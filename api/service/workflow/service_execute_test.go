@@ -109,7 +109,6 @@ func newTestServiceWithRegistry(t *testing.T) (*Service, *engine.AgentRegistry) 
 		AgentRegistry:  reg,
 		RequestTimeout: 30 * time.Second,
 		MaxParallel:    5,
-		UseRunner:      false, // these tests verify the legacy DynamicExecutor path; runner tests are in runner_test.go
 	})
 	require.NoError(t, err)
 	return svc, reg
@@ -308,16 +307,24 @@ eventLoop:
 	assert.Equal(t, "wf-stream-ok", terminal.WorkflowID)
 	assert.NotEmpty(t, terminal.ExecutionID)
 
-	// Verify at least one StepCompleted event was emitted.
+	// Verify native streaming exposes step start before step completion.
+	var stepStartedIndex = -1
+	var stepCompletedIndex = -1
 	var stepCompletedCount int
-	for _, ev := range events {
+	for index, ev := range events {
+		if ev.Type == core.WorkflowEventStepStarted {
+			stepStartedIndex = index
+		}
 		if ev.Type == core.WorkflowEventStepCompleted {
+			stepCompletedIndex = index
 			stepCompletedCount++
 			assert.Equal(t, "step1", ev.StepID)
 			assert.Equal(t, "stream-output", ev.Output)
 		}
 	}
 	assert.GreaterOrEqual(t, stepCompletedCount, 1, "expected at least one StepCompleted event")
+	assert.GreaterOrEqual(t, stepStartedIndex, 0, "expected native StepStarted event")
+	assert.Greater(t, stepCompletedIndex, stepStartedIndex, "StepStarted must precede StepCompleted")
 }
 
 // TestExecuteStream_StepFailure_TerminalFailed verifies that when a step
@@ -374,8 +381,18 @@ eventLoop:
 	assert.Equal(t, core.WorkflowStatusFailed, terminal.Status)
 	assert.Contains(t, terminal.Error, "stream agent error")
 
-	// When ExecuteDynamic returns an error (step failure), ExecuteStream
-	// takes the error branch and emits WorkflowEventFailed directly without
-	// per-step events. Verify the error message is propagated.
+	var stepStarted bool
+	var stepFailed bool
+	for _, event := range events {
+		if event.Type == core.WorkflowEventStepStarted && event.StepID == "step1" {
+			stepStarted = true
+		}
+		if event.Type == core.WorkflowEventStepFailed && event.StepID == "step1" {
+			stepFailed = true
+			assert.Contains(t, event.Error, "stream agent error")
+		}
+	}
+	assert.True(t, stepStarted, "native stream must emit StepStarted before failure")
+	assert.True(t, stepFailed, "native stream must emit StepFailed")
 	assert.Contains(t, terminal.Error, "step1", "error should reference the failed step ID")
 }

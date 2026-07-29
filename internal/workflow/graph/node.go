@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/Timwood0x10/ares/internal/truncate"
+	workflowcore "github.com/Timwood0x10/ares/internal/workflow"
 )
 
 // Node represents an executable unit in the graph.
@@ -337,16 +338,25 @@ func (n *SubGraphNode) Execute(ctx context.Context, state *State) error {
 		}
 	}
 
-	result, err := n.graph.Execute(ctx, subState)
+	compiled, err := CompileBound(n.graph)
 	if err != nil {
-		return fmt.Errorf("sub-graph %s execution failed: %w", n.id, err)
+		return fmt.Errorf("compile sub-graph %s: %w", n.id, err)
 	}
+	options := append(
+		[]workflowcore.RunnerOption{workflowcore.WithInitialState(subState.ToParams())},
+		compiled.Options...,
+	)
+	result, err := workflowcore.NewRunner(compiled.Executor, options...).ExecuteBound(ctx, compiled.Bound)
+	if err != nil {
+		return fmt.Errorf("execute sub-graph %s: %w", n.id, err)
+	}
+	mergeUnifiedResultState(subState, result)
 
 	// Merge sub-graph outputs back into the parent state.
-	if result != nil && result.State != nil {
-		for k, v := range result.State.values {
-			if k != "input" { // don't overwrite parent's input
-				state.Set(k, v)
+	if result != nil {
+		for key, value := range result.State {
+			if key != "input" {
+				state.Set(key, value)
 			}
 		}
 	}

@@ -110,10 +110,9 @@ func TestRunner_Conformance_BranchOne(t *testing.T) {
 	if statusMap["pass"] == workflow.NodeStatusNotSelected {
 		t.Error("pass should have been selected (score=90 >= 60)")
 	}
-	// fail should not have been selected (BranchOne, pass won)
-	if statusMap["fail"] != workflow.NodeStatusNotSelected &&
-		statusMap["fail"] != workflow.NodeStatusUnreachable {
-		t.Logf("fail: status=%v (may execute if BranchOne fallback or not)", statusMap["fail"])
+	// fail should not have been selected (BranchOne, pass won).
+	if statusMap["fail"] != workflow.NodeStatusNotSelected {
+		t.Fatalf("fail: expected not_selected, got %v", statusMap["fail"])
 	}
 
 	t.Logf("Runner conformance §2.2: classify=%v pass=%v fail=%v ✓",

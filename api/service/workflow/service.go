@@ -40,11 +40,12 @@ type Config struct {
 	// routing, checkpointing, and event emission. If nil, the executor
 	// runs without plugins (backward compatible).
 	PluginBus *ares_runtime.PluginBus
-	// UseRunner switches execution to the unified Runner (P2).
-	// When true, the service uses workflow.Runner instead of the legacy
-	// engine.DynamicExecutor. The Runner path is now the default; switch to
-	// false to use the legacy executor for migration only.
+	// UseRunner is retained for source compatibility.
+	//
+	// Deprecated: all service execution paths use the unified Runner.
 	UseRunner bool
+	// CheckpointStore persists atomic Runner snapshots for crash recovery.
+	CheckpointStore ares_runtime.CheckpointStore
 }
 
 // NewService creates a new workflow service instance.
@@ -129,167 +130,64 @@ func (s *Service) Execute(ctx context.Context, req *core.WorkflowRequest) (*core
 	// Build engine workflow from definition.
 	wf := s.buildEngineWorkflow(def, req.Variables)
 
-	// Route to the appropriate executor.
-	if s.config.UseRunner {
-		return s.executeWithRunner(ctx, wf, req)
-	}
-
-	// Build steps for MutableDAG.
-	steps := s.buildEngineSteps(def)
-
-	mutableDAG, err := engine.NewMutableDAG(steps)
-	if err != nil {
-		return nil, fmt.Errorf("create mutable DAG: %w", err)
-	}
-
-	// Create executor and run.
-	executor := engine.NewDynamicExecutor(
-		s.registry,
-		engine.ApplyAtCheckpoint,
-		engine.WithMaxParallel(s.config.MaxParallel),
-	)
-	if s.config.PluginBus != nil {
-		executor.WithPluginBus(s.config.PluginBus)
-	}
-
-	result, err := executor.ExecuteDynamic(ctx, wf, req.Input, mutableDAG)
-	if err != nil {
-		slog.ErrorContext(ctx, "workflow execution failed",
-			"workflow_id", req.WorkflowID,
-			"error", err)
-		return s.buildErrorResponse(req.WorkflowID, result, err), nil
-	}
-
-	return s.buildResponse(result), nil
+	return s.executeWithRunner(ctx, wf, req)
 }
 
 // executeWithRunner executes a workflow using the unified Runner.
 func (s *Service) executeWithRunner(ctx context.Context, wf *engine.Workflow, req *core.WorkflowRequest) (*core.WorkflowResponse, error) {
-	// Compile engine workflow with bindings to capture closures.
-	cw, err := workflow.CompileFromEngineWithBindings(wf)
+	runner, bound, err := s.buildBoundRunner(wf, req)
 	if err != nil {
-		return nil, fmt.Errorf("compile workflow: %w", err)
+		return nil, err
 	}
-	exec := workflow.NewFuncNodeExecutor()
-	for _, step := range wf.Steps {
-		sid := step.ID
-		agentType := step.AgentType
-		exec.Register(workflow.NodeID(sid), func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
-			agent, aErr := s.registry.CreateAgent(ctx, agentType, nil)
-			if aErr != nil {
-				return nil, fmt.Errorf("create agent %q: %w", agentType, aErr)
-			}
-			input, _ := view.Get("input")
-			result, aErr := agent.Process(ctx, input)
-			if aErr != nil {
-				return nil, fmt.Errorf("agent %q: %w", agentType, aErr)
-			}
-			return map[string]any{"output": result}, nil
-		})
+	result, execErr := runner.ExecuteBound(ctx, bound)
+	if execErr != nil {
+		slog.ErrorContext(ctx, "runner execution failed", "workflow_id", wf.ID, "error", execErr)
+		return s.buildRunnerErrorResponse(wf.ID, result, execErr), nil
 	}
+	return s.buildRunnerResponse(result), nil
+}
 
-	// Build Runner options with captured closures.
-	opts := []workflow.RunnerOption{
+func (s *Service) buildBoundRunner(wf *engine.Workflow, req *core.WorkflowRequest, extra ...workflow.RunnerOption) (*workflow.Runner, *workflow.BoundWorkflow, error) {
+	compiled, err := workflow.CompileFromEngineWithBindings(wf)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile workflow: %w", err)
+	}
+	bound, err := workflow.BindCompiledWorkflow(compiled)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bind workflow: %w", err)
+	}
+	executor, err := workflow.NewEngineNodeExecutor(s.registry, wf.Steps)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build engine node executor: %w", err)
+	}
+	options := []workflow.RunnerOption{
 		workflow.WithScheduleStrategy(workflow.ScheduleFIFO),
 		workflow.WithInitialInput(req.Input),
 		workflow.WithInitialVariables(req.Variables),
 	}
-	if cw.UntilCondition != nil {
-		opts = append(opts, workflow.WithConditionEvaluator(
-			func(expr *workflow.ConditionExpr, view workflow.StateView) bool {
-				// Use captured UntilCondition if available.
-				_ = cw.UntilCondition
-				return true
-			},
-		))
-	}
 	if s.config.PluginBus != nil {
-		opts = append(opts, workflow.WithPluginBus(s.config.PluginBus))
+		options = append(options, workflow.WithPluginBus(s.config.PluginBus))
 	}
-
-	runner := workflow.NewRunner(exec, opts...)
-	result, rErr := runner.Execute(ctx, cw.Spec)
-	if rErr != nil {
-		slog.ErrorContext(ctx, "runner execution failed",
-			"workflow_id", wf.ID,
-			"error", rErr)
-		return s.buildRunnerErrorResponse(wf.ID, result, rErr), nil
+	if s.config.CheckpointStore != nil {
+		options = append(options, workflow.WithCheckpointStore(s.config.CheckpointStore))
 	}
-
-	return s.buildRunnerResponse(result), nil
+	options = append(options, extra...)
+	return workflow.NewRunner(executor, options...), bound, nil
 }
 
 // executeStreamWithRunner runs a workflow with the unified Runner and streams events.
 func (s *Service) executeStreamWithRunner(ctx context.Context, req *core.WorkflowRequest, wf *engine.Workflow) (<-chan core.WorkflowEvent, error) {
-	spec, err := workflow.CompileFromEngine(wf) //nolint:staticcheck
-	if err != nil {
-		return nil, fmt.Errorf("compile workflow: %w", err)
-	}
-
-	exec := workflow.NewFuncNodeExecutor()
-	for _, step := range wf.Steps {
-		sid := step.ID
-		agentType := step.AgentType
-		exec.Register(workflow.NodeID(sid), func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
-			agent, aErr := s.registry.CreateAgent(ctx, agentType, nil)
-			if aErr != nil {
-				return nil, fmt.Errorf("create agent %q: %w", agentType, aErr)
-			}
-			input, _ := view.Get("input")
-			result, aErr := agent.Process(ctx, input)
-			if aErr != nil {
-				return nil, fmt.Errorf("agent %q: %w", agentType, aErr)
-			}
-			return map[string]any{"output": result}, nil
-		})
-	}
-
 	events := make(chan core.WorkflowEvent, 64)
-	go func() {
+	runner, bound, err := s.buildBoundRunner(wf, req, workflow.WithEventSink(&serviceRunnerEventSink{events: events}))
+	if err != nil {
+		return nil, err
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
 		defer close(events)
-		emitEvent := func(evType core.WorkflowEventType, status core.WorkflowStatus, stepID, errStr string) {
-			select {
-			case events <- core.WorkflowEvent{Type: evType, WorkflowID: req.WorkflowID, StepID: stepID, Status: status, Error: errStr, Timestamp: time.Now()}:
-			case <-ctx.Done():
-			}
-		}
-
-		emitEvent(core.WorkflowEventStarted, core.WorkflowStatusRunning, "", "")
-
-		runner := workflow.NewRunner(exec,
-			workflow.WithScheduleStrategy(workflow.ScheduleFIFO),
-			workflow.WithInitialInput(req.Input),
-			workflow.WithInitialVariables(req.Variables),
-		)
-		if s.config.PluginBus != nil {
-			runner = workflow.NewRunner(exec,
-				workflow.WithScheduleStrategy(workflow.ScheduleFIFO),
-				workflow.WithInitialInput(req.Input),
-				workflow.WithInitialVariables(req.Variables),
-				workflow.WithPluginBus(s.config.PluginBus),
-			)
-		}
-		result, rErr := runner.Execute(ctx, spec)
-		if rErr != nil || result == nil || result.Status == workflow.NodeStatusFailed {
-			errMsg := ""
-			if rErr != nil {
-				errMsg = rErr.Error()
-			} else if result != nil {
-				errMsg = result.Error
-			}
-			emitEvent(core.WorkflowEventFailed, core.WorkflowStatusFailed, "", errMsg)
-			return
-		}
-
-		for _, ns := range result.NodeStates {
-			s := core.WorkflowStatusCompleted
-			if ns.Status == workflow.NodeStatusFailed {
-				s = core.WorkflowStatusFailed
-			}
-			emitEvent(core.WorkflowEventStepCompleted, s, string(ns.ID), ns.Error)
-		}
-		emitEvent(core.WorkflowEventCompleted, core.WorkflowStatusCompleted, "", "")
-	}()
+		_, execErr := runner.ExecuteBound(groupCtx, bound)
+		return execErr
+	})
 	return events, nil
 }
 
@@ -300,25 +198,35 @@ func (s *Service) buildRunnerResponse(result *workflow.Result) *core.WorkflowRes
 	}
 
 	stepResults := make([]*core.StepResult, 0, len(result.NodeStates))
+	outputs := make(map[string]any, len(result.NodeStates))
 	for _, ns := range result.NodeStates {
+		output := runnerNodeOutput(ns.Output)
 		stepResults = append(stepResults, &core.StepResult{
 			StepID:   string(ns.ID),
 			Status:   mapRunnerStatus(ns.Status),
-			Output:   fmt.Sprintf("%v", ns.Output),
+			Output:   output,
 			Error:    ns.Error,
 			Duration: ns.FinishedAt.Sub(ns.StartedAt),
 		})
+		outputs[string(ns.ID)] = output
 	}
 
 	return &core.WorkflowResponse{
 		ExecutionID: result.ExecutionID,
 		WorkflowID:  result.SpecID,
 		Status:      mapRunnerStatus(result.Status),
-		Output:      result.State,
+		Output:      outputs,
 		Steps:       stepResults,
 		Error:       result.Error,
 		Duration:    result.Duration,
 	}
+}
+
+func runnerNodeOutput(output map[string]any) string {
+	if value, exists := output["output"]; exists {
+		return fmt.Sprint(value)
+	}
+	return fmt.Sprint(output)
 }
 
 // buildRunnerErrorResponse builds a response for a failed runner execution.
@@ -385,168 +293,7 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 	}
 
 	wf := s.buildEngineWorkflow(def, req.Variables)
-
-	// Route to the appropriate executor.
-	if s.config.UseRunner {
-		return s.executeStreamWithRunner(ctx, req, wf)
-	}
-
-	steps := s.buildEngineSteps(def)
-
-	mutableDAG, err := engine.NewMutableDAG(steps)
-	if err != nil {
-		return nil, fmt.Errorf("create mutable DAG: %w", err)
-	}
-
-	executor := engine.NewDynamicExecutor(
-		s.registry,
-		engine.ApplyAtCheckpoint,
-		engine.WithMaxParallel(s.config.MaxParallel),
-	)
-	if s.config.PluginBus != nil {
-		executor.WithPluginBus(s.config.PluginBus)
-	}
-
-	events := make(chan core.WorkflowEvent, 64)
-
-	go func() {
-		// Apply timeout inside the goroutine so cancel does not fire
-		// when ExecuteStream returns, which would prematurely cancel
-		// the running workflow.
-		execCtx := ctx
-		timeout := req.Timeout
-		if timeout == 0 {
-			timeout = s.config.RequestTimeout
-		}
-		if timeout > 0 {
-			var cancel context.CancelFunc
-			execCtx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-		defer close(events)
-
-		// Emit workflow started event.
-		events <- core.WorkflowEvent{
-			Type:        core.WorkflowEventStarted,
-			ExecutionID: "",
-			WorkflowID:  req.WorkflowID,
-			Status:      core.WorkflowStatusRunning,
-			Timestamp:   time.Now(),
-		}
-
-		// Subscribe to graph mutation events for step tracking.
-		// Use SubscribeWithID so we can Unsubscribe (closing the channel)
-		// after execution completes, which unblocks the event-forwarding goroutine.
-		graphSubID, graphEvents := mutableDAG.SubscribeWithID()
-
-		// Run execution and event forwarding via errgroup.
-		type execResult struct {
-			result *engine.WorkflowResult
-			err    error
-		}
-		resultCh := make(chan execResult, 1)
-
-		g, gctx := errgroup.WithContext(execCtx)
-
-		// Goroutine 1: run execution.
-		g.Go(func() error {
-			r, e := executor.ExecuteDynamic(gctx, wf, req.Input, mutableDAG)
-			resultCh <- execResult{result: r, err: e}
-			return nil
-		})
-
-		// Goroutine 2: forward graph events as step events.
-		g.Go(func() error {
-			for ev := range graphEvents {
-				if ev.Success && ev.Change.Step != nil {
-					select {
-					case events <- core.WorkflowEvent{
-						Type:       core.WorkflowEventStepStarted,
-						WorkflowID: req.WorkflowID,
-						StepID:     ev.Change.NodeID,
-						StepName:   ev.Change.Step.Name,
-						Status:     core.WorkflowStatusRunning,
-						Timestamp:  ev.Change.Timestamp,
-					}:
-					case <-gctx.Done():
-						return nil
-					}
-				}
-			}
-			return nil
-		})
-
-		// Wait for execution to complete.
-		res := <-resultCh
-		// Unsubscribe to close the graph event channel, which unblocks
-		// the event-forwarding goroutine and allows g.Wait() to return.
-		mutableDAG.Unsubscribe(graphSubID)
-		if err := g.Wait(); err != nil {
-			fmt.Printf("workflow: executor wait: %v\n", err)
-		}
-
-		if res.err != nil || res.result == nil {
-			errMsg := ""
-			if res.err != nil {
-				errMsg = res.err.Error()
-			}
-			// gctx is already cancelled after g.Wait() — use execCtx for cancellation check
-			// so the Failed event can still be emitted when execution completes normally
-			// but the result is an error.
-			select {
-			case events <- core.WorkflowEvent{
-				Type:       core.WorkflowEventFailed,
-				WorkflowID: req.WorkflowID,
-				Status:     core.WorkflowStatusFailed,
-				Error:      errMsg,
-				Timestamp:  time.Now(),
-			}:
-			case <-execCtx.Done():
-				return
-			}
-			return
-		}
-
-		// Emit step completion events from results.
-		for _, stepRes := range res.result.Steps {
-			evType := core.WorkflowEventStepCompleted
-			status := core.WorkflowStatusCompleted
-			if stepRes.Status == engine.StepStatusFailed {
-				evType = core.WorkflowEventStepFailed
-				status = core.WorkflowStatusFailed
-			}
-			select {
-			case events <- core.WorkflowEvent{
-				Type:        evType,
-				ExecutionID: res.result.ExecutionID,
-				WorkflowID:  req.WorkflowID,
-				StepID:      stepRes.StepID,
-				StepName:    stepRes.Name,
-				Status:      status,
-				Output:      stepRes.Output,
-				Error:       stepRes.Error,
-				Timestamp:   time.Now(),
-			}:
-			case <-execCtx.Done():
-				return
-			}
-		}
-
-		// Emit workflow completed event.
-		select {
-		case events <- core.WorkflowEvent{
-			Type:        core.WorkflowEventCompleted,
-			ExecutionID: res.result.ExecutionID,
-			WorkflowID:  req.WorkflowID,
-			Status:      core.WorkflowStatusCompleted,
-			Timestamp:   time.Now(),
-		}:
-		case <-execCtx.Done():
-			return
-		}
-	}()
-
-	return events, nil
+	return s.executeStreamWithRunner(ctx, req, wf)
 }
 
 // ListWorkflows returns all registered workflow definitions.
@@ -633,58 +380,6 @@ func (s *Service) buildEngineSteps(def *core.WorkflowDefinition) []*engine.Step 
 		}
 	}
 	return steps
-}
-
-// buildResponse converts an engine.WorkflowResult to a core.WorkflowResponse.
-func (s *Service) buildResponse(result *engine.WorkflowResult) *core.WorkflowResponse {
-	status := mapEngineStatus(result.Status)
-
-	stepResults := make([]*core.StepResult, len(result.Steps))
-	for i, sr := range result.Steps {
-		stepResults[i] = &core.StepResult{
-			StepID:   sr.StepID,
-			Name:     sr.Name,
-			Status:   mapEngineStatus(sr.Status),
-			Output:   sr.Output,
-			Error:    sr.Error,
-			Duration: sr.Duration,
-		}
-	}
-
-	return &core.WorkflowResponse{
-		ExecutionID: result.ExecutionID,
-		WorkflowID:  result.WorkflowID,
-		Status:      status,
-		Output:      result.Output,
-		Steps:       stepResults,
-		Error:       result.Error,
-		Duration:    result.Duration,
-	}
-}
-
-// buildErrorResponse builds a response for a failed execution.
-func (s *Service) buildErrorResponse(workflowID string, result *engine.WorkflowResult, execErr error) *core.WorkflowResponse {
-	resp := &core.WorkflowResponse{
-		WorkflowID: workflowID,
-		Status:     core.WorkflowStatusFailed,
-		Error:      execErr.Error(),
-	}
-	if result != nil {
-		resp.ExecutionID = result.ExecutionID
-		resp.Duration = result.Duration
-		resp.Steps = make([]*core.StepResult, len(result.Steps))
-		for i, sr := range result.Steps {
-			resp.Steps[i] = &core.StepResult{
-				StepID:   sr.StepID,
-				Name:     sr.Name,
-				Status:   mapEngineStatus(sr.Status),
-				Output:   sr.Output,
-				Error:    sr.Error,
-				Duration: sr.Duration,
-			}
-		}
-	}
-	return resp
 }
 
 // mapEngineStatus maps engine.WorkflowStatus or engine.StepStatus to core.WorkflowStatus.

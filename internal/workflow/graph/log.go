@@ -1,5 +1,3 @@
 package graph
 
-import "github.com/Timwood0x10/ares/internal/logger"
-
-var log = logger.Module("workflow-graph")
+// TODO(tech-debt): Remove this compatibility file when graph package migration is complete.

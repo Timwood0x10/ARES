@@ -152,7 +152,7 @@ func (b *PluginBus) RegisterHook(name string, hook WorkflowHook) {
 // BeforeStep calls all registered hooks before a step executes.
 // Each hook is invoked sequentially. If a hook fails (error, panic, or
 // timeout), the error is logged and the remaining hooks still execute.
-// This matches the DynamicExecutor's contract (log-and-continue).
+// Hooks are observational and therefore use a log-and-continue contract.
 func (b *PluginBus) BeforeStep(ctx context.Context, executionID string, step *Step) error {
 	b.mu.RLock()
 	hooks := make([]namedHook, len(b.hooks))

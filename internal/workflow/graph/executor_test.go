@@ -668,61 +668,6 @@ func TestGraphCheckpointPlugin(t *testing.T) {
 	}
 }
 
-func TestExecuteFromCheckpoint_SkipsCompletedNodes(t *testing.T) {
-	g := buildTestGraph(t, "resume-graph",
-		nodeDef("n1", func(ctx context.Context, state *State) error {
-			v, _ := state.Get("order")
-			state.Set("order", append(v.([]string), "n1"))
-			return nil
-		}),
-		nodeDef("n2", func(ctx context.Context, state *State) error {
-			v, _ := state.Get("order")
-			state.Set("order", append(v.([]string), "n2"))
-			return nil
-		}),
-		nodeDef("n3", func(ctx context.Context, state *State) error {
-			v, _ := state.Get("order")
-			state.Set("order", append(v.([]string), "n3"))
-			return nil
-		}),
-		edgeDef("n1", "n2"),
-		edgeDef("n2", "n3"),
-		startDef("n1"),
-	)
-
-	// First execution.
-	state := NewState()
-	state.Set("order", []string{})
-	_, err := g.Execute(context.Background(), state)
-	require.NoError(t, err)
-
-	order, _ := state.Get("order")
-	require.Equal(t, []string{"n1", "n2", "n3"}, order)
-
-	// Second execution resume from checkpoint: n1 and n2 already completed.
-	state2 := NewState()
-	state2.Set("order", []string{"n1", "n2"})
-	_, err = g.ExecuteFromCheckpoint(context.Background(), state2, []string{"n1", "n2"})
-	require.NoError(t, err)
-
-	order2, _ := state2.Get("order")
-	// Only n3 should execute (successors of n2 resume with decremented in-degree).
-	require.Equal(t, []string{"n1", "n2", "n3"}, order2)
-}
-
-func TestExecuteFromCheckpoint_AllNodesCompleted(t *testing.T) {
-	g := buildTestGraph(t, "resume-all-done",
-		nodeDef("n1", func(ctx context.Context, state *State) error {
-			return nil
-		}),
-		startDef("n1"),
-	)
-
-	state := NewState()
-	_, err := g.ExecuteFromCheckpoint(context.Background(), state, []string{"n1"})
-	require.NoError(t, err)
-}
-
 func TestGraphSetExecutionCollector_Nil(t *testing.T) {
 	g, err := NewGraph("test-collector-nil")
 	require.NoError(t, err)
@@ -807,21 +752,4 @@ func TestGraphPluginBusRouterRecordsToCollector(t *testing.T) {
 	assert.Equal(t, "n2", routes[0].Decision)
 	assert.Equal(t, "test route", routes[0].Reason)
 	assert.Equal(t, "expression", routes[0].Source)
-}
-
-func TestExecuteFromCheckpoint_EmptyExecuted(t *testing.T) {
-	// Empty executed list behaves like a fresh Execute.
-	var callCount atomic.Int32
-	g := buildTestGraph(t, "resume-empty",
-		nodeDef("n1", func(ctx context.Context, state *State) error {
-			callCount.Add(1)
-			return nil
-		}),
-		startDef("n1"),
-	)
-
-	state := NewState()
-	_, err := g.ExecuteFromCheckpoint(context.Background(), state, nil)
-	require.NoError(t, err)
-	require.Equal(t, int32(1), callCount.Load())
 }

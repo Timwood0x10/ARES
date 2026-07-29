@@ -157,15 +157,11 @@ var Validate = workflow.Validate
 // TopologicalSort returns nodes in topological order.
 var TopologicalSort = workflow.TopologicalSort
 
-// CompileFromEngine compiles an engine.Workflow to a WorkflowSpec.
-//
-//nolint:staticcheck // migration adapter — deprecated by design for legacy compat
-var CompileFromEngine = workflow.CompileFromEngine
+// CompileFromEngine compiles an engine.Workflow and preserves runtime bindings.
+var CompileFromEngine = workflow.CompileFromEngineWithBindings
 
-// CompileFromGraph compiles a graph.Graph to a WorkflowSpec.
-//
-//nolint:staticcheck // migration adapter — deprecated by design for legacy compat
-var CompileFromGraph = workflow.CompileFromGraph
+// CompileFromGraph compiles executable graph bindings for the unified Runner.
+var CompileFromGraph = graph.CompileBound
 
 // ScheduleStrategy constants.
 const (

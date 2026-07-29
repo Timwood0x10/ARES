@@ -1,8 +1,4 @@
-// Package workflow_test — benchmarks comparing the new Runner against legacy executors.
-//
-// Phase: P4 — performance validation.
-// These benchmarks must not regress relative to the legacy engine.Executor
-// and engine.DynamicExecutor baselines.
+// Package workflow_test benchmarks the unified Runner.
 
 package workflow_test
 
@@ -11,27 +7,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/workflow"
 	wfengine "github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // ── Benchmark helpers ─────────────────────────────────────────────────
-
-type benchAgent struct{ id, output string }
-
-func (a *benchAgent) ID() string                    { return a.id }
-func (a *benchAgent) Type() models.AgentType        { return "bench" }
-func (a *benchAgent) Status() models.AgentStatus    { return models.AgentStatusReady }
-func (a *benchAgent) Start(_ context.Context) error { return nil }
-func (a *benchAgent) Stop(_ context.Context) error  { return nil }
-func (a *benchAgent) Process(_ context.Context, _ any) (any, error) {
-	return &models.RecommendResult{Items: []*models.RecommendItem{{Description: a.output}}}, nil
-}
-func (a *benchAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {
-	return nil, nil
-}
 
 // benchLinearWorkflow creates a linear chain of N steps: step0 → step1 → ... → stepN-1.
 func benchLinearWorkflow(n int) *wfengine.Workflow {
@@ -85,23 +65,6 @@ func BenchmarkRunner_Linear3(b *testing.B) {
 	benchRunnerWorkflow(context.Background(), spec, b)
 }
 
-func BenchmarkEngineExecutor_Linear3(b *testing.B) {
-	ctx := context.Background()
-	wf := benchLinearWorkflow(3)
-	reg := wfengine.NewAgentRegistry()
-	_ = reg.Register("bench-agent", func(_ context.Context, _ any) (base.Agent, error) {
-		return &benchAgent{id: "bench", output: "ok"}, nil
-	})
-	exec := wfengine.NewExecutor(reg)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := exec.Execute(ctx, wf, "input")
-		if err != nil {
-			b.Fatalf("Executor: %v", err)
-		}
-	}
-}
-
 // ── Benchmarks: linear chain, 10 nodes ───────────────────────────────
 
 func BenchmarkRunner_Linear10(b *testing.B) {
@@ -126,22 +89,3 @@ func BenchmarkRunner_Linear10(b *testing.B) {
 		}
 	}
 }
-
-func BenchmarkEngineExecutor_Linear10(b *testing.B) {
-	ctx := context.Background()
-	wf := benchLinearWorkflow(10)
-	reg := wfengine.NewAgentRegistry()
-	_ = reg.Register("bench-agent", func(_ context.Context, _ any) (base.Agent, error) {
-		return &benchAgent{id: "bench", output: "ok"}, nil
-	})
-	exec := wfengine.NewExecutor(reg)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := exec.Execute(ctx, wf, "input")
-		if err != nil {
-			b.Fatalf("Executor: %v", err)
-		}
-	}
-}
-
-//nolint:staticcheck // benchmark — intentionally compares against legacy engine

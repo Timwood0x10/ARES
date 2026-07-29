@@ -313,7 +313,7 @@ func validateJoinPolicy(spec *WorkflowSpec, r *ValidationReport) {
 			if _, ok := joinIndex[n.ID]; !ok {
 				r.Warnings = append(r.Warnings, ValidationError{
 					NodeID:  n.ID,
-					Field:   "join",
+					Field:   validationFieldJoin,
 					Message: fmt.Sprintf("node has %d incoming data-dependency edges but no explicit Join policy; defaulting to JoinAll", deg),
 				})
 			}

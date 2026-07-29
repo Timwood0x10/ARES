@@ -8,10 +8,9 @@ import (
 // ExecutionCollector and EventBus. It implements both RuntimePlugin and
 // WorkflowHook.
 //
-// The plugin works alongside the existing HITL mechanism in DynamicExecutor.
-// It does not handle interrupts itself (that is done by the executor's
-// handleDynamicInterrupt) but records what happened for observability,
-// checkpoint, memory distill, and evolution scoring.
+// The plugin observes the unified Runner's HITL lifecycle. It does not make
+// approval decisions; it records them for observability, checkpointing,
+// memory distillation, and evolution scoring.
 type InterruptPlugin struct {
 	name      string
 	collector *ExecutionCollector // optional; if set, interrupts are recorded

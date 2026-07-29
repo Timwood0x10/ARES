@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	wfengine "github.com/Timwood0x10/ares/internal/workflow/engine"
-	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // CompiledWorkflow holds a WorkflowSpec IR together with closures that cannot
@@ -42,8 +41,8 @@ type CompiledWorkflow struct {
 // stored as reference markers in the EdgeSpec.Cond field. The caller must
 // provide a Bindings map to reattach executable closures before execution.
 //
-// Deprecated: this function exists to support migration from the legacy
-// engine.Executor path. New workflows should use the Builder API directly.
+// Deprecated: this function supports engine.Workflow source compatibility.
+// New workflows should use the Builder API directly.
 func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 	if w == nil {
 		return nil, fmt.Errorf("workflow must not be nil")
@@ -76,31 +75,6 @@ func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 		spec.Loop = &LoopSpec{
 			MaxIterations: w.LoopConfig.MaxIterations,
 			LoopNodes:     loopNodes,
-		}
-	}
-
-	// For steps with Conditions, attach a bound-type ConditionExpr to their first
-	// incoming data-dependency edge. This allows the runner's condition evaluator
-	// to look up the original closure via WithBindings when using CompileFromEngineWithBindings.
-	for _, step := range w.Steps {
-		if step.Condition != nil && len(step.DependsOn) > 0 {
-			// Find the first data-dependency edge from a dependency TO this step
-			for i, e := range spec.Edges {
-				// Check if this edge comes from one of the step's dependencies
-				for _, dep := range step.DependsOn {
-					if e.From == NodeID(dep) && e.To == NodeID(step.ID) && e.Kind == EdgeDataDependency {
-						// Create a bound-type expression referencing this node ID
-						spec.Edges[i].Cond = &ConditionExpr{
-							Type:  "bound",
-							Value: step.ID,
-						}
-						break // Only one edge per step
-					}
-				}
-				if spec.Edges[i].Cond != nil {
-					break
-				}
-			}
 		}
 	}
 
@@ -149,105 +123,11 @@ func CompileFromEngineWithBindings(w *wfengine.Workflow) (*CompiledWorkflow, err
 	return cw, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Compiler: graph.Graph → WorkflowSpec
-// ──────────────────────────────────────────────────────────────────────
-
-// CompileFromGraph converts a graph.Graph to a WorkflowSpec.
-// Graph nodes become IR nodes; graph edges become IR edges.
-// Graph conditions (which are closures) cannot be serialized — they are
-// marked as HasCond=true in EdgeInfo and must be reattached via Bindings
-// at execution time.
-//
-// Deprecated: this function exists to support migration from the legacy
-// graph.Graph execution path. New workflows should use the Builder API.
-func CompileFromGraph(g *wfgraph.Graph) (*WorkflowSpec, error) {
-	if g == nil {
-		return nil, fmt.Errorf("graph must not be nil")
-	}
-
-	spec := NewWorkflow(g.ID())
-
-	// ── Compile nodes ──
-	// graph.Node is an interface (AgentNode, ToolNode, FuncNode, SubGraphNode).
-	// The node metadata (agent type, input) lives in the Node implementation,
-	// which Graph does not expose generically. For compilation, we capture
-	// node IDs and let the caller supply agent-type metadata via Bindings.
-	seen := make(map[string]bool)
-	for _, id := range g.NodeIDs() {
-		if seen[id] {
-			return nil, fmt.Errorf("duplicate node ID %q in graph %q", id, g.ID())
-		}
-		seen[id] = true
-		spec.AddNode(NodeSpec{
-			ID:   NodeID(id),
-			Name: id,
-		})
-	}
-
-	// ── Compile edges ──
-	for _, ei := range g.Edges() {
-		kind := EdgeControlFlow
-		if !ei.HasCond {
-			// Unconditional edges in graph are data dependencies
-			kind = EdgeDataDependency
-		}
-		spec.AddEdge(EdgeSpec{
-			From: NodeID(ei.From),
-			To:   NodeID(ei.To),
-			Kind: kind,
-			Cond: condFromGraph(ei),
-		})
-	}
-
-	// ── Entries ──
-	start := g.StartNode()
-	if start != "" {
-		spec.Entries = append(spec.Entries, NodeID(start))
-	} else {
-		// Fall back to zero-in-degree nodes (legacy behaviour documented in §2.4)
-		inDegree := make(map[NodeID]int)
-		for _, n := range spec.Nodes {
-			inDegree[n.ID] = 0
-		}
-		for _, e := range spec.Edges {
-			inDegree[e.To]++
-		}
-		for _, n := range spec.Nodes {
-			if inDegree[n.ID] == 0 {
-				spec.Entries = append(spec.Entries, n.ID)
-			}
-		}
-	}
-
-	spec.Schedule = ScheduleSpec{MaxParallel: 1}
-	return spec, nil
-}
-
-// condFromGraph converts a graph edge with a condition to a ConditionExpr
-// reference marker. Since graph.Condition is a closure, the actual condition
-// function is not serializable — we store an existence marker.
-func condFromGraph(ei wfgraph.EdgeInfo) *ConditionExpr {
-	if !ei.HasCond {
-		return nil
-	}
-	return &ConditionExpr{
-		Type:  "graph_closure_ref",
-		Value: "condition:{" + ei.From + "→" + ei.To + "}",
-	}
-}
-
 // annotateConditionRef records that a Condition closure existed on a step.
 // The closure cannot be serialized, so we annotate the edge kind and metadata.
 func annotateConditionRef(spec *WorkflowSpec, step *wfengine.Step) {
 	if step.Condition == nil || len(step.DependsOn) == 0 {
 		return
-	}
-	for i := range spec.Edges {
-		if spec.Edges[i].To == NodeID(step.ID) {
-			spec.Edges[i].Kind = EdgeControlFlow
-			break
-		}
 	}
 	setNodeMeta(spec, step.ID, "_closure_condition", "true")
 }
@@ -292,8 +172,13 @@ func compileEngineSteps(spec *WorkflowSpec, steps []*wfengine.Step, nodeIDs map[
 			Timeout:   step.Timeout,
 		}
 		convertPolicies(step, &ns)
-		convertSubWorkflow(step, &ns)
+		if err := convertSubWorkflow(step, &ns); err != nil {
+			return fmt.Errorf("compile sub-workflow for step %q: %w", step.ID, err)
+		}
 		convertMetadata(step, &ns)
+		if step.Condition != nil {
+			ns.Condition = &ConditionExpr{Type: "bound", Value: step.ID}
+		}
 		spec.AddNode(ns)
 
 		for _, dep := range step.DependsOn {
@@ -331,15 +216,16 @@ func convertPolicies(step *wfengine.Step, ns *NodeSpec) {
 }
 
 // convertSubWorkflow recursively compiles a nested sub-workflow.
-func convertSubWorkflow(step *wfengine.Step, ns *NodeSpec) {
+func convertSubWorkflow(step *wfengine.Step, ns *NodeSpec) error {
 	if step.SubWorkflow == nil {
-		return
+		return nil
 	}
 	sub, err := CompileFromEngine(step.SubWorkflow)
 	if err != nil {
-		return // error will be caught by validation
+		return fmt.Errorf("compile %q: %w", step.SubWorkflow.ID, err)
 	}
 	ns.SubWorkflow = sub
+	return nil
 }
 
 // convertMetadata copies metadata from a step to a NodeSpec.

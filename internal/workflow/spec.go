@@ -2,13 +2,17 @@
 // DAG-based workflow execution. The IR is the single compilation target for
 // all legacy APIs. The Runner is the single production execution path.
 //
-// Phase: P2 — Single Runner.
-// The Runner consumes WorkflowSpec IR and replaces all three legacy execution
-// paths (engine.Executor, engine.DynamicExecutor, graph.Graph.Execute).
+// The Runner consumes WorkflowSpec IR as the only production DAG execution
+// path. Compatibility APIs compile into this IR before execution.
 
 package workflow
 
 import "time"
+
+const (
+	conditionTypeState  = "state"
+	validationFieldJoin = "join"
+)
 
 // NodeID is a unique identifier for a node within a workflow.
 type NodeID string
@@ -56,8 +60,11 @@ type NodeSpec struct {
 	// Interrupt, when non-nil, marks this node as requiring human approval.
 	Interrupt *InterruptSpec `json:"interrupt,omitempty" yaml:"interrupt,omitempty"`
 	// Join defines how this node is activated when it has multiple incoming edges.
-	// Default: JoinAll (AND-join for all incoming data-dependency edges).
+	// Default: JoinAll (AND-join for all activated incoming edges).
 	Join JoinKind `json:"join,omitempty" yaml:"join,omitempty"`
+	// Condition is evaluated after all required incoming edges have resolved.
+	// A false condition marks the node not selected without executing it.
+	Condition *ConditionExpr `json:"condition,omitempty" yaml:"condition,omitempty"`
 	// SubWorkflow, when non-nil, nests another workflow as a sub-graph node.
 	SubWorkflow *WorkflowSpec `json:"sub_workflow,omitempty" yaml:"sub_workflow,omitempty"`
 	// Metadata carries opaque key-value pairs for tooling and provenance.

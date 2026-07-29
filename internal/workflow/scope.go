@@ -2,9 +2,8 @@
 //
 // Phase: P2 — Single Runner.
 // ExecutionScope is the unified container for all runtime state during a single
-// workflow execution. It replaces the scattered maps, mutexes, and channels
-// previously shared between engine.Executor, engine.DynamicExecutor, and
-// graph.Graph.
+// workflow execution. It owns the state, scheduling recovery data, lifecycle
+// collection, and ordered events used by the single Runner.
 
 package workflow
 
@@ -12,6 +11,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // ──────────────────────────────────────────────────────────────────────
@@ -148,8 +149,11 @@ func (s *executionState) snapshot() map[string]any {
 type ExecutionScope struct {
 	// ExecutionID is the unique identifier for this execution.
 	ExecutionID string `json:"execution_id"`
-	// Spec is the immutable workflow IR being executed.
+	// Spec is the effective workflow IR committed at Runner safe points.
 	Spec *WorkflowSpec `json:"spec"`
+
+	// baseSpec is the immutable public input used to validate resumed executions.
+	baseSpec *WorkflowSpec
 
 	// state is the transactional execution state.
 	state *executionState
@@ -167,6 +171,25 @@ type ExecutionScope struct {
 	// finishedAt is when execution completed or failed.
 	finishedAt time.Time
 
+	// loopHistory stores immutable snapshots for each completed loop iteration.
+	loopHistory []LoopIteration
+	loopMu      sync.RWMutex
+
+	// eventSequence is the last ordered Runner lifecycle event sequence.
+	eventSequence uint64
+	eventMu       sync.Mutex
+
+	// pendingInterrupts records unresolved human approval points.
+	pendingInterrupts map[NodeID]PendingInterrupt
+	interruptMu       sync.RWMutex
+
+	// mutationIDs records mutations atomically applied at Runner safe points.
+	mutationIDs []string
+	mutationMu  sync.RWMutex
+
+	// collector owns lifecycle data for this execution only.
+	collector *ares_runtime.ExecutionCollector
+
 	// err holds the terminal execution error (if any).
 	err   error
 	errMu sync.RWMutex
@@ -178,12 +201,27 @@ func NewExecutionScope(execID string, spec *WorkflowSpec) *ExecutionScope {
 		execID = fmt.Sprintf("exec-%d", time.Now().UnixNano())
 	}
 	return &ExecutionScope{
-		ExecutionID: execID,
-		Spec:        spec,
-		state:       newExecutionState(),
-		nodeStates:  make(map[NodeID]*NodeStatusValue),
-		completed:   make(map[NodeID]bool),
-		startedAt:   time.Now(),
+		ExecutionID:       execID,
+		Spec:              spec,
+		baseSpec:          spec,
+		state:             newExecutionState(),
+		nodeStates:        make(map[NodeID]*NodeStatusValue),
+		completed:         make(map[NodeID]bool),
+		pendingInterrupts: make(map[NodeID]PendingInterrupt),
+		collector:         ares_runtime.NewExecutionCollector(execID),
+		startedAt:         time.Now(),
+	}
+}
+
+// Collector returns execution-scoped lifecycle data.
+func (s *ExecutionScope) Collector() *ares_runtime.ExecutionCollector {
+	return s.collector
+}
+
+// SetCollector replaces the default execution-scoped collector.
+func (s *ExecutionScope) SetCollector(collector *ares_runtime.ExecutionCollector) {
+	if collector != nil {
+		s.collector = collector
 	}
 }
 
@@ -202,9 +240,20 @@ func (s *ExecutionScope) CommitState() {
 	s.state.commit()
 }
 
-// StateSnapshot returns a deep copy of committed state for checkpointing.
+// StateSnapshot returns a copy of committed state for checkpointing.
 func (s *ExecutionScope) StateSnapshot() map[string]any {
 	return s.state.snapshot()
+}
+
+// RestoreState replaces committed state during checkpoint or child-scope restoration.
+func (s *ExecutionScope) RestoreState(state map[string]any) {
+	s.state.mu.Lock()
+	s.state.base = cloneAnyMap(state)
+	if s.state.base == nil {
+		s.state.base = make(map[string]any)
+	}
+	s.state.pending = make(map[string]any)
+	s.state.mu.Unlock()
 }
 
 // ── Node state tracking ──
@@ -345,6 +394,136 @@ func (s *ExecutionScope) FinishedAt() time.Time { return s.finishedAt }
 // MarkFinished records the execution end time.
 func (s *ExecutionScope) MarkFinished() { s.finishedAt = time.Now() }
 
+// RecordLoopIteration appends an immutable snapshot of one committed iteration.
+func (s *ExecutionScope) RecordLoopIteration(iteration int, nodeIDs []NodeID) {
+	nodes := make([]NodeStatusValue, 0, len(nodeIDs))
+	s.nsMu.RLock()
+	for _, id := range nodeIDs {
+		if state, ok := s.nodeStates[id]; ok {
+			copyValue := *state
+			copyValue.Output = cloneAnyMap(state.Output)
+			nodes = append(nodes, copyValue)
+		}
+	}
+	s.nsMu.RUnlock()
+	s.loopMu.Lock()
+	s.loopHistory = append(s.loopHistory, LoopIteration{
+		Iteration: iteration,
+		State:     s.StateSnapshot(),
+		Nodes:     nodes,
+	})
+	s.loopMu.Unlock()
+}
+
+// ResetNodesForIteration resets selected nodes without changing execution identity.
+func (s *ExecutionScope) ResetNodesForIteration(nodeIDs []NodeID) {
+	s.nsMu.Lock()
+	s.compMu.Lock()
+	for _, id := range nodeIDs {
+		s.nodeStates[id] = &NodeStatusValue{ID: id, Status: NodeStatusPending}
+		delete(s.completed, id)
+	}
+	s.compMu.Unlock()
+	s.nsMu.Unlock()
+}
+
+// RestoreNodeStates replaces runtime node state from a validated checkpoint.
+func (s *ExecutionScope) RestoreNodeStates(states []NodeStatusValue) {
+	s.nsMu.Lock()
+	s.compMu.Lock()
+	for i := range states {
+		state := states[i]
+		state.Output = cloneAnyMap(state.Output)
+		s.nodeStates[state.ID] = &state
+		if terminalNodeStatus(state.Status) {
+			s.completed[state.ID] = true
+		} else {
+			delete(s.completed, state.ID)
+		}
+		if state.Output != nil {
+			s.state.SetNodeOutput(state.ID, cloneAnyMap(state.Output))
+		}
+	}
+	s.compMu.Unlock()
+	s.nsMu.Unlock()
+}
+
+// RestoreLoopHistory replaces loop history from a validated checkpoint.
+func (s *ExecutionScope) RestoreLoopHistory(history []LoopIteration) {
+	s.loopMu.Lock()
+	s.loopHistory = append([]LoopIteration(nil), history...)
+	s.loopMu.Unlock()
+}
+
+// LoopHistory returns an immutable snapshot of completed iterations.
+func (s *ExecutionScope) LoopHistory() []LoopIteration {
+	s.loopMu.RLock()
+	defer s.loopMu.RUnlock()
+	return append([]LoopIteration(nil), s.loopHistory...)
+}
+
+// PublishOrderedEvent serializes one event publication with sequence allocation.
+func (s *ExecutionScope) PublishOrderedEvent(publish func(uint64) error) error {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	s.eventSequence++
+	return publish(s.eventSequence)
+}
+
+// PersistOrderedEvent atomically reserves an event sequence after durable state commits.
+func (s *ExecutionScope) PersistOrderedEvent(
+	persist func(uint64) error,
+	publish func(uint64) error,
+) error {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	next := s.eventSequence + 1
+	if err := persist(next); err != nil {
+		return err
+	}
+	s.eventSequence = next
+	return publish(next)
+}
+
+// PersistOrderedEvents reserves a durable sequence range and publishes it in order.
+func (s *ExecutionScope) PersistOrderedEvents(
+	count uint64,
+	persist func(uint64, uint64) error,
+	publish func(uint64) error,
+) error {
+	if count == 0 {
+		return nil
+	}
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	first := s.eventSequence + 1
+	last := s.eventSequence + count
+	if err := persist(first, last); err != nil {
+		return err
+	}
+	s.eventSequence = last
+	for sequence := first; sequence <= last; sequence++ {
+		if err := publish(sequence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// EventSequence returns the last emitted execution event sequence.
+func (s *ExecutionScope) EventSequence() uint64 {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	return s.eventSequence
+}
+
+// RestoreEventSequence restores the last emitted execution event sequence.
+func (s *ExecutionScope) RestoreEventSequence(sequence uint64) {
+	s.eventMu.Lock()
+	s.eventSequence = sequence
+	s.eventMu.Unlock()
+}
+
 // Err returns the terminal execution error, if any.
 func (s *ExecutionScope) Err() error {
 	s.errMu.RLock()
@@ -361,10 +540,18 @@ type Result struct {
 	Status      NodeStatus         `json:"status"`
 	State       map[string]any     `json:"state,omitempty"`
 	NodeStates  []*NodeStatusValue `json:"node_states"`
+	LoopHistory []LoopIteration    `json:"loop_history,omitempty"`
 	StartedAt   time.Time          `json:"started_at"`
 	FinishedAt  time.Time          `json:"finished_at"`
 	Error       string             `json:"error,omitempty"`
 	Duration    time.Duration      `json:"duration"`
+}
+
+// LoopIteration captures the committed state and node statuses for one loop iteration.
+type LoopIteration struct {
+	Iteration int               `json:"iteration"`
+	State     map[string]any    `json:"state"`
+	Nodes     []NodeStatusValue `json:"nodes"`
 }
 
 // ToResult converts the scope to a final Result.
@@ -377,11 +564,14 @@ func (s *ExecutionScope) ToResult() *Result {
 		Duration:    s.finishedAt.Sub(s.startedAt),
 		NodeStates:  s.NodeStates(),
 	}
-	if s.err != nil {
+	s.loopMu.RLock()
+	r.LoopHistory = append([]LoopIteration(nil), s.loopHistory...)
+	s.loopMu.RUnlock()
+	if err := s.Err(); err != nil {
 		r.Status = NodeStatusFailed
-		r.Error = s.err.Error()
+		r.Error = err.Error()
 	} else {
-		r.Status = NodeStatusCompleted
+		r.Status = overallNodeStatus(r.NodeStates)
 	}
 	// Build final state: merge committed base state with all completed node outputs.
 	state := s.StateSnapshot()
@@ -403,4 +593,42 @@ func (s *ExecutionScope) ToResult() *Result {
 	s.state.mu.RUnlock()
 	r.State = state
 	return r
+}
+
+func cloneAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]any, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func terminalNodeStatus(status NodeStatus) bool {
+	switch status {
+	case NodeStatusCompleted, NodeStatusFailed, NodeStatusCancelled,
+		NodeStatusNotSelected, NodeStatusUnreachable, NodeStatusBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+func overallNodeStatus(states []*NodeStatusValue) NodeStatus {
+	result := NodeStatusCompleted
+	for _, state := range states {
+		switch state.Status {
+		case NodeStatusFailed:
+			return NodeStatusFailed
+		case NodeStatusPending, NodeStatusReady, NodeStatusRunning, NodeStatusInterrupted:
+			result = NodeStatusInterrupted
+		case NodeStatusCancelled:
+			if result == NodeStatusCompleted {
+				result = NodeStatusCancelled
+			}
+		}
+	}
+	return result
 }

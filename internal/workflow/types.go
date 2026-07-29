@@ -1,11 +1,7 @@
 // Package workflow defines the unified types and IR for DAG-based workflow
 // execution. It serves as the single source of truth for node status, edge
-// kinds, branching strategies, and join policies — shared by all execution
-// runtimes (engine.Executor, engine.DynamicExecutor, graph.Graph).
-//
-// Phase: P0 — semantic contract freezing.
-// All types defined here are frozen during P0 and serve as the foundation
-// for conformance tests and the future single Runner.
+// kinds, branching strategies, and join policies consumed by the single
+// production Runner.
 package workflow
 
 // NodeStatus represents the execution status of a workflow node.

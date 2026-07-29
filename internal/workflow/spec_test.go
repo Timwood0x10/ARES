@@ -7,12 +7,27 @@
 package workflow_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/workflow"
 	wfengine "github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
+
+func echoNode(id string, recorder *[]string) *wfgraph.FuncNode {
+	node, err := wfgraph.NewFuncNode(id, func(_ context.Context, state *wfgraph.State) error {
+		if recorder != nil {
+			*recorder = append(*recorder, id)
+		}
+		state.Set("node."+id, id+"_done")
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return node
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // IR spec tests
@@ -259,7 +274,7 @@ func TestCompiler_Engine_SubWorkflow(t *testing.T) {
 	}
 }
 
-func TestCompiler_Engine_ConditionAnnotatesEdge(t *testing.T) {
+func TestCompiler_Engine_ConditionAnnotatesNode(t *testing.T) {
 	w := &wfengine.Workflow{
 		ID: "cond",
 		Steps: []*wfengine.Step{
@@ -276,12 +291,17 @@ func TestCompiler_Engine_ConditionAnnotatesEdge(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The edge a→b should be marked as ControlFlow (because of the condition gate)
 	if len(spec.Edges) != 1 {
 		t.Fatalf("expected 1 edge, got %d", len(spec.Edges))
 	}
-	if spec.Edges[0].Kind != workflow.EdgeControlFlow {
-		t.Errorf("expected edge kind ControlFlow (condition gate), got %v", spec.Edges[0].Kind)
+	if spec.Edges[0].Kind != workflow.EdgeDataDependency {
+		t.Errorf("expected structural dependency edge, got %v", spec.Edges[0].Kind)
+	}
+	if spec.Nodes[1].Condition == nil {
+		t.Fatal("expected node condition binding")
+	}
+	if spec.Nodes[1].Condition.Type != "bound" || spec.Nodes[1].Condition.Value != "b" {
+		t.Fatalf("condition = %#v, want bound:b", spec.Nodes[1].Condition)
 	}
 }
 
