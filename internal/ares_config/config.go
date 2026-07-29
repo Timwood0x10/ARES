@@ -3,12 +3,13 @@ package ares_config
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,9 +39,36 @@ type Config struct {
 	Workflow   WorkflowConfig     `yaml:"workflow"`
 	Storage    StorageConfig      `yaml:"storage"`
 	Memory     MemoryConfig       `yaml:"memory"`
+	Knowledge  KnowledgeConfig    `yaml:"knowledge"`
 	MCP        MCPConfig          `yaml:"mcp"`
 	Dashboard  DashboardAppConfig `yaml:"dashboard"`
 	Evolution  EvolutionConfig    `yaml:"evolution"`
+	Embedding  EmbeddingConfig    `yaml:"embedding"`
+	Discovery  DiscoveryConfig    `yaml:"discovery"`
+}
+
+// DiscoveryConfig configures the optional service discovery engine that
+// auto-detects MCP servers and agent runtimes from local config files
+// (Claude, Cursor, VSCode, ARES) and the system PATH. When Enabled is
+// false (the default), discovery is not wired and the discovery packages
+// remain unused, preserving prior behavior.
+type DiscoveryConfig struct {
+	Enabled    bool          `yaml:"enabled"`
+	Interval   time.Duration `yaml:"interval"`
+	ProjectDir string        `yaml:"project_dir"`
+}
+
+// EmbeddingConfig holds configuration for the embedding client used by
+// experience distillation. Distillation requires an embedding client to
+// vectorize distilled experiences; the rest of the system can run without it.
+// When Enabled is false, experience distillation is not wired (graceful skip).
+type EmbeddingConfig struct {
+	Enabled   bool   `yaml:"enabled"`    // Enable embedding client + experience distillation
+	BaseURL   string `yaml:"base_url"`   // Embedding service base URL
+	Model     string `yaml:"model"`      // Embedding model name
+	RedisAddr string `yaml:"redis_addr"` // Optional Redis for embedding cache (empty = no cache)
+	Dimension int    `yaml:"dimension"`  // Vector dimension (0 = use model default)
+	Timeout   int    `yaml:"timeout"`    // Request timeout in seconds (0 = 30s default)
 }
 
 // ServerConfig holds server configuration.
@@ -216,6 +244,71 @@ type MemoryConfig struct {
 	SessionMemory    SessionConfig `yaml:"session"`           // Short-term session memory
 	UserProfile      ProfileConfig `yaml:"user_profile"`      // Long-term user profile
 	TaskDistillation DistillConfig `yaml:"task_distillation"` // Task distillation
+
+	// MaxHistory is the maximum number of turns to keep in the closed-loop
+	// memory context. Defaults to 10 when zero. This is independent of
+	// SessionMemory.MaxHistory (which controls the session store window).
+	MaxHistory int `yaml:"max_history"`
+
+	// EnableDistillation mirrors v0.2.4 memory.enable_distillation: when true,
+	// the closed loop distills task experiences into long-term memory.
+	EnableDistillation bool `yaml:"enable_distillation"`
+
+	// DistillationThreshold is the number of conversation rounds that must
+	// accumulate before distillation fires. Defaults to 3 when zero (only
+	// applied when EnableDistillation is true). Mirrors v0.2.4
+	// memory.distillation_threshold semantics.
+	DistillationThreshold int `yaml:"distillation_threshold"`
+
+	// EnableRAG enables retrieval-augmented generation: past experiences and
+	// distilled memories are retrieved and injected into the LLM prompt.
+	// Default: false (opt-in).
+	EnableRAG bool `yaml:"enable_rag"`
+
+	// RAGTopK is the maximum number of retrieved snippets to inject.
+	// Defaults to 5 when zero (only applied when EnableRAG is true).
+	RAGTopK int `yaml:"rag_top_k"`
+
+	// RAGMinScore is the minimum similarity score for a retrieved snippet to
+	// be included. Snippets below this threshold are filtered out.
+	// Defaults to 0.4 when zero (only applied when EnableRAG is true).
+	RAGMinScore float64 `yaml:"rag_min_score"`
+
+	// Archive holds round-archive settings. Enabled by default: a nil or true
+	// Enabled field turns archiving on; explicit false opts out.
+	Archive ArchiveConfig `yaml:"archive"`
+}
+
+// ArchiveConfig holds round-archive settings. Enabled by default: a nil or
+// true Enabled field turns archiving on; explicit false opts out. A plain
+// bool cannot distinguish "unset" from false, so Enabled is *bool to allow
+// operators to disable with `enabled: false`.
+type ArchiveConfig struct {
+	Enabled   *bool  `yaml:"enabled"`    // nil/true = enabled (default); false = disabled.
+	Dir       string `yaml:"dir"`        // Default ".context/rounds".
+	MaxRounds int    `yaml:"max_rounds"` // Default 200.
+}
+
+// IsEnabled reports whether archiving is active. nil is treated as enabled
+// (default-on) so callers need not dereference the pointer.
+func (a ArchiveConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
+
+// KnowledgeConfig holds configuration for the optional AKG (Agent Knowledge
+// Graph) retrieval integration. When RetrievalEnabled is false (the default),
+// knowledge retrieval is not wired and the closed loop runs without AKG
+// injection, preserving prior behavior.
+type KnowledgeConfig struct {
+	// RetrievalEnabled activates AKG knowledge retrieval. Default: false.
+	RetrievalEnabled bool `yaml:"retrieval_enabled"`
+
+	// TopK is the maximum number of knowledge snippets to retrieve.
+	// Defaults to 5 when zero (only applied when RetrievalEnabled is true).
+	TopK int `yaml:"top_k"`
+
+	// MinScore is the minimum similarity score for a retrieved snippet to
+	// be included. Snippets below this threshold are filtered out.
+	// Defaults to 0.4 when zero (only applied when RetrievalEnabled is true).
+	MinScore float64 `yaml:"min_score"`
 }
 
 // SessionConfig holds session memory configuration.
@@ -237,6 +330,11 @@ type DistillConfig struct {
 	Storage     string `yaml:"storage"`      // Where to store distilled info: "memory" or "postgres"
 	VectorStore bool   `yaml:"vector_store"` // Store distilled results as vectors in pgvector
 	Prompt      string `yaml:"prompt"`       // Custom prompt for distillation
+	// Threshold is the number of conversation rounds that accumulate before
+	// distillation fires in the event subscription path. 0 preserves legacy
+	// ungated behaviour. Mirrors v0.2.4 examples/knowledge-base config.yaml
+	// distillation_threshold semantics.
+	Threshold int `yaml:"threshold"`
 }
 
 // Load reads configuration from a YAML file.
@@ -331,370 +429,6 @@ func LoadFromEnv(cfg *Config) error {
 		cfg.Storage.Database = v
 	}
 
-	return nil
-}
-
-//nolint:gocyclo // Complex default value initialization for multiple config sections
-func (c *Config) setDefaults() {
-	if c.Server.Host == "" {
-		c.Server.Host = "localhost"
-	}
-	if c.Server.Port == 0 {
-		c.Server.Port = 8080
-	}
-	if c.LLM.Provider == "" {
-		c.LLM.Provider = "ollama"
-	}
-	if c.LLM.Model == "" {
-		c.LLM.Model = "llama3.2"
-	}
-	if c.LLM.Timeout == 0 {
-		c.LLM.Timeout = 60
-	}
-	if c.LLM.MaxTokens == 0 {
-		c.LLM.MaxTokens = 4096
-	}
-	if c.LLM.ScorerAPIRate == 0 {
-		c.LLM.ScorerAPIRate = 10
-	}
-	if c.LLM.ScorerAPIBurst == 0 {
-		c.LLM.ScorerAPIBurst = 20
-	}
-	if c.Agents.Leader.MaxSteps == 0 {
-		c.Agents.Leader.MaxSteps = 10
-	}
-	if c.Agents.Leader.MaxParallelTasks == 0 {
-		c.Agents.Leader.MaxParallelTasks = 5
-	}
-	if c.Agents.Leader.MaxValidationRetry == 0 {
-		c.Agents.Leader.MaxValidationRetry = 3
-	}
-	if c.Output.Format == "" {
-		c.Output.Format = "simple"
-	}
-	if c.Output.ItemTemplate == "" {
-		c.Output.ItemTemplate = "{{.ItemID}}: {{.Name}} ({{.Price}})"
-	}
-	if c.Output.SummaryTemplate == "" {
-		c.Output.SummaryTemplate = "Got {{.Count}} recommendations"
-	}
-	// Storage defaults
-	if c.Storage.Type == "" {
-		c.Storage.Type = "postgres"
-	}
-	if c.Storage.Port == 0 {
-		c.Storage.Port = 5432
-	}
-	if c.Storage.PGVector.Dimension == 0 {
-		c.Storage.PGVector.Dimension = 1536
-	}
-	if c.Storage.PGVector.TableName == "" {
-		c.Storage.PGVector.TableName = "embeddings"
-	}
-	// Memory defaults
-	if c.Memory.SessionMemory.MaxHistory == 0 {
-		c.Memory.SessionMemory.MaxHistory = 50
-	}
-	if c.Memory.UserProfile.Storage == "" {
-		c.Memory.UserProfile.Storage = "memory"
-	}
-	if c.Memory.TaskDistillation.Prompt == "" {
-		c.Memory.TaskDistillation.Prompt = DefaultTaskDistillationPrompt
-	}
-	// Validation defaults
-	if c.Validation.SchemaType == "" {
-		c.Validation.SchemaType = "default" // "default", "travel", "custom"
-	}
-	if c.Validation.MaxRetries == 0 {
-		c.Validation.MaxRetries = 3
-	}
-	// Workflow defaults
-	if c.Workflow.ReloadInterval == 0 && c.Workflow.AutoReload {
-		c.Workflow.ReloadInterval = 30 // seconds
-	}
-	// MCP defaults
-	for i := range c.MCP.Servers {
-		if c.MCP.Servers[i].Timeout == 0 {
-			c.MCP.Servers[i].Timeout = 30
-		}
-	}
-	// Dashboard defaults
-	if c.Dashboard.Addr == "" {
-		c.Dashboard.Addr = ":8090"
-	}
-	if c.Dashboard.WSPingInterval == 0 {
-		c.Dashboard.WSPingInterval = 30
-	}
-	// Evolution defaults
-	if c.Evolution.PopulationSize == 0 {
-		c.Evolution.PopulationSize = 20
-	}
-	if c.Evolution.EliteCount == 0 {
-		c.Evolution.EliteCount = 2
-	}
-	if c.Evolution.SurvivalRate == 0 {
-		c.Evolution.SurvivalRate = 0.6
-	}
-	if c.Evolution.MutationRate == 0 {
-		c.Evolution.MutationRate = 0.2
-	}
-	if c.Evolution.MinMutationRate == 0 {
-		c.Evolution.MinMutationRate = 0.05
-	}
-	if c.Evolution.MaxMutationRate == 0 {
-		c.Evolution.MaxMutationRate = 0.5
-	}
-	if c.Evolution.Generations == 0 {
-		c.Evolution.Generations = 15
-	}
-	if c.Evolution.BreedingPoolRatio == 0 {
-		c.Evolution.BreedingPoolRatio = 0.5
-	}
-	if c.Evolution.MinInterval == "" {
-		c.Evolution.MinInterval = "5m"
-	}
-	if c.Evolution.SelectionStrategy == "" {
-		c.Evolution.SelectionStrategy = "tournament"
-	}
-	if c.Evolution.TournamentSize == 0 {
-		c.Evolution.TournamentSize = 3
-	}
-	if c.Evolution.CrossoverType == "" {
-		c.Evolution.CrossoverType = "uniform"
-	}
-}
-
-// Validate validates the configuration values.
-func (c *Config) Validate() error {
-	if err := c.validateServer(); err != nil {
-		return err
-	}
-
-	if err := c.validateLLM(); err != nil {
-		return err
-	}
-
-	if err := c.validateAgents(); err != nil {
-		return err
-	}
-
-	if err := c.validateOutput(); err != nil {
-		return err
-	}
-
-	if err := c.validateStorage(); err != nil {
-		return err
-	}
-
-	if err := c.validateMemory(); err != nil {
-		return err
-	}
-
-	if err := c.validateMCP(); err != nil {
-		return err
-	}
-
-	if err := c.validateDashboard(); err != nil {
-		return err
-	}
-
-	if err := c.validateEvolution(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// validateServer validates server configuration
-func (c *Config) validateServer() error {
-	if c.Server.Port < 1 || c.Server.Port > 65535 {
-		return fmt.Errorf("invalid server port: %d, must be between 1 and 65535", c.Server.Port)
-	}
-	return nil
-}
-
-// validateLLM validates LLM configuration
-func (c *Config) validateLLM() error {
-	if c.LLM.Timeout < 1 {
-		return fmt.Errorf("invalid LLM timeout: %d, must be positive", c.LLM.Timeout)
-	}
-	if c.LLM.MaxTokens < 1 {
-		return fmt.Errorf("invalid LLM max tokens: %d, must be positive", c.LLM.MaxTokens)
-	}
-	validProviders := map[string]bool{"openai": true, "ollama": true, "openrouter": true, "anthropic": true}
-	if !validProviders[c.LLM.Provider] {
-		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', 'openrouter', or 'anthropic'", c.LLM.Provider)
-	}
-	return nil
-}
-
-// validateAgents validates agents configuration
-func (c *Config) validateAgents() error {
-	if c.Agents.Leader.MaxSteps < 1 {
-		return fmt.Errorf("invalid leader max steps: %d, must be positive", c.Agents.Leader.MaxSteps)
-	}
-	if c.Agents.Leader.MaxParallelTasks < 1 {
-		return fmt.Errorf("invalid leader max parallel tasks: %d, must be positive", c.Agents.Leader.MaxParallelTasks)
-	}
-	if c.Agents.Leader.MaxValidationRetry < 0 {
-		return fmt.Errorf("invalid leader max validation retry: %d, must be non-negative", c.Agents.Leader.MaxValidationRetry)
-	}
-
-	for i, subAgent := range c.Agents.Sub {
-		if err := c.validateSubAgent(i, subAgent); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// validateSubAgent validates a single sub-agent configuration
-func (c *Config) validateSubAgent(i int, subAgent SubAgentConfig) error {
-	if subAgent.ID == "" {
-		return fmt.Errorf("sub-agent %d: ID cannot be empty", i)
-	}
-	if subAgent.Type == "" {
-		return fmt.Errorf("sub-agent %d: Type cannot be empty", i)
-	}
-	if subAgent.Timeout < 1 {
-		return fmt.Errorf("sub-agent %d: timeout must be positive", i)
-	}
-	if subAgent.MaxRetries < 0 {
-		return fmt.Errorf("sub-agent %d: max retries must be non-negative", i)
-	}
-	return nil
-}
-
-// validateOutput validates output configuration
-func (c *Config) validateOutput() error {
-	validFormats := map[string]bool{"table": true, "json": true, "simple": true}
-	if !validFormats[c.Output.Format] {
-		return fmt.Errorf("invalid output format: %s, must be 'table', 'json', or 'simple'", c.Output.Format)
-	}
-	if c.Validation.MaxRetries < 0 {
-		return fmt.Errorf("invalid validation max retries: %d, must be non-negative", c.Validation.MaxRetries)
-	}
-	return nil
-}
-
-// validateStorage validates storage configuration
-func (c *Config) validateStorage() error {
-	if !c.Storage.Enabled {
-		return nil
-	}
-
-	if c.Storage.Host == "" {
-		return fmt.Errorf("storage enabled but host is empty")
-	}
-	if c.Storage.Port < 1 || c.Storage.Port > 65535 {
-		return fmt.Errorf("invalid storage port: %d, must be between 1 and 65535", c.Storage.Port)
-	}
-	if c.Storage.Database == "" {
-		return fmt.Errorf("storage enabled but database name is empty")
-	}
-	return nil
-}
-
-// validateMemory validates memory configuration
-func (c *Config) validateMemory() error {
-	if c.Memory.SessionMemory.MaxHistory < 0 {
-		return fmt.Errorf("invalid session memory max history: %d, must be non-negative", c.Memory.SessionMemory.MaxHistory)
-	}
-	return nil
-}
-
-// validateMCP validates MCP configuration
-func (c *Config) validateMCP() error {
-	serverNames := make(map[string]bool)
-	for i, srv := range c.MCP.Servers {
-		if err := c.validateMCPServer(i, srv, serverNames); err != nil {
-			return err
-		}
-		serverNames[srv.Name] = true
-	}
-	return nil
-}
-
-// validateMCPServer validates a single MCP server configuration
-func (c *Config) validateMCPServer(i int, srv MCPServerEntry, serverNames map[string]bool) error {
-	if srv.Name == "" {
-		return fmt.Errorf("mcp server %d: name must not be empty", i)
-	}
-	if serverNames[srv.Name] {
-		return fmt.Errorf("mcp server %d: duplicate name %q", i, srv.Name)
-	}
-	if srv.Transport.Type != "stdio" && srv.Transport.Type != "sse" {
-		return fmt.Errorf("mcp server %q: transport type must be \"stdio\" or \"sse\", got %q", srv.Name, srv.Transport.Type)
-	}
-
-	if err := c.validateMCPTransport(srv); err != nil {
-		return err
-	}
-
-	if srv.Timeout < 0 {
-		return fmt.Errorf("mcp server %q: timeout must be non-negative, got %d", srv.Name, srv.Timeout)
-	}
-	return nil
-}
-
-// validateMCPTransport validates MCP transport configuration
-func (c *Config) validateMCPTransport(srv MCPServerEntry) error {
-	if srv.Transport.Type == "stdio" {
-		if srv.Transport.Stdio == nil {
-			return fmt.Errorf("mcp server %q: stdio transport config must not be nil", srv.Name)
-		}
-		if srv.Transport.Stdio.Command == "" {
-			return fmt.Errorf("mcp server %q: stdio command must not be empty", srv.Name)
-		}
-	}
-
-	if srv.Transport.Type == "sse" {
-		if srv.Transport.SSE == nil {
-			return fmt.Errorf("mcp server %q: sse transport config must not be nil", srv.Name)
-		}
-		if srv.Transport.SSE.URL == "" {
-			return fmt.Errorf("mcp server %q: sse url must not be empty", srv.Name)
-		}
-	}
-	return nil
-}
-
-// validateDashboard validates dashboard configuration
-func (c *Config) validateDashboard() error {
-	if c.Dashboard.Addr == "" {
-		return nil
-	}
-
-	if _, _, err := net.SplitHostPort(c.Dashboard.Addr); err != nil {
-		return fmt.Errorf("invalid dashboard addr %q: %v", c.Dashboard.Addr, err)
-	}
-	if c.Dashboard.WSPingInterval < 1 {
-		return fmt.Errorf("invalid dashboard ws_ping_interval: %d, must be positive", c.Dashboard.WSPingInterval)
-	}
-	return nil
-}
-
-// validateEvolution validates evolution configuration
-func (c *Config) validateEvolution() error {
-	if !c.Evolution.Enabled {
-		return nil
-	}
-
-	if c.Evolution.PopulationSize < 2 {
-		return fmt.Errorf("evolution: population_size must be >= 2, got %d", c.Evolution.PopulationSize)
-	}
-	if c.Evolution.EliteCount < 0 || c.Evolution.EliteCount >= c.Evolution.PopulationSize {
-		return fmt.Errorf("evolution: elite_count must be in [0, population_size), got %d", c.Evolution.EliteCount)
-	}
-	if c.Evolution.SurvivalRate <= 0 || c.Evolution.SurvivalRate > 1 {
-		return fmt.Errorf("evolution: survival_rate must be in (0, 1], got %f", c.Evolution.SurvivalRate)
-	}
-	if c.Evolution.MutationRate < 0 || c.Evolution.MutationRate > 1 {
-		return fmt.Errorf("evolution: mutation_rate must be in [0, 1], got %f", c.Evolution.MutationRate)
-	}
-	if c.Evolution.Generations < 1 {
-		return fmt.Errorf("evolution: generations must be >= 1, got %d", c.Evolution.Generations)
-	}
 	return nil
 }
 
@@ -831,4 +565,37 @@ type EvolutionConfig struct {
 	// in steady-state mode [0.0, 1.0]. Only used when steady_state is true.
 	// Default: 0.3.
 	SteadyStateReplaceRate float64 `yaml:"steady_state_replace_rate"`
+
+	// Deployment configures safe promotion of evolution patches to the live
+	// runtime via the DeploymentPipeline. Disabled by default — when enabled,
+	// accepted patches are promoted through staging → live instead of applied
+	// directly by the Coordinator.
+	Deployment deployment.DeploymentConfig `yaml:"deployment"`
+
+	// LLMScoring configures the opt-in LLM-backed strategy scorer for the
+	// GA evolution system. When Enabled is false (the default), evolution
+	// uses the constant baseline scorer, preserving prior behavior.
+	LLMScoring LLMScoringConfig `yaml:"llm_scoring"`
+}
+
+// LLMScoringConfig configures the opt-in LLM-backed strategy scorer for the
+// GA evolution system. When Enabled is false (the default), evolution uses the
+// constant baseline scorer (ConstantScorer(50.0)), preserving prior behavior
+// and avoiding uncontrolled LLM API costs during tests.
+type LLMScoringConfig struct {
+	// Enabled activates the LLM-backed scorer. When false, the GA evolution
+	// system falls back to the constant baseline scorer. Default: false.
+	Enabled bool `yaml:"enabled"`
+
+	// Seed enables deterministic LLM scoring when > 0. Forces the LLM
+	// temperature to 0 and embeds the seed in the evaluation prompt so
+	// identical strategies always receive the same score. Default: 0
+	// (non-deterministic).
+	Seed int64 `yaml:"seed"`
+
+	// MaxCallsPerGeneration caps the number of LLM scoring calls per
+	// generation to control cost. When the budget is exhausted, remaining
+	// strategies are scored by the deterministic heuristic fallback.
+	// Default: 100 when zero.
+	MaxCallsPerGeneration int `yaml:"max_calls_per_generation"`
 }

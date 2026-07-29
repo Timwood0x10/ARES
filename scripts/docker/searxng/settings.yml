@@ -1,4 +1,4 @@
-# SearXNG settings for GoAgent interview demo
+# SearXNG settings for ARES interview demo
 # Enables JSON API for the web_search tool
 use_default_settings: true
 
@@ -19,6 +19,6 @@ search:
 server:
   port: 5605
   bind_address: "0.0.0.0"
-  secret_key: "goagent-interview-demo-secret-change-in-production"
+  secret_key: "ARES-interview-demo-secret-change-in-production"
   limiter: false
   image_proxy: false

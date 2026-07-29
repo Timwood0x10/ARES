@@ -56,13 +56,13 @@ Welcome to the ARES framework documentation center.
 
 | Topic | 中文 | English |
 |-------|------|---------|
-| Runtime Lifecycle | [运行时生命周期](./articles/zh/runtime-lifecycle-deep-dive.md) | [Runtime Lifecycle](./articles/en/runtime-lifecycle-deep-dive.md) |
-| Workflow Engine | [工作流引擎](./articles/zh/workflow-engine-deep-dive.md) | [Workflow Engine](./articles/en/workflow-engine-deep-dive.md) |
-| Memory Distillation | [记忆蒸馏](./articles/zh/memory-distillation-deep-dive.md) | [Memory Distillation](./articles/en/memory-distillation-deep-dive.md) |
-| Event System | [事件系统](./articles/zh/event-system-deep-dive.md) | [Event System](./articles/en/event-system-deep-dive.md) |
-| Tool System | [工具系统](./articles/zh/tool-system-deep-dive.md) | [Tool System](./articles/en/tool-system-deep-dive.md) |
-| Autonomous Evolution | [自主进化](./articles/zh/autonomous-evolution-deep-dive.md) | [Autonomous Evolution](./articles/en/autonomous-evolution-deep-dive.md) |
-| Arena Fault Injection | [混沌工程](./articles/zh/arena-fault-injection-deep-dive.md) | [Arena Fault Injection](./articles/en/arena-fault-injection-deep-dive.md) |
+| Runtime Lifecycle | [运行时生命周期](./articles/zh/07-runtime-lifecycle-deep-dive.md) | [Runtime Lifecycle](./articles/en/07-runtime-lifecycle-deep-dive.md) |
+| Workflow Engine | [工作流引擎](./articles/zh/04-workflow-engine-deep-dive.md) | [Workflow Engine](./articles/en/04-workflow-engine-deep-dive.md) |
+| Memory Distillation | [记忆蒸馏](./articles/zh/03-memory-distillation-deep-dive.md) | [Memory Distillation](./articles/en/03-memory-distillation-deep-dive.md) |
+| Event System | [事件系统](./articles/zh/08-event-system-deep-dive.md) | [Event System](./articles/en/08-event-system-deep-dive.md) |
+| Tool System | [工具系统](./articles/zh/05-tool-system-deep-dive.md) | [Tool System](./articles/en/05-tool-system-deep-dive.md) |
+| Autonomous Evolution | [自主进化](./articles/zh/11-autonomous-evolution-deep-dive.md) | [Autonomous Evolution](./articles/en/11-autonomous-evolution-deep-dive.md) |
+| Arena Fault Injection | [混沌工程](./articles/zh/09-arena-fault-injection-deep-dive.md) | [Arena Fault Injection](./articles/en/09-arena-fault-injection-deep-dive.md) |
 
 ---
 

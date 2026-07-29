@@ -16,6 +16,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"golang.org/x/sync/errgroup"
 )
 
 // MySQLProvider connects to an external MySQL database and streams table rows
@@ -89,15 +90,19 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 	objCh := make(chan *knowledge.KnowledgeObject, 64)
 	errCh := make(chan error, 1)
 
-	go func() {
+	// Use errgroup for structured concurrency so the streaming goroutine is
+	// ctx-cancelable. The errgroup is not waited on here; callers observe
+	// completion via objCh/errCh being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(objCh)
 		defer close(errCh)
 
 		query := p.buildQuery()
-		rows, err := p.db.QueryContext(ctx, query)
+		rows, err := p.db.QueryContext(gCtx, query)
 		if err != nil {
 			errCh <- fmt.Errorf("mysql provider %s query %q: %w", p.config.Name, query, err)
-			return
+			return nil
 		}
 		defer func() {
 			if err := rows.Close(); err != nil {
@@ -106,8 +111,8 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 		}()
 
 		for rows.Next() {
-			if ctx.Err() != nil {
-				return
+			if gCtx.Err() != nil {
+				return nil
 			}
 
 			obj, err := p.scanRow(rows)
@@ -118,8 +123,8 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 			if obj != nil {
 				select {
 				case objCh <- obj:
-				case <-ctx.Done():
-					return
+				case <-gCtx.Done():
+					return nil
 				}
 			}
 		}
@@ -127,7 +132,8 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 		if err := rows.Err(); err != nil {
 			errCh <- fmt.Errorf("mysql provider %s rows iteration: %w", p.config.Name, err)
 		}
-	}()
+		return nil
+	})
 
 	return objCh, errCh
 }

@@ -289,7 +289,8 @@ func TestBuildEngineRoundTrip(t *testing.T) {
 	require.NoError(t, svc.RegisterWorkflow(def))
 
 	// buildEngineWorkflow
-	wf := svc.buildEngineWorkflow(def, map[string]string{"override": "ov"})
+	wf, err := svc.buildEngineWorkflow(def, map[string]string{"override": "ov"})
+	require.NoError(t, err)
 	require.NotNil(t, wf)
 	assert.Equal(t, def.ID, wf.ID)
 	assert.Equal(t, def.Name, wf.Name)

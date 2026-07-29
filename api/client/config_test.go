@@ -26,7 +26,7 @@ func TestNewConfigLoader(t *testing.T) {
 					"./config/server.yaml",
 					"./examples/simple_newapi/config/server.yaml",
 				},
-				envPrefix: "GOAGENT",
+				envPrefix: "ARES",
 			},
 		},
 		{
@@ -34,7 +34,7 @@ func TestNewConfigLoader(t *testing.T) {
 			opts: []ConfigLoaderOption{WithDefaultPaths("/custom/path.yaml")},
 			want: &ConfigLoader{
 				defaultPaths: []string{"/custom/path.yaml"},
-				envPrefix:    "GOAGENT",
+				envPrefix:    "ARES",
 			},
 		},
 		{
@@ -119,8 +119,8 @@ func TestConfigFileSetDefaults(t *testing.T) {
 			if tt.cfg.Database.User != "postgres" {
 				t.Errorf("expected Database.User to be postgres, got %q", tt.cfg.Database.User)
 			}
-			if tt.cfg.Database.DBName != "goagent" {
-				t.Errorf("expected Database.DBName to be goagent, got %q", tt.cfg.Database.DBName)
+			if tt.cfg.Database.DBName != "ARES" {
+				t.Errorf("expected Database.DBName to be ARES, got %q", tt.cfg.Database.DBName)
 			}
 
 			// Check memory defaults
@@ -307,7 +307,7 @@ func TestConfigFileLoadFromEnv(t *testing.T) {
 		{
 			name: "load llm api key from env",
 			envVars: map[string]string{
-				"GOAGENT_LLM_API_KEY": "test-api-key",
+				"ARES_LLM_API_KEY": "test-api-key",
 			},
 			setupEnv: true,
 			check: func(t *testing.T, cfg *ConfigFile) {
@@ -319,7 +319,7 @@ func TestConfigFileLoadFromEnv(t *testing.T) {
 		{
 			name: "load llm base url from env",
 			envVars: map[string]string{
-				"GOAGENT_LLM_BASE_URL": "http://custom-llm:8080",
+				"ARES_LLM_BASE_URL": "http://custom-llm:8080",
 			},
 			setupEnv: true,
 			check: func(t *testing.T, cfg *ConfigFile) {
@@ -331,7 +331,7 @@ func TestConfigFileLoadFromEnv(t *testing.T) {
 		{
 			name: "load llm model from env",
 			envVars: map[string]string{
-				"GOAGENT_LLM_MODEL": "custom-model",
+				"ARES_LLM_MODEL": "custom-model",
 			},
 			setupEnv: true,
 			check: func(t *testing.T, cfg *ConfigFile) {
@@ -343,7 +343,7 @@ func TestConfigFileLoadFromEnv(t *testing.T) {
 		{
 			name: "load database password from env",
 			envVars: map[string]string{
-				"GOAGENT_DB_PASSWORD": "db-password",
+				"ARES_DB_PASSWORD": "db-password",
 			},
 			setupEnv: true,
 			check: func(t *testing.T, cfg *ConfigFile) {
@@ -378,7 +378,7 @@ func TestConfigFileLoadFromEnv(t *testing.T) {
 			}
 
 			cfg := &ConfigFile{}
-			cfg.loadFromEnv("GOAGENT")
+			cfg.loadFromEnv("ARES")
 			cfg.setDefaults()
 
 			if tt.check != nil {
@@ -546,7 +546,7 @@ func TestDatabaseDefaults(t *testing.T) {
 		t.Errorf("expected default user to be postgres, got %q", cfg.Database.User)
 	}
 
-	if cfg.Database.DBName != "goagent" {
-		t.Errorf("expected default database name to be goagent, got %q", cfg.Database.DBName)
+	if cfg.Database.DBName != "ARES" {
+		t.Errorf("expected default database name to be ARES, got %q", cfg.Database.DBName)
 	}
 }

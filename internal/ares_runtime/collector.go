@@ -221,6 +221,33 @@ func (c *ExecutionCollector) Reset() {
 	c.errorLog = make([]ErrorRecord, 0)
 }
 
+// Import restores collected data from an Export()-format map.
+// Only non-nil keys present in the map are restored; other histories are
+// left unchanged. This is used by the resume path to restore pre-checkpoint
+// observability and evolution data.
+func (c *ExecutionCollector) Import(data map[string]any) {
+	if data == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if routes, ok := data["route_history"].([]RouteRecord); ok {
+		c.routeHistory = append(c.routeHistory, routes...)
+	}
+	if tools, ok := data["tool_history"].([]ToolRecord); ok {
+		c.toolHistory = append(c.toolHistory, tools...)
+	}
+	if mems, ok := data["memory_hits"].([]MemoryHitRecord); ok {
+		c.memoryHits = append(c.memoryHits, mems...)
+	}
+	if interrupts, ok := data["interrupt_log"].([]InterruptRecord); ok {
+		c.interruptLog = append(c.interruptLog, interrupts...)
+	}
+	if errs, ok := data["error_log"].([]ErrorRecord); ok {
+		c.errorLog = append(c.errorLog, errs...)
+	}
+}
+
 // MergeInto copies collector data into an ExperienceCheckpoint.
 // This is called before the checkpoint is saved so that route, tool,
 // memory, interrupt, and error data collected by plugins is included.

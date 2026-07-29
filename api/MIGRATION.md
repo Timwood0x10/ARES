@@ -66,7 +66,7 @@ config := &api.Config{
         Port:     5432,
         User:     "user",
         Password: "pass",
-        Database: "goagent",
+        Database: "ARES",
     },
     LLM: &api.LLMConfig{
         Provider: "ollama",
@@ -257,7 +257,7 @@ func main() {
             Port:     5432,
             User:     "user",
             Password: "pass",
-            Database: "goagent",
+            Database: "ARES",
         },
         Memory: &api.MemoryConfig{
             Enabled:    true,

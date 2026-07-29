@@ -1,6 +1,6 @@
 # Custom Vector Store
 
-GoAgent supports pluggable vector backends. You can replace the default PostgreSQL + pgvector with any vector database by implementing a single interface.
+ARES supports pluggable vector backends. You can replace the default PostgreSQL + pgvector with any vector database by implementing a single interface.
 
 ## Interface
 

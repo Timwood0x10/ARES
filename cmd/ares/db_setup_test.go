@@ -18,7 +18,7 @@ var dbSetupTestCmd = &cobra.Command{
 	Short: "Setup test database",
 	Long: `Creates and migrates the test database.
 Respects TEST_POSTGRES_DSN first, then falls back to DB_* env vars.
-Default: postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable`,
+Default: postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDbSetupTest()
 	},
@@ -35,7 +35,7 @@ func runDbSetupTest() error {
 		port := getEnv("DB_PORT", "5433")
 		user := getEnv("DB_USER", "postgres")
 		password := getEnv("DB_PASSWORD", "postgres")
-		dbname := getEnv("DB_NAME", "goagent_test")
+		dbname := getEnv("DB_NAME", "ARES_test")
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 			url.QueryEscape(user), url.QueryEscape(password),
 			host, port, dbname)

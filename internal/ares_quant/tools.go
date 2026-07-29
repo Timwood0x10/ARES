@@ -122,7 +122,7 @@ func polymarketTool() core.Tool {
 				return core.NewErrorResult("polymarket_sentiment: query is required"), nil
 			}
 			feed := market.NewPolymarketFeed()
-			markets, err := feed.Markets(query)
+			markets, err := feed.Markets(ctx, query)
 			if err != nil {
 				return core.NewErrorResult(fmt.Sprintf("polymarket_sentiment: %v", err)), nil
 			}

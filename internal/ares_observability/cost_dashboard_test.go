@@ -162,7 +162,7 @@ func TestCostDashboard_GenerateDashboardHTML_Empty(t *testing.T) {
 	if !strings.Contains(html, "<!DOCTYPE html>") {
 		t.Error("expected HTML doctype")
 	}
-	if !strings.Contains(html, "GoAgent Cost Dashboard") {
+	if !strings.Contains(html, "ARES Cost Dashboard") {
 		t.Error("expected title in HTML")
 	}
 	if !strings.Contains(html, "GRAND TOTAL") {

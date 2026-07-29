@@ -742,7 +742,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		// Phase 6: Diff Engine — compare old/new snapshots, generate patches,
 		// and submit to Coordinator for evaluation and application.
 		if system.DiffReg != nil && system.Coordinator != nil && system.GenomeReg != nil {
-			diffPatches, dErr := generateDiffPatches(ctx, system.GenomeReg, system.DiffReg)
+			diffPatches, dErr := generateDiffPatches(ctx, system.GenomeReg, system.DiffReg, 3)
 			if dErr != nil {
 				el.Warn(ctx, "RunIdleEvolution", "diff engine failed, continuing", "error", dErr)
 			} else {
@@ -783,10 +783,35 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 	return nil
 }
 
-// generateDiffPatches iterates over all registered genomes, snapshots their
-// current state, and uses the Diff Engine to produce RuntimePatches for any
-// changes detected since the last snapshot.
-func generateDiffPatches(ctx context.Context, genomeReg *evogenome.Registry, diffReg *diff.Registry) ([]patch.RuntimePatch, error) {
+// generateDiffPatches mutates each registered genome, snapshots each mutated
+// candidate, and diffs the candidate snapshot against the parent snapshot to
+// produce RuntimePatches.
+//
+// Algorithm per genome:
+//  1. Snapshot parent (old).
+//  2. Mutate → nChildren candidates.
+//  3. For each candidate: Snapshot candidate (new), Diff(old, new).
+//  4. Collect non-empty patches.
+//
+// Args:
+//   - ctx        - timeout and cancellation context.
+//   - genomeReg  - registry of evolvable genomes.
+//   - diffReg    - registry of genome-specific differs.
+//   - nChildren  - number of mutation candidates per genome (must be > 0).
+//
+// Returns:
+//   - patches - non-empty RuntimePatches from successful mutations.
+//   - err     - non-nil if nChildren is invalid.
+func generateDiffPatches(
+	ctx context.Context,
+	genomeReg *evogenome.Registry,
+	diffReg *diff.Registry,
+	nChildren int,
+) ([]patch.RuntimePatch, error) {
+	if nChildren <= 0 {
+		return nil, fmt.Errorf("generateDiffPatches: nChildren must be > 0, got %d", nChildren)
+	}
+
 	var allPatches []patch.RuntimePatch
 
 	for _, name := range genomeReg.List() {
@@ -800,22 +825,46 @@ func generateDiffPatches(ctx context.Context, genomeReg *evogenome.Registry, dif
 			continue
 		}
 
-		snap, err := g.Snapshot(ctx)
+		// Step 1: Snapshot parent.
+		oldSnap, err := g.Snapshot(ctx)
 		if err != nil {
-			el.Warn(ctx, "generateDiffPatches", "snapshot failed, skipping", "genome", name, "error", err)
+			el.Warn(ctx, "generateDiffPatches", "parent snapshot failed, skipping",
+				"genome", name, "error", err)
 			continue
 		}
-		if snap == nil {
+		if oldSnap == nil {
 			continue
 		}
 
-		patches, err := differ.Diff(ctx, nil, snap)
+		// Step 2: Mutate → nChildren candidates.
+		children, err := g.Mutate(ctx, nChildren)
 		if err != nil {
-			el.Warn(ctx, "generateDiffPatches", "diff failed, skipping", "genome", name, "error", err)
+			el.Warn(ctx, "generateDiffPatches", "mutate failed, skipping",
+				"genome", name, "error", err)
 			continue
 		}
 
-		allPatches = append(allPatches, patches...)
+		// Step 3: For each candidate, Snapshot + Diff against parent.
+		for _, child := range children {
+			newSnap, err := child.Snapshot(ctx)
+			if err != nil {
+				el.Warn(ctx, "generateDiffPatches", "child snapshot failed, skipping",
+					"genome", name, "error", err)
+				continue
+			}
+			if newSnap == nil {
+				continue
+			}
+
+			patches, err := differ.Diff(ctx, oldSnap, newSnap)
+			if err != nil {
+				el.Warn(ctx, "generateDiffPatches", "diff failed, skipping",
+					"genome", name, "error", err)
+				continue
+			}
+
+			allPatches = append(allPatches, patches...)
+		}
 	}
 
 	return allPatches, nil

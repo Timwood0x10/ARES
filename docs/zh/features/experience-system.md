@@ -632,4 +632,4 @@ experience_decay_rate                  // 经验衰减率
 
 **版本**: 1.0  
 **最后更新**: 2026-03-24  
-**维护者**: GoAgent Team
+**维护者**: ARES Team

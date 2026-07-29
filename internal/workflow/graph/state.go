@@ -15,6 +15,15 @@ func NewState() *State {
 	}
 }
 
+// NewStateFromValues creates an independent graph state from the provided values.
+func NewStateFromValues(values map[string]any) *State {
+	state := NewState()
+	for key, value := range values {
+		state.values[key] = value
+	}
+	return state
+}
+
 // Get retrieves a value from the state by key.
 // Returns the value and a boolean indicating whether the key exists.
 func (s *State) Get(key string) (any, bool) {

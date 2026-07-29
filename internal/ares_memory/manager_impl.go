@@ -14,13 +14,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
+	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -36,7 +36,7 @@ type memoryManager struct {
 
 	// Distillation components (nil when using NewMemoryManager without distiller).
 	distiller *distillation.Distiller
-	embedder  embedding.EmbeddingService
+	embedder  apiembed.EmbeddingService
 	expRepo   distillation.ExperienceRepository
 
 	// EmbeddingPipeline: unified embedding generation for memory and query paths.
@@ -48,6 +48,11 @@ type memoryManager struct {
 
 	// ContextCleaner: strips tool call noise and repetitive content before LLM calls.
 	ctxCleaner *memctx.ContextCleaner
+
+	// retrievers hold optional ContextRetrievers (MemoryRetriever, KnowledgeRetriever
+	// adapter, etc.) queried in BuildContext/BuildPromptMessages when config.EnableRAG
+	// is true. Populated post-construction via SetRetrievers.
+	retrievers []memctx.ContextRetriever
 
 	// defaultTenantID is the tenant ID used for search operations when none is
 	// explicitly provided. Must match the tenant used during write (StoreDistilledTask).
@@ -97,7 +102,7 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 //
 //	MemoryManager - configured memory manager instance.
 //	error - any error encountered.
-func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.EmbeddingService, expRepo distillation.ExperienceRepository) (MemoryManager, error) {
+func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.EmbeddingService, expRepo distillation.ExperienceRepository) (MemoryManager, error) {
 	if config == nil {
 		config = DefaultMemoryConfig()
 	}
@@ -137,6 +142,42 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.Embe
 		defaultTenantID: "default",
 	}, nil
 }
+
+// GetConfig returns the current MemoryConfig pointer.
+// The caller must hold the lock (Lock()) before reading the returned config.
+// This method implements the MemoryConfigStore interface.
+func (m *memoryManager) GetConfig() *MemoryConfig {
+	return m.config
+}
+
+// Lock acquires the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *memoryManager) Lock() {
+	m.mu.Lock()
+}
+
+// Unlock releases the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *memoryManager) Unlock() {
+	m.mu.Unlock()
+}
+
+// SetRetrievers configures the RAG retrievers used by BuildContext and
+// BuildPromptMessages. Pass an empty slice to disable retrieval at runtime
+// (even when config.EnableRAG is true). Retrieval only fires when
+// config.EnableRAG is true AND len(retrievers) > 0.
+//
+// This method is safe to call before Start; retrievers are read on every
+// BuildContext/BuildPromptMessages call. Callers MUST NOT mutate the slice
+// after passing it in — make a copy if you need to.
+func (m *memoryManager) SetRetrievers(retrievers []memctx.ContextRetriever) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retrievers = retrievers
+}
+
+// Ensure memoryManager implements MemoryConfigStore.
+var _ MemoryConfigStore = (*memoryManager)(nil)
 
 // Start starts the memory manager and background workers.
 func (m *memoryManager) Start(ctx context.Context) error {
@@ -284,6 +325,11 @@ func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID stri
 // BuildPromptMessages returns all messages as []Message without folding into a flat string.
 // This is the structured counterpart of BuildContext — it preserves the original message
 // structure (role, content, tool calls, turn IDs) for LLM prompt construction.
+//
+// When config.EnableRAG is true and retrievers are configured, a system Message
+// containing retrieved context (past experiences + AKG knowledge) is prepended
+// to the cleaned history. The retrieval query is the last user message in the
+// session; when no user message exists, retrieval is skipped.
 func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]Message, error) {
 	messages, err := m.sessionMemory.GetMessages(ctx, sessionID)
 	if err != nil {
@@ -311,6 +357,12 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 			"bytes_saved", stats.BytesSaved,
 			"dropped_tool_msgs", stats.DroppedToolMessages,
 			"turns_processed", stats.TurnsProcessed)
+	}
+
+	// RAG injection: prepend retrieved context as a system Message when enabled.
+	retrieved := m.retrieveForPrompt(ctx, lastUserMessage(messages))
+	if len(retrieved) > 0 {
+		cleaned = append(retrieved, cleaned...)
 	}
 	return cleaned, nil
 }
@@ -345,6 +397,15 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	// Build context string.
 	var contextBuilder strings.Builder
 	contextBuilder.Grow(len(cleaned) * 256)
+
+	// RAG injection: prepend retrieved context (past experiences + AKG knowledge)
+	// before the conversation history when EnableRAG is true and retrievers are
+	// configured. The current input is used as the retrieval query.
+	if ragContext := m.retrieveContextString(ctx, input); ragContext != "" {
+		contextBuilder.WriteString(ragContext)
+		contextBuilder.WriteString("\n")
+	}
+
 	if len(cleaned) > 0 {
 		contextBuilder.WriteString("Previous conversation history:\n\n")
 		for _, msg := range cleaned {

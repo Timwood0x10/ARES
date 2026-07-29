@@ -102,7 +102,7 @@ func DefaultConfig() *Config {
 		Port:            5432,
 		User:            "postgres",
 		Password:        "",
-		Database:        "goagent",
+		Database:        "ARES",
 		SSLMode:         DefaultSSLMode,
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,

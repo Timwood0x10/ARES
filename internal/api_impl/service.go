@@ -22,17 +22,28 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/api/handler"
+	"github.com/Timwood0x10/ares/api/router"
+	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	ares_config "github.com/Timwood0x10/ares/internal/ares_config"
+	evalapi "github.com/Timwood0x10/ares/internal/ares_eval/service"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience/service"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/memoryservice"
 	"github.com/Timwood0x10/ares/internal/monitoring"
+	"github.com/Timwood0x10/ares/internal/retrievalservice"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/query"
 )
 
 // Service is the top-level application entry point. One call to StartService
 // starts everything: LLM connection, MCP servers, event bridge, orchestrator,
-// flight recorder, and HTTP dashboard. Use Stop for graceful shutdown and
-// Wait to block until the context is cancelled.
+// flight recorder, bootstrap components (runtime, memory, evolution), and HTTP
+// dashboard. Use Stop for graceful shutdown and Wait to block until the context
+// is cancelled.
 type Service struct {
 	cfg        *ServiceConfig
 	orch       *dashboard.Orchestrator
@@ -46,6 +57,17 @@ type Service struct {
 	mu         sync.RWMutex
 	closed     bool
 	g          *errgroup.Group
+
+	// Wired subsystems (constructed in StartService). They are retained so
+	// they can be cleaned up on Stop and inspected by callers.
+	pgPool              *postgres.Pool             // optional, only when Postgres.Enabled
+	experienceRanking   *experience.RankingService // always constructed, exposed for later wiring
+	experienceConflicts *experience.ConflictResolver
+	queryCache          *query.MemoryQueryCache // in-memory query cache (has a cleanup goroutine)
+
+	// Bootstrap components — wired via ares_bootstrap.Bootstrap for autonomous
+	// runtime, memory, evolution, and service discovery.
+	bootstrap *ares_bootstrap.Components
 }
 
 // StartService connects LLM, all MCP servers, creates orchestrator, starts
@@ -136,13 +158,50 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	}
 	log.Info("ares_mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
 
+	// --- Bootstrap: infrastructure components via single wiring hub ---
+	// Wires EventStore, Runtime, Memory, MCP, LLM, Evolution, NewEvolution,
+	// and service discovery — enabling autonomous agent operation without
+	// manual wiring. Uses the ares_config.Config built from ServiceConfig.
+	bootstrapCfg, bsErr := ares_configFromService(cfg)
+	if bsErr != nil {
+		cancel()
+		return nil, fmt.Errorf("build bootstrap config: %w", bsErr)
+	}
+
+	// --- EventStore (archive-enabled, single construction) ---
+	// Built once here and injected into Bootstrap via deps so the bootstrap
+	// hub (Runtime, Memory, ...) wires against the SAME store the dashboard
+	// and flight recorder use — no throwaway MemoryEventStore is created
+	// inside Bootstrap. This is the unified pipeline shared with `ares serve`.
+	eventStore, err := NewEventStoreWithArchive(bootstrapCfg.Memory.Archive)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create event store: %w", err)
+	}
+	s.eventStore = eventStore
+
+	comp, bsErr := ares_bootstrap.Bootstrap(ctx, bootstrapCfg, &ares_bootstrap.BootstrapDeps{
+		EventStore: eventStore.CompactableEventStore,
+	})
+	if bsErr != nil {
+		cancel()
+		return nil, fmt.Errorf("bootstrap: %w", bsErr)
+	}
+	s.bootstrap = comp
+	log.Info("bootstrap components initialized",
+		"runtime", comp.Runtime != nil,
+		"memory", comp.Memory != nil,
+		"evolution", comp.Evolution != nil,
+		"new_evolution", comp.NewEvolution != nil,
+	)
+
 	// Use errgroup for structured concurrency with error propagation.
 	// The derived ctx is cancelled automatically when any goroutine returns
 	// a non-nil error, ensuring sibling goroutines are notified.
 	s.g, s.ctx = errgroup.WithContext(ctx)
 	log.Info("service context derived from errgroup error propagation")
 
-	// --- Hub + EventStore ---
+	// --- Hub ---
 	hub := dashboard.NewWSHub()
 	s.handler = http.NotFoundHandler() // initialize before httpServer uses wrapper
 	s.g.Go(func() error {
@@ -157,12 +216,6 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		return nil
 	})
 	s.hub = hub
-
-	eventStore, err := NewEventStore()
-	if err != nil {
-		return nil, fmt.Errorf("create event store: %w", err)
-	}
-	s.eventStore = eventStore
 
 	// ── Intelligence engine: powers anomaly detection + health scoring ──
 	intelEngine := dashboard.NewEngine(nil)
@@ -210,6 +263,14 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	dashAPI.SetArena(adapter)
 	dashAPI.SetSurvival(adapter)
 
+	// ── Wired subsystems: memory / retrieval / eval / experience / query ──
+	// Memory and retrieval use in-memory repositories (no external backend
+	// required) and are always mounted. Eval is PostgreSQL-backed, so it is
+	// mounted only when Postgres is enabled AND reachable. The experience
+	// ranking/conflict resolvers and the query cache are constructed and
+	// retained on the Service for later (embedding-dependent) wiring.
+	wireWiredServices(s, dashAPI, cfg)
+
 	// Create unified Gin server with dashboard + monitoring routes.
 	monSrv := monitoring.NewHTTPServer(nil, monitoring.WithDashboardAPI(dashAPI))
 	s.handler = monSrv
@@ -223,6 +284,85 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	})
 
 	return s, nil
+}
+
+// wireWiredServices constructs and mounts the memory, retrieval, eval,
+// experience, and query subsystems onto the dashboard API and/or the Service.
+// Paths that cannot be wired in the current configuration (e.g. eval without a
+// reachable Postgres) are skipped with a warning rather than failing the whole
+// service startup — this keeps the existing launch path intact.
+func wireWiredServices(s *Service, dashAPI *dashboard.APIv2, cfg *ServiceConfig) {
+	// Memory service (in-memory repository).
+	memSvc, err := memoryservice.NewService(&memoryservice.Config{
+		Repo: memoryservice.NewMemoryRepository(),
+	})
+	if err != nil {
+		log.Warn("memory service init failed, skipping memory wiring", "error", err)
+	} else {
+		memRouter := router.NewRouter()
+		memRouter.RegisterMemoryEndpoints(handler.NewMemoryHandler(memSvc))
+		dashAPI.SetMemoryMux(memRouter.Handler().(*http.ServeMux))
+		log.Info("memory service wired (in-memory)")
+	}
+
+	// Retrieval service (in-memory repository).
+	retSvc, err := retrievalservice.NewService(&retrievalservice.Config{
+		Repo: retrievalservice.NewMemoryRepository(),
+	})
+	if err != nil {
+		log.Warn("retrieval service init failed, skipping retrieval wiring", "error", err)
+	} else {
+		retRouter := router.NewRouter()
+		retRouter.RegisterRetrievalEndpoints(handler.NewRetrievalHandler(retSvc))
+		dashAPI.SetRetrievalMux(retRouter.Handler().(*http.ServeMux))
+		log.Info("retrieval service wired (in-memory)")
+	}
+
+	// Eval service (PostgreSQL-backed, optional).
+	if cfg.Postgres.Enabled {
+		pgCfg := &postgres.Config{
+			Host:     cfg.Postgres.Host,
+			Port:     cfg.Postgres.Port,
+			User:     cfg.Postgres.User,
+			Password: cfg.Postgres.Password,
+			Database: cfg.Postgres.Database,
+			SSLMode:  cfg.Postgres.SSLMode,
+		}
+		if vErr := pgCfg.Validate(); vErr != nil {
+			log.Warn("postgres config invalid, skipping eval wiring", "error", vErr)
+		} else if pool, pErr := postgres.NewPool(pgCfg); pErr != nil {
+			log.Warn("postgres pool init failed, skipping eval wiring", "error", pErr)
+		} else {
+			s.pgPool = pool
+			evalRepo := evalapi.NewPGEvalResultRepository(pool.GetDB(), pool.GetDB())
+			evalSvc, sErr := evalapi.NewService(evalRepo)
+			if sErr != nil {
+				log.Warn("eval service init failed, skipping eval wiring", "error", sErr)
+				_ = pool.Close()
+				s.pgPool = nil
+			} else {
+				evalRouter := router.NewRouter()
+				if rErr := evalapi.RegisterRoutes(evalRouter, evalapi.NewHandler(evalSvc)); rErr != nil {
+					log.Warn("eval routes register failed, skipping eval wiring", "error", rErr)
+					_ = pool.Close()
+					s.pgPool = nil
+				} else {
+					dashAPI.SetEvalMux(evalRouter.Handler().(*http.ServeMux))
+					log.Info("eval service wired (postgres-backed)")
+				}
+			}
+		}
+	}
+
+	// Experience: ranking + conflict resolver (distillation deferred until an
+	// embedding client is wired). Constructed and retained for later use.
+	s.experienceRanking = experience.NewRankingService()
+	s.experienceConflicts = experience.NewConflictResolver()
+	log.Info("experience ranking/conflict-resolver constructed")
+
+	// Query cache (in-memory, runs a cleanup goroutine that must be closed on Stop).
+	s.queryCache = query.NewMemoryQueryCache()
+	log.Info("query cache constructed (in-memory)")
 }
 
 // Stop gracefully shuts down all service resources: HTTP server, WebSocket hub,
@@ -266,6 +406,18 @@ func (s *Service) Stop(ctx context.Context) error {
 	if s.eventStore != nil {
 		if closeErr := s.eventStore.RawStore().Close(); closeErr != nil {
 			errs = append(errs, fmt.Errorf("event store close: %w", closeErr))
+		}
+	}
+
+	// Close the in-memory query cache (stops its cleanup goroutine).
+	if s.queryCache != nil {
+		s.queryCache.Close()
+	}
+
+	// Close the optional PostgreSQL pool if it was wired.
+	if s.pgPool != nil {
+		if closeErr := s.pgPool.Close(); closeErr != nil {
+			errs = append(errs, fmt.Errorf("postgres pool close: %w", closeErr))
 		}
 	}
 
@@ -318,6 +470,44 @@ func (s *Service) handlerWrapper() http.Handler {
 		s.handlerMu.RUnlock()
 		h.ServeHTTP(w, r)
 	})
+}
+
+// ares_configFromService converts a ServiceConfig to ares_config.Config
+// so that Bootstrap can wire the full infrastructure stack (runtime, memory,
+// evolution) from the same configuration used by the service entry point.
+func ares_configFromService(cfg *ServiceConfig) (*ares_config.Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("service config must not be nil")
+	}
+	out := &ares_config.Config{}
+	out.LLM.Provider = cfg.LLM.Provider
+	out.LLM.Model = cfg.LLM.Model
+	out.LLM.BaseURL = cfg.LLM.BaseURL
+	out.LLM.APIKey = cfg.LLM.APIKey
+	out.LLM.Timeout = cfg.LLM.Timeout
+	out.Dashboard.Addr = cfg.Dashboard.Addr
+	// Storage defaults to in-memory when no postgres config is provided.
+	out.Storage.Enabled = cfg.Postgres.Enabled
+	out.Storage.Type = "memory"
+	if cfg.Postgres.Enabled {
+		out.Storage.Type = "postgres"
+		out.Storage.Host = cfg.Postgres.Host
+		out.Storage.Port = cfg.Postgres.Port
+		out.Storage.Username = cfg.Postgres.User
+		out.Storage.Password = cfg.Postgres.Password
+		out.Storage.Database = cfg.Postgres.Database
+		out.Storage.SSLMode = cfg.Postgres.SSLMode
+	}
+	// Evolution defaults: disabled in the minimal service path unless
+	// explicitly configured via the ServiceConfig's postgres section.
+	out.Evolution.Enabled = cfg.Postgres.Enabled
+	// Archive defaults: archiving is enabled-by-default (nil *bool). Dir and
+	// MaxRounds are set here because setDefaults is not called on this
+	// manually-constructed config. Reuse DefaultArchiveDir so the two wiring
+	// paths cannot drift.
+	out.Memory.Archive.Dir = ares_config.DefaultArchiveDir
+	out.Memory.Archive.MaxRounds = 200
+	return out, nil
 }
 
 // Wait blocks until the service context is cancelled (e.g., by Stop or OS signal).

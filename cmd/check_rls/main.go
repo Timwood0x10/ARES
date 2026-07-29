@@ -16,7 +16,7 @@ func main() {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,

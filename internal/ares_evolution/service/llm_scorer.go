@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -276,35 +278,41 @@ func (s *LLMScorer) ScoreWithContext(ctx context.Context, strategy *Strategy) fl
 		return s.sampleOnce(ctx, strategy)
 	}
 
+	// Use errgroup for structured concurrency so each sampling goroutine is
+	// ctx-cancelable. A manual semaphore (instead of g.SetLimit) preserves
+	// the original behavior of bailing out when ctx is cancelled while
+	// waiting for a concurrency slot.
+	g, gCtx := errgroup.WithContext(ctx)
 	var (
 		best float64
 		mu   sync.Mutex
-		wg   sync.WaitGroup
 		sem  = make(chan struct{}, 3)
 	)
+loop:
 	for range s.numSamples {
 		select {
-		case <-ctx.Done():
-			goto wait
+		case <-gCtx.Done():
+			break loop
 		case sem <- struct{}{}:
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			defer func() { <-sem }()
-			if ctx.Err() != nil {
-				return
+			if gCtx.Err() != nil {
+				return nil
 			}
-			sc := s.sampleOnce(ctx, strategy)
+			sc := s.sampleOnce(gCtx, strategy)
 			mu.Lock()
 			if sc > best {
 				best = sc
 			}
 			mu.Unlock()
-		}()
+			return nil
+		})
 	}
-wait:
-	wg.Wait()
+	// Wait for all in-flight samples to complete. Errors are not returned
+	// because sampleOnce never fails (it falls back to the deterministic
+	// scorer); sampling results are aggregated via the shared best value.
+	_ = g.Wait()
 	return best
 }
 

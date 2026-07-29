@@ -1,18 +1,18 @@
 # 多智能体框架深度对比
 
-> LangChain vs CrewAI vs AgentScope vs GoAgent (ARES) vs tRPC-Agent-Go
+> LangChain vs CrewAI vs AgentScope vs ARES (ARES) vs tRPC-Agent-Go
 
 ***
 
 ## 1. 概述
 
-本文档对五个主流 AI Agent 框架进行真实、全面的技术对比：**LangChain（含 LangGraph）**、**CrewAI**、**AgentScope**、**GoAgent（ARES）** 和 **tRPC-Agent-Go**。对比维度涵盖技术栈、架构设计、工作流编排、多 Agent 协作、记忆系统、稳健性/生产就绪度、部署能力和社区成熟度。
+本文档对五个主流 AI Agent 框架进行真实、全面的技术对比：**LangChain（含 LangGraph）**、**CrewAI**、**AgentScope**、**ARES（ARES）** 和 **tRPC-Agent-Go**。对比维度涵盖技术栈、架构设计、工作流编排、多 Agent 协作、记忆系统、稳健性/生产就绪度、部署能力和社区成熟度。
 
 ***
 
 ## 2. 技术栈对比
 
-| 维度 | LangChain / LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| 维度 | LangChain / LangGraph | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 | ----------- | --------------------------------------------------------------------------- | ------------------------------------------------ | -------------------------------------- | --------------------------------------------- | --------------------------------------------- |
 | **主要语言** | Python（主）、JavaScript/TypeScript | Python | Python | Go (1.26+) | Go (1.23+) |
 | **核心依赖** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b | tRPC 框架, otel, langfuse |
@@ -30,7 +30,7 @@
 
 **AgentScope** 依托阿里巴巴技术栈，内置分布式通信能力（RPC、消息传递），对 Kubernetes 有良好支持。
 
-**GoAgent** 完全使用 Go 编写，零 Python 依赖。利用 Go 的静态编译和 goroutine 并发模型，启动开销极低（毫秒级），无需 Python 运行时环境。
+**ARES** 完全使用 Go 编写，零 Python 依赖。利用 Go 的静态编译和 goroutine 并发模型，启动开销极低（毫秒级），无需 Python 运行时环境。
 
 ***
 
@@ -43,7 +43,7 @@
 | **LangGraph**  | StateGraph（有环有向图）            | 图计算模型，节点=函数，边=转换 | 有状态图执行引擎  |
 | **CrewAI**     | Crew + Agent + Task          | 团队协作隐喻，角色驱动      | 线性/层级管线   |
 | **AgentScope** | Agent + Service Hub          | 分布式消息传递，服务化      | 分布式消息驱动   |
-| **GoAgent (ARES)** | Leader-Sub Agent + DAG + AHP | 分布式任务编排，协议驱动 | 领导者-从属者架构 |
+| **ARES (ARES)** | Leader-Sub Agent + DAG + AHP | 分布式任务编排，协议驱动 | 领导者-从属者架构 |
 | **tRPC-Agent-Go** | GraphAgent + Runner + Agent | 服务友好，tRPC 原生 | Go 原生运行时 + 图工作流 |
 
 ### 3.2 架构示意图
@@ -137,7 +137,7 @@ flowchart TD
     end
 ```
 
-GoAgent 采用领导者-从属者（Leader-Sub）架构，通过 AHP（Agent Heartbeat Protocol）协议进行通信。Leader 负责规划、分发和聚合结果；Sub-Agent 并行执行具体任务。
+ARES 采用领导者-从属者（Leader-Sub）架构，通过 AHP（Agent Heartbeat Protocol）协议进行通信。Leader 负责规划、分发和聚合结果；Sub-Agent 并行执行具体任务。
 
 ### 3.3 架构设计差异关键点
 
@@ -147,7 +147,7 @@ GoAgent 采用领导者-从属者（Leader-Sub）架构，通过 AHP（Agent Hea
 
 **AgentScope** 的分布式架构设计更适合企业级部署。但社区较小，中文文档为主，国际采用度有限。
 
-**GoAgent** 的领导者-从属者模式最适合确定性任务分发。AHP 协议提供心跳检测和死信队列，这是其他三个框架都缺乏的**协议级可靠性保障**。
+**ARES** 的领导者-从属者模式最适合确定性任务分发。AHP 协议提供心跳检测和死信队列，这是其他三个框架都缺乏的**协议级可靠性保障**。
 
 ***
 
@@ -155,7 +155,7 @@ GoAgent 采用领导者-从属者（Leader-Sub）架构，通过 AHP（Agent Hea
 
 ### 4.1 工作流能力对比
 
-| 能力              | LangGraph                | CrewAI                    | AgentScope    | GoAgent                                                                                  | tRPC-Agent-Go                         |
+| 能力              | LangGraph                | CrewAI                    | AgentScope    | ARES                                                                                  | tRPC-Agent-Go                         |
 | --------------- | ------------------------ | ------------------------- | ------------- | ---------------------------------------------------------------------------------------- | ------------------------------------- |
 | **DAG 支持**      | 原生支持                     | 仅 Sequential/Hierarchical | Pipeline 模式   | 原生 DAG                                                                                   | GraphAgent（Pregel 风格图，6 种节点类型）     |
 | **条件分支**        | `add_conditional_edges`  | 无                         | Pipeline 条件节点 | 无（待实现）                                                                                   | `ConditionalFunc` / `MultiConditionalFunc` 路由 |
@@ -172,9 +172,9 @@ GoAgent 采用领导者-从属者（Leader-Sub）架构，通过 AHP（Agent Hea
 | **MCP 支持**       | 不支持（可通过自定义工具）          | 不支持（可通过自定义工具）           | 不支持           | 不内置                                                                                     | 原生 mcptool 集成                            |
 | **协议支持**        | REST（LangServe）, SSE       | 进程内函数调用                   | gRPC, Service Hub | AHP 协议                                                                                  | tRPC, A2A, AG-UI, MCP, OpenAI 兼容 API, Evaluation, PromptIter |
 
-### 4.2 GoAgent DAG 特点
+### 4.2 ARES DAG 特点
 
-GoAgent 的 DAG 引擎具有以下特性：
+ARES 的 DAG 引擎具有以下特性：
 
 - **显式循环检测**: 使用 DFS + 递归栈在构建时检测环，确保执行图始终有效
 - **Kahn 拓扑排序**: 显式计算执行顺序，支持依赖分析和并行度优化
@@ -204,7 +204,7 @@ func (d *DAG) GetExecutionOrder() ([]string, error) {
 
 #### 4.2.1 可变 DAG（Mutable DAG）
 
-GoAgent 的 MutableDAG 在基础 DAG 之上增加了**运行时图突变**能力，这是其他三个框架完全不具备的特性：
+ARES 的 MutableDAG 在基础 DAG 之上增加了**运行时图突变**能力，这是其他三个框架完全不具备的特性：
 
 ```go
 type MutableDAG struct {
@@ -235,7 +235,7 @@ type MutableDAG struct {
 - **ApplyAtCheckpoint**（默认）：每个步骤完成后重新计算执行顺序，适合批处理场景
 - **ApplyImmediate**：每个步骤开始前重新计算执行顺序，适合实时响应场景
 
-**对比**：LangChain、CrewAI、AgentScope **全都不具备**运行时图突变能力。GoAgent 的 Mutable DAG 是唯一支持在运行中动态更改工作流拓扑的框架。
+**对比**：LangChain、CrewAI、AgentScope **全都不具备**运行时图突变能力。ARES 的 Mutable DAG 是唯一支持在运行中动态更改工作流拓扑的框架。
 
 ### 4.3 LangGraph 检查点机制
 
@@ -246,11 +246,11 @@ LangGraph 的状态管理是四个框架中最先进的：
 - **人机交互**: 通过 `interrupt_before` / `interrupt_after` 暂停执行等待人工输入
 - **3 种持久化级别**: `durable`（每次写入）、`recent`（最新写入）、`off`（不持久化）
 
-这是 GoAgent 当前的主要差距——状态在内存中，崩溃即丢失。
+这是 ARES 当前的主要差距——状态在内存中，崩溃即丢失。
 
-### 4.4 GoAgent 动态执行器与恢复
+### 4.4 ARES 动态执行器与恢复
 
-GoAgent 的 DynamicExecutor 扩展了基础执行器，支持**运行中图突变 + 步骤级恢复**：
+ARES 的 DynamicExecutor 扩展了基础执行器，支持**运行中图突变 + 步骤级恢复**：
 
 ```go
 type DynamicExecutor struct {
@@ -292,7 +292,7 @@ type InterruptResult struct {
 
 ### 5.1 协作模式对比
 
-| 模式          | LangGraph | CrewAI               | AgentScope     | GoAgent               | tRPC-Agent-Go                              |
+| 模式          | LangGraph | CrewAI               | AgentScope     | ARES               | tRPC-Agent-Go                              |
 | ----------- | --------- | -------------------- | -------------- | --------------------- | ------------------------------------------ |
 | **监督者/协调者** | 子图组合      | Hierarchical Process | Service Hub    | Leader Agent          | Runner + 链/并行/循环 Agent 组合                  |
 | **点对点通信**   | 共享状态      | 任务输出链式传递             | 消息路由           | AHP 点对点               | 子 Agent 组合，A2A 远程 Agent 协议                  |
@@ -302,7 +302,7 @@ type InterruptResult struct {
 
 ### 5.2 协作确定性对比
 
-**GoAgent** 的协作模式确定性最高：
+**ARES** 的协作模式确定性最高：
 
 - Leader 基于**触发关键词**（`trigger_on`）进行 Agent 选择
 - Planner 依据**规则**而非 LLM 进行任务规划
@@ -320,7 +320,7 @@ type InterruptResult struct {
 
 ### 5.3 AHP 协议通信
 
-GoAgent 的 AHP 协议是四个框架中**唯一提供协议级通信保障**的：
+ARES 的 AHP 协议是四个框架中**唯一提供协议级通信保障**的：
 
 | 消息类型      | 用途                | 频率     |
 | --------- | ----------------- | ------ |
@@ -339,7 +339,7 @@ GoAgent 的 AHP 协议是四个框架中**唯一提供协议级通信保障**的
 
 ### 6.1 记忆能力对比
 
-| 维度        | LangChain/LangGraph     | CrewAI                            | AgentScope | GoAgent                | tRPC-Agent-Go                        |
+| 维度        | LangChain/LangGraph     | CrewAI                            | AgentScope | ARES                | tRPC-Agent-Go                        |
 | --------- | ----------------------- | --------------------------------- | ---------- | ---------------------- | ------------------------------------ |
 | **短期记忆**  | 检查点状态                   | 当前运行上下文                           | 会话消息历史     | Session Memory（内存）     | 会话状态（10+ 后端）                        |
 | **长期记忆**  | Store (PostgresStore 等) | LanceDB 向量存储                      | 内置存储       | PostgreSQL + pgvector  | 记忆服务，12 个后端                         |
@@ -349,9 +349,9 @@ GoAgent 的 AHP 协议是四个框架中**唯一提供协议级通信保障**的
 | **知识蒸馏**  | 不支持                     | 不支持                               | 不支持        | 6 步自动管线                | 未记录                                  |
 | **多租户隔离** | namespace 元组            | 不支持                               | 不支持        | PostgreSQL `SET LOCAL` | 会话隔离，按用户/应用分割                       |
 
-### 6.2 GoAgent 记忆蒸馏管线
+### 6.2 ARES 记忆蒸馏管线
 
-GoAgent 的自动记忆蒸馏管线是独特优势：
+ARES 的自动记忆蒸馏管线是独特优势：
 
 ```mermaid
 flowchart LR
@@ -390,16 +390,16 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 
 **关键差异**:
 
-- GoAgent 的函数记忆是**自动管线**（规则驱动，纳秒级），CrewAI 是 **LLM 辅助**（更准确但更慢、更贵）
-- GoAgent 有多**租户隔离**（PostgreSQL `SET LOCAL`），其他框架不具备
+- ARES 的函数记忆是**自动管线**（规则驱动，纳秒级），CrewAI 是 **LLM 辅助**（更准确但更慢、更贵）
+- ARES 有多**租户隔离**（PostgreSQL `SET LOCAL`），其他框架不具备
 - LangGraph 的 Store 最灵活（namespace 元组），但无自动蒸馏
 - AgentScope 的记忆系统最基础
 
 ***
 
-### 6.4 GoAgent 自主进化（遗传算法流水线）
+### 6.4 ARES 自主进化（遗传算法流水线）
 
-GoAgent 是**唯一**内置完整遗传算法（GA）自主进化能力的框架，通过 `ares_evolution` 包实现策略的自动优化和演化：
+ARES 是**唯一**内置完整遗传算法（GA）自主进化能力的框架，通过 `ares_evolution` 包实现策略的自动优化和演化：
 
 ```mermaid
 flowchart LR
@@ -475,7 +475,7 @@ flowchart LR
 ParentID → ChildID → MutationType → WinRate → ScoreImprovement → Timestamp
 ```
 
-**对比**：LangChain、CrewAI、AgentScope **全都不具备**任何形式的自主进化或遗传算法能力。GoAgent 的这一特性使其能够在生产环境中持续自我优化，无需人工调参。
+**对比**：LangChain、CrewAI、AgentScope **全都不具备**任何形式的自主进化或遗传算法能力。ARES 的这一特性使其能够在生产环境中持续自我优化，无需人工调参。
 
 ***
 
@@ -483,7 +483,7 @@ ParentID → ChildID → MutationType → WinRate → ScoreImprovement → Times
 
 ### 7.1 错误处理机制对比
 
-| 机制       | LangGraph      | CrewAI                         | AgentScope | GoAgent                                        | tRPC-Agent-Go                            |
+| 机制       | LangGraph      | CrewAI                         | AgentScope | ARES                                        | tRPC-Agent-Go                            |
 | -------- | -------------- | ------------------------------ | ---------- | ---------------------------------------------- | ---------------------------------------- |
 | **重试**   | `with_retry()` | `max_retry_limit=2`            | 基础重试       | 3 次指数退避                                        | 通过进化管线支持                                 |
 | **超时**   | 不内置            | `max_execution_time`           | 不内置        | 分层超时 (LLM 120s, DB 30s, Vector 10s)            | 未记录                                      |
@@ -494,7 +494,7 @@ ParentID → ChildID → MutationType → WinRate → ScoreImprovement → Times
 | **人机交互** | `interrupt()`  | `human_input=True`             | 支持         | HITL（InterruptHandler + InterruptStore，崩溃后可恢复） | 支持                                       |
 | **混沌工程** | 不支持            | 不支持                            | 不支持        | 13 种故障注入 + Survival 模式 + Scenario 模式 + 做市混沌    | 未记录                                      |
 
-### 7.2 GoAgent 熔断器实现
+### 7.2 ARES 熔断器实现
 
 ```go
 func (cb *CircuitBreaker) AllowRequest() bool {
@@ -515,7 +515,7 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 }
 ```
 
-### 7.3 GoAgent 重试与验证
+### 7.3 ARES 重试与验证
 
 ```go
 func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
@@ -533,11 +533,11 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*
 }
 ```
 
-**结论: GoAgent 在工具调用可靠性方面领先其他框架一个身位**。熔断器、死信队列、分层超时、自动降级这四项能力，其他三个框架完全不具有。
+**结论: ARES 在工具调用可靠性方面领先其他框架一个身位**。熔断器、死信队列、分层超时、自动降级这四项能力，其他三个框架完全不具有。
 
-### 7.4 GoAgent 混沌工程（Chaos Engineering）
+### 7.4 ARES 混沌工程（Chaos Engineering）
 
-GoAgent 是**唯一**内置混沌工程层的框架，通过 `ares_arena` 包实现系统韧性的主动验证。这不仅是测试工具，而是与运行时深度集成的生产级混沌工程平台：
+ARES 是**唯一**内置混沌工程层的框架，通过 `ares_arena` 包实现系统韧性的主动验证。这不仅是测试工具，而是与运行时深度集成的生产级混沌工程平台：
 
 **13 种故障注入类型**：
 
@@ -589,7 +589,7 @@ actions:
 
 **弹性评分**：每次执行后生成 ResilienceScore（0-100），综合通过率、恢复时间和影响范围。
 
-**对比**：LangChain、CrewAI、AgentScope **全都不具备**任何形式的混沌工程能力。GoAgent 是唯一能够在生产环境中系统性验证 Agent 系统韧性的框架。
+**对比**：LangChain、CrewAI、AgentScope **全都不具备**任何形式的混沌工程能力。ARES 是唯一能够在生产环境中系统性验证 Agent 系统韧性的框架。
 
 ***
 
@@ -597,7 +597,7 @@ actions:
 
 ### 8.1 生产级特性对比
 
-| 特性            | LangChain/LangGraph | CrewAI  | AgentScope    | GoAgent                                            | tRPC-Agent-Go                                    |
+| 特性            | LangChain/LangGraph | CrewAI  | AgentScope    | ARES                                            | tRPC-Agent-Go                                    |
 | ------------- | ------------------- | ------- | ------------- | -------------------------------------------------- | ------------------------------------------------ |
 | **语言**        | Python              | Python  | Python        | Go                                                 | Go                                               |
 | **并发模型**      | asyncio             | asyncio | asyncio + 多进程 | goroutine + channel                                | goroutine + channel + 协程池 (ants/v2)            |
@@ -614,7 +614,7 @@ actions:
 | **启动开销**      | 高（加载LangChain生态）    | 中       | 中             | 低（原生 Go 编译）                                        | 低（原生 Go 编译）                                     |
 | **错误包装**      | 无专门机制               | 无专门机制   | 无专门机制         | 错误包装 (69ns/op, 0 alloc)                            | tRPC 错误处理约定                                     |
 
-### 8.2 GoAgent 多层防护栈
+### 8.2 ARES 多层防护栈
 
 ```mermaid
 flowchart TD
@@ -660,13 +660,13 @@ flowchart TD
 
 **AgentScope**: 提供基础日志和监控能力。
 
-**GoAgent**: 内置 OpenTelemetry 链路追踪 + Prometheus 指标（counters/histograms/gauges/summary）+ 成本追踪。全部开源免费。
+**ARES**: 内置 OpenTelemetry 链路追踪 + Prometheus 指标（counters/histograms/gauges/summary）+ 成本追踪。全部开源免费。
 
 ***
 
 ## 9. 社区与生态成熟度
 
-| 指标               | LangChain                         | CrewAI   | AgentScope | GoAgent    | tRPC-Agent-Go                            |
+| 指标               | LangChain                         | CrewAI   | AgentScope | ARES    | tRPC-Agent-Go                            |
 | ---------------- | --------------------------------- | -------- | ---------- | ---------- | ---------------------------------------- |
 | **GitHub Stars** | \~100,000+                        | \~40,000 | \~4,000    | 早期         | \~1,500                                  |
 | **主要贡献者**        | 1,200+                            | 300+     | \~50       | 1          | \~20                                     |
@@ -735,7 +735,7 @@ flowchart TD
 - 函数记忆系统较基础
 - 非阿里巴巴生态用户集成困难
 
-### 10.4 GoAgent (ARES)
+### 10.4 ARES (ARES)
 
 **优势**:
 
@@ -798,9 +798,9 @@ flowchart TD
     Q2 -->|否| Q3{阿里巴巴生态 / 分布式部署？}
     Q3 -->|是| AS[AgentScope]
     Q3 -->|否| Q4{高并发 / 多租户 / 生产可靠性 / 自进化 / 韧性验证？}
-    Q4 -->|是| GA[GoAgent<br/>含 Chaos/GA/Mutable DAG]
+    Q4 -->|是| GA[ARES<br/>含 Chaos/GA/Mutable DAG]
     Q4 -->|否| Q9{tRPC 生态 / 完整协议支持？}
-    Q9 -->|是| tRPC[GoAgent<br/>tRPC 生态集成]
+    Q9 -->|是| tRPC[ARES<br/>tRPC 生态集成]
     Q9 -->|否| LC[LangChain/LangGraph]
 ```
 
@@ -812,7 +812,7 @@ flowchart TD
 | **CrewAI**              | 团队协作模拟器        | 快速原型、角色扮演                      | 生产部署、高确定性    |
 | **AgentScope**          | 分布式 Agent 框架   | 阿里生态、多机部署                      | 非阿里环境、国际团队   |
 | **tRPC-Agent-Go**        | Go 原生生产级 Agent 框架   | tRPC 生态团队、A2A/MCP 协议需求 | 需要循环/状态回滚的场景 |
-| **GoAgent**             | 分布式 Agent 编排引擎 | 高并发、多租户、协议级通信、混沌工程、自主进化、可变 DAG | 需要循环/状态回滚的场景 |
+| **ARES**             | 分布式 Agent 编排引擎 | 高并发、多租户、协议级通信、混沌工程、自主进化、可变 DAG | 需要循环/状态回滚的场景 |
 
 ***
 
@@ -820,25 +820,25 @@ flowchart TD
 
 | 趋势               | 描述                                                               |
 | ---------------- | ---------------------------------------------------------------- |
-| **Python → 多语言** | SK 已支持 C#/Python/Java，GoAgent 的选择符合方向                            |
-| **单节点 → 分布式**    | AutoGen 0.4 加入分布式运行时，GoAgent 的 AHP 原生支持                          |
+| **Python → 多语言** | SK 已支持 C#/Python/Java，ARES 的选择符合方向                            |
+| **单节点 → 分布式**    | AutoGen 0.4 加入分布式运行时，ARES 的 AHP 原生支持                          |
 | **对话 → 工作流**     | CrewAI 从 Crew 扩展到 Flow，图模型成为终极形式                                 |
-| **记忆成为核心**       | 所有框架在加强记忆能力，仅 GoAgent 有自动化蒸馏                                     |
+| **记忆成为核心**       | 所有框架在加强记忆能力，仅 ARES 有自动化蒸馏                                     |
 | **可观测性标准化**      | LangSmith 绑定 LangGraph，开源替代方案涌现                                  |
 | **安全从可选到必需**     | PII 脱敏、注入检测、沙箱执行成为标配                                             |
-| **自主进化 (GA)**    | GoAgent 是唯一内置 GA 流水线的框架——锦标赛选择、均匀交叉、5 种突变、三级评分、Dream Cycle 两阶段评估 |
+| **自主进化 (GA)**    | ARES 是唯一内置 GA 流水线的框架——锦标赛选择、均匀交叉、5 种突变、三级评分、Dream Cycle 两阶段评估 |
 | **运行时图突变**       | Mutable DAG 实现运行中添加/删除/替换节点和边，BFS 循环检测，GraphEventHub 实时事件通知      |
 | **混沌工程集成**       | 13 种故障注入 + Survival/Scenario 模式，韧性验证成为 Agent 框架新维度               |
 
-### GoAgent 的差异化定位
+### ARES 的差异化定位
 
-GoAgent 拥有其他框架**完全不具有**的三个独特特性：**混沌工程（Chaos Engineering）**、**自主进化（GA）**、**可变 DAG（Mutable DAG）**。加上 Go 的并发优势，定位为 **"生产级韧性 + 自进化 Agent 编排引擎"**：
+ARES 拥有其他框架**完全不具有**的三个独特特性：**混沌工程（Chaos Engineering）**、**自主进化（GA）**、**可变 DAG（Mutable DAG）**。加上 Go 的并发优势，定位为 **"生产级韧性 + 自进化 Agent 编排引擎"**：
 
 > **高可靠性 + 多租户隔离 + 协议级通信保障 + 运行时图突变 + 自主进化 + 混沌工程韧性验证**
 
-GoAgent 现在的差距（状态检查点、条件边）可以通过借鉴其他框架的经验逐步补齐，而其**混沌工程、自主进化、可变 DAG、熔断器、心跳、DLQ、自动蒸馏、多租户隔离**等特性是其他框架短期乃至长期内难以复制的。
+ARES 现在的差距（状态检查点、条件边）可以通过借鉴其他框架的经验逐步补齐，而其**混沌工程、自主进化、可变 DAG、熔断器、心跳、DLQ、自动蒸馏、多租户隔离**等特性是其他框架短期乃至长期内难以复制的。
 
-同样值得关注的是 **tRPC-Agent-Go**，作为 GoAgent 的 tRPC 生态版本，其 tRPC 生态集成优势使其在企业级采用中具有独特定位，特别是对于已经使用 tRPC-Go 微服务框架的团队。tRPC-Agent-Go 继承了 GoAgent 的核心 Agent 类型和 Pregel 图引擎，同时深度集成 tRPC 协议栈、连接池和服务治理能力，为腾讯云用户提供开箱即用的 Agent 开发体验。
+同样值得关注的是 **tRPC-Agent-Go**，作为 ARES 的 tRPC 生态版本，其 tRPC 生态集成优势使其在企业级采用中具有独特定位，特别是对于已经使用 tRPC-Go 微服务框架的团队。tRPC-Agent-Go 继承了 ARES 的核心 Agent 类型和 Pregel 图引擎，同时深度集成 tRPC 协议栈、连接池和服务治理能力，为腾讯云用户提供开箱即用的 Agent 开发体验。
 
 ***
 

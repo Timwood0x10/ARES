@@ -4,7 +4,7 @@
 
 ## 概述
 
-Storage模块是GoAgent的核心数据持久化层，基于PostgreSQL 15+ with pgvector实现，提供高性能的向量存储、检索和多租户隔离能力。
+Storage模块是ARES的核心数据持久化层，基于PostgreSQL 15+ with pgvector实现，提供高性能的向量存储、检索和多租户隔离能力。
 
 ### 核心能力
 
@@ -264,7 +264,7 @@ config := &postgres.Config{
     Port:            5433,
     User:            "postgres",
     Password:        "postgres",
-    Database:        "goagent",
+    Database:        "ARES",
     MaxOpenConns:    25,
     MaxIdleConns:    10,
     ConnMaxLifetime: 5 * time.Minute,
@@ -577,4 +577,4 @@ slog.Info("Query executed",
 
 **版本**: 1.0  
 **最后更新**: 2026-03-24  
-**维护者**: GoAgent Team
+**维护者**: ARES Team

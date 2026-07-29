@@ -21,7 +21,7 @@ func main() {
 	port := getEnv("DB_PORT", "5433")
 	user := getEnv("DB_USER", "postgres")
 	password := getEnv("DB_PASSWORD", "postgres")
-	dbname := getEnv("DB_NAME", "goagent")
+	dbname := getEnv("DB_NAME", "ARES")
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		url.QueryEscape(user), url.QueryEscape(password),

@@ -243,7 +243,13 @@ func (p *profileParser) validateProfile(profile *models.UserProfile) error {
 	if profile == nil {
 		return errors.ErrNilPointer
 	}
-	if len(profile.Preferences) == 0 && len(profile.Style) == 0 {
+	// Only fail when ALL of Preferences, Style, Budget, and Occasions are
+	// empty/nil. Previously a profile with only Budget or Occasions was
+	// silently rejected (LD-1).
+	if len(profile.Preferences) == 0 &&
+		len(profile.Style) == 0 &&
+		profile.Budget == nil &&
+		len(profile.Occasions) == 0 {
 		return errors.ErrProfileValidationFailed
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	workflowcore "github.com/Timwood0x10/ares/internal/workflow"
 )
 
 // Edge represents a connection between two nodes with optional condition.
@@ -136,6 +137,9 @@ func (g *Graph) Node(id string, node Node) (*Graph, error) {
 	if node == nil {
 		return nil, fmt.Errorf("node cannot be nil")
 	}
+	if _, exists := g.nodes[id]; exists {
+		return nil, fmt.Errorf("duplicate node ID %q", id)
+	}
 	g.nodes[id] = node
 	return g, nil
 }
@@ -170,6 +174,20 @@ func (g *Graph) Edge(from, to string, cond ...Condition) (*Graph, error) {
 	edge := &Edge{from: from, to: to}
 	if len(cond) > 0 {
 		edge.cond = cond[0]
+	}
+
+	// Check for duplicate edge: same from→to with the same condition (or both nil).
+	for _, existing := range g.edges[from] {
+		if existing.to == to {
+			if edge.cond == nil && existing.cond == nil {
+				return g, nil // silently allow duplicate no-cond edges
+			}
+			if edge.cond != nil && existing.cond != nil {
+				// Both have conditions — function equality cannot be compared
+				// reflectively; treat as duplicate to avoid infinite growth.
+				return g, nil
+			}
+		}
 	}
 
 	g.edges[from] = append(g.edges[from], edge)
@@ -403,6 +421,161 @@ func (g *Graph) ID() string {
 	defer g.mu.RUnlock()
 
 	return g.id
+}
+
+// NodeIDs returns all node IDs in the graph. The order is non-deterministic.
+func (g *Graph) NodeIDs() []string {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	ids := make([]string, 0, len(g.nodes))
+	for id := range g.nodes {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// EdgeInfo carries the serializable parts of an edge for IR compilation.
+type EdgeInfo struct {
+	From    string
+	To      string
+	HasCond bool
+}
+
+// RuntimeEdge contains one executable edge and its optional predicate.
+type RuntimeEdge struct {
+	From      string
+	To        string
+	Condition Condition
+}
+
+// Edges returns all edges in the graph as serializable EdgeInfo values.
+func (g *Graph) Edges() []EdgeInfo {
+	runtimeEdges := g.RuntimeEdges()
+	edges := make([]EdgeInfo, 0, len(runtimeEdges))
+	for _, edge := range runtimeEdges {
+		edges = append(edges, EdgeInfo{
+			From:    edge.From,
+			To:      edge.To,
+			HasCond: edge.Condition != nil,
+		})
+	}
+	return edges
+}
+
+// CompileEdges returns serializable topology for the unified compiler.
+func (g *Graph) CompileEdges() []workflowcore.GraphCompileEdge {
+	runtimeEdges := g.RuntimeEdges()
+	edges := make([]workflowcore.GraphCompileEdge, 0, len(runtimeEdges))
+	for _, edge := range runtimeEdges {
+		edges = append(edges, workflowcore.GraphCompileEdge{
+			From:       edge.From,
+			To:         edge.To,
+			HasCond:    edge.Condition != nil,
+			BindingRef: graphConditionBindingID(edge.From, edge.To),
+		})
+	}
+	return edges
+}
+
+// RuntimeEdges returns executable edge bindings for unified compilation.
+func (g *Graph) RuntimeEdges() []RuntimeEdge {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	edges := make([]RuntimeEdge, 0, len(g.edges))
+	for from, targets := range g.edges {
+		for _, edge := range targets {
+			edges = append(edges, RuntimeEdge{
+				From:      from,
+				To:        edge.to,
+				Condition: edge.cond,
+			})
+		}
+	}
+	return edges
+}
+
+// RuntimeRouter returns the optional graph routing callback.
+func (g *Graph) RuntimeRouter() NodeRouter {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.router
+}
+
+// RuntimeScheduler returns the configured ready-node selector.
+func (g *Graph) RuntimeScheduler() Scheduler {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.scheduler
+}
+
+// RuntimePluginBus returns the configured lifecycle plugin bus.
+func (g *Graph) RuntimePluginBus() *ares_runtime.PluginBus {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.pluginBus
+}
+
+// RuntimeCollector returns the configured execution collector.
+func (g *Graph) RuntimeCollector() *ares_runtime.ExecutionCollector {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.collector
+}
+
+// RuntimeCheckpointStore returns the configured checkpoint store.
+func (g *Graph) RuntimeCheckpointStore() ares_runtime.CheckpointStore {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.checkpointStore
+}
+
+// RuntimeNodes returns executable node bindings for unified compilation.
+func (g *Graph) RuntimeNodes() map[string]Node {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	nodes := make(map[string]Node, len(g.nodes))
+	for id, node := range g.nodes {
+		nodes[id] = node
+	}
+	return nodes
+}
+
+// StartNode returns the configured start node ID, or "" if not set.
+func (g *Graph) StartNode() string {
+	if g == nil {
+		return ""
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	return g.start
 }
 
 // Result represents the result of graph execution.

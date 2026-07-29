@@ -76,11 +76,12 @@ func NewService(config *Config) (*Service, error) {
 
 	// Create internal LLM client (with optional failover)
 	internalConfig := &llm.Config{
-		Provider: string(config.LLMConfig.Provider),
-		APIKey:   config.LLMConfig.APIKey,
-		BaseURL:  config.LLMConfig.BaseURL,
-		Model:    config.LLMConfig.Model,
-		Timeout:  config.LLMConfig.Timeout,
+		Provider:        string(config.LLMConfig.Provider),
+		APIKey:          config.LLMConfig.APIKey,
+		BaseURL:         config.LLMConfig.BaseURL,
+		Model:           config.LLMConfig.Model,
+		Timeout:         config.LLMConfig.Timeout,
+		MaxPromptLength: config.LLMConfig.MaxPromptLength,
 	}
 
 	var client LLMClient

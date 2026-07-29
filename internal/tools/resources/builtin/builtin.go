@@ -1,8 +1,12 @@
 package builtin
 
 import (
+	"fmt"
+	"log"
 	"os"
 	"time"
+
+	stderrors "errors"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
@@ -42,13 +46,19 @@ func resolveFileToolsAllowedDir() string {
 	return dir
 }
 
-// RegisterGeneralTools registers all general-purpose tools.
+// RegisterGeneralTools registers all general-purpose tools into the provided
+// registry. The caller owns the registry instance (typically the internal
+// core.Registry bridged to agent ToolBinders), which keeps tool wiring
+// explicit and avoids hidden global state.
 //
 // SECURITY: FileTools is registered with WithAllowedDir so that path traversal
 // is blocked by default. CodeRunner is registered with Python DISABLED by
 // default — operators must opt in via EnablePython(true). HTTPRequest and
 // WebScraper enforce SSRF filtering at the HTTP client layer.
-func RegisterGeneralTools() error {
+func RegisterGeneralTools(reg *core.Registry) error {
+	if reg == nil {
+		return errors.New("register general tools: registry cannot be nil")
+	}
 	tools := []core.Tool{
 		// Math capability
 		base.WithToolTags(builtin_math.NewCalculator(), map[string]string{
@@ -186,10 +196,27 @@ func RegisterGeneralTools() error {
 		}),
 	}
 
+	var (
+		errs       []error
+		registered int
+	)
 	for _, tool := range tools {
-		if err := core.Register(tool); err != nil {
-			return errors.Wrap(err, "failed to register tool")
+		if err := reg.Register(tool); err != nil {
+			// On conflict (e.g. duplicate name from a prior registration), log a
+			// warning and continue with the remaining tools instead of aborting
+			// the whole registration. The pre-existing tool wins.
+			log.Printf("WARN: builtin: failed to register tool %q: %v", tool.Name(), err)
+			errs = append(errs, fmt.Errorf("%s: %w", tool.Name(), err))
+			continue
 		}
+		registered++
+	}
+
+	// Succeed when at least one tool registered. Only fail when every
+	// registration failed, which signals a catastrophic problem (e.g. the
+	// registry is unusable) rather than a benign duplicate-name conflict.
+	if registered == 0 && len(errs) > 0 {
+		return errors.Wrap(stderrors.Join(errs...), "failed to register any tool")
 	}
 
 	return nil

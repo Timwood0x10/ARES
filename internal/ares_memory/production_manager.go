@@ -62,6 +62,10 @@ type ProductionMemoryManager struct {
 	// Context cleaner: intelligently strips tool noise and compresses verbose content.
 	ctxCleaner *memctx.ContextCleaner
 
+	// retrievers hold optional ContextRetrievers queried in BuildContext/
+	// BuildPromptMessages when config.EnableRAG is true.
+	retrievers []memctx.ContextRetriever
+
 	// Event sourcing: optional EventStore for emitting lifecycle ares_events.
 	eventStore ares_events.EventStore
 	streamID   string // Stream ID used when appending ares_events.
@@ -184,6 +188,28 @@ func NewProductionMemoryManager(
 		maxCacheSize:           config.MaxSessions,
 	}, nil
 }
+
+// GetConfig returns the current MemoryConfig pointer.
+// The caller must hold the lock (Lock()) before reading the returned config.
+// This method implements the MemoryConfigStore interface.
+func (m *ProductionMemoryManager) GetConfig() *MemoryConfig {
+	return m.config
+}
+
+// Lock acquires the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *ProductionMemoryManager) Lock() {
+	m.mu.Lock()
+}
+
+// Unlock releases the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *ProductionMemoryManager) Unlock() {
+	m.mu.Unlock()
+}
+
+// Ensure ProductionMemoryManager implements MemoryConfigStore.
+var _ MemoryConfigStore = (*ProductionMemoryManager)(nil)
 
 // SetTenantID sets the current tenant ID for multi-tenant operations.
 // Args:
@@ -613,6 +639,12 @@ func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessi
 			"turns_processed", stats.TurnsProcessed)
 	}
 
+	// RAG injection: prepend retrieved context as a system Message when enabled.
+	retrieved := m.retrieveForPrompt(ctx, lastUserMessage(messages))
+	if len(retrieved) > 0 {
+		cleaned = append(retrieved, cleaned...)
+	}
+
 	return cleaned, nil
 }
 
@@ -671,8 +703,14 @@ func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string
 
 	// Build context string
 	var contextBuilder string
+
+	// RAG injection: prepend retrieved context before the conversation history.
+	if ragContext := m.retrieveContextString(ctx, input); ragContext != "" {
+		contextBuilder = ragContext + "\n"
+	}
+
 	if len(cleaned) > 0 {
-		contextBuilder = "Previous conversation history:\n\n"
+		contextBuilder += "Previous conversation history:\n\n"
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:

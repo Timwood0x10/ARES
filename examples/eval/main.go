@@ -23,7 +23,7 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	rt := sdk.MustNew(sdk.WithOllama("llama3.2"), sdk.WithEvolution(), sdk.WithTrace(false))
+	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithEvolution(), sdk.WithTrace(false))
 	defer rt.Close()
 
 	// Register the calculator tool for tool-using scenarios.

@@ -334,4 +334,4 @@ memory:
 
 **Version**: 1.0  
 **Last Updated**: 2026-03-24  
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

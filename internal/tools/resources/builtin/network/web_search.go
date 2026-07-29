@@ -186,7 +186,7 @@ func (t *WebSearch) Execute(ctx context.Context, params map[string]interface{}) 
 		return core.NewErrorResult(fmt.Sprintf("failed to create request: %v", err)), nil
 	}
 
-	req.Header.Set("User-Agent", "GoAgent/1.0 (Interview Demo; +https://github.com/Timwood0x10/ares)")
+	req.Header.Set("User-Agent", "ARES/1.0 (Interview Demo; +https://github.com/Timwood0x10/ares)")
 	req.Header.Set("Accept", "application/json")
 
 	// Execute request

@@ -94,7 +94,7 @@ func TestIsProblem(t *testing.T) {
 		},
 		{
 			name:     "chinese features question",
-			text:     "goagent有哪些功能",
+			text:     "ARES有哪些功能",
 			expected: true,
 		},
 		{

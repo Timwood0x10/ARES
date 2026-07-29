@@ -166,28 +166,40 @@ func (s *LeaderSupervisor) Stop() error {
 // handleFailover is the callback for heartbeat timeout.
 // It launches the failover process asynchronously via errgroup.
 func (s *LeaderSupervisor) handleFailover(leaderID string) {
-	s.mu.RLock()
-	stopped := s.stopped
-	g := s.g
-	gctx := s.gctx
-	s.mu.RUnlock()
-
-	if stopped || g == nil {
+	// Hold the write lock across the stopped-check and g.Go to close the TOCTOU
+	// window: previously Stop could run between the RUnlock and g.Go, launching
+	// a failover goroutine after the supervisor had stopped (LD-4).
+	s.mu.Lock()
+	if s.stopped || s.g == nil {
+		s.mu.Unlock()
 		log.Debug("supervisor stopped, skipping failover", "leader_id", leaderID)
 		return
 	}
 
 	// Dedup: skip if a failover is already running for this leader.
-	s.mu.Lock()
 	if s.failoverRunning[leaderID] {
 		s.mu.Unlock()
 		log.Debug("failover already running, skipping", "leader_id", leaderID)
 		return
 	}
 	s.failoverRunning[leaderID] = true
+	g := s.g
+	gctx := s.gctx
 	s.mu.Unlock()
 
 	g.Go(func() error {
+		// Re-check stopped inside the goroutine: Stop may have completed
+		// after we released the lock but before the goroutine started (LD-4).
+		s.mu.RLock()
+		stopped := s.stopped
+		s.mu.RUnlock()
+		if stopped {
+			s.mu.Lock()
+			delete(s.failoverRunning, leaderID)
+			s.mu.Unlock()
+			log.Debug("supervisor stopped before failover started", "leader_id", leaderID)
+			return nil
+		}
 		s.doFailover(gctx, leaderID)
 		return nil
 	})

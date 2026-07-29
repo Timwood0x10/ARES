@@ -6,6 +6,9 @@
 //  3. The evolved agent runs the same task again.
 //  4. Compare what changed and what was learned.
 //
+// YAML-driven config: evolution is enabled via ares.yaml, only the evolution
+// loop logic needs Go code.
+//
 // Run:
 //
 //	go run examples/05-evolution-demo/main.go
@@ -25,12 +28,18 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── 1. Create Runtime ──────────────────────────────────────
-	rt := sdk.MustNew(
-		sdk.WithOllama("llama3.2"),
-		sdk.WithEvolution(),
-		sdk.WithTrace(false),
-	)
+	// ── 1. Load ares.yaml + wire everything (evolution in YAML) ─
+	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
+		return
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
+		return
+	}
+	rt := sdk.NewRuntime(opts...)
 	defer rt.Close()
 
 	task := "Explain what a closure is in programming, with a concise code example"
@@ -95,7 +104,6 @@ func main() {
 		float64(d1)/float64(d2),
 		(1.0-float64(result2.TokenUsage.Total)/float64(result1.TokenUsage.Total))*100)
 
-	// Export evolution history
 	exportHistory(result1, result2, d1, d2)
 	fmt.Println("\n✅ Evolution demo completed — strategy evolved for better performance")
 }

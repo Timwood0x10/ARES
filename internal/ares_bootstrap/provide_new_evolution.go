@@ -9,6 +9,7 @@ import (
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	evoparent "github.com/Timwood0x10/ares/internal/evolution"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
 	"github.com/Timwood0x10/ares/internal/evolution/genome"
@@ -17,6 +18,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	provider_code "github.com/Timwood0x10/ares/internal/knowledge/provider/code"
+	provider_memory "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
@@ -29,10 +32,32 @@ type NewEvolutionComponents struct {
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
 	Coordinator   *coordinator.EvolutionCoordinator
+	// LLMAdapter parses natural-language LLM suggestions into PatchProposals
+	// that the Coordinator can evaluate alongside GA/Chaos/AKF/Human sources.
+	// Wired into the Coordinator's suggestion pipeline in wireGAEvolution when
+	// an LLM client is available (LLM → Parse → PatchProposal → Coordinate.Evaluate).
+	LLMAdapter *evoparent.LLMAdapter
 	// StrategyStore persists the best-evolved strategy deployed by the GA
 	// engine so the live agent can consume it at runtime. Set by the
 	// bootstrap bridge after the store is created.
 	StrategyStore evolution.StrategyStore
+
+	// liveDAG holds the agent's live workflow DAG injected after bootstrap
+	// so the evolution system's executors operate on real runtime state
+	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents
+	// are created and their DAGs are registered with the runtime manager.
+	liveDAG *engine.MutableDAG
+
+	// recoveryExec is the RecoveryPatchExecutor created at bootstrap time.
+	// UpdateLiveDAG calls SetDAG on it to replace the fake DAG with the
+	// live one, since Register cannot overwrite an already-registered key.
+	recoveryExec *engine.RecoveryPatchExecutor
+
+	// knowledgeExec is the KnowledgePatchExecutor created at bootstrap time.
+	// UpdateLiveKnowledgeRuntime calls SetRuntime on it to swap in the agent's
+	// live KnowledgeRuntime, since Register cannot overwrite an already
+	// registered component key.
+	knowledgeExec *knowledgeruntime.KnowledgePatchExecutor
 }
 
 // ProvideNewEvolution wires the new evolution system:
@@ -42,10 +67,10 @@ type NewEvolutionComponents struct {
 //
 //	dag - optional MutableDAG for WorkflowGenome and executors (may be nil).
 //	rt  - optional KnowledgeRuntime for KnowledgePatchExecutor (may be nil).
-//	memoryMgr - optional ProductionMemoryManager for MemoryPatchExecutor (may be nil).
+//	memoryStore - optional MemoryConfigStore for MemoryPatchExecutor (may be nil).
 //
-// When dag, rt, or memoryMgr is nil, their corresponding executors are skipped.
-func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryMgr *aresmemory.ProductionMemoryManager) (*NewEvolutionComponents, error) {
+// When dag, rt, or memoryStore is nil, their corresponding executors are skipped.
+func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore) (*NewEvolutionComponents, error) {
 	// 1. Evidence Store — central logging for all runtime evidence.
 	evStore := evidence.NewMemoryStore()
 
@@ -90,17 +115,6 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		return nil, fmt.Errorf("register knowledge genome: %w", err)
 	}
 
-	// Planner genome — evolves planning strategy.
-	plannerGenome := genome.NewPlannerGenome(genome.PlannerGenomeConfig{
-		Strategy:      "balanced",
-		MaxSources:    10,
-		MinRelevance:  0.5,
-		EvidenceStore: evStore,
-	})
-	if err := genomeReg.Register(plannerGenome); err != nil {
-		return nil, fmt.Errorf("register planner genome: %w", err)
-	}
-
 	// Memory genome — evolves memory management parameters.
 	memoryGenome := genome.NewMemoryGenome(genome.MemoryGenomeConfig{
 		MaxHistory:            10,
@@ -120,6 +134,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		diff.NewSchedulerDiffer(),
 		diff.NewKnowledgeDiffer(),
 		diff.NewRecoveryDiffer(),
+		diff.NewMemoryDiffer(),
 	} {
 		if err := diffReg.Register(d); err != nil {
 			return nil, fmt.Errorf("register differ %s: %w", d.Name(), err)
@@ -128,6 +143,10 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 
 	// 4. Patch Registry — register all executors.
 	patchReg := patch.NewRegistry()
+
+	// Track the recovery executor so UpdateLiveDAG can replace its DAG
+	// reference later (Register cannot overwrite already-registered keys).
+	var recoveryExec *engine.RecoveryPatchExecutor
 
 	if dag != nil {
 		// Graph executor — for workflow and scheduler patches.
@@ -162,7 +181,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		_ = patchReg.Register("graph.scheduler", graphExec)
 
 		// Recovery executor.
-		recoveryExec := engine.NewRecoveryPatchExecutor(dag)
+		recoveryExec = engine.NewRecoveryPatchExecutor(dag)
 		_ = patchReg.RegisterComponent(recoveryExec)
 		_ = patchReg.Register("recovery.max_attempts", recoveryExec)
 		_ = patchReg.Register("recovery.replacement_agent", recoveryExec)
@@ -171,8 +190,15 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 
 	// Knowledge executor — works with or without a real runtime.
 	var knowledgeExec patch.RuntimeComponent
+	var knowledgeExecTyped *knowledgeruntime.KnowledgePatchExecutor
 	if rt != nil {
-		knowledgeExec = knowledgeruntime.NewKnowledgePatchExecutor(rt)
+		// Wire the KnowledgeRuntime to the PatchRegistry and EvidenceStore
+		// so that runtime patches can dynamically update knowledge config and
+		// evidence emitted during AKG execution is recorded centrally.
+		rt.WithPatchRegistry(patchReg).WithEvidenceStore(evStore)
+		ke := knowledgeruntime.NewKnowledgePatchExecutor(rt)
+		knowledgeExec = ke
+		knowledgeExecTyped = ke
 	} else {
 		// No runtime available — use a no-op executor for knowledge patches.
 		knowledgeExec = &noopKnowledgeExecutor{}
@@ -183,11 +209,11 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	_ = patchReg.Register("knowledge.planner.strategy", knowledgeExec)
 	_ = patchReg.Register("knowledge.planner.summarizer", knowledgeExec)
 
-	// Memory executor — wraps ProductionMemoryManager as a RuntimeComponent.
+	// Memory executor — wraps a MemoryConfigStore as a RuntimeComponent.
 	// Accepts patches for memory configuration (history depth, TTL, task limits).
-	// When memoryMgr is nil, the executor is skipped.
-	if memoryMgr != nil {
-		memoryExec := aresmemory.NewMemoryPatchExecutor(memoryMgr)
+	// When memoryStore is nil, the executor is skipped.
+	if memoryStore != nil {
+		memoryExec := aresmemory.NewMemoryPatchExecutor(memoryStore)
 		_ = patchReg.RegisterComponent(memoryExec)
 		_ = patchReg.Register("memory.config.max_history", memoryExec)
 		_ = patchReg.Register("memory.config.max_tasks", memoryExec)
@@ -204,12 +230,133 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		DiffReg:       diffReg,
 		PatchReg:      patchReg,
 		Coordinator:   coord,
+		LLMAdapter:    evoparent.NewLLMAdapter(),
+		recoveryExec:  recoveryExec,
+		knowledgeExec: knowledgeExecTyped,
 	}, nil
+}
+
+// UpdateLiveKnowledgeRuntime replaces the evolution system's isolated
+// KnowledgeRuntime with the agent's live KnowledgeRuntime, so knowledge
+// genome patches (ChangeBudget/ChangePlanner/ChangeReducer) are applied
+// to the actual runtime used by the agent's knowledge tools.
+//
+// It swaps the runtime into the existing KnowledgePatchExecutor in place via
+// SetRuntime. This is correct where re-registering would silently fail:
+// patch.Registry.Register cannot overwrite an already-registered component
+// key, so a naive RegisterComponent swap would be a no-op and knowledge
+// patches would keep hitting the bootstrap (placeholder) runtime.
+func (c *NewEvolutionComponents) UpdateLiveKnowledgeRuntime(rt *knowledgeruntime.KnowledgeRuntime) {
+	if rt == nil {
+		log.Warn("new evolution: UpdateLiveKnowledgeRuntime called with nil, keeping existing")
+		return
+	}
+	// Wire the live runtime to the patch registry and evidence store so that
+	// patches it proposes are recorded centrally.
+	rt.WithPatchRegistry(c.PatchReg).WithEvidenceStore(c.EvidenceStore)
+
+	// Common path: bootstrap created a real (typed) KnowledgePatchExecutor.
+	// Swap the live runtime in place — no re-registration needed.
+	if c.knowledgeExec != nil {
+		c.knowledgeExec.SetRuntime(rt)
+		log.Info("new evolution: live KnowledgeRuntime injected into executor")
+		return
+	}
+
+	// Fallback path: bootstrap built a no-op executor because rt was nil at
+	// bootstrap time. Replace the registrations so the live runtime takes
+	// effect. Replace overwrites the existing keys instead of failing silently.
+	liveExec := knowledgeruntime.NewKnowledgePatchExecutor(rt)
+	if err := c.PatchReg.ReplaceComponent(liveExec); err != nil {
+		log.Warn("new evolution: replace knowledge component failed", "error", err)
+		return
+	}
+	for _, key := range []string{
+		"knowledge.planner.max_results",
+		"knowledge.planner.reducer",
+		"knowledge.planner.strategy",
+		"knowledge.planner.summarizer",
+	} {
+		if err := c.PatchReg.Replace(key, liveExec); err != nil {
+			log.Warn("new evolution: replace knowledge key failed", "key", key, "error", err)
+		}
+	}
+	log.Info("new evolution: live KnowledgeRuntime injected into executors (replaced no-op)")
 }
 
 // ── noopKnowledgeExecutor ─────────────────────
 
-// noopKnowledgeExecutor is a no-op implementation of patch.RuntimeComponent
+// UpdateLiveDAG injects a live agent workflow DAG into the evolution system's
+// executors after bootstrap, replacing the synthetic placeholder DAG. This
+// ensures that workflow/scheduler/recovery patches generated by the genome
+// evolution system are applied to the real runtime DAG instead of synthetic
+// executors. Must be called after agents are created and their DAGs are
+// registered with the runtime manager.
+//
+// The DAG is used to rebuild the graph executor and recovery executor in the
+// patch registry. The genome registry's WorkflowGenome is NOT updated here
+// because it needs a full re-registration; the live DAG is used downstream
+// when the coordinator evaluates and applies patches.
+func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
+	if dag == nil {
+		return fmt.Errorf("live DAG must not be nil")
+	}
+	c.liveDAG = dag
+
+	// Rebuild graph executor with the live DAG's steps.
+	g, gErr := wfgraph.NewGraph("evolution-workflow")
+	if gErr != nil {
+		return fmt.Errorf("create evolution graph from live DAG: %w", gErr)
+	}
+	for _, step := range dag.Steps() {
+		fn, fErr := wfgraph.NewFuncNode(step.ID, func(_ context.Context, _ *wfgraph.State) error { return nil })
+		if fErr != nil {
+			return fmt.Errorf("create func node %s: %w", step.ID, fErr)
+		}
+		if _, nErr := g.Node(step.ID, fn); nErr != nil {
+			return fmt.Errorf("add node %s: %w", step.ID, nErr)
+		}
+	}
+	for _, step := range dag.Steps() {
+		for _, dep := range step.DependsOn {
+			if _, eErr := g.Edge(dep, step.ID); eErr != nil {
+				return fmt.Errorf("add edge %s→%s: %w", dep, step.ID, eErr)
+			}
+		}
+	}
+	if len(dag.Steps()) > 0 {
+		if _, sErr := g.Start(dag.Steps()[0].ID); sErr != nil {
+			return fmt.Errorf("set start node: %w", sErr)
+		}
+	}
+
+	graphExec := wfgraph.NewGraphPatchExecutor(g)
+	if err := c.PatchReg.RegisterComponent(graphExec); err != nil {
+		return fmt.Errorf("register graph executor component: %w", err)
+	}
+	if err := c.PatchReg.Register("graph.scheduler", graphExec); err != nil {
+		return fmt.Errorf("register graph.scheduler: %w", err)
+	}
+
+	// Rebuild recovery executor with the live DAG.
+	// Register fails on existing keys (bootstrap executors already registered),
+	// so we use SetDAG to update the existing executor's DAG reference instead.
+	if c.recoveryExec != nil {
+		c.recoveryExec.SetDAG(dag)
+	} else {
+		// Fallback: create a new executor if no existing one was stored.
+		recoveryExec := engine.NewRecoveryPatchExecutor(dag)
+		_ = c.PatchReg.RegisterComponent(recoveryExec)
+		_ = c.PatchReg.Register("recovery.max_attempts", recoveryExec)
+		_ = c.PatchReg.Register("recovery.replacement_agent", recoveryExec)
+		_ = c.PatchReg.Register("recovery.max_retries", recoveryExec)
+	}
+
+	log.Info("new evolution: live DAG injected into executors",
+		"steps", len(dag.Steps()))
+	return nil
+}
+
 // used when no KnowledgeRuntime is available. It accepts all knowledge patches
 // but does nothing — enabling the evolution pipeline to function without AKF.
 type noopKnowledgeExecutor struct{}
@@ -239,24 +386,41 @@ func (e *noopKnowledgeExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 // Ensure noopKnowledgeExecutor implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*noopKnowledgeExecutor)(nil)
 
-// buildKnowledgeRuntime creates a minimal KnowledgeRuntime for the evolution
-// system. This enables the KnowledgePatchExecutor to process knowledge/planner
-// patches meaningfully instead of being a no-op.
-func buildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
+// BuildKnowledgeRuntime creates a KnowledgeRuntime for the evolution
+// system with registered providers (memory, code) that work without an
+// external database. This enables the KnowledgePatchExecutor to process
+// knowledge/planner patches meaningfully instead of being a no-op.
+func BuildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
 	knowPipe := knowledge.NewKnowledgePipeline(
 		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
 		[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.6}},
 		[]knowledge.Validator{&pipeline.DefaultValidator{}},
 		[]knowledge.Summarizer{&pipeline.DefaultSummarizer{MaxSummaryLen: 200}},
 	)
+
+	reg := provider.NewProviderRegistry()
+	// Register lightweight providers that work without an external database.
+	// Memory provider — stores knowledge objects in-memory for the current session.
+	if err := reg.Register(provider_memory.New("memory-default", nil)); err != nil {
+		log.Warn("bootstrap: register memory provider for knowledge runtime", "error", err)
+	}
+	// Code provider — extracts knowledge from the local codebase (functions, types, etc.).
+	if cp, err := provider_code.New("codebase", "."); err == nil {
+		if err := reg.Register(cp); err != nil {
+			log.Warn("bootstrap: register code provider for knowledge runtime", "error", err)
+		}
+	} else {
+		log.Warn("bootstrap: create code provider for knowledge runtime", "error", err)
+	}
+
 	knowDiscovery := planner.NewSourceDiscovery(
-		provider.NewProviderRegistry(),
+		reg,
 		planner.NewQueryPlanner(),
 	)
 	return knowledgeruntime.New(
 		planner.NewKnowledgePlanner(),
 		knowDiscovery,
-		provider.NewProviderRegistry(),
+		reg,
 		knowPipe,
 		[]knowledgeruntime.Linker{&knowledgeruntime.DefaultLinker{}},
 		[]knowledgeruntime.Reducer{&knowledgeruntime.DefaultReducer{}},

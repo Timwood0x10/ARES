@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"golang.org/x/sync/errgroup"
 )
 
 // TaskSearcher is the minimal interface needed to query historical tasks.
@@ -62,7 +63,11 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 	objCh := make(chan *knowledge.KnowledgeObject, 64)
 	errCh := make(chan error, 1)
 
-	go func() {
+	// Use errgroup for structured concurrency so the streaming goroutine is
+	// ctx-cancelable. The errgroup is not waited on here; callers observe
+	// completion via objCh/errCh being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(objCh)
 		defer close(errCh)
 
@@ -71,10 +76,10 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			limit = 20
 		}
 
-		results, err := p.searcher.SearchSimilarTasks(ctx, intent.Goal, limit)
+		results, err := p.searcher.SearchSimilarTasks(gCtx, intent.Goal, limit)
 		if err != nil {
 			errCh <- fmt.Errorf("memory provider %q: %w", p.name, err)
-			return
+			return nil
 		}
 
 		for _, r := range results {
@@ -95,11 +100,12 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 
 			select {
 			case objCh <- obj:
-			case <-ctx.Done():
-				return
+			case <-gCtx.Done():
+				return nil
 			}
 		}
-	}()
+		return nil
+	})
 
 	return objCh, errCh
 }

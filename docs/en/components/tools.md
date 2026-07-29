@@ -442,12 +442,15 @@ type MyAgent struct {
 }
 
 func NewMyAgent() (*MyAgent, error) {
-    // Register built-in tools
-    resources.RegisterGeneralTools()
+    // Register built-in tools into a registry.
+    reg := resources.NewRegistry()
+    if err := builtintools.RegisterGeneralTools(reg); err != nil {
+        return nil, err
+    }
 
     // Create Agent toolset
     config := resources.CreateAgentToolConfigs.Worker()
-    agentTools := resources.NewAgentTools(config)
+    agentTools := resources.NewAgentTools(config, reg)
 
     return &MyAgent{tools: agentTools}, nil
 }

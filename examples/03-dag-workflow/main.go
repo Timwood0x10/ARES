@@ -1,5 +1,5 @@
 // DAG workflow — demonstrates graph-based workflow with linear and conditional execution,
-// plus the new DAG flexible features: conditional routing, controlled loops, subgraph nesting.
+// plus the unified Runner API: conditional branching, controlled loops, subgraph nesting.
 //
 // Run:
 //
@@ -11,237 +11,188 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/core/models"
-	wfengine "github.com/Timwood0x10/ares/internal/workflow/engine"
+	"github.com/Timwood0x10/ares/internal/workflow"
 )
-
-// ── Inline agent for engine package demos ──────────────────────────
-
-// demoAgent is a minimal Agent implementation used by the engine examples.
-type demoAgent struct {
-	id        string
-	agentType string
-	process   func(ctx context.Context, input any) (any, error)
-}
-
-func (a *demoAgent) ID() string                    { return a.id }
-func (a *demoAgent) Type() models.AgentType        { return models.AgentType(a.agentType) }
-func (a *demoAgent) Status() models.AgentStatus    { return models.AgentStatusReady }
-func (a *demoAgent) Start(_ context.Context) error { return nil }
-func (a *demoAgent) Stop(_ context.Context) error  { return nil }
-func (a *demoAgent) Process(ctx context.Context, input any) (any, error) {
-	return a.process(ctx, input)
-}
-func (a *demoAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {
-	return nil, nil // nolint: nilnil // stream not supported for demo agent
-}
 
 func main() {
 	ctx := context.Background()
 
-	// ── DAG Flexible Features (engine package) ──
-	engineDemo(ctx)
+	// ── Unified Runner API ──
+	condEdgeDemo(ctx)
+	linearDemo(ctx)
+	branchManyDemo(ctx)
 	loopDemo(ctx)
-	subgraphDemo(ctx)
 
 	fmt.Println("\n✅ All DAG workflow demos completed")
 }
 
-// engineDemo demonstrates Condition + Router using the engine package.
-func engineDemo(ctx context.Context) {
-	fmt.Println("\n═══ Condition + Router (engine package) ═══")
+// condEdgeDemo demonstrates conditional branching with ConditionExpr + WithConditionEvaluator.
+// ingest → gate → (pass if score >= 70) / (fail otherwise)
+func condEdgeDemo(ctx context.Context) {
+	fmt.Println("\n═══ Conditional Edge (unified Runner) ═══")
 
-	registry := wfengine.NewAgentRegistry()
-	executor := wfengine.NewExecutor(registry)
+	spec := workflow.NewWorkflow("wf-cond").
+		AddNode(workflow.NodeSpec{ID: "ingest", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "gate", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "pass", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "fail", AgentType: "echo"}).
+		// DataDependency: gate needs ingest's output
+		AddEdge(workflow.EdgeSpec{From: "ingest", To: "gate", Kind: workflow.EdgeDataDependency}).
+		// ControlFlow with condition: gate → pass if condition matches
+		AddEdge(workflow.EdgeSpec{From: "gate", To: "pass",
+			Kind: workflow.EdgeControlFlow, Branch: workflow.BranchOne, Group: "score",
+			Cond: &workflow.ConditionExpr{Type: "state", Value: "score"},
+		}).
+		// ControlFlow unconditional fallback: gate → fail
+		AddEdge(workflow.EdgeSpec{From: "gate", To: "fail",
+			Kind: workflow.EdgeControlFlow, Branch: workflow.BranchOne, Group: "score"}).
+		WithEntry("ingest")
 
-	// Register a simple agent that returns its input as-is.
-	_ = registry.Register("echo-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
-		return &demoAgent{
-			id:        "echo",
-			agentType: "echo-agent",
-			process: func(_ context.Context, input any) (any, error) {
-				return &models.RecommendResult{Items: []*models.RecommendItem{
-					{ItemID: "r1", Name: fmt.Sprintf("echo:%v", input), Description: "result", Price: 100},
-				}}, nil
-			},
-		}, nil
-	})
-
-	// Workflow: ingest → process (skip if mode=skip) → finalize
-	workflow := &wfengine.Workflow{
-		ID:   "wf-condition",
-		Name: "Conditional Skip Demo",
-		Steps: []*wfengine.Step{
-			{ID: "ingest", Name: "Ingest", AgentType: "echo-agent", Input: "data"},
-			{
-				ID: "process", Name: "Process", AgentType: "echo-agent",
-				DependsOn: []string{"ingest"},
-				Condition: func(vars map[string]any) bool {
-					mode, _ := vars["mode"].(string)
-					return mode != "skip"
-				},
-			},
-			{
-				ID: "finalize", Name: "Finalize", AgentType: "echo-agent",
-				DependsOn: []string{"process"},
-			},
+	// Ingest sets a score in the state.
+	// Gate reads it; the condition evaluator decides which branch fires.
+	fns := map[workflow.NodeID]workflow.ExecutableFunc{
+		"ingest": func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
+			return map[string]any{"score": 85}, nil
 		},
+		"gate": echoFn("gated"),
+		"pass": echoFn("passed"),
+		"fail": echoFn("failed"),
 	}
 
-	// Run with mode=skip — the "process" step should be skipped.
-	result, err := executor.Execute(ctx, workflow, "input")
+	// Condition evaluator reads state["score"] and checks threshold.
+	condEval := func(expr *workflow.ConditionExpr, view workflow.StateView) bool {
+		if expr.Type == "state" {
+			val, ok := view.Get(expr.Value)
+			if !ok {
+				return false
+			}
+			score, ok := val.(int)
+			return ok && score >= 70
+		}
+		return false
+	}
+
+	// RunWorkflow accepts WithConditionEvaluator via variadic opts.
+	result, err := workflow.RunWorkflow(ctx, spec, fns,
+		workflow.WithConditionEvaluator(condEval))
 	if err != nil {
-		log.Fatalf("engine demo failed: %v", err)
+		log.Fatalf("cond edge demo failed: %v", err)
 	}
-	for _, s := range result.Steps {
+
+	for _, ns := range result.NodeStates {
 		status := "✅"
-		if s.Status == wfengine.StepStatusSkipped {
-			status = "⏭️"
+		if ns.Status == workflow.NodeStatusUnreachable {
+			status = "⛔"
 		}
-		fmt.Printf("  %s %s (%s)\n", status, s.StepID, s.Status)
+		fmt.Printf("  %s %s (%v)\n", status, ns.ID, ns.Status)
 	}
-
-	// Re-run with mode=skip to demonstrate condition-triggered skip.
-	workflow.Variables = map[string]string{"mode": "skip"}
-	skipResult, skipErr := executor.Execute(ctx, workflow, "input")
-	if skipErr != nil {
-		log.Fatalf("engine demo (skip) failed: %v", skipErr)
-	}
-	fmt.Println("  --- With mode=skip ---")
-	for _, s := range skipResult.Steps {
-		status := "✅"
-		if s.Status == wfengine.StepStatusSkipped {
-			status = "⏭️"
-		}
-		fmt.Printf("  %s %s (%s)\n", status, s.StepID, s.Status)
-	}
-
-	// ── Dynamic Routing with Router callback ─────────────
-	fmt.Println("  --- Routing demo ---")
-
-	routerWorkflow := &wfengine.Workflow{
-		ID:   "wf-router",
-		Name: "Router Demo",
-		Steps: []*wfengine.Step{
-			{
-				ID: "classify", Name: "Classify", AgentType: "echo-agent",
-				Router: func(_ context.Context, _ string, _ map[string]any, output string) string {
-					// Route based on the step output — choose path_a or path_b.
-					// In a real system this decision would be driven by LLM output.
-					return "path_b"
-				},
-			},
-			{ID: "path_a", Name: "Path A", AgentType: "echo-agent", DependsOn: []string{"classify"}},
-			{ID: "path_b", Name: "Path B", AgentType: "echo-agent", DependsOn: []string{"classify"}},
-		},
-	}
-
-	rResult, rErr := executor.Execute(ctx, routerWorkflow, "classify me")
-	if rErr != nil {
-		log.Fatalf("router demo failed: %v", rErr)
-	}
-	for _, s := range rResult.Steps {
-		fmt.Printf("  [%s] status=%s\n", s.StepID, s.Status)
-	}
+	fmt.Printf("  → Conditional: gate→pass (score=85 >= 70)\n")
 }
 
-// loopDemo demonstrates controlled loops with LoopConfig.
-func loopDemo(ctx context.Context) {
-	fmt.Println("\n═══ Controlled Loop (engine package) ═══")
+// linearDemo demonstrates workflow with linear DataDependency chain.
+func linearDemo(ctx context.Context) {
+	fmt.Println("\n═══ Linear DAG (unified Runner) ═══")
 
-	registry := wfengine.NewAgentRegistry()
-	executor := wfengine.NewExecutor(registry)
+	spec := workflow.NewWorkflow("wf-linear").
+		AddNode(workflow.NodeSpec{ID: "a", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "b", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "c", AgentType: "echo"}).
+		AddEdge(workflow.EdgeSpec{From: "a", To: "b", Kind: workflow.EdgeDataDependency}).
+		AddEdge(workflow.EdgeSpec{From: "b", To: "c", Kind: workflow.EdgeDataDependency}).
+		WithEntry("a")
 
-	_ = registry.Register("loop-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
-		return &demoAgent{
-			id:        "loop",
-			agentType: "loop-agent",
-			process: func(_ context.Context, input any) (any, error) {
-				return &models.RecommendResult{Items: []*models.RecommendItem{
-					{ItemID: "loop", Name: fmt.Sprintf("iter:%v", input), Description: "loop", Price: 100},
-				}}, nil
-			},
-		}, nil
-	})
+	fns := map[workflow.NodeID]workflow.ExecutableFunc{
+		"a": echoFn("done a"),
+		"b": echoFn("done b"),
+		"c": echoFn("done c"),
+	}
 
-	// Workflow with a loop body that repeats up to 3 times.
-	workflow := &wfengine.Workflow{
-		ID:   "wf-loop",
-		Name: "Controlled Loop Demo",
-		Steps: []*wfengine.Step{
-			{ID: "collect", Name: "Collect", AgentType: "loop-agent"},
-			{ID: "process", Name: "Process", AgentType: "loop-agent", DependsOn: []string{"collect"}},
+	result, err := workflow.RunWorkflow(ctx, spec, fns)
+	if err != nil {
+		log.Fatalf("linear DAG demo failed: %v", err)
+	}
+
+	for _, ns := range result.NodeStates {
+		status := "✅"
+		if ns.Status == workflow.NodeStatusUnreachable {
+			status = "⛔"
+		}
+		fmt.Printf("  %s %s (%v)\n", status, ns.ID, ns.Status)
+	}
+	fmt.Printf("  → Linear DAG: a→b→c, all %d nodes completed\n", len(result.NodeStates))
+}
+
+// branchManyDemo demonstrates BranchMany — both outgoing edges are activated.
+func branchManyDemo(ctx context.Context) {
+	fmt.Println("\n═══ BranchMany (unified Runner) ═══")
+
+	spec := workflow.NewWorkflow("wf-branch").
+		AddNode(workflow.NodeSpec{ID: "classify", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "path_a", AgentType: "echo"}).
+		AddNode(workflow.NodeSpec{ID: "path_b", AgentType: "echo"}).
+		AddEdge(workflow.EdgeSpec{From: "classify", To: "path_a",
+			Kind: workflow.EdgeControlFlow, Branch: workflow.BranchMany}).
+		AddEdge(workflow.EdgeSpec{From: "classify", To: "path_b",
+			Kind: workflow.EdgeControlFlow, Branch: workflow.BranchMany}).
+		WithEntry("classify")
+
+	fns := map[workflow.NodeID]workflow.ExecutableFunc{
+		"classify": func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
+			return map[string]any{"decision": "both"}, nil
 		},
-		LoopConfig: &wfengine.LoopConfig{
+		"path_a": echoFn("went to A"),
+		"path_b": echoFn("went to B"),
+	}
+
+	result, err := workflow.RunWorkflow(ctx, spec, fns)
+	if err != nil {
+		log.Fatalf("branch demo failed: %v", err)
+	}
+
+	for _, ns := range result.NodeStates {
+		status := "✅"
+		if ns.Status == workflow.NodeStatusUnreachable {
+			status = "⛔"
+		}
+		fmt.Printf("  %s %s (%v)\n", status, ns.ID, ns.Status)
+	}
+	fmt.Printf("  → BranchMany: classify completed with decision=both\n")
+}
+
+// loopDemo demonstrates controlled loops with LoopSpec.
+func loopDemo(ctx context.Context) {
+	fmt.Println("\n═══ Controlled Loop (unified Runner) ═══")
+
+	spec := workflow.NewWorkflow("wf-loop").
+		AddNode(workflow.NodeSpec{ID: "process", AgentType: "echo"}).
+		WithEntry("process").
+		WithLoop(&workflow.LoopSpec{
 			MaxIterations: 3,
-			LoopSteps:     []string{"collect", "process"},
+			LoopNodes:     []workflow.NodeID{"process"},
+		})
+
+	iteration := 0
+	fns := map[workflow.NodeID]workflow.ExecutableFunc{
+		"process": func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
+			iteration++
+			return map[string]any{"iteration": iteration}, nil
 		},
 	}
 
-	result, err := executor.Execute(ctx, workflow, "loop input")
+	result, err := workflow.RunWorkflow(ctx, spec, fns)
 	if err != nil {
 		log.Fatalf("loop demo failed: %v", err)
 	}
 
-	fmt.Printf("  Total steps executed: %d (expected 6 = 3 iterations × 2 steps)\n", len(result.Steps))
-	for _, s := range result.Steps {
-		fmt.Printf("  [%s] status=%s\n", s.StepID, s.Status)
+	fmt.Printf("  Total iterations: %d (expected 3)\n", iteration)
+	for _, ns := range result.NodeStates {
+		fmt.Printf("  [%s] status=%v\n", ns.ID, ns.Status)
 	}
 }
 
-// subgraphDemo demonstrates sub-workflow nesting.
-func subgraphDemo(ctx context.Context) {
-	fmt.Println("\n═══ Subgraph Nesting (engine package) ═══")
-
-	registry := wfengine.NewAgentRegistry()
-	executor := wfengine.NewExecutor(registry)
-
-	_ = registry.Register("sub-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
-		return &demoAgent{
-			id:        "sub",
-			agentType: "sub-agent",
-			process: func(_ context.Context, input any) (any, error) {
-				return &models.RecommendResult{Items: []*models.RecommendItem{
-					{ItemID: "sub", Name: fmt.Sprintf("sub:%v", input), Description: "result", Price: 100},
-				}}, nil
-			},
-		}, nil
-	})
-
-	// Define a reusable sub-workflow for data validation.
-	subWorkflow := &wfengine.Workflow{
-		ID:   "sub-validate",
-		Name: "Data Validation",
-		Steps: []*wfengine.Step{
-			{ID: "check_format", Name: "Check Format", AgentType: "sub-agent"},
-			{ID: "enrich", Name: "Enrich Data", AgentType: "sub-agent", DependsOn: []string{"check_format"}},
-		},
-	}
-
-	// Parent workflow that uses the sub-workflow as a step.
-	parentWorkflow := &wfengine.Workflow{
-		ID:   "wf-parent",
-		Name: "Parent with Sub-workflow",
-		Steps: []*wfengine.Step{
-			{ID: "receive", Name: "Receive", AgentType: "sub-agent"},
-			{
-				ID:          "validate_step",
-				Name:        "Validate",
-				SubWorkflow: subWorkflow, // <-- nested sub-workflow
-				DependsOn:   []string{"receive"},
-			},
-			{ID: "respond", Name: "Respond", AgentType: "sub-agent", DependsOn: []string{"validate_step"}},
-		},
-	}
-
-	result, err := executor.Execute(ctx, parentWorkflow, "incoming data")
-	if err != nil {
-		log.Fatalf("subgraph demo failed: %v", err)
-	}
-
-	fmt.Printf("  Parent steps: %d (sub-workflow counts as 1 parent step)\n", len(result.Steps))
-	for _, s := range result.Steps {
-		fmt.Printf("  [%s] status=%s\n", s.StepID, s.Status)
+// echoFn returns an ExecutableFunc that records a message and returns it.
+func echoFn(msg string) workflow.ExecutableFunc {
+	return func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
+		return map[string]any{"output": msg}, nil
 	}
 }

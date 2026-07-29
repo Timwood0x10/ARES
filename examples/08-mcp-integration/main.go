@@ -1,7 +1,8 @@
 // MCP integration — demonstrates connecting to an MCP server and using its tools.
 //
-// This example builds the embedded MCP null server, connects via WithMCP(),
-// and uses its tools (echo) through the agent.
+// Builds the embedded MCP null server, then uses WithConfigFromEnv() for the
+// runtime and WithMCP() for the MCP connection. This shows how to compose
+// YAML-driven defaults with programmatic overrides.
 //
 // Run:
 //
@@ -32,15 +33,23 @@ func main() {
 	}
 	defer func() { _ = os.Remove(mcpBin) }()
 
-	// ── 2. Create Runtime with MCP server ──────────────────────
-	rt := sdk.MustNew(
-		sdk.WithOllama("llama3.2"),
-		sdk.WithMCP(sdk.MCPConn{
-			Name:    "null-server",
-			Command: mcpBin,
-			Args:    []string{"serve"},
-		}),
-	)
+	// ── 2. Load ares.yaml + MCP connection (compose) ───────────
+	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
+		return
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
+		return
+	}
+	opts = append(opts, sdk.WithMCP(sdk.MCPConn{
+		Name:    "null-server",
+		Command: mcpBin,
+		Args:    []string{"serve"},
+	}))
+	rt := sdk.NewRuntime(opts...)
 	defer rt.Close()
 
 	// ── 3. Create Agent ─────────────────────────────────────────

@@ -306,24 +306,45 @@ var (
 )
 
 // GlobalRegistry is the default tool registry.
+//
+// Deprecated: GlobalRegistry is no longer populated by production code after
+// the P2.1 DI change (no production caller invokes Register). Use a *Registry
+// instance created via NewRegistry and passed through dependency injection
+// instead.
 var GlobalRegistry = NewRegistry()
 
 // Register registers a tool in the global registry.
+//
+// Deprecated: Register operates on the empty GlobalRegistry. Use a *Registry
+// instance created via NewRegistry and passed through dependency injection
+// instead.
 func Register(tool Tool) error {
 	return GlobalRegistry.Register(tool)
 }
 
 // Get retrieves a tool from the global registry.
+//
+// Deprecated: Get operates on the empty GlobalRegistry. Use a *Registry
+// instance created via NewRegistry and passed through dependency injection
+// instead.
 func Get(name string) (Tool, bool) {
 	return GlobalRegistry.Get(name)
 }
 
 // List returns all tools from the global registry.
+//
+// Deprecated: List operates on the empty GlobalRegistry. Use a *Registry
+// instance created via NewRegistry and passed through dependency injection
+// instead.
 func List() []string {
 	return GlobalRegistry.List()
 }
 
 // Execute executes a tool from the global registry.
+//
+// Deprecated: Execute operates on the empty GlobalRegistry. Use a *Registry
+// instance created via NewRegistry and passed through dependency injection
+// instead.
 func Execute(ctx context.Context, name string, params map[string]interface{}) (Result, error) {
 	return GlobalRegistry.Execute(ctx, name, params)
 }

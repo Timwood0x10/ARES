@@ -2,6 +2,7 @@ package market
 
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -139,7 +140,7 @@ func (f *YahooFeed) Quote(ticker string) (Quote, error) {
 	}, nil
 }
 
-func (f *YahooFeed) Markets(_ string) ([]Market, error) {
+func (f *YahooFeed) Markets(_ context.Context, _ string) ([]Market, error) {
 	return nil, fmt.Errorf("not supported")
 }
 

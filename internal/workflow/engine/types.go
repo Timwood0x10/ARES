@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -231,24 +232,38 @@ func NewDAG(steps []*Step) (*DAG, error) {
 	}
 
 	for _, step := range steps {
-		// H4 fix: check for duplicate step IDs instead of silently overwriting.
-		if _, exists := dag.Nodes[step.ID]; exists {
-			return nil, fmt.Errorf("duplicate step ID %q: %w", step.ID, ErrDuplicateID)
+		// Normalize: trim spaces from step ID.
+		id := strings.TrimSpace(step.ID)
+		if id == "" {
+			return nil, fmt.Errorf("step ID must not be empty after trimming")
 		}
-		dag.Nodes[step.ID] = &DAGNode{
-			StepID:    step.ID,
+
+		// H4 fix: check for duplicate step IDs instead of silently overwriting.
+		if _, exists := dag.Nodes[id]; exists {
+			return nil, fmt.Errorf("duplicate step ID %q: %w", id, ErrDuplicateID)
+		}
+		dag.Nodes[id] = &DAGNode{
+			StepID:    id,
 			InDegree:  0,
 			OutDegree: 0,
 		}
 	}
 
 	for _, step := range steps {
+		id := strings.TrimSpace(step.ID)
+		// Deduplicate DependsOn.
+		seen := make(map[string]bool, len(step.DependsOn))
 		for _, dep := range step.DependsOn {
+			dep = strings.TrimSpace(dep)
+			if dep == "" || seen[dep] {
+				continue
+			}
+			seen[dep] = true
 			if _, ok := dag.Nodes[dep]; !ok {
 				return nil, ErrInvalidDependency
 			}
-			dag.Edges[dep] = append(dag.Edges[dep], step.ID)
-			dag.Nodes[step.ID].InDegree++
+			dag.Edges[dep] = append(dag.Edges[dep], id)
+			dag.Nodes[id].InDegree++
 			dag.Nodes[dep].OutDegree++
 		}
 	}

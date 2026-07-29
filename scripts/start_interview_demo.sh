@@ -57,11 +57,11 @@ log_info "Docker is running."
 log_step "Starting SearXNG"
 
 # Check if already running
-if docker ps --format '{{.Names}}' | grep -q 'goagent-searxng'; then
+if docker ps --format '{{.Names}}' | grep -q 'ARES-searxng'; then
   log_info "SearXNG container already running."
 else
   # Remove exited container if present
-  docker rm -f goagent-searxng 2>/dev/null || true
+  docker rm -f ARES-searxng 2>/dev/null || true
 
   log_info "Bringing up searxng service..."
   if ! docker compose up -d searxng 2>&1; then
@@ -76,13 +76,13 @@ log_info "Waiting for SearXNG container..."
 MAX_WAIT=30
 WAIT=0
 while [ $WAIT -lt $MAX_WAIT ]; do
-  STATUS=$(docker inspect -f '{{.State.Status}}' goagent-searxng 2>/dev/null || echo "missing")
+  STATUS=$(docker inspect -f '{{.State.Status}}' ARES-searxng 2>/dev/null || echo "missing")
   if [ "$STATUS" = "running" ]; then
     break
   elif [ "$STATUS" = "exited" ] || [ "$STATUS" = "dead" ]; then
     log_error "SearXNG container exited unexpectedly."
     log_error "Logs:"
-    docker logs --tail 10 goagent-searxng 2>&1 | sed 's/^/  /'
+    docker logs --tail 10 ARES-searxng 2>&1 | sed 's/^/  /'
     exit 1
   fi
   WAIT=$((WAIT + 1))

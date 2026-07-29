@@ -4,7 +4,7 @@
 
 ## 简介
 
-本文档介绍如何优化 GoAgent 框架的性能，包括数据库连接池、并发控制、缓存策略等方面的优化建议。
+本文档介绍如何优化 ARES 框架的性能，包括数据库连接池、并发控制、缓存策略等方面的优化建议。
 
 ## 数据库连接池优化
 
@@ -19,7 +19,7 @@ storage:
     port: 5433
     user: "postgres"
     password: "postgres"
-    database: "goagent"
+    database: "ARES"
     
     # 连接池配置
     pool:
@@ -635,4 +635,4 @@ func CheckDatabaseConnections() {
 
 **版本**: 1.0  
 **最后更新**: 2026-03-23  
-**维护者**: GoAgent 团队
+**维护者**: ARES 团队

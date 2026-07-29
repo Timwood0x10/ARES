@@ -5,6 +5,151 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-07-29
+
+> Public API layer + Unified DAG Runner + Context Compression Archive + Logic closure fixes.
+> Eight new public API packages expose agents, workflows, evolution, knowledge, embedding, experience, and graph — all without importing `internal/`. Plus self-healing evolution, YAML-driven distillation gating, brand assets, five new GA technical articles, the unified DAG workflow runner, the context compression archive module, and comprehensive reliability closure fixes across mutation idempotency, checkpoint/resume, and observability collectors.
+
+### Unified DAG Runner (`internal/workflow/`)
+
+The legacy `graph.Graph` + `engine.Workflow` dual runtime architecture has been unified into a single IR-based pipeline:
+
+- **WorkflowSpec IR** (`internal/workflow/spec.go`): Single intermediate representation with `NodeSpec`, `EdgeSpec`, `ConditionExpr`, `NodeID`, `LoopSpec`, `ScheduleSpec`, `RetrySpec`, `RecoverySpec`, `InterruptSpec`. Both `engine.Workflow` and `graph.Graph` compile to this IR.
+- **Unified Runner** (`internal/workflow/runner.go`): Single `Runner.Execute(ctx, spec)` — FIFO scheduler, condition evaluation, interrupt handling (HITL), recovery policies, loop support, runtime mutations via `PatchQueue`. `RunningWorkflow(ctx, spec, functions)` convenience entry point.
+- **Atomic Checkpoint/Resume** (`internal/workflow/runner_checkpoint.go`): `ResumeExecution()` with spec hash verification, scheduler state restoration, pending mutation re-queuing, pending interrupt restoration. Schema v3 with durable event sequences.
+- **BoundWorkflow Compiler** (`internal/workflow/compiler.go`, `binding.go`): `CompileFromEngine()` / `CompileFromEngineWithBindings()` / `CompileBound()` convert legacy `engine.Workflow` and `graph.Graph` to executable `BoundWorkflow` with predicate and router closures.
+- **Edge-Activation Scheduler** (`internal/workflow/scheduler.go`): Incremental topological scheduler with conditional edge evaluation, branch-skipping, JoinAll/JoinAny/Merge join policies, ready-queue with configurable selectors.
+- **ExecutionScope** (`internal/workflow/scope.go`): Transactional state (pending→committed), per-node status tracking, loop history, pending interrupts, event sequencing, `ExecutionScoped` collector.
+- **Typed Mutation / PatchQueue** (`internal/workflow/mutation.go`, `patch_queue.go`): Six typed mutations (add/remove/replace node, add/remove edge, update policy). `PatchQueue.Enqueue` with dedup, `Acknowledge` prefix commitment, `Restore` from checkpoint. Safe-point atomic application pipeline.
+- **Native Runner Events** (`internal/workflow/runner_events.go`): 12 typed event types (started/resumed/started/completed/failed/skipped/interrupt pending/resolved/checkpoint saved/mutation applied/completed/failed) with ordered sequencing via `RunnerEventSink`.
+- **Legacy Cleanup**: `CLOSURE_PLAN.md`, `ORPHAN_MODULES.md`, `ZERO_FRICTION_PLAN.md`, `outputs/DAG_UNIFIED_MERGE_*` plan documents deleted. `engine.NewDAG`/`NewExecutor`/`DynamicExecutor`/`Graph.execute` production paths fully replaced.
+- **466 files changed**, +37077 insertions, -17976 deletions across the DAG unification branch.
+
+### Context Compression Archive (`internal/ares_archive/`)
+
+A new archive module that preserves structured per-round records before compaction discards raw conversation events:
+
+- **RoundRecord** (`record.go`): Per-round structured entry with `Round`, `Action`, `Summary`, `Files` (P1 file-change list), `Verdict` (P2 pass/fail), `Decisions` (P0 architecture decisions), `Refs` (P3 identifier protection). JSON-serialized as `round_N.json`.
+- **File Archive Writer** (`writer.go`): Atomic write (temp file + rename), round rotation (configurable `maxRounds`), concurrent-safe. `NewFileArchiveWriter(dir, maxRounds)` creates the directory on demand.
+- **File Archive Reader** (`reader.go`): `Read(n)`, `List()`, `Search(query)` (case-insensitive substring across Summary/Decisions/Files/Refs), `Recall(query)` (human-readable multi-round output). Missing/empty directory handled gracefully.
+- **Identifiers Protection** (`identifiers.go`): Compiled regexes for P3-level protection — commit hashes (7+ hex), PR/issue numbers (`#\d+`), IP:port, owner/repo paths. These identifiers are preserved verbatim during extraction.
+- **Event Archive Sink** (`sink.go`): Bridges `ares_events.CompactableEventStore` to the archive writer via `ArchiveSink` interface. `BuildRoundRecord()` extracts RoundRecord from raw events.
+- **Compactable Store Integration** (`store.go`): `NewCompactableStoreWithArchive()` creates an archive-enabled event store. When enabled, each round's record is flushed before compaction discards the raw events.
+- **17 files**, +2896 lines new code.
+
+### SDK Layer (`sdk/`)
+
+- **Zero-Friction Agent SDK** (`sdk/sdk.go`, `options.go`, `config.go`, +450 lines net): `MustNew`/`New` runtime builder with functional options (`WithAgent`, `WithLLM`, `WithMCP`, `WithMemory`, `WithRAG`, `WithWorkflow`, etc.). Three execution modes: `RunAgent` (blocking), `RunStream` (streaming events), `RunTeam` (multi-agent orchestration).
+- **SDK RAG Support** (`sdk/rag.go`, `sdk/memory_wiring_test.go`, +350 lines): YAML-driven RAG configuration with `enable_rag`, `rag_top_k`, `rag_min_score`. Wiring tests verify the end-to-end configuration→runtime path.
+- **Runtime Evolution Config** (`sdk/evolution.go`): Strategy configuration for GA evolution within the SDK.
+
+### Logic Closure Fixes
+
+Comprehensive reliability closure across the runtime and evolution systems:
+
+- **Mutation Idempotency** (`internal/evolution/patch/patch.go`): `RuntimePatch` gains `ID string` field. `Registry.applied map[string]bool` tracks already-applied patches. `Apply()`/`ApplySet()` silently skip duplicate IDs — prevents re-delivery attacks.
+- **Resume Collector Persistence** (`internal/workflow/runner_checkpoint.go`): `CheckpointSnapshot.CollectorData` preserves route/tool/memory/interrupt/error history across crashes. `ExecutionCollector.Import()` restores data on resume. `ResumeExecution()` reuses the caller's `ExecutionCollector`.
+- **Sub-Workflow Collector Merge** (`internal/workflow/runner_execution.go`): Child workflow collector data merged back into parent scope via `parent.Collector().Import(child.Collector().Export())`.
+- **Graph.Node() Duplicate Detection** (`internal/workflow/graph/graph.go`): `Graph.Node()` now returns error on duplicate node IDs (previously silent overwrite). `Graph.Edge()` deduplicates (from, to, condition) pairs.
+- **WorkflowSpec Validator** (`internal/workflow/validate.go`): `validateDuplicateEdges()` checks for duplicate (From, To, Kind) edge triples.
+- **Normalization** (`internal/workflow/engine/types.go`, `mutable_dag.go`): `strings.TrimSpace` applied to step IDs in `NewDAG()` and `AddNode()`. `DependsOn` arrays deduplicated.
+- **Chaos Methods Return Error** (`internal/ares_runtime/manager_chaos.go`): 4 empty chaos stubs (`PartitionNetwork`, `CorruptMemory`, `DisconnectMCP`, `InjectLLMFailure`) now return `ErrNotImplemented` instead of silent nil.
+- **StartAgent Event Emission** (`internal/ares_runtime/manager_lifecycle.go`): `Start()` now emits `EventAgentStarted` for agents registered before `Start()`, closing the event-sourcing gap.
+- **Event Drop Counter** (`internal/ares_runtime/bus.go`, `internal/ares_events/memory_store.go`): `droppedEvents` atomic counters added to both `PluginBus` and `MemoryEventStore`. Drops are logged with event type and stream ID.
+- **PauseAgent State** (`internal/ares_runtime/manager_chaos.go`, `manager.go`): Independent `paused` flag added to `managedAgent`. `AgentInfo.Paused` exposed to callers. `NotifyAgentDead` and `healthCheck` skip paused agents.
+- **Patch Executor Locking** (`internal/workflow/graph/patcher.go`): `applyInsertNode`, `applyRemoveNode`, `applyReplaceNode` all now hold `graph.mu` while reading/writing `nodes` map — closing data race windows.
+- **argIdx++ Dead Code Removed** (`internal/ares_events/pg_store.go`): Removed the unused `argIdx++` after the last query parameter.
+- **Plugin Panic Structured Logging** (`internal/ares_runtime/bus.go`): Recovered panic values logged with `slog.Default().Error()`, including `panic_type` and `panic_value` fields.
+- **Runner Validate at Entry** (`internal/workflow/runner.go`): `validateExecutionInput()` calls `Validate(spec)` on every `Execute()` — catches duplicate nodes/edges before execution.
+- **FitnessGenome Wiring** (`internal/ares_evolution/genome_wiring_run.go`): `submitToCoordinator()` now queries registered genomes for `FitnessGenome` scores instead of hardcoding `Fitness: 0`. Falls back to 0.5 baseline.
+- **Dashboard LLM/MCP Wiring** (`api/bootstrap/bootstrap.go`): `dashboardMCPAdapter` and `dashboardLLMAdapter` bridge `*ares_mcp.MCPManager` and `*llm.Client` to the dashboard `MCPExecutor`/`LLMExecutor` interfaces. Previous TODO (expected 2026-09-30) resolved.
+- **LazyLoading Budget Clamping** (`internal/knowledge/runtime/runtime.go`): `cfg.LazyLoading=true` now clamps `budget.ForGraph` to 2000 tokens before the reduce step, producing a genuinely smaller graph.
+
+### Context Compression Archive (cont.)
+
+- **BuildRoundRecord** (`extract.go`): 578 lines — extracts round summary, action categorization, file changes, decisions, Refs from raw conversation events. Action inference handles Chinese keywords (修复/审查/设计/实现).
+- **In-Memory Demo** (`internal/ares_archive/`, `examples/13-archive-akg-chain/`): Full pipeline demo reading `.workbuddy/memory/` → processing through AKG knowledge pipeline → structured knowledge objects. Example README documents real capabilities and limitations.
+
+### Public API Layer (`api/`)
+
+Eight new public API packages, all re-exporting internal types via type aliases so external callers never import `internal/`. The public surface is now stable and documented in `api/README.md`.
+
+- **`api/agent`** (`agent.go`): `Agent` interface for creating, running, and streaming from agents. Re-exports `AgentType`, `AgentStatus`, `EventType`, `AgentEvent` from `internal/agents/base`. Built-in agent type constants (Leader, Top, Bottom, Destination, Food, Hotel, Itinerary).
+- **`api/workflow`** (`workflow.go`): Public workflow API re-exporting `Workflow`, `Step`, `NodeRouter`, `RetryPolicy`, `RecoveryPolicy`, `LoopConfig`, `InterruptConfig`, `ConditionFunc`, `AgentFactory`, `WorkflowResult`, `StepResult` from `internal/workflow/engine`.
+- **`api/evolution`** (`evolution.go`): Public strategy evolution API — `Strategy`, `Lineage`, `Population`, `DreamCycle` orchestrator, GA `Population`, mutation (`pubmutation`), and promotion subsystems. External modules can evolve strategies without coupling to `internal/ares_evolution`.
+- **`api/knowledge`** (`knowledge.go`, `service.go`): Public Knowledge Fabric API with `KnowledgeObject`, `KnowledgeLink`, `KnowledgeGraph`, `Provider` interface, and `Service` facade. Storage-agnostic: back it with PostgreSQL, SQLite, memory, or any custom provider.
+- **`api/graph`** (`graph.go`): Public DAG API re-exporting `Graph`, `Node`, `Edge`, `State`, `Result`, `Condition`, `NodeRouter`, and five scheduler types (`Default`, `Priority`, `ShortJob`, `RoundRobin`, `WeightedFair`).
+- **`api/embedding`** (`service.go`): `EmbeddingService` interface for vector embedding operations. Storage-agnostic — callers may back it with PostgreSQL, SQLite-vec, pgvector, or any vector database. `Embed()`, `EmbedWithPrefix()`, `BatchEmbed()` methods.
+- **`api/experience`** (`types.go`, `repository.go`): Public experience storage and memory distillation DTOs. `ExperienceRepository` interface lets external modules implement experience persistence with any vector database. Four `MemoryType` constants: `knowledge`, `preference`, `interaction`, `profile`.
+- **`api/service/workflow`** (`service.go`): Workflow service bridge updated to work with the new public workflow API.
+
+### Self-Healing Evolution System
+
+- **Self-Healing Coordinator** (`internal/evolution/coordinator/coordinator.go`): `Coordinator` now orchestrates self-healing evolution — detecting runtime regressions and automatically proposing corrective patches. +108 lines of coordinator logic.
+- **DAG Runtime Registration** (`internal/ares_runtime/manager.go`): Runtime manager gains +29 lines for DAG runtime registration, enabling evolution patches to target the DAG topology. `internal/ares_bootstrap/bootstrap.go` wires the new registration (+7 lines).
+- **Deployment Pipeline** (`internal/evolution/deployment/deployment.go`, +237 lines): Canary deployment strategy with automatic rollback on regression. Pipeline: `Coordinator.Apply(patch)` → `StagingRuntime.Apply(patch)` → `StagingRuntime.Evaluate()` → if pass: `LiveRuntime.Apply(patch)`; if fail: `StagingRuntime.Rollback()`. Default `Enabled=false`. Includes `deployment_test.go` (+161 lines).
+- **Diff Patch Generation Test** (`internal/ares_evolution/generate_diff_patches_test.go`, +235 lines): New test verifying the end-to-end diff patch generation pipeline.
+
+### YAML-Driven Distillation & Config Options
+
+- **Distillation Threshold** (`api/memory/distillation/distillation.go`, `internal/ares_memory/distillation/distiller.go`, `distiller_admin.go`): New YAML-driven `distillation_threshold` config. Semantics: `0` = ungated (fire every event), `N` = fire every N conversation rounds. Mirrors the v0.2.4 `examples/knowledge-base/config.yaml` convention. The `classifier.go` lost 16 lines (consolidated into distiller).
+- **New Config Options** (`internal/ares_config/config.go` +10 lines, `sdk/config.go` +165 lines, `sdk/options.go` +163 lines): New SDK config options for `max_history`, `max_sessions`, `enable_distillation`, `distillation_threshold`. All default to zero/false, falling back to component defaults. `sdk/config_test.go` (+275 lines) and `internal/ares_memory/distillation/distiller_test.go` (+157 lines) verify the new options.
+- **YAML-Driven Flags Example** (`examples/12-yaml-driven-flags/`): New example demonstrating all new YAML-driven config flags. `ares.yaml` (+19 lines) and `main.go` (+83 lines).
+
+### Brand Assets
+
+- **Logo Assets** (`assets/logo/`): Three new SVG logo assets — `ares-lockup.svg` (+23 lines), `ares-logo-board.svg` (+49 lines), `ares-mark.svg` (+19 lines).
+
+### Documentation
+
+- **Five New GA Technical Articles** (Chinese + English, +5087 lines total):
+  - `docs/articles/{en,zh}/ga-deep-dive.md` (+649/+647 lines): Deep-dive into GA internals.
+  - `docs/articles/{en,zh}/ga-genealogy.md` (+605/+599 lines): GA genealogy and lineage tracking.
+  - `docs/articles/{en,zh}/ga-promoter.md` (+451/+451 lines): GA promoter and promotion logic.
+  - `docs/articles/{en,zh}/ga-selection-benchmark.md` (+352/+350 lines): GA selection strategy benchmarks.
+  - `docs/articles/{en,zh}/ga-tiered-scorer.md` (+407/+405 lines): Tiered scorer architecture.
+- **`examples/10-ga-full-evolution/main.go`**: Refactored — 528 lines changed (simplification, -357 net lines after the article rewrite).
+
+### Examples
+
+- **`examples/21-ai-assistant-integration/main.go`** (+100 lines): New AI assistant integration example demonstrating the public `api/agent` API. Originally +91 lines in `ed62bae`, then +18 lines in `2225940` for self-healing wiring, then +3 lines in `4fa46d7` for cancel-on-error.
+- **`examples/22-evolution-blocks/main.go`** (+148 lines): New evolution blocks example demonstrating the public `api/evolution` API.
+- **`examples/README.md`** (+2 lines): Updated to list the two new examples.
+- **Memory Config Comments** (`examples/01-10/ares.yaml`, `cmd/monitor-live/config.yaml`): All 11 example `ares.yaml` files and the monitor-live config now include commented-out memory subsystem tuning fields (`max_history`, `max_sessions`, `enable_distillation`, `distillation_threshold`) pointing to `examples/12-yaml-driven-flags` for semantics. (+61 lines across 11 files.)
+
+### Refactor
+
+- **Embedding & Experience API Extraction** (`1d14107`): Extracted `api/embedding/service.go` (+77 lines) and `api/experience/{types.go,repository.go}` (+252 lines) to public packages. `internal/storage/postgres/embedding/service.go` simplified (-76 lines net). `internal/ares_memory/distillation/memory.go` refactored (-155 lines, +155 lines — moved logic to public API layer). `internal/ares_memory/embedding/pipeline.go` updated to use new public embedding API.
+- **Knowledge Service Adapter** (`internal/knowledge/service/adapter.go` +126 lines, `adapter_test.go` +90 lines): New adapter bridging the public `api/knowledge` API to the internal Knowledge Fabric runtime.
+- **Memory Patcher & Production Manager** (`internal/ares_memory/memory_patcher.go` +73 lines, `production_manager.go` +22 lines, `manager_impl.go` +22 lines): Memory patcher and production manager enhanced to support the new deployment pipeline.
+
+### Documentation Completion
+
+Closed the gap between code modules and article coverage. Seven new articles (Chinese + English) cover the previously undocumented modules:
+
+- **SDK Layer** (`docs/articles/{en,zh}/00-sdk-layer.md`): The `sdk/` package — `MustNew`/`New`, functional options, Agent/Team/Stream, config-driven setup. The user-facing main entry point, now documented.
+- **Knowledge Graph Build** (`docs/articles/{en,zh}/00-knowledge-graph-build.md`): The AKF Knowledge Fabric construction side — `Plan → Load → Link → Reduce → Graph` pipeline, four Linkers (Decision, Architecture, Similarity, Timeline), three Stores, lazy subgraphs. Article X only covered retrieval; this covers construction.
+- **Storage Layer** (`docs/articles/{en,zh}/00-storage-layer.md`): `internal/storage/postgres/` — Pool, CircuitBreaker, WriteBuffer, Timeout. 14,112 lines of foundational infrastructure, now documented as a coherent layer.
+- **LLM Client Layer** (`docs/articles/{en,zh}/00-llm-client-layer.md`): `internal/llm/` and `internal/llmservice/` — FailoverClient with rate-limit-aware cooldown, DeepSeek ReasoningContent support, multi-provider output adapters.
+- **Evaluation Framework** (`docs/articles/{en,zh}/00-evaluation-framework.md`): `internal/ares_eval/` — LLMJudgeEvaluator (1-10/1-5/pass-fail scales), DimensionJudgeEvaluator, Runner/Comparison/ConcurrentRunner. The fitness function for the GA engine.
+- **Config System** (`docs/articles/{en,zh}/00-config-system.md`): `internal/ares_config/config.go` and `sdk/config.go` — one YAML driving twelve modules, typed validation, path traversal protection, zero-value philosophy, v0.2.8 distillation threshold.
+- **Quant Trading Module** (`docs/articles/{en,zh}/00-quant-trading.md`): `internal/ares_quant/` — the honest assessment of the 9,768-line experiment. Market data sources, market making engine, portfolio metrics, research agents. Labeled as experiment; extraction to separate repo deferred.
+
+### Documentation Fixes
+
+- **XIII Numbering Conflict Resolved**: `flight-recorder-deep-dive` was renumbered from (XIII) to (XVI) to resolve the conflict with `bootstrap-api-deep-dive`. Both English and Chinese versions updated.
+- **Architecture Overview Series List Updated** (`docs/articles/{en,zh}/architecture-overview-deep-dive.md`): Series list extended from XII to include XIII (Bootstrap), XIV (Plugin), XV (MCP), XVI (Flight Recorder), plus the seven new `00-*` articles.
+- **README Article Index Updated** (`README.md`, `README_CN.md`): Added the seven new articles to the Articles section.
+
+### Stats
+
+- **8 commits** since v0.2.7 (code), plus 7 new documentation articles.
+- **62 code files changed**, +8710 insertions, -849 deletions.
+- **14 documentation files** added/updated (7 new articles × 2 languages, plus series list and README updates).
+- **0 build warnings, 0 vet warnings, 0 test failures.**
+
+
+
 ## [0.2.7] - 2026-07-13
 
 > This is a **major milestone release** — 270 commits, 99 features, 27 fixes, 74 refactors since v0.2.5.

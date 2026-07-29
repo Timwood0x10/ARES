@@ -24,6 +24,9 @@ type managedAgent struct {
 	// (via StopAgent or RestartAgent). Prevents NotifyAgentDead from
 	// triggering resurrection of an intentionally stopped agent.
 	stopped bool
+	// paused is set to true when PauseAgent is called. Distinguishes a
+	// chaos-engineering pause from an intentional permanent stop.
+	paused bool
 	// resurrecting is set to true when NotifyAgentDead triggers RestoreAgent.
 	// Prevents duplicate resurrection attempts for the same agent.
 	resurrecting bool
@@ -52,6 +55,10 @@ type Manager struct {
 	isStopped     bool
 	// chaosConfig stores per-agent fault injection settings for the arena.
 	chaosConfig map[string]chaosEntry
+	// dagStore maps agent IDs to their workflow DAGs.
+	// Used by the evolution system to apply workflow patches to the live DAG.
+	// The DAG type is any (engine.MutableDAG) to avoid importing workflow/engine.
+	dagStore map[string]any
 }
 
 // chaosSlowKey is the context key for SlowAgent delay duration.
@@ -88,9 +95,10 @@ func New(config *Config, eventStore ares_events.EventStore, memManager memory.Me
 		eventStore:  eventStore,
 		memManager:  memManager,
 		config:      config,
+		chaosConfig: make(map[string]chaosEntry),
+		dagStore:    make(map[string]any),
 		g:           g,
 		gctx:        gctx,
-		chaosConfig: make(map[string]chaosEntry),
 	}
 }
 
@@ -137,6 +145,28 @@ func (m *Manager) RegisterAgent(agent base.Agent, factory AgentFactory) {
 	}
 
 	log.Info("runtime: agent registered", "agent_id", id, "type", agent.Type())
+}
+
+// RegisterAgentDAG associates a workflow DAG with an agent.
+// The evolution system uses this to apply workflow patches to the live DAG.
+// dag is typically an *engine.MutableDAG, stored as any to avoid importing
+// workflow/engine at this layer.
+func (m *Manager) RegisterAgentDAG(agentID string, dag any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dagStore == nil {
+		m.dagStore = make(map[string]any)
+	}
+	m.dagStore[agentID] = dag
+	log.Info("runtime: DAG registered for agent", "agent_id", agentID)
+}
+
+// GetAgentDAG returns the workflow DAG associated with an agent, if any.
+func (m *Manager) GetAgentDAG(agentID string) (any, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	dag, ok := m.dagStore[agentID]
+	return dag, ok
 }
 
 // StartAgent launches an agent in a managed goroutine with panic recovery.
@@ -490,7 +520,7 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		factory, hasFactory := m.factories[agentID]
 		ma, hasAgent := m.agents[agentID]
 
-		if m.isStopped || (hasAgent && (ma.stopped || ma.resurrecting)) {
+		if m.isStopped || (hasAgent && (ma.stopped || ma.paused || ma.resurrecting)) {
 			return nil, false
 		}
 		if !hasFactory {

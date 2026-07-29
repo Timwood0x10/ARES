@@ -5,6 +5,11 @@ llm:
 
 memory:
   enabled: true
+  # max_history and max_sessions left at 0 → component defaults.
+  # max_history: 0
+  # max_sessions: 0
+  # enable_distillation: false   # set true to enable memory distillation
+  # distillation_threshold: 0    # 0 = ungated (fire every event); N = gate every N rounds
 
 tools:
   builtin: true

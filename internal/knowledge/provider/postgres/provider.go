@@ -11,6 +11,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"golang.org/x/sync/errgroup"
 )
 
 // PGProvider connects to an external PostgreSQL database and streams table rows
@@ -100,19 +101,23 @@ func (p *PGProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-cha
 	objCh := make(chan *knowledge.KnowledgeObject, 32)
 	errCh := make(chan error, 1)
 
-	go func() {
+	// Use errgroup for structured concurrency so the streaming goroutine is
+	// ctx-cancelable. The errgroup is not waited on here; callers observe
+	// completion via objCh/errCh being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(objCh)
 		defer close(errCh)
 
 		query, args, err := p.buildQuery(intent)
 		if err != nil {
 			errCh <- fmt.Errorf("build postgres query: %w", err)
-			return
+			return nil
 		}
-		rows, err := p.db.QueryContext(ctx, query, args...)
+		rows, err := p.db.QueryContext(gCtx, query, args...)
 		if err != nil {
 			errCh <- fmt.Errorf("postgres query: %w", err)
-			return
+			return nil
 		}
 		defer func() { _ = rows.Close() }()
 
@@ -128,15 +133,16 @@ func (p *PGProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-cha
 
 			select {
 			case objCh <- obj:
-			case <-ctx.Done():
-				return
+			case <-gCtx.Done():
+				return nil
 			}
 		}
 
 		if err := rows.Err(); err != nil {
 			errCh <- fmt.Errorf("rows iteration: %w", err)
 		}
-	}()
+		return nil
+	})
 
 	return objCh, errCh
 }

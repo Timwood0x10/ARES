@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,11 +18,12 @@ var (
 
 // MutableDAG extends DAG with thread-safe mutation operations.
 type MutableDAG struct {
-	mu      sync.RWMutex
-	dag     *DAG
-	steps   map[string]*Step
-	version uint64
-	hub     *GraphEventHub
+	mu            sync.RWMutex
+	dag           *DAG
+	steps         map[string]*Step
+	version       uint64
+	hub           *GraphEventHub
+	SchedulerType string // active scheduler type, set by genome evolution patches
 }
 
 // NewMutableDAG creates a MutableDAG from initial steps.
@@ -66,14 +68,17 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 	if step == nil {
 		return errors.New("step must not be nil")
 	}
-	if step.ID == "" {
+
+	// Normalize: trim spaces from step ID.
+	id := strings.TrimSpace(step.ID)
+	if id == "" {
 		return errors.New("step ID must not be empty")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.dag.Nodes[step.ID]; exists {
+	if _, exists := m.dag.Nodes[id]; exists {
 		return ErrDuplicateID
 	}
 
@@ -85,17 +90,24 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 	var addedEdges []addedEdge
 
 	// Add the node.
-	m.dag.Nodes[step.ID] = &DAGNode{
-		StepID:    step.ID,
+	m.dag.Nodes[id] = &DAGNode{
+		StepID:    id,
 		InDegree:  0,
 		OutDegree: 0,
 	}
 
-	// Process dependencies.
+	// Process dependencies, deduplicating DependsOn.
+	seen := make(map[string]bool, len(step.DependsOn))
 	for _, dep := range step.DependsOn {
+		dep = strings.TrimSpace(dep)
+		if dep == "" || seen[dep] {
+			continue
+		}
+		seen[dep] = true
+
 		if _, exists := m.dag.Nodes[dep]; !exists {
 			// Rollback: remove the node and any edges added so far.
-			delete(m.dag.Nodes, step.ID)
+			delete(m.dag.Nodes, id)
 			for _, e := range addedEdges {
 				m.removeEdgeFromSlice(e.from, e.to)
 				m.dag.Nodes[e.from].OutDegree--
@@ -105,9 +117,9 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 		}
 
 		// Check for cycle before adding edge.
-		if m.wouldCreateCycle(dep, step.ID) {
+		if m.wouldCreateCycle(dep, id) {
 			// Rollback.
-			delete(m.dag.Nodes, step.ID)
+			delete(m.dag.Nodes, id)
 			for _, e := range addedEdges {
 				m.removeEdgeFromSlice(e.from, e.to)
 				m.dag.Nodes[e.from].OutDegree--
@@ -116,19 +128,19 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 			return ErrCycleDetected
 		}
 
-		m.dag.Edges[dep] = append(m.dag.Edges[dep], step.ID)
-		m.dag.Nodes[step.ID].InDegree++
+		m.dag.Edges[dep] = append(m.dag.Edges[dep], id)
+		m.dag.Nodes[id].InDegree++
 		m.dag.Nodes[dep].OutDegree++
-		addedEdges = append(addedEdges, addedEdge{from: dep, to: step.ID})
+		addedEdges = append(addedEdges, addedEdge{from: dep, to: id})
 	}
 
-	m.steps[step.ID] = step
+	m.steps[id] = step
 	m.version++
 
 	m.hub.Publish(GraphEvent{
 		Change: GraphChange{
 			Type:      ChangeAddNode,
-			NodeID:    step.ID,
+			NodeID:    id,
 			Step:      step,
 			Timestamp: time.Now(),
 		},
@@ -317,11 +329,62 @@ func (m *MutableDAG) RemoveEdge(ctx context.Context, from, to string) error {
 }
 
 // GetExecutionOrder returns topological sort under read lock.
+// The ordering strategy is determined by SchedulerType:
+//   - "" or "*graph.DefaultScheduler": FIFO topological order (default)
+//   - other: random shuffle of ready nodes at each step
 func (m *MutableDAG) GetExecutionOrder() ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	return m.dag.GetExecutionOrder()
+	inDegree := make(map[string]int)
+	for node := range m.dag.Nodes {
+		inDegree[node] = m.dag.Nodes[node].InDegree
+	}
+
+	queue := make([]string, 0)
+	for node, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, node)
+		}
+	}
+
+	// When the scheduler type is not the default, shuffle the ready queue
+	// at each step to produce a different execution order. This is how
+	// genome evolution of scheduler config actually affects the agent's
+	// runtime behavior — the PatchChangeScheduler sets SchedulerType on
+	// the live DAG, and GetExecutionOrder reads it here.
+	useRandom := m.SchedulerType != "" && m.SchedulerType != "*graph.DefaultScheduler"
+
+	result := make([]string, 0, len(m.dag.Nodes))
+	for len(queue) > 0 {
+		var node string
+		if useRandom && len(queue) > 1 {
+			// Non-default scheduler: randomize selection order.
+			idx := int(time.Now().UnixNano()) % len(queue)
+			if idx < 0 {
+				idx = -idx
+			}
+			node = queue[idx]
+			queue = append(queue[:idx], queue[idx+1:]...)
+		} else {
+			node = queue[0]
+			queue = queue[1:]
+		}
+		result = append(result, node)
+
+		for _, neighbor := range m.dag.Edges[node] {
+			inDegree[neighbor]--
+			if inDegree[neighbor] == 0 {
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+
+	if len(result) != len(m.dag.Nodes) {
+		return nil, ErrCycleDetected
+	}
+
+	return result, nil
 }
 
 // Snapshot returns a deep copy of the current DAG.

@@ -23,7 +23,7 @@ jobs:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: goagent
+          POSTGRES_DB: ARES
         ports:
           - 5433:5432
         options: >-
@@ -53,7 +53,7 @@ jobs:
       - name: Create pgvector extension
         run: |
           for i in {1..30}; do
-            if docker exec postgres psql -U postgres -d goagent -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null; then
+            if docker exec postgres psql -U postgres -d ARES -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null; then
               echo "pgvector extension created successfully"
               break
             fi

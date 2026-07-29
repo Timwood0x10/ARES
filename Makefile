@@ -202,7 +202,7 @@ benchmark-profile:
 benchmark-save:
 	@echo "Running benchmarks and saving results..."
 	@mkdir -p benchmarks
-	@echo "# GoAgent Performance Benchmark Report" > benchmarks/benchmark_report.md
+	@echo "# ARES Performance Benchmark Report" > benchmarks/benchmark_report.md
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "**Date:** $(date +%Y-%m-%d)" >> benchmarks/benchmark_report.md
 	@echo "**Platform:** $(uname -s)/$(uname -m)" >> benchmarks/benchmark_report.md
@@ -248,7 +248,7 @@ demo-mcp:
 # ──────────────────────────────────────────────
 # Start all demo services (pgvector + optional embedding)
 demo-up:
-	@echo "Starting GoAgent demo services..."
+	@echo "Starting ARES demo services..."
 	@docker compose up -d
 	@echo "Waiting for PostgreSQL to be ready..."
 	@until docker compose exec -T postgres pg_isready -U postgres >/dev/null 2>&1; do \
@@ -256,7 +256,7 @@ demo-up:
 	done
 	@echo ""
 	@echo "✅ PostgreSQL is ready!"
-	@echo "   DSN: postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable"
+	@echo "   DSN: postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable"
 	@echo ""
 	@echo "Run tests:       make demo-test"
 	@echo "View logs:       make demo-logs"
@@ -265,14 +265,14 @@ demo-up:
 
 # Stop and clean up demo services
 demo-down:
-	@echo "Stopping GoAgent demo services..."
+	@echo "Stopping ARES demo services..."
 	@docker compose down -v
 	@echo "✅ Demo services stopped"
 
 # Run integration tests against demo services
 demo-test:
 	@echo "Running integration tests against demo services..."
-	@TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable" \
+	@TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable" \
 		go test -v -count=1 -timeout=180s ./internal/integration/... ./internal/events/... 2>&1 | \
 		grep -E "^(=== RUN|--- |ok |FAIL|--- FAIL|PASS|SKIP)"
 	@echo ""
@@ -285,10 +285,10 @@ demo-logs:
 # Quick smoke test — just verify the database connection
 demo-smoke:
 	@echo "Checking PostgreSQL connection..."
-	@docker compose exec postgres psql -U postgres -d goagent_test -c "SELECT '✅ pgvector OK' AS status, extname, extversion FROM pg_extension WHERE extname='vector';"
+	@docker compose exec postgres psql -U postgres -d ARES_test -c "SELECT '✅ pgvector OK' AS status, extname, extversion FROM pg_extension WHERE extname='vector';"
 	@echo ""
 	@echo "Checking test databases..."
-	@docker compose exec postgres psql -U postgres -c "\l goagent_test"
+	@docker compose exec postgres psql -U postgres -c "\l ARES_test"
 	@docker compose exec postgres psql -U postgres -c "\l testdb"
 
 # ──────────────────────────────────────────────

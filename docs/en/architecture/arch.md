@@ -1,4 +1,4 @@
-# GoAgent Architecture Design
+# ARES Architecture Design
 
 **Last Updated**: 2026-03-24
 
@@ -916,4 +916,4 @@ graph LR
 
 **Version**: 1.0  
 **Last Updated**: 2026-03-25  
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

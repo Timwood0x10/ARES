@@ -1,6 +1,6 @@
 # Multi-Agent Framework Deep Comparison
 
-> LangGraph vs CrewAI vs AutoGen vs Semantic Kernel vs GoAgent
+> LangGraph vs CrewAI vs AutoGen vs Semantic Kernel vs ARES
 
 ---
 
@@ -14,7 +14,7 @@
 | **CrewAI** | Crew + Agent + Task | Team collaboration metaphor, role-driven | Python |
 | **AutoGen/AG2** | ConversableAgent + GroupChat | Conversation-driven, message passing | Python |
 | **Semantic Kernel** | Kernel + Plugin + Function | Enterprise middleware, DI container | C#/Python/Java |
-| **GoAgent** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Go |
+| **ARES** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Go |
 
 ### 1.2 Architecture Diagrams
 
@@ -80,7 +80,7 @@ graph LR
     VectorStore --> Redis[Redis]
 ```
 
-#### GoAgent — Leader-Sub Agent with AHP
+#### ARES — Leader-Sub Agent with AHP
 
 ```mermaid
 graph TD
@@ -112,7 +112,7 @@ graph TD
 
 ### 2.1 DAG vs Graph vs Pipeline
 
-| Capability | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Capability | LangGraph | CrewAI | AutoGen | SK | ARES |
 |------------|-----------|--------|---------|-----|---------|
 | **DAG** | Native | Sequential/Hierarchical only | No (conversation flow) | Planners deprecated | Native |
 | **Conditional Edges** | `add_conditional_edges` | None | LLM selects speaker | Function calling | None (TODO) |
@@ -123,7 +123,7 @@ graph TD
 | **Topological Sort** | Implicit (graph traversal) | Not needed | Not needed | Not needed | Kahn's algorithm (explicit) |
 | **Cycle Detection** | Not needed (cycles allowed) | Not needed | Not needed | Not needed | DFS + recursion stack |
 
-#### GoAgent DAG — Cycle Detection
+#### ARES DAG — Cycle Detection
 
 ```go
 // internal/workflow/engine/types.go
@@ -166,7 +166,7 @@ graph.add_conditional_edges("llm", should_continue, {
 graph.add_edge("tools", "llm")  # cycle! tools → llm
 ```
 
-**Key Difference**: LangGraph allows cycles (agentic loop is core design). GoAgent's DAG explicitly forbids cycles (task orchestration scenario).
+**Key Difference**: LangGraph allows cycles (agentic loop is core design). ARES's DAG explicitly forbids cycles (task orchestration scenario).
 
 #### Workflow Execution Flow Comparison
 
@@ -181,7 +181,7 @@ graph TD
         LG5 -->|done| LG6[return result]
     end
 
-    subgraph "GoAgent DAG Execution"
+    subgraph "ARES DAG Execution"
         GA1[NewDAG: build + cycle check] --> GA2[GetExecutionOrder: Kahn's sort]
         GA2 --> GA3[runSteps: semaphore + goroutines]
         GA3 --> GA4[executeWithRetry: exponential backoff]
@@ -193,7 +193,7 @@ graph TD
 
 ### 2.2 State Management
 
-| Dimension | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **State Model** | TypedDict, partial updates | Implicit per-agent | Message history | Kernel DI container | `map[string]any` shared |
 | **Checkpointing** | Native (PostgresSaver, SQLite) | Flow uses SQLite | Not supported | Not supported | Not supported (TODO) |
@@ -236,7 +236,7 @@ sequenceDiagram
 
 ### 3.1 Collaboration Paradigms
 
-| Pattern | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Pattern | LangGraph | CrewAI | AutoGen | SK | ARES |
 |---------|-----------|--------|---------|-----|---------|
 | **Supervisor** | Subgraph composition | Hierarchical Process | GroupChatManager | GroupChatOrchestration | Leader Agent |
 | **Peer-to-peer** | Shared state nodes | Delegation | Pairwise chat | AgentTool | AHP point-to-point |
@@ -246,7 +246,7 @@ sequenceDiagram
 
 ### 3.2 Leader / Sub-Agent Pattern Comparison
 
-#### GoAgent — Deterministic Task Dispatch
+#### ARES — Deterministic Task Dispatch
 
 ```mermaid
 sequenceDiagram
@@ -317,7 +317,7 @@ sequenceDiagram
 ```
 
 **Key Differences**:
-- **GoAgent**: Deterministic dispatch (trigger keywords), deterministic aggregation (dedupe + sort)
+- **ARES**: Deterministic dispatch (trigger keywords), deterministic aggregation (dedupe + sort)
 - **CrewAI**: Manager agent dynamically assigns, more uncertain
 - **AutoGen**: LLM selects speaker, most uncertain but most flexible
 - **LangGraph**: Graph structure determines flow, most controllable
@@ -328,7 +328,7 @@ sequenceDiagram
 
 ### 4.1 Message Mechanisms
 
-| Dimension | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **Comm Style** | Shared state | Task output chaining | Message queue (chat history) | Shared Kernel | AHP Message Protocol |
 | **Message Format** | State dict | Task.output | ChatMessage | KernelArguments | AHPMessage |
@@ -382,7 +382,7 @@ type AHPMessage struct {
 }
 ```
 
-**GoAgent's Unique Advantage**: AHP is the only protocol with **heartbeat detection + dead letter queue + progress reporting**. Other frameworks' messaging is "send→receive" with no agent liveness detection or failure recovery.
+**ARES's Unique Advantage**: AHP is the only protocol with **heartbeat detection + dead letter queue + progress reporting**. Other frameworks' messaging is "send→receive" with no agent liveness detection or failure recovery.
 
 ---
 
@@ -390,7 +390,7 @@ type AHPMessage struct {
 
 ### 5.1 Error Handling Mechanisms
 
-| Mechanism | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Mechanism | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **Retry** | None built-in | `max_retry_limit=2` | None built-in | None built-in | 3x exponential backoff |
 | **Timeout** | None built-in | `max_execution_time` | None built-in | None built-in | Tiered (LLM 120s, DB 30s, Vector 10s) |
@@ -400,7 +400,7 @@ type AHPMessage struct {
 | **Dead Letter Queue** | Not supported | Not supported | Not supported | Not supported | DLQ + DLQProcessor |
 | **Human-in-the-loop** | `interrupt()` | `human_input=True` | `human_input_mode` | Filter | Not supported (TODO) |
 
-#### GoAgent — Layered Error Handling
+#### ARES — Layered Error Handling
 
 ```mermaid
 graph TD
@@ -419,7 +419,7 @@ graph TD
     K -->|no| M[Log + Alert]
 ```
 
-#### GoAgent Circuit Breaker
+#### ARES Circuit Breaker
 
 ```go
 // internal/storage/postgres/circuit_breaker.go
@@ -440,7 +440,7 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 }
 ```
 
-#### GoAgent Retry with Validation
+#### ARES Retry with Validation
 
 ```go
 // internal/agents/sub/executor.go
@@ -465,7 +465,7 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*
 
 ### 6.1 Memory Architecture
 
-| Dimension | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **Short-term** | Checkpointed state | Current run context | Message history | Kernel state | Session Memory (in-memory) |
 | **Long-term** | Store (PostgresStore etc.) | LanceDB vector store | mem0 integration | Vector store abstraction | PostgreSQL + pgvector |
@@ -475,7 +475,7 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*
 | **Distillation** | Not supported | Not supported | Not supported | Not supported | 6-step Pipeline |
 | **Multi-tenancy** | namespace tuple | Not supported | Not supported | Not supported | `SET LOCAL app.tenant_id` |
 
-#### GoAgent Memory Distillation Pipeline
+#### ARES Memory Distillation Pipeline
 
 ```mermaid
 graph LR
@@ -511,8 +511,8 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 ```
 
 **Key Differences**:
-- GoAgent's distillation is an **automated Pipeline** (rule-driven, nanosecond-level), CrewAI's memory is **LLM-assisted** (more accurate but slower and more expensive)
-- GoAgent has **multi-tenant isolation** (PostgreSQL `SET LOCAL`), others don't
+- ARES's distillation is an **automated Pipeline** (rule-driven, nanosecond-level), CrewAI's memory is **LLM-assisted** (more accurate but slower and more expensive)
+- ARES has **multi-tenant isolation** (PostgreSQL `SET LOCAL`), others don't
 - LangGraph's Store is most flexible (namespace tuple), but no automatic distillation
 
 ---
@@ -521,7 +521,7 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 
 ### 7.1 Production-Grade Features
 
-| Feature | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Feature | LangGraph | CrewAI | AutoGen | SK | ARES |
 |---------|-----------|--------|---------|-----|---------|
 | **Language** | Python | Python | Python | C#/Python/Java | Go |
 | **Concurrency** | asyncio | asyncio | asyncio | async/await | goroutine + channel |
@@ -536,7 +536,7 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 
 ### 7.2 Performance Characteristics
 
-| Dimension | LangGraph | CrewAI | AutoGen | SK | GoAgent |
+| Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **Startup Overhead** | High (LangChain ecosystem) | Medium | Medium | High (.NET DI) | Low (native Go) |
 | **State Serialization** | JsonPlusSerializer + AES | None | None | None | None (in-memory map) |
@@ -544,7 +544,7 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 | **Vector Search** | Store-dependent | LanceDB (local) | None | Multi-backend | pgvector (ivfflat index) |
 | **Embedding Cache** | Not supported | Not supported | Not supported | Not supported | Two-tier (Redis + memory) |
 
-#### GoAgent Protection Stack
+#### ARES Protection Stack
 
 ```mermaid
 graph TD
@@ -596,7 +596,7 @@ graph TD
     Q3 -->|No| Q4{Enterprise .NET integration?}
     Q4 -->|Yes| SK[Semantic Kernel]
     Q4 -->|No| Q5{High concurrency + distributed + production reliability?}
-    Q5 -->|Yes| GA[GoAgent]
+    Q5 -->|Yes| GA[ARES]
 ```
 
 ### 8.2 One-Line Positioning
@@ -607,15 +607,15 @@ graph TD
 | **CrewAI** | Team collaboration simulator | Rapid prototyping, role-play scenarios | Production, high determinism |
 | **AutoGen** | Conversational Agent framework | Code generation/execution, research dialogues | Production deployment, structured workflows |
 | **Semantic Kernel** | Enterprise AI middleware | .NET ecosystem, Azure, multi-language | Python-only teams, lightweight scenarios |
-| **GoAgent** | Distributed Agent orchestration engine | High concurrency, multi-tenancy, protocol-level communication | Scenarios needing cycles/state rollback |
+| **ARES** | Distributed Agent orchestration engine | High concurrency, multi-tenancy, protocol-level communication | Scenarios needing cycles/state rollback |
 
 ---
 
-## 9. GoAgent's Differentiators
+## 9. ARES's Differentiators
 
 ### 9.1 Unique Capabilities
 
-| Capability | Other Frameworks | GoAgent |
+| Capability | Other Frameworks | ARES |
 |------------|-----------------|---------|
 | **Heartbeat Detection** | None | HeartbeatMonitor (5s interval, 30s timeout) |
 | **Dead Letter Queue** | None | DLQ (max 10000) + DLQProcessor |
@@ -630,7 +630,7 @@ graph TD
 
 ### 9.2 Current Gaps (vs Competitors)
 
-| Gap | Competitor Advantage | GoAgent Status |
+| Gap | Competitor Advantage | ARES Status |
 |-----|---------------------|----------------|
 | **State Checkpoint** | LangGraph has PostgresSaver for breakpoint recovery | State in-memory, lost on crash |
 | **Cycle/Loop Support** | LangGraph native agentic loop | DAG forbids cycles |
@@ -643,7 +643,7 @@ graph TD
 
 ---
 
-## 10. Cross-Framework Borrowing: GoAgent v2
+## 10. Cross-Framework Borrowing: ARES v2
 
 ### 10.1 From LangGraph
 
@@ -677,14 +677,14 @@ graph TD
 
 | Trend | Description |
 |-------|-------------|
-| **Python → Multi-language** | SK already C#/Python/Java, GoAgent using Go is the right direction |
-| **Single-node → Distributed** | AutoGen 0.4 added DistributedAgentRuntime, GoAgent's AHP natively supports |
+| **Python → Multi-language** | SK already C#/Python/Java, ARES using Go is the right direction |
+| **Single-node → Distributed** | AutoGen 0.4 added DistributedAgentRuntime, ARES's AHP natively supports |
 | **Conversation → Workflow** | CrewAI expanded from Crew to Flow, LangGraph's graph model is the ultimate form |
-| **Memory becomes core** | All frameworks adding Memory, only GoAgent has automated distillation |
+| **Memory becomes core** | All frameworks adding Memory, only ARES has automated distillation |
 | **Observability becomes standard** | LangSmith binds LangGraph, open-source alternatives emerging |
 | **Security from optional to mandatory** | PII redaction, Prompt Injection detection, sandbox execution |
 
-### 11.2 GoAgent's Ecosystem Position
+### 11.2 ARES's Ecosystem Position
 
 ```mermaid
 quadrantChart
@@ -696,13 +696,13 @@ quadrantChart
     quadrant-3 "Simple + Low Determinism"
     quadrant-4 "Simple + High Determinism"
     LangGraph: [0.85, 0.80]
-    GoAgent: [0.75, 0.70]
+    ARES: [0.75, 0.70]
     AutoGen: [0.35, 0.65]
     CrewAI: [0.25, 0.40]
     Semantic Kernel: [0.60, 0.75]
 ```
 
-**GoAgent's differentiating position**: Leverage Go's concurrency advantages for **high-reliability, multi-tenant, protocol-level distributed Agent orchestration**. Don't compete with LangGraph on graph computation flexibility, don't compete with CrewAI on out-of-box experience, but play the **"production-grade reliability"** card.
+**ARES's differentiating position**: Leverage Go's concurrency advantages for **high-reliability, multi-tenant, protocol-level distributed Agent orchestration**. Don't compete with LangGraph on graph computation flexibility, don't compete with CrewAI on out-of-box experience, but play the **"production-grade reliability"** card.
 
 ---
 

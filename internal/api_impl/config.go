@@ -30,6 +30,19 @@ type ServiceConfig struct {
 	Dashboard struct {
 		Addr string `yaml:"addr"`
 	} `yaml:"dashboard"`
+	// Postgres is optional. When Enabled, the PostgreSQL-backed evaluation
+	// service is wired and mounted under /api/v1/eval/*. When disabled
+	// (default), the eval endpoints are simply not mounted — memory and
+	// retrieval services remain available via their in-memory backends.
+	Postgres struct {
+		Enabled  bool   `yaml:"enabled"`
+		Host     string `yaml:"host"`
+		Port     int    `yaml:"port"`
+		User     string `yaml:"user"`
+		Password string `yaml:"password"`
+		Database string `yaml:"database"`
+		SSLMode  string `yaml:"ssl_mode"`
+	} `yaml:"postgres"`
 }
 
 // LoadConfig reads configuration from a YAML file.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -39,6 +40,7 @@ type PluginBus struct {
 	started       bool
 	pluginTimeout time.Duration
 	logger        *slog.Logger
+	droppedEvents atomic.Int64
 }
 
 // NewPluginBus creates a PluginBus with the given options.
@@ -152,7 +154,7 @@ func (b *PluginBus) RegisterHook(name string, hook WorkflowHook) {
 // BeforeStep calls all registered hooks before a step executes.
 // Each hook is invoked sequentially. If a hook fails (error, panic, or
 // timeout), the error is logged and the remaining hooks still execute.
-// This matches the DynamicExecutor's contract (log-and-continue).
+// Hooks are observational and therefore use a log-and-continue contract.
 func (b *PluginBus) BeforeStep(ctx context.Context, executionID string, step *Step) error {
 	b.mu.RLock()
 	hooks := make([]namedHook, len(b.hooks))
@@ -227,7 +229,9 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_ev
 		case <-ctx.Done():
 			return
 		default:
-			// Drop event if buffer full.
+			b.droppedEvents.Add(1)
+			b.logger.Warn("plugin bus: event dropped, subscriber buffer full",
+				"event_type", evt.Type, "stream_id", evt.StreamID)
 		}
 	}
 }
@@ -304,6 +308,11 @@ func invokeWithTimeout(ctx context.Context, timeout time.Duration, pluginName st
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
+				slog.Default().Error("plugin panicked",
+					"plugin", pluginName,
+					"panic_value", fmt.Sprintf("%v", r),
+					"panic_type", fmt.Sprintf("%T", r),
+				)
 				done <- &PluginError{
 					PluginName: pluginName,
 					Err:        ErrPluginPanic,

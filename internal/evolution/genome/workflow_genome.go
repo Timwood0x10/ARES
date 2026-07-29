@@ -89,6 +89,17 @@ func NewWorkflowGenome(dag *engine.MutableDAG, config WorkflowGenomeConfig) *Wor
 	}
 }
 
+// SetDAG replaces the genome's DAG reference with a live one. This is
+// called after agents are created and their DAGs are registered with the
+// runtime manager, so the genome evolves the real workflow topology
+// instead of the bootstrap placeholder.
+func (g *WorkflowGenome) SetDAG(dag *engine.MutableDAG) {
+	if dag == nil {
+		return
+	}
+	g.dag = dag
+}
+
 // Name returns the genome identifier.
 func (g *WorkflowGenome) Name() string { return WorkflowGenomeName }
 

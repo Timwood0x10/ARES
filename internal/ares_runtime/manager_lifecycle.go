@@ -65,6 +65,16 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.launchAgentGoroutine(l.ctx, l.id, l.agent)
 	}
 
+	// Emit EventAgentStarted for agents that were registered before Start().
+	// Without this, the event store has no record of these agents starting and
+	// any downstream event consumer (evolution, flight recorder) sees a gap.
+	for _, l := range launches {
+		m.emitEvent(m.gctx, l.id, ares_events.EventAgentStarted, map[string]any{
+			FieldAgentID: l.id,
+			FieldType:    string(l.agent.Type()),
+		})
+	}
+
 	// Background health check loop.
 	m.g.Go(func() error {
 		ticker := time.NewTicker(m.config.HealthCheckInterval)
@@ -346,7 +356,7 @@ func (m *Manager) healthCheck() {
 	m.mu.RLock()
 	checks := make([]agentCheck, 0, len(m.agents))
 	for id, ma := range m.agents {
-		if ma.stopped {
+		if ma.stopped || ma.paused {
 			continue
 		}
 		checks = append(checks, agentCheck{

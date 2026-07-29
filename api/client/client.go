@@ -1,4 +1,4 @@
-// Package client provides a library-style entry point for embedding GoAgent
+// Package client provides a library-style entry point for embedding ARES
 // into other Go applications. It exposes modular service accessors via api/core
 // interfaces, with implementations injected at construction time.
 //
@@ -18,7 +18,7 @@ import (
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
 )
 
-// Client provides a unified client interface for all GoAgent modules.
+// Client provides a unified client interface for all ARES modules.
 // It is created via NewClient and owns the lifecycle of all child services.
 type Client struct {
 	agentService     core.AgentService
@@ -32,7 +32,7 @@ type Client struct {
 	closed           bool
 }
 
-// Config holds configuration for the GoAgent client.
+// Config holds configuration for the ARES client.
 // Service fields accept pre-built implementations (via api/bootstrap)
 // or nil to skip the module.
 type Config struct {
@@ -44,7 +44,7 @@ type Config struct {
 	Workflow   *workflowSvc.Config
 }
 
-// NewClient creates a new GoAgent client instance with the given configuration.
+// NewClient creates a new ARES client instance with the given configuration.
 // Each service in Config is already fully constructed — this function does not
 // import internal/ packages. Use api/bootstrap to build services.
 //

@@ -614,12 +614,15 @@ type MyAgent struct {
 }
 
 func NewMyAgent() (*MyAgent, error) {
-    // 注册内置工具
-    resources.RegisterGeneralTools()
+    // 将内置工具注册进一个 registry。
+    reg := resources.NewRegistry()
+    if err := builtintools.RegisterGeneralTools(reg); err != nil {
+        return nil, err
+    }
 
     // 创建 Agent 工具集
     config := resources.CreateAgentToolConfigs.Worker()
-    agentTools := resources.NewAgentTools(config)
+    agentTools := resources.NewAgentTools(config, reg)
 
     return &MyAgent{tools: agentTools}, nil
 }

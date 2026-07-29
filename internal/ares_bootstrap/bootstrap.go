@@ -3,19 +3,20 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/evolution/deployment"
+	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -33,7 +34,17 @@ type Components struct {
 	Runtime      *ares_runtime.Manager
 	Memory       ares_memory.MemoryManager
 	EventStore   ares_events.EventStore
-	wg           sync.WaitGroup
+	Distillation *aresexp.DistillationService
+	// Discovery holds the optional service discovery engine. It is nil when
+	// cfg.Discovery.Enabled is false (the default), preserving prior behavior.
+	Discovery *DiscoveryComponents
+	// KnowledgeRuntime is the shared knowledge runtime used by the evolution
+	// system's KnowledgePatchExecutor and the agent's AKF tools. It is
+	// created once during bootstrap and reused so that knowledge genome
+	// patches (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual
+	// runtime used by the agent's knowledge tools.
+	KnowledgeRuntime *knowledgeruntime.KnowledgeRuntime
+	wg               sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -87,7 +98,22 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	comp.Runtime = rt
 
 	// 3. Memory
-	mem, err := ProvideMemory(nil)
+	// Build the memory config from defaults, then propagate RAG settings from
+	// the YAML config so the closed-loop (compression + AKG + memory distill)
+	// activates when the operator opts in via memory.enable_rag. RAGTopK /
+	// RAGMinScore keep their DefaultMemoryConfig values when the YAML leaves
+	// them zero, satisfying validate()'s positive-RAGTopK invariant.
+	memCfg := ares_memory.DefaultMemoryConfig()
+	if cfg.Memory.EnableRAG {
+		memCfg.EnableRAG = true
+		if cfg.Memory.RAGTopK > 0 {
+			memCfg.RAGTopK = cfg.Memory.RAGTopK
+		}
+		if cfg.Memory.RAGMinScore > 0 {
+			memCfg.RAGMinScore = cfg.Memory.RAGMinScore
+		}
+	}
+	mem, err := ProvideMemory(memCfg)
 	if err != nil {
 		runCleanups()
 		return nil, err
@@ -119,6 +145,13 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		comp.LLM = llm
 	}
 
+	// 5b + 5c. Experience distillation + auto-distill on task completion
+	// (Track A). Wired conditionally (PG + embedding); failures are non-fatal.
+	// embClient is reused by wireRetrievers to build the MemoryRetriever, so
+	// the distillation and RAG retrieval paths share one embedding client.
+	guidanceProvider, embClient := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
+	subscribeDistillationEvents(ctx, &comp)
+
 	// 6. Dashboard
 	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr)
 	if err != nil {
@@ -149,6 +182,11 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
 	// Always created; uses a minimal MutableDAG so workflow/scheduler/recovery
 	// genomes have something to evolve (not an empty graph).
+	//
+	// Closure fix (Step 2): pass the LIVE memory manager (comp.Memory) so
+	// evolution patches mutate the real agent's config, not an isolated
+	// Minimal copy. comp.Memory is a *memoryManager which implements
+	// MemoryConfigStore (GetConfig/Lock/Unlock).
 	dagSteps := []*engine.Step{
 		{ID: "input", Name: "Input", AgentType: "parser", Input: "parse input"},
 		{ID: dagStepProcess, Name: "Process", AgentType: "processor", Input: dagStepProcess, DependsOn: []string{"input"}},
@@ -159,81 +197,86 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		runCleanups()
 		return nil, fmt.Errorf("create mutable dag: %w", dagErr)
 	}
-	newEvol, err := ProvideNewEvolution(dag, buildKnowledgeRuntime(), buildMemoryManager())
+
+	// Type-assert comp.Memory to MemoryConfigStore. Both *memoryManager and
+	// *ProductionMemoryManager implement MemoryConfigStore. If the assertion
+	// fails (should not happen), fall back to the minimal manager.
+	var liveMemoryStore ares_memory.MemoryConfigStore
+	if store, ok := comp.Memory.(ares_memory.MemoryConfigStore); ok {
+		liveMemoryStore = store
+	} else {
+		// Defensive fallback — preserves prior behavior if a future
+		// custom MemoryManager does not implement MemoryConfigStore.
+		liveMemoryStore = buildMemoryManager()
+	}
+
+	// Create the KnowledgeRuntime once and share it between the evolution
+	// system and the agent's AKF tools so knowledge genome patches affect
+	// the actual runtime used by the agent's knowledge tools.
+	knowRt := BuildKnowledgeRuntime()
+	comp.KnowledgeRuntime = knowRt
+
+	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
+	// KnowledgeRetriever (AKG entries) into the MemoryManager so every
+	// BuildContext / BuildPromptMessages call augments the prompt with
+	// retrieved context when config.EnableRAG is true. Best-effort: skips
+	// retrievers whose dependencies (embedding client, experience repo, AKG
+	// runtime) are unavailable, so minimal configs are unaffected.
+	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt)
+
+	newEvol, err := ProvideNewEvolution(dag, knowRt, liveMemoryStore)
 	if err != nil {
 		runCleanups()
 		return nil, err
 	}
 	comp.NewEvolution = newEvol
 
-	// 9. Wire the GA population adapter so evolution actually runs and its
-	// best strategy is deployed to the runtime. The GA engine is built
-	// independently of the old evolution system: in the default configuration
-	// (no EventStore/ExpRepo, so comp.Evolution is nil) it builds its own
-	// scheduler driven by the always-present LLM callback registry, so the
-	// bridge no longer depends on the old system. When the old system exists,
-	// the GA adapter is attached to its scheduler instead (preserving prior
-	// behavior). The deployed strategy is persisted to an in-memory store so
-	// the live agent can consume it.
-	memStore := evolution.NewMemoryStrategyStore(0)
-	newEvol.StrategyStore = memStore
-
-	base := &mutation.Strategy{
-		ID:     "bootstrap-root",
-		Params: map[string]any{"temperature": 0.7, "max_tokens": 4096},
+	// Track C (C-Safe): wire the DeploymentPipeline into the Coordinator so
+	// generated patches are safely promoted to the live runtime. Gated by
+	// cfg.Evolution.Deployment.Enabled — when disabled, the Coordinator falls
+	// back to applying patches directly (pre-deployment behavior). The live
+	// runtime is the real executor registry, so memory patches are written to
+	// the live comp.Memory; workflow/scheduler/recovery/knowledge patches hit
+	// their (still synthetic) executors — closing those requires a live DAG
+	// supply chain (Track C-Risky, deferred).
+	if cfg.Evolution.Deployment.Enabled {
+		dp := deployment.NewDeploymentPipeline(
+			cfg.Evolution.Deployment,
+			&deploymentStagingRuntime{reg: newEvol.PatchReg},
+			&deploymentLiveRuntime{reg: newEvol.PatchReg},
+		)
+		newEvol.Coordinator.SetDeployer(&deploymentAdapter{dp: dp})
+		log.Info("bootstrap: deployment pipeline wired into coordinator", "enabled", true)
 	}
-	gaCfg := evolution.DefaultSystemConfig()
-	gaCfg.EnableDreamCycle = false
-	gaCfg.EnableScheduler = comp.Evolution == nil
-	gaCfg.Callbacks = comp.LLM.CallbackReg
-	gaCfg.StrategyStore = memStore
-	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
 
-	wired, wErr := evolution.NewWiredEvolutionSystem(base, gaCfg)
-	if wErr != nil {
+	// Register the minimal DAG with the runtime manager so the evolution
+	// system can apply workflow patches to the live DAG (v0.5.0 DAG reflux).
+	// When a real agent DAG is registered later, it replaces this minimal one.
+	if comp.Runtime != nil && dag != nil {
+		comp.Runtime.RegisterAgentDAG("evolution", dag)
+	}
+
+	// 9. Wire the GA population adapter, coordinator bridge, and background
+	// evolution ticker (extracted to wireGAEvolution to keep Bootstrap's
+	// cyclomatic complexity within lint limits).
+	if err := wireGAEvolution(ctx, cfg, &comp, newEvol, guidanceProvider); err != nil {
 		runCleanups()
-		return nil, fmt.Errorf("wire GA population adapter: %w", wErr)
+		return nil, err
 	}
 
-	// Attach the coordinator bridge to the population adapter.
-	popAdapter := wired.PopAdapter
-	evolution.WithAdapterCoordinator(
-		newEvol.Coordinator,
-		newEvol.DiffReg,
-		newEvol.GenomeReg,
-	)(popAdapter)
-
-	// In the full configuration, attach the GA adapter to the existing
-	// old-system scheduler; otherwise the GA system's own scheduler
-	// (registered above on the LLM callback registry) drives it.
-	if comp.Evolution != nil && comp.Evolution.Scheduler != nil {
-		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok {
-			sched.SetAdapter(popAdapter)
-		}
-	}
-
-	// Start a background ticker that triggers evolution even when no
-	// agents are running (event-driven scheduler won't fire without agents).
-	// This ensures the GA continuously evolves over time.
-	{
-		comp.wg.Add(1)
-		go func() {
-			ctx := ctx
-			evoTicker := time.NewTicker(5 * time.Minute)
-			defer evoTicker.Stop()
-			defer comp.wg.Done()
-			for {
-				select {
-				case <-evoTicker.C:
-					if err := popAdapter.Run(ctx); err != nil {
-						log.WarnContext(ctx, "[bootstrap] ticker-triggered evolution failed",
-							"error", err)
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+	// 10. Optional service discovery (opt-in via config.Discovery.Enabled).
+	// When disabled, ProvideDiscovery returns ErrDiscoveryDisabled and the
+	// discovery packages remain unused, preserving prior behavior.
+	discoveryComp, err := ProvideDiscovery(ctx, &cfg.Discovery)
+	switch {
+	case errors.Is(err, ErrDiscoveryDisabled):
+		// Discovery is disabled — not an error, just no-op.
+		comp.Discovery = nil
+	case err != nil:
+		runCleanups()
+		return nil, fmt.Errorf("bootstrap: wire discovery: %w", err)
+	default:
+		comp.Discovery = discoveryComp
 	}
 
 	return &comp, nil

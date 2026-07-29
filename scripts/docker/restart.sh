@@ -41,7 +41,7 @@ cd "$ROOT" && go run ./cmd/setup_test_db
 
 echo ""
 echo "=== Running production database migrations ==="
-export DB_NAME="goagent"
+export DB_NAME="ARES"
 cd "$ROOT" && go run ./cmd/migrate_db
 
 if [ -n "$SAVE_PATH" ]; then
@@ -53,10 +53,10 @@ fi
 echo ""
 echo "✅ All services are up and databases are migrated."
 echo ""
-echo "   Test DB:      postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable"
-echo "   Production DB: postgres://postgres:postgres@localhost:5433/goagent?sslmode=disable"
+echo "   Test DB:      postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable"
+echo "   Production DB: postgres://postgres:postgres@localhost:5433/ARES?sslmode=disable"
 echo ""
-echo "   Run tests:    export TEST_POSTGRES_DSN=\"postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable\""
+echo "   Run tests:    export TEST_POSTGRES_DSN=\"postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable\""
 echo "                 make demo-test"
 echo ""
 echo "   View logs:    docker compose -f $ROOT/docker-compose.yml logs -f"

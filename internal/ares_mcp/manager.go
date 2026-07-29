@@ -290,10 +290,14 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 
 		fullName := mcpTool.Name()
 		if err := m.registry.Register(mcpTool); err != nil {
-			// Conflict detected — warn but continue.
-			log.Warn("mcp: tool name conflict, skipping",
+			// Conflict detected — builtin tool wins, skip the MCP tool. Log
+			// the tool name and the winning source so the conflict is
+			// observable. The conflict resolution policy (builtin wins) is
+			// unchanged.
+			log.Warn("mcp: tool name conflict, keeping builtin tool and skipping MCP tool",
 				"tool", fullName,
 				"server", mc.config.Name,
+				"winner", "builtin",
 				"error", err,
 			)
 			continue

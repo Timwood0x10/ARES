@@ -1,4 +1,4 @@
-// Package client provides configuration loading utilities for the GoAgent client.
+// Package client provides configuration loading utilities for the ARES client.
 package client
 
 import (
@@ -180,7 +180,7 @@ func NewConfigLoader(opts ...ConfigLoaderOption) *ConfigLoader {
 			"./config/server.yaml",
 			"./examples/simple_newapi/config/server.yaml",
 		},
-		envPrefix: "GOAGENT",
+		envPrefix: "ARES",
 	}
 
 	for _, opt := range opts {
@@ -389,7 +389,7 @@ func (c *ConfigFile) setDefaults() {
 		c.Database.User = "postgres"
 	}
 	if c.Database.DBName == "" {
-		c.Database.DBName = "goagent"
+		c.Database.DBName = "ARES"
 	}
 
 	// Memory defaults
@@ -490,7 +490,7 @@ func LoadConfigFile(path string) (*ConfigFile, error) {
 	return loader.Load(path)
 }
 
-// NewClientFromConfigPath creates a new GoAgent client from a configuration file path.
+// NewClientFromConfigPath creates a new ARES client from a configuration file path.
 // This is the simplest way to initialize the client - just provide the config file path.
 // Args:
 // configPath - path to the configuration file.
@@ -527,7 +527,7 @@ func NewClientFromConfigPath(configPath string) (*Client, error) {
 	return client, nil
 }
 
-// NewClientFromDefaultPath creates a new GoAgent client from default configuration paths.
+// NewClientFromDefaultPath creates a new ARES client from default configuration paths.
 // It searches for configuration files in standard locations.
 // Returns new client instance or error.
 func NewClientFromDefaultPath() (*Client, error) {

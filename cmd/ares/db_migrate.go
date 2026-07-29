@@ -19,7 +19,7 @@ var dbMigrateCmd = &cobra.Command{
 	Short: "Run full database migration",
 	Long: `Creates the database if it doesn't exist and runs all migrations.
 Reads DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME env vars.
-Default: postgres://postgres:postgres@localhost:5432/goagent?sslmode=disable`,
+Default: postgres://postgres:postgres@localhost:5432/ARES?sslmode=disable`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDbMigrate()
 	},
@@ -34,7 +34,7 @@ func runDbMigrate() error {
 	port := getEnv("DB_PORT", "5433")
 	user := getEnv("DB_USER", "postgres")
 	password := getEnv("DB_PASSWORD", "postgres")
-	dbname := getEnv("DB_NAME", "goagent")
+	dbname := getEnv("DB_NAME", "ARES")
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		url.QueryEscape(user), url.QueryEscape(password),

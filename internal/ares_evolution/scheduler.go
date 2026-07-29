@@ -286,14 +286,10 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 	})
 
 	// OnAgentEnd must return immediately (it's a callback handler), so the
-	// errgroup's Wait runs in a background goroutine. The errgroup is stored
-	// in s.evolveEg so Shutdown() can wait for it.
-	go func() {
-		if err := eg.Wait(); err != nil {
-			log.ErrorContext(ctx, "[Evolution] Evolution goroutine exited with error",
-				"error", err)
-		}
-	}()
+	// errgroup is not waited on here. The errgroup is stored in s.evolveEg
+	// so Shutdown() can wait for it. Any error from eg.Go is already logged
+	// inside the goroutine above, and Shutdown() observes the aggregated
+	// error via eg.Wait().
 }
 
 // Register registers the scheduler's handlers to the callback registry.

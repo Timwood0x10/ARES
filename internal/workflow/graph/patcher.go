@@ -121,7 +121,9 @@ func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, p patch.RuntimeP
 	}
 
 	// Capture the old node if it exists (for rollback).
+	e.graph.mu.RLock()
 	oldNode := e.graph.nodes[p.Target]
+	e.graph.mu.RUnlock()
 
 	_, err := e.graph.Node(p.Target, node)
 	if err != nil {
@@ -138,7 +140,9 @@ func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, p patch.RuntimeP
 
 func (e *GraphPatchExecutor) applyRemoveNode(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Capture the node before removing (for rollback).
+	e.graph.mu.RLock()
 	oldNode, exists := e.graph.nodes[p.Target]
+	e.graph.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("graph executor: node %q not found", p.Target)
 	}
@@ -158,7 +162,9 @@ func (e *GraphPatchExecutor) applyRemoveNode(_ context.Context, p patch.RuntimeP
 
 func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Remove old node and insert new node in its place.
+	e.graph.mu.RLock()
 	oldNode, exists := e.graph.nodes[p.Target]
+	e.graph.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("graph executor: node %q not found for replace", p.Target)
 	}

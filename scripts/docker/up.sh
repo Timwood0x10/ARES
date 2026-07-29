@@ -12,15 +12,15 @@ echo "🚀 ARES Local Dev Environment"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── 1. PostgreSQL + pgvector ─────────────────────────────────────────────
-if docker ps --filter name=goagent-pg --format "{{.Names}}" | grep -q goagent-pg; then
+if docker ps --filter name=ARES-pg --format "{{.Names}}" | grep -q ARES-pg; then
   echo "✅ pgvector already running (port 5433)"
 else
   echo "📦 Starting pgvector..."
   docker run -d \
-    --name goagent-pg \
+    --name ARES-pg \
     -e POSTGRES_USER=postgres \
     -e POSTGRES_PASSWORD=postgres \
-    -e POSTGRES_DB=goagent_test \
+    -e POSTGRES_DB=ARES_test \
     -p 5433:5432 \
     --health-cmd "pg_isready -U postgres" \
     --health-interval 5s \
@@ -29,7 +29,7 @@ else
     pgvector/pgvector:pg15
 
   echo "⏳ Waiting for pgvector to be healthy..."
-  until docker exec goagent-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
+  until docker exec ARES-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
   echo "✅ pgvector ready (port 5433)"
 fi
 
@@ -65,7 +65,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ Environment Ready!"
 echo ""
-echo "   PostgreSQL:  postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable"
+echo "   PostgreSQL:  postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable"
 echo "   Ollama:      http://localhost:11434"
 echo "   Model:       $MODEL"
 echo ""

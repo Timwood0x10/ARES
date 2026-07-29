@@ -8,36 +8,35 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	gerr "github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/workflow"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // WorkflowClient provides workflow orchestration capabilities.
 type WorkflowClient struct {
 	client   *Client
-	executor *engine.Executor
 	loader   *engine.FileLoader
 	registry *engine.AgentRegistry
 }
 
 // NewWorkflowClient creates a new workflow client.
 // Args:
-// client - underlying GoAgent client.
+// client - underlying ARES client.
 // Returns workflow client or error.
 func NewWorkflowClient(client *Client) (*WorkflowClient, error) {
 	loader := engine.NewYAMLFileLoader()
 
-	// Create executor with agent registry
 	registry := engine.NewAgentRegistry()
-	executor := engine.NewExecutor(registry)
 
 	return &WorkflowClient{
 		client:   client,
-		executor: executor,
 		loader:   loader,
 		registry: registry,
 	}, nil
@@ -52,20 +51,42 @@ func (w *WorkflowClient) LoadWorkflow(ctx context.Context, path string) (*engine
 	return w.loader.Load(ctx, path)
 }
 
-// Execute executes a workflow with the given input.
+// Execute executes a legacy workflow definition through the unified Runner.
 // Args:
 // ctx - operation context.
-// workflow - workflow definition.
+// workflowDef - workflow definition.
 // input - initial input data.
 // Returns workflow result or error.
-func (w *WorkflowClient) Execute(ctx context.Context, workflow *engine.Workflow, input string) (*engine.WorkflowResult, error) {
-	// Register agents from client config
-	if w.client.configFile != nil {
-		w.registerAgents(ctx)
+func (w *WorkflowClient) Execute(
+	ctx context.Context,
+	workflowDef *engine.Workflow,
+	input string,
+) (*engine.WorkflowResult, error) {
+	if workflowDef == nil {
+		return nil, fmt.Errorf("workflow definition must not be nil")
 	}
-
-	// Execute workflow
-	return w.executor.Execute(ctx, workflow, input)
+	if w.client.configFile != nil {
+		w.registerAgents()
+	}
+	compiled, err := workflow.CompileFromEngineWithBindings(workflowDef)
+	if err != nil {
+		return nil, fmt.Errorf("compile workflow %q: %w", workflowDef.ID, err)
+	}
+	bound, err := workflow.BindCompiledWorkflow(compiled)
+	if err != nil {
+		return nil, fmt.Errorf("bind workflow %q: %w", workflowDef.ID, err)
+	}
+	executor, err := workflow.NewEngineNodeExecutor(w.registry, workflowDef.Steps)
+	if err != nil {
+		return nil, fmt.Errorf("build workflow %q node executor: %w", workflowDef.ID, err)
+	}
+	runner := workflow.NewRunner(
+		executor,
+		workflow.WithInitialInput(input),
+		workflow.WithInitialVariables(workflowDef.Variables),
+	)
+	result, execErr := runner.ExecuteBound(ctx, bound)
+	return convertRunnerWorkflowResult(workflowDef, result), execErr
 }
 
 // ExecuteFromFile loads and executes a workflow from a file.
@@ -83,16 +104,105 @@ func (w *WorkflowClient) ExecuteFromFile(ctx context.Context, path, input string
 	return w.Execute(ctx, workflow, input)
 }
 
+func convertRunnerWorkflowResult(
+	workflowDef *engine.Workflow,
+	result *workflow.Result,
+) *engine.WorkflowResult {
+	if result == nil {
+		return nil
+	}
+	stepDefinitions := make(map[string]*engine.Step, len(workflowDef.Steps))
+	for _, step := range workflowDef.Steps {
+		if step != nil {
+			stepDefinitions[step.ID] = step
+		}
+	}
+	stepResults := make([]*engine.StepResult, 0, len(result.NodeStates))
+	for _, nodeState := range result.NodeStates {
+		definition := stepDefinitions[string(nodeState.ID)]
+		stepResults = append(stepResults, convertRunnerStepResult(definition, nodeState))
+	}
+	outputs := make(map[string]interface{}, len(stepResults))
+	for _, stepResult := range stepResults {
+		outputs[stepResult.StepID] = stepResult.Output
+	}
+	return &engine.WorkflowResult{
+		ExecutionID: result.ExecutionID,
+		WorkflowID:  result.SpecID,
+		Status:      runnerWorkflowStatus(result.Status),
+		Output:      outputs,
+		Error:       result.Error,
+		Duration:    result.Duration,
+		Steps:       stepResults,
+	}
+}
+
+func convertRunnerStepResult(
+	definition *engine.Step,
+	state *workflow.NodeStatusValue,
+) *engine.StepResult {
+	result := &engine.StepResult{
+		StepID:   string(state.ID),
+		Status:   runnerStepStatus(state.Status),
+		Output:   runnerNodeOutput(state.Output),
+		Error:    state.Error,
+		Duration: state.FinishedAt.Sub(state.StartedAt),
+	}
+	if definition != nil {
+		result.Name = definition.Name
+		result.Metadata = definition.Metadata
+	}
+	return result
+}
+
+func runnerNodeOutput(output map[string]any) string {
+	value, exists := output["output"]
+	if !exists {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+func runnerWorkflowStatus(status workflow.NodeStatus) engine.WorkflowStatus {
+	switch status {
+	case workflow.NodeStatusCompleted:
+		return engine.WorkflowStatusCompleted
+	case workflow.NodeStatusCancelled:
+		return engine.WorkflowStatusCancelled
+	case workflow.NodeStatusFailed:
+		return engine.WorkflowStatusFailed
+	default:
+		return engine.WorkflowStatusFailed
+	}
+}
+
+func runnerStepStatus(status workflow.NodeStatus) engine.StepStatus {
+	switch status {
+	case workflow.NodeStatusCompleted:
+		return engine.StepStatusCompleted
+	case workflow.NodeStatusNotSelected, workflow.NodeStatusUnreachable:
+		return engine.StepStatusSkipped
+	case workflow.NodeStatusPending, workflow.NodeStatusReady:
+		return engine.StepStatusPending
+	case workflow.NodeStatusRunning:
+		return engine.StepStatusRunning
+	default:
+		return engine.StepStatusFailed
+	}
+}
+
 // registerAgents registers agents from client configuration.
-func (w *WorkflowClient) registerAgents(ctx context.Context) {
+func (w *WorkflowClient) registerAgents() {
 	if w.client.configFile == nil {
 		return
 	}
 
-	// Register each sub-agent
 	for _, agentConfig := range w.client.configFile.Agents.Sub {
-		agentType := agentConfig.Type
-		if err := w.registry.Register(agentType, func(ctx context.Context, config interface{}) (base.Agent, error) {
+		agentConfig := agentConfig
+		if _, exists := w.registry.GetFactory(agentConfig.Type); exists {
+			continue
+		}
+		err := w.registry.Register(agentConfig.Type, func(ctx context.Context, config interface{}) (base.Agent, error) {
 			return &WorkflowAgentExecutor{
 				agentID:    agentConfig.ID,
 				agentName:  agentConfig.Name,
@@ -103,7 +213,8 @@ func (w *WorkflowClient) registerAgents(ctx context.Context) {
 				timeout:    time.Duration(agentConfig.Timeout) * time.Second,
 				maxRetries: agentConfig.MaxRetries,
 			}, nil
-		}); err != nil {
+		})
+		if err != nil {
 			continue
 		}
 	}
@@ -247,41 +358,47 @@ func (e *WorkflowAgentExecutor) Process(ctx context.Context, input any) (any, er
 
 // ProcessStream executes a workflow step and returns a stream of events.
 func (e *WorkflowAgentExecutor) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	ch := make(chan base.AgentEvent, 64)
-
-	go func() {
-		defer close(ch)
-
-		// Send task start event
-		select {
-		case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: e.agentID, Data: input}:
-		case <-ctx.Done():
-			return
+	events := make(chan base.AgentEvent, 64)
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		defer close(events)
+		if !sendAgentEvent(groupCtx, events, base.AgentEvent{
+			Type:   base.EventTaskStart,
+			Source: e.agentID,
+			Data:   input,
+		}) {
+			return groupCtx.Err()
 		}
-
-		// Execute the task
-		result, err := e.Process(ctx, input)
+		result, err := e.Process(groupCtx, input)
 		if err != nil {
-			select {
-			case ch <- base.AgentEvent{Type: base.EventComplete, Source: e.agentID, Err: err}:
-			case <-ctx.Done():
-			}
-			return
+			sendAgentEvent(groupCtx, events, base.AgentEvent{
+				Type:   base.EventComplete,
+				Source: e.agentID,
+				Err:    err,
+			})
+			return nil
 		}
-
-		// Send task complete event with result data
-		select {
-		case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: e.agentID, Data: result}:
-		case <-ctx.Done():
-			return
+		if !sendAgentEvent(groupCtx, events, base.AgentEvent{
+			Type:   base.EventTaskComplete,
+			Source: e.agentID,
+			Data:   result,
+		}) {
+			return groupCtx.Err()
 		}
+		sendAgentEvent(groupCtx, events, base.AgentEvent{
+			Type:   base.EventComplete,
+			Source: e.agentID,
+		})
+		return nil
+	})
+	return events, nil
+}
 
-		// Send final completion event (no data — result already in EventTaskComplete)
-		select {
-		case ch <- base.AgentEvent{Type: base.EventComplete, Source: e.agentID}:
-		case <-ctx.Done():
-		}
-	}()
-
-	return ch, nil
+func sendAgentEvent(ctx context.Context, events chan<- base.AgentEvent, event base.AgentEvent) bool {
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

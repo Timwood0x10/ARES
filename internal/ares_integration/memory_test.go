@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Timwood0x10/ares/api/embedding"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	pgembed "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // testEmbedder is a minimal EmbeddingService mock for in-memory tests.
@@ -73,7 +74,7 @@ func createTestMemoryManager(t *testing.T, pool *postgres.Pool) *memory.Producti
 	// Create an embedding client pointing to a non-existent service.
 	// Embedding operations will fail, but session/task operations that
 	// don't require embeddings will still work.
-	embeddingClient := embedding.NewEmbeddingClient(
+	embeddingClient := pgembed.NewEmbeddingClient(
 		"http://localhost:9999",
 		"intfloat/e5-large",
 		nil,

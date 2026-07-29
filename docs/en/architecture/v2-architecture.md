@@ -1,4 +1,4 @@
-# GoAgent v2 Architecture
+# ARES v2 Architecture
 
 **Updated**: 2026-06-10
 

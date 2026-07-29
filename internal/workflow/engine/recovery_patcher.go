@@ -20,6 +20,16 @@ func NewRecoveryPatchExecutor(dag *MutableDAG) *RecoveryPatchExecutor {
 	return &RecoveryPatchExecutor{dag: dag}
 }
 
+// SetDAG replaces the executor's DAG reference with a live one.
+// Called after agents are created so recovery patches mutate the
+// agent's real DAG rather than the bootstrap placeholder.
+func (e *RecoveryPatchExecutor) SetDAG(dag *MutableDAG) {
+	if dag == nil {
+		return
+	}
+	e.dag = dag
+}
+
 // Name returns "recovery" as the component identifier for patch routing.
 func (e *RecoveryPatchExecutor) Name() string { return "recovery" }
 

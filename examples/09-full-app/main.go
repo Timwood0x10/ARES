@@ -2,9 +2,12 @@
 //
 // Features:
 //   - HTTP server with chat API
-//   - SDK agent with tools and memory
+//   - YAML-driven agent with custom tools
 //   - Real-time tool call tracking
 //   - Simple HTML dashboard
+//
+// Only the custom tools and HTTP routes need Go code; the LLM, memory,
+// distillation, and AKG are all configured via ares.yaml.
 //
 // Run:
 //
@@ -26,13 +29,19 @@ import (
 )
 
 func main() {
-	rt := sdk.MustNew(
-		sdk.WithOllama("llama3.2"),
-		sdk.WithDefaultMemory(),
-	)
+	// ── 1. Load ares.yaml + wire everything ────────────────────
+	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	rt := sdk.NewRuntime(opts...)
 	defer rt.Close()
 
-	// Register tools.
+	// ── 2. Register custom tools ───────────────────────────────
 	for _, t := range appTools {
 		if err := rt.ToolRegistry().Register(t); err != nil {
 			log.Printf("register: %v", err)
@@ -40,16 +49,17 @@ func main() {
 		}
 	}
 
+	// ── 3. Create agent ─────────────────────────────────────────
 	agent := rt.NewAgent("assistant",
 		sdk.WithInstruction("You are a helpful assistant with tools. Use calculator for math, weather for forecasts."),
 	)
 
+	// ── 4. HTTP server ──────────────────────────────────────────
 	app := &appState{
 		agent:   agent,
 		history: make([]chatEntry, 0),
 	}
 
-	// HTTP routes.
 	http.HandleFunc("/", app.handleIndex)
 	http.HandleFunc("/api/chat", app.handleChat)
 	http.HandleFunc("/api/stats", app.handleStats)

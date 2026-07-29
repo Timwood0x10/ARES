@@ -111,13 +111,13 @@ go mod download
 
 ```bash
 # Create database
-createdb goagent
+createdb ARES
 
 # Start PostgreSQL
 pg_ctl start
 
 # Install pgvector extension
-psql -d goagent -c "CREATE EXTENSION vector;"
+psql -d ARES -c "CREATE EXTENSION vector;"
 ```
 
 #### Option 2: Use Docker (Recommended)
@@ -127,7 +127,7 @@ psql -d goagent -c "CREATE EXTENSION vector;"
 docker run -d \
   --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=goagent \
+  -e POSTGRES_DB=ARES \
   -p 5433:5432 \
   pgvector/pgvector:pg15
 
@@ -135,7 +135,7 @@ docker run -d \
 sleep 5
 
 # Verify connection
-docker exec -it ares-db psql -U postgres -d goagent -c "SELECT version();"
+docker exec -it ares-db psql -U postgres -d ARES -c "SELECT version();"
 ```
 
 ### 4. Configure Example
@@ -150,7 +150,7 @@ database:
   port: 5433  # Default is 5433 when using Docker
   user: postgres
   password: postgres
-  database: goagent
+  database: ARES
 
 embedding_service_url: http://localhost:11434
 embedding_model: nomic-embed-text
@@ -222,7 +222,7 @@ go run main.go
 
 ```bash
 # Connect to database
-psql -h localhost -p 5433 -U postgres -d goagent
+psql -h localhost -p 5433 -U postgres -d ARES
 
 # List tables
 \dt

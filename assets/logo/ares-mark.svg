@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" fill="none" role="img" aria-label="ARES logo mark">
+  <defs>
+    <linearGradient id="grad" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#00E5FF"/>
+      <stop offset="0.5" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <path d="M120 205 C156 193 156 177 120 165 C84 153 84 137 120 125 C156 113 156 97 120 85 C96 73 96 60 108 48" fill="none" stroke="url(#grad)" stroke-width="7" stroke-linecap="round"/>
+    <path d="M120 205 C84 193 84 177 120 165 C156 153 156 137 120 125 C84 113 84 97 120 85 C144 73 144 60 132 48" fill="none" stroke="url(#grad)" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <circle cx="120" cy="40" r="16" fill="#FF2D9B" opacity="0.22"/>
+  <circle cx="120" cy="40" r="9" fill="#FF2D9B"/>
+</svg>

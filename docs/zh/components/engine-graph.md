@@ -1,6 +1,6 @@
 # Graph - 动态 Agent 编排
 
-**GoAgent Graph** 是一个轻量级的动态 Agent 编排系统，作为 Workflow Engine 的可选插件存在。
+**ARES Graph** 是一个轻量级的动态 Agent 编排系统，作为 Workflow Engine 的可选插件存在。
 
 ## 概述
 

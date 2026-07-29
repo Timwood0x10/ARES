@@ -5,6 +5,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -118,6 +120,45 @@ func TestBaseTool(t *testing.T) {
 			t.Errorf("expected A tool, got %s", tool.Description())
 		}
 	})
+}
+
+// TestRegisterGeneralTools_DuplicateNameContinues verifies that
+// RegisterGeneralTools logs a warning and continues past a duplicate tool
+// name instead of aborting all registration. This is the fix for TL-2: a
+// single conflict must not prevent the remaining tools from registering.
+func TestRegisterGeneralTools_DuplicateNameContinues(t *testing.T) {
+	registry := core.NewRegistry()
+
+	// Pre-register a tool whose name collides with the first tool registered
+	// by RegisterGeneralTools (calculator). The pre-existing tool must win.
+	pre := base.NewToolFunc(
+		"calculator",
+		"pre-registered duplicate sentinel",
+		nil,
+		func(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+			return core.NewResult(true, nil), nil
+		},
+	)
+	require.NoError(t, registry.Register(pre))
+
+	// With the OLD behavior this returned an error on the first duplicate;
+	// with the NEW behavior it logs a warning and continues, registering the
+	// rest of the general-purpose tools.
+	require.NoError(t, RegisterGeneralTools(registry),
+		"RegisterGeneralTools should continue past duplicate names")
+
+	// The pre-registered duplicate must still be present (builtin lost the
+	// conflict because the pre-existing registration wins).
+	tool, ok := registry.Get("calculator")
+	require.True(t, ok, "calculator tool should still be registered")
+	require.Equal(t, "pre-registered duplicate sentinel", tool.Description(),
+		"pre-registered tool should win the name conflict")
+
+	// At least one other general tool should have been registered despite the
+	// duplicate. "datetime" is registered right after "calculator" in the
+	// general-tools list.
+	_, ok = registry.Get("datetime")
+	require.True(t, ok, "datetime should be registered after duplicate-name continuation")
 }
 
 // nolint: errcheck // Test code may ignore return values

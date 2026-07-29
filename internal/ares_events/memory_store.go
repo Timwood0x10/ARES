@@ -21,6 +21,7 @@ type MemoryEventStore struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	nextSubID   atomic.Int64
+	dropped     atomic.Int64
 }
 
 type subscription struct {
@@ -257,7 +258,7 @@ func (s *MemoryEventStore) notifySubscribers(event *Event) {
 			select {
 			case sub.ch <- event:
 			default:
-				// Subscriber buffer full, drop event.
+				s.dropped.Add(1)
 			}
 		}
 	}

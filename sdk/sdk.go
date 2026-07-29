@@ -12,7 +12,7 @@
 //
 //	func main() {
 //	    ctx := context.Background()
-//	    rt := ares.MustNew(ares.WithOpenAI("gpt-4o-mini"))
+//	    ares := sdk.NewRuntime(sdk.WithOpenAI("gpt-4o-mini"))
 //	    defer rt.Close()
 //
 //	    agent := rt.NewAgent("assistant",
@@ -25,24 +25,31 @@ package sdk
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
+	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
-	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
+	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -53,6 +60,9 @@ import (
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
+	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
+	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 const strategyPriority = "priority"
@@ -67,30 +77,74 @@ const (
 	roleTool      = "tool"
 )
 
-// Runtime is the top-level ARES container. It owns the LLM client, tool
-// registry, and — optionally — memory, AKF knowledge fabric, MCP
-// connections, and evolution.
-// Create one with MustNew or New.
+// Runtime is the top-level container for an ARES agent system (a "new ARES runtime").
+//
+// It owns and manages:
+//   - LLM client (OpenAI, Ollama, Anthropic, OpenRouter, or custom)
+//   - Tool registry (built-in, custom, MCP-discovered, AKF tools)
+//   - Memory & distillation engine (session history, experience distillation, RAG)
+//   - AKG / AKF Knowledge Fabric (knowledge graph compilation + retrieval)
+//   - Strategy evolution (GA-based optimisation of agent behaviour)
+//   - MCP server connections (stdio-based external tools)
+//   - Event-driven distillation (TaskCompleted → auto-distill pipeline)
+//
+// Create one with NewRuntime or New, then call NewAgent / NewTeam to build
+// agents. Close must be called once when the Runtime is no longer needed to
+// release LLM connections, stop background goroutines, and close MCP clients.
+//
+// Quick start:
+//
+//	cfg, _ := sdk.LoadConfigFile("ares.yaml")
+//	opts, _ := cfg.ToOptions()
+//	ares := sdk.NewRuntime(opts...)       // ares = new ARES runtime
+//	defer ares.Close()
+//
+//	agent := ares.NewAgent("assistant",
+//	    sdk.WithInstruction("You are helpful."),
+//	)
+//	result, _ := agent.Run(ctx, "hello")
 type Runtime struct {
 	llmSvc           *llm.Service
 	toolReg          *tools.Registry
-	memSvc           *memsvc.Service
+	memMgr           memory.MemoryManager
+	distillCleanup   func()
 	memEnabled       bool
 	evoEnabled       bool
 	knowledgeEnabled bool
 	knowledgeRT      *khruntime.KnowledgeRuntime
-	knowledgeStore   *memstore.Store
+	knowledgeStore   knowledge.KnowledgeStore
 	evolutionStore   *memStrategyStore
-	eventStore       ares_events.EventStore
-	mcpClients       []*mcp.Client
-	trace            bool
+	// evoComponents holds the new evolution system (genome/diff/patch/coordinator)
+	// wired to the live KnowledgeRuntime so evolution patches can affect the
+	// running knowledge engine. Nil when evolution or knowledge is disabled.
+	evoComponents *ares_bootstrap.NewEvolutionComponents
+	eventStore    ares_events.EventStore
+	mcpClients    []*mcp.Client
+	trace         bool
+	// ctx governs the lifetime of background goroutines (event-driven
+	// distillation subscriber). Cancelled in Close so subscribers exit cleanly.
+	ctx context.Context
+	// cancel stops background goroutines started in New.
+	cancel context.CancelFunc
+	// eg tracks background goroutines so Close can wait for in-flight work.
+	eg *errgroup.Group
+	// distillSvc consumes TaskCompleted events and distills them into long-term
+	// experiences. Nil when distillation is disabled or its deps are unavailable.
+	distillSvc *aresexp.DistillationService
 }
 
-// memSearcher adapts memsvc.Service to the memory.TaskSearcher interface.
+// memSearcher adapts memory.MemoryManager to the memory.TaskSearcher
+// interface. It converts the manager's []*models.Task results into the
+// memprovider.SearchResult shape expected by the AKF memory provider.
 type memSearcher struct {
-	svc *memsvc.Service
+	svc memory.MemoryManager
 }
 
+// SearchSimilarTasks delegates to the MemoryManager and converts each
+// *models.Task into a memprovider.SearchResult. The Task.TaskID maps to
+// SearchResult.ID; the "input" payload field (set by SearchSimilarTasks
+// on the manager) maps to Summary. Tasks without an input payload fall
+// back to the TaskID as the summary.
 func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]memprovider.SearchResult, error) {
 	results, err := s.svc.SearchSimilarTasks(ctx, query, limit)
 	if err != nil {
@@ -235,10 +289,20 @@ type TokenUsage struct {
 
 // ---- constructors ----
 
-// MustNew creates a new Runtime with the given options. It panics on error so
-// it is safe for quickstart / prototyping code. Use New for production code
-// that wants to handle errors gracefully.
-func MustNew(opts ...Option) *Runtime {
+// NewRuntime creates and returns a new ARES Runtime — the top-level container that
+// owns the LLM client, tool registry, memory/distillation engine, AKG knowledge
+// fabric, evolution system, and MCP connections.
+//
+// It panics on error so it is safe for quickstart / prototyping code.
+// Use New for production code that wants to handle errors gracefully.
+//
+// Quick start:
+//
+//	ares := sdk.NewRuntime(sdk.WithConfigFromEnv())
+//	defer ares.Close()
+//	agent := ares.NewAgent("assistant")
+//	result, _ := agent.Run(ctx, "hello")
+func NewRuntime(opts ...Option) *Runtime {
 	r, err := New(opts...)
 	if err != nil {
 		panic("ares: " + err.Error())
@@ -246,8 +310,178 @@ func MustNew(opts ...Option) *Runtime {
 	return r
 }
 
-// New creates a new Runtime. Returns an error when a required option (e.g. an
-// LLM provider) cannot be initialised.
+// knowledgeWiring bundles the outputs of wireKnowledge so New() can unpack
+// a single struct instead of juggling four return values.
+type knowledgeWiring struct {
+	rt             *khruntime.KnowledgeRuntime
+	store          knowledge.KnowledgeStore
+	evolutionStore *memStrategyStore
+}
+
+// wireKnowledge constructs the AKF Knowledge Fabric runtime, store, and
+// evolution strategy store from the SDK config. When knowledge is disabled,
+// it returns a zero-value wiring (all nil). Extracted from New() to keep
+// the constructor under the 100-line limit.
+//
+// Args:
+//
+//	cfg     - fully applied SDK config; knlCfg/evoCfg/dbCfg/sqliteStorePath are read.
+//	memMgr  - memory manager; when non-nil, a memory provider is auto-registered
+//	          into the knowledge provider registry so past tasks surface in the AKG.
+//
+// Returns:
+//
+//	*knowledgeWiring - rt/store/evolutionStore are nil when knowledge is disabled.
+//	error            - wrapped error if a knowledge store or provider fails to init.
+func wireKnowledge(cfg *config, memMgr memory.MemoryManager) (*knowledgeWiring, error) {
+	if !cfg.knlCfg.Enabled {
+		return &knowledgeWiring{}, nil
+	}
+
+	reg := provider.NewProviderRegistry()
+
+	if err := registerKnowledgeProviders(reg, cfg, memMgr); err != nil {
+		return nil, err
+	}
+
+	store, err := buildKnowledgeStore(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var evoStore *memStrategyStore
+	if cfg.evoCfg.Enabled {
+		evoStore = newMemStrategyStore()
+	}
+
+	rt := khruntime.New(
+		planner.NewKnowledgePlanner(),
+		planner.NewSourceDiscovery(reg, planner.NewQueryPlanner()),
+		reg,
+		nil, // pipeline: use defaults
+		[]khruntime.Linker{
+			&khruntime.DefaultLinker{},
+			&linker.DecisionLinker{},
+			&linker.ArchitectureLinker{},
+			&linker.TimelineLinker{},
+			&linker.SimilarityLinker{},
+		},
+		[]khruntime.Reducer{&khruntime.DefaultReducer{}},
+	)
+
+	return &knowledgeWiring{rt: rt, store: store, evolutionStore: evoStore}, nil
+}
+
+// registerKnowledgeProviders registers the memory, evolution, and
+// user-configured extra providers into the registry. Extracted to keep
+// wireKnowledge under 100 lines.
+func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, memMgr memory.MemoryManager) error {
+	if memMgr != nil {
+		searcher := &memSearcher{svc: memMgr}
+		if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
+			return fmt.Errorf("knowledge: register memory provider: %w", err)
+		}
+	}
+
+	if cfg.evoCfg.Enabled {
+		evoStore := newMemStrategyStore()
+		if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
+			return fmt.Errorf("knowledge: register evolution provider: %w", err)
+		}
+	}
+
+	for _, p := range cfg.extraProviders {
+		if err := reg.Register(p); err != nil {
+			return fmt.Errorf("knowledge: register provider %s: %w", p.Name(), err)
+		}
+	}
+	return nil
+}
+
+// buildKnowledgeStore selects the knowledge store backend: SQLite >
+// PostgreSQL > in-memory. All opt-in via SDK options; defaults to
+// in-memory to preserve prior behaviour.
+func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
+	switch {
+	case cfg.sqliteStorePath != "":
+		s, err := sqlitestore.New(cfg.sqliteStorePath)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge: init sqlite store: %w", err)
+		}
+		return s, nil
+	case cfg.dbCfg.Host != "":
+		sslMode := cfg.dbCfg.SSLMode
+		if sslMode == "" {
+			sslMode = "disable"
+		}
+		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+			cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
+			cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
+		db, err := sql.Open("postgres", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge: open postgres store: %w", err)
+		}
+		store, err := postgresstore.New(db)
+		if err != nil {
+			if closeErr := db.Close(); closeErr != nil {
+				err = fmt.Errorf("knowledge: init postgres store: %w (also close db: %v)", err, closeErr)
+			}
+			return nil, fmt.Errorf("knowledge: init postgres store: %w", err)
+		}
+		return store, nil
+	default:
+		return memstore.New(), nil
+	}
+}
+
+// wireMCPClients connects to each configured MCP server, lists its tools, and
+// registers them into the SDK tool registry. Extracted from New() to keep the
+// constructor under the 100-line limit.
+//
+// Args:
+//
+//	cfg     - fully applied SDK config; mcpConns is read.
+//	toolReg - the SDK tool registry; MCP tools are registered by name.
+//
+// Returns:
+//
+//	[]*mcp.Client - one client per configured MCP connection (empty when none).
+//	error         - wrapped with context if a connection, list, or register fails.
+func wireMCPClients(cfg *config, toolReg *tools.Registry) ([]*mcp.Client, error) {
+	var mcpClients []*mcp.Client
+	for _, conn := range cfg.mcpConns {
+		connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		client, err := mcp.ConnectStdio(connectCtx, conn.Name, conn.Command, conn.Args)
+		connectCancel()
+		if err != nil {
+			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
+		}
+		listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		mcpTools, listErr := client.ListTools(listCtx)
+		listCancel()
+		if listErr != nil {
+			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
+		}
+		for _, t := range mcpTools {
+			if err := toolReg.Register(mcpToolAdapter{
+				name:   t.Name,
+				desc:   t.Description,
+				client: client,
+			}); err != nil {
+				return nil, fmt.Errorf("mcp %q register %s: %w", conn.Name, t.Name, err)
+			}
+		}
+		mcpClients = append(mcpClients, client)
+	}
+	return mcpClients, nil
+}
+
+// New creates and returns a new ARES Runtime. It wires the LLM client, tool
+// registry, memory/distillation engine, RAG retrievers, AKG knowledge fabric,
+// MCP connections, evolution system, and event-driven distillation.
+//
+// Returns an error when a required option (e.g. an LLM provider) cannot be
+// initialised. Use NewRuntime for quickstart code that panics on error instead.
 func New(opts ...Option) (*Runtime, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -267,114 +501,109 @@ func New(opts ...Option) (*Runtime, error) {
 		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
 
-	// ---- Tools ----
 	toolReg := tools.NewRegistry()
 
-	// ---- Memory ----
-	var memSvc *memsvc.Service
+	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
+	var memMgr memory.MemoryManager
+	var distillCleanup func()
+	var embClient apiembed.EmbeddingService
+	var expRepo repositories.ExperienceRepositoryInterface
+	var distillSvc *aresexp.DistillationService
 	if cfg.memCfg.Enabled {
-		s, err := memsvc.New(nil)
+		w, err := wireMemory(context.Background(), cfg)
 		if err != nil {
 			return nil, fmt.Errorf("memory: %w", err)
 		}
-		memSvc = s
+		memMgr = w.mgr
+		embClient = w.embClient
+		expRepo = w.expRepo
+		distillCleanup = w.cleanup
+		distillSvc = w.distillSvc
 	}
 
 	// ---- MCP ----
-	var mcpClients []*mcp.Client
-	for _, conn := range cfg.mcpConns {
-		connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		client, err := mcp.ConnectStdio(connectCtx, conn.Name, conn.Command, conn.Args)
-		connectCancel()
-		if err != nil {
-			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
-		}
-		listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		tools, listErr := client.ListTools(listCtx)
-		listCancel()
-		if listErr != nil {
-			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
-		}
-		for _, t := range tools {
-			toolName := t.Name
-			toolDesc := t.Description
-			mcpClient := client
-			if err := toolReg.Register(mcpToolAdapter{
-				name:   toolName,
-				desc:   toolDesc,
-				client: mcpClient,
-			}); err != nil {
-				return nil, fmt.Errorf("mcp %q register %s: %w", conn.Name, toolName, err)
-			}
-		}
-		mcpClients = append(mcpClients, client)
+	mcpClients, err := wireMCPClients(cfg, toolReg)
+	if err != nil {
+		return nil, err
 	}
 
 	// ---- AKF Knowledge Fabric ----
-	var knowledgeRT *khruntime.KnowledgeRuntime
-	var knowledgeStore *memstore.Store
-	var evoStore *memStrategyStore
-	if cfg.knlCfg.Enabled {
-		reg := provider.NewProviderRegistry()
-
-		// Auto-register memory provider when memory is also enabled.
-		if memSvc != nil {
-			searcher := &memSearcher{svc: memSvc}
-			if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
-				return nil, fmt.Errorf("knowledge: register memory provider: %w", err)
-			}
-		}
-
-		// Auto-register evolution provider when evolution is also enabled.
-		if cfg.evoCfg.Enabled {
-			evoStore = newMemStrategyStore()
-			if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
-				return nil, fmt.Errorf("knowledge: register evolution provider: %w", err)
-			}
-		}
-
-		knowledgeStore = memstore.New()
-
-		knowledgeRT = khruntime.New(
-			planner.NewKnowledgePlanner(),
-			planner.NewSourceDiscovery(reg, planner.NewQueryPlanner()),
-			reg,
-			nil, // pipeline: use defaults
-			[]khruntime.Linker{
-				&khruntime.DefaultLinker{},
-				&linker.DecisionLinker{},
-				&linker.ArchitectureLinker{},
-				&linker.TimelineLinker{},
-				&linker.SimilarityLinker{},
-			},
-			[]khruntime.Reducer{&khruntime.DefaultReducer{}},
-		)
+	kw, err := wireKnowledge(cfg, memMgr)
+	if err != nil {
+		return nil, err
 	}
+
+	// ---- AKF knowledge tools (auto-registered so the agent can call them) ----
+	if cfg.knlCfg.Enabled && kw.rt != nil {
+		if err := registerAKFTools(toolReg, kw.rt); err != nil {
+			return nil, fmt.Errorf("akf tools: %w", err)
+		}
+	}
+
+	// ---- Evolution hot-update (wires the live KnowledgeRuntime into the
+	// evolution patch system so knowledge patches affect the running engine) ----
+	var evoComponents *ares_bootstrap.NewEvolutionComponents
+	if cfg.evoCfg.Enabled && kw.rt != nil {
+		comps, err := ares_bootstrap.ProvideNewEvolution(nil, kw.rt, nil)
+		if err != nil {
+			slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
+				"error", err)
+		} else {
+			evoComponents = comps
+			slog.Info("sdk: evolution hot-update wired (knowledge runtime patchable by evolution)")
+		}
+	}
+
+	// ---- RAG retriever wiring (best-effort, non-fatal) ----
+	if cfg.memCfg.EnableRAG && memMgr != nil {
+		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo, kw.rt)
+	}
+
+	rtCtx, rtCancel, eg, eventStore := newEventBackend(distillSvc)
 
 	return &Runtime{
 		llmSvc:           llmSvc,
 		toolReg:          toolReg,
-		memSvc:           memSvc,
+		memMgr:           memMgr,
+		distillCleanup:   distillCleanup,
 		memEnabled:       cfg.memCfg.Enabled,
 		evoEnabled:       cfg.evoCfg.Enabled,
 		knowledgeEnabled: cfg.knlCfg.Enabled,
-		knowledgeRT:      knowledgeRT,
-		knowledgeStore:   knowledgeStore,
-		evolutionStore:   evoStore,
-		eventStore:       ares_events.NewMemoryEventStore(),
+		knowledgeRT:      kw.rt,
+		knowledgeStore:   kw.store,
+		evolutionStore:   kw.evolutionStore,
+		evoComponents:    evoComponents,
+		eventStore:       eventStore,
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
+		ctx:              rtCtx,
+		cancel:           rtCancel,
+		eg:               eg,
+		distillSvc:       distillSvc,
 	}, nil
 }
 
 // Close releases all resources held by the Runtime (LLM connections, memory
 // store, MCP connections). Call once when the Runtime is no longer needed.
 func (r *Runtime) Close() {
+	// Stop background goroutines (event-driven distillation subscriber) first
+	// and wait for in-flight work, so the subscriber stops accepting new events
+	// before the stores/clients it depends on are torn down. Best-effort: the
+	// subscriber returns nil on ctx cancellation.
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.eg != nil {
+		_ = r.eg.Wait()
+	}
 	r.llmSvc.Close()
-	if r.memSvc != nil {
+	if r.memMgr != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
-		_ = r.memSvc.Stop(stopCtx)
+		_ = r.memMgr.Stop(stopCtx)
+	}
+	if r.distillCleanup != nil {
+		r.distillCleanup()
 	}
 	for _, c := range r.mcpClients {
 		_ = c.Close()
@@ -397,9 +626,11 @@ func (r *Runtime) GetProvider() string {
 	return string(r.llmSvc.GetProvider())
 }
 
-// KnowledgeStore returns the in-memory knowledge store, or nil if knowledge
-// is not enabled. Use this to save and query KnowledgeObjects directly.
-func (r *Runtime) KnowledgeStore() *memstore.Store {
+// KnowledgeStore returns the knowledge store, or nil if knowledge is not
+// enabled. The concrete type depends on the SDK options used: in-memory by
+// default, SQLite via WithSQLiteKnowledgeStore, or PostgreSQL via
+// WithPostgres. Use this to save and query KnowledgeObjects directly.
+func (r *Runtime) KnowledgeStore() knowledge.KnowledgeStore {
 	return r.knowledgeStore
 }
 
@@ -623,8 +854,8 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	start := time.Now()
 
 	sessionID := uuid.NewString()
-	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		sid, err := a.runtime.memSvc.CreateSession(ctx, a.name)
+	if a.runtime.memEnabled && a.runtime.memMgr != nil {
+		sid, err := a.runtime.memMgr.CreateSession(ctx, a.name)
 		if err == nil {
 			sessionID = sid
 		}
@@ -666,8 +897,8 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 			ToolCalls: resp.ToolCalls,
 		})
 
-		if a.runtime.memEnabled && a.runtime.memSvc != nil {
-			_ = a.runtime.memSvc.AddMessage(ctx, sessionID, "assistant", resp.Content)
+		if a.runtime.memEnabled && a.runtime.memMgr != nil {
+			_ = a.runtime.memMgr.AddMessage(ctx, sessionID, "assistant", resp.Content)
 		}
 
 		// ---- tool calling loop ----
@@ -677,6 +908,20 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 				log.Printf("[ares:trace] %s ✓ done (%d tools, %d total tokens, %v)",
 					a.name, toolCallCount, totalInputTokens+totalOutputTokens,
 					time.Since(start).Round(time.Millisecond))
+			}
+			// Emit TaskCompleted so the event-driven distillation subscriber
+			// can distill this conversation into a long-term experience. Gated
+			// on both the event store and distillSvc so non-distilling Runtimes
+			// pay zero overhead.
+			if a.runtime.eventStore != nil && a.runtime.distillSvc != nil {
+				ares_events.Emit(ctx, a.runtime.eventStore, sessionID,
+					ares_events.EventTaskCompleted, "runtime",
+					map[string]any{
+						ares_events.EventKeyTask:     input,
+						ares_events.EventKeyResult:   resp.Content,
+						ares_events.EventKeyTenantID: ares_events.DefaultTenantID,
+						"agent_id":                   a.name,
+					})
 			}
 			return &Result{
 				Output:     resp.Content,
@@ -790,8 +1035,8 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 	}
 
 	// Inject memory context if available
-	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		ctxStr, err := a.runtime.memSvc.BuildContext(ctx, input, sessionID)
+	if a.runtime.memEnabled && a.runtime.memMgr != nil {
+		ctxStr, err := a.runtime.memMgr.BuildContext(ctx, input, sessionID)
 		if err == nil && ctxStr != "" {
 			msgs = append(msgs, &core.LLMMessage{
 				Role:    roleSystem,
@@ -831,8 +1076,8 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 		Content: input,
 	})
 
-	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		_ = a.runtime.memSvc.AddMessage(ctx, sessionID, roleUser, input)
+	if a.runtime.memEnabled && a.runtime.memMgr != nil {
+		_ = a.runtime.memMgr.AddMessage(ctx, sessionID, roleUser, input)
 	}
 
 	return msgs

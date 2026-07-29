@@ -2,10 +2,73 @@ package sdk
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 )
+
+// ---- Config options ----
+
+// ConfigOption configures the Runtime during construction using a YAML file.
+// Loads ares.yaml from the given path and converts it to internal options.
+type ConfigOption func(*config) error
+
+// WithConfig loads configuration from a YAML file, parses and validates it,
+// then converts it to internal options and applies them.
+//
+// Args:
+//
+//	path - filesystem path to the YAML file (ares.yaml by default)
+//
+// Returns:
+//
+//	A Runtime option that applies the loaded configuration.
+func WithConfig(path string) ConfigOption {
+	return func(c *config) error {
+		sdkCfg, err := LoadConfigFile(path)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		opts, err := sdkCfg.ToOptions()
+		if err != nil {
+			return fmt.Errorf("config to options: %w", err)
+		}
+		for _, opt := range opts {
+			if err := opt(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// WithConfigFromEnv loads configuration from a YAML file, allowing override
+// via the ARES_YAML environment variable. If ARES_YAML is set, it will be
+// used as the config path. Otherwise, it falls back to ./ares.yaml.
+func WithConfigFromEnv() ConfigOption {
+	return func(c *config) error {
+		path := "./ares.yaml"
+		if p := os.Getenv("ARES_YAML"); p != "" {
+			path = p
+		}
+		sdkCfg, err := LoadConfigFile(path)
+		if err != nil {
+			return fmt.Errorf("load config %s: %w", path, err)
+		}
+		opts, err := sdkCfg.ToOptions()
+		if err != nil {
+			return fmt.Errorf("config to options: %w", err)
+		}
+		for _, opt := range opts {
+			if err := opt(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
 
 // ---- Runtime options ----
 
@@ -14,18 +77,36 @@ type Option func(*config) error
 
 // config holds the internal configuration state while options are applied.
 type config struct {
-	llmCfg    *core.LLMConfig
-	baseCfg   *core.BaseConfig
-	memCfg    memoryCfg
-	evoCfg    evolutionCfg
-	knlCfg    knowledgeCfg
-	mcpConns  []MCPConn
-	fallbacks []*core.LLMConfig
-	trace     bool
+	llmCfg      *core.LLMConfig
+	baseCfg     *core.BaseConfig
+	memCfg      memoryCfg
+	evoCfg      evolutionCfg
+	knlCfg      knowledgeCfg
+	dbCfg       databaseCfg     // optional PostgreSQL connection
+	embedCfg    embeddingCfg    // optional external embedding service
+	distillCfg  distillationCfg // optional memory distillation
+	knowledgeRT knowledgeRTCfg  // optional retrieval tuning
+	// extraProviders holds user-registered GraphProviders appended via
+	// WithKnowledgeProvider (e.g. code, mysql, postgres providers).
+	extraProviders []provider.GraphProvider
+	// sqliteStorePath, when non-empty, selects the SQLite knowledge store
+	// instead of the default in-memory store.
+	sqliteStorePath string
+	mcpConns        []MCPConn
+	fallbacks       []*core.LLMConfig
+	trace           bool
 }
 
+// memoryCfg holds memory subsystem configuration.
 type memoryCfg struct {
-	Enabled bool
+	Enabled     bool
+	MaxHistory  int // 0 → component default
+	MaxSessions int // 0 → component default
+	// EnableRAG enables retrieval-augmented generation; RAGTopK and RAGMinScore
+	// tune retrieval when EnableRAG is true.
+	EnableRAG   bool
+	RAGTopK     int
+	RAGMinScore float64
 }
 
 type evolutionCfg struct {
@@ -34,6 +115,40 @@ type evolutionCfg struct {
 
 type knowledgeCfg struct {
 	Enabled bool
+}
+
+// databaseCfg holds PostgreSQL connection parameters. Empty host signals
+// in-memory storage fallback.
+type databaseCfg struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Database string
+	SSLMode  string
+}
+
+// embeddingCfg holds an external embedding service endpoint. Empty URL signals
+// default embedding fallback.
+type embeddingCfg struct {
+	ServiceURL string
+	Model      string
+}
+
+// distillationCfg holds memory distillation knobs. Zero threshold signals
+// component default; enabled=false disables the distiller.
+type distillationCfg struct {
+	Enabled   bool
+	Threshold int
+}
+
+// knowledgeRTCfg tunes retrieval chunking and similarity bounds. Zero values
+// signal component defaults.
+type knowledgeRTCfg struct {
+	ChunkSize    int
+	ChunkOverlap int
+	TopK         int
+	MinScore     float64
 }
 
 func defaultConfig() *config {
@@ -52,6 +167,8 @@ func defaultConfig() *config {
 		memCfg: memoryCfg{Enabled: false},
 		evoCfg: evolutionCfg{Enabled: false},
 		trace:  true,
+		// dbCfg, embedCfg, distillCfg, knowledgeRT default to zero values,
+		// signalling component defaults downstream.
 	}
 }
 
@@ -157,6 +274,137 @@ func WithDefaultMemory() Option {
 	}
 }
 
+// WithMemoryConfig overrides default memory sizing. Fields left at zero fall
+// back to the component default, mirroring the yaml-driven philosophy.
+//
+// Args:
+//
+//	maxHistory - max conversation turns retained per session; 0 → default.
+//	maxSessions - max concurrent sessions tracked; 0 → default.
+func WithMemoryConfig(maxHistory, maxSessions int) Option {
+	return func(c *config) error {
+		if maxHistory < 0 || maxSessions < 0 {
+			return fmt.Errorf("memory config: %w", ErrInvalidRange)
+		}
+		c.memCfg.Enabled = true
+		c.memCfg.MaxHistory = maxHistory
+		c.memCfg.MaxSessions = maxSessions
+		return nil
+	}
+}
+
+// WithDistillation enables memory distillation. The threshold controls how
+// many conversation rounds accumulate before distillation fires. A threshold
+// of 0 falls back to the component default. Mirrors v0.2.4
+// examples/knowledge-base config.yaml distillation_threshold semantics.
+//
+// Args:
+//
+//	threshold - conversation rounds between distillation triggers; 0 → default.
+func WithDistillation(threshold int) Option {
+	return func(c *config) error {
+		if threshold < 0 {
+			return fmt.Errorf("distillation threshold %d: %w", threshold, ErrInvalidRange)
+		}
+		c.distillCfg.Enabled = true
+		c.distillCfg.Threshold = threshold
+		return nil
+	}
+}
+
+// WithRAG enables retrieval-augmented generation. Past experiences and distilled
+// memories are retrieved and injected into the LLM prompt.
+//
+// Args:
+//
+//	topK     - max retrieved snippets to inject; must be >= 1.
+//	minScore - minimum similarity score in [0, 1]; snippets below are filtered.
+//
+// Returns:
+//
+//	An Option that arms the memory RAG subsystem. Returns an error wrapping
+//	ErrInvalidRange when topK < 1 or minScore is outside [0, 1].
+func WithRAG(topK int, minScore float64) Option {
+	return func(c *config) error {
+		if topK < 1 {
+			return fmt.Errorf("rag top_k %d: %w", topK, ErrInvalidRange)
+		}
+		if minScore < 0 || minScore > 1 {
+			return fmt.Errorf("rag min_score %v: %w", minScore, ErrInvalidRange)
+		}
+		c.memCfg.Enabled = true
+		c.memCfg.EnableRAG = true
+		c.memCfg.RAGTopK = topK
+		c.memCfg.RAGMinScore = minScore
+		return nil
+	}
+}
+
+// WithEmbeddingService injects an external embedding service endpoint. Empty
+// url signals the sdk to fall back to default embedding behaviour.
+//
+// Args:
+//
+//	url   - embedding service URL, required when this option is used.
+//	model - embedding model name, required when this option is used.
+func WithEmbeddingService(url, model string) Option {
+	return func(c *config) error {
+		if url == "" {
+			return fmt.Errorf("embedding service: %w", ErrMissingValue)
+		}
+		if model == "" {
+			return fmt.Errorf("embedding model: %w", ErrMissingValue)
+		}
+		c.embedCfg.ServiceURL = url
+		c.embedCfg.Model = model
+		return nil
+	}
+}
+
+// WithPostgres enables PostgreSQL-backed memory. Empty host signals in-memory
+// storage fallback; when host is set, the sdk wires a pool to the Runtime.
+//
+// Args:
+//
+//	cfg - database connection parameters; host is the trigger field.
+func WithPostgres(cfg DatabaseFileConfig) Option {
+	return func(c *config) error {
+		if cfg.Host == "" {
+			return fmt.Errorf("postgres host: %w", ErrMissingValue)
+		}
+		if cfg.Port < 1 || cfg.Port > 65535 {
+			return fmt.Errorf("postgres port %d: %w", cfg.Port, ErrInvalidRange)
+		}
+		c.dbCfg = databaseCfg(cfg)
+		return nil
+	}
+}
+
+// WithKnowledgeConfig tunes retrieval chunking and similarity bounds. Zero
+// fields fall back to component defaults.
+//
+// Args:
+//
+//	cfg - knowledge retrieval parameters; chunk_size > 0 signals the section is active.
+func WithKnowledgeConfig(cfg KnowledgeFileConfig) Option {
+	return func(c *config) error {
+		if cfg.ChunkSize > 0 {
+			if cfg.ChunkOverlap < 0 || cfg.ChunkOverlap >= cfg.ChunkSize {
+				return fmt.Errorf("knowledge chunk_overlap %d vs chunk_size %d: %w",
+					cfg.ChunkOverlap, cfg.ChunkSize, ErrInvalidRange)
+			}
+			if cfg.TopK < 1 {
+				return fmt.Errorf("knowledge top_k %d: %w", cfg.TopK, ErrInvalidRange)
+			}
+			if cfg.MinScore < 0 || cfg.MinScore > 1 {
+				return fmt.Errorf("knowledge min_score %v: %w", cfg.MinScore, ErrInvalidRange)
+			}
+		}
+		c.knowledgeRT = knowledgeRTCfg(cfg)
+		return nil
+	}
+}
+
 // WithEvolution enables strategy evolution. When enabled, the Runtime tracks
 // agent performance and can evolve instructions to improve results over time.
 func WithEvolution() Option {
@@ -176,6 +424,52 @@ func WithEvolution() Option {
 func WithKnowledge() Option {
 	return func(c *config) error {
 		c.knlCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithKnowledgeProvider registers an additional GraphProvider with the AKF
+// Knowledge Fabric. Call multiple times to register multiple providers (e.g.
+// code, mysql, postgres). Providers are only wired into the runtime when
+// WithKnowledge is also enabled.
+//
+// Args:
+//
+//	p - a GraphProvider implementation; must not be nil.
+//
+// Returns:
+//
+//	An Option that appends p to the extra provider list. Returns an error
+//	wrapping ErrNilProvider when p is nil.
+func WithKnowledgeProvider(p provider.GraphProvider) Option {
+	return func(c *config) error {
+		if p == nil {
+			return fmt.Errorf("knowledge provider: %w", ErrNilProvider)
+		}
+		c.extraProviders = append(c.extraProviders, p)
+		return nil
+	}
+}
+
+// WithSQLiteKnowledgeStore selects a file-backed SQLite knowledge store instead
+// of the default in-memory store. Only takes effect when WithKnowledge is also
+// enabled. When the SQLite path is set it takes priority over the PostgreSQL
+// store configured via WithPostgres.
+//
+// Args:
+//
+//	dbPath - filesystem path to the SQLite database file; must be non-empty.
+//
+// Returns:
+//
+//	An Option that records the SQLite path. Returns an error wrapping
+//	ErrMissingValue when dbPath is empty.
+func WithSQLiteKnowledgeStore(dbPath string) Option {
+	return func(c *config) error {
+		if dbPath == "" {
+			return fmt.Errorf("sqlite knowledge store path: %w", ErrMissingValue)
+		}
+		c.sqliteStorePath = dbPath
 		return nil
 	}
 }

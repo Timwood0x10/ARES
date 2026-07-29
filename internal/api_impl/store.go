@@ -6,6 +6,8 @@ package apiimpl
 import (
 	"fmt"
 
+	"github.com/Timwood0x10/ares/internal/ares_archive"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
@@ -33,6 +35,27 @@ func NewEventStore() (*EventStore, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create compactable event store: %w", err)
+	}
+	return &EventStore{
+		CompactableEventStore: ces,
+		raw:                   mem,
+	}, nil
+}
+
+// NewEventStoreWithArchive creates an event store with optional round archiving.
+// When archiveCfg.IsEnabled() is false, behaves identically to NewEventStore.
+// When enabled, attaches an ares_archive.ArchiveWriter via an ArchiveSink so
+// rounds are persisted before compaction.
+//
+// Construction is delegated to ares_archive.NewCompactableStoreWithArchive —
+// the single construction source shared by both `ares serve` and `ares start`
+// — so the two entry points never diverge on how the archive-enabled store is
+// wired. This wrapper only adapts the result into the api_impl *EventStore
+// shape (compactable + raw) that local callers and tests depend on.
+func NewEventStoreWithArchive(archiveCfg ares_config.ArchiveConfig) (*EventStore, error) {
+	ces, mem, err := ares_archive.NewCompactableStoreWithArchive(archiveCfg)
+	if err != nil {
+		return nil, err
 	}
 	return &EventStore{
 		CompactableEventStore: ces,

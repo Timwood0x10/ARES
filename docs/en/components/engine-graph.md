@@ -1,6 +1,6 @@
 # Graph - Dynamic Agent Orchestration
 
-**GoAgent Graph** is a lightweight dynamic agent orchestration system that serves as an optional plugin to the Workflow Engine.
+**ARES Graph** is a lightweight dynamic agent orchestration system that serves as an optional plugin to the Workflow Engine.
 
 ## Overview
 

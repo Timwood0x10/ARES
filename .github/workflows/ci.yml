@@ -69,7 +69,7 @@ jobs:
         image: pgvector/pgvector:pg15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: goagent_test
+          POSTGRES_DB: ARES_test
         ports:
           - 5432:5432
         options: >-
@@ -89,7 +89,7 @@ jobs:
 
       - name: Integration tests
         env:
-          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
         run: go test -race -tags=integration -count=1 -timeout=300s ./...
 
   benchmark:
@@ -100,7 +100,7 @@ jobs:
         image: pgvector/pgvector:pg15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: goagent_test
+          POSTGRES_DB: ARES_test
         ports:
           - 5432:5432
         options: >-
@@ -120,7 +120,7 @@ jobs:
 
       - name: Run benchmarks
         env:
-          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
         run: go test -bench=. -benchmem -count=1 -timeout=300s ./... 2>&1 | tee benchmark-output.txt
 
       - name: Upload benchmark results

@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/llm"
 )
 
@@ -26,7 +27,7 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 		MaxPromptLength: cfg.MaxPromptLength,
 		Extra:           cfg.Extra,
 	}
-	client, err := llm.NewClient(llmCfg, llm.WithCallbacks(reg))
+	client, err := llm.NewClient(llmCfg, llm.WithCallbacks(reg), llm.WithSanitizer(ares_security.NewSanitizer()))
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: LLM client: %w", err)
 	}

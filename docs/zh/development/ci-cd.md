@@ -4,7 +4,7 @@
 
 ## 概述
 
-GoAgent 使用 GitHub Actions 进行持续集成和交付。管线通过 lint、测试、集成测试和 benchmark 强制代码质量，确保代码合并前通过所有检查。
+ARES 使用 GitHub Actions 进行持续集成和交付。管线通过 lint、测试、集成测试和 benchmark 强制代码质量，确保代码合并前通过所有检查。
 
 ## 管线架构
 
@@ -116,7 +116,7 @@ staticcheck ./...
 go test -race -count=1 -timeout=300s ./...
 
 # 集成测试（需要 PostgreSQL）
-export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
 go test -race -count=1 -timeout=300s ./internal/integration/...
 
 # Benchmark

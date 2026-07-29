@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"golang.org/x/sync/errgroup"
 )
 
 // Object type constants used by CodeProvider.
@@ -76,7 +77,11 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 	objCh := make(chan *knowledge.KnowledgeObject, 128)
 	errCh := make(chan error, 1)
 
-	go func() {
+	// Use errgroup for structured concurrency so the streaming goroutine is
+	// ctx-cancelable. The errgroup is not waited on here; callers observe
+	// completion via objCh/errCh being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(objCh)
 		defer close(errCh)
 
@@ -92,8 +97,8 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 			if err != nil {
 				return nil // skip unreadable entries
 			}
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if gCtx.Err() != nil {
+				return gCtx.Err()
 			}
 			if count >= maxResults {
 				return filepath.SkipAll
@@ -137,8 +142,8 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 					count++
 					select {
 					case objCh <- obj:
-					case <-ctx.Done():
-						return ctx.Err()
+					case <-gCtx.Done():
+						return gCtx.Err()
 					}
 				}
 			}
@@ -149,7 +154,8 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 		if err != nil && err != context.Canceled && err != filepath.SkipAll {
 			errCh <- fmt.Errorf("code provider: %w", err)
 		}
-	}()
+		return nil
+	})
 
 	return objCh, errCh
 }

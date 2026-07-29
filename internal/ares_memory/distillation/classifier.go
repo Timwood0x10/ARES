@@ -110,22 +110,6 @@ func (c *MemoryClassifier) isRule(content string) bool {
 	return false
 }
 
-// String returns the string representation of MemoryType.
-func (mt MemoryType) String() string {
-	switch mt {
-	case MemoryKnowledge:
-		return "fact"
-	case MemoryPreference:
-		return "preference"
-	case MemoryInteraction:
-		return "solution"
-	case MemoryProfile:
-		return "rule"
-	default:
-		return string(mt)
-	}
-}
-
 // GetMemoryTypeFromString converts a string to MemoryType.
 // Returns MemoryKnowledge as default for invalid input.
 func GetMemoryTypeFromString(s string) MemoryType {

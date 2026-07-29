@@ -294,16 +294,24 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	result, err := a.executor.Execute(ctx, task)
 	if err != nil {
 		a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
-			KeyTaskID:  task.TaskID,
-			KeyAgentID: a.id,
-			KeyError:   err.Error(),
+			KeyTaskID:                            task.TaskID,
+			KeyAgentID:                           a.id,
+			KeyError:                             err.Error(),
+			ares_events.EventKeyTask:             taskEventText(task),
+			ares_events.EventKeyResult:           err.Error(),
+			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
 		return nil, err
 	}
 
 	a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
-		KeyTaskID:  task.TaskID,
-		KeyAgentID: a.id,
+		KeyTaskID:                            task.TaskID,
+		KeyAgentID:                           a.id,
+		ares_events.EventKeyTask:             taskEventText(task),
+		ares_events.EventKeyResult:           resultEventText(result),
+		ares_events.EventKeyTenantID:         distillTenantID(),
+		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 	})
 
 	return result, nil
@@ -372,9 +380,13 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		result, err := a.executor.Execute(ctx, task)
 		if err != nil {
 			a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
-				KeyTaskID:  task.TaskID,
-				KeyAgentID: a.id,
-				KeyError:   err.Error(),
+				KeyTaskID:                            task.TaskID,
+				KeyAgentID:                           a.id,
+				KeyError:                             err.Error(),
+				ares_events.EventKeyTask:             taskEventText(task),
+				ares_events.EventKeyResult:           err.Error(),
+				ares_events.EventKeyTenantID:         distillTenantID(),
+				ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			})
 
 			select {
@@ -386,8 +398,12 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		}
 
 		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
-			KeyTaskID:  task.TaskID,
-			KeyAgentID: a.id,
+			KeyTaskID:                            task.TaskID,
+			KeyAgentID:                           a.id,
+			ares_events.EventKeyTask:             taskEventText(task),
+			ares_events.EventKeyResult:           resultEventText(result),
+			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
 
 		// Send task complete event

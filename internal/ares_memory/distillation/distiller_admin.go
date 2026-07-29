@@ -37,6 +37,13 @@ func (d *Distiller) ResetMetrics() {
 // SubscribeAndDistill subscribes to an EventStore and automatically
 // distills memories from incoming ares_events.
 //
+// When DistillationThreshold > 0, EventMessageAdded events accumulate until
+// the threshold count is reached before being forwarded to processEvent,
+// mirroring the v0.2.4 examples/knowledge-base config.yaml
+// distillation_threshold semantics. EventTaskCompleted events bypass the
+// gate and fire immediately. A threshold of 0 preserves the legacy
+// ungated behaviour: every event fires immediately.
+//
 // Args:
 //
 //	ctx - operation context. Cancelling it closes the subscription.
@@ -62,6 +69,7 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 	d.distillWg.Add(1)
 	d.distillEg.Go(func() error {
 		defer d.distillWg.Done()
+		var roundCounter int
 		for {
 			select {
 			case <-ctx.Done():
@@ -72,6 +80,28 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 					log.InfoContext(ctx, "[Memory Distillation] Event channel closed")
 					return nil
 				}
+				// Task completion bypasses the round gate: tasks are terminal
+				// signals whose distillation should not be delayed.
+				if event.Type == ares_events.EventTaskCompleted {
+					d.processEvent(ctx, event)
+					continue
+				}
+				// Threshold 0 preserves legacy ungated behaviour.
+				d.configMu.RLock()
+				threshold := d.config.DistillationThreshold
+				d.configMu.RUnlock()
+				if threshold <= 0 {
+					d.processEvent(ctx, event)
+					continue
+				}
+				roundCounter++
+				if roundCounter%threshold != 0 {
+					log.DebugContext(ctx, "[Memory Distillation] Round gate holding",
+						"round", roundCounter, "threshold", threshold)
+					continue
+				}
+				log.InfoContext(ctx, "[Memory Distillation] Round gate reached, triggering distillation",
+					"round", roundCounter, "threshold", threshold)
 				d.processEvent(ctx, event)
 			}
 		}
@@ -90,10 +120,14 @@ func (d *Distiller) processEvent(ctx context.Context, event *ares_events.Event) 
 	}
 	switch event.Type {
 	case ares_events.EventMessageAdded:
+		role, _ := event.Payload["role"].(string)
 		log.Debug("distiller received message event",
 			"stream_id", event.StreamID,
-			"role", event.Payload["role"],
+			"role", role,
 		)
+		if d.OnMessageAdded != nil {
+			d.OnMessageAdded(ctx, event.StreamID, role)
+		}
 	case ares_events.EventTaskCompleted:
 		taskID, _ := event.Payload["task_id"].(string)
 		log.Debug("distiller received task completion",

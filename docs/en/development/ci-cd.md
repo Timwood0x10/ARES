@@ -4,7 +4,7 @@
 
 ## Overview
 
-GoAgent uses GitHub Actions for continuous integration and delivery. The pipeline enforces code quality through linting, testing, integration testing, and benchmarking before any code is merged.
+ARES uses GitHub Actions for continuous integration and delivery. The pipeline enforces code quality through linting, testing, integration testing, and benchmarking before any code is merged.
 
 ## Pipeline Architecture
 
@@ -116,7 +116,7 @@ staticcheck ./...
 go test -race -count=1 -timeout=300s ./...
 
 # Integration tests (requires PostgreSQL)
-export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
 go test -race -count=1 -timeout=300s ./internal/integration/...
 
 # Benchmarks

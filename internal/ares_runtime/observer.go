@@ -38,11 +38,11 @@ func (p *ObserverPlugin) Capabilities() []Capability {
 }
 
 // Start subscribes to workflow ares_events and begins writing them to the store.
-// The plugin manages its own lifecycle context so it is not affected by
-// the Start context timeout.
+// The plugin manages its own lifecycle context via Stop().
 func (p *ObserverPlugin) Start(ctx context.Context, bus EventBus) error {
-	// Derive an independent context so the background loop survives the
-	// Start call's context timeout.
+	// Derive an independent context — the ctx passed to Start is a timeout
+	// context from invokeWithTimeout that is cancelled immediately after
+	// Start returns. Using it for the background loop would kill it on return.
 	loopCtx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 

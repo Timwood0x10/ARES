@@ -186,6 +186,53 @@ func TestRegistry_Apply_FailureWithRollback(t *testing.T) {
 	assert.Contains(t, err.Error(), "apply failed")
 }
 
+// fallbackMock is a RuntimeComponent used to verify the registry's fallback
+// rollback behaviour. Its first Apply fails and returns a rollback patch; the
+// registry must apply that rollback through the fallback itself.
+type fallbackMock struct {
+	mu       sync.Mutex
+	applied  []RuntimePatch
+	failWith *RuntimePatch
+}
+
+func (m *fallbackMock) Name() string { return "fallback" }
+
+func (m *fallbackMock) Snapshot(_ context.Context) (any, error) { return nil, nil }
+
+func (m *fallbackMock) Apply(_ context.Context, p RuntimePatch) (*RuntimePatch, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applied = append(m.applied, p)
+	// Fail only on the first call (the original patch), so the rollback
+	// application triggered by the registry succeeds and is observable.
+	if m.failWith != nil && len(m.applied) == 1 {
+		return m.failWith, fmt.Errorf("fallback: apply failed")
+	}
+	return nil, nil
+}
+
+func (m *fallbackMock) CanApply(_ context.Context, _ RuntimePatch) error { return nil }
+
+func TestRegistry_Apply_FallbackFailureWithRollback(t *testing.T) {
+	r := NewRegistry()
+	fb := &fallbackMock{failWith: &RuntimePatch{Type: PatchRemoveNode, Target: "v"}}
+	r.SetFallback(fb)
+
+	err := r.Apply(context.Background(), RuntimePatch{
+		Type:   PatchInsertNode,
+		Target: "unknown-target", // no exact executor -> routed to fallback
+		Value:  "validator",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "apply failed")
+	// The fallback failed and returned a rollback; the registry must apply it
+	// through the fallback itself instead of discarding it (regression test for
+	// the previously-dropped fallback rollback).
+	require.Len(t, fb.applied, 2, "fallback should be applied for the patch and again for its rollback")
+	assert.Equal(t, PatchInsertNode, fb.applied[0].Type)
+	assert.Equal(t, PatchRemoveNode, fb.applied[1].Type)
+}
+
 func TestRegistry_ApplySet(t *testing.T) {
 	r := NewRegistry()
 	ex := &mockExecutor{rollback: &RuntimePatch{Type: PatchRemoveNode, Target: "graph"}}

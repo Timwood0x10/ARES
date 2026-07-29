@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,16 +13,23 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
+	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
+	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -52,32 +61,9 @@ func init() {
 
 func runServe() error {
 	// --- Config ---
-	configPath := serveConfigPath
-	if configPath == "" {
-		for _, p := range []string{
-			"cmd/monitor-live/config.yaml",
-			"./cmd/monitor-live/config.yaml",
-		} {
-			if _, err := os.Stat(p); err == nil {
-				configPath = p
-				break
-			}
-		}
-		if configPath == "" {
-			configPath = "cmd/monitor-live/config.yaml"
-		}
-	}
-
-	cfg, err := ares_config.Load(configPath)
+	cfg, err := loadServeConfig()
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if err := ares_config.LoadFromEnv(cfg); err != nil {
-		return fmt.Errorf("load env: %w", err)
-	}
-
-	if servePort > 0 {
-		cfg.Server.Port = servePort
+		return err
 	}
 
 	// --- Context with signal handling ---
@@ -91,19 +77,27 @@ func runServe() error {
 	// The actual server is constructed after bootstrap/agent setup is complete.
 	var httpSrv *http.Server
 
+	// Graceful shutdown coordinator (internal/ares_shutdown). Real teardown
+	// hooks (HTTP server, MCP, runtime) are registered below once those
+	// components are initialized.
+	shutdownMgr := ares_shutdown.NewManager(30 * time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhasePreShutdown, 5*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseGraceful, 20*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseForce, 5*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		select {
 		case <-sigCh:
 			fmt.Println("\nShutting down...")
-			if httpSrv != nil {
-				// Create a fresh context for shutdown with a timeout so the
-				// server does not hang indefinitely if connections refuse to close.
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer shutdownCancel()
-				if err := httpSrv.Shutdown(shutdownCtx); err != nil && err != http.ErrServerClosed {
-					fmt.Fprintf(os.Stderr, "HTTP server shutdown error: %v\n", err)
-				}
+			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
+			// bounded overall timeout. cancel() afterwards stops background
+			// goroutines (event bridge, task submission) that wait on ctx.
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer shutdownCancel()
+			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
 			}
 			cancel()
 		case <-ctx.Done():
@@ -111,10 +105,26 @@ func runServe() error {
 		return nil
 	})
 
+	// --- EventStore (archive-enabled, shared pipeline) ---
+	// Build the archive-enabled store once and inject it into Bootstrap so
+	// `ares serve` uses the same construction path as `ares start`
+	// (ares_archive.NewCompactableStoreWithArchive is the single source).
+	// Archive defaults to on; disable via memory.archive.enabled: false.
+	// The raw *MemoryEventStore is unused here — serve consumes the store via
+	// the EventStore interface only — so it is discarded.
+	compactableStore, _, err := ares_archive.NewCompactableStoreWithArchive(cfg.Memory.Archive)
+	if err != nil {
+		return fmt.Errorf("create event store: %w", err)
+	}
+
 	// --- Bootstrap: infrastructure components via single wiring hub ---
 	// Uses internal/ares_bootstrap for EventStore, Runtime, Memory.
-	// MCP setup is handled separately below for registry bridging.
-	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
+	// MCP setup is handled separately below for registry bridging. The store
+	// is passed via deps so Bootstrap wires Runtime/Memory against the real
+	// archive-enabled store instead of creating a throwaway MemoryEventStore.
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
+		EventStore: compactableStore,
+	})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
@@ -141,6 +151,24 @@ func runServe() error {
 	internalReg, err := setupMCP(ctx, cfg, registry)
 	if err != nil {
 		return fmt.Errorf("MCP setup: %w", err)
+	}
+
+	// Register AKF (Knowledge Fabric) tools into the internal registry using
+	// the shared KnowledgeRuntime from bootstrap. This is the critical wiring
+	// that makes knowledge genome patches (ChangeBudget/ChangePlanner/
+	// ChangeReducer) affect the actual runtime used by the agent's knowledge
+	// tools — because both the evolution system's KnowledgePatchExecutor and
+	// the agent's AKF tools share the same comp.KnowledgeRuntime instance.
+	if comp.KnowledgeRuntime != nil {
+		akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
+		for _, akfTool := range akfSvc.Tools() {
+			t := akfTool // capture
+			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
+			if err := internalReg.Register(adapted); err != nil {
+				log.Printf("AKF: failed to register tool %q: %v", t.Name, err)
+			}
+		}
+		log.Printf("AKF tools registered with shared KnowledgeRuntime: %d", len(akfSvc.Tools()))
 	}
 
 	// --- ToolBinder for agents ---
@@ -189,7 +217,9 @@ func runServe() error {
 					return s
 				}
 			}
-			return subAgent
+			log.Printf("ERROR: sub-agent factory: agent %q not found in live pool, resurrection impossible",
+				subAgent.ID())
+			return nil // returning nil prevents resurrection with a dead agent
 		}
 		mgr.RegisterAgent(subAgent, subFactory)
 	}
@@ -255,6 +285,11 @@ func runServe() error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
+	// Inject the live agent DAGs into the evolution system's executors,
+	// replacing the synthetic placeholder DAG created at bootstrap time.
+	// This ensures workflow/scheduler/recovery patches hit real runtime state.
+	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
+
 	// --- Submit real tasks ---
 	g.Go(func() error {
 		submitTasks(ctx, leaderAgent)
@@ -288,8 +323,121 @@ func runServe() error {
 		return nil
 	})
 
+	// Register graceful-shutdown hooks now that the server, MCP, and runtime
+	// are initialized. Each hook performs a real teardown (no no-ops).
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
+		if httpSrv != nil {
+			return httpSrv.Shutdown(ctx)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("register http shutdown hook: %w", err)
+	}
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, comp.MCP.Stop); err != nil {
+		return fmt.Errorf("register mcp shutdown hook: %w", err)
+	}
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
+		return mgr.Stop()
+	}); err != nil {
+		return fmt.Errorf("register runtime shutdown hook: %w", err)
+	}
+
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	return g.Wait()
+}
+
+// wireEvolutionLiveDAGs injects the live agent DAGs into the evolution
+// system's executors, replacing the synthetic placeholder DAG created at
+// bootstrap time. This ensures workflow/scheduler/recovery patches hit real
+// runtime state. Extracted from runServe to keep its cyclomatic complexity
+// within lint limits.
+func wireEvolutionLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Manager, leaderID string) {
+	if comp.NewEvolution == nil {
+		return
+	}
+	for _, id := range []string{leaderID} {
+		dag, ok := mgr.GetAgentDAG(id)
+		if !ok || dag == nil {
+			continue
+		}
+		liveDAG, dagOk := dag.(*engine.MutableDAG)
+		if !dagOk {
+			continue
+		}
+		// Register a LiveDAGPatchExecutor that directly mutates the agent's
+		// live MutableDAG instead of a private noop graph.
+		liveExec := newLiveDAGPatchExecutor(mgr, id)
+		// Register as component AND as fallback so workflow structure patches
+		// (insert/remove nodes/edges) with dynamic node ID targets are routed
+		// to the live DAG executor.
+		if err := comp.NewEvolution.PatchReg.RegisterComponent(liveExec); err != nil {
+			log.Printf("serve: register live exec component: %v", err)
+		}
+		if err := comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec); err != nil {
+			log.Printf("serve: register live exec graph.scheduler: %v", err)
+		}
+		comp.NewEvolution.PatchReg.SetFallback(liveExec)
+
+		// Also update the existing graph executor for consistency.
+		if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
+			log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
+		}
+
+		// Update the WorkflowGenome's DAG reference so its evolution mutations
+		// are based on the agent's real workflow topology instead of the
+		// bootstrap 3-step placeholder. Without this, the genome generates
+		// patches against the toy structure, so the content being evolved is
+		// disconnected from reality.
+		wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow")
+		if gErr != nil {
+			continue
+		}
+		setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) })
+		if !ok {
+			continue
+		}
+		setter.SetDAG(liveDAG)
+		log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
+	}
+	// Replace the evolution system's isolated KnowledgeRuntime with the
+	// agent's live KnowledgeRuntime. This ensures knowledge genome patches
+	// (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual runtime
+	// used by the agent's knowledge tools, not the bootstrap placeholder.
+	comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
+}
+
+// loadServeConfig resolves the config path (falling back to the bundled
+// monitor-live config), loads it, applies environment overrides, and applies
+// the --port flag. Extracted from runServe to keep its cyclomatic complexity
+// within lint limits.
+func loadServeConfig() (*ares_config.Config, error) {
+	configPath := serveConfigPath
+	if configPath == "" {
+		for _, p := range []string{
+			"cmd/monitor-live/config.yaml",
+			"./cmd/monitor-live/config.yaml",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				configPath = p
+				break
+			}
+		}
+		if configPath == "" {
+			configPath = "cmd/monitor-live/config.yaml"
+		}
+	}
+
+	cfg, err := ares_config.Load(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		return nil, fmt.Errorf("load env: %w", err)
+	}
+	if servePort > 0 {
+		cfg.Server.Port = servePort
+	}
+	return cfg, nil
 }
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.
@@ -388,3 +536,158 @@ func (s *runtimeAdapterShim) GetAgentInfo(agentID string) (*adapter.AgentInfo, b
 var (
 	_ adapter.RuntimeManager = (*runtimeAdapterShim)(nil)
 )
+
+// akfToolAdapter adapts an AKF MCP tool (func(ctx, input string) -> string)
+// to the core_tools.Tool interface so it can be registered in the internal
+// tool registry and used by sub-agents through the ToolBinder. This is the
+// wiring that makes knowledge genome patches affect the agent's knowledge
+// tools — because both share the same comp.KnowledgeRuntime instance.
+type akfToolAdapter struct {
+	name string
+	desc string
+	fn   func(ctx context.Context, input string) (string, error)
+}
+
+func (a *akfToolAdapter) Name() string                      { return a.name }
+func (a *akfToolAdapter) Description() string               { return a.desc }
+func (a *akfToolAdapter) Category() core_tools.ToolCategory { return core_tools.CategoryKnowledge }
+func (a *akfToolAdapter) Capabilities() []core_tools.Capability {
+	return []core_tools.Capability{core_tools.CapabilityKnowledge}
+}
+func (a *akfToolAdapter) Parameters() *core_tools.ParameterSchema { return nil }
+func (a *akfToolAdapter) Execute(ctx context.Context, params map[string]interface{}) (core_tools.Result, error) {
+	input, _ := params["input"].(string)
+	if input == "" {
+		// Serialize the whole params map as JSON input.
+		b, _ := json.Marshal(params)
+		input = string(b)
+	}
+	out, err := a.fn(ctx, input)
+	if err != nil {
+		return core_tools.NewErrorResult(err.Error()), nil
+	}
+	return core_tools.NewResult(true, map[string]interface{}{"output": out}), nil
+}
+
+// liveDAGPatchExecutor applies workflow structure patches directly to the
+// agent's live engine.MutableDAG held by the runtime manager. Unlike the
+// synthetic GraphPatchExecutor (which operates on a private noop *wfgraph.Graph),
+// this executor reads the live DAG from the manager's dagStore, applies the
+// mutation, and writes it back — so genome evolution patches to workflow
+// structure (insert/remove nodes/edges) actually change the DAG the agent
+// reads at runtime.
+type liveDAGPatchExecutor struct {
+	mgr     *ares_runtime.Manager
+	agentID string
+}
+
+// errNoSnapshot is returned by Snapshot to signal that this executor does
+// not produce a serializable snapshot. Callers should treat it as "no diff
+// available" rather than a real failure.
+var errNoSnapshot = errors.New("live DAG executor: snapshot not supported")
+
+// errNoRollback is returned by Apply when the patch succeeds but produces no
+// rollback patch (the operation is its own inverse or is irreversible).
+var errNoRollback = errors.New("live DAG executor: no rollback patch")
+
+func newLiveDAGPatchExecutor(mgr *ares_runtime.Manager, agentID string) *liveDAGPatchExecutor {
+	return &liveDAGPatchExecutor{mgr: mgr, agentID: agentID}
+}
+
+func (e *liveDAGPatchExecutor) Name() string { return "live_dag" }
+
+func (e *liveDAGPatchExecutor) Snapshot(_ context.Context) (any, error) {
+	return nil, errNoSnapshot
+}
+
+func (e *liveDAGPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
+	// All patch types that GraphPatchExecutor supports are supported here.
+	switch p.Type {
+	case patch.PatchInsertNode, patch.PatchRemoveNode,
+		patch.PatchReplaceNode, patch.PatchAddEdge,
+		patch.PatchRemoveEdge, patch.PatchChangeScheduler:
+		return nil
+	default:
+		return fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)
+	}
+}
+
+func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	dagAny, ok := e.mgr.GetAgentDAG(e.agentID)
+	if !ok || dagAny == nil {
+		return nil, fmt.Errorf("live DAG executor: no DAG for agent %s", e.agentID)
+	}
+	dag, dagOk := dagAny.(*engine.MutableDAG)
+	if !dagOk || dag == nil {
+		return nil, fmt.Errorf("live DAG executor: DAG for agent %s is not a MutableDAG", e.agentID)
+	}
+
+	switch p.Type {
+	case patch.PatchInsertNode:
+		step := &engine.Step{ID: p.Target, Name: p.Target, AgentType: "processor"}
+		if err := dag.AddNode(ctx, step); err != nil {
+			return nil, fmt.Errorf("live DAG: insert node %s: %w", p.Target, err)
+		}
+		return &patch.RuntimePatch{
+			Type:   patch.PatchRemoveNode,
+			Target: p.Target,
+			Reason: "rollback: remove inserted node",
+		}, nil
+
+	case patch.PatchRemoveNode:
+		if err := dag.RemoveNode(ctx, p.Target); err != nil {
+			return nil, fmt.Errorf("live DAG: remove node %s: %w", p.Target, err)
+		}
+		return nil, errNoRollback
+
+	case patch.PatchReplaceNode:
+		step := &engine.Step{ID: p.Target, Name: p.Target, AgentType: "processor"}
+		if err := dag.RemoveNode(ctx, p.Target); err != nil {
+			return nil, fmt.Errorf("live DAG: replace (remove) node %s: %w", p.Target, err)
+		}
+		if err := dag.AddNode(ctx, step); err != nil {
+			return nil, fmt.Errorf("live DAG: replace (add) node %s: %w", p.Target, err)
+		}
+		return nil, errNoRollback
+
+	case patch.PatchAddEdge:
+		val, ok := p.Value.(map[string]string)
+		if !ok {
+			return nil, fmt.Errorf("live DAG: AddEdge value must be map[string]string")
+		}
+		from, to := val["from"], val["to"]
+		if err := dag.AddEdge(ctx, from, to); err != nil {
+			return nil, fmt.Errorf("live DAG: add edge %s→%s: %w", from, to, err)
+		}
+		return &patch.RuntimePatch{
+			Type:   patch.PatchRemoveEdge,
+			Value:  map[string]string{"from": from, "to": to},
+			Reason: "rollback: remove added edge",
+		}, nil
+
+	case patch.PatchRemoveEdge:
+		val, ok := p.Value.(map[string]string)
+		if !ok {
+			return nil, fmt.Errorf("live DAG: RemoveEdge value must be map[string]string")
+		}
+		from, to := val["from"], val["to"]
+		if err := dag.RemoveEdge(ctx, from, to); err != nil {
+			return nil, fmt.Errorf("live DAG: remove edge %s→%s: %w", from, to, err)
+		}
+		return nil, errNoRollback
+
+	case patch.PatchChangeScheduler:
+		// Store the scheduler type on the live DAG so the agent's runtime
+		// scheduler selection reads the evolved config instead of the default.
+		schedType := fmt.Sprintf("%T", p.Value)
+		dag.SchedulerType = schedType
+		log.Printf("live DAG: scheduler change for agent %s: %s", e.agentID, schedType)
+		return nil, errNoRollback
+
+	default:
+		return nil, fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)
+	}
+}
+
+// Ensure liveDAGPatchExecutor implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*liveDAGPatchExecutor)(nil)

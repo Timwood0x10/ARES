@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/storage"
+	"golang.org/x/sync/errgroup"
 )
 
 // VectorProvider implements GraphProvider by querying a VectorStore for
@@ -128,7 +129,11 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 	objCh := make(chan *knowledge.KnowledgeObject, 32)
 	errCh := make(chan error, 1)
 
-	go func() {
+	// Use errgroup for structured concurrency so the streaming goroutine is
+	// ctx-cancelable. The errgroup is not waited on here; callers observe
+	// completion via objCh/errCh being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(objCh)
 		defer close(errCh)
 
@@ -146,11 +151,11 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			limit = 200 // safety cap
 		}
 
-		results, err := p.store.Search(ctx, p.config.Collection, queryVec, limit)
+		results, err := p.store.Search(gCtx, p.config.Collection, queryVec, limit)
 		if err != nil {
 			// If the collection doesn't exist yet, return empty (not an error).
 			errCh <- fmt.Errorf("vector search %s: %w", p.config.Collection, err)
-			return
+			return nil
 		}
 
 		for _, r := range results {
@@ -162,11 +167,12 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 
 			select {
 			case objCh <- obj:
-			case <-ctx.Done():
-				return
+			case <-gCtx.Done():
+				return nil
 			}
 		}
-	}()
+		return nil
+	})
 
 	return objCh, errCh
 }

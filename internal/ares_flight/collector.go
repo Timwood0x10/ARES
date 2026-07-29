@@ -117,20 +117,20 @@ func (c *Collector) collectLoop(ctx context.Context, ch <-chan *ares_events.Even
 			if !ok {
 				return
 			}
-			c.processEvent(evt)
+			c.processEvent(ctx, evt)
 		}
 	}
 }
 
 // processEvent routes a single event to the right handler.
-func (c *Collector) processEvent(evt *ares_events.Event) {
+func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 	if evt == nil {
 		return
 	}
 
 	// Emit evidence to the unified Evidence Store.
 	if c.evidenceCollector != nil {
-		_ = c.evidenceCollector.EmitWithMeta(context.Background(), evidence.KindExecutionTrace,
+		_ = c.evidenceCollector.EmitWithMeta(ctx, evidence.KindExecutionTrace,
 			map[string]any{
 				"event_type": evt.Type,
 				"stream_id":  evt.StreamID,

@@ -25,6 +25,8 @@ go run examples/01-quickstart/main.go
 | 07 | Human-in-Loop | `go run examples/07-human-in-loop/main.go` | `WithHumanInput` human approval for tool calls | ≤150 |
 | 08 | MCP | `go run examples/08-mcp-integration/main.go` | `WithMCP` connect to MCP server | ≤73 |
 | 09 | Full App | `go run examples/09-full-app/main.go` | Web UI + Agent + Tools + Memory + Stats (open :8080) | ≤240 |
+| 21 | AI Assistant | `go run examples/21-ai-assistant-integration/main.go` | `api/knowledge` KnowledgeService integration (no internal/ import) | ≤94 |
+| 22 | Evolution Blocks | `go run examples/22-evolution-blocks/main.go` | `api/evolution` building blocks: Mutator+Population+Promoter (no internal/ import) | ≤148 |
 | Eval | Evaluation | `go run examples/eval/main.go` | 5 scenarios: chat, tool, multi-agent, resilience, evolution | ≤264 |
 
 ## Evaluation Scenarios

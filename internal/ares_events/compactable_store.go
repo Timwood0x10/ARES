@@ -32,6 +32,18 @@ type CompactableEventStore struct {
 	// Track which streams have been recently checked to avoid redundant checks.
 	// Key: streamID, value: last version at which compaction was checked.
 	lastChecked map[string]int64
+
+	// archiveSink archives round records at task-terminal boundaries and before
+	// compaction. nil = no archiving. Set via WithArchiveSink.
+	archiveSink ArchiveSink
+	// archiveMu protects roundCounter and lastArchivedVersion. It is separate
+	// from mu so I/O (stream Read, sink call) never holds mu.
+	archiveMu sync.Mutex
+	// roundCounter maps streamID -> next round number to assign (1-based).
+	roundCounter map[string]int
+	// lastArchivedVersion maps streamID -> stream version through which rounds
+	// are archived. Reads for archiving start at this version (inclusive).
+	lastArchivedVersion map[string]int64
 }
 
 // NewCompactableEventStore creates a new auto-compacting event store wrapper.
@@ -55,9 +67,11 @@ func NewCompactableEventStore(
 	}
 
 	c := &CompactableEventStore{
-		EventStore:  store,
-		trimStore:   trimStore,
-		lastChecked: make(map[string]int64),
+		EventStore:          store,
+		trimStore:           trimStore,
+		lastChecked:         make(map[string]int64),
+		roundCounter:        make(map[string]int),
+		lastArchivedVersion: make(map[string]int64),
 	}
 
 	c.compactor = NewCompactor(store, repo, config)
@@ -85,11 +99,24 @@ func (s *CompactableEventStore) Append(
 		return err
 	}
 
+	// Detect a terminal event in the appended batch synchronously (before
+	// launching the goroutine) so the async path never reads the caller's
+	// slice. Non-terminal appends skip the archive scan entirely to avoid
+	// re-reading the in-progress round on every Append; the pre-compaction
+	// drain in maybeCompact is the safety net for rounds that accumulate
+	// without a triggering Append.
+	hasTerminal := s.archiveSink != nil && len(filterTerminalEvents(events)) > 0
+
 	// Launch compaction check in background with a timeout context to prevent
 	// runaway goroutines. Uses errgroup per coding standard (no bare go).
 	compactCtx, cancel := context.WithTimeout(context.Background(), compactionTimeout)
 	g, gCtx := errgroup.WithContext(compactCtx)
 	g.Go(func() error {
+		if hasTerminal {
+			if err := s.drainPendingRounds(gCtx, streamID); err != nil {
+				log.Warn("archive: drain pending rounds failed", "stream_id", streamID, "error", err)
+			}
+		}
 		s.maybeCompact(gCtx, streamID)
 		return nil
 	})
@@ -177,6 +204,16 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	s.lastChecked[streamID] = version
 	s.mu.Unlock()
 
+	// Pre-compaction archive flush (P3 safety net). Drains ALL pending rounds
+	// so the compaction core cannot trim raw events belonging to an
+	// un-archived round (which would permanently lose its RoundRecord). Must
+	// run BEFORE CheckAndCompact. Best-effort: never fails compaction.
+	if s.archiveSink != nil {
+		if archiveErr := s.drainPendingRounds(ctx, streamID); archiveErr != nil {
+			log.Warn("compaction: pre-compaction archive drain failed", "stream_id", streamID, "error", archiveErr)
+		}
+	}
+
 	didCompact, err := s.compactor.CheckAndCompact(ctx, streamID)
 	if err != nil {
 		log.Error("compaction: automatic compaction failed",
@@ -235,4 +272,151 @@ func (s *CompactableEventStore) GetSummariesForAgent(ctx context.Context, agentI
 func (s *CompactableEventStore) WithCustomSummarizer(summarizer EventSummarizer) *CompactableEventStore {
 	s.compactor.summarizer = summarizer
 	return s
+}
+
+// WithArchiveSink attaches a round-archive sink. The sink is invoked at round
+// boundaries (task-terminal events) and before compaction, so a round's record
+// is durable before the compaction core can discard the raw events. nil is a
+// no-op. Returns the store for chaining.
+func (s *CompactableEventStore) WithArchiveSink(sink ArchiveSink) *CompactableEventStore {
+	s.archiveSink = sink
+	return s
+}
+
+// archiveReadLimit caps the number of events read per archive scan page so a
+// single archivePendingRoundsOnce call stays bounded even on very long
+// streams. Rounds that span more than this many events are handled by paging:
+// the scan accumulates events across pages until it reaches the terminal.
+const archiveReadLimit = 500
+
+// maxArchiveDrainRounds caps the number of rounds a single drain may archive,
+// bounding work when a stream accumulates many terminals before compaction.
+// Any residual is picked up by the next drain.
+const maxArchiveDrainRounds = 1000
+
+// archivePendingRounds archives the next un-archived round for the stream and
+// returns its error. It is a thin wrapper around archivePendingRoundsOnce that
+// discards the "archived" flag, preserved for direct unit-testing of the
+// single-round path. Callers that must flush ALL pending rounds before
+// compaction use drainPendingRounds instead.
+func (s *CompactableEventStore) archivePendingRounds(ctx context.Context, streamID string) error {
+	_, err := s.archivePendingRoundsOnce(ctx, streamID)
+	return err
+}
+
+// drainPendingRounds repeatedly archives pending rounds until no un-archived
+// terminal event remains (or an error/cancellation occurs). It is the
+// pre-compaction safety net: every pending round must be flushed BEFORE
+// CheckAndCompact so the compaction core cannot trim raw events belonging to
+// an un-archived round, which would permanently lose its RoundRecord.
+func (s *CompactableEventStore) drainPendingRounds(ctx context.Context, streamID string) error {
+	for range maxArchiveDrainRounds {
+		archived, err := s.archivePendingRoundsOnce(ctx, streamID)
+		if err != nil {
+			return err
+		}
+		if !archived {
+			return nil
+		}
+	}
+	return nil
+}
+
+// archivePendingRoundsOnce archives the next un-archived round (if any) for
+// the stream. It pages through the un-archived window, accumulating the
+// round's events until it finds the next terminal event (task completed or
+// failed) or runs out of events. Paging ensures rounds that span more than
+// archiveReadLimit events are archived completely — earlier events are never
+// orphaned from their round record.
+//
+// When no terminal event is found, the round boundary (lastArchivedVersion)
+// is left UNCHANGED so the next call re-scans from the same boundary and
+// captures the in-progress events once the terminal arrives. (Advancing past
+// non-terminal events would orphan them from their round record.)
+//
+// The function is safe for concurrent use and never holds archiveMu during
+// stream I/O or the sink call (mirroring maybeCompact's lock discipline).
+//
+// Returns:
+//   - archived: true when a round was archived (the sink was invoked).
+//   - error: nil on success or "nothing to archive"; a wrapped error on read
+//     or sink failure. A sink failure returns archived=true because the round
+//     was already claimed (best-effort, no rollback).
+func (s *CompactableEventStore) archivePendingRoundsOnce(ctx context.Context, streamID string) (bool, error) {
+	if s.archiveSink == nil {
+		return false, nil
+	}
+
+	// Step 1: snapshot the round boundary (last archived terminal version).
+	s.archiveMu.Lock()
+	roundStart := s.lastArchivedVersion[streamID]
+	s.archiveMu.Unlock()
+
+	// Step 2: page through the un-archived window, accumulating events until
+	// the next terminal event or the end of the stream. lastSeen is both the
+	// read cursor (ReadOptions.FromVersion is inclusive) and the dedup filter,
+	// so the inclusive overlap event from the previous page is skipped.
+	var roundEvents []*Event
+	var terminal *Event
+	lastSeen := roundStart
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, fmt.Errorf("archive: context: %w", err)
+		}
+		page, err := s.EventStore.Read(ctx, streamID, ReadOptions{
+			FromVersion: lastSeen,
+			Direction:   ReadAscending,
+			Limit:       archiveReadLimit,
+		})
+		if err != nil {
+			return false, fmt.Errorf("archive: read stream %q: %w", streamID, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, ev := range page {
+			if ev == nil || ev.Version <= lastSeen {
+				continue // skip inclusive overlap + the archived boundary terminal
+			}
+			roundEvents = append(roundEvents, ev)
+			if ev.Type == EventTaskCompleted || ev.Type == EventTaskFailed {
+				terminal = ev
+				break
+			}
+		}
+		lastSeen = page[len(page)-1].Version
+		if terminal != nil {
+			break
+		}
+		// Partial page => end of stream reached without a terminal.
+		if len(page) < archiveReadLimit {
+			break
+		}
+	}
+
+	if terminal == nil {
+		// No terminal yet — leave the round boundary unchanged so the
+		// in-progress events are retained for the round record.
+		return false, nil
+	}
+
+	// Step 3: compare-and-swap the round assignment under the lock.
+	s.archiveMu.Lock()
+	if current, ok := s.lastArchivedVersion[streamID]; ok && current != roundStart {
+		// Another goroutine already advanced the boundary — round was claimed.
+		s.archiveMu.Unlock()
+		return false, nil
+	}
+	s.roundCounter[streamID]++
+	round := s.roundCounter[streamID]
+	s.lastArchivedVersion[streamID] = terminal.Version
+	s.archiveMu.Unlock()
+
+	// Step 4: invoke the sink WITHOUT holding the lock. A sink failure is
+	// returned (the caller logs it) but the round is considered claimed — no
+	// rollback, matching the best-effort archive contract.
+	if err := s.archiveSink(ctx, round, streamID, roundEvents); err != nil {
+		return true, fmt.Errorf("archive: sink round %d stream %q: %w", round, streamID, err)
+	}
+	return true, nil
 }

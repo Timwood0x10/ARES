@@ -4,6 +4,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"golang.org/x/sync/errgroup"
 )
 
 // StrategyStore is the interface we need from the evolution system.
@@ -61,13 +63,17 @@ func (p *EvolutionProvider) Stream(ctx context.Context, intent knowledge.Intent)
 	objCh := make(chan *knowledge.KnowledgeObject, 32)
 	errCh := make(chan error, 1)
 
-	go func() {
+	// Use errgroup for structured concurrency so the streaming goroutine is
+	// ctx-cancelable. The errgroup is not waited on here; callers observe
+	// completion via objCh/errCh being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(objCh)
 		defer close(errCh)
 
 		// Check context before doing any work.
-		if ctx.Err() != nil {
-			return
+		if gCtx.Err() != nil {
+			return nil
 		}
 
 		limit := intent.Scope.MaxObjects
@@ -76,30 +82,33 @@ func (p *EvolutionProvider) Stream(ctx context.Context, intent knowledge.Intent)
 		}
 
 		// Emit active strategy first.
-		active, err := p.store.GetActive(ctx)
+		active, err := p.store.GetActive(gCtx)
 		if err != nil {
-			errCh <- fmt.Errorf("evolution provider %q: get active: %w", p.name, err)
-			return
+			if !errors.Is(err, ares_evolution.ErrNoActiveStrategy) {
+				errCh <- fmt.Errorf("evolution provider %q: get active: %w", p.name, err)
+				return nil
+			}
+			active = nil
 		}
 		if active != nil {
 			obj := adapter.FromStrategy(active, p.ns)
 			if obj != nil {
 				select {
 				case objCh <- obj:
-				case <-ctx.Done():
-					return
+				case <-gCtx.Done():
+					return nil
 				}
 				limit--
 			}
 		}
 
 		if limit <= 0 {
-			return
+			return nil
 		}
 
 		// Emit historical strategies from the active strategy's lineage.
 		if active != nil {
-			history, hErr := p.store.GetHistory(ctx, active.ID, limit)
+			history, hErr := p.store.GetHistory(gCtx, active.ID, limit)
 			if hErr == nil {
 				for _, s := range history {
 					if s.Version == active.Version {
@@ -109,14 +118,15 @@ func (p *EvolutionProvider) Stream(ctx context.Context, intent knowledge.Intent)
 					if obj != nil {
 						select {
 						case objCh <- obj:
-						case <-ctx.Done():
-							return
+						case <-gCtx.Done():
+							return nil
 						}
 					}
 				}
 			}
 		}
-	}()
+		return nil
+	})
 
 	return objCh, errCh
 }

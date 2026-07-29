@@ -450,7 +450,6 @@ func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
 		}
 		query += fmt.Sprintf(" AND type = ANY($%d)", argIdx)
 		args = append(args, typeStrs)
-		argIdx++ //nolint:ineffassign // Reserved for future query parameters.
 	}
 
 	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT %d", defaultEventReadLimit)

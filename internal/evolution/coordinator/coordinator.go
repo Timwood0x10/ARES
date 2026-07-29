@@ -33,12 +33,13 @@ const (
 // PatchProposal is what the Coordinator receives.
 // It wraps a RuntimePatch with metadata for the decision process.
 type PatchProposal struct {
-	Patch     patch.RuntimePatch `json:"patch"`
-	Source    PatchSource        `json:"source"`
-	Reason    string             `json:"reason"`   // why this patch was proposed
-	Priority  int                `json:"priority"` // 1-10, higher = more urgent
-	Fitness   float64            `json:"fitness"`  // GA fitness score (0-100), 0 = unknown
-	Timestamp time.Time          `json:"timestamp"`
+	Patch      patch.RuntimePatch `json:"patch"`
+	Source     PatchSource        `json:"source"`
+	Reason     string             `json:"reason"`   // why this patch was proposed
+	Priority   int                `json:"priority"` // 1-10, higher = more urgent
+	Fitness    float64            `json:"fitness"`  // GA fitness score (0-100), 0 = unknown
+	Timestamp  time.Time          `json:"timestamp"`
+	RetryCount int                `json:"retry_count"` // number of times this proposal was delayed and re-queued
 }
 
 // Decision is the Coordinator's output.
@@ -49,6 +50,10 @@ const (
 	DecisionReject                 // Reject the patch
 	DecisionDelay                  // Revisit later
 )
+
+// maxProposalRetries bounds how many times a delayed proposal is re-queued for
+// review before it is permanently dropped, preventing an infinite delay loop.
+const maxProposalRetries = 3
 
 // String returns a human-readable name for the decision.
 func (d Decision) String() string {
@@ -88,6 +93,17 @@ type PolicyGenome struct {
 	// Scale: 0-100, matching population BestScore. 0 = disabled.
 	// Only applies to SourceGA. Other sources bypass fitness checks.
 	ApplyFitnessThreshold float64
+
+	// SelfHealingEnabled enables automatic repair patch generation when
+	// chaos faults are detected. When enabled, the Coordinator monitors
+	// patch failures and generated repair proposals.
+	// Default: false (disabled, must be explicitly enabled).
+	SelfHealingEnabled bool `json:"self_healing_enabled" yaml:"self_healing_enabled"`
+
+	// SelfHealingMaxRetries is the maximum number of self-healing attempts
+	// before the Coordinator stops trying to repair a failing component.
+	// Default: 3.
+	SelfHealingMaxRetries int `json:"self_healing_max_retries" yaml:"self_healing_max_retries"`
 }
 
 // DefaultPolicy returns a sensible default Coordinator policy.
@@ -97,6 +113,8 @@ func DefaultPolicy() PolicyGenome {
 		MaxPatchesPerMinute:   4,
 		MinFitnessThreshold:   30.0,
 		ApplyFitnessThreshold: 60.0,
+		SelfHealingEnabled:    false,
+		SelfHealingMaxRetries: 3,
 	}
 }
 
@@ -125,14 +143,52 @@ type EvolutionCoordinator struct {
 	decisions    []PatchDecision // decision history
 	patchHistory []PatchResult   // apply results
 	patchReg     *patch.Registry // registry for applying patches
+	deployer     PatchDeployer   // optional safe-promotion pipeline (nil = direct apply)
+
+	// Self-healing state.
+	healingAttempts map[string]int // target -> number of healing attempts
+	healingResults  []HealingAttempt
+}
+
+// HealingAttempt records a self-healing attempt by the Coordinator.
+type HealingAttempt struct {
+	Target    string    `json:"target"`
+	PatchType string    `json:"patch_type"`
+	Attempt   int       `json:"attempt"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NewEvolutionCoordinator creates a new EvolutionCoordinator.
 func NewEvolutionCoordinator(policy PolicyGenome, patchReg *patch.Registry) *EvolutionCoordinator {
 	return &EvolutionCoordinator{
-		policy:   policy,
-		patchReg: patchReg,
+		policy:          policy,
+		patchReg:        patchReg,
+		healingAttempts: make(map[string]int),
+		healingResults:  make([]HealingAttempt, 0),
 	}
+}
+
+// PatchDeployer safely promotes a patch to the live runtime. It is optional:
+// when nil or disabled, the Coordinator applies patches directly via patchReg,
+// preserving the pre-deployment behavior. This keeps the Coordinator decoupled
+// from the deployment package (it only depends on this interface).
+type PatchDeployer interface {
+	// Enabled reports whether auto-promotion to live is active.
+	Enabled() bool
+	// Deploy promotes the patch; returns a non-nil error only on catastrophic
+	// failure (a normal reject/rollback is not an error).
+	Deploy(ctx context.Context, p patch.RuntimePatch) error
+}
+
+// SetDeployer installs an optional safe-promotion pipeline. When set and
+// enabled, accepted patches are promoted through it instead of applied
+// directly. Safe to call once during wiring; nil clears it.
+func (ec *EvolutionCoordinator) SetDeployer(d PatchDeployer) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.deployer = d
 }
 
 // ApplyEmergency applies a patch immediately, bypassing the decision process.
@@ -196,6 +252,81 @@ func (ec *EvolutionCoordinator) PatchHistory() []PatchResult {
 	return results
 }
 
+// NotifySelfHealingAttempt records a self-healing attempt. Returns true if
+// the Coordinator should proceed, false if disabled or max retries exceeded.
+// Once exceeded, the refusal is sticky: subsequent calls for the same target
+// return false without appending another record, so healingResults is bounded.
+func (ec *EvolutionCoordinator) NotifySelfHealingAttempt(target string, patchType string) bool {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if !ec.policy.SelfHealingEnabled {
+		return false
+	}
+
+	// Sticky refusal: once exceeded, do not grow history further.
+	if ec.healingAttempts[target] > ec.policy.SelfHealingMaxRetries {
+		return false
+	}
+
+	ec.healingAttempts[target]++
+	attempt := ec.healingAttempts[target]
+	if attempt > ec.policy.SelfHealingMaxRetries {
+		ec.healingResults = append(ec.healingResults, HealingAttempt{
+			Target:    target,
+			PatchType: patchType,
+			Attempt:   attempt,
+			Success:   false,
+			Error:     "max retries exceeded",
+			Timestamp: time.Now(),
+		})
+		return false
+	}
+	return true
+}
+
+// NotifySelfHealingOutcome records the result of a self-healing attempt.
+// No-op when SelfHealingEnabled is false. The caller MUST have called
+// NotifySelfHealingAttempt first for this target; if not, the outcome is
+// recorded with an explicit "outcome recorded without attempt" marker so
+// the misuse is observable in SelfHealingHistory rather than silently
+// emitting Attempt: 0.
+func (ec *EvolutionCoordinator) NotifySelfHealingOutcome(target string, patchType string, success bool, errMsg string) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if !ec.policy.SelfHealingEnabled {
+		return
+	}
+
+	attempt := ec.healingAttempts[target]
+	err := errMsg
+	if attempt == 0 {
+		if err != "" {
+			err += "; "
+		}
+		err += "outcome recorded without attempt"
+	}
+
+	ec.healingResults = append(ec.healingResults, HealingAttempt{
+		Target:    target,
+		PatchType: patchType,
+		Attempt:   attempt,
+		Success:   success,
+		Error:     err,
+		Timestamp: time.Now(),
+	})
+}
+
+// SelfHealingHistory returns all self-healing attempts for observability.
+func (ec *EvolutionCoordinator) SelfHealingHistory() []HealingAttempt {
+	ec.mu.RLock()
+	defer ec.mu.RUnlock()
+	out := make([]HealingAttempt, len(ec.healingResults))
+	copy(out, ec.healingResults)
+	return out
+}
+
 // Evaluate processes all pending proposals and applies accepted patches.
 func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 	ec.mu.Lock()
@@ -213,19 +344,40 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 		})
 		ec.mu.Unlock()
 
-		if decision != DecisionApply {
-			continue
+		switch decision {
+		case DecisionApply:
+			// Apply the patch. When a deployer is installed and enabled,
+			// promote through the safe-deployment pipeline (staging → live);
+			// otherwise apply directly to preserve prior behavior.
+			ec.mu.Lock()
+			d := ec.deployer
+			ec.mu.Unlock()
+			var applyErr error
+			if d != nil && d.Enabled() {
+				applyErr = d.Deploy(ctx, proposal.Patch)
+			} else {
+				applyErr = ec.patchReg.Apply(ctx, proposal.Patch)
+			}
+			ec.mu.Lock()
+			ec.patchHistory = append(ec.patchHistory, PatchResult{
+				Proposal:  proposal,
+				AppliedAt: time.Now(),
+				Error:     applyErr,
+			})
+			ec.mu.Unlock()
+		case DecisionDelay:
+			// Re-queue for later review instead of silently discarding the
+			// proposal. Bounded by maxProposalRetries to prevent an infinite
+			// delay loop.
+			if proposal.RetryCount < maxProposalRetries {
+				proposal.RetryCount++
+				ec.mu.Lock()
+				ec.proposals = append(ec.proposals, proposal)
+				ec.mu.Unlock()
+			}
+		case DecisionReject:
+			// Permanently rejected; do not re-queue.
 		}
-
-		// Apply the patch.
-		err := ec.patchReg.Apply(ctx, proposal.Patch)
-		ec.mu.Lock()
-		ec.patchHistory = append(ec.patchHistory, PatchResult{
-			Proposal:  proposal,
-			AppliedAt: time.Now(),
-			Error:     err,
-		})
-		ec.mu.Unlock()
 	}
 }
 
@@ -263,7 +415,10 @@ func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 		return DecisionApply
 	}
 
-	return DecisionApply
+	// Below auto-apply threshold: delay for review rather than silently
+	// applying. The previous fallthrough to DecisionApply meant all patches
+	// got applied regardless of quality — rendering AutoApplyThreshold dead.
+	return DecisionDelay
 }
 
 // countRecentPatches counts patch applications within the given duration.

@@ -25,6 +25,7 @@ const (
 	srcKnowledge = "diff.knowledge"
 	srcScheduler = "diff.scheduler"
 	srcRecovery  = "diff.recovery"
+	srcMemory    = "diff.memory"
 )
 
 // Differ computes the difference between two genome snapshots

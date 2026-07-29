@@ -12,9 +12,9 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -64,6 +64,12 @@ type DistillationConfig struct {
 
 	// PrecisionOverRecall prioritizes precision over recall.
 	PrecisionOverRecall bool
+
+	// DistillationThreshold is the number of conversation rounds that accumulate
+	// before distillation fires in the event subscription path. A value of 0
+	// disables round gating: every EventMessageAdded triggers distillation.
+	// Mirrors v0.2.4 examples/knowledge-base config.yaml distillation_threshold.
+	DistillationThreshold int
 }
 
 // DefaultDistillationConfig returns the default configuration for distillation.
@@ -84,6 +90,9 @@ func DefaultDistillationConfig() *DistillationConfig {
 		TopNBeforeConflict:         true,
 		ConflictSearchLimit:        5,
 		PrecisionOverRecall:        true,
+		// DistillationThreshold 0 means event-driven ungated firing
+		// (preserves existing behaviour when no threshold is configured).
+		DistillationThreshold: 0,
 	}
 }
 
@@ -128,7 +137,7 @@ type Distiller struct {
 	scorer      *ImportanceScorer
 	resolver    *ConflictResolver
 	noiseFilter *NoiseFilter
-	embedder    embedding.EmbeddingService
+	embedder    apiembed.EmbeddingService
 	pipeline    memembed.EmbeddingPipeline
 	repo        ExperienceRepository
 	expStore    ExperienceStore // Optional: writes distilled memories to experience store
@@ -140,6 +149,14 @@ type Distiller struct {
 	// If set, the distiller invokes it with the task ID from the event payload.
 	// The handler should trigger the full distillation pipeline for the task.
 	OnTaskCompleted func(ctx context.Context, taskID string)
+
+	// OnMessageAdded is called when a message-added event passes the round gate
+	// (i.e. after DistillationThreshold gating in SubscribeAndDistill, or
+	// immediately when no threshold is configured). If set, the distiller
+	// invokes it with the stream ID and role from the event payload. This is
+	// the observable hook for the round-gate behaviour; without it, message
+	// events only produce a debug log.
+	OnMessageAdded func(ctx context.Context, streamID, role string)
 }
 
 // NewDistiller creates a new Distiller instance.
@@ -153,7 +170,7 @@ type Distiller struct {
 // Returns:
 //
 //	*Distiller - configured distiller instance.
-func NewDistiller(config *DistillationConfig, embedder embedding.EmbeddingService, repo ExperienceRepository) *Distiller {
+func NewDistiller(config *DistillationConfig, embedder apiembed.EmbeddingService, repo ExperienceRepository) *Distiller {
 	if config == nil {
 		config = DefaultDistillationConfig()
 	}
@@ -426,7 +443,10 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 			if d.pipeline != nil {
 				problem, _ := memory.Metadata["problem"].(string)
 				solution, _ := memory.Metadata["solution"].(string)
-				spec, specErr := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
+				// Assign to the outer spec so the retry path below can reuse it.
+				// Using := here would shadow spec and leave the retry with a zero value.
+				var specErr error
+				spec, specErr = d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
 					MemoryType: memory.Type.String(),
 					Problem:    problem,
 					Solution:   solution,
@@ -439,7 +459,9 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 				}
 				embedding, err = d.pipeline.Embed(embedCtx, spec)
 			} else {
-				embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
+				// Assign to the outer embeddingText so the retry path below can reuse it.
+				// Using := here would shadow embeddingText and leave the retry with empty text.
+				embeddingText = fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
 				embedding, err = d.embedder.EmbedWithPrefix(embedCtx, embeddingText, "memory:")
 			}
 			if err != nil {
