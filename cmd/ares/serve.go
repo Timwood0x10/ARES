@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
@@ -104,10 +105,26 @@ func runServe() error {
 		return nil
 	})
 
+	// --- EventStore (archive-enabled, shared pipeline) ---
+	// Build the archive-enabled store once and inject it into Bootstrap so
+	// `ares serve` uses the same construction path as `ares start`
+	// (ares_archive.NewCompactableStoreWithArchive is the single source).
+	// Archive defaults to on; disable via memory.archive.enabled: false.
+	// The raw *MemoryEventStore is unused here — serve consumes the store via
+	// the EventStore interface only — so it is discarded.
+	compactableStore, _, err := ares_archive.NewCompactableStoreWithArchive(cfg.Memory.Archive)
+	if err != nil {
+		return fmt.Errorf("create event store: %w", err)
+	}
+
 	// --- Bootstrap: infrastructure components via single wiring hub ---
 	// Uses internal/ares_bootstrap for EventStore, Runtime, Memory.
-	// MCP setup is handled separately below for registry bridging.
-	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
+	// MCP setup is handled separately below for registry bridging. The store
+	// is passed via deps so Bootstrap wires Runtime/Memory against the real
+	// archive-enabled store instead of creating a throwaway MemoryEventStore.
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
+		EventStore: compactableStore,
+	})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}

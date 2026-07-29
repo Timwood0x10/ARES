@@ -46,19 +46,21 @@ func NewEventStore() (*EventStore, error) {
 // When archiveCfg.IsEnabled() is false, behaves identically to NewEventStore.
 // When enabled, attaches an ares_archive.ArchiveWriter via an ArchiveSink so
 // rounds are persisted before compaction.
+//
+// Construction is delegated to ares_archive.NewCompactableStoreWithArchive —
+// the single construction source shared by both `ares serve` and `ares start`
+// — so the two entry points never diverge on how the archive-enabled store is
+// wired. This wrapper only adapts the result into the api_impl *EventStore
+// shape (compactable + raw) that local callers and tests depend on.
 func NewEventStoreWithArchive(archiveCfg ares_config.ArchiveConfig) (*EventStore, error) {
-	es, err := NewEventStore()
+	ces, mem, err := ares_archive.NewCompactableStoreWithArchive(archiveCfg)
 	if err != nil {
 		return nil, err
 	}
-	if archiveCfg.IsEnabled() {
-		aw, err := ares_archive.NewFileArchiveWriter(archiveCfg.Dir, archiveCfg.MaxRounds)
-		if err != nil {
-			return nil, fmt.Errorf("create archive writer: %w", err)
-		}
-		es.CompactableEventStore = es.WithArchiveSink(ares_archive.NewEventArchiveSink(aw))
-	}
-	return es, nil
+	return &EventStore{
+		CompactableEventStore: ces,
+		raw:                   mem,
+	}, nil
 }
 
 // RawStore exposes the underlying MemoryEventStore for components

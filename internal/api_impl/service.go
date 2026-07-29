@@ -167,7 +167,22 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		cancel()
 		return nil, fmt.Errorf("build bootstrap config: %w", bsErr)
 	}
-	comp, bsErr := ares_bootstrap.Bootstrap(ctx, bootstrapCfg, nil)
+
+	// --- EventStore (archive-enabled, single construction) ---
+	// Built once here and injected into Bootstrap via deps so the bootstrap
+	// hub (Runtime, Memory, ...) wires against the SAME store the dashboard
+	// and flight recorder use — no throwaway MemoryEventStore is created
+	// inside Bootstrap. This is the unified pipeline shared with `ares serve`.
+	eventStore, err := NewEventStoreWithArchive(bootstrapCfg.Memory.Archive)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create event store: %w", err)
+	}
+	s.eventStore = eventStore
+
+	comp, bsErr := ares_bootstrap.Bootstrap(ctx, bootstrapCfg, &ares_bootstrap.BootstrapDeps{
+		EventStore: eventStore.CompactableEventStore,
+	})
 	if bsErr != nil {
 		cancel()
 		return nil, fmt.Errorf("bootstrap: %w", bsErr)
@@ -186,7 +201,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	s.g, s.ctx = errgroup.WithContext(ctx)
 	log.Info("service context derived from errgroup error propagation")
 
-	// --- Hub + EventStore ---
+	// --- Hub ---
 	hub := dashboard.NewWSHub()
 	s.handler = http.NotFoundHandler() // initialize before httpServer uses wrapper
 	s.g.Go(func() error {
@@ -201,12 +216,6 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		return nil
 	})
 	s.hub = hub
-
-	eventStore, err := NewEventStoreWithArchive(bootstrapCfg.Memory.Archive)
-	if err != nil {
-		return nil, fmt.Errorf("create event store: %w", err)
-	}
-	s.eventStore = eventStore
 
 	// ── Intelligence engine: powers anomaly detection + health scoring ──
 	intelEngine := dashboard.NewEngine(nil)
