@@ -33,6 +33,10 @@ type CheckpointSnapshot struct {
 	PendingMutations      []Mutation         `json:"pending_mutations,omitempty"`
 	EventSequence         uint64             `json:"event_sequence"`
 	SavedAt               time.Time          `json:"saved_at"`
+	// CollectorData carries the execution collector snapshot (route/tool/memory
+	// history) so the resume path can restore observability and evolution data.
+	// Saved/restored via ExecutionCollector.Export() / Import().
+	CollectorData map[string]any `json:"collector_data,omitempty"`
 }
 
 // ResumeExecution resumes a workflow from an atomic scheduler checkpoint.
@@ -70,12 +74,22 @@ func (r *Runner) ResumeExecution(ctx context.Context, spec *WorkflowSpec, execut
 	scope := NewExecutionScope(snapshot.ExecutionID, snapshot.EffectiveSpec)
 	scope.baseSpec = spec
 	scope.InitNodeStates()
+	// Reuse the caller's collector (if set) instead of the default empty one.
+	if r.collector != nil {
+		scope.SetCollector(r.collector)
+	}
 	scope.RestoreState(snapshot.State)
 	scope.RestoreNodeStates(snapshot.NodeStates)
 	scope.RestoreLoopHistory(snapshot.LoopHistory)
 	scope.RestorePendingInterrupts(snapshot.PendingInterrupts)
 	scope.RestoreMutationIDs(snapshot.MutationIDs)
 	scope.RestoreEventSequence(snapshot.EventSequence)
+	// Restore collector data from the checkpoint — this ensures route/tool/memory
+	// history recorded before the crash is available for evolution scoring and
+	// observability after resume.
+	if len(snapshot.CollectorData) > 0 {
+		scope.Collector().Import(snapshot.CollectorData)
+	}
 	if len(snapshot.PendingMutations) > 0 {
 		if r.patchQueue == nil {
 			return nil, fmt.Errorf("checkpoint has pending mutations but Runner has no patch queue")
@@ -254,6 +268,7 @@ func (r *Runner) checkpointSnapshot(
 		PendingMutations:      r.pendingMutations(scope.ExecutionID),
 		EventSequence:         eventSequence,
 		SavedAt:               time.Now(),
+		CollectorData:         exportCollectorData(scope),
 	}, nil
 }
 
@@ -396,6 +411,19 @@ func workflowSpecHash(spec *WorkflowSpec) (string, error) {
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// exportCollectorData extracts the execution-scoped collector data for checkpoint
+// persistence. Returns nil when no data is available or the scope has no collector.
+func exportCollectorData(scope *ExecutionScope) map[string]any {
+	if scope == nil {
+		return nil
+	}
+	col := scope.Collector()
+	if col == nil {
+		return nil
+	}
+	return col.Export()
 }
 
 func copyNodeStates(states []*NodeStatusValue) []NodeStatusValue {

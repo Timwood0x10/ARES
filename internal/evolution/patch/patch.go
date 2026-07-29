@@ -72,7 +72,9 @@ func (pt PatchType) String() string {
 // RuntimePatch is the universal mutation unit.
 // Source identifies who proposed it (genome / chaos / llm / human / k8s).
 // If Rollback is non-nil, Runtime can undo the patch on failure.
+// ID must be unique for idempotency tracking — Registry skips already-applied IDs.
 type RuntimePatch struct {
+	ID       string        `json:"id,omitempty"`       // unique idempotency key (optional; empty = no dedup)
 	Type     PatchType     `json:"type"`               // what to change
 	Target   string        `json:"target"`             // what to change (node ID / component name)
 	Value    any           `json:"value,omitempty"`    // what to become (new Node / Scheduler / Config)
@@ -173,12 +175,15 @@ type Registry struct {
 	// liveDAGPatchExecutor to handle all workflow structure patches (insert/
 	// remove nodes/edges) whose targets are dynamic node IDs.
 	fallback RuntimeComponent
+	// applied tracks already-applied patch IDs for idempotent re-delivery.
+	applied map[string]bool
 }
 
 // NewRegistry creates a new patch registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		executors: make(map[string]Executor),
+		applied:   make(map[string]bool),
 	}
 }
 
@@ -241,7 +246,14 @@ func (r *Registry) ReplaceComponent(comp RuntimeComponent) error {
 // First tries to find an executor by target name. If none is found and a
 // fallback is set, delegates to the fallback. If no fallback exists, returns
 // an error. If the patch has a Rollback, it is automatically applied on failure.
+// If the patch has a non-empty ID that was already applied, Apply silently skips
+// it — this provides idempotent re-delivery protection.
 func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
+	// Idempotency guard: skip already-applied patches.
+	if patch.ID != "" && r.applied[patch.ID] {
+		return nil
+	}
+
 	ex, ok := r.executors[patch.Target]
 	if !ok {
 		// No executor for this target — try the fallback if one is set.
@@ -260,6 +272,9 @@ func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 				}
 				return fmt.Errorf("patch %s on %s (fallback): %w", patch.Type, patch.Target, err)
 			}
+			if patch.ID != "" {
+				r.applied[patch.ID] = true
+			}
 			return nil
 		}
 		return fmt.Errorf("patch: no executor registered for target %q", patch.Target)
@@ -276,6 +291,9 @@ func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 			}
 		}
 		return fmt.Errorf("patch %s on %s: %w", patch.Type, patch.Target, err)
+	}
+	if patch.ID != "" {
+		r.applied[patch.ID] = true
 	}
 	return nil
 }
@@ -295,6 +313,11 @@ func (r *Registry) ApplySet(ctx context.Context, ps PatchSet) error {
 	var appliedPatches []applied
 
 	for _, p := range ps.Patches {
+		// Idempotency guard: skip already-applied patches.
+		if p.ID != "" && r.applied[p.ID] {
+			continue
+		}
+
 		ex, ok := r.executors[p.Target]
 		if !ok {
 			// Try fallback if no dedicated executor.
@@ -312,6 +335,9 @@ func (r *Registry) ApplySet(ctx context.Context, ps PatchSet) error {
 						}
 					}
 					return fmt.Errorf("patch set: no executor for target %q (fallback also failed: %w)", p.Target, fbErr)
+				}
+				if p.ID != "" {
+					r.applied[p.ID] = true
 				}
 				appliedPatches = append(appliedPatches, applied{patch: p, rollback: rollback})
 				continue
@@ -359,6 +385,9 @@ func (r *Registry) ApplySet(ctx context.Context, ps PatchSet) error {
 			return fmt.Errorf("patch set: apply %s on %s failed: %w", p.Type, p.Target, err)
 		}
 
+		if p.ID != "" {
+			r.applied[p.ID] = true
+		}
 		appliedPatches = append(appliedPatches, applied{patch: p, rollback: rollback})
 	}
 

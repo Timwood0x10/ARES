@@ -128,7 +128,10 @@ func (s *Service) Execute(ctx context.Context, req *core.WorkflowRequest) (*core
 	}
 
 	// Build engine workflow from definition.
-	wf := s.buildEngineWorkflow(def, req.Variables)
+	wf, err := s.buildEngineWorkflow(def, req.Variables)
+	if err != nil {
+		return nil, err
+	}
 
 	return s.executeWithRunner(ctx, wf, req)
 }
@@ -292,7 +295,10 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		return nil, err
 	}
 
-	wf := s.buildEngineWorkflow(def, req.Variables)
+	wf, err := s.buildEngineWorkflow(def, req.Variables)
+	if err != nil {
+		return nil, err
+	}
 	return s.executeStreamWithRunner(ctx, req, wf)
 }
 
@@ -343,7 +349,7 @@ func (s *Service) getWorkflowDef(id string) (*core.WorkflowDefinition, error) {
 }
 
 // buildEngineWorkflow converts a WorkflowDefinition to an engine.Workflow.
-func (s *Service) buildEngineWorkflow(def *core.WorkflowDefinition, overrides map[string]string) *engine.Workflow {
+func (s *Service) buildEngineWorkflow(def *core.WorkflowDefinition, overrides map[string]string) (*engine.Workflow, error) {
 	variables := make(map[string]string)
 	for k, v := range def.Variables {
 		variables[k] = v
@@ -352,7 +358,10 @@ func (s *Service) buildEngineWorkflow(def *core.WorkflowDefinition, overrides ma
 		variables[k] = v
 	}
 
-	engineSteps := s.buildEngineSteps(def)
+	engineSteps, err := s.buildEngineSteps(def)
+	if err != nil {
+		return nil, err
+	}
 
 	return &engine.Workflow{
 		ID:        def.ID,
@@ -363,23 +372,31 @@ func (s *Service) buildEngineWorkflow(def *core.WorkflowDefinition, overrides ma
 		Metadata:  def.Metadata,
 		CreatedAt: def.CreatedAt,
 		UpdatedAt: def.UpdatedAt,
-	}
+	}, nil
 }
 
 // buildEngineSteps converts StepDef slice to engine.Step slice.
-func (s *Service) buildEngineSteps(def *core.WorkflowDefinition) []*engine.Step {
-	steps := make([]*engine.Step, len(def.Steps))
-	for i, sd := range def.Steps {
-		steps[i] = &engine.Step{
+// Returns error if duplicate step IDs are detected.
+func (s *Service) buildEngineSteps(def *core.WorkflowDefinition) ([]*engine.Step, error) {
+	seen := make(map[string]bool, len(def.Steps))
+	steps := make([]*engine.Step, 0, len(def.Steps))
+	for _, sd := range def.Steps {
+		if seen[sd.ID] {
+			slog.Warn("skipping duplicate step ID in workflow definition",
+				"workflow_id", def.ID, "step_id", sd.ID)
+			continue
+		}
+		seen[sd.ID] = true
+		steps = append(steps, &engine.Step{
 			ID:        sd.ID,
 			Name:      sd.Name,
 			AgentType: sd.AgentType,
 			Input:     sd.Input,
 			DependsOn: sd.DependsOn,
 			Timeout:   sd.Timeout,
-		}
+		})
 	}
-	return steps
+	return steps, nil
 }
 
 // mapEngineStatus maps engine.WorkflowStatus or engine.StepStatus to core.WorkflowStatus.

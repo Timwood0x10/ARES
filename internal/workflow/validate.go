@@ -73,6 +73,7 @@ func Validate(spec *WorkflowSpec) *ValidationReport {
 
 	validateNodeIDs(spec, report)
 	validateEdgeTargets(spec, report)
+	validateDuplicateEdges(spec, report)
 	validateCycle(spec, report)
 	validateEntries(spec, report)
 	validateBranchOne(spec, report)
@@ -138,6 +139,22 @@ func validateEdgeTargets(spec *WorkflowSpec, r *ValidationReport) {
 				Message: fmt.Sprintf("edge references non-existent target node %q", e.To),
 			})
 		}
+	}
+}
+
+// validateDuplicateEdges checks for duplicate edges with the same From/To/Kind.
+func validateDuplicateEdges(spec *WorkflowSpec, r *ValidationReport) {
+	seen := make(map[string]bool)
+	for _, e := range spec.Edges {
+		key := string(e.From) + "|" + string(e.To) + "|" + string(e.Kind)
+		if seen[key] {
+			r.Errors = append(r.Errors, ValidationError{
+				NodeID:  e.From,
+				Field:   "edges[]",
+				Message: fmt.Sprintf("duplicate edge from %q to %q", e.From, e.To),
+			})
+		}
+		seen[key] = true
 	}
 }
 

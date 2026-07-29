@@ -164,13 +164,25 @@ func NewWorkflow(id string) *WorkflowSpec {
 }
 
 // AddNode appends a node and returns the builder.
+// Silently skips if a node with the same ID already exists.
 func (s *WorkflowSpec) AddNode(n NodeSpec) *WorkflowSpec {
+	for _, existing := range s.Nodes {
+		if existing.ID == n.ID {
+			return s
+		}
+	}
 	s.Nodes = append(s.Nodes, n)
 	return s
 }
 
 // AddEdge appends an edge and returns the builder.
+// Silently skips if an identical edge (same From, To, Kind) already exists.
 func (s *WorkflowSpec) AddEdge(e EdgeSpec) *WorkflowSpec {
+	for _, existing := range s.Edges {
+		if existing.From == e.From && existing.To == e.To && existing.Kind == e.Kind {
+			return s
+		}
+	}
 	s.Edges = append(s.Edges, e)
 	return s
 }

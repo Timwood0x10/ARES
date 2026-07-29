@@ -137,6 +137,9 @@ func (g *Graph) Node(id string, node Node) (*Graph, error) {
 	if node == nil {
 		return nil, fmt.Errorf("node cannot be nil")
 	}
+	if _, exists := g.nodes[id]; exists {
+		return nil, fmt.Errorf("duplicate node ID %q", id)
+	}
 	g.nodes[id] = node
 	return g, nil
 }
@@ -171,6 +174,20 @@ func (g *Graph) Edge(from, to string, cond ...Condition) (*Graph, error) {
 	edge := &Edge{from: from, to: to}
 	if len(cond) > 0 {
 		edge.cond = cond[0]
+	}
+
+	// Check for duplicate edge: same from→to with the same condition (or both nil).
+	for _, existing := range g.edges[from] {
+		if existing.to == to {
+			if edge.cond == nil && existing.cond == nil {
+				return g, nil // silently allow duplicate no-cond edges
+			}
+			if edge.cond != nil && existing.cond != nil {
+				// Both have conditions — function equality cannot be compared
+				// reflectively; treat as duplicate to avoid infinite growth.
+				return g, nil
+			}
+		}
 	}
 
 	g.edges[from] = append(g.edges[from], edge)

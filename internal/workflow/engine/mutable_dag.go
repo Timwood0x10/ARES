@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -67,14 +68,17 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 	if step == nil {
 		return errors.New("step must not be nil")
 	}
-	if step.ID == "" {
+
+	// Normalize: trim spaces from step ID.
+	id := strings.TrimSpace(step.ID)
+	if id == "" {
 		return errors.New("step ID must not be empty")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.dag.Nodes[step.ID]; exists {
+	if _, exists := m.dag.Nodes[id]; exists {
 		return ErrDuplicateID
 	}
 
@@ -86,17 +90,24 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 	var addedEdges []addedEdge
 
 	// Add the node.
-	m.dag.Nodes[step.ID] = &DAGNode{
-		StepID:    step.ID,
+	m.dag.Nodes[id] = &DAGNode{
+		StepID:    id,
 		InDegree:  0,
 		OutDegree: 0,
 	}
 
-	// Process dependencies.
+	// Process dependencies, deduplicating DependsOn.
+	seen := make(map[string]bool, len(step.DependsOn))
 	for _, dep := range step.DependsOn {
+		dep = strings.TrimSpace(dep)
+		if dep == "" || seen[dep] {
+			continue
+		}
+		seen[dep] = true
+
 		if _, exists := m.dag.Nodes[dep]; !exists {
 			// Rollback: remove the node and any edges added so far.
-			delete(m.dag.Nodes, step.ID)
+			delete(m.dag.Nodes, id)
 			for _, e := range addedEdges {
 				m.removeEdgeFromSlice(e.from, e.to)
 				m.dag.Nodes[e.from].OutDegree--
@@ -106,9 +117,9 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 		}
 
 		// Check for cycle before adding edge.
-		if m.wouldCreateCycle(dep, step.ID) {
+		if m.wouldCreateCycle(dep, id) {
 			// Rollback.
-			delete(m.dag.Nodes, step.ID)
+			delete(m.dag.Nodes, id)
 			for _, e := range addedEdges {
 				m.removeEdgeFromSlice(e.from, e.to)
 				m.dag.Nodes[e.from].OutDegree--
@@ -117,19 +128,19 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 			return ErrCycleDetected
 		}
 
-		m.dag.Edges[dep] = append(m.dag.Edges[dep], step.ID)
-		m.dag.Nodes[step.ID].InDegree++
+		m.dag.Edges[dep] = append(m.dag.Edges[dep], id)
+		m.dag.Nodes[id].InDegree++
 		m.dag.Nodes[dep].OutDegree++
-		addedEdges = append(addedEdges, addedEdge{from: dep, to: step.ID})
+		addedEdges = append(addedEdges, addedEdge{from: dep, to: id})
 	}
 
-	m.steps[step.ID] = step
+	m.steps[id] = step
 	m.version++
 
 	m.hub.Publish(GraphEvent{
 		Change: GraphChange{
 			Type:      ChangeAddNode,
-			NodeID:    step.ID,
+			NodeID:    id,
 			Step:      step,
 			Timestamp: time.Now(),
 		},
