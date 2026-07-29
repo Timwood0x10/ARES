@@ -40,11 +40,11 @@ func (f *PolymarketFeed) Quote(_ string) (Quote, error) {
 
 // Markets searches prediction markets by query string.
 // Returns active markets matching the query, sorted by volume descending.
-func (f *PolymarketFeed) Markets(query string) ([]Market, error) {
+func (f *PolymarketFeed) Markets(ctx context.Context, query string) ([]Market, error) {
 	url := fmt.Sprintf("%s/markets?tag=%s&limit=10&closed=false&order=volume&asc=false",
 		f.baseURL, urlEncode(query))
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("polymarket: create request: %w", err)
 	}

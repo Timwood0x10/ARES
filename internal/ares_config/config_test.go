@@ -451,6 +451,7 @@ func TestValidate(t *testing.T) {
 			SessionMemory: SessionConfig{
 				MaxHistory: 50,
 			},
+			Archive: ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
 		},
 	}
 
@@ -925,6 +926,7 @@ func TestValidLLMProviders(t *testing.T) {
 				SessionMemory: SessionConfig{
 					MaxHistory: 50,
 				},
+				Archive: ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
 			},
 		}
 
@@ -969,6 +971,7 @@ func TestValidOutputFormats(t *testing.T) {
 				SessionMemory: SessionConfig{
 					MaxHistory: 50,
 				},
+				Archive: ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
 			},
 		}
 

@@ -343,7 +343,7 @@ func validateLoop(spec *WorkflowSpec, r *ValidationReport) {
 	if spec.Loop == nil {
 		return
 	}
-	if spec.Loop.MaxIterations <= 0 && spec.Loop.MaxIterations != 0 {
+	if spec.Loop.MaxIterations < 0 {
 		r.Errors = append(r.Errors, ValidationError{
 			Field:   "loop.max_iterations",
 			Message: "loop MaxIterations must be > 0; 0 means run once (no loop)",

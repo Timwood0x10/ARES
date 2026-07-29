@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -39,6 +40,7 @@ type PluginBus struct {
 	started       bool
 	pluginTimeout time.Duration
 	logger        *slog.Logger
+	droppedEvents atomic.Int64
 }
 
 // NewPluginBus creates a PluginBus with the given options.
@@ -227,7 +229,9 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_ev
 		case <-ctx.Done():
 			return
 		default:
-			// Drop event if buffer full.
+			b.droppedEvents.Add(1)
+			b.logger.Warn("plugin bus: event dropped, subscriber buffer full",
+				"event_type", evt.Type, "stream_id", evt.StreamID)
 		}
 	}
 }

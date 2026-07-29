@@ -21,6 +21,11 @@ const (
 	providerAnthropic   = "anthropic"
 )
 
+// DefaultArchiveDir is the default round-archive directory. Exported so the
+// minimal service path (api_impl) can reuse the exact same default without
+// duplicating the literal, keeping the two wiring paths in sync.
+const DefaultArchiveDir = ".context/rounds"
+
 //nolint:gocyclo // Complex default value initialization for multiple config sections
 func (c *Config) setDefaults() {
 	if c.Server.Host == "" {
@@ -108,6 +113,14 @@ func (c *Config) setDefaults() {
 		if c.Memory.RAGMinScore == 0 {
 			c.Memory.RAGMinScore = 0.4
 		}
+	}
+	// Archive defaults: dir and max_rounds apply regardless so the values are
+	// always valid; Enabled is *bool so its default-on semantics need no setting here.
+	if c.Memory.Archive.Dir == "" {
+		c.Memory.Archive.Dir = DefaultArchiveDir
+	}
+	if c.Memory.Archive.MaxRounds == 0 {
+		c.Memory.Archive.MaxRounds = 200
 	}
 	// Knowledge (AKG) defaults: only apply TopK/MinScore defaults when
 	// retrieval is opted in. When RetrievalEnabled is false, leave them at

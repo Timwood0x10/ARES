@@ -273,7 +273,25 @@ type MemoryConfig struct {
 	// be included. Snippets below this threshold are filtered out.
 	// Defaults to 0.4 when zero (only applied when EnableRAG is true).
 	RAGMinScore float64 `yaml:"rag_min_score"`
+
+	// Archive holds round-archive settings. Enabled by default: a nil or true
+	// Enabled field turns archiving on; explicit false opts out.
+	Archive ArchiveConfig `yaml:"archive"`
 }
+
+// ArchiveConfig holds round-archive settings. Enabled by default: a nil or
+// true Enabled field turns archiving on; explicit false opts out. A plain
+// bool cannot distinguish "unset" from false, so Enabled is *bool to allow
+// operators to disable with `enabled: false`.
+type ArchiveConfig struct {
+	Enabled   *bool  `yaml:"enabled"`    // nil/true = enabled (default); false = disabled.
+	Dir       string `yaml:"dir"`        // Default ".context/rounds".
+	MaxRounds int    `yaml:"max_rounds"` // Default 200.
+}
+
+// IsEnabled reports whether archiving is active. nil is treated as enabled
+// (default-on) so callers need not dereference the pointer.
+func (a ArchiveConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 // KnowledgeConfig holds configuration for the optional AKG (Agent Knowledge
 // Graph) retrieval integration. When RetrievalEnabled is false (the default),

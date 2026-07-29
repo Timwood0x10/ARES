@@ -24,6 +24,9 @@ type managedAgent struct {
 	// (via StopAgent or RestartAgent). Prevents NotifyAgentDead from
 	// triggering resurrection of an intentionally stopped agent.
 	stopped bool
+	// paused is set to true when PauseAgent is called. Distinguishes a
+	// chaos-engineering pause from an intentional permanent stop.
+	paused bool
 	// resurrecting is set to true when NotifyAgentDead triggers RestoreAgent.
 	// Prevents duplicate resurrection attempts for the same agent.
 	resurrecting bool
@@ -517,7 +520,7 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		factory, hasFactory := m.factories[agentID]
 		ma, hasAgent := m.agents[agentID]
 
-		if m.isStopped || (hasAgent && (ma.stopped || ma.resurrecting)) {
+		if m.isStopped || (hasAgent && (ma.stopped || ma.paused || ma.resurrecting)) {
 			return nil, false
 		}
 		if !hasFactory {

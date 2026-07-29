@@ -430,6 +430,9 @@ func (r *Runner) executeChildScope(ctx context.Context, spec *WorkflowSpec, pare
 		return nil, fmt.Errorf("execute sub-workflow %q: %w", spec.ID, err)
 	}
 	child.MarkFinished()
+	// Merge child collector data (route/tool/memory/interrupt/error) back into
+	// the parent scope so sub-workflow execution data is not lost.
+	parent.Collector().Import(child.Collector().Export())
 	return child.StateSnapshot(), nil
 }
 

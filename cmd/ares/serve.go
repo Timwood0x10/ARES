@@ -200,7 +200,9 @@ func runServe() error {
 					return s
 				}
 			}
-			return subAgent
+			log.Printf("ERROR: sub-agent factory: agent %q not found in live pool, resurrection impossible",
+				subAgent.ID())
+			return nil // returning nil prevents resurrection with a dead agent
 		}
 		mgr.RegisterAgent(subAgent, subFactory)
 	}

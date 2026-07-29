@@ -182,6 +182,16 @@ func (c *Config) validateMemory() error {
 			return fmt.Errorf("invalid memory rag_min_score: %f, must be non-negative", c.Memory.RAGMinScore)
 		}
 	}
+	// Archive validation: only enforce when active. Defaults guarantee Dir and
+	// MaxRounds are set, but validate defensively in case defaults were skipped.
+	if c.Memory.Archive.IsEnabled() {
+		if c.Memory.Archive.Dir == "" {
+			return fmt.Errorf("archive dir must be non-empty when archive is enabled")
+		}
+		if c.Memory.Archive.MaxRounds <= 0 {
+			return fmt.Errorf("invalid archive max_rounds: %d, must be positive", c.Memory.Archive.MaxRounds)
+		}
+	}
 	return nil
 }
 

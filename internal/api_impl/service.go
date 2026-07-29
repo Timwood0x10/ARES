@@ -202,7 +202,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	})
 	s.hub = hub
 
-	eventStore, err := NewEventStore()
+	eventStore, err := NewEventStoreWithArchive(bootstrapCfg.Memory.Archive)
 	if err != nil {
 		return nil, fmt.Errorf("create event store: %w", err)
 	}
@@ -492,6 +492,12 @@ func ares_configFromService(cfg *ServiceConfig) (*ares_config.Config, error) {
 	// Evolution defaults: disabled in the minimal service path unless
 	// explicitly configured via the ServiceConfig's postgres section.
 	out.Evolution.Enabled = cfg.Postgres.Enabled
+	// Archive defaults: archiving is enabled-by-default (nil *bool). Dir and
+	// MaxRounds are set here because setDefaults is not called on this
+	// manually-constructed config. Reuse DefaultArchiveDir so the two wiring
+	// paths cannot drift.
+	out.Memory.Archive.Dir = ares_config.DefaultArchiveDir
+	out.Memory.Archive.MaxRounds = 200
 	return out, nil
 }
 

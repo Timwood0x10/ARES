@@ -738,7 +738,7 @@ func TestCollectorProcessEvents(t *testing.T) {
 	// Simulate agent lifecycle ares_events.
 	base := time.Now()
 
-	c.processEvent(&ares_events.Event{
+	c.processEvent(context.Background(), &ares_events.Event{
 		ID: "e1", StreamID: "agent-1", Type: ares_events.EventAgentStarted,
 		Timestamp: base, Payload: map[string]any{"type": "leader"},
 	})
@@ -754,7 +754,7 @@ func TestCollectorProcessEvents(t *testing.T) {
 		t.Errorf("expected agent-1, got %s", c.Graph().Root().Name)
 	}
 
-	c.processEvent(&ares_events.Event{
+	c.processEvent(context.Background(), &ares_events.Event{
 		ID: "e2", StreamID: "agent-1", Type: ares_events.EventAgentStopped,
 		Timestamp: base.Add(5 * time.Second),
 	})
@@ -767,7 +767,7 @@ func TestCollectorProcessEvents(t *testing.T) {
 func TestCollectorProcessTaskFailed(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	c.processEvent(&ares_events.Event{
+	c.processEvent(context.Background(), &ares_events.Event{
 		ID: "f1", StreamID: "agent-1", Type: ares_events.EventTaskFailed,
 		Timestamp: time.Now(),
 		Payload:   map[string]any{"error": "connection timeout"},
@@ -789,7 +789,7 @@ func TestCollectorProcessTaskFailed(t *testing.T) {
 func TestCollectorProcessMemoryDistilled(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	c.processEvent(&ares_events.Event{
+	c.processEvent(context.Background(), &ares_events.Event{
 		ID: "m1", StreamID: "session-1", Type: ares_events.EventMemoryDistilled,
 		Timestamp: time.Now(),
 		Payload:   map[string]any{"input_count": float64(500), "output_count": float64(32)},
@@ -811,7 +811,7 @@ func TestCollectorProcessMemoryDistilled(t *testing.T) {
 func TestCollectorProcessLLMCall(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	c.processEvent(&ares_events.Event{
+	c.processEvent(context.Background(), &ares_events.Event{
 		ID: "llm1", StreamID: "agent-1", Type: ares_events.EventLLMCall,
 		Timestamp: time.Now(),
 	})
@@ -828,7 +828,7 @@ func TestCollectorProcessLLMCall(t *testing.T) {
 func TestCollectorProcessNilEvent(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 	// Should not panic.
-	c.processEvent(nil)
+	c.processEvent(context.Background(), nil)
 }
 
 func TestCollectorAccessors(t *testing.T) {

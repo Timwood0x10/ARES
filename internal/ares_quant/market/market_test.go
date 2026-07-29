@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -97,13 +98,13 @@ func TestPolymarketFeed_QuoteNotSupported(t *testing.T) {
 
 func TestCoinGeckoFeed_MarketsNotSupported(t *testing.T) {
 	f := NewCoinGeckoFeed()
-	_, err := f.Markets("test")
+	_, err := f.Markets(context.Background(), "test")
 	assert.ErrorContains(t, err, "not supported")
 }
 
 func TestYahooFeed_MarketsNotSupported(t *testing.T) {
 	f := NewYahooFeed()
-	_, err := f.Markets("test")
+	_, err := f.Markets(context.Background(), "test")
 	assert.ErrorContains(t, err, "not supported")
 }
 

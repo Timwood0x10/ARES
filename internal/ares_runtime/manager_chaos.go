@@ -2,6 +2,7 @@ package ares_runtime
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -11,6 +12,7 @@ type AgentInfo struct {
 	Type     string
 	Status   string
 	Restarts int
+	Paused   bool
 }
 
 // ListAgents returns metadata for all managed agents.
@@ -28,6 +30,7 @@ func (m *Manager) ListAgents() []AgentInfo {
 			Type:     string(ma.agent.Type()),
 			Status:   string(ma.agent.Status()),
 			Restarts: ma.restarts,
+			Paused:   ma.paused,
 		})
 	}
 
@@ -49,6 +52,7 @@ func (m *Manager) GetAgentInfo(agentID string) (*AgentInfo, bool) {
 		Type:     string(ma.agent.Type()),
 		Status:   string(ma.agent.Status()),
 		Restarts: ma.restarts,
+		Paused:   ma.paused,
 	}, true
 }
 
@@ -57,12 +61,22 @@ func (m *Manager) GetAgentInfo(agentID string) (*AgentInfo, bool) {
 // PauseAgent stops an agent without triggering resurrection.
 func (m *Manager) PauseAgent(ctx context.Context, agentID string) error {
 	log.Info("[arena] PauseAgent", "agent", agentID)
+	m.mu.Lock()
+	if ma, ok := m.agents[agentID]; ok {
+		ma.paused = true
+	}
+	m.mu.Unlock()
 	return m.StopAgent(ctx, agentID)
 }
 
 // ResumeAgent restarts a previously paused agent.
 func (m *Manager) ResumeAgent(ctx context.Context, agentID string) error {
 	log.Info("[arena] ResumeAgent", "agent", agentID)
+	m.mu.Lock()
+	if ma, ok := m.agents[agentID]; ok {
+		ma.paused = false
+	}
+	m.mu.Unlock()
 	return m.RestartAgent(ctx, agentID)
 }
 
@@ -82,8 +96,7 @@ func (m *Manager) SlowAgent(_ context.Context, agentID string, delay time.Durati
 
 // PartitionNetwork simulates a network partition for an agent.
 func (m *Manager) PartitionNetwork(_ context.Context, agentID string) error {
-	log.Warn("[arena] PartitionNetwork — SIMULATION: no actual network partition applied (R-02)", "agent", agentID)
-	return nil
+	return fmt.Errorf("partition network: %w", ErrNotImplemented)
 }
 
 // ToolTimeout sets a short execution deadline for an agent's tools.
@@ -102,18 +115,15 @@ func (m *Manager) ToolTimeout(_ context.Context, agentID string, timeout time.Du
 
 // CorruptMemory simulates memory corruption for an agent.
 func (m *Manager) CorruptMemory(_ context.Context, agentID string) error {
-	log.Warn("[arena] CorruptMemory — SIMULATION: no actual memory corruption applied (R-02)", "agent", agentID)
-	return nil
+	return fmt.Errorf("corrupt memory: %w", ErrNotImplemented)
 }
 
 // DisconnectMCP simulates an MCP server disconnection for an agent.
 func (m *Manager) DisconnectMCP(_ context.Context, agentID string) error {
-	log.Warn("[arena] DisconnectMCP — SIMULATION: no actual MCP disconnection applied (R-02)", "agent", agentID)
-	return nil
+	return fmt.Errorf("disconnect MCP: %w", ErrNotImplemented)
 }
 
 // InjectLLMFailure simulates an LLM failure for an agent.
 func (m *Manager) InjectLLMFailure(_ context.Context, agentID string, errType string) error {
-	log.Warn("[arena] InjectLLMFailure — SIMULATION: no actual LLM failure injected (R-02)", "agent", agentID, "errType", errType)
-	return nil
+	return fmt.Errorf("inject LLM failure: %w", ErrNotImplemented)
 }

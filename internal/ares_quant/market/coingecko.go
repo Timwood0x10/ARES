@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -146,6 +147,6 @@ func (f *CoinGeckoFeed) Quote(ticker string) (Quote, error) {
 }
 
 // Markets returns nil since CoinGecko does not provide prediction markets.
-func (f *CoinGeckoFeed) Markets(_ string) ([]Market, error) {
+func (f *CoinGeckoFeed) Markets(_ context.Context, _ string) ([]Market, error) {
 	return nil, fmt.Errorf("not supported")
 }

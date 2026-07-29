@@ -4,6 +4,7 @@
 package market
 
 import (
+	"context"
 	"time"
 )
 
@@ -77,5 +78,5 @@ type Feed interface {
 	Quote(ticker string) (Quote, error)
 
 	// Markets returns prediction markets matching a query (Polymarket only).
-	Markets(query string) ([]Market, error)
+	Markets(ctx context.Context, query string) ([]Market, error)
 }

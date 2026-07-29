@@ -397,7 +397,7 @@ func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, c
 		return fmt.Errorf("checkpoint: save: %w", err)
 	}
 	if p.bus != nil {
-		p.bus.Emit(context.Background(), executionID, EventCheckpointSaved, "runtime", map[string]any{
+		p.bus.Emit(ctx, executionID, EventCheckpointSaved, "runtime", map[string]any{
 			PayloadKeyExecutionID: executionID,
 			"state_version":       ckpt.StateVersion,
 		})

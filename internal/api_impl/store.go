@@ -6,6 +6,8 @@ package apiimpl
 import (
 	"fmt"
 
+	"github.com/Timwood0x10/ares/internal/ares_archive"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
@@ -38,6 +40,25 @@ func NewEventStore() (*EventStore, error) {
 		CompactableEventStore: ces,
 		raw:                   mem,
 	}, nil
+}
+
+// NewEventStoreWithArchive creates an event store with optional round archiving.
+// When archiveCfg.IsEnabled() is false, behaves identically to NewEventStore.
+// When enabled, attaches an ares_archive.ArchiveWriter via an ArchiveSink so
+// rounds are persisted before compaction.
+func NewEventStoreWithArchive(archiveCfg ares_config.ArchiveConfig) (*EventStore, error) {
+	es, err := NewEventStore()
+	if err != nil {
+		return nil, err
+	}
+	if archiveCfg.IsEnabled() {
+		aw, err := ares_archive.NewFileArchiveWriter(archiveCfg.Dir, archiveCfg.MaxRounds)
+		if err != nil {
+			return nil, fmt.Errorf("create archive writer: %w", err)
+		}
+		es.CompactableEventStore = es.WithArchiveSink(ares_archive.NewEventArchiveSink(aw))
+	}
+	return es, nil
 }
 
 // RawStore exposes the underlying MemoryEventStore for components
