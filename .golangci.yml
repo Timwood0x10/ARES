@@ -128,6 +128,12 @@ linters:
       - path: internal/tools/planner/
         linters:
           - goconst
+      # Toolsource keyword→capability map keys are a data table; some keys
+      # ("math", "calc", "http") coincide with test fixture tool names, which
+      # inflates goconst counts. Same pattern as the planner exemption above.
+      - path: internal/tools/toolsource/capability_selector.go
+        linters:
+          - goconst
       # Tool result formatter format strings.
       - path: internal/tools/resources/formatter/
         linters:

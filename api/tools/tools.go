@@ -300,7 +300,7 @@ func NewPlanner(r *Registry) (*Planner, error) {
 //	result, err := bridge.Execute(ctx, "", nil, "计算1+1")
 func NewBridge(r *Registry, p *Planner) (*Bridge, error) {
 	store := planner.NewMemoryEvidenceStore()
-	coreReg, err := r.coreRegistry()
+	coreReg, err := r.CoreRegistry()
 	if err != nil {
 		return nil, fmt.Errorf("core registry: %w", err)
 	}
@@ -311,9 +311,13 @@ func NewBridge(r *Registry, p *Planner) (*Bridge, error) {
 	return bridge, nil
 }
 
-// coreRegistry returns the cached core.Registry, lazily building it from
-// the public Registry's tools on first access.
-func (r *Registry) coreRegistry() (*core.Registry, error) {
+// CoreRegistry returns the cached internal *core.Registry bridge, lazily
+// building it from the public Registry's tools on first access. Each public
+// Tool is wrapped in a toolAdapter so it satisfies the internal core.Tool
+// interface. Subsequent Register/Unregister calls keep the cached core
+// registry in sync (see Register/Unregister). The returned registry is the
+// shared cache; callers must not mutate it directly.
+func (r *Registry) CoreRegistry() (*core.Registry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.coreReg != nil {

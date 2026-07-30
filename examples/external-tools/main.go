@@ -5,6 +5,7 @@
 //  2. Custom tool registration
 //  3. MCP server connection and tool usage
 //  4. Building a tool registry for an agent system
+//  5. Tool discovery via the discover_tools meta-tool over a RegistrySource
 //
 // Run: go run ./examples/external-tools
 package main
@@ -17,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/api/discovery"
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 
 func main() {
@@ -125,6 +127,27 @@ func main() {
 	fmt.Printf("\n=== All %d Tools ===\n", len(registry.List()))
 	for _, name := range registry.List() {
 		fmt.Printf("  %s\n", name)
+	}
+
+	// ── 6. Tool discovery ────────────────────────────────
+	// Build a RegistrySource over the public Registry's core bridge, then
+	// drive the discover_tools meta-tool directly: the same path the LLM uses
+	// at runtime when an Agent is built with sdk.WithToolDiscovery().
+	fmt.Println("\n=== Tool Discovery (discover_tools) ===")
+	coreReg, err := registry.CoreRegistry()
+	if err != nil {
+		fmt.Printf("core registry: %v\n", err)
+		return
+	}
+	src := toolsource.NewRegistrySource(coreReg)
+	meta := toolsource.NewDiscoverToolsTool(src)
+	for _, q := range []string{"sentiment", "calculator"} {
+		res, err := meta.Execute(ctx, map[string]any{"query": q})
+		if err != nil {
+			fmt.Printf("  discover %q: %v\n", q, err)
+			continue
+		}
+		fmt.Printf("  query=%q -> %s\n", q, res.Data)
 	}
 }
 

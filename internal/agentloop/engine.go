@@ -24,6 +24,17 @@ const (
 	roleTool      = "tool"
 )
 
+// DiscoverToolsName is the well-known name of the runtime discovery meta-tool.
+// When the engine executes a tool call with this name, it parses the result as a
+// JSON array of tool names and asks ToolExpander to turn them into LLM tool
+// definitions, appending them to the active set for subsequent iterations.
+//
+// The same constant is intentionally duplicated in internal/tools/toolsource
+// (the package that builds the meta-tool implementation). agentloop must not
+// import toolsource, so the name is replicated here; a shared test asserts the
+// two constants stay equal.
+const DiscoverToolsName = "discover_tools"
+
 // HumanInputFunc is called before each tool call to request human approval.
 // Return true to approve, false to skip the tool call, or an error to abort.
 // It is structurally identical to sdk.HumanInputFunc; the sdk converts its
@@ -41,6 +52,19 @@ type LLMCaller interface {
 // tools.Registry.Execute's signature (returns a Result value, not a pointer).
 type ToolExecutor interface {
 	Execute(ctx context.Context, name string, args map[string]any) (tools.Result, error)
+}
+
+// ToolExpander resolves runtime-discovered tool names into LLM tool definitions
+// so they can be appended to the active tool set when an agent calls the
+// discover_tools meta-tool. nil disables runtime expansion (the meta-tool
+// result is still returned to the LLM as text, but no new tools become
+// callable).
+//
+// The sdk provides the concrete adapter (it looks names up in the available
+// tool pool and converts them via toCoreTools); agentloop only depends on this
+// narrow interface to stay decoupled from toolsource.
+type ToolExpander interface {
+	Expand(ctx context.Context, names []string) ([]core.Tool, error)
 }
 
 // EventSink appends events to an event stream. It is the minimal subset of
@@ -111,6 +135,15 @@ type Request struct {
 	Input string
 	// HumanInput, when non-nil, is called before each tool call for approval.
 	HumanInput HumanInputFunc
+	// ToolExpander, when non-nil, enables runtime tool discovery: when the LLM
+	// calls the discover_tools meta-tool, the engine parses its result as a JSON
+	// array of tool names and asks ToolExpander to resolve them into LLM tool
+	// definitions, which are appended (deduped by Function.Name) to the active
+	// tool set for subsequent iterations. nil disables expansion (the meta-tool
+	// result is still returned to the LLM as text, but no new tools become
+	// callable). When no discover_tools call happens, behaviour is identical to
+	// passing no expander.
+	ToolExpander ToolExpander
 }
 
 // Result mirrors the execution outcome of sdk.Agent.Run, expressed without
@@ -133,10 +166,11 @@ type Result struct {
 // iterState carries the mutable loop state so helper methods stay under the
 // parameter-count limit (rule: params <= 5).
 type iterState struct {
-	messages  []*core.LLMMessage
-	toolCount int
-	inputTok  int
-	outputTok int
+	messages    []*core.LLMMessage
+	toolCount   int
+	inputTok    int
+	outputTok   int
+	activeTools []core.Tool
 }
 
 // Run executes the ReAct loop against the pre-built messages and returns the
@@ -151,19 +185,24 @@ type iterState struct {
 //     reached".
 func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 	start := time.Now()
-	st := &iterState{messages: req.Messages}
+	// Copy req.Tools so runtime expansion never mutates the caller's slice.
+	// When no discover_tools call happens, activeTools stays equal to req.Tools
+	// and the GenerateRequest is identical to the pre-expansion behaviour.
+	activeTools := make([]core.Tool, len(req.Tools))
+	copy(activeTools, req.Tools)
+	st := &iterState{messages: req.Messages, activeTools: activeTools}
 	maxIter := req.MaxIter
 	if maxIter <= 0 {
 		maxIter = DefaultMaxIterations
 	}
 
 	for iter := 0; iter < maxIter; iter++ {
-		e.trace("[ares:trace] %s → LLM call (iter %d, %d msgs)",
-			req.AgentName, iter, len(st.messages))
+		e.trace("[ares:trace] %s → LLM call (iter %d, %d msgs, %d tools)",
+			req.AgentName, iter, len(st.messages), len(st.activeTools))
 
 		resp, err := e.LLM.Generate(ctx, &core.GenerateRequest{
 			Messages: st.messages,
-			Tools:    req.Tools,
+			Tools:    st.activeTools,
 		})
 		if err != nil {
 			return nil, FriendlyErr("llm generate", e.LLM.GetProvider(), err)
@@ -253,6 +292,11 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 		if err != nil {
 			resultContent = fmt.Sprintf("Error: %v", err)
 		} else {
+			// discover_tools returns Data as a JSON-encoded string; %v of a
+			// string yields the raw JSON text, which expandDiscoveredTools
+			// parses below. This implicit string-JSON contract is documented
+			// on discoverToolsTool.Execute; changing Data's type would break
+			// expansion silently (the parse-error branch traces and returns).
 			resultContent = fmt.Sprintf("%v", result.Data)
 		}
 
@@ -269,8 +313,77 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 				"result":  resultContent,
 				"success": err == nil,
 			}, st.toolCount)
+
+		// Runtime tool discovery: when the agent called the discover_tools
+		// meta-tool, expand the returned names into LLM tool defs and append
+		// them (deduped) to the active set for subsequent iterations. The tool
+		// result is already appended above, so expansion failures are non-fatal.
+		// Skip expansion on execution error or a non-success Result (e.g. empty
+		// query / source failure): those return a plain error string, not JSON,
+		// so parsing would only emit a spurious "parse failed" trace.
+		if tc.Function.Name == DiscoverToolsName && err == nil && result.Success {
+			e.expandDiscoveredTools(ctx, req, st, resultContent)
+		}
 	}
 	return nil
+}
+
+// expandDiscoveredTools parses a discover_tools result as a JSON array of
+// {name, description} objects and asks req.ToolExpander to resolve the names
+// into LLM tool definitions, appending any new ones (deduped by Function.Name)
+// to st.activeTools. It is non-fatal: parse errors, expander errors, and
+// per-tool duplicates are traced and skipped so the run continues with the tool
+// result already in messages. No-op when req.ToolExpander is nil (discovery
+// expansion disabled).
+func (e *Engine) expandDiscoveredTools(ctx context.Context, req *Request, st *iterState, resultContent string) {
+	if req.ToolExpander == nil {
+		return
+	}
+	// The discover_tools meta-tool returns Data as a JSON string of
+	// [{"name":..., "description":...}] objects. We only need the names.
+	var entries []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(resultContent), &entries); err != nil {
+		e.trace("[ares:trace] %s ⚠ discover_tools result parse failed: %v",
+			req.AgentName, err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, en := range entries {
+		if en.Name != "" {
+			names = append(names, en.Name)
+		}
+	}
+	expanded, err := req.ToolExpander.Expand(ctx, names)
+	if err != nil {
+		e.trace("[ares:trace] %s ⚠ discover_tools expand failed: %v",
+			req.AgentName, err)
+		return
+	}
+	for _, t := range expanded {
+		if toolNameInSet(t.Function.Name, st.activeTools) {
+			continue
+		}
+		st.activeTools = append(st.activeTools, t)
+		e.trace("[ares:trace] %s + discovered tool: %s",
+			req.AgentName, t.Function.Name)
+	}
+}
+
+// toolNameInSet reports whether name already appears in tools by Function.Name.
+// Used for dedup during runtime tool expansion; the active set is small so a
+// linear scan is sufficient.
+func toolNameInSet(name string, tools []core.Tool) bool {
+	for _, t := range tools {
+		if t.Function.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // emitToolEvent appends a single tool-call event (Started or Completed) to the

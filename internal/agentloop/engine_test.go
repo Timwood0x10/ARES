@@ -9,7 +9,20 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
+
+// TestDiscoverToolsName_MatchesToolsourceConstant guards the intentionally
+// duplicated discover_tools constant: agentloop must not import toolsource, so
+// both packages define DiscoverToolsName. If they drift, the engine's
+// tool-call dispatch would silently fail to match the meta-tool. This test is
+// the single source of truth linking the two copies.
+func TestDiscoverToolsName_MatchesToolsourceConstant(t *testing.T) {
+	if DiscoverToolsName != toolsource.DiscoverToolsName {
+		t.Fatalf("agentloop.DiscoverToolsName=%q != toolsource.DiscoverToolsName=%q",
+			DiscoverToolsName, toolsource.DiscoverToolsName)
+	}
+}
 
 // mockLLM scripts Generate responses per call. When the scripted responses are
 // exhausted, the last response is repeated so a tool-call loop can run to the
@@ -19,13 +32,18 @@ type mockLLM struct {
 	responses []*core.GenerateResponse
 	errs      []error
 	calls     int
+	reqs      []*core.GenerateRequest
 }
 
-func (m *mockLLM) Generate(_ context.Context, _ *core.GenerateRequest) (*core.GenerateResponse, error) {
+func (m *mockLLM) Generate(_ context.Context, req *core.GenerateRequest) (*core.GenerateResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx := m.calls
 	m.calls++
+	// Capture the request so tests can assert on Tools/Messages per iteration.
+	// The engine builds a fresh GenerateRequest each iteration, so storing the
+	// pointer is sufficient; the Tools slice header is fixed at call time.
+	m.reqs = append(m.reqs, req)
 	if idx < len(m.errs) && m.errs[idx] != nil {
 		return nil, m.errs[idx]
 	}
@@ -36,6 +54,15 @@ func (m *mockLLM) Generate(_ context.Context, _ *core.GenerateRequest) (*core.Ge
 		idx = len(m.responses) - 1
 	}
 	return m.responses[idx], nil
+}
+
+// snapshotReqs returns a copy of the captured GenerateRequests in call order.
+func (m *mockLLM) snapshotReqs() []*core.GenerateRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*core.GenerateRequest, len(m.reqs))
+	copy(out, m.reqs)
+	return out
 }
 
 // GetProvider returns a fixed provider for friendlyErr hint lookups.
@@ -62,6 +89,13 @@ func (m *mockToolExecutor) Execute(_ context.Context, name string, _ map[string]
 		return res, nil
 	}
 	return tools.Result{Success: true, Data: "default"}, nil
+}
+
+// lastToolName returns the name of the most recently executed tool (race-safe).
+func (m *mockToolExecutor) lastToolName() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastName
 }
 
 // fakeEventSink records every appended event without optimistic-concurrency
@@ -495,4 +529,271 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// fakeToolExpander is a test ToolExpander that resolves requested names from a
+// pre-built map. Unknown names are skipped (not an error). It records every
+// Expand call so tests can assert on the names seen.
+type fakeToolExpander struct {
+	mu    sync.Mutex
+	calls int
+	seen  [][]string
+	tools map[string]core.Tool
+	err   error
+}
+
+func (f *fakeToolExpander) Expand(_ context.Context, names []string) ([]core.Tool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	cp := make([]string, len(names))
+	copy(cp, names)
+	f.seen = append(f.seen, cp)
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make([]core.Tool, 0, len(names))
+	for _, n := range names {
+		if t, ok := f.tools[n]; ok {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeToolExpander) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// toolListCount returns the number of tools with the given Function.Name.
+func toolListCount(tools []core.Tool, name string) int {
+	n := 0
+	for _, t := range tools {
+		if t.Function.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+// findToolMessage searches messages for the first tool-role message whose
+// content contains sub. Used to confirm a discover_tools result was appended.
+func findToolMessage(msgs []*core.LLMMessage, sub string) (*core.LLMMessage, bool) {
+	for _, m := range msgs {
+		if m.Role == roleTool && contains(m.Content, sub) {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// TestEngine_DiscoverToolsExpansion verifies the full discovery flow: on iter 0
+// the LLM calls discover_tools, the engine expands the returned names into LLM
+// tool defs, and those defs are present in the GenerateRequest.Tools of iter 1
+// (alongside the original tools). On iter 1 the LLM calls one of the expanded
+// tools, which must be dispatched through ToolExecutor.
+func TestEngine_DiscoverToolsExpansion(t *testing.T) {
+	// discoverResult is the JSON array of {name, description} objects the
+	// discover_tools tool returns.
+	const discoverResult = `[{"name":"search","description":"search the web"},{"name":"translate","description":"translate text"}]`
+	expanded := map[string]core.Tool{
+		"search":    {Type: "function", Function: core.FunctionDefinition{Name: "search", Description: "search the web"}},
+		"translate": {Type: "function", Function: core.FunctionDefinition{Name: "translate", Description: "translate text"}},
+	}
+	expander := &fakeToolExpander{tools: expanded}
+
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		// iter 0: call the discover_tools meta-tool.
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("d1", DiscoverToolsName, `{"query":"go"}`)}},
+		// iter 1: call one of the EXPANDED tools.
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("s1", "search", `{"q":"go"}`)}},
+		// iter 2: final answer.
+		{Content: "final answer"},
+	}}
+	toolEx := &mockToolExecutor{results: map[string]tools.Result{
+		DiscoverToolsName: {Success: true, Data: discoverResult},
+		"search":          {Success: true, Data: "search-result"},
+	}}
+	eng := &Engine{LLM: llm, Tools: toolEx}
+	req := &Request{
+		Messages:     []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:        []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}},
+		MaxIter:      5,
+		AgentName:    "discover-agent",
+		ToolExpander: expander,
+	}
+
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != "final answer" {
+		t.Errorf("Output = %q, want %q", res.Output, "final answer")
+	}
+	if res.ToolCalls != 2 {
+		t.Errorf("ToolCalls = %d, want 2 (discover_tools + search)", res.ToolCalls)
+	}
+
+	reqs := llm.snapshotReqs()
+	if len(reqs) != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", len(reqs))
+	}
+	// iter 0 saw only the original tool set.
+	if len(reqs[0].Tools) != 1 || reqs[0].Tools[0].Function.Name != "calc" {
+		t.Errorf("iter 0 tools = %+v, want only [calc]", reqs[0].Tools)
+	}
+	// iter 1 (after expansion) must include the expanded tools AND the original.
+	iter1 := reqs[1].Tools
+	if !toolNameInSet("calc", iter1) {
+		t.Errorf("iter 1 tools missing original 'calc': %+v", iter1)
+	}
+	if !toolNameInSet("search", iter1) {
+		t.Errorf("iter 1 tools missing expanded 'search': %+v", iter1)
+	}
+	if !toolNameInSet("translate", iter1) {
+		t.Errorf("iter 1 tools missing expanded 'translate': %+v", iter1)
+	}
+	if got := toolListCount(iter1, "search"); got != 1 {
+		t.Errorf("iter 1 'search' count = %d, want 1", got)
+	}
+
+	// The expanded tool's call was dispatched through ToolExecutor.
+	if got := toolEx.lastToolName(); got != "search" {
+		t.Errorf("last executed tool = %q, want %q", got, "search")
+	}
+	if got := expander.callCount(); got != 1 {
+		t.Errorf("expander call count = %d, want 1", got)
+	}
+}
+
+// TestEngine_DiscoverToolsDedup verifies that calling discover_tools twice with
+// the same names does not duplicate entries in the active tool set.
+func TestEngine_DiscoverToolsDedup(t *testing.T) {
+	const discoverResult = `[{"name":"search","description":"s"}]`
+	expander := &fakeToolExpander{tools: map[string]core.Tool{
+		"search": {Type: "function", Function: core.FunctionDefinition{Name: "search"}},
+	}}
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		// iter 0: discover tools (adds 'search').
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("d1", DiscoverToolsName, `{}`)}},
+		// iter 1: discover tools AGAIN with the same name.
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("d2", DiscoverToolsName, `{}`)}},
+		// iter 2: final answer.
+		{Content: "done"},
+	}}
+	toolEx := &mockToolExecutor{results: map[string]tools.Result{
+		DiscoverToolsName: {Success: true, Data: discoverResult},
+	}}
+	eng := &Engine{LLM: llm, Tools: toolEx}
+	req := &Request{
+		Messages:     []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:        []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}},
+		MaxIter:      5,
+		ToolExpander: expander,
+	}
+	if _, err := eng.Run(context.Background(), req); err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if got := expander.callCount(); got != 2 {
+		t.Errorf("expander call count = %d, want 2", got)
+	}
+	reqs := llm.snapshotReqs()
+	// After two discover_tools calls with the same name, 'search' must appear
+	// exactly once in the final active set.
+	final := reqs[len(reqs)-1].Tools
+	if got := toolListCount(final, "search"); got != 1 {
+		t.Errorf("'search' appears %d times in final tool set, want 1: %+v", got, final)
+	}
+	if got := toolListCount(final, "calc"); got != 1 {
+		t.Errorf("'calc' appears %d times in final tool set, want 1: %+v", got, final)
+	}
+	if len(final) != 2 {
+		t.Errorf("final tool set size = %d, want 2 (calc + search)", len(final))
+	}
+}
+
+// TestEngine_DiscoverToolsNilExpander verifies that when ToolExpander is nil, a
+// discover_tools call still completes (its result is appended as a tool message)
+// and the active tool set is unchanged.
+func TestEngine_DiscoverToolsNilExpander(t *testing.T) {
+	const discoverResult = `[{"name":"search","description":"s"},{"name":"translate","description":"t"}]`
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("d1", DiscoverToolsName, `{}`)}},
+		{Content: "done"},
+	}}
+	toolEx := &mockToolExecutor{results: map[string]tools.Result{
+		DiscoverToolsName: {Success: true, Data: discoverResult},
+	}}
+	eng := &Engine{LLM: llm, Tools: toolEx}
+	req := &Request{
+		Messages:     []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:        []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}},
+		MaxIter:      5,
+		ToolExpander: nil, // discovery expansion disabled
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != "done" {
+		t.Errorf("Output = %q, want %q", res.Output, "done")
+	}
+	reqs := llm.snapshotReqs()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(reqs))
+	}
+	// iter 1 tools must equal the original set (no expansion happened).
+	iter1 := reqs[1].Tools
+	if len(iter1) != 1 || iter1[0].Function.Name != "calc" {
+		t.Errorf("iter 1 tools = %+v, want only [calc]", iter1)
+	}
+	// The discover_tools result was still appended as a tool message for the LLM.
+	if _, ok := findToolMessage(reqs[1].Messages, discoverResult); !ok {
+		t.Errorf("missing tool message with discover_tools result %q", discoverResult)
+	}
+}
+
+// TestEngine_NoDiscoverTools_BackwardCompat verifies that a normal run with no
+// discover_tools call behaves exactly as before: every LLM call sees the
+// original tool set, req.Tools is not mutated, and the result is unchanged.
+func TestEngine_NoDiscoverTools_BackwardCompat(t *testing.T) {
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("c1", "calc", `{}`)}},
+		{Content: "done"},
+	}}
+	toolEx := &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "42"}}}
+	eng := &Engine{LLM: llm, Tools: toolEx}
+	baseTools := []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}}
+	req := &Request{
+		Messages: []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:    baseTools,
+		MaxIter:  5,
+		// ToolExpander left nil: even if a discover_tools call happened, no
+		// expansion would occur. Here no such call happens at all.
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != "done" {
+		t.Errorf("Output = %q, want %q", res.Output, "done")
+	}
+	if res.ToolCalls != 1 {
+		t.Errorf("ToolCalls = %d, want 1", res.ToolCalls)
+	}
+	reqs := llm.snapshotReqs()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(reqs))
+	}
+	for i, r := range reqs {
+		if len(r.Tools) != 1 || r.Tools[0].Function.Name != "calc" {
+			t.Errorf("iter %d tools = %+v, want only [calc]", i, r.Tools)
+		}
+	}
+	// The caller's req.Tools slice must not be mutated by the engine.
+	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "calc" {
+		t.Errorf("req.Tools mutated: %+v", req.Tools)
+	}
 }

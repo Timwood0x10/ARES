@@ -8,6 +8,7 @@ import (
 	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 
 // ---- Config options ----
@@ -641,6 +642,19 @@ type agentConfig struct {
 	tools       []tools.Tool
 	humanInput  HumanInputFunc
 	maxIter     int
+	// discovery enables runtime tool discovery: when true the agent exposes a
+	// discover_tools meta-tool so the LLM can search the tool pool at runtime
+	// and expand its active tool set on demand. Default is off (backward
+	// compatible: identical to the legacy WithTools-only path).
+	discovery bool
+	// toolSource, when non-nil, is the ToolSource used for discovery. When nil
+	// and discovery is on, the SDK defaults to a RegistrySource over the
+	// Runtime's tool registry.
+	toolSource toolsource.ToolSource
+	// selector, when non-nil, narrows the available tool pool before each run.
+	// When nil and discovery is on, the SDK defaults to AllSelector (expose all
+	// available tools — zero behaviour change vs. legacy).
+	selector toolsource.ToolSelector
 }
 
 func defaultAgentConfig() *agentConfig {
@@ -683,5 +697,42 @@ func WithMaxIterations(n int) AgentOption {
 		if n > 0 {
 			c.maxIter = n
 		}
+	}
+}
+
+// WithToolDiscovery enables runtime tool discovery. When enabled, the agent
+// exposes a discover_tools meta-tool so the LLM can search the available tool
+// pool at runtime by name/description/tag and expand its active tool set on
+// demand. Tools discovered at runtime are expanded via the agentloop engine's
+// ToolExpander path (no second execution loop).
+//
+// Default is off: behaviour is byte-for-byte identical to the legacy
+// WithTools-only path (no meta-tool, no expander, Engine.Tools = registry).
+func WithToolDiscovery() AgentOption {
+	return func(c *agentConfig) {
+		c.discovery = true
+	}
+}
+
+// WithToolSource sets the ToolSource used to discover available tools for
+// each run. Setting a source also implies discovery on (equivalent to also
+// calling WithToolDiscovery). When discovery is on and no source is set, the
+// SDK defaults to a RegistrySource over the Runtime's tool registry.
+func WithToolSource(s toolsource.ToolSource) AgentOption {
+	return func(c *agentConfig) {
+		c.toolSource = s
+		c.discovery = true
+	}
+}
+
+// WithToolSelector sets the ToolSelector used to narrow the available tool
+// pool before each run. Setting a selector also implies discovery on
+// (equivalent to also calling WithToolDiscovery). When discovery is on and no
+// selector is set, the SDK defaults to AllSelector (expose all available
+// tools — zero behaviour change vs. legacy).
+func WithToolSelector(s toolsource.ToolSelector) AgentOption {
+	return func(c *agentConfig) {
+		c.selector = s
+		c.discovery = true
 	}
 }
