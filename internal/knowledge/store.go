@@ -36,4 +36,41 @@ type KnowledgeStore interface {
 
 	// GetRepresentation retrieves an embedding vector by model.
 	GetRepresentation(ctx context.Context, objectID string, model string) (*Representation, error)
+
+	// HybridSearch performs vector recall (cosine) plus lexical (keyword) scoring
+	// and returns ranked results. The caller supplies QueryVector (computed via
+	// its EmbeddingService); when QueryVector is nil the search degrades to
+	// lexical-only. Stores do NOT embed — they are storage-agnostic.
+	HybridSearch(ctx context.Context, req HybridSearchRequest) ([]ScoredObject, error)
+
+	// ListByStatus returns objects in namespace ns matching the given status.
+	// Empty status matches objects with no status (backward compatibility).
+	ListByStatus(ctx context.Context, ns string, status ObjectStatus, limit int) ([]*KnowledgeObject, error)
+
+	// UpdateStatus transitions an object's lifecycle status.
+	UpdateStatus(ctx context.Context, id string, status ObjectStatus) error
+
+	// Promote moves a candidate to active and records its computed Quality.
+	Promote(ctx context.Context, id string, q *Quality) error
+}
+
+// HybridSearchRequest configures a HybridSearch call.
+type HybridSearchRequest struct {
+	Query        string
+	QueryVector  []float32 // computed by the caller via its EmbeddingService; nil = lexical-only
+	Namespace    string
+	Types        []ObjectType
+	TopK         int // vector recall cap (default 20)
+	FinalK       int // final result cap (default 5)
+	MinScore     float64
+	Model        string         // embedding model name (selects which Representation to compare)
+	StatusFilter []ObjectStatus // default: only StatusActive (+ empty for back-compat)
+}
+
+// ScoredObject is a HybridSearch result with its component scores.
+type ScoredObject struct {
+	Object       *KnowledgeObject
+	VectorScore  float64
+	LexicalScore float64
+	FinalScore   float64
 }

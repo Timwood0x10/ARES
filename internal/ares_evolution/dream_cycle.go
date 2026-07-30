@@ -441,7 +441,7 @@ func (dc *DreamCycle) runESEvolution(ctx context.Context, cycleCtx context.Conte
 	}
 
 	// Step 3: Test each candidate in arena and find best winner.
-	winner, err := dc.findWinner(ctx, candidates, parent)
+	winner, err := dc.findWinner(ctx, candidates, parent, data.AgentID)
 	if errors.Is(err, ErrAllCandidatesRejected) {
 		slog.InfoContext(ctx, "[DreamCycle] No candidate passed win rate threshold",
 			"min_win_rate", dc.config.MinWinRate)
@@ -782,6 +782,7 @@ func (dc *DreamCycle) findWinner(
 	ctx context.Context,
 	candidates []Strategy,
 	baseline Strategy,
+	taskType string,
 ) (*candidateResult, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("dream cycle: no candidates to evaluate")
@@ -835,6 +836,11 @@ func (dc *DreamCycle) findWinner(
 					"candidate_id", qr.candidate.ID,
 					"win_rate", qr.winRate,
 					"threshold", dc.config.MinWinRate)
+				// Record the rejection as a negative outcome so the hint
+				// provider can learn which strategies fail the cheap screen
+				// and avoid regenerating them. Best-effort: a recording
+				// failure must not abort the cycle.
+				dc.recordQuickReject(ctx, qr.candidate, qr.winRate, taskType)
 			}
 		}
 
@@ -926,6 +932,29 @@ func (dc *DreamCycle) recordFailure(ctx context.Context, parent Strategy) {
 			slog.WarnContext(ctx, "[DreamCycle] Failed to record failure outcome",
 				"error", err)
 		}
+	}
+}
+
+// recordQuickReject records a candidate that was discarded by the cheap quick-
+// reject screen as a negative StrategyOutcome, so the hint provider can learn
+// which strategies fail early and steer future mutations away from them. It is
+// best-effort: a recording error is logged and never propagated. No-op when no
+// hint provider is wired.
+func (dc *DreamCycle) recordQuickReject(ctx context.Context, candidate Strategy, winRate float64, taskType string) {
+	if dc.hintProvider == nil {
+		return
+	}
+	outcome := mutation.StrategyOutcome{
+		StrategyID:   candidate.ID,
+		TaskType:     taskType,
+		Success:      false,
+		Score:        winRate,
+		MutationType: candidate.StrategyMutationType,
+		Timestamp:    time.Now(),
+	}
+	if err := dc.hintProvider.RecordStrategyOutcome(ctx, outcome); err != nil {
+		slog.WarnContext(ctx, "[DreamCycle] Failed to record quick-reject outcome",
+			"candidate_id", candidate.ID, "error", err)
 	}
 }
 

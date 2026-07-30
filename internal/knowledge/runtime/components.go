@@ -26,10 +26,24 @@ type Reducer interface {
 // DefaultLinker generates basic relations based on shared tags and types.
 type DefaultLinker struct{}
 
+// Linking thresholds for DefaultLinker. Centralised as constants so the
+// behaviour is documented and tunable in one place.
+const (
+	// maxAllPairs is the group size below which Link emits all-pairs edges
+	// (O(n²) but bounded). Above it Link switches to a star topology — each
+	// member linked to the group representative — which is O(n) and, unlike
+	// the old hard cap of 200, leaves no member orphaned from its cluster.
+	maxAllPairs = 64
+	// maxEdgesTotal caps the total number of edges emitted across all groups
+	// to bound memory for pathological inputs (e.g. one tag shared by every
+	// object). Once hit, remaining groups are skipped.
+	maxEdgesTotal = 5000
+)
+
 func (l *DefaultLinker) Name() string { return "default-linker" }
 
 func (l *DefaultLinker) Link(_ context.Context, objects []*knowledge.KnowledgeObject) ([]knowledge.Relation, error) {
-	var edges []knowledge.Relation
+	edges := make([]knowledge.Relation, 0, min(len(objects), maxEdgesTotal))
 	byTag := make(map[string][]*knowledge.KnowledgeObject)
 
 	for _, obj := range objects {
@@ -40,19 +54,50 @@ func (l *DefaultLinker) Link(_ context.Context, objects []*knowledge.KnowledgeOb
 
 	// Create relations between objects sharing the same tag.
 	for _, group := range byTag {
-		for i := 0; i < len(group) && i < 200; i++ {
-			for j := i + 1; j < len(group) && j < 200; j++ {
-				edges = append(edges, knowledge.Relation{
-					From:  group[i].ID,
-					To:    group[j].ID,
-					Name:  knowledge.RelBelongsTo,
-					Score: 0.5,
-				})
-			}
+		if len(edges) >= maxEdgesTotal {
+			break
 		}
+		edges = linkGroup(edges, group)
 	}
 
 	return edges, nil
+}
+
+// linkGroup appends belongs_to edges for a single tag group. For small groups
+// (≤ maxAllPairs) it emits all pairs; for larger groups it emits a star
+// (every member → the first member) so growth is linear and no member is left
+// unlinked. It respects the maxEdgesTotal cap by stopping early.
+func linkGroup(edges []knowledge.Relation, group []*knowledge.KnowledgeObject) []knowledge.Relation {
+	if len(group) < 2 {
+		return edges
+	}
+	emit := func(from, to string) {
+		edges = append(edges, knowledge.Relation{
+			From:  from,
+			To:    to,
+			Name:  knowledge.RelBelongsTo,
+			Score: 0.5,
+		})
+	}
+
+	if len(group) <= maxAllPairs {
+		// All-pairs: every member linked to every other member.
+		for i := 0; i < len(group) && len(edges) < maxEdgesTotal; i++ {
+			for j := i + 1; j < len(group) && len(edges) < maxEdgesTotal; j++ {
+				emit(group[i].ID, group[j].ID)
+			}
+		}
+		return edges
+	}
+
+	// Star topology: link each member to the group representative (group[0]).
+	// This keeps large clusters O(n) instead of O(n²) while still connecting
+	// every member to the cluster via the representative.
+	rep := group[0]
+	for i := 1; i < len(group) && len(edges) < maxEdgesTotal; i++ {
+		emit(rep.ID, group[i].ID)
+	}
+	return edges
 }
 
 // DefaultReducer removes low-confidence nodes to fit the token budget.

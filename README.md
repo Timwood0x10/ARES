@@ -9,6 +9,16 @@
 
 ```
 
+**⚠️  WARNING: AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL STAGE**
+
+This is the **FIRST attempt to build a knowledge graph WITHOUT relying on LLMs**. The current implementation uses:
+- Rule-based relation extraction (regex patterns, no generative AI)
+- Hybrid search (BM25-style lexical + vector cosine similarity)
+- Deterministic quality scoring (no LLM evaluation)
+
+Feature status: **EXPERIMENTAL — API may change, not production-ready**. Please use for experimentation and feedback only.
+
+---
 **ARES** — Agent Runtime & Evolution System.
 
 Build resilient, self-evolving AI agents in Go. Unified SDK, DAG workflow, chaos engineering, MCP support.

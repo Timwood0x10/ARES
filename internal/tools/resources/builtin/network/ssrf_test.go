@@ -106,31 +106,31 @@ func TestSSRFTransport_ReturnsClonedTransport(t *testing.T) {
 // prove DNS-rebinding defense end-to-end. It is skipped under -short and when
 // nip.io is not resolvable, so it never breaks offline CI / `make check`.
 func TestSSRF_Rebinding_nipio(t *testing.T) {
-  if testing.Short() {
-   t.Skip("skipping network-dependent DNS rebinding test in -short mode")
-  }
-  // Precheck: skip if nip.io cannot be resolved (offline CI).
-  addrs, err := net.DefaultResolver.LookupHost(context.Background(), "127.0.0.1.nip.io")
-  if err != nil {
-   t.Skipf("skipping: nip.io not resolvable: %v", err)
-  }
-  // Verify that at least one resolved IP is actually a blocked IP.
-  // nip.io may not resolve to 127.0.0.1 in all environments.
-  hasBlocked := false
-  for _, a := range addrs {
-   ip := net.ParseIP(a)
-   if ip != nil && isBlockedIP(ip) {
-    hasBlocked = true
-    break
-   }
-  }
-  if !hasBlocked {
-   t.Skipf("skipping: nip.io resolved to non-blocked IPs %v", addrs)
-  }
+	if testing.Short() {
+		t.Skip("skipping network-dependent DNS rebinding test in -short mode")
+	}
+	// Precheck: skip if nip.io cannot be resolved (offline CI).
+	addrs, err := net.DefaultResolver.LookupHost(context.Background(), "127.0.0.1.nip.io")
+	if err != nil {
+		t.Skipf("skipping: nip.io not resolvable: %v", err)
+	}
+	// Verify that at least one resolved IP is actually a blocked IP.
+	// nip.io may not resolve to 127.0.0.1 in all environments.
+	hasBlocked := false
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip != nil && isBlockedIP(ip) {
+			hasBlocked = true
+			break
+		}
+	}
+	if !hasBlocked {
+		t.Skipf("skipping: nip.io resolved to non-blocked IPs %v", addrs)
+	}
 
-  _, err = SSRFDialer().DialContext(context.Background(), "tcp", "127.0.0.1.nip.io:80")
-  require.ErrorIs(t, err, ErrSSRFBlocked)
+	_, err = SSRFDialer().DialContext(context.Background(), "tcp", "127.0.0.1.nip.io:80")
+	require.ErrorIs(t, err, ErrSSRFBlocked)
 
-  // Public rebinding host must NOT be blocked at the control layer.
-  require.NoError(t, ssrfDialControl("tcp", "1.1.1.1.nip.io:80", nil))
- }
+	// Public rebinding host must NOT be blocked at the control layer.
+	require.NoError(t, ssrfDialControl("tcp", "1.1.1.1.nip.io:80", nil))
+}

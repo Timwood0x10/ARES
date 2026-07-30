@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -27,13 +28,57 @@ type Tool struct {
 type AKFService struct {
 	Runtime  *runtime.KnowledgeRuntime
 	Compiler compiler.Compiler
+	// store is the optional persistence layer for distilled KnowledgeObjects.
+	// When nil, distill_memory computes the quality score but skips Save/
+	// Promote (backward compatibility with pre-0.2.9 callers).
+	store knowledge.KnowledgeStore
+	// gate is the quality gate used to score distilled objects. Always set
+	// via the constructors; a zero-value gate would still function but
+	// DefaultQualityGateConfig carries the 0.2.9 thresholds.
+	gate knowledge.QualityGateConfig
+	// extractor extracts rule-based Relations from each distilled object's
+	// text before the quality gate runs, so the ExtractionScore boost
+	// applies identically to the DistillBridge path. Always non-nil after
+	// construction.
+	extractor *knowledge.RelationExtractor
 }
 
 // NewAKFService creates an AKFService with the given runtime and compiler.
+// No store is wired, so distill_memory scores objects but does not persist
+// them. The default quality gate (DefaultQualityGateConfig) and the default
+// relation extractor are applied.
 func NewAKFService(rt *runtime.KnowledgeRuntime, comp compiler.Compiler) *AKFService {
 	return &AKFService{
-		Runtime:  rt,
-		Compiler: comp,
+		Runtime:   rt,
+		Compiler:  comp,
+		store:     nil,
+		gate:      knowledge.DefaultQualityGateConfig(),
+		extractor: knowledge.NewRelationExtractor(),
+	}
+}
+
+// NewAKFServiceWithStore creates an AKFService backed by a KnowledgeStore so
+// distill_memory persists candidate objects and promotes them to active when
+// their final confidence clears the gate's MinFinalScore threshold.
+//
+// Args:
+//   - rt:    shared KnowledgeRuntime (may be nil for tool-only tests).
+//   - comp:  compiler used by compile_context.
+//   - store: persistence layer; pass nil to skip persistence.
+//   - gate:  quality gate thresholds; pass DefaultQualityGateConfig() when
+//     unsure.
+func NewAKFServiceWithStore(
+	rt *runtime.KnowledgeRuntime,
+	comp compiler.Compiler,
+	store knowledge.KnowledgeStore,
+	gate knowledge.QualityGateConfig,
+) *AKFService {
+	return &AKFService{
+		Runtime:   rt,
+		Compiler:  comp,
+		store:     store,
+		gate:      gate,
+		extractor: knowledge.NewRelationExtractor(),
 	}
 }
 
@@ -182,7 +227,12 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 	return string(data), nil
 }
 
-// handleDistillMemory converts a text memory into a KnowledgeObject via the pipeline.
+// handleDistillMemory converts a text memory into a KnowledgeObject, runs it
+// through the quality gate, and (when a store is wired) persists it as a
+// candidate before promoting it to active when its confidence clears the
+// gate threshold. The previous implementation constructed the object but
+// never called store.Save and hardcoded Confidence to 1.0 — this fix closes
+// that pseudo-write bug.
 func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (string, error) {
 	var params distillMemoryParams
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
@@ -197,21 +247,57 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 		objType = knowledge.ObjectType(params.Type)
 	}
 
+	now := time.Now()
 	obj := &knowledge.KnowledgeObject{
-		ID:         fmt.Sprintf("mem_%d", time.Now().UnixNano()),
+		ID:         fmt.Sprintf("mem_%d", now.UnixNano()),
 		Type:       objType,
 		Summary:    params.Content,
 		Normalized: params.Content,
 		Tags:       params.Tags,
-		Confidence: 1.0,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		Status:     knowledge.StatusCandidate,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	// Relation extraction must run before the quality gate so the
+	// ExtractionScore boost applies identically to the DistillBridge path
+	// (phase 3.5). Without this the same content scores lower via MCP than
+	// via the bridge.
+	obj.Relations = s.extractor.Extract(obj)
+
+	// Quality gate: evaluate multi-dimensional quality and fold it into a
+	// single Confidence score. Confidence is derived from the gate rather
+	// than hardcoded to 1.0 so downstream ranking reflects real signal.
+	q := s.gate.Evaluate(obj)
+	obj.Quality = q
+	obj.Confidence = s.gate.ComputeFinal(q)
+
+	// Persist when a store is wired. The object is saved as a candidate
+	// first; if its final score clears the gate threshold it is then
+	// promoted to active. Promotion is best-effort — a failure leaves the
+	// object persisted as a candidate rather than failing the whole call.
+	if s.store != nil {
+		if err := s.store.Save(ctx, obj); err != nil {
+			return "", fmt.Errorf("distill memory: save object %s: %w", obj.ID, err)
+		}
+		if obj.Confidence >= s.gate.MinFinalScore {
+			if err := s.store.Promote(ctx, obj.ID, obj.Quality); err == nil {
+				obj.Status = knowledge.StatusActive
+			} else {
+				// best-effort: promotion failure leaves the object persisted as
+				// a candidate; log so the failure is observable rather than silent.
+				slog.Warn("akf service: promote object",
+					"object_id", obj.ID, "error", err)
+			}
+		}
 	}
 
 	result := map[string]any{
-		"object_id": obj.ID,
-		"type":      obj.Type,
-		"summary":   obj.Summary,
+		"object_id":  obj.ID,
+		"type":       obj.Type,
+		"summary":    obj.Summary,
+		"status":     obj.Status,
+		"confidence": obj.Confidence,
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil

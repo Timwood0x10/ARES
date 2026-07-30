@@ -4,7 +4,9 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
+	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -20,17 +22,34 @@ type ConversationDistiller interface {
 // resulting Memory objects to KnowledgeObjects, processes them through
 // the AKF KnowledgePipeline, and persists them to the KnowledgeStore.
 //
-// This closes the P6 distillation loop: raw experience → distilled
-// Memory → KnowledgeObject → Pipeline → Store.
+// The 0.2.9 write loop adds four phases before Save:
+//   - relation extraction (rule-based, non-LLM),
+//   - embedding + dedup (marks superseded duplicates),
+//   - quality-gate scoring (sets Quality and Confidence),
+//   - lifecycle promotion (candidate → active when above MinFinalScore).
 type DistillBridge struct {
 	distiller ConversationDistiller
 	pipeline  *knowledge.KnowledgePipeline
 	store     knowledge.KnowledgeStore
+	// emb is optional; when nil, embedding and dedup are skipped entirely.
+	emb embedding.EmbeddingService
+	// gate configures the quality gate: scoring weights, dedup threshold,
+	// and per-ingest caps. Always non-nil after construction.
+	gate knowledge.QualityGateConfig
+	// extractor extracts rule-based Relations from each object's text.
+	// Always non-nil after construction.
+	extractor *knowledge.RelationExtractor
 	namespace string
+	// model is the embedding model name recorded on each Representation
+	// and KnowledgeObject.EmbeddingModel. Empty means no model recorded.
+	model string
 }
 
 // NewDistillBridge creates a bridge that connects the Memory Distillation
-// pipeline to the AKF KnowledgeObject system.
+// pipeline to the AKF KnowledgeObject system. It delegates to
+// NewDistillBridgeWithGate with the 0.2.9 defaults: no embedding service
+// (skips vector + dedup), the default quality gate, and the default
+// relation extractor.
 //
 // Args:
 //   - distiller: existing Memory Distiller that produces Memory objects.
@@ -44,11 +63,52 @@ func NewDistillBridge(
 	store knowledge.KnowledgeStore,
 	namespace string,
 ) *DistillBridge {
+	return NewDistillBridgeWithGate(
+		distiller,
+		pipeline,
+		store,
+		nil, // emb: nil skips embedding + dedup
+		knowledge.DefaultQualityGateConfig(),
+		knowledge.NewRelationExtractor(),
+		namespace,
+		"", // model: empty means no model recorded
+	)
+}
+
+// NewDistillBridgeWithGate creates a bridge with the full 0.2.9 write loop:
+// relation extraction, embedding + dedup, quality-gate scoring, and
+// lifecycle promotion before Save.
+//
+// Args:
+//   - distiller: existing Memory Distiller that produces Memory objects.
+//   - pipeline: AKF KnowledgePipeline; pass nil to skip pipeline processing.
+//   - store: AKF KnowledgeStore for persisting the resulting KnowledgeObjects.
+//   - emb: EmbeddingService for vector embedding; nil skips embedding + dedup.
+//   - gate: QualityGateConfig for scoring, dedup threshold, and caps.
+//   - extractor: RelationExtractor; nil defaults to NewRelationExtractor().
+//   - namespace: namespace assigned to all produced KnowledgeObjects.
+//   - model: embedding model name; empty means no model recorded.
+func NewDistillBridgeWithGate(
+	distiller ConversationDistiller,
+	pipeline *knowledge.KnowledgePipeline,
+	store knowledge.KnowledgeStore,
+	emb embedding.EmbeddingService,
+	gate knowledge.QualityGateConfig,
+	extractor *knowledge.RelationExtractor,
+	namespace, model string,
+) *DistillBridge {
+	if extractor == nil {
+		extractor = knowledge.NewRelationExtractor()
+	}
 	return &DistillBridge{
 		distiller: distiller,
 		pipeline:  pipeline,
 		store:     store,
+		emb:       emb,
+		gate:      gate,
+		extractor: extractor,
 		namespace: namespace,
+		model:     model,
 	}
 }
 
@@ -59,7 +119,17 @@ func NewDistillBridge(
 //  1. Distill: uses the existing Distiller to extract Memories from messages.
 //  2. Convert: maps each Memory to a KnowledgeObject via FromMemory.
 //  3. Pipeline: runs each KnowledgeObject through Normalizer → Resolver → Summarizer.
-//  4. Persist: saves the processed KnowledgeObjects to the Store.
+//     3.5. Relation extraction: extracts rule-based Relations from each object.
+//     3.6. Embedding + dedup: embeds each object, stores the Representation, and
+//     marks superseded duplicates (only when emb and store are non-nil; dedup
+//     additionally requires gate.EnableDedup).
+//     3.7. Quality gate: scores each non-superseded object and sets its
+//     Confidence; EmbeddingModel is recorded when model is non-empty.
+//  4. Persist: saves all objects to the Store, then promotes candidates
+//     whose Confidence >= MinFinalScore to StatusActive (best-effort).
+//
+// MaxFactsPerIngest caps the number of objects that enter phase 3.5+; when
+// exceeded the slice is truncated before the expensive phases run.
 //
 // Returns the saved KnowledgeObjects or an error if any step fails.
 func (b *DistillBridge) DistillConversation(
@@ -110,12 +180,142 @@ func (b *DistillBridge) DistillConversation(
 		objects = processed
 	}
 
-	// Phase 4: persist to KnowledgeStore.
-	if b.store != nil {
-		if err := b.store.Save(ctx, objects...); err != nil {
-			return nil, fmt.Errorf("distill bridge: save to store: %w", err)
-		}
+	// Cap the ingest before the expensive phases (embedding, dedup, scoring).
+	if b.gate.MaxFactsPerIngest > 0 && len(objects) > b.gate.MaxFactsPerIngest {
+		objects = objects[:b.gate.MaxFactsPerIngest]
 	}
 
-	return objects, nil
+	// Phase 3.5: extract rule-based Relations from each object's text.
+	// Relations feed the quality gate (ExtractionScore boost) and downstream
+	// graph construction.
+	b.extractRelations(objects)
+
+	// Phase 3.6: embedding + dedup. Requires both emb and store; dedup
+	// additionally requires gate.EnableDedup. Superseded objects skip the
+	// quality gate in phase 3.7.
+	b.embedAndDedup(ctx, objects)
+
+	// Phase 3.7: quality gate. Score each non-superseded object; the
+	// resulting Quality and Confidence drive the promote decision in phase 4.
+	b.scoreQuality(objects)
+
+	// Phase 4: persist to KnowledgeStore and promote qualifying candidates.
+	return objects, b.persistAndPromote(ctx, objects)
+}
+
+// extractRelations runs Phase 3.5: it populates obj.Relations for each object
+// using the rule-based RelationExtractor. Relations feed the quality gate
+// (ExtractionScore boost) and downstream graph construction.
+func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) {
+	for _, obj := range objects {
+		obj.Relations = b.extractor.Extract(obj)
+	}
+}
+
+// embedAndDedup runs Phase 3.6: it embeds each object, stores the
+// Representation, and marks superseded duplicates. Requires both emb and
+// store; dedup additionally requires gate.EnableDedup. Superseded objects
+// skip the quality gate in phase 3.7. Does nothing when emb or store is nil.
+func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.KnowledgeObject) {
+	if b.emb == nil || b.store == nil {
+		return
+	}
+	for _, obj := range objects {
+		text := obj.Normalized
+		if text == "" {
+			continue
+		}
+		vecF64, eErr := b.emb.EmbedWithPrefix(ctx, text, "passage:")
+		if eErr != nil {
+			slog.Warn("distill bridge: embed object",
+				"object_id", obj.ID, "error", eErr)
+			continue
+		}
+		vec := toFloat32(vecF64)
+		rep := &knowledge.Representation{
+			ID:        "rep_" + obj.ID,
+			ObjectID:  obj.ID,
+			Model:     b.model,
+			Dimension: len(vec),
+			Vector:    vec,
+		}
+		if rErr := b.store.SaveRepresentation(ctx, rep); rErr != nil {
+			// best-effort: representation is not required for Save.
+			slog.Warn("distill bridge: save representation",
+				"object_id", obj.ID, "error", rErr)
+		}
+		if !b.gate.EnableDedup {
+			continue
+		}
+		dup, dErr := knowledge.FindDuplicate(ctx, b.store, vec, b.model, b.gate.DedupThreshold)
+		if dErr != nil {
+			slog.Warn("distill bridge: find duplicate",
+				"object_id", obj.ID, "error", dErr)
+			continue
+		}
+		if dup != nil {
+			obj.Status = knowledge.StatusSuperseded
+		}
+	}
+}
+
+// scoreQuality runs Phase 3.7: it scores each non-superseded object and sets
+// its Status, Quality, Confidence, and EmbeddingModel. Superseded objects
+// skip the gate; the resulting Quality and Confidence drive the promote
+// decision in phase 4.
+func (b *DistillBridge) scoreQuality(objects []*knowledge.KnowledgeObject) {
+	for _, obj := range objects {
+		if obj.Status == knowledge.StatusSuperseded {
+			continue
+		}
+		obj.Status = knowledge.StatusCandidate
+		q := b.gate.Evaluate(obj)
+		obj.Quality = q
+		obj.Confidence = b.gate.ComputeFinal(q)
+		if b.model != "" {
+			obj.EmbeddingModel = b.model
+		}
+	}
+}
+
+// persistAndPromote runs Phase 4: it saves all objects to the Store and
+// promotes candidates whose Confidence >= MinFinalScore to StatusActive
+// (best-effort; promotion failures are logged but do not roll back the Save).
+// Returns a wrapped error if Save fails. Does nothing when store is nil.
+func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowledge.KnowledgeObject) error {
+	if b.store == nil {
+		return nil
+	}
+	if err := b.store.Save(ctx, objects...); err != nil {
+		return fmt.Errorf("distill bridge: save to store: %w", err)
+	}
+	for _, obj := range objects {
+		if obj.Status != knowledge.StatusCandidate {
+			continue
+		}
+		if obj.Confidence < b.gate.MinFinalScore {
+			continue
+		}
+		if pErr := b.store.Promote(ctx, obj.ID, obj.Quality); pErr != nil {
+			// best-effort: promotion failure does not roll back the Save.
+			slog.Warn("distill bridge: promote object",
+				"object_id", obj.ID, "error", pErr)
+		} else {
+			obj.Status = knowledge.StatusActive
+		}
+	}
+	return nil
+}
+
+// toFloat32 converts a []float64 embedding vector to []float32, the format
+// expected by Representation.Vector and FindDuplicate. The EmbeddingService
+// interface returns []float64 (matching the ARES embedding client contract),
+// while the vector store layer uses []float32 to halve memory and match the
+// pgvector/sqlite-vec on-disk format.
+func toFloat32(vec []float64) []float32 {
+	out := make([]float32, len(vec))
+	for i, v := range vec {
+		out[i] = float32(v)
+	}
+	return out
 }

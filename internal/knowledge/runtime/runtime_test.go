@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -45,6 +46,49 @@ func TestDefaultLinkerEmptyObjects(t *testing.T) {
 	}
 	if len(edges) != 0 {
 		t.Errorf("expected 0 edges for nil input, got %d", len(edges))
+	}
+}
+
+func TestDefaultLinkerLargeGroupUsesStarTopology(t *testing.T) {
+	linker := &DefaultLinker{}
+
+	// A single shared tag with more than maxAllPairs members. Under the old
+	// all-pairs-with-cap-200 logic this orphaned members beyond index 200 and
+	// wasted work; the star topology must link every member via the
+	// representative in O(n) edges.
+	const n = maxAllPairs + 50
+	objects := make([]*knowledge.KnowledgeObject, 0, n)
+	for i := range n {
+		objects = append(objects, &knowledge.KnowledgeObject{
+			ID:   fmt.Sprintf("obj-%d", i),
+			Tags: []string{"shared"},
+		})
+	}
+
+	edges, err := linker.Link(context.Background(), objects)
+	if err != nil {
+		t.Fatalf("Link error: %v", err)
+	}
+
+	// Star topology emits exactly n-1 edges (each member → representative),
+	// far below the O(n²) all-pairs count.
+	if len(edges) != n-1 {
+		t.Fatalf("expected %d star edges, got %d", n-1, len(edges))
+	}
+
+	// Every edge must involve the representative (objects[0]) so no member is
+	// orphaned from the cluster.
+	rep := objects[0].ID
+	linked := map[string]bool{rep: true}
+	for _, e := range edges {
+		if e.From != rep && e.To != rep {
+			t.Errorf("edge %s→%s does not involve representative %s", e.From, e.To, rep)
+		}
+		linked[e.From] = true
+		linked[e.To] = true
+	}
+	if len(linked) != n {
+		t.Errorf("expected all %d members linked, got %d", n, len(linked))
 	}
 }
 

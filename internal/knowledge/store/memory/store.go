@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -181,6 +182,154 @@ func (s *Store) GetRepresentation(_ context.Context, objectID string, model stri
 		return nil, ErrObjectNotFound
 	}
 	return rep, nil
+}
+
+// HybridSearch performs vector + lexical scoring over in-memory objects.
+func (s *Store) HybridSearch(_ context.Context, req knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Default status filter: active (plus empty-status objects for back-compat).
+	statuses := req.StatusFilter
+	if len(statuses) == 0 {
+		statuses = []knowledge.ObjectStatus{knowledge.StatusActive}
+	}
+
+	// Collect candidates matching namespace/types/status.
+	var candidates []*knowledge.KnowledgeObject
+	for _, obj := range s.objects {
+		if req.Namespace != "" && obj.Namespace != req.Namespace {
+			continue
+		}
+		if len(req.Types) > 0 {
+			typeMatch := false
+			for _, t := range req.Types {
+				if obj.Type == t {
+					typeMatch = true
+					break
+				}
+			}
+			if !typeMatch {
+				continue
+			}
+		}
+		if !statusMatches(obj.Status, statuses) {
+			continue
+		}
+		candidates = append(candidates, obj)
+	}
+
+	// Build the representations map for the requested model.
+	reps := make(map[string]*knowledge.Representation, len(candidates))
+	for _, obj := range candidates {
+		key := obj.ID + ":" + req.Model
+		if rep, ok := s.reps[key]; ok {
+			reps[obj.ID] = rep
+		}
+	}
+
+	scored := knowledge.ScoreHybrid(candidates, reps, req.QueryVector, req.Query)
+
+	// Filter by MinScore.
+	if req.MinScore > 0 {
+		filtered := scored[:0]
+		for _, r := range scored {
+			if r.FinalScore >= req.MinScore {
+				filtered = append(filtered, r)
+			}
+		}
+		scored = filtered
+	}
+
+	// Sort by FinalScore descending.
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].FinalScore > scored[j].FinalScore
+	})
+
+	// Apply recall cap (TopK) and final cap (FinalK).
+	topK := req.TopK
+	if topK <= 0 {
+		topK = 20
+	}
+	if len(scored) > topK {
+		scored = scored[:topK]
+	}
+	finalK := req.FinalK
+	if finalK <= 0 {
+		finalK = 5
+	}
+	if len(scored) > finalK {
+		scored = scored[:finalK]
+	}
+	return scored, nil
+}
+
+// ListByStatus returns objects in ns matching one of the given statuses.
+// Empty status matches objects with no status (backward compatibility).
+func (s *Store) ListByStatus(_ context.Context, ns string, status knowledge.ObjectStatus, limit int) ([]*knowledge.KnowledgeObject, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*knowledge.KnowledgeObject
+	for _, obj := range s.objects {
+		if ns != "" && obj.Namespace != ns {
+			continue
+		}
+		if obj.Status != status {
+			// Empty object status is treated as active for back-compat: only
+			// skip when the requested status is not active, or the object has a
+			// (non-empty) status that differs from it.
+			if status != knowledge.StatusActive || obj.Status != "" {
+				continue
+			}
+		}
+		result = append(result, obj)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+// UpdateStatus transitions an object's lifecycle status.
+func (s *Store) UpdateStatus(_ context.Context, id string, status knowledge.ObjectStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	obj, ok := s.objects[id]
+	if !ok {
+		return ErrObjectNotFound
+	}
+	obj.Status = status
+	obj.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// Promote moves a candidate to active and records its computed Quality.
+func (s *Store) Promote(_ context.Context, id string, q *knowledge.Quality) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	obj, ok := s.objects[id]
+	if !ok {
+		return ErrObjectNotFound
+	}
+	obj.Status = knowledge.StatusActive
+	obj.Quality = q
+	obj.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// statusMatches reports whether objStatus matches any of the wanted statuses,
+// treating an empty objStatus as active (backward compatibility).
+func statusMatches(objStatus knowledge.ObjectStatus, want []knowledge.ObjectStatus) bool {
+	for _, w := range want {
+		if objStatus == w {
+			return true
+		}
+		// Empty object status is treated as active for back-compat.
+		if w == knowledge.StatusActive && objStatus == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Count returns the number of stored objects.

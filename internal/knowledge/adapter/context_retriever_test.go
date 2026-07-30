@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 )
 
 // ctxProvider is a minimal GraphProvider that streams a fixed set of
@@ -404,6 +405,311 @@ func TestSnippetContent_FallbackChain(t *testing.T) {
 // TestClampScore was removed: the local clampScore helper was centralized into
 // internal/scoreutil.ClampUnit, which has its own table-driven test
 // (TestClampUnit) covering the same boundaries plus the NaN edge case.
+
+// TestKnowledgeRetriever_StoreHybrid covers the AKG read loop: when a store is
+// wired via NewKnowledgeRetrieverWithStore, Retrieve must call
+// store.HybridSearch and surface the scored facts — bypassing runtime.Execute
+// entirely. Seeds the memstore with active objects and asserts the lexically
+// matching fact is returned. The store path short-circuits before Execute, so
+// the runtime is never invoked here (a minimal runtime still must be passed
+// because the constructor enforces non-nil).
+func TestKnowledgeRetriever_StoreHybrid(t *testing.T) {
+	// Shared seed objects. Lexical scoring is Jaccard overlap of lowercased
+	// token sets over (Summary + " " + Normalized), so the seeds are kept
+	// short to keep Jaccard above the DefaultMinScore (0.4) cutoff.
+	redisObj := &knowledge.KnowledgeObject{
+		ID:         "akg:redis",
+		Type:       knowledge.ObjectDecision,
+		Namespace:  "memory",
+		Summary:    "Redis cache",
+		Normalized: "",
+		Confidence: 0.9,
+		Status:     knowledge.StatusActive,
+		Tags:       []string{"redis", "cache"},
+		CreatedAt:  time.Now(),
+	}
+	pgObj := &knowledge.KnowledgeObject{
+		ID:         "akg:pg",
+		Type:       knowledge.ObjectDecision,
+		Namespace:  "memory",
+		Summary:    "PostgreSQL storage",
+		Normalized: "",
+		Confidence: 0.85,
+		Status:     knowledge.StatusActive,
+		Tags:       []string{"postgres", "database"},
+		CreatedAt:  time.Now(),
+	}
+	// A rejected object must NOT surface because StatusFilter=[StatusActive].
+	// Its content overlaps the redis query on purpose, so the only thing
+	// keeping it out of the results is the status filter.
+	rejectedObj := &knowledge.KnowledgeObject{
+		ID:         "akg:rejected",
+		Type:       knowledge.ObjectDecision,
+		Namespace:  "memory",
+		Summary:    "Redis Redis",
+		Normalized: "",
+		Confidence: 0.99,
+		Status:     knowledge.StatusRejected,
+		CreatedAt:  time.Now(),
+	}
+
+	// buildSeededStore returns a fresh memstore populated with the seed.
+	buildSeededStore := func(t *testing.T) *memorystore.Store {
+		t.Helper()
+		s := memorystore.New()
+		if err := s.Save(context.Background(), redisObj, pgObj, rejectedObj); err != nil {
+			t.Fatalf("seed store: %v", err)
+		}
+		return s
+	}
+
+	// buildMinimalRuntime returns a non-nil runtime so the constructor's
+	// non-nil check passes. It is never invoked on the store path.
+	buildMinimalRuntime := func(t *testing.T) *knowledgeruntime.KnowledgeRuntime {
+		t.Helper()
+		return buildTestRuntime(t, &ctxProvider{
+			name:    "unused",
+			objects: []*knowledge.KnowledgeObject{},
+		})
+	}
+
+	tests := []struct {
+		name        string
+		query       string
+		topK        int
+		minScore    float64
+		wantIDs     []string
+		wantNotIDs  []string
+		wantSource  string
+		wantErr     bool
+		errSub      string
+		wantAllMeta []string // metadata keys every snippet must contain
+	}{
+		{
+			name:       "lexically matching active fact surfaces",
+			query:      "Redis cache",
+			topK:       5,
+			minScore:   0,
+			wantIDs:    []string{"akg:redis"},
+			wantNotIDs: []string{"akg:pg", "akg:rejected"},
+			wantSource: sourceAKGStore,
+			wantAllMeta: []string{
+				"id", "type", "source", "vector", "lexical", "namespace",
+			},
+		},
+		{
+			// Query "Redis" overlaps both the active redis object and the
+			// rejected object; the rejected one must be dropped by the
+			// StatusFilter=[StatusActive] in the HybridSearch request.
+			name:       "rejected status filtered out by StatusFilter",
+			query:      "Redis",
+			topK:       5,
+			minScore:   0,
+			wantIDs:    []string{"akg:redis"},
+			wantNotIDs: []string{"akg:rejected"},
+			wantSource: sourceAKGStore,
+		},
+		{
+			name:       "non-matching query returns empty",
+			query:      "kubernetes",
+			topK:       5,
+			minScore:   0,
+			wantIDs:    nil,
+			wantNotIDs: []string{"akg:redis", "akg:pg", "akg:rejected"},
+			wantSource: sourceAKGStore,
+		},
+		{
+			name:     "empty input short-circuits before store",
+			query:    "",
+			topK:     5,
+			minScore: 0,
+			wantErr:  false,
+			// wantIDs left nil → expect zero snippets.
+		},
+		{
+			// minScore above the lexical Jaccard score (0.5 for "Redis" vs
+			// "Redis cache") must yield zero results.
+			name:     "minScore above all lexical scores returns nothing",
+			query:    "Redis",
+			topK:     5,
+			minScore: 0.99,
+			wantErr:  false,
+			// wantIDs left nil → expect zero snippets.
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := buildSeededStore(t)
+			rt := buildMinimalRuntime(t)
+			kr, err := NewKnowledgeRetrieverWithStore(
+				context.Background(), rt, store, "", tt.minScore,
+			)
+			if err != nil {
+				t.Fatalf("NewKnowledgeRetrieverWithStore: %v", err)
+			}
+
+			snippets, err := kr.Retrieve(context.Background(), tt.query, tt.topK)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSub)
+				}
+				if tt.errSub != "" && !containsStr(err.Error(), tt.errSub) {
+					t.Errorf("expected error containing %q, got %q", tt.errSub, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Retrieve: unexpected error: %v", err)
+			}
+
+			// Empty input must yield an empty (non-nil) slice.
+			if tt.query == "" {
+				if snippets == nil {
+					t.Fatal("expected non-nil slice for empty input")
+				}
+				if len(snippets) != 0 {
+					t.Errorf("expected 0 snippets for empty input, got %d", len(snippets))
+				}
+				return
+			}
+
+			gotIDs := make(map[string]bool, len(snippets))
+			for _, s := range snippets {
+				if s.Source != tt.wantSource {
+					t.Errorf("expected Source %q, got %q", tt.wantSource, s.Source)
+				}
+				if s.Content == "" {
+					t.Errorf("snippet %v: expected non-empty Content", s.Metadata)
+				}
+				for _, k := range tt.wantAllMeta {
+					if _, ok := s.Metadata[k]; !ok {
+						t.Errorf("snippet metadata missing key %q: %v", k, s.Metadata)
+					}
+				}
+				if id, ok := s.Metadata["id"].(string); ok {
+					gotIDs[id] = true
+				} else {
+					t.Errorf("snippet metadata id is not a string: %v", s.Metadata)
+				}
+			}
+
+			for _, want := range tt.wantIDs {
+				if !gotIDs[want] {
+					t.Errorf("expected snippet id %q in results, got %v", want, gotIDs)
+				}
+			}
+			for _, notWant := range tt.wantNotIDs {
+				if gotIDs[notWant] {
+					t.Errorf("did not expect snippet id %q in results, got %v", notWant, gotIDs)
+				}
+			}
+
+			if tt.wantIDs == nil && len(snippets) != 0 {
+				t.Errorf("expected 0 snippets, got %d: %+v", len(snippets), snippets)
+			}
+		})
+	}
+}
+
+// TestNewKnowledgeRetrieverWithStore_Validation covers the constructor's
+// runtime-non-nil invariant and the minScore defaulting behavior. store may be
+// nil (then it behaves like NewKnowledgeRetriever).
+func TestNewKnowledgeRetrieverWithStore_Validation(t *testing.T) {
+	rt := buildTestRuntime(t, &ctxProvider{
+		name:    "memory",
+		objects: []*knowledge.KnowledgeObject{{ID: "x", Summary: "y", Confidence: 0.5}},
+	})
+
+	tests := []struct {
+		name     string
+		runtime  *knowledgeruntime.KnowledgeRuntime
+		store    knowledge.KnowledgeStore
+		model    string
+		minScore float64
+		wantErr  bool
+		errSub   string
+		wantMin  float64
+	}{
+		{
+			name:     "nil runtime returns error even with store",
+			runtime:  nil,
+			store:    memorystore.New(),
+			model:    "bge-m3",
+			minScore: 0.4,
+			wantErr:  true,
+			errSub:   "runtime is nil",
+		},
+		{
+			name:     "nil store allowed (fallback path)",
+			runtime:  rt,
+			store:    nil,
+			model:    "",
+			minScore: 0,
+			wantErr:  false,
+			wantMin:  DefaultMinScore,
+		},
+		{
+			name:     "zero minScore defaults to DefaultMinScore",
+			runtime:  rt,
+			store:    memorystore.New(),
+			model:    "bge-m3",
+			minScore: 0,
+			wantErr:  false,
+			wantMin:  DefaultMinScore,
+		},
+		{
+			name:     "negative minScore defaults to DefaultMinScore",
+			runtime:  rt,
+			store:    memorystore.New(),
+			model:    "bge-m3",
+			minScore: -1,
+			wantErr:  false,
+			wantMin:  DefaultMinScore,
+		},
+		{
+			name:     "positive minScore preserved",
+			runtime:  rt,
+			store:    memorystore.New(),
+			model:    "bge-m3",
+			minScore: 0.7,
+			wantErr:  false,
+			wantMin:  0.7,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kr, err := NewKnowledgeRetrieverWithStore(
+				context.Background(), tt.runtime, tt.store, tt.model, tt.minScore,
+			)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSub)
+				}
+				if !containsStr(err.Error(), tt.errSub) {
+					t.Errorf("expected error containing %q, got %q", tt.errSub, err.Error())
+				}
+				if kr != nil {
+					t.Errorf("expected nil retriever on error, got non-nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if kr == nil {
+				t.Fatal("expected non-nil retriever")
+			}
+			if kr.minScore != tt.wantMin {
+				t.Errorf("minScore: got %v, want %v", kr.minScore, tt.wantMin)
+			}
+			if kr.model != tt.model {
+				t.Errorf("model: got %q, want %q", kr.model, tt.model)
+			}
+		})
+	}
+}
 
 // containsStr is a minimal strings.Contains helper to avoid pulling in
 // the strings package just for one test assertion.

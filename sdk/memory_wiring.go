@@ -38,6 +38,7 @@ import (
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/llm"
@@ -381,12 +382,16 @@ func (a *sdkKnowledgeRetrieverAdapter) Retrieve(
 // DistillationService consumed by the event-driven distillation subscriber;
 // it is nil when distillation is disabled, deps are missing, or the service
 // could not be constructed (non-fatal: the memory manager still works).
+// akgDistiller is a separate distiller built for the AKG DistillBridge
+// (conversation → KnowledgeObject pipeline). It is nil when embClient or
+// expRepo is unavailable, since the distiller requires both.
 type memoryWiring struct {
-	mgr        memory.MemoryManager
-	embClient  apiembed.EmbeddingService
-	expRepo    repositories.ExperienceRepositoryInterface
-	cleanup    func()
-	distillSvc *aresexp.DistillationService
+	mgr          memory.MemoryManager
+	embClient    apiembed.EmbeddingService
+	expRepo      repositories.ExperienceRepositoryInterface
+	cleanup      func()
+	distillSvc   *aresexp.DistillationService
+	akgDistiller adapter.ConversationDistiller
 }
 
 // wireMemory constructs the production MemoryManager (compression + RAG +
@@ -448,12 +453,31 @@ func wireMemory(ctx context.Context, cfg *config) (*memoryWiring, error) {
 		slog.Warn("sdk: distillation service construction failed; event-driven distillation disabled",
 			"error", derr)
 	}
+
+	// Build a separate distiller for the AKG DistillBridge. The memory
+	// manager's internal distiller is not exposed, so a dedicated instance is
+	// constructed from the same embedding client and experience repo. Non-fatal:
+	// when construction fails the AKG bridge is simply not wired. The deps-nil
+	// guard lives here (not in buildAKGDistiller) so that function never returns
+	// the ambiguous (nil, nil) — see the nilnil linter rule.
+	var akgDistiller adapter.ConversationDistiller
+	if embClient != nil && expRepo != nil {
+		d, aerr := buildAKGDistiller(embClient, expRepo)
+		if aerr != nil {
+			slog.Warn("sdk: AKG distiller construction failed; AKG distillation disabled",
+				"error", aerr)
+		} else {
+			akgDistiller = d
+		}
+	}
+
 	return &memoryWiring{
-		mgr:        mgr,
-		embClient:  embClient,
-		expRepo:    expRepo,
-		cleanup:    cleanup,
-		distillSvc: distillSvc,
+		mgr:          mgr,
+		embClient:    embClient,
+		expRepo:      expRepo,
+		cleanup:      cleanup,
+		distillSvc:   distillSvc,
+		akgDistiller: akgDistiller,
 	}, nil
 }
 
@@ -600,6 +624,41 @@ func buildDistillationService(
 	return aresexp.NewDistillationService(llmClient, embClient, expRepo), nil
 }
 
+// buildAKGDistiller constructs a standalone distiller for the AKG DistillBridge.
+// The memory manager builds its own internal distiller via
+// NewMemoryManagerWithDistiller, but that distiller is not exposed on the
+// MemoryManager interface, so a separate instance is constructed from the
+// same embedding client and experience repo. The distillation config uses
+// conservative defaults (DefaultDistillationConfig) and the embedding pipeline
+// is wired so conflict detection uses the canonical spec builders.
+//
+// Precondition: both embClient and expRepo are non-nil. The caller (wireMemory)
+// guards the deps-nil case so this function never has to return the ambiguous
+// (nil, nil) — it always returns either a usable distiller or a real error.
+//
+// Args:
+//
+//	embClient - embedding service for vector generation; must be non-nil.
+//	expRepo   - postgres experience repo; must be non-nil.
+//
+// Returns:
+//
+//	adapter.ConversationDistiller - ready to feed to NewDistillBridgeWithGate.
+//	error                        - wrapped error if the embedding pipeline cannot be constructed.
+func buildAKGDistiller(
+	embClient apiembed.EmbeddingService,
+	expRepo repositories.ExperienceRepositoryInterface,
+) (adapter.ConversationDistiller, error) {
+	distillRepo := newSDKDistillationRepo(expRepo, defaultDistillTenant)
+	distiller := distillation.NewDistiller(distillation.DefaultDistillationConfig(), embClient, distillRepo)
+	pipeline, err := memembed.NewEmbeddingPipeline(embClient)
+	if err != nil {
+		return nil, fmt.Errorf("akg distiller embedding pipeline: %w", err)
+	}
+	distiller.SetEmbeddingPipeline(pipeline)
+	return distiller, nil
+}
+
 // buildPostgresPool opens and pings a postgres connection pool from the SDK
 // databaseCfg. The pool is returned ready for use; the caller owns Close.
 func buildPostgresPool(ctx context.Context, cfg databaseCfg) (*postgres.Pool, error) {
@@ -633,14 +692,21 @@ func buildPostgresPool(ctx context.Context, cfg databaseCfg) (*postgres.Pool, er
 // config.EnableRAG is true, so callers still control the feature via
 // config regardless of whether retrievers are wired.
 //
+// When knowStore is non-nil the KnowledgeRetriever takes the AKG read loop:
+// HybridSearch against the store's AKG-distilled facts instead of re-running
+// provider streaming via runtime.Execute. This closes the 0.2.9 read loop
+// (facts written by the DistillBridge are recalled here).
+//
 // Args:
 //
-//	ctx       - construction context, used for KnowledgeRetriever construction.
-//	cfg       - fully applied SDK config; memCfg.RAGMinScore tunes memory retriever.
-//	memMgr    - the MemoryManager; type-asserted to retrieverSetter.
-//	embClient - embedding client for query embedding. Nil skips memory retriever.
-//	expRepo   - postgres experience repo. Nil skips memory retriever.
-//	knowRt    - AKG KnowledgeRuntime. Nil skips knowledge retriever.
+//	ctx        - construction context, used for KnowledgeRetriever construction.
+//	cfg        - fully applied SDK config; memCfg.RAGMinScore tunes memory retriever.
+//	memMgr     - the MemoryManager; type-asserted to retrieverSetter.
+//	embClient  - embedding client for query embedding. Nil skips memory retriever.
+//	expRepo    - postgres experience repo. Nil skips memory retriever.
+//	knowRt     - AKG KnowledgeRuntime. Nil skips knowledge retriever.
+//	knowStore  - optional KnowledgeStore; when non-nil the retriever reads AKG facts via HybridSearch.
+//	embModel   - embedding model name for HybridSearch; empty = lexical-only.
 func wireSDKRetrievers(
 	ctx context.Context,
 	cfg *config,
@@ -648,6 +714,8 @@ func wireSDKRetrievers(
 	embClient apiembed.EmbeddingService,
 	expRepo repositories.ExperienceRepositoryInterface,
 	knowRt *khruntime.KnowledgeRuntime,
+	knowStore knowledge.KnowledgeStore,
+	embModel string,
 ) {
 	setter, ok := memMgr.(retrieverSetter)
 	if !ok {
@@ -670,12 +738,18 @@ func wireSDKRetrievers(
 
 	if knowRt != nil {
 		minScore := cfg.knowledgeRT.MinScore
-		kr, err := adapter.NewKnowledgeRetriever(ctx, knowRt, minScore)
+		var kr *adapter.KnowledgeRetriever
+		var err error
+		if knowStore != nil {
+			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, embModel, minScore)
+		} else {
+			kr, err = adapter.NewKnowledgeRetriever(ctx, knowRt, minScore)
+		}
 		if err != nil {
 			slog.Warn("sdk: knowledge retriever construction failed; skipping", "error", err)
 		} else {
 			retrievers = append(retrievers, &sdkKnowledgeRetrieverAdapter{inner: kr})
-			slog.Info("sdk: knowledge retriever wired (AKG -> RAG)", "min_score", minScore)
+			slog.Info("sdk: knowledge retriever wired (AKG -> RAG)", "min_score", minScore, "store_backed", knowStore != nil)
 		}
 	}
 

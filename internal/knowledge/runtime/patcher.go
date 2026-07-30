@@ -23,6 +23,8 @@ type PlanConfig struct {
 // SetPlanConfig updates the planner's MaxResults and reducer strategy.
 // This is the integration point for KnowledgePatchExecutor.
 func (r *KnowledgeRuntime) SetPlanConfig(cfg PlanConfig) {
+	r.planMu.Lock()
+	defer r.planMu.Unlock()
 	r.planner = &configurablePlanner{
 		maxResults:      cfg.MaxResults,
 		reducerStrategy: cfg.ReducerStrategy,
@@ -30,6 +32,23 @@ func (r *KnowledgeRuntime) SetPlanConfig(cfg PlanConfig) {
 	log.Info("knowledge runtime: plan config updated",
 		"max_results", cfg.MaxResults,
 		"reducer", cfg.ReducerStrategy)
+}
+
+// PlanConfig returns the currently applied planner configuration, or the zero
+// value when the planner is not a configurablePlanner (e.g. the bootstrap
+// default planner). It is the read-side counterpart of SetPlanConfig and lets
+// the patch executor capture the previous values needed for a precise rollback
+// instead of falling back to hardcoded defaults.
+func (r *KnowledgeRuntime) PlanConfig() PlanConfig {
+	r.planMu.RLock()
+	defer r.planMu.RUnlock()
+	if cp, ok := r.planner.(*configurablePlanner); ok && cp != nil {
+		return PlanConfig{
+			MaxResults:      cp.maxResults,
+			ReducerStrategy: cp.reducerStrategy,
+		}
+	}
+	return PlanConfig{}
 }
 
 // configurablePlanner wraps a KnowledgePlanner with configurable MaxResults and ReducerStrategy.
@@ -141,57 +160,68 @@ func (e *KnowledgePatchExecutor) CanApply(_ context.Context, p patch.RuntimePatc
 	}
 }
 
-// applyChangeBudget updates the MaxResults parameter.
+// applyChangeBudget updates the MaxResults parameter. It captures the previous
+// MaxResults so the returned rollback patch restores the exact old value rather
+// than a hardcoded default, and preserves the current ReducerStrategy (a budget
+// change must not wipe an unrelated setting).
 func (e *KnowledgePatchExecutor) applyChangeBudget(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	newBudget, ok := p.Value.(int)
 	if !ok {
 		return nil, fmt.Errorf("knowledge executor: ChangeBudget value must be int")
 	}
 
-	// Snapshot old budget for rollback. We use 0 as "unknown" since we can't
-	// directly read the current value from the interface.
+	old := e.runtime.PlanConfig()
 	e.runtime.SetPlanConfig(PlanConfig{
-		MaxResults: newBudget,
+		MaxResults:      newBudget,
+		ReducerStrategy: old.ReducerStrategy,
 	})
 
 	return &patch.RuntimePatch{
 		Type:   patch.PatchChangeBudget,
-		Value:  0, // actual old value unknown from interface; rollback sets default
-		Reason: "rollback: restore default budget",
+		Value:  old.MaxResults,
+		Reason: "rollback: restore previous budget",
 	}, nil
 }
 
-// applyChangePlanner updates the planner strategy.
+// applyChangePlanner updates the planner strategy. It applies the incoming
+// strategy (instead of a hardcoded "default") and captures the previous
+// strategy so the rollback restores it precisely. MaxResults is preserved.
 func (e *KnowledgePatchExecutor) applyChangePlanner(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
-	_, ok := p.Value.(string)
+	newStrategy, ok := p.Value.(string)
 	if !ok {
 		return nil, fmt.Errorf("knowledge executor: ChangePlanner value must be string")
 	}
 
-	// Currently the planner strategy is applied via plan config.
+	old := e.runtime.PlanConfig()
 	e.runtime.SetPlanConfig(PlanConfig{
-		ReducerStrategy: "default",
+		MaxResults:      old.MaxResults,
+		ReducerStrategy: newStrategy,
 	})
 
 	return &patch.RuntimePatch{
 		Type:   patch.PatchChangePlanner,
-		Reason: "rollback: restore default planner",
+		Value:  old.ReducerStrategy,
+		Reason: "rollback: restore previous planner",
 	}, nil
 }
 
-// applyChangeReducer updates the reducer strategy.
+// applyChangeReducer updates the reducer strategy. It captures the previous
+// strategy so the rollback restores it precisely. MaxResults is preserved.
 func (e *KnowledgePatchExecutor) applyChangeReducer(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	strategy, ok := p.Value.(string)
 	if !ok {
 		return nil, fmt.Errorf("knowledge executor: ChangeReducer value must be string")
 	}
 
+	old := e.runtime.PlanConfig()
 	e.runtime.SetPlanConfig(PlanConfig{
+		MaxResults:      old.MaxResults,
 		ReducerStrategy: strategy,
 	})
 
 	return &patch.RuntimePatch{
 		Type:   patch.PatchChangeReducer,
-		Reason: "rollback: restore default reducer",
+		Value:  old.ReducerStrategy,
+		Reason: "rollback: restore previous reducer",
 	}, nil
 }

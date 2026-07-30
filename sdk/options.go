@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 )
 
@@ -115,6 +116,17 @@ type evolutionCfg struct {
 
 type knowledgeCfg struct {
 	Enabled bool
+	// QualityGate configures the AKG fact quality gate. Zero value falls back
+	// to knowledge.DefaultQualityGateConfig at apply time.
+	QualityGate knowledge.QualityGateConfig
+	// EmbeddingModel selects the embedding model used to vectorize distilled
+	// facts and retrieval queries. Empty falls back to the embedding service
+	// default.
+	EmbeddingModel string
+	// EmbeddingBaseURL is the embedding service endpoint used by the AKG
+	// distillation pipeline and StoreProvider. Empty falls back to the
+	// embedding service configured via WithEmbeddingService.
+	EmbeddingBaseURL string
 }
 
 // databaseCfg holds PostgreSQL connection parameters. Empty host signals
@@ -400,7 +412,12 @@ func WithKnowledgeConfig(cfg KnowledgeFileConfig) Option {
 				return fmt.Errorf("knowledge min_score %v: %w", cfg.MinScore, ErrInvalidRange)
 			}
 		}
-		c.knowledgeRT = knowledgeRTCfg(cfg)
+		c.knowledgeRT = knowledgeRTCfg{
+			ChunkSize:    cfg.ChunkSize,
+			ChunkOverlap: cfg.ChunkOverlap,
+			TopK:         cfg.TopK,
+			MinScore:     cfg.MinScore,
+		}
 		return nil
 	}
 }
@@ -424,6 +441,45 @@ func WithEvolution() Option {
 func WithKnowledge() Option {
 	return func(c *config) error {
 		c.knlCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithAKGQualityGate configures the AKG fact quality gate. The gate controls
+// fact promotion: distilled candidates whose computed Confidence clears
+// gate.MinFinalScore are promoted to active and become retrievable by the
+// StoreProvider. A zero-value QualityGateConfig falls back to
+// knowledge.DefaultQualityGateConfig at apply time.
+//
+// Args:
+//
+//	q - AKG quality gate configuration; MinFinalScore, DedupThreshold and
+//	     MaxFactsPerIngest drive promotion and dedup behaviour.
+func WithAKGQualityGate(q knowledge.QualityGateConfig) Option {
+	return func(c *config) error {
+		c.knlCfg.QualityGate = q
+		return nil
+	}
+}
+
+// WithAKGEmbedding configures the embedding model and endpoint used by the
+// AKG distillation pipeline to vectorize distilled facts and by the
+// StoreProvider to embed retrieval queries. When WithKnowledge is enabled this
+// arms both the write side (DistillBridge) and the read side (StoreProvider)
+// with vector recall.
+//
+// Args:
+//
+//	model   - embedding model name (e.g. "intfloat/e5-large-v2"); required.
+//	baseURL - embedding service endpoint; empty defers to the service
+//	          configured via WithEmbeddingService.
+func WithAKGEmbedding(model, baseURL string) Option {
+	return func(c *config) error {
+		if model == "" {
+			return fmt.Errorf("akg embedding model: %w", ErrMissingValue)
+		}
+		c.knlCfg.EmbeddingModel = model
+		c.knlCfg.EmbeddingBaseURL = baseURL
 		return nil
 	}
 }

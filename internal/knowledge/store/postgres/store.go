@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,7 +52,11 @@ func (s *Store) initTables(ctx context.Context) error {
 			confidence REAL NOT NULL DEFAULT 1.0,
 			version BIGINT NOT NULL DEFAULT 1,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			status TEXT NOT NULL DEFAULT '',
+			quality JSONB DEFAULT '{}',
+			relations JSONB DEFAULT '[]',
+			embedding_model TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS akf_representations (
 			id TEXT PRIMARY KEY,
@@ -63,7 +69,14 @@ func (s *Store) initTables(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_akf_objects_type ON akf_objects(type)`,
 		`CREATE INDEX IF NOT EXISTS idx_akf_objects_namespace ON akf_objects(namespace)`,
+		`CREATE INDEX IF NOT EXISTS idx_akf_objects_status ON akf_objects(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_akf_representations_object_model ON akf_representations(object_id, model)`,
+		// Migrate pre-0.2.9 databases by adding the new columns. PostgreSQL
+		// supports IF NOT EXISTS on ADD COLUMN, so this is idempotent.
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS quality JSONB DEFAULT '{}'`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS relations JSONB DEFAULT '[]'`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, q := range queries {
@@ -85,10 +98,12 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 		if tags == nil {
 			tags = []string{}
 		}
+		qualityJSON := marshalQuality(obj.Quality)
+		relationsJSON := marshalRelations(obj.Relations)
 
 		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 			ON CONFLICT (id) DO UPDATE SET
 				type = EXCLUDED.type,
 				namespace = EXCLUDED.namespace,
@@ -99,10 +114,15 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 				tags = EXCLUDED.tags,
 				confidence = EXCLUDED.confidence,
 				version = akf_objects.version + 1,
-				updated_at = NOW()
+				updated_at = NOW(),
+				status = EXCLUDED.status,
+				quality = EXCLUDED.quality,
+				relations = EXCLUDED.relations,
+				embedding_model = EXCLUDED.embedding_model
 		`, obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
 			string(metaJSON), pqStringArray(tags), obj.Confidence, obj.Version,
-			obj.CreatedAt, obj.UpdatedAt)
+			obj.CreatedAt, obj.UpdatedAt,
+			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel)
 		if err != nil {
 			return fmt.Errorf("save %q: %w", obj.ID, err)
 		}
@@ -110,38 +130,51 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 	return nil
 }
 
+// marshalQuality returns the JSON encoding of q, or "{}" when q is nil (the
+// JSONB column default, keeping the value a valid JSON object).
+// Marshal errors are logged as warnings and return "{}" so the caller never sees
+// a partial write.
+func marshalQuality(q *knowledge.Quality) string {
+	if q == nil {
+		return "{}"
+	}
+	b, err := json.Marshal(q)
+	if err != nil {
+		slog.Warn("marshal quality failed", "error", err)
+		return "{}"
+	}
+	return string(b)
+}
+
+// marshalRelations returns the JSON encoding of rels, or "[]" when empty (the
+// JSONB column default, keeping the value a valid JSON array).
+// Marshal errors are logged as warnings and return "[]" so the caller never sees
+// a partial write.
+func marshalRelations(rels []knowledge.Relation) string {
+	if len(rels) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(rels)
+	if err != nil {
+		slog.Warn("marshal relations failed", "error", err)
+		return "[]"
+	}
+	return string(b)
+}
+
 func (s *Store) Get(ctx context.Context, id string) (*knowledge.KnowledgeObject, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at
+		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
 		FROM akf_objects WHERE id = $1`, id)
 
-	var obj knowledge.KnowledgeObject
-	var typeStr, ns, norm, summary string
-	var raw []byte
-	var metaJSON string
-	var tags []string
-	var createdAt, updatedAt time.Time
-
-	err := row.Scan(&obj.ID, &typeStr, &ns, &raw, &norm, &summary, &metaJSON, (*pqStringArray)(&tags),
-		&obj.Confidence, &obj.Version, &createdAt, &updatedAt)
+	obj, err := scanObject(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrObjectNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	obj.Type = knowledge.ObjectType(typeStr)
-	obj.Namespace = ns
-	obj.Normalized = norm
-	obj.Summary = summary
-	obj.Raw = raw
-	obj.Tags = tags
-	obj.CreatedAt = createdAt
-	obj.UpdatedAt = updatedAt
-	_ = json.Unmarshal([]byte(metaJSON), &obj.Metadata)
-
-	return &obj, nil
+	return obj, nil
 }
 
 func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.KnowledgeObject, error) {
@@ -169,7 +202,7 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 		argIdx++
 	}
 
-	query := "SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at FROM akf_objects"
+	query := "SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model FROM akf_objects"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -193,29 +226,11 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 
 	var results []*knowledge.KnowledgeObject
 	for rows.Next() {
-		var obj knowledge.KnowledgeObject
-		var typeStr, ns, norm, summary string
-		var raw []byte
-		var metaJSON string
-		var tags []string
-		var createdAt, updatedAt time.Time
-
-		if err := rows.Scan(&obj.ID, &typeStr, &ns, &raw, &norm, &summary, &metaJSON, (*pqStringArray)(&tags),
-			&obj.Confidence, &obj.Version, &createdAt, &updatedAt); err != nil {
+		obj, err := scanObject(rows)
+		if err != nil {
 			return nil, err
 		}
-
-		obj.Type = knowledge.ObjectType(typeStr)
-		obj.Namespace = ns
-		obj.Normalized = norm
-		obj.Summary = summary
-		obj.Raw = raw
-		obj.Tags = tags
-		obj.CreatedAt = createdAt
-		obj.UpdatedAt = updatedAt
-		_ = json.Unmarshal([]byte(metaJSON), &obj.Metadata)
-
-		results = append(results, &obj)
+		results = append(results, obj)
 	}
 
 	return results, rows.Err()
@@ -231,7 +246,7 @@ func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at
+		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
 		FROM akf_objects
 		WHERE normalized ILIKE $1 OR summary ILIKE $1
 		ORDER BY created_at DESC
@@ -243,32 +258,75 @@ func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([
 
 	var results []*knowledge.KnowledgeObject
 	for rows.Next() {
-		var obj knowledge.KnowledgeObject
-		var typeStr, ns, norm, summary string
-		var raw []byte
-		var metaJSON string
-		var tags []string
-		var createdAt, updatedAt time.Time
-
-		if err := rows.Scan(&obj.ID, &typeStr, &ns, &raw, &norm, &summary, &metaJSON, (*pqStringArray)(&tags),
-			&obj.Confidence, &obj.Version, &createdAt, &updatedAt); err != nil {
+		obj, err := scanObject(rows)
+		if err != nil {
 			return nil, err
 		}
-
-		obj.Type = knowledge.ObjectType(typeStr)
-		obj.Namespace = ns
-		obj.Normalized = norm
-		obj.Summary = summary
-		obj.Raw = raw
-		obj.Tags = tags
-		obj.CreatedAt = createdAt
-		obj.UpdatedAt = updatedAt
-		_ = json.Unmarshal([]byte(metaJSON), &obj.Metadata)
-
-		results = append(results, &obj)
+		results = append(results, obj)
 	}
 
 	return results, rows.Err()
+}
+
+// scanner is the common interface implemented by *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// scanObject scans one row (16 columns) into a KnowledgeObject. It unmarshals
+// metadata/quality/relations JSON best-effort. Quality/relations JSON that is
+// empty or the column default is ignored.
+func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
+	var obj knowledge.KnowledgeObject
+	var typeStr, ns, norm, summary string
+	var raw []byte
+	var metaJSON, qualityJSON, relationsJSON string
+	var tags []string
+	var createdAt, updatedAt time.Time
+	var statusStr, embeddingModel string
+
+	if err := row.Scan(&obj.ID, &typeStr, &ns, &raw, &norm, &summary, &metaJSON, (*pqStringArray)(&tags),
+		&obj.Confidence, &obj.Version, &createdAt, &updatedAt,
+		&statusStr, &qualityJSON, &relationsJSON, &embeddingModel); err != nil {
+		return nil, err
+	}
+
+	obj.Type = knowledge.ObjectType(typeStr)
+	obj.Namespace = ns
+	obj.Normalized = norm
+	obj.Summary = summary
+	obj.Raw = raw
+	obj.Tags = tags
+	obj.CreatedAt = createdAt
+	obj.UpdatedAt = updatedAt
+	obj.Status = knowledge.ObjectStatus(statusStr)
+	obj.EmbeddingModel = embeddingModel
+	if qualityJSON != "" && qualityJSON != "{}" {
+		var q knowledge.Quality
+		if err := json.Unmarshal([]byte(qualityJSON), &q); err == nil {
+			obj.Quality = &q
+		}
+	}
+	if relationsJSON != "" && relationsJSON != "[]" && relationsJSON != "null" {
+		_ = json.Unmarshal([]byte(relationsJSON), &obj.Relations)
+	}
+	_ = json.Unmarshal([]byte(metaJSON), &obj.Metadata)
+
+	return &obj, nil
+}
+
+// scanRepresentation scans a representation row.
+func scanRepresentation(row scanner) (*knowledge.Representation, error) {
+	var rep knowledge.Representation
+	var metaJSON string
+	var vec []float32
+
+	if err := row.Scan(&rep.ID, &rep.ObjectID, &rep.Model, &rep.Dimension, (*pqFloat32Array)(&vec), &metaJSON, &rep.CreatedAt); err != nil {
+		return nil, err
+	}
+	rep.Vector = vec
+	_ = json.Unmarshal([]byte(metaJSON), &rep.Metadata)
+	return &rep, nil
 }
 
 func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Representation) error {
@@ -293,21 +351,222 @@ func (s *Store) GetRepresentation(ctx context.Context, objectID string, model st
 		SELECT id, object_id, model, dimension, vector, metadata, created_at
 		FROM akf_representations WHERE object_id = $1 AND model = $2`, objectID, model)
 
-	var rep knowledge.Representation
-	var metaJSON string
-	var vec []float32
-
-	err := row.Scan(&rep.ID, &rep.ObjectID, &rep.Model, &rep.Dimension, (*pqFloat32Array)(&vec), &metaJSON, &rep.CreatedAt)
+	rep, err := scanRepresentation(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrObjectNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	return rep, nil
+}
 
-	rep.Vector = vec
-	_ = json.Unmarshal([]byte(metaJSON), &rep.Metadata)
-	return &rep, nil
+// HybridSearch performs vector + lexical scoring over PostgreSQL-stored objects.
+func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
+	conditions, args := hybridConditions(req)
+	//nolint:gosec // conditions are static WHERE fragments; values use $N placeholders.
+	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		FROM akf_objects` + conditions
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hybrid search query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var candidates []*knowledge.KnowledgeObject
+	var ids []string
+	for rows.Next() {
+		obj, err := scanObject(rows)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, obj)
+		ids = append(ids, obj.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Load representations for the requested model into a map keyed by object ID.
+	reps := make(map[string]*knowledge.Representation, len(ids))
+	if len(ids) > 0 && req.Model != "" {
+		repArgs := make([]interface{}, 0, len(ids)+1)
+		for _, id := range ids {
+			repArgs = append(repArgs, id)
+		}
+		repArgs = append(repArgs, req.Model)
+		repQuery := `SELECT id, object_id, model, dimension, vector, metadata, created_at
+			FROM akf_representations WHERE object_id = ANY($1) AND model = $2`
+		repArgs[0] = pqStringArray(ids) //nolint:gosec // ids are local object IDs
+		repRows, err := s.db.QueryContext(ctx, repQuery, repArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("hybrid search reps: %w", err)
+		}
+		for repRows.Next() {
+			rep, err := scanRepresentation(repRows)
+			if err != nil {
+				_ = repRows.Close()
+				return nil, err
+			}
+			reps[rep.ObjectID] = rep
+		}
+		_ = repRows.Close()
+		if err := repRows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	scored := knowledge.ScoreHybrid(candidates, reps, req.QueryVector, req.Query)
+
+	// Filter by MinScore.
+	if req.MinScore > 0 {
+		filtered := scored[:0]
+		for _, r := range scored {
+			if r.FinalScore >= req.MinScore {
+				filtered = append(filtered, r)
+			}
+		}
+		scored = filtered
+	}
+
+	// Sort by FinalScore descending.
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].FinalScore > scored[j].FinalScore
+	})
+
+	topK := req.TopK
+	if topK <= 0 {
+		topK = 20
+	}
+	if len(scored) > topK {
+		scored = scored[:topK]
+	}
+	finalK := req.FinalK
+	if finalK <= 0 {
+		finalK = 5
+	}
+	if len(scored) > finalK {
+		scored = scored[:finalK]
+	}
+	return scored, nil
+}
+
+// hybridConditions builds the WHERE clause (with parameterized $N
+// placeholders) and args for HybridSearch candidates based on namespace, types,
+// and status filter. Empty status on a row matches the active filter for
+// back-compat.
+func hybridConditions(req knowledge.HybridSearchRequest) (string, []interface{}) {
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+	if req.Namespace != "" {
+		conditions = append(conditions, fmt.Sprintf("namespace = $%d", argIdx))
+		args = append(args, req.Namespace)
+		argIdx++
+	}
+	if len(req.Types) > 0 {
+		typeStrs := make([]string, len(req.Types))
+		for i, t := range req.Types {
+			typeStrs[i] = string(t)
+		}
+		conditions = append(conditions, fmt.Sprintf("type = ANY($%d)", argIdx))
+		args = append(args, pqStringArray(typeStrs))
+		argIdx++
+	}
+	statuses := req.StatusFilter
+	if len(statuses) == 0 {
+		statuses = []knowledge.ObjectStatus{knowledge.StatusActive}
+	}
+	var statusConds []string
+	for _, st := range statuses {
+		if st == knowledge.StatusActive {
+			// Backward compat: empty status is treated as active.
+			statusConds = append(statusConds, "status = ''")
+			statusConds = append(statusConds, fmt.Sprintf("status = $%d", argIdx))
+			args = append(args, string(st))
+			argIdx++
+		} else {
+			statusConds = append(statusConds, fmt.Sprintf("status = $%d", argIdx))
+			args = append(args, string(st))
+			argIdx++
+		}
+	}
+	conditions = append(conditions, "("+strings.Join(statusConds, " OR ")+")")
+	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+// ListByStatus returns objects in ns matching the given status.
+// Empty status matches objects with no status (backward compatibility).
+func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.ObjectStatus, limit int) ([]*knowledge.KnowledgeObject, error) {
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+	if ns != "" {
+		conditions = append(conditions, fmt.Sprintf("namespace = $%d", argIdx))
+		args = append(args, ns)
+		argIdx++
+	}
+	if status == knowledge.StatusActive {
+		// Backward compat: empty status is treated as active.
+		conditions = append(conditions, fmt.Sprintf("(status = '' OR status = $%d)", argIdx))
+		args = append(args, string(status))
+		argIdx++
+	} else {
+		conditions = append(conditions, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, string(status))
+		argIdx++
+	}
+	//nolint:gosec // conditions are static WHERE fragments; values use $N placeholders.
+	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		FROM akf_objects WHERE ` + strings.Join(conditions, " AND ") + " ORDER BY created_at DESC"
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list by status: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*knowledge.KnowledgeObject
+	for rows.Next() {
+		obj, err := scanObject(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, obj)
+	}
+	return results, rows.Err()
+}
+
+// UpdateStatus transitions an object's lifecycle status.
+func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.ObjectStatus) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = $1, updated_at = NOW() WHERE id = $2",
+		string(status), id)
+	if err != nil {
+		return fmt.Errorf("update status %q: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrObjectNotFound
+	}
+	return nil
+}
+
+// Promote moves a candidate to active and records its computed Quality.
+func (s *Store) Promote(ctx context.Context, id string, q *knowledge.Quality) error {
+	qualityJSON := marshalQuality(q)
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = $1, quality = $2, updated_at = NOW() WHERE id = $3",
+		string(knowledge.StatusActive), qualityJSON, id)
+	if err != nil {
+		return fmt.Errorf("promote %q: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrObjectNotFound
+	}
+	return nil
 }
 
 // ── PQ-compatible array types ───────────────────────────────────────────────

@@ -37,6 +37,15 @@ type ContextRetriever interface {
 // returned as a ContextSnippet when no explicit minScore is provided.
 const DefaultMinScore = 0.4
 
+// Shared metadata keys and source identifiers used by both the store path and
+// the runtime path (and their tests). Centralised so the literals are not
+// repeated across the package (goconst).
+const (
+	sourceAKGStore   = "akg_store"
+	metaKeyType      = "type"
+	metaKeyNamespace = "namespace"
+)
+
 // defaultTopK is the default maximum number of snippets returned by Retrieve
 // when the caller passes topK <= 0.
 const defaultTopK = 5
@@ -61,8 +70,16 @@ const defaultMaxConcurrentProviders = 5
 // The underlying KnowledgeRuntime is responsible for its own internal locking
 // (see runtime.loadAndProcess); this adapter holds no mutable state and is
 // safe for concurrent use across goroutines.
+//
+// When a KnowledgeStore is wired (store != nil) Retrieve takes the AKG read
+// loop: HybridSearch against the store's AKG-distilled facts instead of
+// re-running provider streaming. With store == nil it falls back to the
+// original runtime.Execute path. The model field names the embedding model
+// the store should compare against (empty = lexical-only search).
 type KnowledgeRetriever struct {
 	runtime  *knowledgeruntime.KnowledgeRuntime
+	store    knowledge.KnowledgeStore // optional; nil = fall back to runtime.Execute
+	model    string                   // embedding model name for HybridSearch
 	minScore float64
 }
 
@@ -96,6 +113,50 @@ func NewKnowledgeRetriever(
 	}, nil
 }
 
+// NewKnowledgeRetrieverWithStore creates a KnowledgeRetriever that takes the
+// AKG read loop: when store is non-nil, Retrieve calls store.HybridSearch to
+// read AKG-distilled facts instead of re-running provider streaming via
+// runtime.Execute. Pass store == nil to behave like NewKnowledgeRetriever
+// (fall back to runtime.Execute).
+//
+// Args:
+//   - ctx: context reserved for future initialization I/O (currently unused
+//     but kept to satisfy §4.3 constructor conventions).
+//   - runtime: AKG KnowledgeRuntime. Must be non-nil even when store is set,
+//     because the fallback path needs it. The store path itself does not call
+//     runtime.Execute.
+//   - store: optional KnowledgeStore. nil = fall back to runtime.Execute.
+//   - model: embedding model name passed to HybridSearch (selects which
+//     Representation the store compares against). Empty = lexical-only.
+//   - minScore: minimum Confidence score for a snippet to be returned.
+//     Pass 0 (or any value <= 0) to use DefaultMinScore (0.4). For the store
+//     path this is forwarded as HybridSearchRequest.MinScore; the store layer
+//     applies the filter, so Retrieve does NOT filter again.
+//
+// Returns:
+//   - retriever: ready to serve Retrieve calls.
+//   - err: wrapped error if runtime is nil.
+func NewKnowledgeRetrieverWithStore(
+	_ context.Context,
+	runtime *knowledgeruntime.KnowledgeRuntime,
+	store knowledge.KnowledgeStore,
+	model string,
+	minScore float64,
+) (*KnowledgeRetriever, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+	}
+	if minScore <= 0 {
+		minScore = DefaultMinScore
+	}
+	return &KnowledgeRetriever{
+		runtime:  runtime,
+		store:    store,
+		model:    model,
+		minScore: minScore,
+	}, nil
+}
+
 // Retrieve queries the AKG for knowledge entries matching the input and
 // returns them as ContextSnippets sorted by Score descending.
 //
@@ -125,6 +186,46 @@ func (r *KnowledgeRetriever) Retrieve(
 	}
 	if topK <= 0 {
 		topK = defaultTopK
+	}
+
+	// AKG read loop: when a KnowledgeStore is wired, read AKG-distilled facts
+	// via HybridSearch instead of re-running provider streaming. The store
+	// layer applies MinScore and the TopK/FinalK caps, so we do not filter or
+	// cap again here. Vector recall (TopK) is over-fetched 3x relative to the
+	// caller's topK so the FinalK ranking has a richer candidate pool.
+	if r.store != nil {
+		req := knowledge.HybridSearchRequest{
+			Query:        input,
+			TopK:         topK * 3,
+			FinalK:       topK,
+			MinScore:     r.minScore,
+			Model:        r.model,
+			StatusFilter: []knowledge.ObjectStatus{knowledge.StatusActive},
+		}
+		scored, err := r.store.HybridSearch(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge retriever: hybrid search: %w", err)
+		}
+		snippets := make([]ContextSnippet, 0, len(scored))
+		for _, s := range scored {
+			if s.Object == nil {
+				continue
+			}
+			snippets = append(snippets, ContextSnippet{
+				Source:  sourceAKGStore,
+				Content: snippetContent(s.Object),
+				Score:   s.FinalScore,
+				Metadata: map[string]any{
+					"id":             s.Object.ID,
+					metaKeyType:      string(s.Object.Type),
+					"source":         sourceAKGStore,
+					"vector":         s.VectorScore,
+					"lexical":        s.LexicalScore,
+					metaKeyNamespace: s.Object.Namespace,
+				},
+			})
+		}
+		return snippets, nil
 	}
 
 	// Run the AKG pipeline: Plan → Load → Link → Reduce.
@@ -175,11 +276,11 @@ func (r *KnowledgeRetriever) collectSnippets(
 			Content: snippetContent(obj),
 			Score:   score,
 			Metadata: map[string]any{
-				"id":        obj.ID,
-				"type":      string(obj.Type),
-				"namespace": obj.Namespace,
-				"tags":      obj.Tags,
-				"version":   obj.Version,
+				"id":             obj.ID,
+				metaKeyType:      string(obj.Type),
+				metaKeyNamespace: obj.Namespace,
+				"tags":           obj.Tags,
+				"version":        obj.Version,
 			},
 		})
 	}

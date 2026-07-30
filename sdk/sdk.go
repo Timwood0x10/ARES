@@ -52,12 +52,14 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/linker"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
+	storeprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/store"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
@@ -66,6 +68,12 @@ import (
 )
 
 const strategyPriority = "priority"
+
+// akgNamespace is the default namespace assigned to AKG-distilled
+// KnowledgeObjects and used to filter recall in the StoreProvider. It matches
+// ares_events.DefaultTenantID so AKG facts are visible to the same
+// single-tenant consumers that read distilled experiences.
+const akgNamespace = "default"
 
 // ---- public types ----
 
@@ -131,6 +139,11 @@ type Runtime struct {
 	// distillSvc consumes TaskCompleted events and distills them into long-term
 	// experiences. Nil when distillation is disabled or its deps are unavailable.
 	distillSvc *aresexp.DistillationService
+	// akgBridge distills conversations into AKG KnowledgeObjects and persists
+	// them through the quality gate into the knowledge store. Triggered
+	// best-effort from the event subscriber alongside distillSvc. Nil when the
+	// AKG distiller or knowledge store is unavailable.
+	akgBridge *adapter.DistillBridge
 }
 
 // memSearcher adapts memory.MemoryManager to the memory.TaskSearcher
@@ -325,15 +338,24 @@ type knowledgeWiring struct {
 //
 // Args:
 //
-//	cfg     - fully applied SDK config; knlCfg/evoCfg/dbCfg/sqliteStorePath are read.
-//	memMgr  - memory manager; when non-nil, a memory provider is auto-registered
-//	          into the knowledge provider registry so past tasks surface in the AKG.
+//	cfg      - fully applied SDK config; knlCfg/evoCfg/dbCfg/sqliteStorePath are read.
+//	memMgr   - memory manager; when non-nil, a memory provider is auto-registered
+//	           into the knowledge provider registry so past tasks surface in the AKG.
+//	embClient - embedding service used by the StoreProvider for vector recall;
+//	            nil signals lexical-only search.
+//	embModel - embedding model name selecting which Representation the store
+//	           compares against; empty is valid when embClient is nil.
 //
 // Returns:
 //
 //	*knowledgeWiring - rt/store/evolutionStore are nil when knowledge is disabled.
-//	error            - wrapped error if a knowledge store or provider fails to init.
-func wireKnowledge(cfg *config, memMgr memory.MemoryManager) (*knowledgeWiring, error) {
+//	error             - wrapped error if a knowledge store or provider fails to init.
+func wireKnowledge(
+	cfg *config,
+	memMgr memory.MemoryManager,
+	embClient apiembed.EmbeddingService,
+	embModel string,
+) (*knowledgeWiring, error) {
 	if !cfg.knlCfg.Enabled {
 		return &knowledgeWiring{}, nil
 	}
@@ -347,6 +369,16 @@ func wireKnowledge(cfg *config, memMgr memory.MemoryManager) (*knowledgeWiring, 
 	store, err := buildKnowledgeStore(cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	// Register the StoreProvider so AKG-distilled facts written to the store
+	// by the DistillBridge are readable by the KnowledgeRuntime as a
+	// KnowledgeObject source. This closes the 0.2.9 write→read loop.
+	if store != nil {
+		sp := storeprovider.New("akg_store", store, embClient, embModel, akgNamespace)
+		if err := reg.Register(sp); err != nil {
+			return nil, fmt.Errorf("knowledge: register store provider: %w", err)
+		}
 	}
 
 	var evoStore *memStrategyStore
@@ -434,6 +466,63 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 	}
 }
 
+// resolveAKGEmbeddingModel picks the embedding model for the AKG loop. The
+// AKG-specific model (cfg.knlCfg.EmbeddingModel) takes precedence so users can
+// pin a different model for fact distillation than the one used by the memory
+// distiller. Falls back to the base embedding service model when unset.
+func resolveAKGEmbeddingModel(cfg *config) string {
+	if cfg.knlCfg.EmbeddingModel != "" {
+		return cfg.knlCfg.EmbeddingModel
+	}
+	return cfg.embedCfg.Model
+}
+
+// buildAKGBridge constructs the DistillBridge that distills conversations into
+// AKG KnowledgeObjects and persists them through the quality gate. Returns nil
+// (no-op) when either the distiller or the store is unavailable, so the caller
+// can unconditionally assign the result. The quality gate falls back to the
+// knowledge package default when left at zero, matching WithAKGQualityGate's
+// documented "zero value = default" contract.
+func buildAKGBridge(
+	cfg *config,
+	distiller adapter.ConversationDistiller,
+	store knowledge.KnowledgeStore,
+	embClient apiembed.EmbeddingService,
+	embModel string,
+) *adapter.DistillBridge {
+	if distiller == nil || store == nil {
+		return nil
+	}
+	gate := cfg.knlCfg.QualityGate
+	if gate.MinFinalScore == 0 {
+		gate = knowledge.DefaultQualityGateConfig()
+	}
+	return adapter.NewDistillBridgeWithGate(
+		distiller, nil, store, embClient,
+		gate, knowledge.NewRelationExtractor(),
+		akgNamespace, embModel,
+	)
+}
+
+// wireEvolutionHotUpdate wires the live KnowledgeRuntime into the evolution
+// patch system so knowledge patches affect the running engine. Returns nil
+// (no-op) when evolution or knowledge is disabled, or when wiring fails
+// (non-fatal: a warning is logged). Extracted from New() to keep the
+// constructor under the 100-line limit.
+func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime) *ares_bootstrap.NewEvolutionComponents {
+	if !cfg.evoCfg.Enabled || knowRt == nil {
+		return nil
+	}
+	comps, err := ares_bootstrap.ProvideNewEvolution(nil, knowRt, nil)
+	if err != nil {
+		slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
+			"error", err)
+		return nil
+	}
+	slog.Info("sdk: evolution hot-update wired (knowledge runtime patchable by evolution)")
+	return comps
+}
+
 // wireMCPClients connects to each configured MCP server, lists its tools, and
 // registers them into the SDK tool registry. Extracted from New() to keep the
 // constructor under the 100-line limit.
@@ -509,6 +598,7 @@ func New(opts ...Option) (*Runtime, error) {
 	var embClient apiembed.EmbeddingService
 	var expRepo repositories.ExperienceRepositoryInterface
 	var distillSvc *aresexp.DistillationService
+	var akgDistiller adapter.ConversationDistiller
 	if cfg.memCfg.Enabled {
 		w, err := wireMemory(context.Background(), cfg)
 		if err != nil {
@@ -519,6 +609,7 @@ func New(opts ...Option) (*Runtime, error) {
 		expRepo = w.expRepo
 		distillCleanup = w.cleanup
 		distillSvc = w.distillSvc
+		akgDistiller = w.akgDistiller
 	}
 
 	// ---- MCP ----
@@ -528,7 +619,8 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- AKF Knowledge Fabric ----
-	kw, err := wireKnowledge(cfg, memMgr)
+	embModelForAKG := resolveAKGEmbeddingModel(cfg)
+	kw, err := wireKnowledge(cfg, memMgr, embClient, embModelForAKG)
 	if err != nil {
 		return nil, err
 	}
@@ -542,24 +634,18 @@ func New(opts ...Option) (*Runtime, error) {
 
 	// ---- Evolution hot-update (wires the live KnowledgeRuntime into the
 	// evolution patch system so knowledge patches affect the running engine) ----
-	var evoComponents *ares_bootstrap.NewEvolutionComponents
-	if cfg.evoCfg.Enabled && kw.rt != nil {
-		comps, err := ares_bootstrap.ProvideNewEvolution(nil, kw.rt, nil)
-		if err != nil {
-			slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
-				"error", err)
-		} else {
-			evoComponents = comps
-			slog.Info("sdk: evolution hot-update wired (knowledge runtime patchable by evolution)")
-		}
-	}
+	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt)
 
 	// ---- RAG retriever wiring (best-effort, non-fatal) ----
 	if cfg.memCfg.EnableRAG && memMgr != nil {
-		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo, kw.rt)
+		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo,
+			kw.rt, kw.store, embModelForAKG)
 	}
 
-	rtCtx, rtCancel, eg, eventStore := newEventBackend(distillSvc)
+	// ---- AKG DistillBridge (write loop: conversations → knowledge store) ----
+	akgBridge := buildAKGBridge(cfg, akgDistiller, kw.store, embClient, embModelForAKG)
+
+	rtCtx, rtCancel, eg, eventStore := newEventBackend(distillSvc, akgBridge)
 
 	return &Runtime{
 		llmSvc:           llmSvc,
@@ -580,6 +666,7 @@ func New(opts ...Option) (*Runtime, error) {
 		cancel:           rtCancel,
 		eg:               eg,
 		distillSvc:       distillSvc,
+		akgBridge:        akgBridge,
 	}, nil
 }
 
