@@ -70,9 +70,56 @@ make examples          # build all 24 examples
 | **DAG Workflow** | Dynamic graphs with conditional branching and recovery |
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
 | **Memory** | Session context, task distillation, vector similarity search |
+| **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Leader/sub orchestration with automatic failover |
 | **Observability** | OpenTelemetry traces, structured logs, Prometheus metrics |
+
+## AKG — Knowledge Graph Without LLMs (Experimental)
+
+**⚠️ AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL stage. The API may change; it is not production-ready. Use it for experimentation and feedback.**
+
+### Exploration goal
+
+AKG is an experiment with one question: **can we build a precise, queryable knowledge graph from source material WITHOUT a generative LLM in the extraction loop?** The current pipeline uses only embeddings + rules + deterministic scoring — no LLM calls during the write/build/retrieve path. The goal is to measure how far rule-based extraction and hybrid retrieval can go before an LLM becomes a necessity, and to keep the knowledge layer cheap, reproducible, and fully offline-capable.
+
+### How the LLM-free loop works
+
+```
+Write:  source → KnowledgeObject (Raw/Normalized/Summary) → RelationExtractor (rules)
+                → EmbeddingService → QualityGate → KnowledgeStore
+Retrieve: query → EmbeddingService → HybridSearch (0.7·vector + 0.3·lexical)
+                → ranked KnowledgeObjects → ContextSnippet
+Inject:   ContextSnippets → the Agent's reasoning LLM (the ONLY place an LLM is involved)
+```
+
+The LLM never participates in extraction or build — it only consumes the retrieved facts at inference time.
+
+### Current capabilities (no LLM in the loop)
+
+- **Three-layer `KnowledgeObject`** (Raw → Normalized → Summary) with evidence/provenance tracing.
+- **Rule-based relation extraction** over a closed predicate vocabulary: `calls`, `fixes`, `depends_on`, `belongs_to`, `similar_to`, `supersedes`, `causes`, `related_to`.
+- **Multi-dimensional QualityGate** (extraction / consistency / freshness / usage) driving a `candidate → active → superseded/rejected` lifecycle with promotion.
+- **HybridSearch**: vector cosine + lexical Jaccard, filtered by namespace and status.
+- **Multi-backend persistence**: Memory, SQLite, PostgreSQL, **MySQL** (driver-free).
+
+### Honest limitations
+
+- No entity disambiguation — two facts about "Redis" are not merged into one entity.
+- No semantic relation inference — only rule-pattern matches are extracted.
+- No abstractive summarization — `Summary` is extracted/normalized text, not LLM-generated.
+- Rule regexes can be greedy on unusual formatting.
+- Vector recall is in-process brute-force cosine — fine for tens of thousands of vectors, not millions.
+
+### Extensibility — the architecture is open
+
+| Extension point | What to do | Interface touched |
+|---|---|---|
+| **New database backend** | Add `internal/knowledge/store/<name>/store.go` implementing `KnowledgeStore`. Shipped: Memory, SQLite, PostgreSQL, **MySQL** (no driver dependency — the consumer blank-imports their MySQL driver). CockroachDB / TiDB / Spanner are one file each. | `KnowledgeStore` (unchanged for new backends) |
+| **Professional vector DB** | Implement the `VectorIndex` interface (`Upsert` / `Search` / `Delete`) for pgvector, Milvus, Weaviate, Qdrant. `InMemoryVectorIndex` is the default. Stores delegate recall to a `VectorIndex` internally. | `VectorIndex` (new seam) — **`KnowledgeStore` stays unchanged** |
+| **Multi-tenancy** | Every `KnowledgeObject` carries a `Namespace`; `Query`, `HybridSearch`, and `ListByStatus` filter by it, so tenants sharing one store never see each other's facts. | No new interface |
+
+> Design invariant: `KnowledgeStore` is the single persistence contract. Adding a database or a vector index never changes it — only new implementations appear. This is what keeps the upper runtime logic untouched as the storage layer evolves.
 
 ## Module Map
 

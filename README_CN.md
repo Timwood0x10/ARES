@@ -9,17 +9,16 @@
 
 ```
 
-**⚠️ 警告：AKG（自适应知识图谱）处于 BETA 试验阶段**
+**⚠️ 警告：AKG（自适应知识图谱）处于 BETA 实验阶段**
 
-这是**首次尝试不依赖 LLM 构建知识图谱**。当前实现使用：
-- **基于规则的关系抽取**（正则表达式，无需生成式 AI）
-- **混合检索**（BM25-style 关键词 + 向量余弦相似度）
-- **确定性质量评分**（无需 LLM 评估）
+这是**首次尝试在不依赖 LLM 的前提下构建知识图谱**。当前实现使用：
+- 基于规则的关系抽取（正则模式，无生成式 AI）
+- 混合检索（BM25 风格词法 + 向量余弦相似度）
+- 确定性质量评分（无 LLM 评估）
 
-功能状态：**试验性 — API 可能变更，未准备好生产环境。** 仅用于实验和反馈。
+功能状态：**实验性 —— API 可能变化，非生产就绪**。仅用于实验与反馈。
 
 ---
-
 **ARES** — 智能体运行时与进化系统（Agent Runtime & Evolution System）。
 
 用 Go 构建高韧性、自进化的 AI Agent。统一 SDK、DAG 工作流、混沌工程、MCP 支持。
@@ -71,9 +70,56 @@ make examples          # 构建全部 24 个示例
 | **DAG 工作流** | 动态图编排，支持条件分支和自动恢复 |
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
+| **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
 | **多 Agent** | 领导/成员编排，支持自动故障切换 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
+
+## AKG —— 无需 LLM 的知识图谱（实验性）
+
+**⚠️ AKG（自适应知识图谱）处于 BETA 实验阶段。API 可能变化，非生产就绪。仅用于实验与反馈。**
+
+### 探索目标
+
+AKG 是一个围绕单一问题展开的实验：**能否在不引入生成式 LLM 参与抽取循环的前提下，从原始材料构建出精确、可查询的知识图谱？** 当前流水线仅使用 embedding + 规则 + 确定性评分 —— 在写入/构建/检索路径上没有任何 LLM 调用。目标是量化"规则抽取 + 混合检索"能走多远，直到 LLM 成为必需；并让知识层保持廉价、可复现、可完全离线。
+
+### 无 LLM 闭环如何工作
+
+```
+写入：  源 → KnowledgeObject（Raw/Normalized/Summary）→ RelationExtractor（规则）
+              → EmbeddingService → QualityGate → KnowledgeStore
+检索：  query → EmbeddingService → HybridSearch（0.7·向量 + 0.3·词法）
+              → 排序后的 KnowledgeObjects → ContextSnippet
+注入：  ContextSnippets → Agent 的推理 LLM（唯一涉及 LLM 的环节）
+```
+
+LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事实。
+
+### 当前能力（闭环内无 LLM）
+
+- **三层 `KnowledgeObject`**（Raw → Normalized → Summary），带 evidence/溯源追踪。
+- **基于规则的关系抽取**，谓词词表封闭：`calls`、`fixes`、`depends_on`、`belongs_to`、`similar_to`、`supersedes`、`causes`、`related_to`。
+- **多维 QualityGate**（抽取/一致性/新鲜度/使用度），驱动 `candidate → active → superseded/rejected` 生命周期与晋升。
+- **HybridSearch**：向量余弦 + 词法 Jaccard，按 namespace 与 status 过滤。
+- **多后端持久化**：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖）。
+
+### 诚实的局限
+
+- 无实体消歧 —— 关于 "Redis" 的两条事实不会合并为同一实体。
+- 无语义关系推理 —— 仅抽取规则模式命中的关系。
+- 无抽象式摘要 —— `Summary` 是抽取/归一化后的文本，非 LLM 生成。
+- 规则正则在异常格式上可能贪婪匹配。
+- 向量召回为进程内暴力余弦 —— 适合数万级向量，不适合百万级。
+
+### 可扩展性 —— 架构完全开放
+
+| 扩展点 | 做法 | 涉及接口 |
+|---|---|---|
+| **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖 —— 消费方自行 blank-import MySQL 驱动）。CockroachDB / TiDB / Spanner 各只需一个文件。 | `KnowledgeStore`（新增后端时不变） |
+| **专业向量库** | 实现 `VectorIndex` 接口（`Upsert` / `Search` / `Delete`）接入 pgvector、Milvus、Weaviate、Qdrant。`InMemoryVectorIndex` 为默认实现。Store 在内部将召回委托给 `VectorIndex`。 | `VectorIndex`（新接缝）—— **`KnowledgeStore` 保持不变** |
+| **多租户** | 每个 `KnowledgeObject` 携带 `Namespace`；`Query`、`HybridSearch`、`ListByStatus` 均按其过滤，共享同一 store 的租户互不可见。 | 无新接口 |
+
+> 设计不变量：`KnowledgeStore` 是唯一的持久化契约。新增数据库或向量索引永远不改变它 —— 只会出现新的实现。这正是存储层演进时上层 runtime 逻辑不受影响的根本原因。
 
 ## CLI 命令
 
