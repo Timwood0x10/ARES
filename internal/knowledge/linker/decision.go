@@ -1,5 +1,3 @@
-// Package linker provides pluggable Relation generators for AKF.
-// Each LinkerPlugin implements runtime.Linker and generates domain-specific edges.
 package linker
 
 import (

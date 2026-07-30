@@ -1,8 +1,3 @@
-// Package adapter provides bridges between existing ARES subsystems and AKF.
-//
-// This file implements KnowledgeRetriever — an adapter that exposes the AKG
-// (Adaptive Knowledge Graph) via the ContextRetriever interface so the
-// chat-loop context builder can inject AKG knowledge into the LLM prompt.
 package adapter
 
 import (

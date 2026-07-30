@@ -1,4 +1,3 @@
-// Package pipeline — LLM-based summarizer for AKF.
 package pipeline
 
 import (

@@ -2,12 +2,19 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
+	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/detector"
 )
 
 func TestNew(t *testing.T) {
@@ -42,7 +49,7 @@ func TestNewWithProviders(t *testing.T) {
 		name string
 		opt  Option
 	}{
-		{"openai", WithOpenAI("gpt-4o-mini")},
+		{"openai", WithOpenAI(defaultOpenAIModel)},
 		{"anthropic", WithAnthropic("claude-3-haiku")},
 		{"openrouter", WithOpenRouter("openai/gpt-4o")},
 	}
@@ -316,4 +323,399 @@ var calcTool = tools.ToolFunc{
 	ToolName: "calculator",
 	ToolDesc: "test tool",
 	Fn:       func(ctx context.Context, p map[string]any) (any, error) { return "42", nil },
+}
+
+// ---- 4a/4b integration tests: Agent.Run delegates to agentloop.Engine ----
+//
+// These tests inject a mock LLM (implementing the unexported llmService
+// interface) by overriding Runtime.llmSvc after construction. They verify the
+// end-to-end wiring through Agent.Run → agentloop.Engine without a real LLM.
+
+// mockLLMSvc scripts Generate responses per call. It implements llmService so
+// it can be assigned to Runtime.llmSvc. When responses are exhausted it returns
+// a fallback final answer so the loop terminates.
+type mockLLMSvc struct {
+	responses []*core.GenerateResponse
+	calls     int
+}
+
+func (m *mockLLMSvc) Generate(_ context.Context, _ *core.GenerateRequest) (*core.GenerateResponse, error) {
+	idx := m.calls
+	m.calls++
+	if idx >= len(m.responses) {
+		return &core.GenerateResponse{Content: "mock fallback"}, nil
+	}
+	return m.responses[idx], nil
+}
+
+func (m *mockLLMSvc) GetProvider() core.LLMProvider { return core.LLMProviderOllama }
+func (m *mockLLMSvc) GetModel() string              { return "mock-model" }
+func (m *mockLLMSvc) Close()                        {}
+
+// Compile-time check that mockLLMSvc satisfies the unexported llmService
+// interface used by Runtime.llmSvc.
+var _ llmService = (*mockLLMSvc)(nil)
+
+// mockToolCall builds a core.ToolCall for scripted LLM responses.
+func mockToolCall(id, name, args string) core.ToolCall {
+	return core.ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: core.FunctionCall{
+			Name:      name,
+			Arguments: args,
+		},
+	}
+}
+
+// recordingMemMgr wraps a real memory.MemoryManager and records AddMessage
+// calls so tests can assert which roles/content were persisted. All other
+// methods delegate to the embedded manager.
+type recordingMemMgr struct {
+	memory.MemoryManager
+	mu    sync.Mutex
+	added []memEntry
+}
+
+type memEntry struct {
+	sessionID string
+	role      string
+	content   string
+}
+
+// AddMessage records the call then delegates to the wrapped manager.
+func (r *recordingMemMgr) AddMessage(ctx context.Context, sessionID, role, content string) error {
+	r.mu.Lock()
+	r.added = append(r.added, memEntry{sessionID: sessionID, role: role, content: content})
+	r.mu.Unlock()
+	return r.MemoryManager.AddMessage(ctx, sessionID, role, content)
+}
+
+func (r *recordingMemMgr) snapshot() []memEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]memEntry, len(r.added))
+	copy(out, r.added)
+	return out
+}
+
+// TestAgentRun_EmitsTaskCompletedEvent (4a) verifies that a successful agent
+// run emits an EventTaskCompleted event carrying the original input and the LLM
+// output in its payload. TaskCompleted emission is gated on distillSvc != nil,
+// so the test sets a non-nil distillSvc (no subscriber runs because it is set
+// after New, so the event is only inspected, not consumed).
+func TestAgentRun_EmitsTaskCompletedEvent(t *testing.T) {
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
+	defer rt.Close()
+	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
+		{Content: "the answer is 4", Usage: core.TokenUsage{PromptTokens: 3, CompletionTokens: 5}},
+	}}
+	// A non-nil distillSvc enables TaskCompleted emission (mirrors distillSvc != nil
+	// in the original Agent.Run). Set after New so no distillation subscriber runs.
+	rt.distillSvc = &aresexp.DistillationService{}
+
+	agent := rt.NewAgent("task-agent", WithInstruction("help"))
+	res, err := agent.Run(context.Background(), "what is 2+2")
+	if err != nil {
+		t.Fatalf("Agent.Run error: %v", err)
+	}
+	if res.Output != "the answer is 4" {
+		t.Fatalf("Output = %q, want %q", res.Output, "the answer is 4")
+	}
+
+	evs, rerr := rt.eventStore.ReadAll(context.Background(), ares_events.ReadOptions{})
+	if rerr != nil {
+		t.Fatalf("ReadAll error: %v", rerr)
+	}
+	var found *ares_events.Event
+	for _, ev := range evs {
+		if ev.Type == ares_events.EventTaskCompleted {
+			found = ev
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected EventTaskCompleted in event store")
+	}
+	if got := found.Payload[ares_events.EventKeyTask]; got != "what is 2+2" {
+		t.Errorf("task payload = %v, want %q", got, "what is 2+2")
+	}
+	if got := found.Payload[ares_events.EventKeyResult]; got != "the answer is 4" {
+		t.Errorf("result payload = %v, want %q", got, "the answer is 4")
+	}
+	if got := found.Payload["agent_id"]; got != "task-agent" {
+		t.Errorf("agent_id payload = %v, want %q", got, "task-agent")
+	}
+	if got := found.Payload[ares_events.EventKeyTenantID]; got != ares_events.DefaultTenantID {
+		t.Errorf("tenant payload = %v, want %q", got, ares_events.DefaultTenantID)
+	}
+}
+
+// TestAgentRun_ToolCallEvents (4a) verifies that a tool-calling run emits
+// ToolCallStarted then ToolCallCompleted events on the agent-name stream with
+// strictly increasing versions.
+func TestAgentRun_ToolCallEvents(t *testing.T) {
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
+	defer rt.Close()
+	if err := rt.ToolRegistry().Register(calcTool); err != nil {
+		t.Fatal(err)
+	}
+	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{mockToolCall("tc1", "calculator", `{}`)}},
+		{Content: "computed"},
+	}}
+
+	agent := rt.NewAgent("evt-agent", WithTools(calcTool))
+	res, err := agent.Run(context.Background(), "compute")
+	if err != nil {
+		t.Fatalf("Agent.Run error: %v", err)
+	}
+	if res.Output != "computed" {
+		t.Fatalf("Output = %q, want %q", res.Output, "computed")
+	}
+	if res.ToolCalls != 1 {
+		t.Fatalf("ToolCalls = %d, want 1", res.ToolCalls)
+	}
+
+	evs, rerr := rt.eventStore.Read(context.Background(), "evt-agent", ares_events.ReadOptions{})
+	if rerr != nil {
+		t.Fatalf("Read error: %v", rerr)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 tool events, got %d", len(evs))
+	}
+	if evs[0].Type != ares_events.EventToolCallStarted {
+		t.Errorf("event[0].Type = %s, want %s", evs[0].Type, ares_events.EventToolCallStarted)
+	}
+	if evs[1].Type != ares_events.EventToolCallCompleted {
+		t.Errorf("event[1].Type = %s, want %s", evs[1].Type, ares_events.EventToolCallCompleted)
+	}
+	if evs[1].Version <= evs[0].Version {
+		t.Errorf("versions not increasing: %d then %d", evs[0].Version, evs[1].Version)
+	}
+	// The completed event payload carries the tool name and success flag.
+	if got := evs[1].Payload["tool"]; got != "calculator" {
+		t.Errorf("completed tool = %v, want %q", got, "calculator")
+	}
+	if got := evs[1].Payload["success"]; got != true {
+		t.Errorf("completed success = %v, want true", got)
+	}
+}
+
+// TestAgentRun_WithMemory_PersistsMessages (4b) verifies that a run with memory
+// enabled persists both the user input (from buildMessages) and the assistant
+// response (from the engine) via MemoryManager.AddMessage.
+func TestAgentRun_WithMemory_PersistsMessages(t *testing.T) {
+	rt := NewRuntime(WithOllama("llama3.2"), WithDefaultMemory(), WithTrace(false))
+	defer rt.Close()
+	rec := &recordingMemMgr{MemoryManager: rt.memMgr}
+	rt.memMgr = rec
+	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
+		{Content: "hello back"},
+	}}
+
+	agent := rt.NewAgent("mem-agent", WithInstruction("help"))
+	res, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Agent.Run error: %v", err)
+	}
+	if res.Output != "hello back" {
+		t.Fatalf("Output = %q, want %q", res.Output, "hello back")
+	}
+	if !res.MemoryUsed {
+		t.Fatal("MemoryUsed = false, want true")
+	}
+
+	added := rec.snapshot()
+	// Expect at least a user message (buildMessages) and an assistant message (engine).
+	var userContent, asstContent string
+	roles := map[string]bool{}
+	for _, m := range added {
+		roles[m.role] = true
+		switch m.role {
+		case roleUser:
+			userContent = m.content
+		case roleAssistant:
+			asstContent = m.content
+		}
+	}
+	if !roles[roleUser] {
+		t.Error("expected AddMessage call for user input")
+	}
+	if !roles[roleAssistant] {
+		t.Error("expected AddMessage call for assistant response")
+	}
+	if userContent != "hi" {
+		t.Errorf("user content = %q, want %q", userContent, "hi")
+	}
+	if asstContent != "hello back" {
+		t.Errorf("assistant content = %q, want %q", asstContent, "hello back")
+	}
+}
+
+// TestAgentRun_DelegatesToEngine verifies the delegation wiring: a mock LLM
+// answer flows back through Agent.Run as the Result.Output, and token counts
+// are mapped from the engine result into TokenUsage.
+func TestAgentRun_DelegatesToEngine(t *testing.T) {
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
+	defer rt.Close()
+	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
+		{Content: "delegated", Usage: core.TokenUsage{PromptTokens: 7, CompletionTokens: 11}},
+	}}
+
+	agent := rt.NewAgent("del-agent", WithInstruction("help"))
+	res, err := agent.Run(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Agent.Run error: %v", err)
+	}
+	if res.Output != "delegated" {
+		t.Fatalf("Output = %q, want %q", res.Output, "delegated")
+	}
+	if res.TokenUsage.Input != 7 {
+		t.Errorf("TokenUsage.Input = %d, want 7", res.TokenUsage.Input)
+	}
+	if res.TokenUsage.Output != 11 {
+		t.Errorf("TokenUsage.Output = %d, want 11", res.TokenUsage.Output)
+	}
+	if res.TokenUsage.Total != 18 {
+		t.Errorf("TokenUsage.Total = %d, want 18", res.TokenUsage.Total)
+	}
+}
+
+// ---- MustNew quickstart tests ----
+//
+// These tests exercise the zero-parameter MustNew entry point by overriding
+// the package-level detectFn with a deterministic detector, so no network
+// probe or environment variable is touched. Each test restores detectFn on
+// cleanup via setDetectFn.
+
+// setDetectFn overrides the package-level detectFn for the duration of the
+// test, restoring the previous value on cleanup. Tests must use this instead
+// of writing detectFn directly so cleanup is guaranteed even on failure.
+func setDetectFn(t *testing.T, fn func(context.Context, time.Duration) *detector.Environment) {
+	t.Helper()
+	prev := detectFn
+	detectFn = fn
+	t.Cleanup(func() { detectFn = prev })
+}
+
+// TestMustNew_PanicNoLLM verifies that MustNew panics with a message
+// containing "no LLM provider" when the detector returns an empty
+// Environment (no Ollama, no API keys).
+func TestMustNew_PanicNoLLM(t *testing.T) {
+	setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
+		return &detector.Environment{} // no provider detected
+	})
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected MustNew to panic, got none")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "no LLM provider") {
+			t.Fatalf("panic message = %q, want substring %q", msg, "no LLM provider")
+		}
+	}()
+	_ = MustNew()
+}
+
+// TestMustNew_Ollama verifies that MustNew returns a usable Runtime with
+// default memory enabled when the detector reports a running Ollama daemon.
+// The LLM client is created lazily, so no running server is required.
+func TestMustNew_Ollama(t *testing.T) {
+	setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
+		return &detector.Environment{
+			LLMProvider: "ollama",
+			LLMModel:    "llama3.2",
+			LLMEndpoint: "http://localhost:11434",
+			HasOllama:   true,
+		}
+	})
+	rt := MustNew()
+	defer rt.Close()
+	if rt == nil {
+		t.Fatal("MustNew returned nil Runtime")
+	}
+	if !rt.memEnabled {
+		t.Fatal("rt.memEnabled = false, want true (default memory should be enabled)")
+	}
+}
+
+// TestMustNew_OpenAI verifies that MustNew returns a usable Runtime with
+// default memory enabled when the detector reports an OpenAI API key. The
+// API key is read from OPENAI_API_KEY to match buildOptsFromEnv's contract.
+func TestMustNew_OpenAI(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
+		return &detector.Environment{
+			LLMProvider:  "openai",
+			LLMModel:     defaultOpenAIModel,
+			HasOpenAIKey: true,
+		}
+	})
+	rt := MustNew()
+	defer rt.Close()
+	if rt == nil {
+		t.Fatal("MustNew returned nil Runtime")
+	}
+	if !rt.memEnabled {
+		t.Fatal("rt.memEnabled = false, want true (default memory should be enabled)")
+	}
+}
+
+// TestMustNew_DefaultMemoryEnabled asserts the defaultConfig flip holds
+// across every provider supported by buildOptsFromEnv: each MustNew success
+// path must yield a Runtime with memEnabled == true without an explicit
+// WithDefaultMemory call. The anthropic case is covered here because the
+// dedicated TestMustNew_Ollama / TestMustNew_OpenAI tests cover the other two.
+func TestMustNew_DefaultMemoryEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     *detector.Environment
+		envVars map[string]string
+	}{
+		{
+			name: "ollama_default_memory_on",
+			env: &detector.Environment{
+				LLMProvider: "ollama",
+				LLMModel:    "llama3.2",
+				LLMEndpoint: "http://localhost:11434",
+				HasOllama:   true,
+			},
+		},
+		{
+			name: "openai_default_memory_on",
+			env: &detector.Environment{
+				LLMProvider:  "openai",
+				LLMModel:     defaultOpenAIModel,
+				HasOpenAIKey: true,
+			},
+			envVars: map[string]string{"OPENAI_API_KEY": "test-key"},
+		},
+		{
+			name: "anthropic_default_memory_on",
+			env: &detector.Environment{
+				LLMProvider:     "anthropic",
+				LLMModel:        "claude-3-haiku",
+				HasAnthropicKey: true,
+			},
+			envVars: map[string]string{"ANTHROPIC_API_KEY": "test-key"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.envVars {
+				t.Setenv(k, v)
+			}
+			env := tt.env
+			setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
+				return env
+			})
+			rt := MustNew()
+			defer rt.Close()
+			if !rt.memEnabled {
+				t.Fatalf("rt.memEnabled = false, want true for %s", tt.name)
+			}
+		})
+	}
 }

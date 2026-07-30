@@ -1,10 +1,3 @@
-// Package mysql implements a GraphProvider for external MySQL databases.
-// It reads table rows via SQL queries and converts them to KnowledgeObjects.
-//
-// Usage:
-//
-//	db, _ := sql.Open("mysql", "user:pass@tcp(host:3306)/dbname")
-//	provider, _ := mysql.NewMySQLProvider(db, cfg, mapping)
 package mysql
 
 import (

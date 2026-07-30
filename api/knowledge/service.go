@@ -1,9 +1,3 @@
-// Package knowledge provides the public API for the ARES Knowledge
-// Fabric (AKF) — the Agent Knowledge Graph (AKG).
-//
-// This package exposes the KnowledgeService interface, allowing external
-// modules (including AI assistants) to build, query, and compile knowledge
-// graphs without importing internal packages.
 package knowledge
 
 import (

@@ -1,6 +1,6 @@
 # Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci benchmark quickstart examples
+.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci benchmark quickstart examples cover cover-html ci-test-race-short
 
 # Default target
 all: lint test
@@ -54,10 +54,16 @@ ci-build:
 	@go build -v ./...
 	@echo "Build: OK"
 
-# CI tests with race detection
+# CI tests with race detection (FULL suite, -count=1 bypasses test cache)
 ci-test-race:
-	@echo "Running tests with race detection..."
-	@go test -race -short ./...
+	@echo "Running full test suite with race detection..."
+	@go test -race -count=1 ./...
+	@echo "Tests: OK"
+
+# CI tests with race detection (short/fast path for quick local checks)
+ci-test-race-short:
+	@echo "Running short tests with race detection..."
+	@go test -race -short -count=1 ./...
 	@echo "Tests: OK"
 
 # CI security scan
@@ -106,6 +112,16 @@ test:
 
 test-race:
 	go test -race -cover ./...
+
+# Coverage — full race-enabled coverage report (prints total coverage line)
+cover:
+	@echo "Running tests with race detection and coverage..."
+	@go test -race -count=1 -coverprofile=cover.out ./... && go tool cover -func=cover.out | tail -1
+
+# Coverage — open HTML coverage report in browser (run `make cover` first)
+cover-html:
+	@echo "Opening HTML coverage report..."
+	@go tool cover -html=cover.out
 
 # Core modules — check total coverage across all core packages
 test-core:
@@ -321,6 +337,8 @@ help:
 	@echo "  lint-golangci    - Run golangci-lint (REQUIRED)"
 	@echo "  test          - Run tests with coverage"
 	@echo "  test-race     - Run tests with race detection"
+	@echo "  cover         - Run race tests with coverage and print total"
+	@echo "  cover-html    - Open HTML coverage report (run 'make cover' first)"
 	@echo "  test-core     - Run tests for core modules (requires 90%+ coverage)"
 	@echo "  test-tools    - Run tests for tools modules (requires 80%+ coverage)"
 	@echo "  benchmark     - Run all benchmarks"
@@ -342,7 +360,8 @@ help:
 	@echo "  ci-vet        - Run go vet"
 	@echo "  ci-lint       - Run golangci-lint"
 	@echo "  ci-build      - Build all packages"
-	@echo "  ci-test-race  - Run tests with race detection"
+	@echo "  ci-test-race  - Run full test suite with race detection"
+	@echo "  ci-test-race-short - Run short tests with race detection"
 	@echo ""
 	@echo "Required tools:"
 	@echo ""

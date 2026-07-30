@@ -1,4 +1,3 @@
-// Package adapter provides bridges between existing ARES subsystems and AKF.
 package adapter
 
 import (

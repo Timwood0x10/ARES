@@ -362,3 +362,167 @@ if err != nil {
 - **更好的文档**: 完整的类型定义
 
 这种架构设计遵循了SOLID原则，特别是依赖倒置原则（DIP），确保了代码的可维护性和可扩展性。
+
+## Dependency Graph
+
+This section documents how the SDK Runtime wires its modules at construction
+time (`sdk.New`) and which modules the agent execution flow passes through at
+run time (`Agent.Run`). Every claim below is traceable to a source location so
+new developers can answer "which modules does the agent execution flow pass
+through?" without reading the whole codebase.
+
+### Bootstrap stage (sdk.New)
+
+`sdk.New` (`sdk/sdk.go:587`) constructs the Runtime by composing a handful of
+`wire*` helpers. The call order below is the actual order in `New`, not a
+logical reordering. Each leaf names the value stored on the `Runtime` struct
+(`sdk/sdk.go:127`) and the source location that backs it.
+
+```
+sdk.New  (sdk/sdk.go:587)
+├─ llm.NewService                     → llmSvc            (sdk.go:601)
+├─ tools.NewRegistry                  → toolReg           (sdk.go:606)
+├─ wireMemory                         → memMgr, embClient, expRepo, distillSvc,
+│   (sdk/memory_wiring.go:413)          akgDistiller, distillCleanup
+│   ├─ distillation disabled:
+│   │    memory.NewMemoryManager           (compression only)   (memory_wiring.go:417)
+│   ├─ distillation enabled + deps OK:
+│   │    memory.NewMemoryManagerWithDistiller (compression + RAG + distiller)
+│   │                                                              (memory_wiring.go:440)
+│   ├─ buildDistillationService       → distillSvc        (optional, non-fatal) (memory_wiring.go:451)
+│   └─ buildAKGDistiller              → akgDistiller      (optional, non-fatal) (memory_wiring.go:465)
+│   Fallback: distillation deps missing or construction failed → compression-only
+│   NewMemoryManager                                          (memory_wiring.go:424-438)
+├─ wireMCPClients                     → mcpClients        (sdk.go:629, def L552)
+├─ wireKnowledge                      → knowledgeRT, knowledgeStore, evolutionStore
+│   (sdk.go:636, def L366)
+│   ├─ registerKnowledgeProviders     (memory / evolution / extra)  (sdk.go:378, def L423)
+│   ├─ buildKnowledgeStore            (SQLite > Postgres > in-memory) (sdk.go:382, def L449)
+│   ├─ StoreProvider registered       (closes AKG write→read loop)   (sdk.go:391)
+│   └─ khruntime.New                  (planner + linkers + reducers) (sdk.go:402)
+├─ registerAKFTools                   (optional, when knowledge enabled) (sdk.go:642)
+├─ wireEvolutionHotUpdate             → evoComponents      (optional) (sdk.go:650, def L525)
+├─ wireSDKRetrievers                  (best-effort) injects MemoryRetriever +
+│   (sdk.go:654, def L723)              KnowledgeRetriever into memMgr via SetRetrievers
+├─ buildAKGBridge                     → akgBridge          (optional) (sdk.go:659, def L499)
+└─ newEventBackend                    → ctx, cancel, eg, eventStore + subscriber
+    (sdk.go:661, def sdk/distill_events.go:47)
+    └─ wireDistillationSubscriber     (TaskCompleted/TaskFailed → distillSvc + akgBridge)
+        (sdk/distill_events.go:85)
+```
+
+Notes on the bootstrap tree:
+
+- `wireMemory` is the only helper with a fallback path. When distillation is
+  enabled but its dependencies (embedding service URL or Postgres host) are
+  missing, it logs a warning and returns a compression-only
+  `MemoryManager` instead of failing the whole Runtime
+  (`sdk/memory_wiring.go:424-438`, `ErrDistillDepsMissing` at L57).
+- `distillSvc` and `akgDistiller` are both constructed non-fatally: a
+  construction failure disables event-driven distillation (or the AKG bridge)
+  but leaves the `MemoryManager` working (`sdk/memory_wiring.go:451-472`).
+- `newEventBackend` creates the in-memory `MemoryEventStore`
+  (`sdk/distill_events.go:55`) and starts the background distillation
+  subscriber only when at least one of `distillSvc` / `akgBridge` is non-nil
+  (`sdk/distill_events.go:56`). When both are nil, the store is still
+  returned but no subscriber runs.
+
+### Execution stage (Agent.Run)
+
+`Agent.Run` (`sdk/sdk.go:954`) runs a ReAct loop. The tree below lists every
+module the execution flow passes through. "optional" means the call is gated
+on a runtime flag (memory enabled / eventStore non-nil) and may be skipped.
+
+```
+Agent.Run  (sdk/sdk.go:954)
+├─ buildMessages                                 (sdk.go:965, def L1128)
+│  ├─ memMgr.BuildContext        (optional, RAG context)        (sdk.go:1140)
+│  ├─ knowledgeRT.Execute        (optional, AKG context)        (sdk.go:1156)
+│  └─ memMgr.AddMessage          (user message, optional)       (sdk.go:1181)
+├─ for iter < maxIter:
+│  ├─ llmSvc.Generate            → LLM response                 (sdk.go:983)
+│  ├─ memMgr.AddMessage          (assistant message, optional)  (sdk.go:1002)
+│  ├─ if no tool calls (final answer):
+│  │  ├─ ares_events.Emit EventTaskCompleted
+│  │  │   (optional, gated on eventStore + distillSvc)          (sdk.go:1017)
+│  │  └─ return Result
+│  └─ for each tool call:
+│     ├─ eventStore.Append EventToolCallStarted  (optional)     (sdk.go:1066)
+│     ├─ toolReg.Execute                         → tool result  (sdk.go:1078)
+│     └─ eventStore.Append EventToolCallCompleted (optional)    (sdk.go:1093)
+```
+
+So the modules the execution flow always passes through are `llmSvc` and
+`toolReg`. The `memMgr`, `knowledgeRT`, and `eventStore` modules are
+optional and depend on the Runtime configuration (`memEnabled`,
+`knowledgeEnabled`, and whether `distillSvc` was constructed).
+
+### Events flow
+
+The diagram below shows the flow of events emitted by `Agent.Run`. Solid
+edges run inside every `sdk.New` Runtime that has distillation enabled. The
+dashed edge (Dashboard EventBridge) is wired only in the full service
+deployment (`internal/api_impl/service.go`), where a shared `EventStore` is
+injected into `ares_bootstrap.Bootstrap` and also fed to the dashboard — it
+is not wired by `sdk.New` itself.
+
+```mermaid
+graph LR
+    Run["Agent.Run<br/>(sdk.go:940)"]
+    ES[("EventStore<br/>in-memory<br/>ares_events.MemoryEventStore")]
+    Sub["Distillation Subscriber<br/>(sdk/distill_events.go:85)"]
+    DistSvc["DistillationService<br/>(ares_experience)"]
+    ExpRepo[("Experience Repository<br/>Postgres")]
+    AKG["AKG DistillBridge<br/>(knowledge/adapter)"]
+    KS[("KnowledgeStore")]
+    Dash["Dashboard EventBridge<br/>(internal/dashboard)"]
+    WS["WebSocket Hub"]
+    Intel["Intelligence Engine"]
+
+    Run -->|EventTaskCompleted<br/>EventToolCallStarted/Completed| ES
+    ES -->|Subscribe<br/>TaskCompleted / TaskFailed| Sub
+    Sub --> DistSvc
+    DistSvc -->|experienceRepo.Create<br/>(distillation_service.go:109)| ExpRepo
+    Sub --> AKG
+    AKG -->|DistillConversation<br/>→ quality gate| KS
+    ES -.->|Subscribe<br/>all events<br/>wired in api_impl/service.go:223| Dash
+    Dash --> WS
+    Dash --> Intel
+```
+
+Verified branches:
+
+- `Agent.Run` → `EventStore`: `ares_events.Emit` writes `EventTaskCompleted`
+  (`sdk/sdk.go:1003-1012`); `eventStore.Append` writes `EventToolCallStarted`
+  and `EventToolCallCompleted` (`sdk/sdk.go:1052`, `sdk/sdk.go:1079`).
+- `EventStore` → Distillation Subscriber → `DistillationService` → Experience
+  Repository: the subscriber is started in `wireDistillationSubscriber`
+  (`sdk/distill_events.go:85`), which calls
+  `ares_bootstrap.HandleTaskCompletedForDistillation`
+  (`sdk/distill_events.go:119`) → `DistillationService.Distill`
+  (`internal/ares_bootstrap/provide_distillation.go:180`) →
+  `experienceRepo.Create` (`internal/ares_experience/distillation_service.go:109`).
+- `EventStore` → AKG DistillBridge → KnowledgeStore: the subscriber calls
+  `triggerAKGBridge` (`sdk/distill_events.go:122`) →
+  `bridge.DistillConversation` (`sdk/distill_events.go:165`), which persists
+  AKG KnowledgeObjects through the quality gate into the `KnowledgeStore`
+  wired by `buildAKGBridge` (`sdk/sdk.go:646`).
+- `EventStore` → Dashboard EventBridge → WebSocket / Intelligence Engine:
+  `dashboard.NewEventBridge` subscribes to the EventStore and forwards every
+  event to the WebSocket hub and the intelligence engine
+  (`internal/dashboard/event_bridge.go:32`, `:84`, `:95`). It is wired in
+  `internal/api_impl/service.go:223` against the shared EventStore built at
+  `internal/api_impl/service.go:176` and passed to
+  `ares_bootstrap.Bootstrap` at `internal/api_impl/service.go:184`. This
+  branch does NOT run in a pure `sdk.New` Runtime, whose `eventStore` is
+  private and has no public accessor on `Runtime` (`sdk/sdk.go:129`).
+
+### Module maturity
+
+The AKG / knowledge packages — `internal/knowledge` and its subpackages
+(`adapter`, `compiler`, `linker`, `planner`, `provider`, `runtime`, `store/*`)
+— plus the evolution packages under `internal/ares_evolution` are designated
+Beta. They carry package-level Beta markers added by Task 2 of the ARES
+optimization plan; treat their public API as potentially unstable and subject
+to breaking changes before GA. The LLM, tool registry, memory manager, event
+store, and distillation service referenced in the trees above are stable.

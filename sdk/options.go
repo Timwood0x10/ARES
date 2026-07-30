@@ -176,7 +176,12 @@ func defaultConfig() *config {
 			RequestTimeout: 60,
 			MaxRetries:     3,
 		},
-		memCfg: memoryCfg{Enabled: false},
+		// memCfg.Enabled defaults to true so users no longer need
+		// WithDefaultMemory() for the quickstart path. wireMemory falls back
+		// to compression-only memory when no embedding service is available
+		// (see sdk/memory_wiring.go), so this is safe without an embedding
+		// service. Use WithoutMemory() to opt out.
+		memCfg: memoryCfg{Enabled: true},
 		evoCfg: evolutionCfg{Enabled: false},
 		trace:  true,
 		// dbCfg, embedCfg, distillCfg, knowledgeRT default to zero values,
@@ -279,9 +284,24 @@ func WithFallbackLLM(cfg *core.LLMConfig) Option {
 
 // WithDefaultMemory enables in-memory session storage. Each Run call creates a
 // session and conversation history is available to the LLM on subsequent calls.
+//
+// As of the defaultConfig flip, memory is enabled by default, so this option is
+// now a no-op kept for backward compatibility. Use it to make the intent
+// explicit in code that relies on default memory.
 func WithDefaultMemory() Option {
 	return func(c *config) error {
 		c.memCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithoutMemory disables the memory subsystem, overriding the
+// defaultConfig-enabled memory. Use this when a Runtime should not maintain
+// session history (e.g. stateless CLI tools or tests that assert the
+// memory-off path).
+func WithoutMemory() Option {
+	return func(c *config) error {
+		c.memCfg.Enabled = false
 		return nil
 	}
 }

@@ -43,6 +43,7 @@ import (
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agentloop"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -111,8 +112,20 @@ const (
 //	    sdk.WithInstruction("You are helpful."),
 //	)
 //	result, _ := agent.Run(ctx, "hello")
+
+// llmService is the subset of the LLM service the sdk uses. It is an
+// unexported interface so tests can inject a mock LLM (see sdk_test.go)
+// without spinning up a real provider. *llm.Service satisfies it; the field
+// is assigned the concrete service in New().
+type llmService interface {
+	Generate(ctx context.Context, req *core.GenerateRequest) (*core.GenerateResponse, error)
+	GetProvider() core.LLMProvider
+	GetModel() string
+	Close()
+}
+
 type Runtime struct {
-	llmSvc           *llm.Service
+	llmSvc           llmService
 	toolReg          *tools.Registry
 	memMgr           memory.MemoryManager
 	distillCleanup   func()
@@ -587,7 +600,7 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 	llmSvc, err := llm.NewService(llmCfg)
 	if err != nil {
-		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
+		return nil, agentloop.FriendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
 
 	toolReg := tools.NewRegistry()
@@ -929,14 +942,15 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 // ---- Agent ----
 
 // Run executes the agent against the given input and returns the result.
-// It runs a ReAct loop:
+// It builds the message list (system instruction + memory/knowledge context +
+// input), creates the memory session, then delegates the ReAct loop
+// (LLM call → tool execution → feed back) to agentloop.Engine. The engine is
+// the single execution path; Run no longer inlines the loop.
 //
-//  1. Build the message list (system instruction + memory context + input).
-//  2. Call the LLM (with tool definitions).
-//  3. If the LLM calls tools, execute them and feed results back.
-//  4. Repeat until the LLM produces a final answer.
-//  5. Store the conversation in memory (if enabled).
-//  6. Return the final output and metadata.
+//  1. Create the memory session (when memory is enabled).
+//  2. Build the message list (system instruction + memory context + input).
+//  3. Delegate the ReAct loop to agentloop.Engine.
+//  4. Map the engine Result back into the sdk Result.
 func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	start := time.Now()
 
@@ -949,164 +963,50 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	}
 
 	messages := a.buildMessages(ctx, input, sessionID)
-
-	// ---- convert tools to core.Tool format ----
 	coreTools := a.toCoreTools(a.tools)
-	totalInputTokens := 0
-	totalOutputTokens := 0
-	toolCallCount := 0
-	maxIter := a.maxIter
-	if maxIter <= 0 {
-		maxIter = defaultMaxIterations
+
+	eng := &agentloop.Engine{
+		LLM:            a.runtime.llmSvc,
+		Tools:          a.runtime.toolReg,
+		Events:         a.runtime.eventStore,
+		Memory:         a.runtime.memMgr,
+		Tracer:         a.traceTracer(),
+		MemEnabled:     a.runtime.memEnabled,
+		DistillEnabled: a.runtime.distillSvc != nil,
 	}
-
-	for iter := 0; iter < maxIter; iter++ {
-		if a.runtime.trace {
-			log.Printf("[ares:trace] %s → LLM call (iter %d, %d msgs)",
-				a.name, iter, len(messages))
-		}
-
-		resp, err := a.runtime.llmSvc.Generate(ctx, &core.GenerateRequest{
-			Messages: messages,
-			Tools:    coreTools,
-		})
-		if err != nil {
-			return nil, friendlyErr("llm generate", a.runtime.llmSvc.GetProvider(), err)
-		}
-
-		totalInputTokens += resp.Usage.PromptTokens
-		totalOutputTokens += resp.Usage.CompletionTokens
-
-		// Store assistant message
-		messages = append(messages, &core.LLMMessage{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-
-		if a.runtime.memEnabled && a.runtime.memMgr != nil {
-			_ = a.runtime.memMgr.AddMessage(ctx, sessionID, "assistant", resp.Content)
-		}
-
-		// ---- tool calling loop ----
-		if len(resp.ToolCalls) == 0 {
-			// Final answer
-			if a.runtime.trace {
-				log.Printf("[ares:trace] %s ✓ done (%d tools, %d total tokens, %v)",
-					a.name, toolCallCount, totalInputTokens+totalOutputTokens,
-					time.Since(start).Round(time.Millisecond))
-			}
-			// Emit TaskCompleted so the event-driven distillation subscriber
-			// can distill this conversation into a long-term experience. Gated
-			// on both the event store and distillSvc so non-distilling Runtimes
-			// pay zero overhead.
-			if a.runtime.eventStore != nil && a.runtime.distillSvc != nil {
-				ares_events.Emit(ctx, a.runtime.eventStore, sessionID,
-					ares_events.EventTaskCompleted, "runtime",
-					map[string]any{
-						ares_events.EventKeyTask:     input,
-						ares_events.EventKeyResult:   resp.Content,
-						ares_events.EventKeyTenantID: ares_events.DefaultTenantID,
-						"agent_id":                   a.name,
-					})
-			}
-			return &Result{
-				Output:     resp.Content,
-				ToolCalls:  toolCallCount,
-				MemoryUsed: a.runtime.memEnabled,
-				TokenUsage: TokenUsage{
-					Input:  totalInputTokens,
-					Output: totalOutputTokens,
-					Total:  totalInputTokens + totalOutputTokens,
-				},
-				Duration: time.Since(start),
-			}, nil
-		}
-
-		// Execute each tool call
-		for _, tc := range resp.ToolCalls {
-			args := parseArgs(tc.Function.Arguments)
-
-			// Human-in-the-loop check.
-			if a.humanInput != nil {
-				approved, err := a.humanInput(ctx, tc.Function.Name, args)
-				if err != nil {
-					return nil, fmt.Errorf("human input: %w", err)
-				}
-				if !approved {
-					if a.runtime.trace {
-						log.Printf("[ares:trace] %s → tool call REJECTED by human: %s",
-							a.name, tc.Function.Name)
-					}
-					messages = append(messages, &core.LLMMessage{
-						Role:       roleTool,
-						ToolCallID: tc.ID,
-						Content:    fmt.Sprintf("Tool call %s was rejected by human operator", tc.Function.Name),
-					})
-					continue
-				}
-			}
-
-			toolCallCount++
-			if a.runtime.eventStore != nil {
-				_ = a.runtime.eventStore.Append(ctx, a.name, []*ares_events.Event{{
-					Type:     ares_events.EventToolCallStarted,
-					StreamID: a.name,
-					Payload:  map[string]any{roleTool: tc.Function.Name, "args": tc.Function.Arguments},
-					Version:  int64(toolCallCount),
-				}}, int64(toolCallCount-1))
-			}
-			if a.runtime.trace {
-				log.Printf("[ares:trace] %s → tool call: %s(%s)",
-					a.name, tc.Function.Name, tc.Function.Arguments)
-			}
-
-			result, err := a.runtime.toolReg.Execute(ctx, tc.Function.Name, args)
-			resultContent := ""
-			if err != nil {
-				resultContent = fmt.Sprintf("Error: %v", err)
-			} else {
-				resultContent = fmt.Sprintf("%v", result.Data)
-			}
-
-			messages = append(messages, &core.LLMMessage{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    resultContent,
-			})
-
-			if a.runtime.eventStore != nil {
-				_ = a.runtime.eventStore.Append(ctx, a.name, []*ares_events.Event{{
-					Type:     ares_events.EventToolCallCompleted,
-					StreamID: a.name,
-					Payload: map[string]any{
-						"tool":    tc.Function.Name,
-						"args":    tc.Function.Arguments,
-						"result":  resultContent,
-						"success": err == nil,
-					},
-					Version: int64(toolCallCount),
-				}}, int64(toolCallCount-1))
-			}
-		}
-
-		// Continue loop — the LLM will either call more tools or produce a final answer
-	}
-
-	if a.runtime.trace {
-		log.Printf("[ares:trace] %s ⚠ max iterations reached (%d)", a.name, maxIter)
+	res, err := eng.Run(ctx, &agentloop.Request{
+		Messages:   messages,
+		Tools:      coreTools,
+		MaxIter:    a.maxIter,
+		AgentName:  a.name,
+		SessionID:  sessionID,
+		Input:      input,
+		HumanInput: agentloop.HumanInputFunc(a.humanInput),
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &Result{
-		Output:     "max iterations reached",
-		ToolCalls:  toolCallCount,
-		MemoryUsed: a.runtime.memEnabled,
+		Output:     res.Output,
+		ToolCalls:  res.ToolCalls,
+		MemoryUsed: res.MemoryUsed,
 		TokenUsage: TokenUsage{
-			Input:  totalInputTokens,
-			Output: totalOutputTokens,
-			Total:  totalInputTokens + totalOutputTokens,
+			Input:  res.InputTokens,
+			Output: res.OutputTokens,
+			Total:  res.InputTokens + res.OutputTokens,
 		},
 		Duration: time.Since(start),
 	}, nil
+}
+
+// traceTracer returns log.Printf when tracing is enabled, nil otherwise. The
+// agentloop engine treats a nil Tracer as "no trace logging", so this preserves
+// the original a.runtime.trace gating without the engine needing a trace bool.
+func (a *Agent) traceTracer() func(format string, args ...any) {
+	if a.runtime.trace {
+		return log.Printf
+	}
+	return nil
 }
 
 // ---- internal helpers ----
@@ -1229,19 +1129,4 @@ func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (too
 		sb.WriteString(c.Text)
 	}
 	return tools.Result{Success: !result.IsError, Data: sb.String()}, nil
-}
-
-// friendlyErr wraps an LLM error with an actionable hint based on the provider.
-func friendlyErr(scope string, provider core.LLMProvider, origErr error) error {
-	hints := map[core.LLMProvider]string{
-		core.LLMProviderOpenAI:     "→ Set OPENAI_API_KEY or check https://platform.openai.com/account/api-keys",
-		core.LLMProviderAnthropic:  "→ Set ANTHROPIC_API_KEY or check https://console.anthropic.com/",
-		core.LLMProviderOpenRouter: "→ Set OPENROUTER_API_KEY or check https://openrouter.ai/keys",
-		core.LLMProviderOllama:     "→ Run: ollama run llama3.2  (Ollama may not be running)",
-	}
-	msg := fmt.Sprintf("%s: %v", scope, origErr)
-	if hint, ok := hints[provider]; ok {
-		msg += "\n  " + hint
-	}
-	return fmt.Errorf("%s", msg)
 }

@@ -28,6 +28,9 @@ const (
 	providerAnthropic  = "anthropic"
 	providerOpenRouter = "openrouter"
 	defaultModel       = "llama3.2"
+	// defaultOpenAIModel is the default model used when the OpenAI provider
+	// is selected without an explicit model.
+	defaultOpenAIModel = "gpt-4o-mini"
 	// defaultMaxIterations is the default cap on the ReAct tool-calling loop.
 	defaultMaxIterations = 10
 )
@@ -305,7 +308,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	case providerOpenAI:
 		model := c.LLM.Model
 		if model == "" {
-			model = "gpt-4o-mini"
+			model = defaultOpenAIModel
 		}
 		opts = append(opts, WithOpenAI(model))
 		if key := resolveAPIKey(c.LLM.APIKey, "OPENAI_API_KEY"); key != "" {

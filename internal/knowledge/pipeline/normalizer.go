@@ -1,5 +1,3 @@
-// Package pipeline provides concrete implementations of the AKF processing
-// pipeline: Normalizer, Summarizer, EntityMatcher, and Validator.
 package pipeline
 
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
