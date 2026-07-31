@@ -13,7 +13,6 @@ var (
 	ErrDuplicatePlugin   = errors.New("plugin name already registered")
 	ErrBusNotStarted     = errors.New("plugin bus not started")
 	ErrBusAlreadyStarted = errors.New("plugin bus already started")
-	ErrNotImplemented    = errors.New("not implemented")
 )
 
 // PluginError wraps an error with the plugin name and optional recovered panic value.

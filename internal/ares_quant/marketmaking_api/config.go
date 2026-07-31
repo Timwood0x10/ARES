@@ -12,11 +12,6 @@ var (
 	ErrNoSymbols = errors.New("no symbols configured")
 	// ErrNotInitialized is returned when a required engine/manager has not been injected.
 	ErrNotInitialized = errors.New("required component not initialized")
-	// ErrNotImplemented is returned by skeleton/stub implementations to indicate
-	// the feature has not been wired to a real backend yet. Callers can use
-	// errors.Is(err, ErrNotImplemented) to detect this condition instead of
-	// checking for zero-value results (code rule 4.4, 9).
-	ErrNotImplemented = errors.New("feature not implemented")
 )
 
 // MarketMakingConfig holds all configuration for the market-making system.

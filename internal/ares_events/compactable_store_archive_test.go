@@ -7,6 +7,7 @@ package ares_events
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -336,4 +337,83 @@ func TestArchiveSink_LongRoundPagedCompletely(t *testing.T) {
 	// The first event — which the old cursor-advance behavior orphaned —
 	// must be present.
 	assert.Equal(t, EventToolCallStarted, call.events[0].Type)
+}
+
+// TestCompactableStore_CompactionCtxDecoupledFromCaller is a regression test for
+// the compaction-context derivation in CompactableEventStore.Append. Compaction
+// is best-effort background maintenance that must OUTLIVE the Append caller's
+// request: a per-request ctx is cancelled when that request returns, and tying
+// compaction to it would abort compaction mid-flight and starve streams fed by
+// short-lived requests. The compaction ctx is therefore derived from the store's
+// lifecycle context (cancelled by Close), not the caller's ctx.
+//
+// The test observes ctx propagation through a blocking archive sink:
+//   - Cancelling the CALLER's ctx must NOT cancel the sink (compaction is
+//     decoupled from the request lifetime, avoiding starvation).
+//   - Calling Close must cancel the sink promptly (clean shutdown, no leak).
+func TestCompactableStore_CompactionCtxDecoupledFromCaller(t *testing.T) {
+	mem := NewMemoryEventStore()
+	repo := NewMemorySummaryRepository()
+	ces, err := NewCompactableEventStore(mem, repo, nil, DefaultCompactionConfig())
+	require.NoError(t, err)
+	// Close is idempotent (lcancel + MemoryEventStore.Close both tolerate repeat
+	// calls), so a cleanup Close plus the in-test Close is safe.
+	t.Cleanup(func() { _ = ces.Close() })
+
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	// cancelled fires when the sink observes its ctx being cancelled (via Close).
+	// Buffered so the sink never blocks on send.
+	cancelled := make(chan struct{}, 1)
+	sink := func(ctx context.Context, _ int, _ string, _ []*Event) error {
+		startedOnce.Do(func() { close(started) })
+		select {
+		case <-ctx.Done():
+			cancelled <- struct{}{}
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+			// Fallback so a regression (ctx never cancelled) fails in ~10s
+			// instead of hanging the test suite indefinitely.
+			return errors.New("archive sink ctx was never cancelled")
+		}
+	}
+	ces.WithArchiveSink(sink)
+
+	callerCtx, callerCancel := context.WithCancel(context.Background())
+
+	// A terminal event sets hasTerminal=true so the async archive path calls
+	// the sink from the compaction goroutine.
+	require.NoError(t, ces.Append(callerCtx, "stream-ctx", []*Event{
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "work"}},
+	}, 0))
+
+	// Wait until the sink is mid-flight (blocked on ctx), proving the goroutine
+	// started and is holding a reference to the compaction ctx.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive sink was not invoked within 2s")
+	}
+
+	// Cancel the CALLER's ctx. The sink must keep running: compaction is
+	// decoupled from the request lifetime, so caller cancel must NOT propagate.
+	callerCancel()
+	select {
+	case <-cancelled:
+		t.Fatal("compaction ctx was cancelled by caller cancel; Append must " +
+			"derive the compaction ctx from the store lifecycle, not the caller's ctx")
+	case <-time.After(300 * time.Millisecond):
+		// Success: the sink is still alive after caller cancel (decoupled).
+	}
+
+	// Close the store. The store lifecycle ctx is cancelled, so the sink must
+	// observe ctx.Done() and return promptly — clean shutdown, no goroutine leak.
+	require.NoError(t, ces.Close())
+	select {
+	case <-cancelled:
+		// Success: Close cancelled the store lifecycle ctx and unblocked the sink.
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive sink was not cancelled by Close; Append must derive " +
+			"the compaction ctx from the store lifecycle so Close stops in-flight workers")
+	}
 }

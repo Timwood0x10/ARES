@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -231,4 +232,35 @@ func TestGraphPatchExecutor_CanApply_NilGraph(t *testing.T) {
 		Type: patch.PatchInsertNode, Target: "A",
 	})
 	assert.Error(t, err)
+}
+
+// TestGraphPatchExecutor_Apply_ChangeScheduler_Concurrent_NoRace exercises the
+// data race between applyChangeScheduler (which reads e.graph.scheduler) and
+// SetScheduler (which writes it under the write lock). Under -race this must
+// not flag a concurrent read/write on the scheduler field.
+func TestGraphPatchExecutor_Apply_ChangeScheduler_Concurrent_NoRace(t *testing.T) {
+	g := buildPatcherTestGraph(t)
+	exec := NewGraphPatchExecutor(g)
+
+	priorities := map[string]int{"A": 1, "B": 2, "C": 3}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = exec.Apply(context.Background(), patch.RuntimePatch{
+				Type:  patch.PatchChangeScheduler,
+				Value: NewRoundRobinScheduler(),
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = g.SetScheduler(NewPriorityScheduler(priorities))
+		}()
+	}
+	wg.Wait()
+
+	// Final read must go through the locked accessor to stay race-free.
+	_ = g.RuntimeScheduler()
 }

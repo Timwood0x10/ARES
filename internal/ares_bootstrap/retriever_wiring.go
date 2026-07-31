@@ -1,23 +1,6 @@
-// Package ares_bootstrap — RAG retriever wiring.
-//
-// This file closes the compression + AKG + memory-distillation loop by
-// constructing the two ContextRetrievers (MemoryRetriever for distilled
-// experiences, KnowledgeRetriever for AKG entries) and injecting them into
-// the MemoryManager via SetRetrievers. Once wired, every BuildContext /
-// BuildPromptMessages call transparently augments the LLM prompt with
-// retrieved context when config.EnableRAG is true.
-//
-// Two adapters live here because the in-tree retriever types do not line up
-// directly with the production storage types:
-//
-//   - pgExperienceSearcher adapts repositories.ExperienceRepositoryInterface
-//     (returns *storage_models.Experience) to context.ExperienceSearcher
-//     (returns distillation.Experience). The MemoryRetriever only reads, so
-//     the narrow ExperienceSearcher interface is sufficient.
-//   - knowledgeRetrieverAdapter adapts adapter.KnowledgeRetriever (returns
-//     adapter.ContextSnippet, a local type that avoids an import cycle) to
-//     memctx.ContextRetriever (returns memctx.ContextSnippet, the canonical
-//     type consumed by the context builder).
+// The storage/knowledge adapters (experience searcher, knowledge retriever
+// adapter) live in internal/ares_memory/experienceadapters and are shared
+// with the sdk layer, so the field mapping has a single source of truth.
 package ares_bootstrap
 
 import (
@@ -26,13 +9,11 @@ import (
 
 	aresconfig "github.com/Timwood0x10/ares/internal/ares_config"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
-	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/ares_memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
-	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
-	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -43,114 +24,6 @@ import (
 // wiring time instead of widening the interface.
 type retrieverSetter interface {
 	SetRetrievers(retrievers []memctx.ContextRetriever)
-}
-
-// pgExperienceSearcher adapts the PostgreSQL experience repository to the
-// context.ExperienceSearcher interface expected by MemoryRetriever.
-//
-// The postgres repository returns *storage_models.Experience (the storage
-// DTO with backward-compat Input/Output aliases and metadata), while the
-// retriever consumes distillation.Experience (the canonical api/experience
-// DTO). This adapter performs the field mapping on every SearchByVector
-// call so the retriever stays storage-agnostic.
-//
-// The underlying repository is responsible for its own concurrency safety;
-// this adapter holds no mutable state and is safe for concurrent use.
-type pgExperienceSearcher struct {
-	repo repositories.ExperienceRepositoryInterface
-}
-
-// SearchByVector delegates to the PostgreSQL repository and converts each
-// storage_models.Experience into a distillation.Experience. Entries with a
-// blank ID are dropped defensively — they cannot be referenced later and
-// would only add noise to the prompt.
-func (s *pgExperienceSearcher) SearchByVector(
-	ctx context.Context,
-	vector []float64,
-	tenantID string,
-	limit int,
-) ([]distillation.Experience, error) {
-	if s == nil || s.repo == nil {
-		return nil, fmt.Errorf("pg experience searcher: repository is nil")
-	}
-	storageExps, err := s.repo.SearchByVector(ctx, vector, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("pg experience searcher: %w", err)
-	}
-
-	out := make([]distillation.Experience, 0, len(storageExps))
-	for _, se := range storageExps {
-		if se == nil || se.ID == "" {
-			continue
-		}
-		out = append(out, toDistillationExperience(se))
-	}
-	return out, nil
-}
-
-// toDistillationExperience maps a storage_models.Experience into the
-// canonical distillation.Experience DTO. Problem/Solution fall back to the
-// legacy Input/Output fields when the high-level fields are empty (the
-// storage layer stores them in the 'input'/'output' columns for backward
-// compat). Confidence is clamped to [0, 1] so downstream filtering operates
-// on a well-defined domain.
-func toDistillationExperience(e *storage_models.Experience) distillation.Experience {
-	problem := e.Problem
-	if problem == "" {
-		problem = e.Input
-	}
-	solution := e.Solution
-	if solution == "" {
-		solution = e.Output
-	}
-	return distillation.Experience{
-		ID:         e.ID,
-		Problem:    problem,
-		Solution:   solution,
-		Confidence: scoreutil.ClampUnit(e.Score),
-		Vector:     e.Embedding,
-	}
-}
-
-// knowledgeRetrieverAdapter wraps adapter.KnowledgeRetriever and converts
-// its local adapter.ContextSnippet results into the canonical
-// memctx.ContextSnippet so the MemoryManager's context builder can consume
-// them uniformly alongside MemoryRetriever output.
-//
-// The conversion is a shallow field copy — both ContextSnippet types have
-// identical shapes (Source, Content, Score, Metadata). The adapter exists
-// only to bridge the import boundary (knowledge/adapter cannot import
-// ares_memory/context without creating a cycle through distillation).
-type knowledgeRetrieverAdapter struct {
-	inner *adapter.KnowledgeRetriever
-}
-
-// Retrieve delegates to the underlying KnowledgeRetriever and converts each
-// adapter.ContextSnippet into a memctx.ContextSnippet. A nil inner
-// retriever yields an empty slice — this keeps BuildContext resilient when
-// the AKG runtime was not constructed.
-func (a *knowledgeRetrieverAdapter) Retrieve(
-	ctx context.Context,
-	input string,
-	topK int,
-) ([]memctx.ContextSnippet, error) {
-	if a == nil || a.inner == nil {
-		return []memctx.ContextSnippet{}, nil
-	}
-	snippets, err := a.inner.Retrieve(ctx, input, topK)
-	if err != nil {
-		return nil, fmt.Errorf("knowledge retriever adapter: %w", err)
-	}
-	out := make([]memctx.ContextSnippet, 0, len(snippets))
-	for _, s := range snippets {
-		out = append(out, memctx.ContextSnippet{
-			Source:   s.Source,
-			Content:  s.Content,
-			Score:    s.Score,
-			Metadata: s.Metadata,
-		})
-	}
-	return out, nil
 }
 
 // wireRetrievers constructs the MemoryRetriever and KnowledgeRetriever from
@@ -206,7 +79,7 @@ func wireRetrievers(
 			mr, err := memctx.NewMemoryRetriever(
 				embClient,
 				pipeline,
-				&pgExperienceSearcher{repo: expRepo},
+				experienceadapters.NewExperienceSearcher(expRepo),
 				defaultDistillTenant,
 				minScore,
 			)
@@ -232,7 +105,7 @@ func wireRetrievers(
 			log.Warn("bootstrap: knowledge retriever construction failed; skipping",
 				"error", err)
 		} else {
-			retrievers = append(retrievers, &knowledgeRetrieverAdapter{inner: kr})
+			retrievers = append(retrievers, experienceadapters.NewKnowledgeRetrieverAdapter(kr))
 			log.Info("bootstrap: knowledge retriever wired (AKG → RAG)",
 				"min_score", minScore)
 		}

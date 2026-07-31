@@ -2,6 +2,7 @@ package marketmakingapi
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,4 +134,73 @@ func TestPaperTrader_CancelledContext(t *testing.T) {
 	})
 	require.ErrorIs(t, err, context.Canceled)
 	require.Nil(t, resp)
+}
+
+// TestPaperTrader_Status_HonestPlaceholderPnL verifies that Status reports
+// PnL as 0 and equity equal to capital when no market data feed is wired.
+// This is an honest placeholder, not a fake valuation (rule 0.2).
+func TestPaperTrader_Status_HonestPlaceholderPnL(t *testing.T) {
+	trader := NewDefaultPaperTrader()
+	req := &PaperTradeRequest{
+		Symbols:        []string{SymbolBTCUSDT},
+		InitialCapital: 50000.0,
+		Duration:       time.Hour,
+	}
+	created, err := trader.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	resp, err := trader.Status(context.Background(), created.SessionID)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	// Without a market data feed, PnL is honestly 0 and equity equals
+	// capital — not a fake valuation.
+	require.Equal(t, 0.0, resp.CurrentPnL)
+	require.Equal(t, 50000.0, resp.Equity)
+}
+
+// TestPaperTrader_Stop_HonestPlaceholderPnL verifies that Stop reports
+// PnL as 0 and equity equal to capital when no market data feed is wired.
+func TestPaperTrader_Stop_HonestPlaceholderPnL(t *testing.T) {
+	trader := NewDefaultPaperTrader()
+	req := &PaperTradeRequest{
+		Symbols:        []string{SymbolBTCUSDT},
+		InitialCapital: 75000.0,
+		Duration:       time.Hour,
+	}
+	created, err := trader.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	resp, err := trader.Stop(context.Background(), created.SessionID)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, 0.0, resp.CurrentPnL)
+	require.Equal(t, 75000.0, resp.Equity)
+}
+
+// TestPaperTrader_StatusStop_ConcurrentNoRace exercises concurrent Status
+// and Stop calls to verify the lock-protected field snapshots don't race.
+// Run with -race to detect data races.
+func TestPaperTrader_StatusStop_ConcurrentNoRace(t *testing.T) {
+	trader := NewDefaultPaperTrader()
+	req := &PaperTradeRequest{
+		Symbols:        []string{SymbolBTCUSDT},
+		InitialCapital: 50000.0,
+		Duration:       time.Hour,
+	}
+	created, err := trader.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = trader.Status(context.Background(), created.SessionID)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = trader.Stop(context.Background(), created.SessionID)
+		}()
+	}
+	wg.Wait()
 }

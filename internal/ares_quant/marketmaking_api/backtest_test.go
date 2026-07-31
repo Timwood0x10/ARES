@@ -62,9 +62,8 @@ func TestBacktestRunner_Run_ValidRequest(t *testing.T) {
 	}
 	resp, err := runner.Run(context.Background(), req)
 	// The runner now attempts data loading; without real CSV data it returns a
-	// file-not-found or similar error (not ErrNotImplemented).
+	// file-not-found or similar error.
 	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrNotImplemented)
 	require.Nil(t, resp)
 }
 

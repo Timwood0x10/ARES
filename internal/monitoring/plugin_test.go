@@ -144,7 +144,7 @@ func TestMonitorPlugin_Events(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.Events(ctx, 10)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_Tasks(t *testing.T) {
@@ -236,28 +236,28 @@ func TestMonitorPlugin_CostAlerts(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.CostAlerts(ctx)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_Interactions(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.Interactions(ctx, 10)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_Traces(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.Traces(ctx, "trace-1")
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_AgentMemory(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.AgentMemory(ctx, "a1")
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_AgentEvolution(t *testing.T) {
@@ -274,7 +274,7 @@ func TestMonitorPlugin_MCPToolCalls(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.MCPToolCalls(ctx, "a1", 10)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_LLMCalls(t *testing.T) {
@@ -288,7 +288,7 @@ func TestMonitorPlugin_Recommendations(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.Recommendations(ctx)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_RegisterRoutes(t *testing.T) {
@@ -353,7 +353,7 @@ func TestMonitorPlugin_ListMCPTools_NoManager(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.ListMCPTools(ctx)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_ListMCPTools_WithManager(t *testing.T) {
@@ -372,7 +372,7 @@ func TestMonitorPlugin_CallMCPTool_NoManager(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.CallMCPTool(ctx, "tool1", nil)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrNotConfigured)
 }
 
 func TestMonitorPlugin_CallMCPTool_WithManager(t *testing.T) {

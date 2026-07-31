@@ -590,10 +590,10 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		return errors.Wrap(err, "store distilled experiences")
 	}
 
-	if len(memories) > 0 && atomic.LoadInt64(&storedCount) == 0 {
-		return errors.New("all experiences failed to store")
-	}
-
+	// Note: there is no "all experiences failed to store" check here. errgroup.Wait
+	// returns the first non-nil error if ANY goroutine fails, so reaching this point
+	// means every goroutine returned nil and storedCount == len(memories). A
+	// `len(memories) > 0 && storedCount == 0` branch would be unreachable dead code.
 	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
 		"task_id":      taskID,
 		"output_count": storedCount,
@@ -652,10 +652,22 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 	return tasks, nil
 }
 
-// GetLatestSessionForLeader returns an empty session ID for in-memory implementation.
-// Session recovery requires persistent storage; use ProductionMemoryManager for that.
+// GetLatestSessionForLeader returns the most recent session ID for a leader.
+//
+// The in-memory memoryManager does not persist leader checkpoints: sessions are
+// keyed by session ID (each carrying a UserID, not a leader/agent ID), and there
+// is no leader->session mapping. Without that mapping any "lookup" would either
+// silently return empty (the previous behavior, which hid the limitation and
+// broke leader recovery in manager_lifecycle.go) or conflate the session's
+// UserID with the leader ID and return wrong results.
+//
+// Per rule 0.2 we do not fake an implementation. Instead we return
+// ErrLeaderCheckpointNotSupported so the caller (ares_runtime cognitive
+// recovery) can distinguish "no session" from "backend cannot answer" and log
+// accordingly. The production path uses ProductionMemoryManager, which queries
+// the leader_checkpoints table.
 func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
-	return "", nil
+	return "", ErrLeaderCheckpointNotSupported
 }
 
 // SetDefaultTenantID overrides the default tenant ID used for search operations.

@@ -7,20 +7,10 @@
 // provide_distillation.go) without taking a build-time dependency on that
 // internal bootstrap package.
 //
-// Two adapters live here because the in-tree retriever/storage types do not
-// line up directly with the production contracts:
-//
-//   - sdkExperienceSearcher adapts repositories.ExperienceRepositoryInterface
-//     (returns *storage_models.Experience) to memctx.ExperienceSearcher
-//     (returns distillation.Experience). The MemoryRetriever only reads, so
-//     the narrow ExperienceSearcher interface is sufficient.
-//   - sdkDistillationRepo adapts the same postgres repository to the full
-//     distillation.ExperienceRepository contract required by
-//     NewMemoryManagerWithDistiller. It carries the write-side methods
-//     (Create/Update/Delete/...) the distiller invokes at store time.
-//   - sdkKnowledgeRetrieverAdapter adapts adapter.KnowledgeRetriever (returns
-//     adapter.ContextSnippet) to memctx.ContextRetriever (returns
-//     memctx.ContextSnippet).
+// The storage/knowledge adapters (experience searcher, distillation repo,
+// knowledge retriever adapter) live in
+// internal/ares_memory/experienceadapters and are shared with
+// internal/ares_bootstrap, so the field mapping has a single source of truth.
 package sdk
 
 import (
@@ -31,21 +21,18 @@ import (
 	"time"
 
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
-	"github.com/Timwood0x10/ares/api/experience"
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/ares_memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/llm"
-	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	pgembedding "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
-	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -56,21 +43,9 @@ import (
 // without failing the whole Runtime.
 var ErrDistillDepsMissing = errors.New("distillation dependencies unavailable")
 
-// defaultDistillTenant is the tenant scope used for distillation writes and
-// experience reads when no explicit tenant is carried by the Experience DTO.
-// It mirrors internal/ares_bootstrap.defaultDistillTenant so SDK-produced
-// experiences are visible to the same single-tenant consumers.
-const defaultDistillTenant = ares_events.DefaultTenantID
-
 // defaultEmbeddingTimeout is the HTTP timeout used when the SDK builds an
 // embedding client from cfg.embedCfg (which carries no explicit timeout).
 const defaultEmbeddingTimeout = 30 * time.Second
-
-// defaultListLimit caps the best-effort ListByType call backing
-// GetByMemoryType/CountByMemoryType on the distillation repo adapter. The
-// distiller uses these for deduplication, so a generous cap keeps semantics
-// correct without unbounded scans.
-const defaultListLimit = 1000
 
 // retrieverSetter is the minimal interface for injecting ContextRetrievers
 // into a MemoryManager. Both *memory.memoryManager and
@@ -80,299 +55,6 @@ const defaultListLimit = 1000
 // interface. Mirrors internal/ares_bootstrap.retrieverSetter.
 type retrieverSetter interface {
 	SetRetrievers(retrievers []memctx.ContextRetriever)
-}
-
-// sdkExperienceSearcher adapts the PostgreSQL experience repository to the
-// memctx.ExperienceSearcher interface expected by MemoryRetriever.
-//
-// The postgres repository returns *storage_models.Experience (the storage
-// DTO with backward-compat Input/Output aliases and metadata), while the
-// retriever consumes distillation.Experience (the canonical api/experience
-// DTO). This adapter performs the field mapping on every SearchByVector
-// call so the retriever stays storage-agnostic.
-//
-// TODO: unify with internal/ares_bootstrap pgExperienceSearcher into a shared package.
-type sdkExperienceSearcher struct {
-	repo repositories.ExperienceRepositoryInterface
-}
-
-// SearchByVector delegates to the PostgreSQL repository and converts each
-// storage_models.Experience into a distillation.Experience. Entries with a
-// blank ID are dropped defensively — they cannot be referenced later and
-// would only add noise to the prompt.
-func (s *sdkExperienceSearcher) SearchByVector(
-	ctx context.Context,
-	vector []float64,
-	tenantID string,
-	limit int,
-) ([]distillation.Experience, error) {
-	if s == nil || s.repo == nil {
-		return nil, fmt.Errorf("sdk experience searcher: repository is nil")
-	}
-	storageExps, err := s.repo.SearchByVector(ctx, vector, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("sdk experience searcher: %w", err)
-	}
-	out := make([]distillation.Experience, 0, len(storageExps))
-	for _, se := range storageExps {
-		if se == nil || se.ID == "" {
-			continue
-		}
-		out = append(out, toDistillationExperience(se))
-	}
-	return out, nil
-}
-
-// sdkDistillationRepo adapts repositories.ExperienceRepositoryInterface to
-// the full distillation.ExperienceRepository contract required by
-// NewMemoryManagerWithDistiller. It carries the write-side methods
-// (Create/Update/Delete/DeleteBatch) and the memory-type queries
-// (GetByMemoryType/CountByMemoryType) the distiller invokes at store and
-// deduplication time.
-//
-// The underlying repository is responsible for its own concurrency safety;
-// this adapter holds no mutable state and is safe for concurrent use.
-//
-// TODO: unify with internal/ares_bootstrap pgExperienceSearcher into a shared package.
-type sdkDistillationRepo struct {
-	repo          repositories.ExperienceRepositoryInterface
-	defaultTenant string
-}
-
-// newSDKDistillationRepo constructs an adapter wrapping the given postgres
-// repository. defaultTenant is used for Create/Update when the Experience
-// DTO carries no tenant (the distillation.Experience struct has no TenantID
-// field, so the distiller path relies on the adapter to supply one).
-func newSDKDistillationRepo(repo repositories.ExperienceRepositoryInterface, defaultTenant string) *sdkDistillationRepo {
-	if defaultTenant == "" {
-		defaultTenant = defaultDistillTenant
-	}
-	return &sdkDistillationRepo{repo: repo, defaultTenant: defaultTenant}
-}
-
-// SearchByVector delegates to the postgres repository and converts each
-// storage_models.Experience into a distillation.Experience.
-func (r *sdkDistillationRepo) SearchByVector(
-	ctx context.Context,
-	vector []float64,
-	tenantID string,
-	limit int,
-) ([]distillation.Experience, error) {
-	if r == nil || r.repo == nil {
-		return nil, fmt.Errorf("sdk distillation repo: repository is nil")
-	}
-	storageExps, err := r.repo.SearchByVector(ctx, vector, tenantID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("sdk distillation repo search: %w", err)
-	}
-	out := make([]distillation.Experience, 0, len(storageExps))
-	for _, se := range storageExps {
-		if se == nil || se.ID == "" {
-			continue
-		}
-		out = append(out, toDistillationExperience(se))
-	}
-	return out, nil
-}
-
-// GetByMemoryType returns experiences whose storage Type matches the
-// memory-type label. The mapping is best-effort: storage Type stores
-// success/failure/etc. while MemoryType.String() returns
-// fact/preference/solution/rule, so this surface is approximate. It is
-// only used by the distiller's deduplication path.
-func (r *sdkDistillationRepo) GetByMemoryType(
-	ctx context.Context,
-	tenantID string,
-	memoryType experience.MemoryType,
-) ([]experience.Experience, error) {
-	if r == nil || r.repo == nil {
-		return nil, fmt.Errorf("sdk distillation repo: repository is nil")
-	}
-	storageExps, err := r.repo.ListByType(ctx, memoryType.String(), tenantID, defaultListLimit)
-	if err != nil {
-		return nil, fmt.Errorf("sdk distillation repo get by memory type: %w", err)
-	}
-	out := make([]experience.Experience, 0, len(storageExps))
-	for _, se := range storageExps {
-		if se == nil || se.ID == "" {
-			continue
-		}
-		out = append(out, toDistillationExperience(se))
-	}
-	return out, nil
-}
-
-// CountByMemoryType returns the number of experiences for the given tenant
-// and memory type. The postgres repository exposes no direct count API, so
-// this delegates to GetByMemoryType and returns the slice length. This is
-// inefficient for large tables but correct; the distiller only calls it
-// during deduplication, which is itself bounded by MaxDistilledTasks.
-func (r *sdkDistillationRepo) CountByMemoryType(
-	ctx context.Context,
-	tenantID string,
-	memoryType experience.MemoryType,
-) (int, error) {
-	exps, err := r.GetByMemoryType(ctx, tenantID, memoryType)
-	if err != nil {
-		return 0, fmt.Errorf("sdk distillation repo count: %w", err)
-	}
-	return len(exps), nil
-}
-
-// Create inserts a new experience. The Experience DTO carries no tenant,
-// so the adapter's defaultTenant is applied. ExtractionMethod is preserved
-// in Metadata so the round-trip through SearchByVector restores it.
-func (r *sdkDistillationRepo) Create(ctx context.Context, exp *experience.Experience) error {
-	if r == nil || r.repo == nil {
-		return fmt.Errorf("sdk distillation repo: repository is nil")
-	}
-	if exp == nil {
-		return fmt.Errorf("sdk distillation repo: experience is nil")
-	}
-	storage := toStorageExperience(exp, r.defaultTenant)
-	if err := r.repo.Create(ctx, storage); err != nil {
-		return fmt.Errorf("sdk distillation repo create: %w", err)
-	}
-	return nil
-}
-
-// Update updates an existing experience. Same tenant/ExtractionMethod
-// handling as Create.
-func (r *sdkDistillationRepo) Update(ctx context.Context, exp *experience.Experience) error {
-	if r == nil || r.repo == nil {
-		return fmt.Errorf("sdk distillation repo: repository is nil")
-	}
-	if exp == nil {
-		return fmt.Errorf("sdk distillation repo: experience is nil")
-	}
-	storage := toStorageExperience(exp, r.defaultTenant)
-	if err := r.repo.Update(ctx, storage); err != nil {
-		return fmt.Errorf("sdk distillation repo update: %w", err)
-	}
-	return nil
-}
-
-// Delete removes an experience by ID.
-func (r *sdkDistillationRepo) Delete(ctx context.Context, id string) error {
-	if r == nil || r.repo == nil {
-		return fmt.Errorf("sdk distillation repo: repository is nil")
-	}
-	if err := r.repo.Delete(ctx, id); err != nil {
-		return fmt.Errorf("sdk distillation repo delete: %w", err)
-	}
-	return nil
-}
-
-// DeleteBatch deletes multiple experiences by ID. The postgres repository
-// exposes no batch API, so this loops single deletes. A failure short-circuits
-// and the remaining IDs are left in place; the caller (distiller) already
-// falls back to per-id deletes on batch failure.
-func (r *sdkDistillationRepo) DeleteBatch(ctx context.Context, ids []string) error {
-	if r == nil || r.repo == nil {
-		return fmt.Errorf("sdk distillation repo: repository is nil")
-	}
-	for _, id := range ids {
-		if err := r.repo.Delete(ctx, id); err != nil {
-			return fmt.Errorf("sdk distillation repo delete batch %s: %w", id, err)
-		}
-	}
-	return nil
-}
-
-// toDistillationExperience maps a storage_models.Experience into the
-// canonical distillation.Experience DTO. Problem/Solution fall back to the
-// legacy Input/Output fields when the high-level fields are empty (the
-// storage layer stores them in the 'input'/'output' columns for backward
-// compat). Confidence is clamped to [0, 1] so downstream filtering operates
-// on a well-defined domain. ExtractionMethod is recovered from Metadata
-// when present, defaulting to ExtractionDirect.
-func toDistillationExperience(e *storage_models.Experience) distillation.Experience {
-	problem := e.Problem
-	if problem == "" {
-		problem = e.Input
-	}
-	solution := e.Solution
-	if solution == "" {
-		solution = e.Output
-	}
-	method := distillation.ExtractionDirect
-	if e.Metadata != nil {
-		if m, ok := e.Metadata["extraction_method"].(string); ok && m != "" {
-			method = distillation.ExtractionMethod(m)
-		}
-	}
-	return distillation.Experience{
-		ID:               e.ID,
-		Problem:          problem,
-		Solution:         solution,
-		Confidence:       scoreutil.ClampUnit(e.Score),
-		ExtractionMethod: method,
-		Vector:           e.Embedding,
-	}
-}
-
-// toStorageExperience maps a distillation.Experience into a
-// storage_models.Experience DTO ready for postgres persistence. Problem and
-// Solution are mirrored into the legacy Input/Output columns so existing
-// keyword-search and backward-compat reads keep working. ExtractionMethod
-// is stashed in Metadata for round-trip fidelity. tenantID is supplied by
-// the adapter (the Experience DTO carries no tenant).
-func toStorageExperience(exp *distillation.Experience, tenantID string) *storage_models.Experience {
-	meta := map[string]any{}
-	if exp.ExtractionMethod != "" {
-		meta["extraction_method"] = string(exp.ExtractionMethod)
-	}
-	return &storage_models.Experience{
-		ID:        exp.ID,
-		TenantID:  tenantID,
-		Problem:   exp.Problem,
-		Solution:  exp.Solution,
-		Input:     exp.Problem,
-		Output:    exp.Solution,
-		Embedding: exp.Vector,
-		Score:     exp.Confidence,
-		Metadata:  meta,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-}
-
-// sdkKnowledgeRetrieverAdapter wraps adapter.KnowledgeRetriever and converts
-// its local adapter.ContextSnippet results into the canonical
-// memctx.ContextSnippet so the MemoryManager's context builder can consume
-// them uniformly alongside MemoryRetriever output.
-//
-// TODO: unify with internal/ares_bootstrap knowledgeRetrieverAdapter into a shared package.
-type sdkKnowledgeRetrieverAdapter struct {
-	inner *adapter.KnowledgeRetriever
-}
-
-// Retrieve delegates to the underlying KnowledgeRetriever and converts each
-// adapter.ContextSnippet into a memctx.ContextSnippet. A nil inner
-// retriever yields an empty slice — this keeps BuildContext resilient when
-// the AKG runtime was not constructed.
-func (a *sdkKnowledgeRetrieverAdapter) Retrieve(
-	ctx context.Context,
-	input string,
-	topK int,
-) ([]memctx.ContextSnippet, error) {
-	if a == nil || a.inner == nil {
-		return []memctx.ContextSnippet{}, nil
-	}
-	snippets, err := a.inner.Retrieve(ctx, input, topK)
-	if err != nil {
-		return nil, fmt.Errorf("sdk knowledge retriever adapter: %w", err)
-	}
-	out := make([]memctx.ContextSnippet, 0, len(snippets))
-	for _, s := range snippets {
-		out = append(out, memctx.ContextSnippet{
-			Source:   s.Source,
-			Content:  s.Content,
-			Score:    s.Score,
-			Metadata: s.Metadata,
-		})
-	}
-	return out, nil
 }
 
 // memoryWiring bundles the outputs of wireMemory so New() can unpack a
@@ -437,7 +119,7 @@ func wireMemory(ctx context.Context, cfg *config) (*memoryWiring, error) {
 		return &memoryWiring{mgr: mgr}, nil
 	}
 
-	mgr, err := memory.NewMemoryManagerWithDistiller(memCfg, embClient, newSDKDistillationRepo(expRepo, defaultDistillTenant))
+	mgr, err := memory.NewMemoryManagerWithDistiller(memCfg, embClient, experienceadapters.NewDistillationRepo(expRepo, experienceadapters.DefaultTenant))
 	if err != nil {
 		if cleanup != nil {
 			cleanup()
@@ -649,7 +331,7 @@ func buildAKGDistiller(
 	embClient apiembed.EmbeddingService,
 	expRepo repositories.ExperienceRepositoryInterface,
 ) (adapter.ConversationDistiller, error) {
-	distillRepo := newSDKDistillationRepo(expRepo, defaultDistillTenant)
+	distillRepo := experienceadapters.NewDistillationRepo(expRepo, experienceadapters.DefaultTenant)
 	distiller := distillation.NewDistiller(distillation.DefaultDistillationConfig(), embClient, distillRepo)
 	pipeline, err := memembed.NewEmbeddingPipeline(embClient)
 	if err != nil {
@@ -748,7 +430,7 @@ func wireSDKRetrievers(
 		if err != nil {
 			slog.Warn("sdk: knowledge retriever construction failed; skipping", "error", err)
 		} else {
-			retrievers = append(retrievers, &sdkKnowledgeRetrieverAdapter{inner: kr})
+			retrievers = append(retrievers, experienceadapters.NewKnowledgeRetrieverAdapter(kr))
 			slog.Info("sdk: knowledge retriever wired (AKG -> RAG)", "min_score", minScore, "store_backed", knowStore != nil)
 		}
 	}
@@ -779,8 +461,8 @@ func buildMemoryRetriever(
 	if err != nil {
 		return nil, fmt.Errorf("build memory retriever pipeline: %w", err)
 	}
-	searcher := &sdkExperienceSearcher{repo: expRepo}
-	mr, err := memctx.NewMemoryRetriever(embClient, pipeline, searcher, defaultDistillTenant, minScore)
+	searcher := experienceadapters.NewExperienceSearcher(expRepo)
+	mr, err := memctx.NewMemoryRetriever(embClient, pipeline, searcher, experienceadapters.DefaultTenant, minScore)
 	if err != nil {
 		return nil, fmt.Errorf("build memory retriever: %w", err)
 	}

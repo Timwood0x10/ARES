@@ -109,6 +109,18 @@ func (t *DefaultPaperTrader) Start(ctx context.Context, req *PaperTradeRequest) 
 	}, nil
 }
 
+// sessionEquity computes session equity from capital and open positions.
+//
+// TODO(tech-debt): mark-to-market requires a live market data feed (see
+// Start skeleton step 3). paperSession.Positions tracks only signed
+// quantities, not entry or current prices, so unrealized PnL cannot be
+// computed. Until a price feed is wired, equity equals capital and PnL
+// is honestly reported as 0 — do not fake a valuation.
+func sessionEquity(capital float64, positions map[string]float64) float64 {
+	_ = positions // reserved for future mark-to-market computation
+	return capital
+}
+
 // Status returns the current state of an active paper trading session.
 //
 // Args:
@@ -129,26 +141,28 @@ func (t *DefaultPaperTrader) Status(ctx context.Context, sessionID string) (*Pap
 		return nil, ctx.Err()
 	}
 
+	// t.mu guards all paperSession fields (Capital, Symbols, Positions,
+	// Trades, StartTime). Capture a snapshot under the read lock so
+	// concurrent writers cannot race the reads.
 	t.mu.RLock()
 	session, ok := t.sessions[sessionID]
-	t.mu.RUnlock()
-
 	if !ok {
+		t.mu.RUnlock()
 		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
-
-	equity := session.Capital
-	for sym, qty := range session.Positions {
-		_ = sym
-		equity += qty * 0 // placeholder: mark-to-market not wired
-	}
+	capital := session.Capital
+	startTime := session.StartTime
+	trades := make([]TradeRecord, len(session.Trades))
+	copy(trades, session.Trades)
+	equity := sessionEquity(capital, session.Positions)
+	t.mu.RUnlock()
 
 	return &PaperTradeResponse{
 		SessionID:  sessionID,
-		CurrentPnL: equity - session.Capital,
+		CurrentPnL: equity - capital,
 		Equity:     equity,
-		Trades:     session.Trades,
-		StartedAt:  session.StartTime,
+		Trades:     trades,
+		StartedAt:  startTime,
 	}, nil
 }
 
@@ -172,28 +186,30 @@ func (t *DefaultPaperTrader) Stop(ctx context.Context, sessionID string) (*Paper
 		return nil, ctx.Err()
 	}
 
+	// t.mu guards the sessions map and all paperSession fields. Remove
+	// the session under the write lock and capture a snapshot of its
+	// fields so the response is built from consistent data.
 	t.mu.Lock()
 	session, ok := t.sessions[sessionID]
 	if ok {
 		delete(t.sessions, sessionID)
 	}
-	t.mu.Unlock()
-
 	if !ok {
+		t.mu.Unlock()
 		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
-
-	equity := session.Capital
-	for sym, qty := range session.Positions {
-		_ = sym
-		equity += qty * 0 // placeholder: mark-to-market not wired
-	}
+	capital := session.Capital
+	startTime := session.StartTime
+	trades := make([]TradeRecord, len(session.Trades))
+	copy(trades, session.Trades)
+	equity := sessionEquity(capital, session.Positions)
+	t.mu.Unlock()
 
 	return &PaperTradeResponse{
 		SessionID:  sessionID,
-		CurrentPnL: equity - session.Capital,
+		CurrentPnL: equity - capital,
 		Equity:     equity,
-		Trades:     session.Trades,
-		StartedAt:  session.StartTime,
+		Trades:     trades,
+		StartedAt:  startTime,
 	}, nil
 }

@@ -11,7 +11,13 @@ import (
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
+
+// log is the module-scoped structured logger for the agent loop. Best-effort
+// event emission failures are routed here (never silently swallowed) so an
+// observability regression is visible in production even when Tracer is nil.
+var log = logger.Module("agentloop")
 
 // DefaultMaxIterations is the default cap on the ReAct tool-calling loop when
 // Request.MaxIter is <= 0. It mirrors sdk.defaultMaxIterations so the engine
@@ -23,6 +29,11 @@ const (
 	roleAssistant = "assistant"
 	roleTool      = "tool"
 )
+
+// maxIterationsReachedMsg is the Result.Output value (and trace token) the
+// engine returns when it hits the iteration cap without a final answer. It is
+// shared by production and test code so the contract is defined in one place.
+const maxIterationsReachedMsg = "max iterations reached"
 
 // DiscoverToolsName is the well-known name of the runtime discovery meta-tool.
 // When the engine executes a tool call with this name, it parses the result as a
@@ -243,9 +254,9 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 		}
 	}
 
-	e.trace("[ares:trace] %s ⚠ max iterations reached (%d)", req.AgentName, maxIter)
+	e.trace("[ares:trace] %s ⚠ %s (%d)", req.AgentName, maxIterationsReachedMsg, maxIter)
 	return &Result{
-		Output:       "max iterations reached",
+		Output:       maxIterationsReachedMsg,
 		ToolCalls:    st.toolCount,
 		MemoryUsed:   e.MemEnabled,
 		InputTokens:  st.inputTok,
@@ -282,8 +293,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 
 		st.toolCount++
 		e.emitToolEvent(ctx, req.AgentName, ares_events.EventToolCallStarted,
-			map[string]any{roleTool: tc.Function.Name, "args": tc.Function.Arguments},
-			st.toolCount)
+			map[string]any{roleTool: tc.Function.Name, "args": tc.Function.Arguments})
 		e.trace("[ares:trace] %s → tool call: %s(%s)",
 			req.AgentName, tc.Function.Name, tc.Function.Arguments)
 
@@ -312,7 +322,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 				"args":    tc.Function.Arguments,
 				"result":  resultContent,
 				"success": err == nil,
-			}, st.toolCount)
+			})
 
 		// Runtime tool discovery: when the agent called the discover_tools
 		// meta-tool, expand the returned names into LLM tool defs and append
@@ -387,35 +397,46 @@ func toolNameInSet(name string, tools []core.Tool) bool {
 }
 
 // emitToolEvent appends a single tool-call event (Started or Completed) to the
-// agent-name stream with the same version numbering as the original sdk loop:
-// Version = toolCount, expectedVersion = toolCount-1. No-op when Events is nil.
+// agent-name stream. It passes expectedVersion=0 (auto-detect) so appends never
+// conflict with the stream's current version — matching emitTaskCompleted and
+// the ares_events.Emit helper. Previously it passed expectedVersion=toolCount-1,
+// which became stale after the first tool call's Started+Completed advanced the
+// stream version, causing every subsequent event to be rejected with
+// ErrVersionConflict and silently dropped. No-op when Events is nil.
+//
+// Event emission is best-effort observability, not control flow: an Append
+// failure is logged (never silently swallowed) but never aborts the agent loop.
 func (e *Engine) emitToolEvent(
 	ctx context.Context,
 	agentName string,
 	evType ares_events.EventType,
 	payload map[string]any,
-	version int,
 ) {
 	if e.Events == nil {
 		return
 	}
-	_ = e.Events.Append(ctx, agentName, []*ares_events.Event{{
+	if err := e.Events.Append(ctx, agentName, []*ares_events.Event{{
 		Type:     evType,
 		StreamID: agentName,
 		Payload:  payload,
-		Version:  int64(version),
-	}}, int64(version-1))
+	}}, 0); err != nil {
+		log.Warn("emit tool event failed",
+			"agent", agentName,
+			"event_type", evType,
+			"error", err)
+	}
 }
 
 // emitTaskCompleted appends a TaskCompleted event to the session stream,
 // replicating ares_events.Emit: a fresh event ID, ModuleName "runtime", the
 // task/result/tenant payload, and expectedVersion 0 (auto-detect). No-op when
 // Events is nil or DistillEnabled is false (mirrors distillSvc != nil gating).
+// Append failures are best-effort: logged and never abort the agent loop.
 func (e *Engine) emitTaskCompleted(ctx context.Context, sessionID, input, agentName, result string) {
 	if e.Events == nil || !e.DistillEnabled {
 		return
 	}
-	_ = e.Events.Append(ctx, sessionID, []*ares_events.Event{{
+	if err := e.Events.Append(ctx, sessionID, []*ares_events.Event{{
 		ID:         ares_events.NewEventID(),
 		StreamID:   sessionID,
 		Type:       ares_events.EventTaskCompleted,
@@ -427,7 +448,12 @@ func (e *Engine) emitTaskCompleted(ctx context.Context, sessionID, input, agentN
 			"agent_id":                   agentName,
 		},
 		Timestamp: time.Now(),
-	}}, 0)
+	}}, 0); err != nil {
+		log.Warn("emit task completed event failed",
+			"session_id", sessionID,
+			"agent", agentName,
+			"error", err)
+	}
 }
 
 // trace forwards a formatted line to the Tracer when one is configured. It is

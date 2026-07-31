@@ -71,6 +71,11 @@ type Client struct {
 	stopped        bool
 	quoteCtx       context.Context
 	stopQuote      context.CancelFunc
+	// stopOnce guarantees cleanup runs exactly once regardless of which
+	// entry point (Stop or Close) triggers it. stopErr captures the first
+	// cleanup error so both entry points can return it consistently.
+	stopOnce sync.Once
+	stopErr  error
 }
 
 // NewClient creates a new market-making Client with the given configuration.
@@ -243,27 +248,38 @@ func (c *Client) quoteLoop(ctx context.Context) {
 //
 //	err - nil on success, or the first shutdown error encountered.
 func (c *Client) Stop(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// ctx is reserved for future graceful-shutdown timeouts; cleanup is
+	// currently synchronous.
+	_ = ctx
 
+	c.mu.Lock()
 	if !c.started || c.stopped {
+		c.mu.Unlock()
 		return nil
 	}
 	c.stopped = true
-
-	// Stop quote loop
+	// Cancel the quote loop context while holding the lock. CancelFunc
+	// is fast and idempotent; calling c.stopQuote directly (rather than
+	// via a local) lets gosec verify the WithCancel is drained.
 	if c.stopQuote != nil {
 		c.stopQuote()
 	}
+	dataFeed := c.dataFeed
+	c.mu.Unlock()
 
-	// Close data feed
-	if c.dataFeed != nil {
-		if err := c.dataFeed.Close(); err != nil {
-			return errors.Wrap(err, "close data feed")
+	// stopOnce guarantees the data feed close runs exactly once, even
+	// if Close and Stop are called concurrently. Only the goroutine
+	// that flips c.stopped under the lock reaches here, so stopOnce is
+	// defense-in-depth against future refactors that might break the
+	// single-writer invariant.
+	c.stopOnce.Do(func() {
+		if dataFeed != nil {
+			if err := dataFeed.Close(); err != nil {
+				c.stopErr = errors.Wrap(err, "close data feed")
+			}
 		}
-	}
-
-	return nil
+	})
+	return c.stopErr
 }
 
 // Quote produces a two-sided quote for the given symbol using the injected
@@ -306,21 +322,45 @@ func (c *Client) Backtest(ctx context.Context, req *BacktestRequest) (*BacktestR
 	if req == nil {
 		return nil, fmt.Errorf("backtest request must not be nil")
 	}
-	if len(req.Symbols) == 0 {
-		req.Symbols = c.config.Symbols
-	}
 	if req.InitialCapital <= 0 {
 		return nil, fmt.Errorf("backtest: InitialCapital must be positive, got %.2f", req.InitialCapital)
 	}
 
+	// Build effective symbols without mutating the caller's request.
+	// When req.Symbols is empty, fall back to config symbols (copied so
+	// downstream runners cannot alias or mutate c.config.Symbols).
 	c.mu.RLock()
 	runner := c.backtestRunner
+	symbols := req.Symbols
+	if len(symbols) == 0 {
+		cfgSymbols := c.config.Symbols
+		symbols = make([]string, len(cfgSymbols))
+		copy(symbols, cfgSymbols)
+	}
 	c.mu.RUnlock()
 
 	if runner == nil {
-		return nil, ErrNotImplemented
+		return nil, ErrNotInitialized
 	}
-	return runner.Run(ctx, req)
+
+	// Pass a copy of the request with the effective symbols so the caller's
+	// original request is not mutated. Reference-typed fields (Symbols, Signals,
+	// AssetTypes) are deep-copied so a runner cannot mutate them in place and
+	// leak changes back to the caller. TradeSignal is a value-only struct, so a
+	// slice copy fully isolates the elements.
+	effectiveReq := *req
+	effectiveReq.Symbols = symbols
+	if req.Signals != nil {
+		effectiveReq.Signals = make([]TradeSignal, len(req.Signals))
+		copy(effectiveReq.Signals, req.Signals)
+	}
+	if req.AssetTypes != nil {
+		effectiveReq.AssetTypes = make(map[string]string, len(req.AssetTypes))
+		for k, v := range req.AssetTypes {
+			effectiveReq.AssetTypes[k] = v
+		}
+	}
+	return runner.Run(ctx, &effectiveReq)
 }
 
 // PaperTrade starts or queries a paper trading session.
@@ -340,22 +380,32 @@ func (c *Client) PaperTrade(ctx context.Context, req *PaperTradeRequest) (*Paper
 	if req == nil {
 		return nil, fmt.Errorf("paper trade request must not be nil")
 	}
-	if len(req.Symbols) == 0 {
-		req.Symbols = c.config.Symbols
-	}
 	if req.InitialCapital <= 0 {
 		return nil, fmt.Errorf("paper trade: InitialCapital must be positive, got %.2f", req.InitialCapital)
 	}
 
+	// Build effective symbols without mutating the caller's request.
+	// When req.Symbols is empty, fall back to config symbols (copied so
+	// downstream traders cannot alias or mutate c.config.Symbols).
 	c.mu.RLock()
 	trader := c.paperTrader
+	symbols := req.Symbols
+	if len(symbols) == 0 {
+		cfgSymbols := c.config.Symbols
+		symbols = make([]string, len(cfgSymbols))
+		copy(symbols, cfgSymbols)
+	}
 	c.mu.RUnlock()
 
 	if trader == nil {
 		return nil, ErrNotInitialized
 	}
 
-	return trader.Start(ctx, req)
+	// Pass a shallow copy of the request with the effective symbols so
+	// the caller's original request is not mutated.
+	effectiveReq := *req
+	effectiveReq.Symbols = symbols
+	return trader.Start(ctx, &effectiveReq)
 }
 
 // GetRisk returns the current risk report from the injected risk manager.
@@ -409,14 +459,9 @@ func (c *Client) GetInventory(ctx context.Context) (*InventoryReport, error) {
 //
 //	err - the first error encountered during cleanup, or nil.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	wasStarted := c.started && !c.stopped
-	c.mu.Unlock()
-
-	if wasStarted {
-		if stopErr := c.Stop(context.Background()); stopErr != nil {
-			return stopErr
-		}
-	}
-	return nil
+	// Delegate to Stop — it is idempotent and lock-protected. This
+	// avoids the non-atomic wasStarted check that previously read
+	// c.started/c.stopped under the lock but called Stop after releasing
+	// it, allowing a race with concurrent Stop callers.
+	return c.Stop(context.Background())
 }

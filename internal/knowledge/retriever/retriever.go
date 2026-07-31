@@ -98,22 +98,17 @@ func (r *Retriever) Retrieve(ctx context.Context, query Query) (*Result, error) 
 		Reserved:  maxTokens - forGraph,
 	}
 
-	// Build intent from query.
-	intent := knowledge.Intent{
-		Goal: query.Text,
-		Scope: knowledge.Scope{
-			MaxObjects: maxResults,
-			Types:      query.Types,
-		},
-		Budget: budget,
-	}
-	_ = intent // used by runtime.Execute internally
-
 	// Run KnowledgeRuntime: Plan → Load → Pipeline → Link → Reduce.
+	// The runtime does not accept a scope/intent, so Query.Types is enforced
+	// as a post-reduce filter below (see filterByTypes).
 	graph, err := r.runtime.Execute(ctx, query.Text, budget, nil)
 	if err != nil {
 		return nil, fmt.Errorf("retriever: execute: %w", err)
 	}
+
+	// Apply the Query.Types filter on the reduced graph. Without this, the
+	// declared Types field would be silently ignored.
+	graph = filterByTypes(graph, query.Types)
 
 	// Compile the graph into the requested formats.
 	formats := query.Formats
@@ -135,4 +130,38 @@ func (r *Retriever) Retrieve(ctx context.Context, query Query) (*Result, error) 
 		Graph:   graph,
 		Query:   query.Text,
 	}, nil
+}
+
+// filterByTypes returns a new WorkingGraph containing only nodes whose Type is
+// in types, plus edges whose endpoints both survive. A nil graph or an empty
+// types slice (meaning "all types") returns the graph unchanged.
+func filterByTypes(graph *knowledge.WorkingGraph, types []knowledge.ObjectType) *knowledge.WorkingGraph {
+	if graph == nil || len(types) == 0 {
+		return graph
+	}
+
+	allowed := make(map[knowledge.ObjectType]struct{}, len(types))
+	for _, t := range types {
+		allowed[t] = struct{}{}
+	}
+
+	nodes := make(map[string]*knowledge.KnowledgeObject, len(graph.Nodes))
+	for id, obj := range graph.Nodes {
+		if _, ok := allowed[obj.Type]; ok {
+			nodes[id] = obj
+		}
+	}
+
+	edges := make([]knowledge.Relation, 0, len(graph.Edges))
+	for _, e := range graph.Edges {
+		if _, ok := nodes[e.From]; !ok {
+			continue
+		}
+		if _, ok := nodes[e.To]; !ok {
+			continue
+		}
+		edges = append(edges, e)
+	}
+
+	return &knowledge.WorkingGraph{Nodes: nodes, Edges: edges}
 }

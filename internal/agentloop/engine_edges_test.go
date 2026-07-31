@@ -78,8 +78,8 @@ func TestEngine_MaxIterDefault(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Engine.Run error: %v", err)
 			}
-			if res.Output != "max iterations reached" {
-				t.Errorf("Output = %q, want %q", res.Output, "max iterations reached")
+			if res.Output != maxIterationsReachedMsg {
+				t.Errorf("Output = %q, want %q", res.Output, maxIterationsReachedMsg)
 			}
 			if res.ToolCalls != DefaultMaxIterations {
 				t.Errorf("ToolCalls = %d, want default cap %d", res.ToolCalls, DefaultMaxIterations)

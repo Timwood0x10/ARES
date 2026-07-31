@@ -17,7 +17,7 @@ var (
 	ErrPluginAlreadyStarted = errors.New("monitor plugin already started")
 	ErrPluginNotStarted     = errors.New("monitor plugin not started")
 	ErrNotStarted           = errors.New("console not started, call Start first")
-	ErrNotImplemented       = errors.New("not implemented")
+	ErrNotConfigured        = errors.New("optional component not configured")
 	ErrAgentNotFound        = errors.New("agent not found")
 	ErrCostNotConfigured    = errors.New("cost bar not configured")
 	ErrDetailNotConfigured  = errors.New("detail panel not configured")
@@ -304,7 +304,7 @@ func (p *MonitorPlugin) DAG(_ context.Context) (*dag.DAGSnapshot, error) {
 // Events returns recent events. Currently returns an empty slice as event
 // history is not yet wired.
 func (p *MonitorPlugin) Events(_ context.Context, _ int) ([]*ares_events.Event, error) {
-	return nil, fmt.Errorf("events: %w", ErrNotImplemented)
+	return nil, fmt.Errorf("events: %w", ErrNotConfigured)
 }
 
 // Agent returns details for a single agent.
@@ -333,7 +333,7 @@ func (p *MonitorPlugin) CostBreakdown(_ context.Context) (*CostBreakdown, error)
 
 // CostAlerts returns active cost alerts. Currently returns an empty slice.
 func (p *MonitorPlugin) CostAlerts(_ context.Context) ([]CostAlert, error) {
-	return nil, fmt.Errorf("cost alerts: %w", ErrNotImplemented)
+	return nil, fmt.Errorf("cost alerts: %w", ErrNotConfigured)
 }
 
 // Tasks returns all task views, optionally filtered by status.
@@ -346,7 +346,7 @@ func (p *MonitorPlugin) Tasks(_ context.Context, _ *dag.NodeStatus) ([]TaskView,
 func (p *MonitorPlugin) Traces(_ context.Context, traceID string) ([]TraceSpan, error) {
 	linker := p.mainPage.Linker()
 	if linker == nil {
-		return nil, fmt.Errorf("traces: %w", ErrNotImplemented)
+		return nil, fmt.Errorf("traces: %w", ErrNotConfigured)
 	}
 	spans := linker.GetTrace(traceID)
 	return spans, nil
@@ -390,7 +390,7 @@ func (p *MonitorPlugin) ExecuteAction(ctx context.Context, nodeID, actionID stri
 
 // Interactions returns recent interactions. Not yet wired.
 func (p *MonitorPlugin) Interactions(_ context.Context, _ int) ([]Interaction, error) {
-	return nil, fmt.Errorf("interactions: %w", ErrNotImplemented)
+	return nil, fmt.Errorf("interactions: %w", ErrNotConfigured)
 }
 
 // Detail returns a detailed view for a selected entity.
@@ -405,7 +405,7 @@ func (p *MonitorPlugin) Detail(_ context.Context, _, entityID string) (*DetailVi
 // AgentMemory returns the memory state of an agent. Delegates to intelligence provider.
 func (p *MonitorPlugin) AgentMemory(_ context.Context, agentID string) (*AgentMemory, error) {
 	if p.intel == nil {
-		return nil, fmt.Errorf("agent memory: %w", ErrNotImplemented)
+		return nil, fmt.Errorf("agent memory: %w", ErrNotConfigured)
 	}
 	return &AgentMemory{
 		AgentID:   agentID,
@@ -430,14 +430,14 @@ func (p *MonitorPlugin) AgentEvolution(_ context.Context, agentID string) (*Agen
 func (p *MonitorPlugin) MCPToolCalls(_ context.Context, _ string, _ int) ([]MCPToolCall, error) {
 	// MCP call history is not yet tracked per-agent. Returning the registered
 	// tool list here would misleadingly present it as real call records.
-	return nil, fmt.Errorf("MCP tool calls: %w", ErrNotImplemented)
+	return nil, fmt.Errorf("MCP tool calls: %w", ErrNotConfigured)
 }
 
 // LLMCalls returns LLM call records. Delegates to cost bar data.
 func (p *MonitorPlugin) LLMCalls(_ context.Context, agentID string, _ int) ([]LLMCallRecord, error) {
 	cb := p.mainPage.CostBar()
 	if cb == nil {
-		return nil, fmt.Errorf("LLM calls: %w", ErrNotImplemented)
+		return nil, fmt.Errorf("LLM calls: %w", ErrNotConfigured)
 	}
 	cost, ok := cb.GetCost(agentID)
 	if !ok {
@@ -456,7 +456,7 @@ func (p *MonitorPlugin) LLMCalls(_ context.Context, agentID string, _ int) ([]LL
 // Recommendations returns current recommendations from the intelligence engine.
 func (p *MonitorPlugin) Recommendations(_ context.Context) ([]Recommendation, error) {
 	if p.intel == nil {
-		return nil, fmt.Errorf("recommendations: %w", ErrNotImplemented)
+		return nil, fmt.Errorf("recommendations: %w", ErrNotConfigured)
 	}
 	recs := make([]Recommendation, 0, p.intel.AnomalyCount()+p.intel.InsightCount())
 	if p.intel.AnomalyCount() > 0 {
@@ -481,7 +481,7 @@ func (p *MonitorPlugin) Recommendations(_ context.Context) ([]Recommendation, er
 // ListMCPTools returns all available MCP tools.
 func (p *MonitorPlugin) ListMCPTools(ctx context.Context) ([]MCPToolInfo, error) {
 	if p.mcp == nil {
-		return nil, fmt.Errorf("list MCP tools: %w", ErrNotImplemented)
+		return nil, fmt.Errorf("list MCP tools: %w", ErrNotConfigured)
 	}
 	return p.mcp.ListTools(ctx)
 }
@@ -489,7 +489,7 @@ func (p *MonitorPlugin) ListMCPTools(ctx context.Context) ([]MCPToolInfo, error)
 // CallMCPTool invokes an MCP tool by name with the given arguments.
 func (p *MonitorPlugin) CallMCPTool(ctx context.Context, toolName string, args map[string]any) (*MCPToolResult, error) {
 	if p.mcp == nil {
-		return nil, fmt.Errorf("call MCP tool: %w", ErrNotImplemented)
+		return nil, fmt.Errorf("call MCP tool: %w", ErrNotConfigured)
 	}
 	return p.mcp.CallTool(ctx, toolName, args)
 }

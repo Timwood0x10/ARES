@@ -54,9 +54,9 @@ func TestEvolutionPlugin_StartStop(t *testing.T) {
 func TestEvolutionPlugin_RecommendWithoutProvider(t *testing.T) {
 	p := NewEvolutionPlugin("test", nil, nil)
 	rec, err := p.Recommend(context.Background(), ExecutionState{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no recommendation provider configured")
-	assert.Nil(t, rec)
+	// A nil provider is a valid "evolution disabled" state, not an error.
+	assert.NoError(t, err, "nil provider must be a no-op, not an error")
+	assert.Nil(t, rec, "nil provider must return a nil recommendation")
 }
 
 func TestEvolutionPlugin_RecommendFromProvider(t *testing.T) {
@@ -176,11 +176,44 @@ func TestEvolutionPlugin_StopClearsCache(t *testing.T) {
 func TestEvolutionPlugin_NilProviderAfterConstruct(t *testing.T) {
 	p := NewEvolutionPlugin("test", nil, nil)
 
-	// Calling with nil provider should not panic.
+	// Calling with nil provider should not panic and should not error.
 	rec, err := p.Recommend(context.Background(), ExecutionState{})
+	assert.NoError(t, err, "nil provider must be a no-op, not an error")
+	assert.Nil(t, rec, "nil provider must return a nil recommendation")
+}
+
+// TestEvolutionPlugin_ProviderReturnsNilNil verifies that a provider returning
+// (nil, nil) is treated as "no recommendation available" (success, empty) — not
+// as an error. This is the documented StrategyProvider contract; previously the
+// plugin misjudged a legitimate empty recommendation as a failure.
+func TestEvolutionPlugin_ProviderReturnsNilNil(t *testing.T) {
+	provider := &mockStrategyProvider{rec: nil, err: nil}
+	p := NewEvolutionPlugin("test", provider, nil)
+
+	rec, err := p.Recommend(context.Background(), ExecutionState{})
+	assert.NoError(t, err, "nil,nil from provider must not be an error")
+	assert.Nil(t, rec, "nil recommendation must be returned as-is")
+
+	// A second call must still succeed and not surface a cached error.
+	rec2, err2 := p.Recommend(context.Background(), ExecutionState{})
+	assert.NoError(t, err2)
+	assert.Nil(t, rec2)
+}
+
+// TestEvolutionPlugin_NilProviderVsProviderError verifies the plugin
+// distinguishes "no provider configured" (no-op, no error) from a real provider
+// error (surfaced). Only a non-nil error is treated as a failure.
+func TestEvolutionPlugin_NilProviderVsProviderError(t *testing.T) {
+	// No provider: no error.
+	nilP := NewEvolutionPlugin("test", nil, nil)
+	_, err := nilP.Recommend(context.Background(), ExecutionState{})
+	assert.NoError(t, err)
+
+	// Provider returns an error: surfaced.
+	errP := NewEvolutionPlugin("test", &mockStrategyProvider{err: errors.New("boom")}, nil)
+	_, err = errP.Recommend(context.Background(), ExecutionState{})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no recommendation provider configured")
-	assert.Nil(t, rec)
+	assert.Contains(t, err.Error(), "boom")
 }
 
 // strategyProviderWithCounter wraps a StrategyProvider and counts calls.

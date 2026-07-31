@@ -3,6 +3,7 @@ package agentloop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -199,7 +200,7 @@ func TestEngine_Run(t *testing.T) {
 			},
 			toolResult: tools.Result{Success: true, Data: "42"},
 			maxIter:    3,
-			wantOutput: "max iterations reached",
+			wantOutput: maxIterationsReachedMsg,
 			wantCalls:  3,
 		},
 		{
@@ -323,13 +324,14 @@ func TestEngine_EventsEmitted(t *testing.T) {
 			t.Errorf("event[%d].Type = %s, want %s", i, evs[i].Type, want)
 		}
 	}
-	// Tool-call versions track the tool-call count: 1 for the first call,
-	// 2 for the second (increment across calls).
-	if evs[0].Version != 1 || evs[1].Version != 1 {
-		t.Errorf("first tool-call versions = %d,%d, want 1,1", evs[0].Version, evs[1].Version)
-	}
-	if evs[2].Version != 2 || evs[3].Version != 2 {
-		t.Errorf("second tool-call versions = %d,%d, want 2,2", evs[2].Version, evs[3].Version)
+	// The engine no longer stamps Event.Version: it passes expectedVersion=0
+	// (auto-detect) and lets the store assign the authoritative monotonic
+	// stream version. Version assignment against a real OCC-enforcing store is
+	// covered by TestEngine_ToolEventsNotDropped_RealStore.
+	for i, ev := range evs {
+		if ev.Version != 0 {
+			t.Errorf("event[%d].Version = %d, want 0 (store assigns version)", i, ev.Version)
+		}
 	}
 	// Tool-call events stream under the agent name; TaskCompleted under the session.
 	for i := 0; i < 4; i++ {
@@ -796,4 +798,171 @@ func TestEngine_NoDiscoverTools_BackwardCompat(t *testing.T) {
 	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "calc" {
 		t.Errorf("req.Tools mutated: %+v", req.Tools)
 	}
+}
+
+// TestEngine_ToolEventsNotDropped_RealStore is a regression test for the
+// version-conflict bug in emitToolEvent. The fakeEventSink used by other tests
+// ignores expectedVersion, so the bug was invisible there. Against a real
+// EventStore (MemoryEventStore) that enforces optimistic concurrency, the old
+// code passed expectedVersion=toolCount-1, which was stale by the second tool
+// call (the first call's Started+Completed had already advanced the stream
+// version to 2), so every Started/Completed event after the first tool call was
+// rejected with ErrVersionConflict and silently dropped.
+//
+// With the fix (expectedVersion=0, auto-detect), all events must persist with
+// monotonic store-assigned versions, regardless of how many tool calls run.
+func TestEngine_ToolEventsNotDropped_RealStore(t *testing.T) {
+	tests := []struct {
+		name      string
+		toolCalls int
+	}{
+		{name: "single_tool_call", toolCalls: 1},
+		{name: "two_tool_calls_repro", toolCalls: 2},
+		{name: "three_tool_calls", toolCalls: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := ares_events.NewMemoryEventStore()
+			t.Cleanup(func() { _ = store.Close() })
+
+			// Script N tool-call turns then a final answer turn.
+			responses := make([]*core.GenerateResponse, 0, tt.toolCalls+1)
+			for i := 0; i < tt.toolCalls; i++ {
+				responses = append(responses, &core.GenerateResponse{
+					Content: "",
+					ToolCalls: []core.ToolCall{
+						toolCall(fmt.Sprintf("tc%d", i+1), "calc", `{}`),
+					},
+				})
+			}
+			responses = append(responses, &core.GenerateResponse{Content: "final answer"})
+
+			llm := &mockLLM{responses: responses}
+			toolEx := &mockToolExecutor{
+				results: map[string]tools.Result{"calc": {Success: true, Data: "42"}},
+			}
+			eng := &Engine{
+				LLM:            llm,
+				Tools:          toolEx,
+				Events:         store, // real store: enforces OCC
+				DistillEnabled: true,
+			}
+			req := &Request{
+				Messages:  []*core.LLMMessage{{Role: "user", Content: "hi"}},
+				Tools:     []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}},
+				MaxIter:   tt.toolCalls + 5,
+				AgentName: "conflict-agent",
+				SessionID: "sess-conflict",
+				Input:     "hi",
+			}
+			res, err := eng.Run(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Engine.Run error: %v", err)
+			}
+			if res.Output != "final answer" {
+				t.Fatalf("Output = %q, want %q", res.Output, "final answer")
+			}
+			if res.ToolCalls != tt.toolCalls {
+				t.Fatalf("ToolCalls = %d, want %d", res.ToolCalls, tt.toolCalls)
+			}
+
+			// The agent-name stream must hold every tool call's Started+Completed
+			// events (2*N). Before the fix, every event after the first tool call
+			// was dropped by ErrVersionConflict, leaving only 2.
+			agentEvents, err := store.Read(context.Background(), "conflict-agent", ares_events.ReadOptions{})
+			if err != nil {
+				t.Fatalf("Read agent stream: %v", err)
+			}
+			wantCount := tt.toolCalls * 2
+			if len(agentEvents) != wantCount {
+				t.Fatalf("agent stream events = %d, want %d (events were dropped)",
+					len(agentEvents), wantCount)
+			}
+			for i := 0; i < tt.toolCalls; i++ {
+				started := agentEvents[i*2]
+				completed := agentEvents[i*2+1]
+				if started.Type != ares_events.EventToolCallStarted {
+					t.Errorf("event[%d].Type = %s, want %s", i*2, started.Type, ares_events.EventToolCallStarted)
+				}
+				if completed.Type != ares_events.EventToolCallCompleted {
+					t.Errorf("event[%d].Type = %s, want %s", i*2+1, completed.Type, ares_events.EventToolCallCompleted)
+				}
+			}
+			// The store assigns monotonic versions 1..2N; the engine no longer
+			// stamps a stale Version field (which previously conflicted with OCC).
+			for i, ev := range agentEvents {
+				if ev.Version != int64(i+1) {
+					t.Errorf("agent event[%d].Version = %d, want %d", i, ev.Version, i+1)
+				}
+			}
+
+			// TaskCompleted lands on the session stream (DistillEnabled).
+			sessEvents, err := store.Read(context.Background(), "sess-conflict", ares_events.ReadOptions{})
+			if err != nil {
+				t.Fatalf("Read session stream: %v", err)
+			}
+			if len(sessEvents) != 1 || sessEvents[0].Type != ares_events.EventTaskCompleted {
+				t.Fatalf("session stream = %+v, want 1 TaskCompleted", sessEvents)
+			}
+		})
+	}
+}
+
+// TestEngine_EventAppendFailureNotFatal verifies that a failing EventSink does
+// not abort the run: emitToolEvent/emitTaskCompleted treat event emission as
+// best-effort observability, so an Append error is logged (not silently
+// swallowed) and the loop still returns the final answer.
+func TestEngine_EventAppendFailureNotFatal(t *testing.T) {
+	sink := &errorEventSink{err: errors.New("store down")}
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc1", "calc", `{}`)}},
+		{Content: "final answer"},
+	}}
+	toolEx := &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "42"}}}
+	eng := &Engine{
+		LLM:            llm,
+		Tools:          toolEx,
+		Events:         sink,
+		DistillEnabled: true,
+	}
+	req := &Request{
+		Messages:  []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:     []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}},
+		MaxIter:   5,
+		AgentName: "fail-agent",
+		SessionID: "sess-fail",
+		Input:     "hi",
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run must not fail when event Append fails: %v", err)
+	}
+	if res.Output != "final answer" {
+		t.Errorf("Output = %q, want %q", res.Output, "final answer")
+	}
+	if sink.callCount() == 0 {
+		t.Error("expected Append to be attempted at least once")
+	}
+}
+
+// errorEventSink is an EventSink whose Append always returns err, recording the
+// call count so tests can confirm emission was attempted (and the error routed
+// to the logger rather than returned).
+type errorEventSink struct {
+	mu    sync.Mutex
+	err   error
+	calls int
+}
+
+func (s *errorEventSink) Append(_ context.Context, _ string, _ []*ares_events.Event, _ int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	return s.err
+}
+
+func (s *errorEventSink) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }

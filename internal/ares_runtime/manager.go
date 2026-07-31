@@ -61,9 +61,6 @@ type Manager struct {
 	dagStore map[string]any
 }
 
-// chaosSlowKey is the context key for SlowAgent delay duration.
-type chaosSlowKey struct{}
-
 // chaosEntry holds fault injection settings for a single agent.
 // All fields are write-once via the arena injectors; they are read at the
 // agent Process/ProcessStream boundary (see chaosWrappedAgent) so injections
@@ -201,26 +198,14 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 
 	agentCtx, agentCancel := context.WithCancel(m.gctx)
 
-	// Apply chaos engineering injections if configured for this agent.
-	// Note: We already hold the write lock (m.mu.Lock() above),
-	// so we can directly read chaosConfig without acquiring a read lock.
-	chaos := m.chaosConfig[id]
-	if chaos.slowDelay > 0 {
-		agentCtx = context.WithValue(agentCtx, chaosSlowKey{}, chaos.slowDelay)
-	}
-	if chaos.toolTimeout > 0 {
-		// Derive a timeout context from the cancellable parent. Keep both
-		// cancel functions: the timeout cancel stops the timer, and the parent
-		// cancel frees the WithCancel resources. Overwriting agentCancel with
-		// only the timeout cancel leaks the parent context.
-		timeoutCtx, timeoutCancel := context.WithTimeout(agentCtx, chaos.toolTimeout)
-		agentCtx = timeoutCtx
-		parentCancel := agentCancel
-		agentCancel = func() {
-			timeoutCancel()
-			parentCancel()
-		}
-	}
+	// Chaos engineering injections (SlowAgent, ToolTimeout, fault errors) are
+	// NOT applied to the agent lifecycle context here. They are read from
+	// chaosConfig at the Process/ProcessStream boundary by chaosWrappedAgent,
+	// so they take effect on the next execution without restarting the agent.
+	// Applying them to this lifecycle context would (a) require a restart to
+	// change, contradicting the chaosEntry contract, and (b) let a short
+	// ToolTimeout cancel the long-running Start goroutine and kill a healthy
+	// agent. See chaosWrappedAgent.Process/ProcessStream.
 
 	ma := &managedAgent{
 		agent:  &chaosWrappedAgent{Agent: agent, m: m, id: id},

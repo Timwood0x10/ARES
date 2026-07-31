@@ -8,6 +8,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/core/models"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -285,4 +286,236 @@ func TestChaosUnwrapRoundTrip(t *testing.T) {
 	assert.Same(t, agent, chaosUnwrap(wrapped), "unwrap must return the raw agent")
 	assert.Same(t, agent, chaosUnwrap(agent), "unwrap of a plain agent is a no-op")
 	assert.Nil(t, chaosUnwrap(nil), "unwrap of nil is nil")
+}
+
+// TestSlowAgent_InjectsDelay verifies SlowAgent actually slows down the agent's
+// Process call. Previously slowDelay was written into the agent context but
+// never read (dead code), so the injection had no effect. Now it is read at the
+// Process boundary and the delay is observed without restarting the agent.
+func TestSlowAgent_InjectsDelay(t *testing.T) {
+	m, _, _, _ := chaosTestManager(t)
+	ctx := context.Background()
+
+	// Baseline: without injection, Process returns the mock error quickly.
+	m.mu.RLock()
+	wrapped := m.agents["a1"].agent
+	m.mu.RUnlock()
+	baseStart := time.Now()
+	_, err := wrapped.Process(ctx, "input")
+	baseElapsed := time.Since(baseStart)
+	require.ErrorContains(t, err, "not implemented in mock")
+	assert.Less(t, baseElapsed, 20*time.Millisecond,
+		"baseline Process without slow injection must be fast")
+
+	// Inject a 60ms delay and call Process again WITHOUT restarting the agent.
+	// The delay must take effect on this next execution.
+	const slowDelay = 60 * time.Millisecond
+	require.NoError(t, m.SlowAgent(ctx, "a1", slowDelay))
+
+	slowStart := time.Now()
+	_, err = wrapped.Process(ctx, "input")
+	slowElapsed := time.Since(slowStart)
+	require.ErrorContains(t, err, "not implemented in mock",
+		"slow injection must still delegate to the wrapped agent (mock error)")
+	// Lower-bound assertion: the delay must be observed. A small tolerance
+	// accounts for timer coarseness without making the test flaky.
+	assert.GreaterOrEqual(t, slowElapsed, slowDelay-10*time.Millisecond,
+		"SlowAgent must inject a measurable delay >= configured duration")
+	assert.Greater(t, slowElapsed, baseElapsed+slowDelay/2,
+		"slow Process must be noticeably slower than the baseline")
+}
+
+// TestSlowAgent_RespectsContextCancellation verifies the injected slow delay
+// is ctx-aware: a cancelled context aborts the wait immediately instead of
+// blocking for the full duration (a bare time.Sleep would ignore cancellation).
+func TestSlowAgent_RespectsContextCancellation(t *testing.T) {
+	m, _, _, _ := chaosTestManager(t)
+
+	m.mu.RLock()
+	wrapped := m.agents["a1"].agent
+	m.mu.RUnlock()
+
+	require.NoError(t, m.SlowAgent(context.Background(), "a1", 5*time.Second))
+
+	// Pre-cancelled context: chaosWait must return ctx.Err() at once.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	_, err := wrapped.Process(ctx, "input")
+	elapsed := time.Since(start)
+	assert.ErrorIs(t, err, context.Canceled,
+		"slow wait must abort on a cancelled context")
+	assert.Less(t, elapsed, 100*time.Millisecond,
+		"slow wait must not block when the context is already cancelled")
+}
+
+// TestSlowAgent_ProcessStreamDelay verifies SlowAgent also delays ProcessStream
+// before opening the stream.
+func TestSlowAgent_ProcessStreamDelay(t *testing.T) {
+	m, _, _, _ := chaosTestManager(t)
+	ctx := context.Background()
+
+	m.mu.RLock()
+	wrapped := m.agents["a1"].agent
+	m.mu.RUnlock()
+
+	const slowDelay = 50 * time.Millisecond
+	require.NoError(t, m.SlowAgent(ctx, "a1", slowDelay))
+
+	start := time.Now()
+	ch, err := wrapped.ProcessStream(ctx, "input")
+	elapsed := time.Since(start)
+	// The mock ProcessStream returns a closed channel and nil error; the
+	// observable effect of the injection is the elapsed time before the call.
+	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, elapsed, slowDelay-10*time.Millisecond,
+		"SlowAgent must delay ProcessStream by the configured duration")
+	// Drain the closed channel to confirm it still closes cleanly.
+	_, ok := <-ch
+	assert.False(t, ok, "stream channel must be closed")
+}
+
+// blockingProcessAgent embeds mockAgent and overrides Process/ProcessStream to
+// block until ctx is cancelled. This lets a per-call ToolTimeout be observed as
+// a DeadlineExceeded error without restarting the agent, and lets us prove the
+// timeout never cancels the agent's lifecycle context.
+type blockingProcessAgent struct {
+	*mockAgent
+}
+
+func newBlockingProcessAgent(id string) *blockingProcessAgent {
+	return &blockingProcessAgent{mockAgent: newMockAgent(id)}
+}
+
+func (a *blockingProcessAgent) Process(ctx context.Context, _ any) (any, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (a *blockingProcessAgent) ProcessStream(ctx context.Context, _ any) (<-chan base.AgentEvent, error) {
+	ch := make(chan base.AgentEvent)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
+}
+
+// chaosBlockingManager builds a started Manager with a blockingProcessAgent so
+// ToolTimeout's per-execution deadline can be observed.
+func chaosBlockingManager(t *testing.T) (*Manager, *blockingProcessAgent, *atomic.Int32) {
+	t.Helper()
+	store := ares_events.NewMemoryEventStore()
+	m := New(nil, store, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, m.Start(ctx))
+
+	agent := newBlockingProcessAgent("a1")
+	var factoryCalls atomic.Int32
+	m.RegisterAgent(agent, func() base.Agent {
+		factoryCalls.Add(1)
+		return newBlockingProcessAgent("a1")
+	})
+	require.NoError(t, m.StartAgent(ctx, agent))
+	waitUntil(t, func() bool { return agent.started.Load() == 1 })
+	return m, agent, &factoryCalls
+}
+
+// TestToolTimeout_AppliesWithoutRestart verifies ToolTimeout takes effect on the
+// next Process call WITHOUT restarting the agent, and that the per-call deadline
+// does NOT cancel the agent's lifecycle context (Start goroutine stays alive).
+// Previously ToolTimeout was only read at agent (re)start time and applied to
+// the whole agent context, so it could not be changed without a restart and
+// could kill healthy agent goroutines.
+func TestToolTimeout_AppliesWithoutRestart(t *testing.T) {
+	m, agent, factoryCalls := chaosBlockingManager(t)
+	ctx := context.Background()
+
+	// Inject a short tool timeout AFTER start — must take effect on the next
+	// Process call without a restart.
+	const timeout = 40 * time.Millisecond
+	require.NoError(t, m.ToolTimeout(ctx, "a1", timeout))
+
+	m.mu.RLock()
+	wrapped := m.agents["a1"].agent
+	m.mu.RUnlock()
+
+	start := time.Now()
+	_, err := wrapped.Process(ctx, "input")
+	elapsed := time.Since(start)
+
+	// The per-call deadline must cancel the Process call.
+	assert.ErrorIs(t, err, context.DeadlineExceeded,
+		"ToolTimeout must deadline the Process call")
+	assert.GreaterOrEqual(t, elapsed, timeout-15*time.Millisecond,
+		"Process must be bounded by the ToolTimeout")
+	assert.Less(t, elapsed, timeout+500*time.Millisecond,
+		"Process must return shortly after the deadline")
+
+	// The agent lifecycle must NOT be affected: no restart, still running.
+	assert.Equal(t, int32(0), factoryCalls.Load(),
+		"ToolTimeout must not restart the agent")
+	assert.Equal(t, int32(1), agent.started.Load(),
+		"agent Start must not be re-invoked by the tool timeout")
+	assert.Equal(t, models.AgentStatusReady, agent.Status(),
+		"agent must still be alive after the per-call tool timeout")
+}
+
+// TestToolTimeout_DoesNotKillAgentLifecycle verifies a short ToolTimeout never
+// cancels the agent's lifecycle context even when set before any Process call:
+// the agent stays alive past the deadline, proving the timeout is scoped to
+// per-execution and not the whole agent context (the old bug).
+func TestToolTimeout_DoesNotKillAgentLifecycle(t *testing.T) {
+	m, agent, factoryCalls := chaosBlockingManager(t)
+	ctx := context.Background()
+
+	// A 20ms tool timeout must NOT cancel the long-running agent goroutine.
+	require.NoError(t, m.ToolTimeout(ctx, "a1", 20*time.Millisecond))
+
+	// Poll past the deadline: the agent must remain alive the whole time.
+	deadline := time.Now().Add(120 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		assert.Equal(t, models.AgentStatusReady, agent.Status(),
+			"agent must stay alive past the tool timeout")
+		assert.Equal(t, int32(1), agent.started.Load(),
+			"agent must not be restarted by the tool timeout")
+		time.Sleep(10 * time.Millisecond)
+	}
+	assert.Equal(t, int32(0), factoryCalls.Load(),
+		"no factory resurrection must be triggered")
+}
+
+// TestToolTimeout_ProcessStreamDeadline verifies the per-call ToolTimeout also
+// bounds a streaming execution: the relayed channel closes within a bounded
+// time after the deadline, and the agent lifecycle is unaffected.
+func TestToolTimeout_ProcessStreamDeadline(t *testing.T) {
+	m, agent, factoryCalls := chaosBlockingManager(t)
+	ctx := context.Background()
+
+	const timeout = 40 * time.Millisecond
+	require.NoError(t, m.ToolTimeout(ctx, "a1", timeout))
+
+	m.mu.RLock()
+	wrapped := m.agents["a1"].agent
+	m.mu.RUnlock()
+
+	start := time.Now()
+	ch, err := wrapped.ProcessStream(ctx, "input")
+	require.NoError(t, err, "ProcessStream must open the relay channel")
+
+	// The relay must close once the per-call deadline fires.
+	_, ok := <-ch
+	elapsed := time.Since(start)
+	assert.False(t, ok, "relay channel must close after the tool timeout")
+	assert.GreaterOrEqual(t, elapsed, timeout-15*time.Millisecond,
+		"stream must stay open until the deadline")
+	assert.Less(t, elapsed, timeout+500*time.Millisecond,
+		"stream must close shortly after the deadline")
+
+	// Agent lifecycle unaffected.
+	assert.Equal(t, int32(1), agent.started.Load(),
+		"agent must still be alive after the stream timeout")
+	assert.Equal(t, int32(0), factoryCalls.Load(),
+		"ToolTimeout must not restart the agent")
 }

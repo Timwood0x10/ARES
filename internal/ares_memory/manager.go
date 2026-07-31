@@ -61,7 +61,10 @@ type MemoryManager interface {
 	SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error)
 
 	// GetLatestSessionForLeader retrieves the most recent session ID for a leader from checkpoint.
-	// Returns ("", nil) if no checkpoint exists.
+	// Returns ("", nil) if no checkpoint exists for the leader.
+	// Implementations that do not persist leader checkpoints return
+	// ErrLeaderCheckpointNotSupported so callers can distinguish "no session"
+	// (empty string, nil error) from "unsupported backend" (non-nil error).
 	GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error)
 
 	// Start starts the memory manager and background workers.
@@ -154,6 +157,13 @@ const (
 // ErrInvalidRAGConfig is returned when MemoryConfig.EnableRAG is true but
 // RAGTopK or RAGMinScore are set to invalid values.
 var ErrInvalidRAGConfig = errors.New("invalid RAG configuration")
+
+// ErrLeaderCheckpointNotSupported is returned by GetLatestSessionForLeader when
+// the memory backend does not persist leader checkpoints (e.g. the in-memory
+// memoryManager). Callers can use errors.Is to distinguish "no session for this
+// leader" (("", nil)) from "backend cannot answer this question" (this error).
+var ErrLeaderCheckpointNotSupported = errors.New(
+	"leader checkpoint lookup not supported by this memory backend")
 
 // Role constants re-exported for convenience.
 const (

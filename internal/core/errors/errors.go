@@ -73,7 +73,6 @@ var (
 	ErrServiceUnavailable = apperrors.ErrServiceUnavailable
 	ErrInvalidState       = apperrors.ErrInvalidState
 	ErrSecretExpired      = apperrors.ErrSecretExpired
-	ErrNotImplemented     = apperrors.ErrNotImplemented
 	ErrBufferFull         = apperrors.ErrBufferFull
 )
 

@@ -3,6 +3,8 @@ package marketmakingapi
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,6 +63,29 @@ func (m *mockInventoryManager) GetPositions(_ context.Context) (*InventoryReport
 			},
 		},
 	}, nil
+}
+
+// mockDataFeed is a test double for DataFeed that counts Close calls
+// to verify cleanup runs exactly once.
+type mockDataFeed struct {
+	closeCount atomic.Int32
+}
+
+func (m *mockDataFeed) Connect(_ context.Context, _ []string) error { return nil }
+func (m *mockDataFeed) Close() error {
+	m.closeCount.Add(1)
+	return nil
+}
+
+// mockBacktestRunner is a test double for BacktestRunner that captures
+// the request it receives for inspection.
+type mockBacktestRunner struct {
+	receivedReq *BacktestRequest
+}
+
+func (m *mockBacktestRunner) Run(_ context.Context, req *BacktestRequest) (*BacktestResponse, error) {
+	m.receivedReq = req
+	return &BacktestResponse{Request: req}, nil
 }
 
 // TestNewClient_ValidConfig tests successful client creation.
@@ -212,7 +237,8 @@ func TestClient_Backtest_NilRequest(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestClient_Backtest_ValidRequest tests backtest returns ErrNotImplemented (skeleton).
+// TestClient_Backtest_ValidRequest tests backtest returns ErrNotInitialized
+// when no runner is injected.
 func TestClient_Backtest_ValidRequest(t *testing.T) {
 	cfg := DefaultConfig()
 	client, err := NewClient(cfg)
@@ -225,8 +251,8 @@ func TestClient_Backtest_ValidRequest(t *testing.T) {
 		InitialCapital: 50000.0,
 	}
 	resp, err := client.Backtest(context.Background(), req)
-	// FIX: Skeleton implementation returns ErrNotImplemented.
-	require.ErrorIs(t, err, ErrNotImplemented)
+	// Backtest without an injected runner returns ErrNotInitialized.
+	require.ErrorIs(t, err, ErrNotInitialized)
 	require.Nil(t, resp)
 }
 
@@ -300,4 +326,109 @@ func TestClient_Close_AfterStart(t *testing.T) {
 
 	err = client.Close()
 	require.NoError(t, err)
+}
+
+// TestClient_Backtest_DoesNotMutateRequest verifies that Backtest does not
+// mutate the caller's request when falling back to config symbols.
+func TestClient_Backtest_DoesNotMutateRequest(t *testing.T) {
+	cfg := DefaultConfig()
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+
+	runner := &mockBacktestRunner{}
+	client.SetBacktestRunner(runner)
+
+	req := &BacktestRequest{
+		Symbols:        []string{},
+		InitialCapital: 50000.0,
+		StartTime:      time.Now().Add(-24 * time.Hour),
+		EndTime:        time.Now(),
+	}
+	resp, err := client.Backtest(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Caller's request must not be mutated.
+	require.Empty(t, req.Symbols)
+	// Runner received the effective symbols copied from config.
+	require.Equal(t, cfg.Symbols, runner.receivedReq.Symbols)
+	// Runner received a different request object, not the caller's.
+	require.NotSame(t, req, runner.receivedReq)
+}
+
+// TestClient_PaperTrade_DoesNotMutateRequest verifies that PaperTrade does
+// not mutate the caller's request when falling back to config symbols.
+func TestClient_PaperTrade_DoesNotMutateRequest(t *testing.T) {
+	cfg := DefaultConfig()
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+
+	trader := NewDefaultPaperTrader()
+	client.SetPaperTrader(trader)
+
+	req := &PaperTradeRequest{
+		Symbols:        []string{},
+		InitialCapital: 100000.0,
+		Duration:       time.Hour,
+	}
+	resp, err := client.PaperTrade(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Caller's request must not be mutated.
+	require.Empty(t, req.Symbols)
+}
+
+// TestClient_Close_ConcurrentNoDoubleCleanup verifies that concurrent
+// Close and Stop calls do not cause double cleanup (data feed closed
+// more than once). stopOnce must guarantee single execution.
+func TestClient_Close_ConcurrentNoDoubleCleanup(t *testing.T) {
+	cfg := DefaultConfig()
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+
+	feed := &mockDataFeed{}
+	client.SetDataFeed(feed)
+
+	err = client.Start(context.Background())
+	require.NoError(t, err)
+
+	// Call Close and Stop concurrently — stopOnce must prevent double cleanup.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = client.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = client.Stop(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	require.Equal(t, int32(1), feed.closeCount.Load(),
+		"data feed must be closed exactly once")
+}
+
+// TestClient_Stop_IdempotentAfterClose verifies that Stop after Close
+// is a no-op and does not panic or double-clean.
+func TestClient_Stop_IdempotentAfterClose(t *testing.T) {
+	cfg := DefaultConfig()
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+
+	feed := &mockDataFeed{}
+	client.SetDataFeed(feed)
+
+	err = client.Start(context.Background())
+	require.NoError(t, err)
+
+	require.NoError(t, client.Close())
+	require.NoError(t, client.Stop(context.Background()))
+	require.NoError(t, client.Close())
+
+	require.Equal(t, int32(1), feed.closeCount.Load(),
+		"data feed must be closed exactly once")
 }

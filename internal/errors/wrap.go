@@ -72,7 +72,6 @@ var (
 	ErrServiceUnavailable = errors.New("service is temporarily unavailable")
 	ErrInvalidState       = errors.New("invalid state")
 	ErrSecretExpired      = errors.New("secret has expired")
-	ErrNotImplemented     = errors.New("feature not implemented yet")
 	ErrBufferFull         = errors.New("write buffer is full")
 )
 

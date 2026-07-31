@@ -230,14 +230,22 @@ func (e *GraphPatchExecutor) applyRemoveEdge(_ context.Context, p patch.RuntimeP
 	}, nil
 }
 
-func (e *GraphPatchExecutor) applyChangeScheduler(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func (e *GraphPatchExecutor) applyChangeScheduler(
+	_ context.Context,
+	p patch.RuntimePatch,
+) (*patch.RuntimePatch, error) {
 	newSched, ok := p.Value.(Scheduler)
 	if !ok {
 		return nil, fmt.Errorf("graph executor: change scheduler value must be a Scheduler")
 	}
 
-	// Capture old scheduler for rollback.
+	// Capture old scheduler for rollback. e.graph.scheduler is guarded by
+	// e.graph.mu (SetScheduler writes it under the write lock), so the read
+	// must hold the read lock too — matching the pattern used by the sibling
+	// apply* functions and avoiding a data race with concurrent SetScheduler.
+	e.graph.mu.RLock()
 	oldSched := e.graph.scheduler
+	e.graph.mu.RUnlock()
 
 	_, err := e.graph.SetScheduler(newSched)
 	if err != nil {

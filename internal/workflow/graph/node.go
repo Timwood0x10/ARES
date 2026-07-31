@@ -21,9 +21,9 @@ import (
 
 // Node represents an executable unit in the graph.
 //
-// TODO(P2): All Node implementations must satisfy ares_runtime.Executable
-// once the single Runner is built. The adapter will map between *State
-// (graph-local) and *ExecutionContext (unified scope).
+// Node implementations are adapted to ares_runtime.Executable by the unified
+// Runner's adapter layer: the adapter maps between *State (graph-local) and
+// *ExecutionContext (unified scope) at execution time.
 type Node interface {
 	// Execute runs the node with the given state.
 	Execute(ctx context.Context, state *State) error
