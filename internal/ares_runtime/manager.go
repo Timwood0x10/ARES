@@ -65,9 +65,16 @@ type Manager struct {
 type chaosSlowKey struct{}
 
 // chaosEntry holds fault injection settings for a single agent.
+// All fields are write-once via the arena injectors; they are read at the
+// agent Process/ProcessStream boundary (see chaosWrappedAgent) so injections
+// take effect on the next execution without restarting the agent.
 type chaosEntry struct {
-	slowDelay   time.Duration // zero = no slow
-	toolTimeout time.Duration // zero = no timeout
+	slowDelay          time.Duration // zero = no slow
+	toolTimeout        time.Duration // zero = no timeout
+	networkPartitioned bool          // true = Process fails with a network partition fault
+	memoryCorrupt      bool          // true = Process fails with a memory corruption fault
+	mcpDisconnected    bool          // true = Process fails with an MCP disconnect fault
+	llmFailureType     string        // non-empty = Process fails with an LLM failure fault
 }
 
 // New creates a new Manager.
@@ -216,7 +223,7 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 	}
 
 	ma := &managedAgent{
-		agent:  agent,
+		agent:  &chaosWrappedAgent{Agent: agent, m: m, id: id},
 		cancel: agentCancel,
 	}
 	// Preserve factory if already registered via RegisterAgent.
@@ -350,7 +357,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	m.mu.Lock()
 	agentCtx, agentCancel := context.WithCancel(m.gctx)
 	m.agents[agentID] = &managedAgent{
-		agent:    newAgent,
+		agent:    &chaosWrappedAgent{Agent: newAgent, m: m, id: agentID},
 		factory:  factory,
 		cancel:   agentCancel,
 		restarts: prevRestarts + 1,
@@ -396,7 +403,7 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 	}
 	agentCtx, agentCancel := context.WithCancel(m.gctx)
 	m.agents[agentID] = &managedAgent{
-		agent:    newAgent,
+		agent:    &chaosWrappedAgent{Agent: newAgent, m: m, id: agentID},
 		factory:  factory,
 		cancel:   agentCancel,
 		restarts: prevRestarts,

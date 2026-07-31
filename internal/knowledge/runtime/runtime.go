@@ -91,6 +91,12 @@ type Config struct {
 	LazyLoading            bool // Enable lazy graph mode (default false)
 }
 
+// maxLazyForGraph caps the graph budget in lazy mode before Reduce.
+// DefaultReducer estimates ~50 tokens per node, so this limits the returned
+// WorkingGraph to at most 40 nodes, approximating a lazy graph until a
+// full *LazyGraph return type is implemented (see the clamp in Execute).
+const maxLazyForGraph = 2000
+
 // Execute runs the full AKF pipeline: Plan → Load → Link → Reduce → Graph.
 func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget knowledge.TokenBudget, cfg *Config) (*knowledge.WorkingGraph, error) {
 	if r == nil || r.planner == nil {
@@ -133,18 +139,24 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("link: %w", err)
 	}
 
-	// If lazy loading is requested, clamp the budget BEFORE reduce so the
-	// reducer produces a smaller graph. Full lazy graph support (LazyGraph
-	// return type) requires future API changes; for now this provides real
-	// lazy behavior by limiting the output via a tighter reduce budget.
-	if cfg.LazyLoading {
-		maxLazyBudget := knowledge.TokenBudget{ForGraph: 2000}
-		if budget.ForGraph > maxLazyBudget.ForGraph {
-			log.Info("lazy loading: clamping graph budget",
-				"original", budget.ForGraph,
-				"clamped", maxLazyBudget.ForGraph)
-			budget = maxLazyBudget
-		}
+	// Lazy loading is approximated by clamping budget.ForGraph to
+	// maxLazyForGraph before Reduce. The reducer then prunes the graph to a
+	// smaller size, so the returned WorkingGraph is genuinely smaller.
+	//
+	// Known limitation: this is not a full LazyGraph. Execute still loads
+	// every object from the providers and returns *knowledge.WorkingGraph;
+	// only the final graph size is reduced. A complete implementation would
+	// return *LazyGraph built from summaries with an expandFn that fetches
+	// full objects on demand.
+	//
+	// Future direction: change Execute's return type to *LazyGraph (or add a
+	// parallel ExecuteLazy) and defer object loading until Expand is called.
+	// Until then the clamp below is the lazy-loading mechanism.
+	if cfg.LazyLoading && budget.ForGraph > maxLazyForGraph {
+		log.Info("lazy loading: clamping graph budget",
+			"original", budget.ForGraph,
+			"clamped", maxLazyForGraph)
+		budget.ForGraph = maxLazyForGraph
 	}
 
 	// 5. Reduce: prune and compress to fit budget (uses clamped budget when lazy).

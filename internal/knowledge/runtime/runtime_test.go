@@ -313,6 +313,70 @@ func TestKnowledgeRuntimeFullPipeline(t *testing.T) {
 	}
 }
 
+// TestKnowledgeRuntimeLazyLoading locks in the lazy-loading clamp: when
+// LazyLoading is set, budget.ForGraph is capped at maxLazyForGraph before
+// Reduce, so the returned graph is smaller. When LazyLoading is false (or the
+// budget is already at/below the cap), the budget passes through unchanged and
+// the graph size matches the raw budget.
+func TestKnowledgeRuntimeLazyLoading(t *testing.T) {
+	// 60 objects: DefaultReducer's ~50 tokens/node estimate yields 40 nodes at
+	// maxLazyForGraph (2000) and 20 nodes at a raw budget of 1000, so both the
+	// clamped and the un-clamped paths produce distinct, predictable sizes.
+	const nObjects = 60
+	objects := make([]*knowledge.KnowledgeObject, 0, nObjects)
+	for i := range nObjects {
+		objects = append(objects, &knowledge.KnowledgeObject{
+			ID:         fmt.Sprintf("obj-%d", i),
+			Type:       knowledge.ObjectDecision,
+			Summary:    fmt.Sprintf("decision node %d", i),
+			Confidence: 0.9,
+			Tags:       []string{"domain:cache"},
+		})
+	}
+
+	run := func(t *testing.T, lazy bool, forGraph int) int {
+		t.Helper()
+		reg := provider.NewProviderRegistry()
+		if err := reg.Register(&testGraphProvider{name: "memory", objects: objects}); err != nil {
+			t.Fatalf("register provider: %v", err)
+		}
+		rt := New(
+			planner.NewKnowledgePlanner(),
+			planner.NewSourceDiscovery(reg, &testQueryPlanner{}),
+			reg,
+			nil,
+			[]Linker{&DefaultLinker{}},
+			[]Reducer{&DefaultReducer{}},
+		)
+		graph, err := rt.Execute(context.Background(), "why redis",
+			knowledge.TokenBudget{ForGraph: forGraph},
+			&Config{MaxConcurrentProviders: 5, LazyLoading: lazy})
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+		return len(graph.Nodes)
+	}
+
+	tests := []struct {
+		name     string
+		lazy     bool
+		forGraph int
+		want     int
+	}{
+		{"non_lazy_keeps_all_nodes", false, 10000, nObjects},
+		{"lazy_clamps_large_budget", true, 10000, maxLazyForGraph / 50},
+		{"lazy_budget_below_cap_unchanged", true, 1000, 20},
+		{"non_lazy_small_budget_matches_lazy", false, 1000, 20},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := run(t, tc.lazy, tc.forGraph); got != tc.want {
+				t.Errorf("expected %d graph nodes, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
 // testQueryPlanner for runtime tests.
 type testQueryPlanner struct{}
 

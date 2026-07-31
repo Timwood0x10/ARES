@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
@@ -151,9 +152,90 @@ func (m *Manager) SlowAgent(_ context.Context, agentID string, delay time.Durati
 	return nil
 }
 
-// PartitionNetwork simulates a network partition for an agent.
+// chaosFault returns the active fault error for the agent, or nil when no
+// fault is configured. It is read at the Process boundary by
+// chaosWrappedAgent so injections take effect on the next execution without
+// restarting the agent. Read under RLock; config is written by the arena
+// injectors under Lock.
+func (m *Manager) chaosFault(agentID string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	c := m.chaosConfig[agentID]
+	switch {
+	case c.networkPartitioned:
+		return fmt.Errorf("chaos: network partition injected for agent %s", agentID)
+	case c.memoryCorrupt:
+		return fmt.Errorf("chaos: memory corruption injected for agent %s", agentID)
+	case c.mcpDisconnected:
+		return fmt.Errorf("chaos: MCP disconnected injected for agent %s", agentID)
+	case c.llmFailureType != "":
+		return fmt.Errorf("chaos: LLM failure (%s) injected for agent %s", c.llmFailureType, agentID)
+	default:
+		return nil
+	}
+}
+
+// chaosWrappedAgent decorates a base.Agent so fault injections take effect at
+// the Process/ProcessStream boundary. All other methods are promoted from the
+// embedded base.Agent unchanged. Only agents registered via StartAgent (or
+// rebuilt by RestartAgent) are wrapped; the wrap is transparent to callers.
+type chaosWrappedAgent struct {
+	base.Agent
+	m  *Manager
+	id string
+}
+
+// Process injects the configured fault (if any) before delegating to the
+// wrapped agent, so a partitioned/corrupted/disconnected/failing agent fails
+// fast instead of silently succeeding.
+func (w *chaosWrappedAgent) Process(ctx context.Context, input any) (any, error) {
+	if err := w.m.chaosFault(w.id); err != nil {
+		return nil, err
+	}
+	return w.Agent.Process(ctx, input)
+}
+
+// ProcessStream injects the configured fault (if any) before delegating.
+// On injection the returned channel is closed immediately and the fault error
+// is returned, matching the ProcessStream contract.
+func (w *chaosWrappedAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	if err := w.m.chaosFault(w.id); err != nil {
+		ch := make(chan base.AgentEvent)
+		close(ch)
+		return ch, err
+	}
+	return w.Agent.ProcessStream(ctx, input)
+}
+
+// chaosUnwrap returns the underlying agent when wrapped by chaosWrappedAgent,
+// so optional-interface assertions (StatefulAgent, Heartbeater, Messenger)
+// keep working on the raw instance. Returns the input unchanged otherwise.
+func chaosUnwrap(a base.Agent) base.Agent {
+	if w, ok := a.(*chaosWrappedAgent); ok {
+		return w.Agent
+	}
+	return a
+}
+
+// setChaosConfig writes a per-agent chaos entry under the manager write lock,
+// initializing the map on first use.
+func (m *Manager) setChaosConfig(agentID string, mutate func(*chaosEntry)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.chaosConfig == nil {
+		m.chaosConfig = make(map[string]chaosEntry)
+	}
+	entry := m.chaosConfig[agentID]
+	mutate(&entry)
+	m.chaosConfig[agentID] = entry
+}
+
+// PartitionNetwork marks the agent as network-partitioned: its next
+// Process/ProcessStream call fails with an injected network fault.
 func (m *Manager) PartitionNetwork(_ context.Context, agentID string) error {
-	return fmt.Errorf("partition network: %w", ErrNotImplemented)
+	log.Info("[arena] PartitionNetwork", "agent", agentID)
+	m.setChaosConfig(agentID, func(e *chaosEntry) { e.networkPartitioned = true })
+	return nil
 }
 
 // ToolTimeout sets a short execution deadline for an agent's tools.
@@ -170,17 +252,26 @@ func (m *Manager) ToolTimeout(_ context.Context, agentID string, timeout time.Du
 	return nil
 }
 
-// CorruptMemory simulates memory corruption for an agent.
+// CorruptMemory marks the agent's memory as corrupted: its next
+// Process/ProcessStream call fails with an injected memory fault.
 func (m *Manager) CorruptMemory(_ context.Context, agentID string) error {
-	return fmt.Errorf("corrupt memory: %w", ErrNotImplemented)
+	log.Info("[arena] CorruptMemory", "agent", agentID)
+	m.setChaosConfig(agentID, func(e *chaosEntry) { e.memoryCorrupt = true })
+	return nil
 }
 
-// DisconnectMCP simulates an MCP server disconnection for an agent.
+// DisconnectMCP marks the agent's MCP connection as disconnected: its next
+// Process/ProcessStream call fails with an injected MCP fault.
 func (m *Manager) DisconnectMCP(_ context.Context, agentID string) error {
-	return fmt.Errorf("disconnect MCP: %w", ErrNotImplemented)
+	log.Info("[arena] DisconnectMCP", "agent", agentID)
+	m.setChaosConfig(agentID, func(e *chaosEntry) { e.mcpDisconnected = true })
+	return nil
 }
 
-// InjectLLMFailure simulates an LLM failure for an agent.
+// InjectLLMFailure marks the agent's LLM as failing with the given error
+// type: its next Process/ProcessStream call fails with an injected LLM fault.
 func (m *Manager) InjectLLMFailure(_ context.Context, agentID string, errType string) error {
-	return fmt.Errorf("inject LLM failure: %w", ErrNotImplemented)
+	log.Info("[arena] InjectLLMFailure", "agent", agentID, "error_type", errType)
+	m.setChaosConfig(agentID, func(e *chaosEntry) { e.llmFailureType = errType })
+	return nil
 }

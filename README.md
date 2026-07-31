@@ -30,15 +30,20 @@ Build resilient, self-evolving AI agents in Go. Unified SDK, DAG workflow, chaos
 ```go
 package main
 
-import "github.com/Timwood0x10/ares/sdk"
+import (
+    "context"
+    "fmt"
+
+    "github.com/Timwood0x10/ares/sdk"
+)
 
 func main() {
-    rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
+    rt := sdk.MustNew() // auto-detects Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY; use sdk.New(opts...) for fine-grained config
     defer rt.Close()
 
-    agent := rt.NewAgent("assistant")
-    result, _ := agent.Run(ctx, "Say hello")
-    println(result.Output)
+    agent := rt.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
+    result, _ := agent.Run(context.Background(), "hello")
+    fmt.Println(result.Output)
 }
 ```
 
@@ -149,7 +154,7 @@ ares version            # Show version
 ## SDK
 
 ```go
-rt := sdk.MustNew(
+rt, err := sdk.New(
     sdk.WithOpenAI("gpt-4o-mini"),          // or WithOllama, WithAnthropic
     sdk.WithDefaultMemory(),                 // session history
     sdk.WithEvolution(),                     // strategy evolution
@@ -157,6 +162,9 @@ rt := sdk.MustNew(
         Name: "my-server", Command: "/path/to/server", Args: []string{"serve"},
     }),
 )
+if err != nil {
+    log.Fatal(err)
+}
 defer rt.Close()
 
 // Agent with tools and human-in-the-loop.

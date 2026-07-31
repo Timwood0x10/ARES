@@ -120,7 +120,8 @@ func TestResumeAgent_RelaunchesSameInstance(t *testing.T) {
 	m.mu.RUnlock()
 	require.True(t, ok)
 	assert.False(t, ma.paused, "paused flag must be cleared after resume")
-	assert.Equal(t, agent, ma.agent, "the same agent instance must be relaunched")
+	assert.Equal(t, agent, chaosUnwrap(ma.agent),
+		"the same agent instance must be relaunched (unwrapped from chaos wrapper)")
 }
 
 // TestResumeAgent_NotPaused_NoOp verifies resume on a running (not paused)
@@ -199,4 +200,89 @@ func lastEventOfType(evts []*ares_events.Event, typ ares_events.EventType) *ares
 		}
 	}
 	return nil
+}
+
+// TestChaosFaultInjections verifies the four fault-injection methods actually
+// take effect at the Process boundary: after injection, Process returns a
+// fault error instead of delegating to the wrapped agent. Without injection
+// the wrapper delegates unchanged (mock Process returns its own error).
+func TestChaosFaultInjections(t *testing.T) {
+	tests := []struct {
+		name        string
+		inject      func(m *Manager, ctx context.Context) error
+		wantErrText string
+	}{
+		{
+			name:        "network_partition",
+			inject:      func(m *Manager, ctx context.Context) error { return m.PartitionNetwork(ctx, "a1") },
+			wantErrText: "network partition injected",
+		},
+		{
+			name:        "memory_corrupt",
+			inject:      func(m *Manager, ctx context.Context) error { return m.CorruptMemory(ctx, "a1") },
+			wantErrText: "memory corruption injected",
+		},
+		{
+			name:        "mcp_disconnect",
+			inject:      func(m *Manager, ctx context.Context) error { return m.DisconnectMCP(ctx, "a1") },
+			wantErrText: "MCP disconnected injected",
+		},
+		{
+			name: "llm_failure",
+			inject: func(m *Manager, ctx context.Context) error {
+				return m.InjectLLMFailure(ctx, "a1", "rate_limit")
+			},
+			wantErrText: "LLM failure (rate_limit) injected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _, _, _ := chaosTestManager(t)
+			ctx := context.Background()
+
+			// Before injection the wrapper delegates to the raw mock agent
+			// (its Process returns "not implemented in mock").
+			m.mu.RLock()
+			wrapped := m.agents["a1"].agent
+			m.mu.RUnlock()
+			_, err := wrapped.Process(ctx, "input")
+			require.ErrorContains(t, err, "not implemented in mock",
+				"pre-injection Process must delegate to the wrapped agent")
+
+			require.NoError(t, tt.inject(m, ctx))
+
+			_, err = wrapped.Process(ctx, "input")
+			require.ErrorContains(t, err, tt.wantErrText,
+				"post-injection Process must surface the injected fault")
+		})
+	}
+}
+
+// TestChaosFaultInjections_ProcessStream verifies the injected fault also
+// fails ProcessStream with a closed channel, per its contract.
+func TestChaosFaultInjections_ProcessStream(t *testing.T) {
+	m, _, _, _ := chaosTestManager(t)
+	ctx := context.Background()
+	require.NoError(t, m.PartitionNetwork(ctx, "a1"))
+
+	m.mu.RLock()
+	wrapped := m.agents["a1"].agent
+	m.mu.RUnlock()
+
+	ch, err := wrapped.ProcessStream(ctx, "input")
+	require.ErrorContains(t, err, "network partition injected")
+	_, ok := <-ch
+	assert.False(t, ok, "channel must be closed when a fault is injected")
+}
+
+// TestChaosUnwrapRoundTrip verifies chaosUnwrap returns the raw agent from a
+// wrapped instance and passes through unwrapped instances unchanged, so
+// optional-interface assertions (StatefulAgent, Heartbeater) keep working.
+func TestChaosUnwrapRoundTrip(t *testing.T) {
+	agent := newMockAgent("u1")
+	wrapped := &chaosWrappedAgent{Agent: agent, id: "u1"}
+	assert.Same(t, agent, chaosUnwrap(wrapped), "unwrap must return the raw agent")
+	assert.Same(t, agent, chaosUnwrap(agent), "unwrap of a plain agent is a no-op")
+	assert.Nil(t, chaosUnwrap(nil), "unwrap of nil is nil")
 }

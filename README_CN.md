@@ -30,15 +30,20 @@
 ```go
 package main
 
-import "github.com/Timwood0x10/ares/sdk"
+import (
+    "context"
+    "fmt"
+
+    "github.com/Timwood0x10/ares/sdk"
+)
 
 func main() {
-    rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
+    rt := sdk.MustNew() // 零参数：自动检测 Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY；需要精细配置时使用 sdk.New(opts...)
     defer rt.Close()
 
-    agent := rt.NewAgent("assistant")
-    result, _ := agent.Run(ctx, "Say hello")
-    println(result.Output)
+    agent := rt.NewAgent("assistant", sdk.WithInstruction("你是一个有用的助手。"))
+    result, _ := agent.Run(context.Background(), "你好")
+    fmt.Println(result.Output)
 }
 ```
 
@@ -137,7 +142,7 @@ ares evolution   # 运行时进化：status / run
 ## SDK 用法
 
 ```go
-rt := sdk.MustNew(
+rt, err := sdk.New(
     sdk.WithOpenAI("gpt-4o-mini"),          // 或 WithOllama、WithAnthropic
     sdk.WithDefaultMemory(),                 // 开启会话记忆
     sdk.WithEvolution(),                     // 开启策略进化
@@ -145,6 +150,9 @@ rt := sdk.MustNew(
         Name: "my-server", Command: "/path/to/server", Args: []string{"serve"},
     }),
 )
+if err != nil {
+    log.Fatal(err)
+}
 defer rt.Close()
 
 // 带工具和人工审批的 Agent
