@@ -395,51 +395,51 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **Key design**: LLM is a **participant**, not the leader. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
-### Benchmarks (Apple M3 Max, 2026-07-16)
+### Benchmarks (Apple M3 Max, 2026-07-31)
 
 ```
 === Runtime Evolution (internal/evolution) ===
-BenchmarkWorkflowGenome_Mutate     309k   7.1µs  11.4KB  155 allocs
-BenchmarkSchedulerGenome_Mutate    3.3M   0.4µs   719B    15 allocs
-BenchmarkKnowledgeGenome_Mutate    2.8M   0.4µs   960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.2M   0.5µs  1.1KB    21 allocs
-BenchmarkDiffEngine_Workflow       2.9M   0.4µs   256B     3 allocs
-BenchmarkCoordinator_Evaluate      217M   5.4ns     0B      0 allocs
-BenchmarkFullEvolutionCycle        206k   5.3µs  8.0KB   109 allocs
+BenchmarkWorkflowGenome_Mutate     245k   7.28µs  11.7KB  157 allocs
+BenchmarkSchedulerGenome_Mutate    3.07M  386ns    720B    16 allocs
+BenchmarkKnowledgeGenome_Mutate    2.78M  434ns    960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.13M  561ns    1.1KB   21 allocs
+BenchmarkDiffEngine_Workflow       2.83M  425ns    304B     3 allocs
+BenchmarkCoordinator_Evaluate      221M   5.4ns      0B      0 allocs
+BenchmarkFullEvolutionCycle        355k   3.27µs  6.3KB    82 allocs
 
 === Event System (internal/ares_events) ===
-BenchmarkMemoryStore_Append           226k   516ns    596B    7 allocs
-BenchmarkMemoryStore_AppendBatch      27k    3.96µs   8.4KB   1 alloc
-BenchmarkMemoryStore_Read             28k    4.33µs   17.5KB  11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 165k   667ns    619B    6 allocs
+BenchmarkMemoryStore_Append           2.36M  500ns    624B     7 allocs
+BenchmarkMemoryStore_AppendBatch      303k   4.33µs   8.8KB    1 alloc
+BenchmarkMemoryStore_Read             184k   6.26µs   17.5KB  11 allocs
+BenchmarkMemoryStore_ConcurrentAppend 1.0M   1.26µs   626B     6 allocs
 
 === Evaluation Framework (internal/ares_eval) ===
-BenchmarkExactMatchEvaluator_Evaluate    39.2M   3.1ns      0B      0 allocs
-BenchmarkToolUsageEvaluator_Evaluate      4.2M   28.7ns     0B      0 allocs
-BenchmarkAgentTestRunner_RunSingle       372k    315ns    320B      5 allocs
-BenchmarkReportGenerator_GenerateMarkdown 33k     3.5µs   4.3KB    76 allocs
-BenchmarkLoader_Load                      2.5k    47.3µs  34.1KB   601 allocs
+BenchmarkExactMatchEvaluator_Evaluate    372M    3.07ns     0B      0 allocs
+BenchmarkToolUsageEvaluator_Evaluate     42.1M   28.4ns     0B      0 allocs
+BenchmarkAgentTestRunner_RunSingle       3.66M   327ns     320B      5 allocs
+BenchmarkReportGenerator_GenerateMarkdown 332k   3.73µs    4.3KB    76 allocs
+BenchmarkLoader_Load                      23.2k  51.6µs    34.1KB   601 allocs
 
 === AKG Knowledge Fabric (internal/knowledge) ===
 --- Linkers ---
-DecisionLinker (100 objs)           8.4k   15.1µs  10.9KB  295 allocs
-ArchitectureLinker (100 objs)       3.7k   34.1µs 102.6KB   85 allocs
-TimelineLinker (100 objs)          61.2k   2.01µs   3.1KB   11 allocs
-SimilarityLinker (100 objs)          74    1.96ms   3.2MB 20216 allocs
+DecisionLinker (100 objs)           78.7k  15.3µs  10.9KB  295 allocs
+ArchitectureLinker (100 objs)       33.4k  36.0µs 167.0KB    85 allocs
+TimelineLinker (100 objs)           613k   1.84µs   3.1KB   11 allocs
+SimilarityLinker (100 objs)          664   1.84ms   4.7MB 20217 allocs
 --- Compiler ---
-DefaultCompiler Prompt (100 nodes) 2.6k   45.6µs  73.3KB  819 allocs
-DefaultCompiler All Formats (100)    478   263.7µs 365.2KB 3476 allocs
+DefaultCompiler Prompt (100 nodes)  27.1k  44.5µs  73.3KB  819 allocs
+DefaultCompiler All Formats (100)    5.1k 237.7µs 365.2KB 3476 allocs
 --- Memory Store ---
-Store_Save                          213k   503ns    586B    11 allocs
-Store_Get                          2.09M    56ns     13B     1 alloc
-Store_QueryByType                  22.8k   5.16µs  4.5KB    11 allocs
-Store_Search                        1.3k   77.2µs  69.4KB  1514 allocs
+Store_Save                           1.97M  615ns    719B    11 allocs
+Store_Get                           18.4M   61.4ns    13B     1 alloc
+Store_QueryByType                   198k    6.06µs   4.5KB   11 allocs
+Store_Search                        14.7k   80.9µs  69.4KB  1514 allocs
 --- Pipeline ---
-DefaultNormalizer_Normalize        254k    476ns    607B     9 allocs
+DefaultNormalizer_Normalize         2.28M   508ns    688B    10 allocs
 --- Planner ---
-KnowledgePlanner_Plan              170k    720ns    928B    14 allocs
+KnowledgePlanner_Plan               1.50M   767ns    1.0KB   14 allocs
 --- Retriever (end-to-end) ---
-Retrieve (100 objs)                  16   10.8ms  23.8MB 132959 allocs
+Retrieve (100 objs)                  133   9.00ms  16.2MB 129675 allocs
 ```
 
 ### CLI
@@ -483,19 +483,19 @@ Beyond runtime-level evolution, ARES includes a **strategy-level Genetic Algorit
 | **Generation History** | Per-generation snapshots with metadata |
 | **Experience System** | 3-tier pipeline: ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### Benchmarks (Apple M3 Max, 2026-07-16)
+### Benchmarks (Apple M3 Max, 2026-07-31)
 
 ```
 === GA Genome (internal/ares_evolution/genome) ===
-CrossoverUniform (10 params)        500k   2.4µs    2.9KB   29 allocs
-CrossoverUniform (100 params)        68k  17.7µs   21.0KB   36 allocs
-TruncationSelection (pop=100)       200k   6.2µs        —    —
-TournamentSelection (pop=50,k=2)    380k   3.2µs        —    —
-RouletteWheelSelection (pop=100)    410k   2.9µs        —    —
-Evolve_OneGeneration (pop=10)       437k     281ns   344B     6 allocs
-Evolve_MultipleGenerations (100)     3.7k    28µs   34.4KB  600 allocs
-ApplyFitnessSharing (pop=100)         88   1.35ms    540KB 106 allocs
-RealWorldEvolution (100 gen)          12    9.87ms  4.43MB  59894 allocs
+CrossoverUniform (10 params)        496k   2.40µs   3.1KB   31 allocs
+CrossoverUniform (100 params)       69.6k  24.5µs   21.2KB  38 allocs
+TruncationSelection (pop=100)       205k   5.76µs       —    —
+TournamentSelection (pop=50,k=2)    282k   4.41µs       —    —
+RouletteWheelSelection (pop=100)    398k   2.98µs       —    —
+Evolve_OneGeneration (pop=10)       4.15M    303ns   344B     6 allocs
+Evolve_MultipleGenerations (100)    43.9k   28.4µs   34.4KB 600 allocs
+ApplyFitnessSharing (pop=100)         892   1.35ms    540KB 106 allocs
+RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
 ```
 
 ### Examples

@@ -1,0 +1,16 @@
+2026/07/31 11:30:14 ERROR failed to run config module=ares_eval config=bad-config error="create runner for config \"bad-config\": assert.AnError general error for testing"
+2026/07/31 11:30:14 ERROR test case failed module=ares_eval test_case_id=slow-tc error="context deadline exceeded"
+2026/07/31 11:30:14 ERROR test case failed module=ares_eval test_case_id=fail-tc error="test failure"
+2026/07/31 11:30:14 ERROR test case failed module=ares_eval test_case_id=c1 error="context canceled"
+2026/07/31 11:30:14 ERROR test case failed module=ares_eval test_case_id=c2 error="context canceled"
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/ares_eval
+cpu: Apple M3 Max
+BenchmarkExactMatchEvaluator_Evaluate-14        	371883297	         3.074 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolUsageEvaluator_Evaluate-14         	42065410	        28.35 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAgentTestRunner_RunSingle-14           	 3663362	       326.5 ns/op	     320 B/op	       5 allocs/op
+BenchmarkReportGenerator_GenerateMarkdown-14    	  332298	      3732 ns/op	    4258 B/op	      76 allocs/op
+BenchmarkLoader_Load-14                         	   23229	     51594 ns/op	   34062 B/op	     601 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/ares_eval	7.967s

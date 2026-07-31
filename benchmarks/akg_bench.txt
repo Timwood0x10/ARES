@@ -1,0 +1,126 @@
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge	0.309s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/adapter	0.305s
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/knowledge/compiler
+cpu: Apple M3 Max
+BenchmarkDefaultCompiler_PromptFormat/nodes_10-14         	  260166	      4680 ns/op	    5947 B/op	      92 allocs/op
+BenchmarkDefaultCompiler_PromptFormat/nodes_50-14         	   54494	     21704 ns/op	   29514 B/op	     416 allocs/op
+BenchmarkDefaultCompiler_PromptFormat/nodes_100-14        	   27085	     44498 ns/op	   73287 B/op	     819 allocs/op
+BenchmarkDefaultCompiler_PromptFormat/nodes_500-14        	    5438	    215941 ns/op	  340760 B/op	    4026 allocs/op
+BenchmarkDefaultCompiler_MarkdownFormat/nodes_10-14       	  225877	      5277 ns/op	    6267 B/op	     112 allocs/op
+BenchmarkDefaultCompiler_MarkdownFormat/nodes_50-14       	   46198	     26152 ns/op	   40594 B/op	     517 allocs/op
+BenchmarkDefaultCompiler_MarkdownFormat/nodes_100-14      	   22610	     53066 ns/op	   98264 B/op	    1020 allocs/op
+BenchmarkDefaultCompiler_MarkdownFormat/nodes_500-14      	    4659	    259727 ns/op	  455157 B/op	    5027 allocs/op
+BenchmarkDefaultCompiler_JSONFormat/nodes_10-14           	  167458	      7132 ns/op	    6820 B/op	      91 allocs/op
+BenchmarkDefaultCompiler_JSONFormat/nodes_50-14           	   33670	     35728 ns/op	   40250 B/op	     416 allocs/op
+BenchmarkDefaultCompiler_JSONFormat/nodes_100-14          	   16658	     72308 ns/op	   96318 B/op	     819 allocs/op
+BenchmarkDefaultCompiler_JSONFormat/nodes_500-14          	    3255	    368759 ns/op	  440385 B/op	    4024 allocs/op
+BenchmarkDefaultCompiler_AllFormats/nodes_10-14           	   49162	     24555 ns/op	   29924 B/op	     386 allocs/op
+BenchmarkDefaultCompiler_AllFormats/nodes_50-14           	   10000	    118591 ns/op	  163903 B/op	    1765 allocs/op
+BenchmarkDefaultCompiler_AllFormats/nodes_100-14          	    5098	    237682 ns/op	  365191 B/op	    3476 allocs/op
+BenchmarkDefaultCompiler_AllFormats/nodes_500-14          	     982	   1216998 ns/op	 1809000 B/op	   17105 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/compiler	23.661s
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/knowledge/linker
+cpu: Apple M3 Max
+BenchmarkDecisionLinker/objs_10-14         	  808579	      1469 ns/op	     800 B/op	      25 allocs/op
+BenchmarkDecisionLinker/objs_50-14         	  150704	      7689 ns/op	    5280 B/op	     145 allocs/op
+BenchmarkDecisionLinker/objs_100-14        	   78709	     15283 ns/op	   10880 B/op	     295 allocs/op
+BenchmarkDecisionLinker/objs_500-14        	   15183	     78441 ns/op	   55680 B/op	    1495 allocs/op
+BenchmarkArchitectureLinker/objs_10-14     	 1546532	       772.5 ns/op	    1104 B/op	      10 allocs/op
+BenchmarkArchitectureLinker/objs_50-14     	  120901	     10027 ns/op	   41624 B/op	      48 allocs/op
+BenchmarkArchitectureLinker/objs_100-14    	   33358	     36019 ns/op	  166960 B/op	      85 allocs/op
+BenchmarkArchitectureLinker/objs_500-14    	     609	   2019161 ns/op	 9097958 B/op	     367 allocs/op
+BenchmarkTimelineLinker/objs_10-14         	 3854625	       312.6 ns/op	     384 B/op	       8 allocs/op
+BenchmarkTimelineLinker/objs_50-14         	 1204072	      1040 ns/op	    1488 B/op	      10 allocs/op
+BenchmarkTimelineLinker/objs_100-14        	  613411	      1838 ns/op	    3120 B/op	      11 allocs/op
+BenchmarkTimelineLinker/objs_500-14        	  135130	      9074 ns/op	   13488 B/op	      13 allocs/op
+BenchmarkSimilarityLinker/objs_10-14       	   70437	     17388 ns/op	   37864 B/op	     227 allocs/op
+BenchmarkSimilarityLinker/objs_50-14       	    2954	    433833 ns/op	  920404 B/op	    5112 allocs/op
+BenchmarkSimilarityLinker/objs_100-14      	     664	   1841851 ns/op	 4709409 B/op	   20217 allocs/op
+BenchmarkSimilarityLinker/objs_500-14      	      20	  54527198 ns/op	123223788 B/op	  501030 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/linker	24.617s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/mcp	0.289s
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/knowledge/pipeline
+cpu: Apple M3 Max
+BenchmarkDefaultNormalizer_Normalize-14            	 2276992	       508.4 ns/op	     688 B/op	      10 allocs/op
+BenchmarkDefaultNormalizer_AlreadyNormalized-14    	21798628	        55.49 ns/op	      24 B/op	       2 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/pipeline	3.211s
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/knowledge/planner
+cpu: Apple M3 Max
+BenchmarkKnowledgePlanner_Plan-14                	 1499036	       767.3 ns/op	    1008 B/op	      14 allocs/op
+BenchmarkKnowledgePlanner_PlanComplexQuery-14    	  835800	      1388 ns/op	    1553 B/op	      18 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/planner	3.256s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider	0.288s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider/code	0.320s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider/evolution	0.311s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider/memory	0.298s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider/mysql	0.282s
+?   	github.com/Timwood0x10/ares/internal/knowledge/provider/postgres	[no test files]
+2026/07/31 11:35:27 WARN store provider: embed query, falling back to lexical-only provider=akg_store error="simulated embed failure"
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider/store	0.293s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/provider/vector	0.289s
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/knowledge/retriever
+cpu: Apple M3 Max
+BenchmarkRetriever_Retrieve/objs_10-14           	    7470	    157059 ns/op	  278342 B/op	    2157 allocs/op
+BenchmarkRetriever_Retrieve/objs_50-14           	     404	   2971872 ns/op	 6763418 B/op	   36450 allocs/op
+BenchmarkRetriever_Retrieve/objs_100-14          	     133	   9003702 ns/op	16197920 B/op	  129675 allocs/op
+BenchmarkRetriever_Retrieve/objs_500-14          	       9	 235321315 ns/op	432702948 B/op	 3183962 allocs/op
+BenchmarkRetriever_RetrieveMultipleFormats-14    	     133	   9113782 ns/op	16160597 B/op	  129456 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/retriever	10.020s
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=10 reducer=strict
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=42 reducer=strict
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=10 reducer=strict
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=5 reducer=strict
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=5 reducer=memory-first
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=7 reducer=relaxed
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=7 reducer=strict
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=77 reducer=""
+2026/07/31 11:35:38 INFO knowledge runtime: plan config updated module=knowledge-runtime max_results=99 reducer=""
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/runtime	0.277s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/service	0.280s
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/knowledge/store/memory
+cpu: Apple M3 Max
+BenchmarkStore_Save-14            	 1968333	       615.0 ns/op	     719 B/op	      11 allocs/op
+BenchmarkStore_SaveBatch10-14     	  299448	      3938 ns/op	    6886 B/op	     117 allocs/op
+BenchmarkStore_SaveBatch100-14    	   28120	     45660 ns/op	   67833 B/op	    1113 allocs/op
+BenchmarkStore_Get-14             	18382880	        61.37 ns/op	      13 B/op	       1 allocs/op
+BenchmarkStore_QueryByType-14     	  197998	      6055 ns/op	    4528 B/op	      11 allocs/op
+BenchmarkStore_Search-14          	   14658	     80919 ns/op	   69440 B/op	    1514 allocs/op
+BenchmarkStore_Delete-14          	 2614222	       450.4 ns/op	     901 B/op	      11 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/store/memory	12.330s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/store/mysql	0.279s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/store/postgres	0.285s
+PASS
+ok  	github.com/Timwood0x10/ares/internal/knowledge/store/sqlite	0.328s
+?   	github.com/Timwood0x10/ares/internal/knowledge/workflow	[no test files]

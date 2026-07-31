@@ -251,6 +251,15 @@ func (s *MemoryEventStore) Close() error {
 	return nil
 }
 
+// Stats returns runtime metrics for the store. Currently exposes the count of
+// events dropped because a subscriber's channel buffer was full, enabling
+// monitoring/debugging of data loss in the event pipeline.
+func (s *MemoryEventStore) Stats() map[string]int64 {
+	return map[string]int64{
+		"dropped_events": s.dropped.Load(),
+	}
+}
+
 // notifySubscribers sends an event to all matching subscribers (non-blocking).
 func (s *MemoryEventStore) notifySubscribers(event *Event) {
 	for _, sub := range s.subscribers {

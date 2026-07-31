@@ -160,7 +160,10 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 			return fmt.Errorf("knowledge object ID cannot be empty")
 		}
 
-		metaJSON, _ := json.Marshal(obj.Metadata)
+		metaJSON, err := json.Marshal(obj.Metadata)
+		if err != nil {
+			slog.Warn("marshal metadata failed", "object_id", obj.ID, "error", err)
+		}
 		tags := strings.Join(obj.Tags, ",")
 		qualityJSON := marshalQuality(obj.Quality)
 		relationsJSON := marshalRelations(obj.Relations)
@@ -169,7 +172,7 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 		// ON DUPLICATE KEY UPDATE is the MySQL upsert. VALUES(col) refers to
 		// the value proposed by the INSERT; it is widely supported (5.7+,
 		// 8.0, MariaDB) though deprecated in 8.0.20 in favor of row aliases.
-		_, err := s.db.ExecContext(ctx, `
+		_, err = s.db.ExecContext(ctx, `
 			INSERT INTO akf_objects
 				(id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -317,8 +320,14 @@ func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Represent
 	if rep.ID == "" {
 		return fmt.Errorf("representation ID cannot be empty")
 	}
-	metaJSON, _ := json.Marshal(rep.Metadata)
-	vecJSON, _ := json.Marshal(rep.Vector)
+	metaJSON, mErr := json.Marshal(rep.Metadata)
+	if mErr != nil {
+		slog.Warn("marshal representation metadata failed", "id", rep.ID, "error", mErr)
+	}
+	vecJSON, vErr := json.Marshal(rep.Vector)
+	if vErr != nil {
+		slog.Warn("marshal representation vector failed", "id", rep.ID, "error", vErr)
+	}
 	now := time.Now().UTC()
 
 	_, err := s.db.ExecContext(ctx, `
@@ -669,7 +678,10 @@ func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.Ob
 	if err != nil {
 		return fmt.Errorf("update status %q: %w", id, err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update status %q: rows affected: %w", id, err)
+	}
 	if n == 0 {
 		return ErrObjectNotFound
 	}
@@ -684,7 +696,10 @@ func (s *Store) Promote(ctx context.Context, id string, q *knowledge.Quality) er
 	if err != nil {
 		return fmt.Errorf("promote %q: %w", id, err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("promote %q: rows affected: %w", id, err)
+	}
 	if n == 0 {
 		return ErrObjectNotFound
 	}

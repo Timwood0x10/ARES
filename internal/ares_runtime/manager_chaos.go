@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // AgentInfo holds agent metadata for external consumers like the dashboard.
@@ -58,26 +60,81 @@ func (m *Manager) GetAgentInfo(agentID string) (*AgentInfo, bool) {
 
 // ── Arena Chaos Engineering Fault Injection ───────────────────────────
 
-// PauseAgent stops an agent without triggering resurrection.
+// PauseAgent suspends an agent's goroutine without destroying its state, so
+// ResumeAgent can relaunch the SAME in-memory instance. Unlike StopAgent it
+// does NOT set the permanent `stopped` flag: the managedAgent entry stays in
+// m.agents and the agent object is preserved. Paused agents are skipped by
+// healthCheck and NotifyAgentDead (no resurrection while paused).
 func (m *Manager) PauseAgent(ctx context.Context, agentID string) error {
 	log.Info("[arena] PauseAgent", "agent", agentID)
 	m.mu.Lock()
-	if ma, ok := m.agents[agentID]; ok {
-		ma.paused = true
+	ma, exists := m.agents[agentID]
+	if !exists {
+		m.mu.Unlock()
+		return ErrAgentNotFound
 	}
+	ma.paused = true
+	cancel := ma.cancel
+	agent := ma.agent
 	m.mu.Unlock()
-	return m.StopAgent(ctx, agentID)
+
+	// Cancel the managed goroutine context first, then stop the agent
+	// gracefully. The agent instance is intentionally NOT replaced, so the
+	// in-memory state survives for ResumeAgent.
+	if cancel != nil {
+		cancel()
+	}
+	if agent != nil {
+		stopCtx, stopCancel := context.WithTimeout(ctx, m.config.AgentStopTimeout)
+		defer stopCancel()
+		if err := agent.Stop(stopCtx); err != nil {
+			log.Warn("runtime: agent pause stop failed", "agent_id", agentID, "error", err)
+		}
+	}
+
+	m.emitEvent(ctx, agentID, ares_events.EventAgentStopped, map[string]any{
+		FieldAgentID: agentID,
+		FieldReason:  "pause",
+	})
+
+	log.Info("runtime: agent paused", "agent_id", agentID)
+	return nil
 }
 
-// ResumeAgent restarts a previously paused agent.
+// ResumeAgent relaunches a previously paused agent using its SAME in-memory
+// instance: no factory rebuild, no restart counter increment, and any state
+// accumulated before the pause is preserved. It is a no-op for agents that
+// are not paused. A fresh cancellable context is stored on the managedAgent
+// so a later StopAgent/PauseAgent can cancel the new goroutine.
 func (m *Manager) ResumeAgent(ctx context.Context, agentID string) error {
 	log.Info("[arena] ResumeAgent", "agent", agentID)
 	m.mu.Lock()
-	if ma, ok := m.agents[agentID]; ok {
-		ma.paused = false
+	ma, exists := m.agents[agentID]
+	if !exists {
+		m.mu.Unlock()
+		return ErrAgentNotFound
 	}
+	if !ma.paused {
+		m.mu.Unlock()
+		return nil // not paused: nothing to resume
+	}
+	agentCtx, agentCancel := context.WithCancel(m.gctx)
+	ma.paused = false
+	ma.cancel = agentCancel
+	agent := ma.agent
 	m.mu.Unlock()
-	return m.RestartAgent(ctx, agentID)
+
+	if agent != nil {
+		m.launchAgentGoroutine(agentCtx, agentID, agent)
+	}
+
+	m.emitEvent(ctx, agentID, ares_events.EventAgentStarted, map[string]any{
+		FieldAgentID: agentID,
+		FieldReason:  "resume",
+	})
+
+	log.Info("runtime: agent resumed", "agent_id", agentID)
+	return nil
 }
 
 // SlowAgent adds an artificial latency for an agent's operations.

@@ -133,17 +133,10 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("link: %w", err)
 	}
 
-	// 5. Reduce: prune and compress to fit budget.
-	graph := &knowledge.WorkingGraph{Nodes: objects, Edges: edges}
-	graph, err = r.reduce(ctx, graph, budget)
-	if err != nil {
-		return nil, fmt.Errorf("reduce: %w", err)
-	}
-
-	// If lazy loading is requested, apply a tighter budget so the reducer
-	// produces a smaller graph. Full lazy graph support (LazyGraph return type)
-	// requires future API changes; for now this provides real lazy behavior
-	// by limiting the output before the expensive reduce step.
+	// If lazy loading is requested, clamp the budget BEFORE reduce so the
+	// reducer produces a smaller graph. Full lazy graph support (LazyGraph
+	// return type) requires future API changes; for now this provides real
+	// lazy behavior by limiting the output via a tighter reduce budget.
 	if cfg.LazyLoading {
 		maxLazyBudget := knowledge.TokenBudget{ForGraph: 2000}
 		if budget.ForGraph > maxLazyBudget.ForGraph {
@@ -152,6 +145,13 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 				"clamped", maxLazyBudget.ForGraph)
 			budget = maxLazyBudget
 		}
+	}
+
+	// 5. Reduce: prune and compress to fit budget (uses clamped budget when lazy).
+	graph := &knowledge.WorkingGraph{Nodes: objects, Edges: edges}
+	graph, err = r.reduce(ctx, graph, budget)
+	if err != nil {
+		return nil, fmt.Errorf("reduce: %w", err)
 	}
 
 	// Emit insight evidence to the unified Evidence Store.

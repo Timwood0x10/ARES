@@ -1,0 +1,9 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/api/handler
+cpu: Apple M3 Max
+BenchmarkStreamHandler_HandleStream-14      	  227089	      5106 ns/op	    9357 B/op	      67 allocs/op
+BenchmarkStreamHandler_ConvertEvent-14      	240026122	         4.996 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStreamHandler_MultipleEvents-14    	   34846	     33988 ns/op	   38237 B/op	     460 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/api/handler	12.985s

@@ -394,16 +394,17 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
 
-### 基准测试（Apple M3 Max）
+### 基准测试（Apple M3 Max，2026-07-31）
 
 ```
-BenchmarkWorkflowGenome_Mutate     309k   7.1µs  11.4KB  155 allocs
-BenchmarkSchedulerGenome_Mutate    3.3M   0.4µs   719B    15 allocs
-BenchmarkKnowledgeGenome_Mutate    2.8M   0.4µs   960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.2M   0.5µs  1.1KB    21 allocs
-BenchmarkDiffEngine_Workflow       2.9M   0.4µs   256B     3 allocs
-BenchmarkCoordinator_Evaluate      217M   5.4ns     0B      0 allocs
-BenchmarkFullEvolutionCycle        206k   5.3µs  8.0KB   109 allocs
+=== 运行时进化（internal/evolution） ===
+BenchmarkWorkflowGenome_Mutate     245k   7.28µs  11.7KB  157 allocs
+BenchmarkSchedulerGenome_Mutate    3.07M  386ns    720B    16 allocs
+BenchmarkKnowledgeGenome_Mutate    2.78M  434ns    960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.13M  561ns    1.1KB   21 allocs
+BenchmarkDiffEngine_Workflow       2.83M  425ns    304B     3 allocs
+BenchmarkCoordinator_Evaluate      221M   5.4ns      0B      0 allocs
+BenchmarkFullEvolutionCycle        355k   3.27µs  6.3KB    82 allocs
 ```
 
 ### CLI
@@ -447,14 +448,19 @@ go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Exe
 | **世代历史** | 每代快照及元数据 |
 | **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### 基准测试（Apple M3 Max）
+### 基准测试（Apple M3 Max，2026-07-31）
 
 ```
-BenchmarkPopulation_Init-10           100   11.7ms    2.5MB   32 allocs
-BenchmarkPopulation_Select-10         300    4.1ms    1.1MB   12 allocs
-BenchmarkPopulation_Mutate-10         500    2.5ms    708KB   10 allocs
-BenchmarkDreamCycle_FullCycle-10       50   24.3ms    5.8MB   55 allocs
-BenchmarkNondominatedSort-10         1000    1.8ms    256KB    8 allocs
+=== GA Genome（internal/ares_evolution/genome） ===
+CrossoverUniform (10 params)        496k   2.40µs   3.1KB   31 allocs
+CrossoverUniform (100 params)       69.6k  24.5µs   21.2KB  38 allocs
+TruncationSelection (pop=100)       205k   5.76µs       —    —
+TournamentSelection (pop=50,k=2)    282k   4.41µs       —    —
+RouletteWheelSelection (pop=100)    398k   2.98µs       —    —
+Evolve_OneGeneration (pop=10)       4.15M    303ns   344B     6 allocs
+Evolve_MultipleGenerations (100)    43.9k   28.4µs   34.4KB 600 allocs
+ApplyFitnessSharing (pop=100)         892   1.35ms    540KB 106 allocs
+RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
 ```
 
 ### 示例

@@ -1,0 +1,13 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/evolution
+cpu: Apple M3 Max
+BenchmarkWorkflowGenome_Mutate-14     	  245115	      7280 ns/op	   11708 B/op	     157 allocs/op
+BenchmarkSchedulerGenome_Mutate-14    	 3068302	       385.9 ns/op	     720 B/op	      16 allocs/op
+BenchmarkKnowledgeGenome_Mutate-14    	 2778663	       433.9 ns/op	     960 B/op	      11 allocs/op
+BenchmarkRecoveryGenome_Mutate-14     	 2125812	       561.1 ns/op	    1120 B/op	      21 allocs/op
+BenchmarkDiffEngine_Workflow-14       	 2833591	       425.3 ns/op	     304 B/op	       3 allocs/op
+BenchmarkCoordinator_Evaluate-14      	220633574	         5.447 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFullEvolutionCycle-14        	  354609	      3272 ns/op	    6258 B/op	      82 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/evolution	11.836s
