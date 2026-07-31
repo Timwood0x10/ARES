@@ -29,6 +29,36 @@ type GraphProvider interface {
 	Stream(ctx context.Context, intent knowledge.Intent) (<-chan *knowledge.KnowledgeObject, <-chan error)
 }
 
+// ProviderType classifies a GraphProvider by its backing data source kind.
+// SourceDiscovery uses it to route query planning (e.g. SQL for relational
+// providers, vector for embedding stores, memory for task history).
+type ProviderType string
+
+const (
+	// ProviderMemory wraps a task-similarity searcher (past executions).
+	ProviderMemory ProviderType = "memory"
+	// ProviderEvolution wraps an evolution strategy store.
+	ProviderEvolution ProviderType = "evolution"
+	// ProviderPostgres reads rows from a PostgreSQL table.
+	ProviderPostgres ProviderType = "postgres"
+	// ProviderMySQL reads rows from a MySQL table.
+	ProviderMySQL ProviderType = "mysql"
+	// ProviderVector queries a vector store for semantic similarity.
+	ProviderVector ProviderType = "vector"
+	// ProviderStore recalls AKG-distilled objects from a KnowledgeStore.
+	ProviderStore ProviderType = "store"
+	// ProviderCode indexes a source tree (AST-level).
+	ProviderCode ProviderType = "code"
+)
+
+// TypedProvider is optionally implemented by GraphProviders to expose their
+// backing data source type. SourceDiscovery detects it via type assertion so
+// the planner stays decoupled from concrete provider packages; providers that
+// do not implement it are treated as unknown ("") by detectProviderType.
+type TypedProvider interface {
+	ProviderType() ProviderType
+}
+
 // ProviderConfig is a generic configuration for database-backed providers.
 // Specific providers (PG, MySQL, etc.) extend this with their own connection params.
 type ProviderConfig struct {

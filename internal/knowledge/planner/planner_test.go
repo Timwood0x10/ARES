@@ -251,22 +251,81 @@ func (p *testGraphProvider) Stream(_ context.Context, _ knowledge.Intent) (<-cha
 	return ch, errCh
 }
 
+// typedStub is a GraphProvider that exposes a configured ProviderType, for
+// verifying detectProviderType dispatches through the TypedProvider interface.
+type typedStub struct {
+	name string
+	pt   provider.ProviderType
+}
+
+func (s *typedStub) Name() string { return s.name }
+func (s *typedStub) IntentMatch(_ knowledge.Intent) float64 {
+	if s.pt == "" {
+		return 0
+	}
+	return 0.9
+}
+func (s *typedStub) Stream(_ context.Context, _ knowledge.Intent) (<-chan *knowledge.KnowledgeObject, <-chan error) {
+	ch := make(chan *knowledge.KnowledgeObject)
+	errCh := make(chan error)
+	close(ch)
+	close(errCh)
+	return ch, errCh
+}
+func (s *typedStub) ProviderType() provider.ProviderType { return s.pt }
+
+// untypedStub is a GraphProvider that does NOT implement TypedProvider, for
+// verifying detectProviderType falls back to "" for unknown providers.
+type untypedStub struct {
+	name string
+}
+
+func (u *untypedStub) Name() string                           { return u.name }
+func (u *untypedStub) IntentMatch(_ knowledge.Intent) float64 { return 0.5 }
+func (u *untypedStub) Stream(_ context.Context, _ knowledge.Intent) (<-chan *knowledge.KnowledgeObject, <-chan error) {
+	ch := make(chan *knowledge.KnowledgeObject)
+	errCh := make(chan error)
+	close(ch)
+	close(errCh)
+	return ch, errCh
+}
+
+// TestDetectProviderType verifies detectProviderType reads the backing type
+// from each provider via the TypedProvider interface, and returns "" for
+// providers that do not expose a type. Previously detectProviderType just
+// returned the provider's name (unimplemented).
 func TestDetectProviderType(t *testing.T) {
 	tests := []struct {
 		name     string
+		provider provider.GraphProvider
 		expected string
 	}{
-		{"postgres", "postgres"},
-		{"mysql", "mysql"},
-		{"memory", "memory"},
-		{"git-provider", "git-provider"},
-		{"", ""},
+		{"memory", &typedStub{name: "m", pt: provider.ProviderMemory}, string(provider.ProviderMemory)},
+		{"evolution", &typedStub{name: "e", pt: provider.ProviderEvolution}, string(provider.ProviderEvolution)},
+		{"postgres", &typedStub{name: "pg", pt: provider.ProviderPostgres}, string(provider.ProviderPostgres)},
+		{"mysql", &typedStub{name: "my", pt: provider.ProviderMySQL}, string(provider.ProviderMySQL)},
+		{"vector", &typedStub{name: "v", pt: provider.ProviderVector}, string(provider.ProviderVector)},
+		{"store", &typedStub{name: "s", pt: provider.ProviderStore}, string(provider.ProviderStore)},
+		{"code_provider", &typedStub{name: "c", pt: provider.ProviderCode}, string(provider.ProviderCode)},
+		{"untyped", &untypedStub{name: "custom"}, ""},
 	}
 
 	for _, tt := range tests {
-		got := detectProviderType(tt.name)
-		if got != tt.expected {
-			t.Errorf("detectProviderType(%q) = %q, want %q", tt.name, got, tt.expected)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectProviderType(tt.provider)
+			if got != tt.expected {
+				t.Errorf("detectProviderType(%s) = %q, want %q", tt.name, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDetectProviderType_RealMemoryProvider verifies a real constructed
+// MemoryProvider is detected as "memory" through the TypedProvider interface
+// (integration check that the production provider is wired, not just stubs).
+func TestDetectProviderType_RealMemoryProvider(t *testing.T) {
+	mp := memory.New("memory", &fakeTaskSearcher{})
+	if got := detectProviderType(mp); got != "memory" {
+		t.Errorf("detectProviderType(memory.MemoryProvider) = %q, want %q", got, "memory")
 	}
 }

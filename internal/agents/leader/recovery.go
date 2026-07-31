@@ -6,11 +6,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
-
-// taskResultsTable is the table name for task results.
-// Configurable to support different environments.
-const taskResultsTable = "task_results_1024"
 
 // StaleTask represents a task orphaned by leader failure.
 type StaleTask struct {
@@ -52,7 +49,7 @@ func (r *TaskRecovery) RecoverStaleTasks(ctx context.Context, sessionID string) 
 
 	// The Output column stores JSON, so IS NULL checks cover the empty-output case.
 	query := `
-		UPDATE ` + taskResultsTable + `
+		UPDATE ` + storage_models.TaskResultsTable + `
 		SET status = 'failed',
 		    error = 'leader failover: task orphaned'
 		WHERE session_id = $1

@@ -209,6 +209,33 @@ type TradeRecord struct {
 	PnL float64 `json:"pnl"`
 }
 
+// Paper trade signal side constants. A buy/sell side fills a virtual trade
+// at Price for Quantity; PaperSideMark updates the symbol's last price
+// without trading (a market price tick used for mark-to-market).
+const (
+	PaperSideBuy  = "buy"
+	PaperSideSell = "sell"
+	PaperSideMark = "mark"
+)
+
+// PaperTradeSignal is a single trade instruction or price tick fed into a
+// paper trading session. Buy/sell signals fill virtual trades at Price for
+// Quantity; mark signals update the symbol's last market price only.
+type PaperTradeSignal struct {
+	// Symbol is the instrument this signal applies to.
+	Symbol string `json:"symbol"`
+	// Side is one of PaperSideBuy, PaperSideSell, PaperSideMark.
+	Side string `json:"side"`
+	// Price is the fill price (for buy/sell) or the observed market price
+	// (for mark). Must be > 0.
+	Price float64 `json:"price"`
+	// Quantity is the size to fill for buy/sell signals. Ignored for mark.
+	// Must be > 0 for buy/sell.
+	Quantity float64 `json:"quantity"`
+	// Time is when the signal was generated. Defaults to now if zero.
+	Time time.Time `json:"time"`
+}
+
 // PaperTradeRequest defines the parameters for a paper trading session.
 type PaperTradeRequest struct {
 	// Symbols is the list of instruments to trade.
@@ -217,6 +244,10 @@ type PaperTradeRequest struct {
 	InitialCapital float64 `json:"initial_capital"`
 	// Duration is how long the paper trading session should run.
 	Duration time.Duration `json:"duration"`
+	// Signals carries trade/price signals consumed by Start to fill virtual
+	// trades and mark positions to market. When empty the session starts
+	// flat with PnL 0; additional signals can be fed via ApplySignals.
+	Signals []PaperTradeSignal `json:"signals,omitempty"`
 }
 
 // PaperTradeResponse reports the state of an active or completed paper trade session.

@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // storageMigrations contains the DDL statements for the vector-based storage schema.
@@ -192,8 +193,10 @@ var storageMigrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_conversations_expires 
 		ON conversations(expires_at) WHERE expires_at IS NOT NULL`,
 
-	// 5. task_results_1024 table - Task execution results with vector embedding
-	`CREATE TABLE IF NOT EXISTS task_results_1024 (
+	// 5. task_results_1024 table - Task execution results with vector embedding.
+	// Table name is sourced from storage_models.TaskResultsTable so the
+	// dimension suffix stays in sync across all files.
+	`CREATE TABLE IF NOT EXISTS ` + storage_models.TaskResultsTable + ` (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			session_id VARCHAR(64) NOT NULL,
@@ -211,32 +214,32 @@ var storageMigrations = []string{
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-	`ALTER TABLE task_results_1024 ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE ` + storage_models.TaskResultsTable + ` ENABLE ROW LEVEL SECURITY`,
 
-	`DROP POLICY IF EXISTS tenant_isolation_task_results_1024 ON task_results_1024`,
-	`CREATE POLICY tenant_isolation_task_results_1024 ON task_results_1024
+	`DROP POLICY IF EXISTS tenant_isolation_task_results_1024 ON ` + storage_models.TaskResultsTable,
+	`CREATE POLICY tenant_isolation_task_results_1024 ON ` + storage_models.TaskResultsTable + `
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
 	// Create indexes for task_results_1024
-	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_embedding 
-		ON task_results_1024 
-		USING ivfflat (embedding vector_cosine_ops) 
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_embedding
+		ON ` + storage_models.TaskResultsTable + `
+		USING ivfflat (embedding vector_cosine_ops)
 		WHERE embedding IS NOT NULL`,
 
-	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_type 
-		ON task_results_1024(task_type)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_type
+		ON ` + storage_models.TaskResultsTable + `(task_type)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_status 
-		ON task_results_1024(status)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_status
+		ON ` + storage_models.TaskResultsTable + `(status)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_session 
-		ON task_results_1024(session_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_session
+		ON ` + storage_models.TaskResultsTable + `(session_id)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_agent 
-		ON task_results_1024(agent_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_agent
+		ON ` + storage_models.TaskResultsTable + `(agent_id)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_tenant 
-		ON task_results_1024(tenant_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_tenant
+		ON ` + storage_models.TaskResultsTable + `(tenant_id)`,
 
 	// 6. secrets table - Encrypted sensitive data
 	`CREATE TABLE IF NOT EXISTS secrets (

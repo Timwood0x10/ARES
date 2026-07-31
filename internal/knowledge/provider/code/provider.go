@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -51,6 +52,12 @@ func New(name, rootDir string) (*CodeProvider, error) {
 
 // Name returns the provider identifier.
 func (p *CodeProvider) Name() string { return p.name }
+
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *CodeProvider) ProviderType() provider.ProviderType { return provider.ProviderCode }
+
+// Compile-time guard that CodeProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*CodeProvider)(nil)
 
 // IntentMatch returns 0.7 for architecture/code intents, 0.2 otherwise.
 func (p *CodeProvider) IntentMatch(intent knowledge.Intent) float64 {

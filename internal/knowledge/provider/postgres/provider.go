@@ -76,6 +76,12 @@ func NewPGProvider(dsn string, cfg provider.ProviderConfig, mapping provider.Col
 // Name returns the provider identifier.
 func (p *PGProvider) Name() string { return p.config.Name }
 
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *PGProvider) ProviderType() provider.ProviderType { return provider.ProviderPostgres }
+
+// Compile-time guard that PGProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*PGProvider)(nil)
+
 // IntentMatch scores based on configured intent tags.
 func (p *PGProvider) IntentMatch(intent knowledge.Intent) float64 {
 	if len(p.config.IntentTags) == 0 || intent.Goal == "" {

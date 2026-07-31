@@ -4,13 +4,14 @@ package engine
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 // RecoveryPatchExecutor handles recovery-related runtime patches.
-// It wraps a MutableDAG and applies ChangeRecoveryStrategy/ChangeMaxRetries.
-// Implements patch.RuntimeComponent for unified runtime evolution.
+// It wraps a MutableDAG and applies ChangeRecoveryStrategy/ChangeMaxRetries/
+// ChangeBackoff. Implements patch.RuntimeComponent for unified runtime evolution.
 type RecoveryPatchExecutor struct {
 	dag *MutableDAG
 }
@@ -65,9 +66,15 @@ func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 	}
 	switch p.Type {
 	case patch.PatchChangeRecoveryStrategy:
+		// Rollback patches carry a *recoveryStrategySnapshot; forward patches
+		// carry a strategy string. Accept both so a rollback patch re-submitted
+		// through a CanApply-gated path is not rejected.
+		if _, ok := p.Value.(*recoveryStrategySnapshot); ok {
+			return nil
+		}
 		strategy, ok := p.Value.(string)
 		if !ok {
-			return fmt.Errorf("recovery executor: ChangeRecoveryStrategy value must be string")
+			return fmt.Errorf("recovery executor: ChangeRecoveryStrategy value must be string or strategy snapshot")
 		}
 		switch RecoveryStrategy(strategy) {
 		case RecoveryRetry, RecoveryReplaceNode, RecoveryFailFast:
@@ -76,12 +83,24 @@ func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 			return fmt.Errorf("recovery executor: unknown strategy %q", strategy)
 		}
 	case patch.PatchChangeMaxRetries:
-		_, ok := p.Value.(int)
-		if !ok {
-			return fmt.Errorf("recovery executor: ChangeMaxRetries value must be int")
+		// Rollback patches carry a *recoveryMaxAttemptsSnapshot; forward
+		// patches carry an int. Accept both for the same reason as above.
+		if _, ok := p.Value.(*recoveryMaxAttemptsSnapshot); ok {
+			return nil
+		}
+		if _, ok := p.Value.(int); !ok {
+			return fmt.Errorf("recovery executor: ChangeMaxRetries value must be int or max-attempts snapshot")
 		}
 		return nil
 	case patch.PatchChangeBackoff:
+		// Rollback patches carry a *recoveryBackoffSnapshot; forward patches
+		// carry a time.Duration. Accept both for the same reason as above.
+		if _, ok := p.Value.(*recoveryBackoffSnapshot); ok {
+			return nil
+		}
+		if _, ok := p.Value.(time.Duration); !ok {
+			return fmt.Errorf("recovery executor: ChangeBackoff value must be time.Duration")
+		}
 		return nil
 	default:
 		return fmt.Errorf("recovery executor: unsupported patch type %s", p.Type)
@@ -114,6 +133,17 @@ type recoveryStrategySnapshot struct {
 type recoveryMaxAttemptsSnapshot struct {
 	maxAttempts map[string]int
 	hadPolicy   map[string]bool
+}
+
+// recoveryBackoffSnapshot captures per-step Backoff state for rollback,
+// mirroring recoveryStrategySnapshot/recoveryMaxAttemptsSnapshot. Steps that
+// had no RecoveryPolicy before the patch have hadPolicy=false so rollback
+// removes the policy it created.
+//
+// Guarding lock: e.dag.mu (write).
+type recoveryBackoffSnapshot struct {
+	backoff   map[string]time.Duration
+	hadPolicy map[string]bool
 }
 
 // applyChangeStrategy applies a ChangeRecoveryStrategy patch. A forward patch
@@ -293,9 +323,92 @@ func (e *RecoveryPatchExecutor) restoreMaxAttemptsSnapshot(
 	}, nil
 }
 
+// applyChangeBackoff applies a ChangeBackoff patch. A forward patch carries a
+// time.Duration applied to every step; a rollback patch carries a
+// *recoveryBackoffSnapshot that restores each step individually. The whole
+// read-modify-write runs under e.dag.mu (write) for the same reasons as
+// applyChangeStrategy/applyChangeMaxRetries. Policy creation for
+// previously-policyless steps is consistent with the sibling apply functions so
+// rollback stays symmetric: a step that gained a policy here is returned to nil
+// on rollback rather than keeping a zero-backoff policy.
 func (e *RecoveryPatchExecutor) applyChangeBackoff(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	// Rollback path: restore each step from the per-step snapshot.
+	if snap, ok := p.Value.(*recoveryBackoffSnapshot); ok {
+		return e.restoreBackoffSnapshot(snap)
+	}
+
+	newBackoff, ok := p.Value.(time.Duration)
+	if !ok {
+		return nil, fmt.Errorf("recovery executor: ChangeBackoff value must be time.Duration")
+	}
+
+	e.dag.mu.Lock()
+	defer e.dag.mu.Unlock()
+
+	if len(e.dag.steps) == 0 {
+		return nil, fmt.Errorf("recovery executor: no steps in DAG to apply backoff")
+	}
+
+	snap := &recoveryBackoffSnapshot{
+		backoff:   make(map[string]time.Duration, len(e.dag.steps)),
+		hadPolicy: make(map[string]bool, len(e.dag.steps)),
+	}
+	for id, step := range e.dag.steps {
+		snap.hadPolicy[id] = step.RecoveryPolicy != nil
+		if step.RecoveryPolicy != nil {
+			snap.backoff[id] = step.RecoveryPolicy.Backoff
+		}
+		// Create a policy for steps without one so backoff applies uniformly
+		// (consistent with ChangeRecoveryStrategy/ChangeMaxRetries); rollback
+		// clears it via hadPolicy=false.
+		if step.RecoveryPolicy == nil {
+			step.RecoveryPolicy = &RecoveryPolicy{}
+		}
+		step.RecoveryPolicy.Backoff = newBackoff
+	}
+
 	return &patch.RuntimePatch{
 		Type:   patch.PatchChangeBackoff,
+		Value:  snap,
 		Reason: "rollback: restore previous backoff",
+	}, nil
+}
+
+// restoreBackoffSnapshot restores per-step Backoff state from a snapshot under
+// the write lock. It returns a fresh snapshot of the pre-restoration state so
+// the rollback is itself reversible.
+func (e *RecoveryPatchExecutor) restoreBackoffSnapshot(
+	snap *recoveryBackoffSnapshot,
+) (*patch.RuntimePatch, error) {
+	e.dag.mu.Lock()
+	defer e.dag.mu.Unlock()
+
+	current := &recoveryBackoffSnapshot{
+		backoff:   make(map[string]time.Duration, len(snap.hadPolicy)),
+		hadPolicy: make(map[string]bool, len(snap.hadPolicy)),
+	}
+	for id, hadPolicy := range snap.hadPolicy {
+		step, ok := e.dag.steps[id]
+		if !ok {
+			continue
+		}
+		current.hadPolicy[id] = step.RecoveryPolicy != nil
+		if step.RecoveryPolicy != nil {
+			current.backoff[id] = step.RecoveryPolicy.Backoff
+		}
+		if hadPolicy {
+			if step.RecoveryPolicy == nil {
+				step.RecoveryPolicy = &RecoveryPolicy{}
+			}
+			step.RecoveryPolicy.Backoff = snap.backoff[id]
+		} else {
+			step.RecoveryPolicy = nil
+		}
+	}
+
+	return &patch.RuntimePatch{
+		Type:   patch.PatchChangeBackoff,
+		Value:  current,
+		Reason: "rollback: re-apply backoff",
 	}, nil
 }

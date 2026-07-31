@@ -52,6 +52,12 @@ func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingServic
 // Name returns the provider identifier.
 func (p *StoreProvider) Name() string { return p.name }
 
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *StoreProvider) ProviderType() provider.ProviderType { return provider.ProviderStore }
+
+// Compile-time guard that StoreProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*StoreProvider)(nil)
+
 // IntentMatch scores relevance for the given intent. The store provider is a
 // generic recall source, so it returns a moderate score that keeps it
 // selectable unless another provider is clearly a better fit:

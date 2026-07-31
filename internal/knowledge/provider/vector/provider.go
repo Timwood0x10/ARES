@@ -98,6 +98,12 @@ func NewVectorProvider(store storage.VectorStore, cfg Config) (*VectorProvider, 
 // Name returns the provider identifier.
 func (p *VectorProvider) Name() string { return p.config.Name }
 
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *VectorProvider) ProviderType() provider.ProviderType { return provider.ProviderVector }
+
+// Compile-time guard that VectorProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*VectorProvider)(nil)
+
 // IntentMatch scores relevance based on configured intent tags.
 // Returns 0.0–1.0 where higher = more relevant to the query.
 func (p *VectorProvider) IntentMatch(intent knowledge.Intent) float64 {

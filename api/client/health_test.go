@@ -156,7 +156,7 @@ func TestClientHealth_ReportsHealthy(t *testing.T) {
 		t.Fatal("expected non-nil report")
 	}
 
-	// Client not closed => Healthy is true
+	// Client not closed, no services configured => Healthy is true.
 	if !report.Healthy {
 		t.Errorf("expected Healthy to be true when client is open")
 	}
@@ -173,6 +173,87 @@ func TestClientHealth_ReportsHealthy(t *testing.T) {
 	if report.Healthy {
 		t.Errorf("expected Healthy to be false after Close()")
 	}
+}
+
+// TestClientHealth_ProbesLLMService verifies Health actually invokes
+// checkLLMHealth on the configured LLM service (previously checkLLMHealth had
+// no production caller). An enabled LLM service reports Available; a disabled
+// one reports unavailable and makes the overall report unhealthy.
+func TestClientHealth_ProbesLLMService(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("enabled LLM service is reported available", func(t *testing.T) {
+		client, err := NewClient(&Config{
+			BaseConfig: &core.BaseConfig{RequestTimeout: 30 * time.Second},
+			LLM:        &stubLLMService{},
+		})
+		if err != nil {
+			t.Fatalf("NewClient() error = %v", err)
+		}
+
+		report, err := client.Health(ctx)
+		if err != nil {
+			t.Fatalf("Health() error = %v", err)
+		}
+		if !report.LLMStatus.Available {
+			t.Errorf("expected LLMStatus.Available to be true for an enabled service")
+		}
+		if report.LLMStatus.Error != "" {
+			t.Errorf("expected empty LLM error, got %q", report.LLMStatus.Error)
+		}
+		if !report.Healthy {
+			t.Errorf("expected Healthy to be true when the only configured service is available")
+		}
+	})
+
+	t.Run("disabled LLM service makes report unhealthy", func(t *testing.T) {
+		client, err := NewClient(&Config{
+			BaseConfig: &core.BaseConfig{RequestTimeout: 30 * time.Second},
+			LLM:        &stubLLMService{disabled: true},
+		})
+		if err != nil {
+			t.Fatalf("NewClient() error = %v", err)
+		}
+
+		report, err := client.Health(ctx)
+		if err != nil {
+			t.Fatalf("Health() error = %v", err)
+		}
+		if report.LLMStatus.Available {
+			t.Errorf("expected LLMStatus.Available to be false for a disabled service")
+		}
+		if report.LLMStatus.Error == "" {
+			t.Errorf("expected a non-empty LLM error for a disabled service")
+		}
+		if report.Healthy {
+			t.Errorf("expected Healthy to be false when a configured service is unavailable")
+		}
+	})
+
+	t.Run("unconfigured LLM service is omitted from Healthy", func(t *testing.T) {
+		client, err := NewClient(&Config{
+			BaseConfig: &core.BaseConfig{RequestTimeout: 30 * time.Second},
+		})
+		if err != nil {
+			t.Fatalf("NewClient() error = %v", err)
+		}
+
+		report, err := client.Health(ctx)
+		if err != nil {
+			t.Fatalf("Health() error = %v", err)
+		}
+		// No LLM configured: status stays zero (not available, no error) and
+		// does not make the report unhealthy.
+		if report.LLMStatus.Available {
+			t.Errorf("expected LLMStatus.Available to be false when LLM is not configured")
+		}
+		if report.LLMStatus.Error != "" {
+			t.Errorf("expected empty LLM error when LLM is not configured, got %q", report.LLMStatus.Error)
+		}
+		if !report.Healthy {
+			t.Errorf("expected Healthy to be true when no services are configured and client is open")
+		}
+	})
 }
 
 // TestClientConfig_ReturnsInternalPointer tests Config() returns the config pointer directly.

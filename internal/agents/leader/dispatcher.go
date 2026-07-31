@@ -17,12 +17,37 @@ import (
 // concurrent task failure cancelled the errgroup context before execution began.
 var ErrTaskNotStarted = errors.New("task not started: cancelled by concurrent task failure")
 
+// DefaultDispatcherAgentID is the legacy sender identity used when no
+// WithDispatcherAgentID option is supplied. It preserves the pre-fix behavior
+// for tests that never exercise the message-sender path. Production callers
+// should always pass the real leader ID via WithDispatcherAgentID so
+// distributed messages carry the correct sender.
+//
+// TODO(tech-debt): make agentID required once all construction sites
+// (including tests) are migrated to pass a real ID.
+const DefaultDispatcherAgentID = "leader"
+
 // TaskExecutorFunc is a function type for executing tasks directly.
 type TaskExecutorFunc func(ctx context.Context, task *models.Task) (*models.TaskResult, error)
 
 // MessageSender sends messages to sub-agents (for distributed deployment).
 type MessageSender interface {
 	Send(ctx context.Context, agentAddr string, msg *ahp.AHPMessage) error
+}
+
+// DispatcherOption configures a taskDispatcher.
+type DispatcherOption func(*taskDispatcher)
+
+// WithDispatcherAgentID sets the sender identity stamped on distributed
+// task messages. Pass the leader agent's actual ID so sub-agents can
+// attribute messages correctly. When unset, DefaultDispatcherAgentID is
+// used as a legacy fallback.
+func WithDispatcherAgentID(id string) DispatcherOption {
+	return func(d *taskDispatcher) {
+		if id != "" {
+			d.agentID = id
+		}
+	}
 }
 
 // taskDispatcher dispatches tasks to sub-agents.
@@ -33,6 +58,8 @@ type taskDispatcher struct {
 	messageSender MessageSender
 	maxParallel   int
 	timeout       int
+	// agentID is the sender identity stamped on distributed task messages.
+	agentID string
 }
 
 // NewTaskDispatcher creates a new TaskDispatcher.
@@ -43,12 +70,13 @@ type taskDispatcher struct {
 //	maxParallel - maximum number of parallel task dispatches; uses default if <= 0.
 //	timeout - dispatch timeout in seconds; uses default if <= 0.
 //	sender - optional message sender for distributed deployment; may be nil for local-only mode.
+//	opts - optional configuration (e.g. WithDispatcherAgentID).
 //
 // Returns:
 //
 //	dispatcher - a new TaskDispatcher instance.
 //	err - validation error if agentRegistry is nil.
-func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender) (TaskDispatcher, error) {
+func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender, opts ...DispatcherOption) (TaskDispatcher, error) {
 	if agentRegistry == nil {
 		return nil, errors.New("task dispatcher: agent registry cannot be nil")
 	}
@@ -64,10 +92,16 @@ func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel in
 		messageSender: sender,
 		maxParallel:   maxParallel,
 		timeout:       timeout,
+		agentID:       DefaultDispatcherAgentID,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(d)
+		}
 	}
 	log.Debug("TaskDispatcher created",
 		"max_parallel", maxParallel, "timeout", timeout,
-		"has_sender", sender != nil)
+		"has_sender", sender != nil, "agent_id", d.agentID)
 	return d, nil
 }
 
@@ -200,6 +234,12 @@ func (d *taskDispatcher) executeTask(ctx context.Context, task *models.Task) *mo
 	return result
 }
 
+// getAgentID returns the configured sender identity for distributed task
+// messages. It returns the agent ID set via WithDispatcherAgentID, falling
+// back to DefaultDispatcherAgentID when unset (legacy behavior for tests).
 func (d *taskDispatcher) getAgentID() string {
-	return "leader"
+	if d.agentID != "" {
+		return d.agentID
+	}
+	return DefaultDispatcherAgentID
 }

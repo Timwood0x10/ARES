@@ -234,6 +234,68 @@ func TestGraphPatchExecutor_CanApply_NilGraph(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestGraphPatchExecutor_PlaceholderNode_IsHonestNotSilent verifies the R6 fix:
+// when an InsertNode/ReplaceNode patch carries no real Node implementation, the
+// executor does NOT silently return success doing nothing. Instead the inserted
+// node writes a distinguishable PlaceholderResult into state so callers can tell
+// no real work was performed. The node still returns nil so the DAG stays valid.
+func TestGraphPatchExecutor_PlaceholderNode_IsHonestNotSilent(t *testing.T) {
+	g := buildPatcherTestGraph(t)
+	exec := NewGraphPatchExecutor(g)
+
+	// Insert a node with NO Node implementation (Value omitted) — this is the
+	// evolution path that previously produced a silent no-op.
+	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
+		Type:   patch.PatchInsertNode,
+		Target: "D",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, rollback)
+
+	inserted, exists := g.nodes["D"]
+	require.True(t, exists, "placeholder node D should be inserted")
+
+	// Executing the placeholder must succeed (DAG stays valid) but must NOT be
+	// a silent empty success: state must carry an explicit PlaceholderResult.
+	state := NewState()
+	err = inserted.Execute(context.Background(), state)
+	require.NoError(t, err, "placeholder Execute must not fail the DAG")
+
+	val, ok := state.Get("node.D")
+	require.True(t, ok, "placeholder must write node.D rather than leaving state empty")
+	placeholder, isPlaceholder := val.(PlaceholderResult)
+	require.True(t, isPlaceholder, "node.D value must be a PlaceholderResult")
+	assert.True(t, placeholder.Placeholder, "Placeholder flag must be true")
+	assert.Equal(t, "D", placeholder.NodeID)
+	assert.NotEmpty(t, placeholder.Reason, "Reason must explain why no work was done")
+}
+
+// TestGraphPatchExecutor_ReplaceNode_PlaceholderFallback verifies the same
+// honest-placeholder behavior on the ReplaceNode path when no real Node is
+// supplied.
+func TestGraphPatchExecutor_ReplaceNode_PlaceholderFallback(t *testing.T) {
+	g := buildPatcherTestGraph(t)
+	exec := NewGraphPatchExecutor(g)
+
+	// Replace A with a placeholder (no Node implementation supplied).
+	_, err := exec.Apply(context.Background(), patch.RuntimePatch{
+		Type:   patch.PatchReplaceNode,
+		Target: "A",
+	})
+	require.NoError(t, err)
+
+	replaced, exists := g.nodes["A"]
+	require.True(t, exists)
+
+	state := NewState()
+	require.NoError(t, replaced.Execute(context.Background(), state))
+
+	val, ok := state.Get("node.A")
+	require.True(t, ok)
+	_, isPlaceholder := val.(PlaceholderResult)
+	assert.True(t, isPlaceholder, "replaced node A must produce a PlaceholderResult")
+}
+
 // TestGraphPatchExecutor_Apply_ChangeScheduler_Concurrent_NoRace exercises the
 // data race between applyChangeScheduler (which reads e.graph.scheduler) and
 // SetScheduler (which writes it under the write lock). Under -race this must

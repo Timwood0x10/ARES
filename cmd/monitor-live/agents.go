@@ -76,6 +76,7 @@ func createLeaderAgent(
 		cfg.Agents.Leader.MaxParallelTasks,
 		120, // timeout per step
 		nil,
+		leader.WithDispatcherAgentID(cfg.Agents.Leader.ID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create dispatcher: %w", err)

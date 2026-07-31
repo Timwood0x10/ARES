@@ -42,6 +42,22 @@ type DistillBridge struct {
 	// model is the embedding model name recorded on each Representation
 	// and KnowledgeObject.EmbeddingModel. Empty means no model recorded.
 	model string
+	// memoryAdapter converts distillation Memories into KnowledgeObjects,
+	// capping Memory.Content length at the configured value. Always
+	// non-nil after construction.
+	memoryAdapter *MemoryAdapter
+}
+
+// DistillBridgeOption configures a DistillBridge.
+type DistillBridgeOption func(*DistillBridge)
+
+// WithMemoryMaxContentLen overrides the cap on Memory.Content length when
+// converting distilled memories into KnowledgeObjects. Pass 0 or a
+// negative value to keep DefaultMaxMemoryContentLen.
+func WithMemoryMaxContentLen(n int) DistillBridgeOption {
+	return func(b *DistillBridge) {
+		b.memoryAdapter = NewMemoryAdapter(n)
+	}
 }
 
 // NewDistillBridge creates a bridge that connects the Memory Distillation
@@ -56,11 +72,13 @@ type DistillBridge struct {
 //     Pass nil to skip pipeline processing.
 //   - store: AKF KnowledgeStore for persisting the resulting KnowledgeObjects.
 //   - namespace: namespace assigned to all produced KnowledgeObjects.
+//   - opts: optional DistillBridgeOption overrides (e.g. WithMemoryMaxContentLen).
 func NewDistillBridge(
 	distiller ConversationDistiller,
 	pipeline *knowledge.KnowledgePipeline,
 	store knowledge.KnowledgeStore,
 	namespace string,
+	opts ...DistillBridgeOption,
 ) *DistillBridge {
 	return NewDistillBridgeWithGate(
 		distiller,
@@ -71,6 +89,7 @@ func NewDistillBridge(
 		knowledge.NewRelationExtractor(),
 		namespace,
 		"", // model: empty means no model recorded
+		opts...,
 	)
 }
 
@@ -87,6 +106,7 @@ func NewDistillBridge(
 //   - extractor: RelationExtractor; nil defaults to NewRelationExtractor().
 //   - namespace: namespace assigned to all produced KnowledgeObjects.
 //   - model: embedding model name; empty means no model recorded.
+//   - opts: optional DistillBridgeOption overrides (e.g. WithMemoryMaxContentLen).
 func NewDistillBridgeWithGate(
 	distiller ConversationDistiller,
 	pipeline *knowledge.KnowledgePipeline,
@@ -95,20 +115,32 @@ func NewDistillBridgeWithGate(
 	gate knowledge.QualityGateConfig,
 	extractor *knowledge.RelationExtractor,
 	namespace, model string,
+	opts ...DistillBridgeOption,
 ) *DistillBridge {
 	if extractor == nil {
 		extractor = knowledge.NewRelationExtractor()
 	}
-	return &DistillBridge{
-		distiller: distiller,
-		pipeline:  pipeline,
-		store:     store,
-		emb:       emb,
-		gate:      gate,
-		extractor: extractor,
-		namespace: namespace,
-		model:     model,
+	b := &DistillBridge{
+		distiller:     distiller,
+		pipeline:      pipeline,
+		store:         store,
+		emb:           emb,
+		gate:          gate,
+		extractor:     extractor,
+		namespace:     namespace,
+		model:         model,
+		memoryAdapter: NewMemoryAdapter(DefaultMaxMemoryContentLen),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(b)
+		}
+	}
+	// Guard against an option that left the adapter nil.
+	if b.memoryAdapter == nil {
+		b.memoryAdapter = NewMemoryAdapter(DefaultMaxMemoryContentLen)
+	}
+	return b
 }
 
 // DistillConversation runs a conversation through the full distillation
@@ -116,7 +148,7 @@ func NewDistillBridgeWithGate(
 //
 // Steps:
 //  1. Distill: uses the existing Distiller to extract Memories from messages.
-//  2. Convert: maps each Memory to a KnowledgeObject via FromMemory.
+//  2. Convert: maps each Memory to a KnowledgeObject via MemoryAdapter.FromMemory.
 //  3. Pipeline: runs each KnowledgeObject through Normalizer → Resolver → Summarizer.
 //     3.5. Relation extraction: extracts rule-based Relations from each object.
 //     3.6. Embedding + dedup: embeds each object, stores the Representation, and
@@ -159,7 +191,7 @@ func (b *DistillBridge) DistillConversation(
 	for i := range memories {
 		pointers[i] = &memories[i]
 	}
-	objects := FromMemories(pointers, b.namespace)
+	objects := b.memoryAdapter.FromMemories(pointers, b.namespace)
 	if len(objects) == 0 {
 		return nil, nil
 	}

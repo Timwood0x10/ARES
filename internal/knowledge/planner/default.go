@@ -182,7 +182,7 @@ func (d *defaultSourceDiscovery) Discover(ctx context.Context, reqs []KnowledgeR
 
 		// For each matching provider, generate a query plan.
 		for _, prov := range providers {
-			providerType := detectProviderType(prov.Name())
+			providerType := detectProviderType(prov)
 			qp, err := d.planner.PlanQuery(ctx, req, prov.Name(), providerType)
 			if err != nil {
 				continue
@@ -206,10 +206,16 @@ func (d *defaultSourceDiscovery) Discover(ctx context.Context, reqs []KnowledgeR
 	return sources, nil
 }
 
-func detectProviderType(name string) string {
-	// Simple heuristic: derive provider type from name.
-	// Real implementations would register their type explicitly.
-	return name
+// detectProviderType returns the backing data source type of a GraphProvider
+// via the optional TypedProvider interface. Providers that explicitly expose
+// their type (memory, evolution, postgres, mysql, vector, store, code) return
+// their registered type; providers that do not implement TypedProvider return
+// "" (unknown), which SourceDiscovery treats as a generic/keyword query.
+func detectProviderType(p provider.GraphProvider) string {
+	if tp, ok := p.(provider.TypedProvider); ok {
+		return string(tp.ProviderType())
+	}
+	return ""
 }
 
 // defaultQueryPlanner is a simple QueryPlanner that generates keyword-based

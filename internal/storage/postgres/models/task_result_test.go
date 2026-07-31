@@ -8,10 +8,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestTaskResult_TableName tests table name returns correct value.
+// TestTaskResult_TableName tests table name returns the shared constant.
+// This locks the model to TaskResultsTable so the dimension suffix stays
+// in sync across all files that reference the table.
 func TestTaskResult_TableName(t *testing.T) {
 	result := &TaskResult{}
-	assert.Equal(t, "task_results_1024", result.TableName())
+	assert.Equal(t, TaskResultsTable, result.TableName(),
+		"TableName must return the TaskResultsTable constant")
+	assert.Equal(t, "task_results_1024", TaskResultsTable,
+		"TaskResultsTable must equal the canonical table name")
 }
 
 // TestTaskResult_ValidFields tests valid field assignment.

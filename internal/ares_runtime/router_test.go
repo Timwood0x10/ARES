@@ -27,8 +27,9 @@ func TestExpressionRouter_NoRules_ReturnsNil(t *testing.T) {
 	decision, err := r.Route(context.Background(), RouteState{
 		CurrentStepID: "s1",
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no matching rule for step")
+	// Per the RouterPlugin contract: no matching rule → (nil, nil), not an
+	// error. A nil decision means "no routing is needed".
+	require.NoError(t, err)
 	assert.Nil(t, decision)
 }
 
@@ -104,8 +105,8 @@ func TestExpressionRouter_NoMatchingFromStep(t *testing.T) {
 	decision, err := r.Route(context.Background(), RouteState{
 		CurrentStepID: "s99",
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no matching rule for step")
+	// No rule matches step s99 → (nil, nil) per the documented contract.
+	require.NoError(t, err)
 	assert.Nil(t, decision)
 }
 

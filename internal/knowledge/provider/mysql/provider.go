@@ -57,6 +57,12 @@ func NewMySQLProvider(db *sql.DB, cfg provider.ProviderConfig, mapping provider.
 // Name returns the provider identifier.
 func (p *MySQLProvider) Name() string { return p.config.Name }
 
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *MySQLProvider) ProviderType() provider.ProviderType { return provider.ProviderMySQL }
+
+// Compile-time guard that MySQLProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*MySQLProvider)(nil)
+
 // IntentMatch returns a relevance score based on type/goal overlap.
 func (p *MySQLProvider) IntentMatch(intent knowledge.Intent) float64 {
 	if len(p.config.IntentTags) == 0 || len(intent.Scope.Types) == 0 {

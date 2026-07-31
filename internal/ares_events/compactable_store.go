@@ -54,6 +54,14 @@ type CompactableEventStore struct {
 	// compaction goroutines on shutdown.
 	lctx    context.Context
 	lcancel context.CancelFunc
+
+	// wg tracks in-flight background compaction workers launched by Append so
+	// Close can join them (bounded by compactionTimeout) before closing the
+	// underlying store — a worker must never run against a closing store.
+	// closed is set by Close under mu to stop new Append-launched workers from
+	// racing with the WaitGroup wait (Add-after-Wait is a WaitGroup misuse).
+	wg     sync.WaitGroup
+	closed bool
 }
 
 // NewCompactableEventStore creates a new auto-compacting event store wrapper.
@@ -100,14 +108,31 @@ func NewCompactableEventStore(
 // compactionTimeout is the maximum duration allowed for a single compaction check.
 const compactionTimeout = 30 * time.Second
 
-// Close cancels the store's lifecycle context, stopping any in-flight background
-// compaction workers, and closes the underlying EventStore if it implements
-// io.Closer. It is safe to call multiple times. Callers should call Close during
-// shutdown so compaction goroutines do not outlive the store; compaction runs are
-// already bounded by compactionTimeout, so failing to call Close does not leak
-// indefinitely but delays teardown of any in-flight run.
+// Close cancels the store's lifecycle context and waits for in-flight
+// background compaction workers to finish (bounded by compactionTimeout),
+// then closes the underlying EventStore if it implements io.Closer. It is
+// safe to call multiple times. Callers should call Close during shutdown so
+// compaction goroutines do not outlive the store; each compaction run is
+// bounded by compactionTimeout, so the wait below never blocks indefinitely.
 func (s *CompactableEventStore) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	s.lcancel()
+
+	// Join in-flight compaction workers so none is still running against the
+	// underlying store after Close returns. The worker group itself respects
+	// lctx (cancelled above) and compactionTimeout, so the wait is bounded.
+	waitCh := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(waitCh)
+	}()
+	select {
+	case <-waitCh:
+	case <-time.After(compactionTimeout + 5*time.Second):
+	}
+
 	if closer, ok := s.EventStore.(interface{ Close() error }); ok {
 		return closer.Close()
 	}
@@ -158,10 +183,24 @@ func (s *CompactableEventStore) Append(
 		return nil
 	})
 
+	// Register the waiter with the store's WaitGroup so Close can join it.
+	// The closed check runs under mu against Close's closed=true assignment:
+	// if Close has already begun, Append skips launching (no Add-after-Wait);
+	// if Append wins the race, Close's wg.Wait covers this worker.
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		cancel()
+		return nil
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+
 	// Waiter: drain the group asynchronously so Append stays non-blocking, then
 	// release the timeout context. See the comment above for why this goroutine
 	// is safe (managed lifecycle via errgroup, respects caller ctx, panic-free).
 	go func() {
+		defer s.wg.Done()
 		defer cancel()
 		if err := g.Wait(); err != nil {
 			log.Warn("compactable store: compaction wait failed", "error", err)

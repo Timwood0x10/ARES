@@ -327,15 +327,18 @@ func (c *Client) Backtest(ctx context.Context, req *BacktestRequest) (*BacktestR
 	}
 
 	// Build effective symbols without mutating the caller's request.
-	// When req.Symbols is empty, fall back to config symbols (copied so
-	// downstream runners cannot alias or mutate c.config.Symbols).
+	// Symbols is always copied into a fresh slice — when req.Symbols is empty
+	// it falls back to config symbols (also copied), and when non-empty the
+	// copy ensures a downstream runner cannot mutate the caller's backing
+	// array in place (sorting, reordering, element writes would otherwise
+	// leak back into req).
 	c.mu.RLock()
 	runner := c.backtestRunner
-	symbols := req.Symbols
+	symbols := make([]string, len(req.Symbols))
+	copy(symbols, req.Symbols)
 	if len(symbols) == 0 {
-		cfgSymbols := c.config.Symbols
-		symbols = make([]string, len(cfgSymbols))
-		copy(symbols, cfgSymbols)
+		symbols = make([]string, len(c.config.Symbols))
+		copy(symbols, c.config.Symbols)
 	}
 	c.mu.RUnlock()
 
@@ -385,15 +388,18 @@ func (c *Client) PaperTrade(ctx context.Context, req *PaperTradeRequest) (*Paper
 	}
 
 	// Build effective symbols without mutating the caller's request.
-	// When req.Symbols is empty, fall back to config symbols (copied so
-	// downstream traders cannot alias or mutate c.config.Symbols).
+	// Symbols is always copied into a fresh slice — when req.Symbols is empty
+	// it falls back to config symbols (also copied), and when non-empty the
+	// copy ensures a downstream trader cannot mutate the caller's backing
+	// array in place (sorting, reordering, element writes would otherwise
+	// leak back into req).
 	c.mu.RLock()
 	trader := c.paperTrader
-	symbols := req.Symbols
+	symbols := make([]string, len(req.Symbols))
+	copy(symbols, req.Symbols)
 	if len(symbols) == 0 {
-		cfgSymbols := c.config.Symbols
-		symbols = make([]string, len(cfgSymbols))
-		copy(symbols, cfgSymbols)
+		symbols = make([]string, len(c.config.Symbols))
+		copy(symbols, c.config.Symbols)
 	}
 	c.mu.RUnlock()
 

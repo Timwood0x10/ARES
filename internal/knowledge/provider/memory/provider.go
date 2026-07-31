@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -35,6 +36,12 @@ func New(name string, searcher TaskSearcher) *MemoryProvider {
 
 // Name returns the provider identifier.
 func (p *MemoryProvider) Name() string { return p.name }
+
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *MemoryProvider) ProviderType() provider.ProviderType { return provider.ProviderMemory }
+
+// Compile-time guard that MemoryProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*MemoryProvider)(nil)
 
 // IntentMatch scores relevance based on intent type overlap.
 // Returns a moderated score [0.1, 0.8] — high for memory/decision types, low for

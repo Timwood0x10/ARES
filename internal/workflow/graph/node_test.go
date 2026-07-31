@@ -191,6 +191,106 @@ func TestToolNode(t *testing.T) {
 	}
 }
 
+// TestToolNode_StateKey_UsesNodeIDNotToolName verifies the R2 fix: the state
+// key is derived from the node ID (set via WithNodeID), not the tool name, so
+// two packages reusing the same tool with distinct node IDs do not collide on
+// the "node.<id>" state key. The node ID still reports the tool name via ID().
+func TestToolNode_StateKey_UsesNodeIDNotToolName(t *testing.T) {
+	// Same tool instance shared by two nodes with distinct node IDs.
+	tool := &mockTool{
+		name:        "shared-tool",
+		description: "A shared tool",
+		executeFn: func(_ context.Context, params map[string]interface{}) (core.Result, error) {
+			// Echo the node_id from params so each node writes a distinct value.
+			return core.Result{Success: true, Data: params["node_id"]}, nil
+		},
+	}
+
+	nodeAlpha, err := NewToolNode(tool)
+	if err != nil {
+		t.Fatalf("NewToolNode alpha failed: %v", err)
+	}
+	nodeAlpha.WithNodeID("alpha")
+
+	nodeBeta, err := NewToolNode(tool)
+	if err != nil {
+		t.Fatalf("NewToolNode beta failed: %v", err)
+	}
+	nodeBeta.WithNodeID("beta")
+
+	// ID() still reports the tool name for both nodes (back-compat).
+	if nodeAlpha.ID() != "shared-tool" || nodeBeta.ID() != "shared-tool" {
+		t.Fatalf("ID() should report tool name; got alpha=%s beta=%s",
+			nodeAlpha.ID(), nodeBeta.ID())
+	}
+
+	state := NewState()
+	// Each node reads its own node_id input and writes under node.<nodeID>.
+	state.Set("node_id", "alpha-out")
+	if err := nodeAlpha.Execute(context.Background(), state); err != nil {
+		t.Fatalf("alpha execute: %v", err)
+	}
+	state.Set("node_id", "beta-out")
+	if err := nodeBeta.Execute(context.Background(), state); err != nil {
+		t.Fatalf("beta execute: %v", err)
+	}
+
+	// Distinct keys must both be present — no collision.
+	alphaVal, ok := state.Get("node.alpha")
+	if !ok {
+		t.Fatal("expected node.alpha key in state (no collision with tool name)")
+	}
+	if alphaVal != "alpha-out" {
+		t.Errorf("expected alpha-out, got %v", alphaVal)
+	}
+
+	betaVal, ok := state.Get("node.beta")
+	if !ok {
+		t.Fatal("expected node.beta key in state (no collision with tool name)")
+	}
+	if betaVal != "beta-out" {
+		t.Errorf("expected beta-out, got %v", betaVal)
+	}
+
+	// The tool-name key must NOT exist when a custom node ID is set; this is
+	// the collision that previously overwrote one package's output with the
+	// other's.
+	if _, exists := state.Get("node.shared-tool"); exists {
+		t.Error("node.shared-tool key must not exist when custom node IDs are set")
+	}
+}
+
+// TestToolNode_StateKey_FallsBackToToolName verifies backward compatibility:
+// when no custom node ID is set, the state key still uses the tool name.
+func TestToolNode_StateKey_FallsBackToToolName(t *testing.T) {
+	tool := &mockTool{
+		name:        "plain-tool",
+		description: "A plain tool",
+		executeFn: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+			return core.Result{Success: true, Data: "ok"}, nil
+		},
+	}
+
+	node, err := NewToolNode(tool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
+	// No WithNodeID call.
+
+	state := NewState()
+	if err := node.Execute(context.Background(), state); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	val, ok := state.Get("node.plain-tool")
+	if !ok {
+		t.Fatal("expected node.plain-tool key (tool-name fallback) in state")
+	}
+	if val != "ok" {
+		t.Errorf("expected ok, got %v", val)
+	}
+}
+
 func TestToolNodeWithError(t *testing.T) {
 	expectedErr := errors.New("tool error")
 	tool := &mockTool{
