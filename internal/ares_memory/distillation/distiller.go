@@ -574,6 +574,12 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 			switch strategy {
 			case ReplaceOld:
 				finalMemories = append(finalMemories, memory)
+			case KeepOld:
+				// Drop the incoming near-duplicate: the stored memory has
+				// higher confidence and remains in the repository untouched.
+				log.InfoContext(ctx, "[Memory Distillation] Discarding lower-confidence duplicate",
+					"conversation_id", conversationID, "memory_index", idx,
+					"new_confidence", memory.Importance, "existing_confidence", conflict.Confidence)
 			case KeepBoth:
 				oldMemory := Memory{
 					ID:         uuid.New().String(),

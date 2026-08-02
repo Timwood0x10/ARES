@@ -47,7 +47,7 @@ func (c *MemoryClassifier) ClassifyMemory(experience *Experience) MemoryType {
 
 	// Check for rule type
 	if c.isRule(content) {
-		return MemoryProfile
+		return MemoryKnowledge
 	}
 
 	// Default to fact type
@@ -121,6 +121,8 @@ func GetMemoryTypeFromString(s string) MemoryType {
 	case "solution":
 		return MemoryInteraction
 	case "rule":
+		return MemoryKnowledge
+	case "profile":
 		return MemoryProfile
 	default:
 		return MemoryKnowledge

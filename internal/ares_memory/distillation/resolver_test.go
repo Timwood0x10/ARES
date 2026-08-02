@@ -30,16 +30,24 @@ func TestConflictResolver_ResolveConflict(t *testing.T) {
 			expected:       ReplaceOld,
 		},
 		{
+			// A lower-confidence duplicate must not overwrite a better fact.
 			name:           "old memory higher confidence",
 			newMemory:      &Experience{Problem: "test", Solution: "fix", Confidence: 0.5},
 			existingMemory: &Experience{Problem: "test", Solution: "old fix", Confidence: 0.9},
-			expected:       KeepBoth,
+			expected:       KeepOld,
 		},
 		{
+			// Tie is broken in favour of the more recent observation.
 			name:           "equal confidence",
 			newMemory:      &Experience{Problem: "test", Solution: "fix", Confidence: 0.7},
 			existingMemory: &Experience{Problem: "test", Solution: "old fix", Confidence: 0.7},
-			expected:       KeepBoth,
+			expected:       ReplaceOld,
+		},
+		{
+			name:           "nil new memory keeps existing",
+			newMemory:      nil,
+			existingMemory: &Experience{Problem: "test", Solution: "old fix", Confidence: 0.9},
+			expected:       KeepOld,
 		},
 	}
 

@@ -201,7 +201,13 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 	// and the GenerateRequest is identical to the pre-expansion behaviour.
 	activeTools := make([]core.Tool, len(req.Tools))
 	copy(activeTools, req.Tools)
-	st := &iterState{messages: req.Messages, activeTools: activeTools}
+	// Copy req.Messages so that append does not write into the caller's
+	// backing array when the caller used append (cap > len). Without this
+	// copy, retry/multi-agent scenarios that reuse the same Messages slice
+	// would see messages from one run leak into another.
+	msgs := make([]*core.LLMMessage, len(req.Messages))
+	copy(msgs, req.Messages)
+	st := &iterState{messages: msgs, activeTools: activeTools}
 	maxIter := req.MaxIter
 	if maxIter <= 0 {
 		maxIter = DefaultMaxIterations

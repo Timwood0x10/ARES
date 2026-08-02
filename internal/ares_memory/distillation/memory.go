@@ -64,6 +64,8 @@ const (
 
 	// ReplaceOld replaces the old memory with the new one.
 	ReplaceOld = experience.ReplaceOld
+	// KeepOld discards the new memory and retains the existing one.
+	KeepOld = experience.KeepOld
 	// KeepBoth keeps both versions (used for competing solutions).
 	KeepBoth = experience.KeepBoth
 	// Merge merges the memories (reserved for future use).

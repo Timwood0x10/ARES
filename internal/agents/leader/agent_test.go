@@ -960,3 +960,69 @@ func TestSnapshotRestore_RoundTrip(t *testing.T) {
 		t.Errorf("conversation_summary mismatch: got %q, want %q", snap2["conversation_summary"], snap["conversation_summary"])
 	}
 }
+
+// TestLeaderAgent_RestartThenStop guards a shutdown regression.
+//
+// Stop once closed stopCh inside a sync.Once. Start allocates a *fresh* stopCh
+// when restarting a previously stopped agent, and a sync.Once has no reset, so
+// the second Stop silently skipped the close: background goroutines stayed
+// blocked on <-a.stopCh and distillWg.Wait() hung forever. Stop must therefore
+// perform an idempotent close guarded by a.mu, not a Once.
+func TestLeaderAgent_RestartThenStop(t *testing.T) {
+	parser := NewProfileParser(
+		nil,
+		output.NewTemplateEngine(),
+		"{{.input}}",
+		output.NewValidator(),
+		3,
+	)
+	planner := NewTaskPlanner(3)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
+
+	leader := &leaderAgent{
+		id:         "leader-restart",
+		agentType:  models.AgentTypeLeader,
+		status:     models.AgentStatusOffline,
+		config:     DefaultLeaderAgentConfig(),
+		parser:     parser,
+		planner:    planner,
+		dispatcher: dispatcher,
+		aggregator: NewResultAggregator(true, 10, SortByNone),
+	}
+
+	ctx := context.Background()
+	for cycle := 1; cycle <= 2; cycle++ {
+		if err := leader.Start(ctx); err != nil {
+			t.Fatalf("cycle %d: Start() error = %v", cycle, err)
+		}
+
+		leader.mu.RLock()
+		stopCh := leader.stopCh
+		leader.mu.RUnlock()
+		if stopCh == nil {
+			t.Fatalf("cycle %d: Start() left stopCh nil", cycle)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- leader.Stop(ctx) }()
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("cycle %d: Stop() error = %v", cycle, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("cycle %d: Stop() hung — stopCh was never closed on restart", cycle)
+		}
+
+		select {
+		case <-stopCh:
+			// closed as expected
+		default:
+			t.Fatalf("cycle %d: stopCh still open after Stop() returned", cycle)
+		}
+	}
+}

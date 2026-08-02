@@ -7,8 +7,8 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -345,13 +345,13 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 
 	// Manage cache size
 	if len(m.sessionCache) > m.maxCacheSize {
-		// Remove oldest entry (simple LRU)
+		// Remove least recently used entry (by UpdatedAt).
 		var oldestKey string
 		var oldestTime time.Time
 		for k, v := range m.sessionCache {
-			if oldestKey == "" || v.CreatedAt.Before(oldestTime) {
+			if oldestKey == "" || v.UpdatedAt.Before(oldestTime) {
 				oldestKey = k
-				oldestTime = v.CreatedAt
+				oldestTime = v.UpdatedAt
 			}
 		}
 		if oldestKey != "" {
@@ -771,9 +771,9 @@ func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context,
 
 	var sessionID string
 	if err := row.Scan(&sessionID); err != nil {
-		// Handle both sql.ErrNoRows (database/sql driver) and pgx.ErrNoRows (pgx driver)
-		// to support different database drivers.
-		if err == sql.ErrNoRows || strings.Contains(err.Error(), "no rows in result set") {
+		// Handle both sql.ErrNoRows (database/sql driver) and pgx.ErrNoRows
+		// (pgx driver) to support different database drivers.
+		if stderrors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
 		return "", errors.Wrap(err, "get latest session for leader")

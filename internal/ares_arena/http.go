@@ -26,6 +26,12 @@ type Handler struct {
 	service  *Service
 	recorder *flight.FlightRecorder
 	apiKey   string // when non-empty, all routes require this key
+	// allowAnonymous disables authentication entirely. It must be opted into
+	// explicitly and is intended for local development only. An unset API key
+	// alone is NOT sufficient to bypass auth: arena exposes destructive
+	// endpoints (leader/agent kill, node removal, memory corruption), so the
+	// default posture is deny.
+	allowAnonymous bool
 }
 
 // NewHandler creates a Handler backed by the given Service.
@@ -38,21 +44,37 @@ func (h *Handler) SetFlightRecorder(recorder *flight.FlightRecorder) {
 	h.recorder = recorder
 }
 
-// SetAPIKey enables API key authentication on all arena routes. When key is
-// non-empty, every request must include the X-API-Key header with a matching
-// value. When key is empty, authentication is disabled (useful for local
-// development but not recommended for production deployments).
+// SetAPIKey enables API key authentication on all arena routes. Every request
+// must then include the X-API-Key header with a matching value.
 func (h *Handler) SetAPIKey(key string) {
 	h.apiKey = key
 }
 
+// AllowAnonymous explicitly disables authentication on all arena routes.
+// This is an intentional, opt-in escape hatch for local development. Callers
+// must never enable it for a network-reachable deployment: arena routes can
+// kill the leader, remove nodes and corrupt agent memory.
+func (h *Handler) AllowAnonymous(allow bool) {
+	h.allowAnonymous = allow
+}
+
 // APIKeyAuthMiddleware enforces that incoming requests carry the configured
-// X-API-Key header. When no key is configured (h.apiKey == ""), the middleware
-// is a no-op to preserve backward compatibility for local-only deployments.
+// X-API-Key header.
+//
+// The default posture is deny: when no key is configured and anonymous access
+// was not explicitly opted into via AllowAnonymous, every request is rejected
+// with 401. A missing key is treated as a misconfiguration, not as permission
+// to serve destructive endpoints anonymously.
 func (h *Handler) APIKeyAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.apiKey == "" {
+		if h.allowAnonymous {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if h.apiKey == "" {
+			writeError(w, http.StatusUnauthorized,
+				"arena API key not configured: set ARENA_API_KEY (or --api-key), "+
+					"or pass --allow-anonymous for local development")
 			return
 		}
 		provided := r.Header.Get(apiKeyHeader)

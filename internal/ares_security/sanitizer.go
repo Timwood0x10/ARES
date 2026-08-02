@@ -434,7 +434,9 @@ func (l *SafeLogger) Logf(format string, args ...interface{}) {
 		}
 	}
 
-	// Format the message with sanitized format and args
+	// Format the message with sanitized format and args, then sanitize
+	// the final result to catch sensitive data that emerges only after
+	// format substitution (e.g., "api_key: sk-xxx" from Logf("api_key: %s", key)).
 	message := fmt.Sprintf(sanitizedFormat, sanitizedArgs...)
-	l.underlying(message)
+	l.underlying(l.sanitizer.Sanitize(message))
 }

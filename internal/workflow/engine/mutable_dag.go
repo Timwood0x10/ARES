@@ -106,25 +106,28 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 		seen[dep] = true
 
 		if _, exists := m.dag.Nodes[dep]; !exists {
-			// Rollback: remove the node and any edges added so far.
-			delete(m.dag.Nodes, id)
+			// Rollback: remove any edges added so far, then remove the node.
+			// Node deletion must happen AFTER edge rollback because
+			// addedEdges[].to is always id, and decrementing InDegree on
+			// a deleted node would nil-deref.
 			for _, e := range addedEdges {
 				m.removeEdgeFromSlice(e.from, e.to)
 				m.dag.Nodes[e.from].OutDegree--
 				m.dag.Nodes[e.to].InDegree--
 			}
+			delete(m.dag.Nodes, id)
 			return ErrInvalidDependency
 		}
 
 		// Check for cycle before adding edge.
 		if m.wouldCreateCycle(dep, id) {
 			// Rollback.
-			delete(m.dag.Nodes, id)
 			for _, e := range addedEdges {
 				m.removeEdgeFromSlice(e.from, e.to)
 				m.dag.Nodes[e.from].OutDegree--
 				m.dag.Nodes[e.to].InDegree--
 			}
+			delete(m.dag.Nodes, id)
 			return ErrCycleDetected
 		}
 

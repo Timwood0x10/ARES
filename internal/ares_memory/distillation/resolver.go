@@ -39,9 +39,15 @@ func NewConflictResolverWithConfig(repo ExperienceRepository, conflictThreshold 
 }
 
 // ResolveConflict determines the resolution strategy for a conflict.
-// It compares the confidence/importance of both memories and decides:
-// - If new memory has higher confidence: ReplaceOld
-// - If old memory has higher confidence: KeepBoth (preserve existing, add new as alternative)
+//
+// DetectConflict has already established that the two memories are
+// near-duplicates (similarity > threshold), so exactly one of them should
+// survive; keeping both would pollute retrieval with redundant entries.
+// The survivor is chosen by confidence:
+//   - new memory strictly more confident: ReplaceOld
+//   - old memory strictly more confident: KeepOld (the incoming low-confidence
+//     duplicate is discarded rather than overwriting a better fact)
+//   - equal confidence: ReplaceOld, preferring the more recent observation
 //
 // Args:
 //
@@ -55,16 +61,16 @@ func (r *ConflictResolver) ResolveConflict(newMemory *Experience, oldMemory *Exp
 	if oldMemory == nil {
 		return ReplaceOld
 	}
-
-	// Compare confidence scores to determine strategy
-	// Higher confidence new memory should replace old one
-	if newMemory.Confidence > oldMemory.Confidence {
-		return ReplaceOld
+	if newMemory == nil {
+		return KeepOld
 	}
 
-	// Keep both versions if old memory has higher or equal confidence
-	// This preserves the original while allowing the new one as an alternative
-	return KeepBoth
+	if oldMemory.Confidence > newMemory.Confidence {
+		return KeepOld
+	}
+
+	// Strictly higher, or a tie broken in favour of the newer observation.
+	return ReplaceOld
 }
 
 // DetectConflict detects conflicts with existing memories.
@@ -168,5 +174,11 @@ func (r *ConflictResolver) cosineSimilarity(v1, v2 []float64) float64 {
 
 	// Optimization: Use single sqrt instead of two
 	// math.Sqrt(norm1) * math.Sqrt(norm2) == math.Sqrt(norm1 * norm2)
-	return dotProduct / math.Sqrt(norm1*norm2)
+	result := dotProduct / math.Sqrt(norm1*norm2)
+
+	// Guard against NaN/Inf from degenerate vectors.
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0.0
+	}
+	return result
 }

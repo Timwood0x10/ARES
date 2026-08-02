@@ -3,7 +3,9 @@
 package indicators
 
 // MACD computes Moving Average Convergence Divergence.
-// Returns (macdLine, signalLine, histogram) slices of length len(prices).
+// Returns (macdLine, signalLine, histogram) slices.
+// macdLine has length len(prices)-slow+1, signalLine has the same length,
+// and histogram has length len(macdLine)-signal+1.
 func MACD(prices []float64, fast, slow, signal int) ([]float64, []float64, []float64) {
 	if len(prices) < slow+signal {
 		return nil, nil, nil
@@ -12,16 +14,21 @@ func MACD(prices []float64, fast, slow, signal int) ([]float64, []float64, []flo
 	emaFast := EMA(prices, fast)
 	emaSlow := EMA(prices, slow)
 
-	// MACD line = emaFast - emaSlow (aligned from index slow-1).
+	// MACD line = emaFast - emaSlow, aligned to the same bar index k.
+	// Both EMAs are valid starting at index slow-1 (the slow EMA's first
+	// real value). macdLine has length len(prices)-slow+1.
 	macdLine := make([]float64, len(prices)-slow+1)
 	for i := range macdLine {
-		macdLine[i] = emaFast[i+slow-fast] - emaSlow[i]
+		k := i + slow - 1
+		macdLine[i] = emaFast[k] - emaSlow[k]
 	}
 
 	// Signal line = EMA of macdLine.
 	signalLine := EMA(macdLine, signal)
 
-	// Histogram = macdLine - signalLine (aligned).
+	// Histogram = macdLine - signalLine, aligned to the same index.
+	// Both are valid starting at index signal-1 (the signal EMA's first
+	// real value). histogram has length len(macdLine)-signal+1.
 	histLen := len(macdLine) - signal + 1
 	if histLen < 0 {
 		histLen = 0
@@ -29,7 +36,7 @@ func MACD(prices []float64, fast, slow, signal int) ([]float64, []float64, []flo
 	histogram := make([]float64, histLen)
 	offset := len(macdLine) - histLen
 	for i := range histogram {
-		histogram[i] = macdLine[i+offset] - signalLine[i]
+		histogram[i] = macdLine[i+offset] - signalLine[i+offset]
 	}
 
 	return macdLine, signalLine, histogram

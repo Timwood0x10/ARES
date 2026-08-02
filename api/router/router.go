@@ -17,12 +17,11 @@ const (
 	methodDELETE = "DELETE"
 )
 
-// defaultAPIKey is a development-only placeholder.
+// defaultAPIKey is empty by default — deny-by-default.
 // Production deployments MUST override this via WithAPIKey.
-// An empty key means "auth disabled" (development mode); a non-empty key
-// gates all endpoints via X-API-Key header comparison with constant-time
-// equality.
-const defaultAPIKey = "change-me-in-production"
+// An empty key denies all requests; a non-empty key gates all endpoints
+// via X-API-Key header comparison with constant-time equality.
+const defaultAPIKey = ""
 
 // Router provides HTTP routing for the API.
 type Router struct {
@@ -61,8 +60,13 @@ func (r *Router) WithAPIKey(key string) *Router {
 
 // authMiddleware wraps an http.HandlerFunc with API key authentication.
 // The key must be provided via the X-API-Key header.
+// When apiKey is empty, all requests are denied (deny-by-default).
 func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		if r.apiKey == "" {
+			http.Error(w, "401: unauthorized — API key not configured", http.StatusUnauthorized)
+			return
+		}
 		provided := req.Header.Get("X-API-Key")
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(r.apiKey)) != 1 {
 			http.Error(w, "401: unauthorized — provide X-API-Key header", http.StatusUnauthorized)

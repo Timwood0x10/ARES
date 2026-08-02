@@ -60,6 +60,12 @@ func NewMemoryPatchExecutor(store MemoryConfigStore) *MemoryPatchExecutor {
 // only needs the config field — it reads/writes memory configuration values
 // without touching the database. Use this when the full ProductionMemoryManager
 // is not available (e.g., default bootstrap path).
+//
+// WARNING: The returned *ProductionMemoryManager has nil dbPool, tenantGuard,
+// embeddingClient, ctxCleaner, and conversationRepository fields. Calling any
+// method other than config-related accessors (e.g., AddMessage, BuildPromptMessages)
+// will nil-panic. This is acceptable for the config-only use case but callers
+// must not use it for full memory operations.
 func NewMinimalMemoryManager() *ProductionMemoryManager {
 	return &ProductionMemoryManager{
 		config: DefaultMemoryConfig(),

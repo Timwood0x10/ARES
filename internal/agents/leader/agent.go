@@ -211,56 +211,67 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 //
 //	err - joined errors from distillation/streaming goroutines, or status error.
 func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
-	// Serialize with concurrent Process/ProcessStream to prevent races on
-	// distillEg/streamEg lifecycle (P0-6).
-	a.processingMu.Lock()
-	defer a.processingMu.Unlock()
-
+	// Close stopCh FIRST to unblock streaming goroutines that hold
+	// processingMu and block on ch sends. This must happen BEFORE acquiring
+	// processingMu to avoid deadlock: ProcessStream's goroutine holds
+	// processingMu and blocks on ch sends that can only be interrupted by
+	// closing stopCh. If we lock processingMu first, we deadlock with the
+	// streaming goroutine.
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
 		return errors.ErrAgentNotRunning
 	}
 	a.status = models.AgentStatusStopping
+
+	// Idempotent close guarded by a.mu, which also guards every write to
+	// stopCh (Start / ensureInitialized). A sync.Once cannot be used here:
+	// Start allocates a fresh stopCh on restart, and a Once has no reset, so
+	// the second Stop would silently skip the close and leave background
+	// goroutines blocked on <-a.stopCh forever (distillWg.Wait would hang).
+	if a.stopCh != nil {
+		select {
+		case <-a.stopCh:
+			// already closed by a previous Stop
+		default:
+			close(a.stopCh)
+		}
+	}
 	a.mu.Unlock()
 
-	a.cleanupOnce.Do(func() {
-		// Signal all goroutines to stop under a.mu, which is the lock used for
-		// both creation (Start) and reads (checkAgentRunning, ProcessStream).
-		// Previously this used distillMu, creating a data race (P0-6).
-		a.mu.Lock()
-		close(a.stopCh)
-		a.mu.Unlock()
+	// Wait for in-flight Process/ProcessStream to release processingMu.
+	// The streaming goroutine will exit once stopCh is closed.
+	a.processingMu.Lock()
+	defer a.processingMu.Unlock()
 
-		// Wait for background goroutines to complete and collect their errors.
-		a.distillWg.Wait()
+	// Wait for background goroutines to complete and collect their errors.
+	a.distillWg.Wait()
 
-		var errs []error
-		if a.distillEg != nil {
-			if err := a.distillEg.Wait(); err != nil {
-				log.Warn("Errors from distillation goroutines during shutdown",
-					"error", err)
-				errs = append(errs, fmt.Errorf("distillation: %w", err))
-			}
+	var errs []error
+	if a.distillEg != nil {
+		if err := a.distillEg.Wait(); err != nil {
+			log.Warn("Errors from distillation goroutines during shutdown",
+				"error", err)
+			errs = append(errs, fmt.Errorf("distillation: %w", err))
 		}
-		if a.streamEg != nil {
-			if err := a.streamEg.Wait(); err != nil {
-				log.Warn("Errors from streaming goroutines during shutdown",
-					"error", err)
-				errs = append(errs, fmt.Errorf("streaming: %w", err))
-			}
+	}
+	if a.streamEg != nil {
+		if err := a.streamEg.Wait(); err != nil {
+			log.Warn("Errors from streaming goroutines during shutdown",
+				"error", err)
+			errs = append(errs, fmt.Errorf("streaming: %w", err))
 		}
-		if len(errs) > 0 {
-			retErr = stderrors.Join(errs...)
-		}
+	}
+	if len(errs) > 0 {
+		retErr = stderrors.Join(errs...)
+	}
 
-		// Cleanup heartbeat monitor if provided.
-		if a.heartbeatMon != nil {
-			a.heartbeatMon.RemoveAgent(a.id)
-		}
+	// Cleanup heartbeat monitor if provided.
+	if a.heartbeatMon != nil {
+		a.heartbeatMon.RemoveAgent(a.id)
+	}
 
-		log.Info("Leader agent stopped successfully", "agent_id", a.id)
-	})
+	log.Info("Leader agent stopped successfully", "agent_id", a.id)
 
 	a.emitEvent(ctx, ares_events.EventAgentStopped, map[string]any{
 		"agent_id": a.id,

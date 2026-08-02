@@ -306,7 +306,15 @@ func runServe() error {
 	fmt.Println()
 
 	server := monitoring.NewHTTPServer(plugin)
-	handler := &actionHandler{inner: server, mgr: mgr, tools: registry}
+
+	// API key for destructive endpoints (agents/chaos/tools). When empty,
+	// all destructive requests are denied (deny-by-default). Configure via
+	// ARES_API_KEY environment variable.
+	serveAPIKey := os.Getenv("ARES_API_KEY")
+	if serveAPIKey != "" {
+		server = monitoring.NewHTTPServer(plugin, monitoring.WithAPIKey(serveAPIKey))
+	}
+	handler := &actionHandler{inner: server, mgr: mgr, tools: registry, apiKey: serveAPIKey}
 
 	httpSrv = &http.Server{
 		Addr:         addr,

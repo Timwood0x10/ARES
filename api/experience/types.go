@@ -33,7 +33,7 @@ const (
 //	MemoryKnowledge   → "fact"
 //	MemoryPreference  → "preference"
 //	MemoryInteraction → "solution"
-//	MemoryProfile     → "rule"
+//	MemoryProfile     → "profile"
 //
 // Unknown values are returned verbatim.
 func (m MemoryType) String() string {
@@ -45,7 +45,7 @@ func (m MemoryType) String() string {
 	case MemoryInteraction:
 		return "solution"
 	case MemoryProfile:
-		return "rule"
+		return "profile"
 	default:
 		return string(m)
 	}
@@ -67,6 +67,11 @@ type ResolutionStrategy string
 const (
 	// ReplaceOld replaces the old memory with the new one.
 	ReplaceOld ResolutionStrategy = "replace"
+	// KeepOld discards the new memory and retains the existing one. Used when
+	// the stored memory carries strictly higher confidence than the incoming
+	// one, so that a low-confidence duplicate cannot overwrite a high-confidence
+	// fact.
+	KeepOld ResolutionStrategy = "keep_old"
 	// KeepBoth keeps both versions (used for competing solutions).
 	KeepBoth ResolutionStrategy = "version"
 	// Merge merges the memories (reserved for future use).

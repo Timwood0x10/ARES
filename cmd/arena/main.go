@@ -152,6 +152,7 @@ func runRun(args []string) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setArenaAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -258,6 +259,7 @@ func validateRemote(scenarioPath, addr string) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setArenaAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -331,10 +333,24 @@ func runList(args []string) error {
 	return nil
 }
 
+// setArenaAuthHeader attaches the arena API key from the environment to an
+// outgoing request. Client subcommands need this because the arena server
+// denies unauthenticated requests by default; without it every CLI call would
+// 401 against a properly configured server, pushing operators towards
+// --allow-anonymous and undoing the hardening.
+func setArenaAuthHeader(req *http.Request) {
+	if key := os.Getenv("ARENA_API_KEY"); key != "" {
+		req.Header.Set("X-API-Key", key)
+	}
+}
+
 // runServe handles the "serve" subcommand.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "Listen address")
+	apiKeyFlag := fs.String("api-key", "", "API key required for all arena endpoints (also via ARENA_API_KEY env)")
+	allowAnon := fs.Bool("allow-anonymous", false,
+		"Serve arena endpoints without authentication (local development only; destructive endpoints become unprotected)")
 
 	flags, _ := separateArgs(args)
 	if err := fs.Parse(flags); err != nil {
@@ -352,12 +368,31 @@ func runServe(args []string) error {
 	}
 
 	handler := arena.NewHandler(svc)
+	// Enable API key auth when configured via env or flag. Without a key, the
+	// middleware denies every request unless anonymous access was explicitly
+	// requested (local development only).
+	apiKey := *apiKeyFlag
+	if apiKey == "" {
+		apiKey = os.Getenv("ARENA_API_KEY")
+	}
+	switch {
+	case apiKey != "":
+		handler.SetAPIKey(apiKey)
+	case *allowAnon:
+		handler.AllowAnonymous(true)
+		fmt.Fprintln(os.Stderr, "Auth: DISABLED via --allow-anonymous — destructive endpoints "+
+			"are reachable without credentials. Do not expose this port.")
+	default:
+		return fmt.Errorf("arena serve requires an API key: set --api-key or ARENA_API_KEY, " +
+			"or pass --allow-anonymous to run without authentication (local development only)")
+	}
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
+	authWrapped := handler.APIKeyAuthMiddleware(mux)
 
 	// Wrap with recovery middleware.
-	wrapped := arena.RecoverMiddleware(mux)
+	wrapped := arena.RecoverMiddleware(authWrapped)
 
 	server := &http.Server{
 		Addr:         *addr,
@@ -434,6 +469,7 @@ func runSurvival(args []string) error {
 		return fmt.Errorf("create start request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setArenaAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

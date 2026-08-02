@@ -346,8 +346,11 @@ func buildOpenAIChatMessages(messages []*core.LLMMessage) []map[string]any {
 					"id":   tc.ID,
 					"type": tc.Type,
 					"function": map[string]any{
-						"name":      tc.Function.Name,
-						"arguments": tryParseJSON(tc.Function.Arguments),
+						"name": tc.Function.Name,
+						// OpenAI API requires function.arguments to be a string,
+						// not a parsed JSON object. Sending an object causes
+						// invalid_request_error on multi-turn tool calls.
+						"arguments": tc.Function.Arguments,
 					},
 				})
 			}

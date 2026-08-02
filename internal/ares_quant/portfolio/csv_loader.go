@@ -121,6 +121,7 @@ func LoadSignalsFromCSV(path string) ([]TradeSignal, error) {
 			Action:     action,
 			Reason:     reason,
 			Confidence: weight, // map weight -> confidence field
+			Symbol:     symbol,
 		})
 	}
 
