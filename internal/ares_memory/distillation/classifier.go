@@ -58,7 +58,7 @@ func (c *MemoryClassifier) ClassifyMemory(experience *Experience) MemoryType {
 func (c *MemoryClassifier) isSolution(content string) bool {
 	solutionKeywords := []string{
 		"fix", "solution", "error", "issue", "problem", "resolve",
-		"debug", "troubleshoot", "resolve", "workaround", "patch",
+		"debug", "troubleshoot", "workaround", "patch",
 		"error:", "exception", "fail", "failure", "bug",
 		"restart", "update", "change", "modify", "adjust",
 		"correct", "repair", "heal", "recover",

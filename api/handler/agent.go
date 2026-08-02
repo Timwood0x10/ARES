@@ -145,6 +145,9 @@ func (h *AgentHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.Status != "" {
 		updates["status"] = req.Status
 	}
+	if req.Config != nil {
+		updates["config"] = req.Config
+	}
 
 	agent, err := h.agent.UpdateAgent(r.Context(), agentID, updates)
 	if err != nil {

@@ -233,5 +233,7 @@ func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
 
 // Ping checks if the client is operational.
 func (c *Client) Ping(ctx context.Context) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return !c.closed
 }

@@ -157,6 +157,9 @@ type ArenaAdapter struct {
 	successfulActions int
 	failedActions     int
 	resurrectionTotal int
+	// survival mode state — updated by StartSurvival/StopSurvival.
+	survivalRunning bool
+	survivalMode    string
 	// history records every Execute result.
 	history []dashboard.ArenaResult
 }
@@ -324,20 +327,40 @@ func (a *ArenaAdapter) ResilienceScore() map[string]any {
 		"score":         roundTo(score, 1),
 		"grade":         grade,
 		"total_actions": a.totalActions,
-		"success_rate":  roundTo(score, 1),
+		"success_rate":  roundTo(successRate(a.successfulActions, a.totalActions), 4),
 	}
+}
+
+// successRate returns the fraction of successful actions in [0, 1], or 0
+// when no actions have been executed.
+func successRate(successful, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(successful) / float64(total)
 }
 
 // --- SurvivalStarter / SurvivalProvider implementation ---
 
-// StartSurvival starts survival mode (demo mode).
+// StartSurvival starts survival mode. It records the running state so
+// GetSurvivalStatus reports the actual status instead of a hardcoded value.
 func (a *ArenaAdapter) StartSurvival(ctx context.Context) error {
-	log.Info("arena: survival mode started (demo mode)")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.survivalRunning {
+		return nil
+	}
+	a.survivalRunning = true
+	a.survivalMode = "chaos_demo"
+	log.Info("arena: survival mode started")
 	return nil
 }
 
 // StopSurvival stops survival mode.
 func (a *ArenaAdapter) StopSurvival() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.survivalRunning = false
 	log.Info("arena: survival mode stopped")
 	return nil
 }
@@ -349,5 +372,7 @@ func (a *ArenaAdapter) GetResilienceScore() map[string]any {
 
 // GetSurvivalStatus returns the survival mode status.
 func (a *ArenaAdapter) GetSurvivalStatus() map[string]any {
-	return map[string]any{"running": false, "mode": "chaos_demo"}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return map[string]any{"running": a.survivalRunning, "mode": a.survivalMode}
 }

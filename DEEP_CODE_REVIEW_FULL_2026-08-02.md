@@ -261,6 +261,8 @@ auto-split 模式,`files` 非空但 `available` 为空 (零成员,或唯一成�
 | `api/core/factory.go:21` | `DefaultArenaConfig` 硬编码 `"latency_spike"`,不是定义的 `core.FaultType` 常量 |
 | `cmd/ares/db_create_table.go:44-50` | adminDB 双重 Close (defer + 显式) |
 | `internal/storage/postgres/memory/vector.go:41` | `VectorSearcher.Search` 忽略 ctx |
+| `internal/monitoring/plugin.go:120-122` | `WithCostAlertThreshold` 是空 option (注释自认 placeholder,未来成本告警预留) |
+| `internal/monitoring/http_api.go:155` | 注释 "SSE placeholder" 过时——`handleSubscribe` (391-449) 是完整 SSE 实现,仅注释误导 |
 
 ---
 

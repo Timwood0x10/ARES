@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/Timwood0x10/ares/api/core"
 )
@@ -154,11 +155,34 @@ func (h *MemoryHandler) HandleGetMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	messages, err := h.memory.GetMessages(r.Context(), sessionID, nil)
+	messages, err := h.memory.GetMessages(r.Context(), sessionID, parsePagination(r))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("get messages failed: %v", err))
 		return
 	}
 
 	writeJSON(w, http.StatusOK, messages)
+}
+
+// parsePagination builds a PaginationRequest from query parameters. It
+// applies a default page size of 100 and a page of 1 when the parameters
+// are absent or invalid, so handlers never issue unbounded queries.
+func parsePagination(r *http.Request) *core.PaginationRequest {
+	page := 1
+	pageSize := 100
+	if v := r.URL.Query().Get("page"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if v := r.URL.Query().Get("page_size"); v != "" {
+		if ps, err := strconv.Atoi(v); err == nil && ps > 0 {
+			pageSize = ps
+		}
+	}
+	return &core.PaginationRequest{
+		Page:     page,
+		PageSize: pageSize,
+		Limit:    pageSize,
+	}
 }

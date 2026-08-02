@@ -61,18 +61,19 @@ var (
 
 // Sentinel errors for Storage module.
 var (
-	ErrDBConnectionFailed = errors.New("database connection failed")
-	ErrQueryFailed        = errors.New("query execution failed")
-	ErrVectorSearchFailed = errors.New("vector search failed")
-	ErrRecordNotFound     = fmt.Errorf("record not found: %w", ErrNotFound)
-	ErrTransactionFailed  = errors.New("transaction failed")
-	ErrNoTransaction      = errors.New("no active transaction")
-	ErrInvalidArgument    = errors.New("invalid argument provided")
-	ErrCircuitBreakerOpen = errors.New("circuit breaker is open")
-	ErrServiceUnavailable = errors.New("service is temporarily unavailable")
-	ErrInvalidState       = errors.New("invalid state")
-	ErrSecretExpired      = errors.New("secret has expired")
-	ErrBufferFull         = errors.New("write buffer is full")
+	ErrDBConnectionFailed  = errors.New("database connection failed")
+	ErrQueryFailed         = errors.New("query execution failed")
+	ErrVectorSearchFailed  = errors.New("vector search failed")
+	ErrRecordNotFound      = fmt.Errorf("record not found: %w", ErrNotFound)
+	ErrTransactionFailed   = errors.New("transaction failed")
+	ErrNoTransaction       = errors.New("no active transaction")
+	ErrInvalidArgument     = errors.New("invalid argument provided")
+	ErrCircuitBreakerOpen  = errors.New("circuit breaker is open")
+	ErrServiceUnavailable  = errors.New("service is temporarily unavailable")
+	ErrInvalidState        = errors.New("invalid state")
+	ErrSecretExpired       = errors.New("secret has expired")
+	ErrBufferFull          = errors.New("write buffer is full")
+	ErrRollbackUnsupported = errors.New("rollback is not supported without a migration version table")
 )
 
 // Sentinel errors for LLM module.

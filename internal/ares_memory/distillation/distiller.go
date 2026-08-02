@@ -554,6 +554,7 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 		}
 
 		exp := &Experience{
+			Type:       memory.Type,
 			Problem:    problem,
 			Solution:   solution,
 			Confidence: memory.Importance,

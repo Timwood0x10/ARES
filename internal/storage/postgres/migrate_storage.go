@@ -75,7 +75,7 @@ var storageMigrations = []string{
 	`CREATE TABLE IF NOT EXISTS experiences_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
-			type VARCHAR(50) NOT NULL CHECK (type IN ('query', 'solution', 'failure', 'pattern', 'distilled')),
+			type VARCHAR(50) NOT NULL CHECK (type IN ('success', 'failure', 'query', 'solution', 'pattern', 'distilled')),
 			input TEXT,
 			output TEXT,
 			embedding VECTOR(1024) NOT NULL,
@@ -86,7 +86,9 @@ var storageMigrations = []string{
 			agent_id VARCHAR(255),
 			metadata JSONB DEFAULT '{}'::jsonb,
 			decay_at TIMESTAMP DEFAULT NOW() + INTERVAL '30 days',
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW(),
+			usage_count INTEGER DEFAULT 0
 		)`,
 
 	`ALTER TABLE experiences_1024 ENABLE ROW LEVEL SECURITY`,
@@ -131,7 +133,8 @@ var storageMigrations = []string{
 			success_rate FLOAT DEFAULT 0.0,
 			last_used_at TIMESTAMP,
 			metadata JSONB DEFAULT '{}'::jsonb,
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMP DEFAULT NOW(),
+			UNIQUE (tenant_id, name)
 		)`,
 
 	`ALTER TABLE tools ENABLE ROW LEVEL SECURITY`,
@@ -167,6 +170,7 @@ var storageMigrations = []string{
 			agent_id VARCHAR(64),
 			role VARCHAR(32) NOT NULL,
 			content TEXT NOT NULL,
+			metadata JSONB DEFAULT '{}'::jsonb,
 			expires_at TIMESTAMP,
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
@@ -251,7 +255,9 @@ var storageMigrations = []string{
 			algorithm VARCHAR(32) NOT NULL DEFAULT 'aes-gcm',
 			expires_at TIMESTAMP,
 			metadata JSONB DEFAULT '{}'::jsonb,
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW(),
+			UNIQUE (tenant_id, key)
 		)`,
 
 	`ALTER TABLE secrets ENABLE ROW LEVEL SECURITY`,

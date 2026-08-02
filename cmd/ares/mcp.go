@@ -5,17 +5,17 @@ import (
 	"fmt"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
-	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
-	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	builtintools "github.com/Timwood0x10/ares/internal/tools/resources/builtin"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// setupMCP connects to MCP servers and registers their tools in the public registry.
-// The builtin→public bridge ALWAYS runs so the dashboard sees builtin tools
-// regardless of whether MCP servers are configured; MCP-specific setup only
-// runs when at least one MCP server is configured.
-func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) (*core.Registry, error) {
+// setupMCP registers builtin and MCP tools into the internal registry and
+// bridges them into the public registry. It reuses the MCP manager created
+// by Bootstrap (comp.MCP) instead of creating a second manager, so server
+// connections are not duplicated and the single manager's Stop hook (already
+// registered at shutdown) covers every connection.
+func setupMCP(_ context.Context, mcpMgr *ares_mcp.MCPManager, registry *api_tools.Registry) (*core.Registry, error) {
 	internalReg := core.NewRegistry()
 
 	// Register builtin general tools into the internal registry so sub-agents
@@ -24,16 +24,15 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 		return internalReg, fmt.Errorf("register general tools: %w", err)
 	}
 
-	// Conditionally connect MCP servers and register their tools into the
-	// internal registry. Builtin tools remain available regardless of MCP
-	// configuration.
-	if len(cfg.MCP.Servers) > 0 {
-		mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, internalReg)
-		if err != nil {
-			return internalReg, fmt.Errorf("MCP setup: %w", err)
-		}
-		if mcpMgr != nil {
-			fmt.Printf("MCP manager started: %d servers\n", len(cfg.MCP.Servers))
+	// Copy tools from the bootstrap-created MCP manager into the internal
+	// registry so sub-agents and the dashboard see MCP tools. The manager was
+	// already started by Bootstrap; no second manager is created here.
+	if mcpMgr != nil {
+		for _, tool := range mcpMgr.RegisteredTools() {
+			t := tool
+			if err := internalReg.Register(t); err != nil {
+				fmt.Printf("MCP bridge: failed to register tool %s: %v\n", t.Name(), err)
+			}
 		}
 	}
 

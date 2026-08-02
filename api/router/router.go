@@ -15,6 +15,12 @@ const (
 	methodGET = "GET"
 	// methodDELETE is the HTTP DELETE method constant used in route registrations.
 	methodDELETE = "DELETE"
+	// methodPUT is the HTTP PUT method constant used in route registrations.
+	methodPUT = "PUT"
+	// agentsPath is the agent collection route path.
+	agentsPath = "/api/v1/agents"
+	// agentByIDPath is the single-agent route path with an id placeholder.
+	agentByIDPath = "/api/v1/agents/{id}"
 )
 
 // defaultAPIKey is empty by default — deny-by-default.
@@ -137,10 +143,11 @@ func (r *Router) RegisterAgentEndpoints(agentHandler *handler.AgentHandler) {
 		path   string
 		fn     http.HandlerFunc
 	}{
-		{methodPOST, "/api/v1/agents", r.agentH.HandleCreate},
-		{methodGET, "/api/v1/agents", r.agentH.HandleList},
-		{methodGET, "/api/v1/agents/{id}", r.agentH.HandleGet},
-		{methodDELETE, "/api/v1/agents/{id}", r.agentH.HandleDelete},
+		{methodPOST, agentsPath, r.agentH.HandleCreate},
+		{methodGET, agentsPath, r.agentH.HandleList},
+		{methodGET, agentByIDPath, r.agentH.HandleGet},
+		{methodPUT, agentByIDPath, r.agentH.HandleUpdate},
+		{methodDELETE, agentByIDPath, r.agentH.HandleDelete},
 	} {
 		r.mux.HandleFunc(route.method+" "+route.path, r.authMiddleware(route.fn))
 	}

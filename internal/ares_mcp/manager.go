@@ -262,6 +262,24 @@ func (m *MCPManager) GetClient(serverName string) (*MCPClient, bool) {
 	return mc.client, true
 }
 
+// RegisteredTools returns the tools currently registered by connected MCP
+// servers. It is the read-side counterpart of the internal registry, letting
+// callers bridge MCP tools into another registry without holding a second
+// manager instance (and thus without duplicating server connections).
+func (m *MCPManager) RegisteredTools() []core.Tool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	names := m.registry.List()
+	tools := make([]core.Tool, 0, len(names))
+	for _, name := range names {
+		if t, ok := m.registry.Get(name); ok {
+			tools = append(tools, t)
+		}
+	}
+	return tools
+}
+
 // registerTools creates MCPTool instances and registers them in the registry.
 func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 	if mc.client == nil {

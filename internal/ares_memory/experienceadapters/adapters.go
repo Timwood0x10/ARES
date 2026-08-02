@@ -124,10 +124,31 @@ func (r *DistillationRepo) SearchByVector(
 	return out, nil
 }
 
+// memoryTypeToStorageType maps a distillation MemoryType to the storage
+// Type value used for persistence and lookup. The storage schema stores
+// success/failure and legacy outcome labels, while MemoryType carries
+// knowledge/preference/interaction/profile semantics; this single mapping
+// keeps write-side Type and query-side WHERE type = $1 consistent so the
+// distiller's solution cap and cross-session dedup can match rows.
+func memoryTypeToStorageType(mt experience.MemoryType) string {
+	switch mt {
+	case experience.MemoryKnowledge:
+		return storage_models.ExperienceTypeSuccess
+	case experience.MemoryPreference:
+		return storage_models.ExperienceTypePattern
+	case experience.MemoryInteraction:
+		return storage_models.ExperienceTypeSolution
+	case experience.MemoryProfile:
+		return storage_models.ExperienceTypeDistilled
+	default:
+		return storage_models.ExperienceTypeSuccess
+	}
+}
+
 // GetByMemoryType returns experiences whose storage Type matches the
 // memory-type label. The mapping is best-effort: storage Type stores
 // success/failure/etc. while MemoryType.String() returns
-// fact/preference/solution/rule, so this surface is approximate. It is
+// fact/preference/solution/profile, so this surface is approximate. It is
 // only used by the distiller's deduplication path.
 func (r *DistillationRepo) GetByMemoryType(
 	ctx context.Context,
@@ -137,7 +158,7 @@ func (r *DistillationRepo) GetByMemoryType(
 	if r == nil || r.Repo == nil {
 		return nil, fmt.Errorf("distillation repo: repository is nil")
 	}
-	storageExps, err := r.Repo.ListByType(ctx, memoryType.String(), tenantID, DefaultListLimit)
+	storageExps, err := r.Repo.ListByType(ctx, memoryTypeToStorageType(memoryType), tenantID, DefaultListLimit)
 	if err != nil {
 		return nil, fmt.Errorf("distillation repo get by memory type: %w", err)
 	}
@@ -162,7 +183,7 @@ func (r *DistillationRepo) CountByMemoryType(
 	if r == nil || r.Repo == nil {
 		return 0, fmt.Errorf("distillation repo: repository is nil")
 	}
-	storageExps, err := r.Repo.ListByType(ctx, memoryType.String(), tenantID, DefaultListLimit)
+	storageExps, err := r.Repo.ListByType(ctx, memoryTypeToStorageType(memoryType), tenantID, DefaultListLimit)
 	if err != nil {
 		return 0, fmt.Errorf("distillation repo count by memory type: %w", err)
 	}
@@ -235,6 +256,24 @@ func (r *DistillationRepo) DeleteBatch(ctx context.Context, ids []string) error 
 	return nil
 }
 
+// storageTypeToMemoryType maps a stored Type value back to a MemoryType.
+// It is the inverse of memoryTypeToStorageType and keeps the read side
+// (GetByMemoryType / SearchByVector) consistent with what was persisted.
+func storageTypeToMemoryType(storageType string) experience.MemoryType {
+	switch storageType {
+	case storage_models.ExperienceTypePattern:
+		return experience.MemoryPreference
+	case storage_models.ExperienceTypeSolution:
+		return experience.MemoryInteraction
+	case storage_models.ExperienceTypeDistilled:
+		return experience.MemoryProfile
+	case storage_models.ExperienceTypeSuccess:
+		return experience.MemoryKnowledge
+	default:
+		return experience.MemoryKnowledge
+	}
+}
+
 // ToDistillationExperience maps a storage_models.Experience into the
 // canonical distillation.Experience DTO. Problem/Solution fall back to the
 // legacy Input/Output fields when the high-level fields are empty (the
@@ -259,6 +298,7 @@ func ToDistillationExperience(e *storage_models.Experience) distillation.Experie
 	}
 	return distillation.Experience{
 		ID:               e.ID,
+		Type:             storageTypeToMemoryType(e.Type),
 		Problem:          problem,
 		Solution:         solution,
 		Confidence:       scoreutil.ClampUnit(e.Score),
@@ -281,6 +321,7 @@ func ToStorageExperience(exp *distillation.Experience, tenantID string) *storage
 	return &storage_models.Experience{
 		ID:        exp.ID,
 		TenantID:  tenantID,
+		Type:      memoryTypeToStorageType(exp.Type),
 		Problem:   exp.Problem,
 		Solution:  exp.Solution,
 		Input:     exp.Problem,

@@ -193,6 +193,10 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 			if v, ok := val.(string); ok {
 				agent.Status = Status(v)
 			}
+		case "config":
+			if v, ok := val.(map[string]interface{}); ok {
+				agent.Config = v
+			}
 		}
 	}
 
@@ -203,6 +207,7 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    agent.Status,
+		Config:    agent.Config,
 		CreatedAt: agent.CreatedAt,
 	}, nil
 }
@@ -255,12 +260,13 @@ type AgentFilter struct {
 
 // Agent represents an AI agent with session management.
 type Agent struct {
-	ID        string `json:"id"`
-	Name      string `json:"name,omitempty"`
-	Type      string `json:"type,omitempty"`
-	SessionID string `json:"session_id"`
-	Status    Status `json:"status"`
-	CreatedAt int64  `json:"created_at"`
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name,omitempty"`
+	Type      string                 `json:"type,omitempty"`
+	SessionID string                 `json:"session_id"`
+	Status    Status                 `json:"status"`
+	Config    map[string]interface{} `json:"config,omitempty"`
+	CreatedAt int64                  `json:"created_at"`
 }
 
 // Status represents the current status of an agent.

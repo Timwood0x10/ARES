@@ -840,12 +840,35 @@ func TestArenaAdapter_GetResilienceScore(t *testing.T) {
 
 func TestArenaAdapter_GetSurvivalStatus(t *testing.T) {
 	a := &ArenaAdapter{}
+
+	// Initially survival mode is not running and has no mode set.
 	status := a.GetSurvivalStatus()
 	if status["running"] != false {
 		t.Errorf("running = %v, want false", status["running"])
 	}
+	if status["mode"] != "" {
+		t.Errorf("mode = %v, want empty before start", status["mode"])
+	}
+
+	// StartSurvival must flip the state so the dashboard reports running.
+	if err := a.StartSurvival(context.Background()); err != nil {
+		t.Fatalf("StartSurvival failed: %v", err)
+	}
+	status = a.GetSurvivalStatus()
+	if status["running"] != true {
+		t.Errorf("running = %v, want true after start", status["running"])
+	}
 	if status["mode"] != "chaos_demo" {
-		t.Errorf("mode = %v, want chaos_demo", status["mode"])
+		t.Errorf("mode = %v, want chaos_demo after start", status["mode"])
+	}
+
+	// StopSurvival must reset the running flag.
+	if err := a.StopSurvival(); err != nil {
+		t.Fatalf("StopSurvival failed: %v", err)
+	}
+	status = a.GetSurvivalStatus()
+	if status["running"] != false {
+		t.Errorf("running = %v, want false after stop", status["running"])
 	}
 }
 

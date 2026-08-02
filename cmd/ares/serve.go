@@ -147,8 +147,10 @@ func runServe() error {
 		return fmt.Errorf("create tool registry: %w", err)
 	}
 
-	// --- MCP servers via ares_bootstrap.SetupMCP (handles registry bridging) ---
-	internalReg, err := setupMCP(ctx, cfg, registry)
+	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
+	// single set of connections; its Stop hook is registered below) and bridge
+	// its tools into the internal + public registries. ---
+	internalReg, err := setupMCP(ctx, comp.MCP, registry)
 	if err != nil {
 		return fmt.Errorf("MCP setup: %w", err)
 	}

@@ -86,6 +86,9 @@ const (
 type Experience struct {
 	// ID is the unique identifier for the experience.
 	ID string
+	// Type is the classified memory type. It is persisted to storage so the
+	// distiller's solution cap and cross-session dedup can query by type.
+	Type MemoryType
 	// Problem is the abstract problem statement.
 	Problem string
 	// Solution is the concise solution approach.

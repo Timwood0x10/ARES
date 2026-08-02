@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -310,7 +311,9 @@ func (m *memoryManager) GetMessages(ctx context.Context, sessionID string) ([]Me
 // AddStructuredMessage adds a structured message with full metadata (TurnID, ToolCallID, ToolCalls)
 // to the session. The underlying SessionMemory stores all Message fields faithfully.
 func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
-	msg.Time = time.Now()
+	if msg.Time.IsZero() {
+		msg.Time = time.Now()
+	}
 	if err := m.sessionMemory.AddMessage(ctx, sessionID, msg); err != nil {
 		return errors.Wrap(err, "add structured message")
 	}
@@ -381,8 +384,13 @@ func (m *memoryManager) DeleteSession(ctx context.Context, sessionID string) err
 func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
 	messages, err := m.GetMessages(ctx, sessionID)
 	if err != nil {
-		log.Warn("Failed to get messages, using raw input", "error", err)
-		return input, nil
+		// A missing session is the normal first-interaction case: there is
+		// no history to build context from, so degrade gracefully to the
+		// raw input instead of failing. Real retrieval errors propagate.
+		if stderrors.Is(err, memctx.ErrSessionNotFound) {
+			return input, nil
+		}
+		return "", errors.Wrap(err, "get messages")
 	}
 
 	// Keep only last N messages to avoid long context.
@@ -567,6 +575,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 			}
 
 			exp := &distillation.Experience{
+				Type:             mem.Type,
 				Problem:          problem,
 				Solution:         solution,
 				Confidence:       confidence,

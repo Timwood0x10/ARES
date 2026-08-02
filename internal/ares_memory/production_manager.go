@@ -688,8 +688,7 @@ func (m *ProductionMemoryManager) DeleteSession(ctx context.Context, sessionID s
 func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
 	messages, err := m.GetMessages(ctx, sessionID)
 	if err != nil {
-		log.Warn("Failed to get messages, using raw input", "error", err)
-		return input, nil
+		return "", errors.Wrap(err, "get messages")
 	}
 
 	// Keep only last N messages to avoid long context

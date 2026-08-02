@@ -53,6 +53,7 @@ func (h *LLMHandler) HandleChat(w http.ResponseWriter, r *http.Request) {
 	genReq := &core.GenerateRequest{
 		Model:    req.Model,
 		Messages: req.Messages,
+		Stream:   req.Stream,
 	}
 
 	resp, err := h.llm.Generate(r.Context(), genReq)

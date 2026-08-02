@@ -11,6 +11,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// Evolvable strategy parameter keys. Shared across base strategy creation,
+// mutator ranges, scoring, and application so the dimension names stay in
+// sync and the linter (goconst) stays quiet.
+const (
+	paramToolSelector      = "tool_selector"
+	paramSearchDepth       = "search_depth"
+	paramSchedulerStrategy = "scheduler_strategy"
+	paramMemoryThreshold   = "memory_threshold"
+	paramRecoveryStrategy  = "recovery_strategy"
+)
+
 // Evolve runs an evolution cycle to improve an agent's instruction. It uses the
 // LLM to generate variations, evaluates them against the given task, and returns
 // the best-evolved instruction.
@@ -34,11 +45,11 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 		Score:     -1,
 		CreatedAt: time.Now(),
 		Params: map[string]any{
-			"tool_selector":      "auto",  // auto / manual / priority
-			"search_depth":       3,       // 1-5: how deep to search
-			"scheduler_strategy": "fifo",  // fifo / priority / round_robin
-			"memory_threshold":   0.7,     // 0.0-1.0: similarity threshold
-			"recovery_strategy":  "retry", // retry / replace / fallback
+			paramToolSelector:      "auto",  // auto / manual / priority
+			paramSearchDepth:       3,       // 1-5: how deep to search
+			paramSchedulerStrategy: "fifo",  // fifo / priority / round_robin
+			paramMemoryThreshold:   0.7,     // 0.0-1.0: similarity threshold
+			paramRecoveryStrategy:  "retry", // retry / replace / fallback
 		},
 		PromptTemplate: agent.instruction,
 	}
@@ -100,21 +111,46 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 	// Apply the evolved strategy's params to the agent.
 	applyEvolvedParams(agent, best.Params)
 
-	// Return the evolved strategy summary.
-	return fmt.Sprintf("evolved: tool=%v depth=%v scheduler=%v memory=%.2f recovery=%v",
-		best.Params["tool_selector"], best.Params["search_depth"],
-		best.Params["scheduler_strategy"], best.Params["memory_threshold"],
-		best.Params["recovery_strategy"]), nil
+	// Return the best-evolved instruction: the base prompt template enriched
+	// with the evolved strategy parameters, so callers can apply the evolved
+	// configuration to a new agent via WithInstruction.
+	return buildEvolvedInstruction(agent.instruction, best), nil
+}
+
+// buildEvolvedInstruction composes the base instruction with the evolved
+// strategy parameters into a single instruction string. It returns the base
+// instruction unchanged when the strategy is nil or carries no parameters.
+func buildEvolvedInstruction(base string, s *mutation.Strategy) string {
+	if s == nil {
+		return base
+	}
+	params := []struct {
+		key string
+		v   any
+	}{
+		{paramToolSelector, s.Params[paramToolSelector]},
+		{paramSearchDepth, s.Params[paramSearchDepth]},
+		{paramSchedulerStrategy, s.Params[paramSchedulerStrategy]},
+		{paramMemoryThreshold, s.Params[paramMemoryThreshold]},
+		{paramRecoveryStrategy, s.Params[paramRecoveryStrategy]},
+	}
+	instruction := base + "\n\nEvolved strategy:"
+	for _, p := range params {
+		if p.v != nil {
+			instruction += fmt.Sprintf("\n- %s: %v", p.key, p.v)
+		}
+	}
+	return instruction
 }
 
 // evolvableParams returns the parameter ranges for meaningful evolution dimensions.
 func evolvableParams() map[string]mutation.ParamRange {
 	return map[string]mutation.ParamRange{
-		"tool_selector":      {Values: []any{"auto", "manual", strategyPriority}},
-		"search_depth":       {Values: []any{1, 2, 3, 4, 5}},
-		"scheduler_strategy": {Values: []any{"fifo", strategyPriority, "round_robin"}},
-		"memory_threshold":   {Values: []any{0.3, 0.5, 0.7, 0.9}},
-		"recovery_strategy":  {Values: []any{"retry", "replace", "fallback"}},
+		paramToolSelector:      {Values: []any{"auto", "manual", strategyPriority}},
+		paramSearchDepth:       {Values: []any{1, 2, 3, 4, 5}},
+		paramSchedulerStrategy: {Values: []any{"fifo", strategyPriority, "round_robin"}},
+		paramMemoryThreshold:   {Values: []any{0.3, 0.5, 0.7, 0.9}},
+		paramRecoveryStrategy:  {Values: []any{"retry", "replace", "fallback"}},
 	}
 }
 
@@ -160,7 +196,7 @@ func executeAndScore(ctx context.Context, r *Runtime, agent *Agent, task string,
 
 // applyToolSelector filters the agent's tool list based on the strategy.
 func applyToolSelector(toolList []tools.Tool, params map[string]any) []tools.Tool {
-	selector, _ := params["tool_selector"].(string)
+	selector, _ := params[paramToolSelector].(string)
 	switch selector {
 	case "priority":
 		if len(toolList) > 3 {
@@ -184,20 +220,24 @@ func applyToolSelector(toolList []tools.Tool, params map[string]any) []tools.Too
 }
 
 // applyEvolvedParams applies the evolved strategy params to the agent.
+// tool_selector is the only dimension with a direct backing field on Agent
+// (the tool list), so it is applied by filtering agent.tools. The remaining
+// dimensions (search_depth, scheduler_strategy, memory_threshold,
+// recovery_strategy) have no corresponding Agent field yet; they are logged
+// and marked TODO so the wiring gap stays visible instead of being silent.
 func applyEvolvedParams(agent *Agent, params map[string]any) {
-	if v, ok := params["tool_selector"]; ok {
-		log.Printf("[ares:evolve] applied tool_selector=%v", v)
+	if v, ok := params[paramToolSelector]; ok {
+		if selector, isString := v.(string); isString {
+			agent.tools = applyToolSelector(agent.tools, map[string]any{paramToolSelector: selector})
+			log.Printf("[ares:evolve] applied tool_selector=%v (%d tools after filtering)", v, len(agent.tools))
+		}
 	}
-	if v, ok := params["search_depth"]; ok {
-		log.Printf("[ares:evolve] applied search_depth=%v", v)
-	}
-	if v, ok := params["scheduler_strategy"]; ok {
-		log.Printf("[ares:evolve] applied scheduler_strategy=%v", v)
-	}
-	if v, ok := params["memory_threshold"]; ok {
-		log.Printf("[ares:evolve] applied memory_threshold=%v", v)
-	}
-	if v, ok := params["recovery_strategy"]; ok {
-		log.Printf("[ares:evolve] applied recovery_strategy=%v", v)
+	// TODO: wire search_depth/scheduler_strategy/memory_threshold/recovery_strategy
+	// into Agent fields (e.g. discovery depth, scheduler, RAG threshold, retry
+	// policy) and consume them inside Run; until then they cannot be applied.
+	for _, key := range []string{paramSearchDepth, paramSchedulerStrategy, paramMemoryThreshold, paramRecoveryStrategy} {
+		if v, ok := params[key]; ok {
+			log.Printf("[ares:evolve] TODO: %s=%v not wired to Agent field yet", key, v)
+		}
 	}
 }

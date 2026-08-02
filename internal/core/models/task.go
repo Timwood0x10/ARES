@@ -27,6 +27,7 @@ type TaskContext struct {
 func NewTask(taskID string, agentType AgentType, profile *UserProfile) *Task {
 	return &Task{
 		TaskID:      taskID,
+		TaskType:    agentType,
 		AgentType:   agentType,
 		UserProfile: profile,
 		Context:     &TaskContext{},

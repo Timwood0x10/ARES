@@ -372,16 +372,6 @@ func buildOpenAIChatMessages(messages []*core.LLMMessage) []map[string]any {
 	return result
 }
 
-// tryParseJSON attempts to parse a JSON string into an object.
-// Ollama and some other providers expect arguments as a JSON object, not a string.
-func tryParseJSON(s string) any {
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err == nil {
-		return v
-	}
-	return s
-}
-
 // buildOpenAIChatTools converts core.Tool slice to OpenAI tools format.
 func buildOpenAIChatTools(tools []core.Tool) []map[string]any {
 	result := make([]map[string]any, 0, len(tools))

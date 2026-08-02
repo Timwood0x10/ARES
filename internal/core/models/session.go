@@ -40,9 +40,9 @@ func (s *Session) IsExpired() bool {
 	return time.Now().After(s.ExpiredAt)
 }
 
-// IsCompleted checks if the session is completed.
+// IsCompleted checks if the session has completed successfully.
 func (s *Session) IsCompleted() bool {
-	return s.Status == SessionStatusCompleted || s.Status == SessionStatusFailed
+	return s.Status == SessionStatusCompleted
 }
 
 // AddTask adds a task to the session.
@@ -64,16 +64,33 @@ func (s *Session) SetStatus(status SessionStatus) {
 }
 
 // Progress returns the completion progress (0.0 - 1.0).
+// Only results whose TaskID matches an existing task are counted, so
+// orphaned or duplicated results cannot inflate progress past 1.0.
 func (s *Session) Progress() float64 {
 	if len(s.Tasks) == 0 {
 		return 0.0
 	}
-	// Count only successful results
+
+	taskIDs := make(map[string]struct{}, len(s.Tasks))
+	for _, t := range s.Tasks {
+		if t != nil {
+			taskIDs[t.TaskID] = struct{}{}
+		}
+	}
+
+	// Count only successful results that belong to a known task.
 	successCount := 0
 	for _, result := range s.Results {
 		if result != nil && result.Success {
-			successCount++
+			if _, ok := taskIDs[result.TaskID]; ok {
+				successCount++
+			}
 		}
 	}
-	return float64(successCount) / float64(len(s.Tasks))
+
+	progress := float64(successCount) / float64(len(s.Tasks))
+	if progress > 1.0 {
+		return 1.0
+	}
+	return progress
 }
