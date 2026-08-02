@@ -401,20 +401,25 @@ func (t *SSEServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) erro
 	t.sessionsMu.Lock()
 	sessionID := t.currentSession
 	sess, ok := t.sessions[sessionID]
-	t.sessionsMu.Unlock()
-
 	if !ok || sess == nil {
 		// Client disconnected — drop silently instead of broadcasting (P0-3).
+		t.sessionsMu.Unlock()
 		return nil
 	}
 
+	// Send while holding the sessions lock so this is atomic with Close's
+	// channel close: a send racing a close panics with
+	// "send on closed channel" (H7). The non-blocking select keeps the
+	// critical section short.
 	select {
 	case sess.msgCh <- msg:
 	case <-ctx.Done():
+		t.sessionsMu.Unlock()
 		return ctx.Err()
 	default:
 		// Client buffer full; drop to avoid blocking the server loop.
 	}
+	t.sessionsMu.Unlock()
 	return nil
 }
 

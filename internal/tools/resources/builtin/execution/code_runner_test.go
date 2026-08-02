@@ -362,6 +362,11 @@ func TestCodeRunnerImportAllowlist(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "backslash line continuation bypass",
+			code:    "import math \\\n, os",
+			wantErr: true,
+		},
+		{
 			name:    "from allowed module single name",
 			code:    "from json import loads",
 			wantErr: false,

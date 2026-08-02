@@ -279,6 +279,29 @@ func stripPythonComments(code string) string {
 	return strings.Join(result, "\n")
 }
 
+// foldLineContinuations merges backslash-continued lines (Python's explicit
+// line continuation) into a single logical line. Without this, validation
+// would only see the first fragment of `import math \` + newline + `, os`,
+// letting `os` slip past the allowlist while Python still imports it.
+func foldLineContinuations(code string) string {
+	lines := strings.Split(code, "\n")
+	var b strings.Builder
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimRight(lines[i], " \t")
+		if strings.HasSuffix(trimmed, "\\") {
+			// Drop the continuation backslash and join with a space.
+			b.WriteString(strings.TrimSuffix(trimmed, "\\"))
+			b.WriteString(" ")
+			continue
+		}
+		b.WriteString(lines[i])
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 // validateCode checks code for potential security issues.
 //
 // When strictAllowlist is true (the default), only the modules listed in
@@ -288,7 +311,7 @@ func (t *CodeRunner) validateCode(code string) error {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	stripped := stripPythonComments(code)
+	stripped := foldLineContinuations(stripPythonComments(code))
 	lowerCode := strings.ToLower(stripped)
 
 	// Defense-in-depth: reject known dangerous builtins.
