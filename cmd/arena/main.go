@@ -26,6 +26,7 @@ import (
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -357,9 +358,15 @@ func runServe(args []string) error {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
-	// Create a minimal service for the HTTP handler.
+	// Create a minimal service for the HTTP handler. The evidence store is
+	// shared with the evolution components so chaos failures land in the same
+	// store the GA genomes consume for fitness evaluation.
 	inj := arena.NewInjector(nil, nil)
-	svc := arena.NewService(inj, nil, nil)
+	var evStore evidence.Store
+	if ev := getArenaEvolution(); ev != nil && ev.EvidenceStore != nil {
+		evStore = ev.EvidenceStore
+	}
+	svc := arena.NewService(inj, nil, evStore)
 
 	// Wire the evolution bridge: chaos fault detection → coordinator.
 	if ev := getArenaEvolution(); ev != nil && ev.Coordinator != nil {

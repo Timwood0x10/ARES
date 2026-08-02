@@ -105,47 +105,20 @@ func (g *RecoveryGenome) Crossover(_ context.Context, other Genome) (Genome, err
 	return child, nil
 }
 
-// Fitness evaluates the recovery strategy quality based on recovery evidence.
+// Fitness evaluates the recovery strategy quality based on real recovery
+// evidence. It aggregates the measured recovery success rate (Value in [0, 1])
+// produced by chaos arena and runtime recovery paths. When no evidence is
+// available yet, a neutral 0.5 is returned so the GA keeps exploring.
+//
+// The strategy type is not hard-coded here: fitness reflects actual recovery
+// outcomes under the current strategy, so the GA converges to whichever
+// strategy (replace/retry/fail_fast) demonstrably recovers the most.
 func (g *RecoveryGenome) Fitness(ctx context.Context) (float64, error) {
-	if g.config.EvidenceStore == nil {
-		return 0.5, nil
-	}
-
-	evs, err := g.config.EvidenceStore.Query(ctx, evidence.Filter{
-		Source: "recovery",
-		Limit:  50,
-	})
+	score, err := avgFitnessValue(ctx, g.config.EvidenceStore, "recovery", 0, 50)
 	if err != nil {
-		return 0.0, fmt.Errorf("recovery: query evidence: %w", err)
-	}
-
-	if len(evs) == 0 {
 		return 0.5, nil
 	}
-
-	// Heuristic: favour replace_node and retry over fail_fast.
-	var fitness float64
-	switch g.policy.Strategy {
-	case engine.RecoveryReplaceNode:
-		fitness = 0.8
-	case engine.RecoveryRetry:
-		fitness = 0.7
-	case engine.RecoveryFailFast:
-		fitness = 0.4
-	default:
-		fitness = 0.5
-	}
-
-	// Emit fitness evidence.
-	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
-		"recovery",
-		evidence.KindFitness,
-		fitness,
-		evidence.WithMetadata("type", "recovery"),
-		evidence.WithMetadata("strategy", string(g.policy.Strategy)),
-	))
-
-	return fitness, nil
+	return score, nil
 }
 
 // Snapshot returns the current recovery policy as the serializable state.

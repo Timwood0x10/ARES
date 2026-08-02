@@ -338,9 +338,15 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	var rawCh <-chan StreamChunk
 	var err error
 
+	// Derive a cancellable stream context so the wrapper goroutine can stop
+	// the underlying provider stream (and free its HTTP connection) when the
+	// caller abandons the returned channel without cancelling ctx (M6).
+	streamCtx, cancelStream := context.WithCancel(ctx)
+
 	// Apply rate limiter before making the API call.
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
+			cancelStream()
 			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
 			c.emitCallback(&ares_callbacks.Context{
 				Event: ares_callbacks.EventLLMError,
@@ -354,16 +360,17 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	switch ProviderType(c.config.Provider) {
 	case ProviderOpenAI, ProviderOpenRouter:
-		rawCh, err = c.streamOpenRouter(ctx, prompt)
+		rawCh, err = c.streamOpenRouter(streamCtx, prompt)
 	case ProviderOllama:
-		rawCh, err = c.streamOllama(ctx, prompt)
+		rawCh, err = c.streamOllama(streamCtx, prompt)
 	case ProviderAnthropic:
-		rawCh, err = c.streamAnthropic(ctx, prompt)
+		rawCh, err = c.streamAnthropic(streamCtx, prompt)
 	default:
 		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
 
 	if err != nil {
+		cancelStream()
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		c.emitCallback(&ares_callbacks.Context{
 			Event: ares_callbacks.EventLLMError,
@@ -385,6 +392,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	ch := make(chan StreamChunk, defaultStreamBuffer)
 	go func() {
 		defer close(ch)
+		defer cancelStream()
 		var builder strings.Builder
 		var streamErr error
 		for chunk := range rawCh {
@@ -398,6 +406,11 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 				select {
 				case ch <- chunk:
 				case <-ctx.Done():
+					return
+				default:
+					// Caller is not reading (buffer full): stop the stream
+					// instead of blocking forever and leaking the goroutine
+					// and the underlying HTTP connection (M6).
 					return
 				}
 			}

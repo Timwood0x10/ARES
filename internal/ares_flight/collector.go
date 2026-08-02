@@ -9,19 +9,27 @@ import (
 	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
+// keyFitnessValue is the JSON payload key that carries the normalized fitness
+// value in [0, 1] for GA genome evidence (used by the workflow, recovery, and
+// scheduler collectors).
+const keyFitnessValue = "value"
+
 // Collector subscribes to the EventStore and populates flight recorder data structures.
 type Collector struct {
-	eventStore        ares_events.EventStore
-	evidenceStore     evidence.Store      // optional: unified Evidence Store
-	evidenceCollector *evidence.Collector // optional: evidence emitter
-	timeline          *Timeline
-	graph             *Graph
-	decisions         *DecisionLog
-	diag              *DiagnosticsEngine
-	pipelines         map[string]*MemoryPipeline
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
-	mu                sync.RWMutex
+	eventStore         ares_events.EventStore
+	evidenceStore      evidence.Store      // optional: unified Evidence Store
+	evidenceCollector  *evidence.Collector // optional: evidence emitter (Source "flight")
+	workflowCollector  *evidence.Collector // optional: workflow fitness evidence (Source "workflow")
+	recoveryCollector  *evidence.Collector // optional: recovery fitness evidence (Source "recovery")
+	schedulerCollector *evidence.Collector // optional: scheduler fitness evidence (Source "scheduler")
+	timeline           *Timeline
+	graph              *Graph
+	decisions          *DecisionLog
+	diag               *DiagnosticsEngine
+	pipelines          map[string]*MemoryPipeline
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	mu                 sync.RWMutex
 }
 
 // CollectorConfig holds dependencies for the collector.
@@ -43,6 +51,15 @@ func NewCollector(cfg CollectorConfig) *Collector {
 	}
 	if cfg.EvidenceStore != nil {
 		c.evidenceCollector = evidence.NewCollector(cfg.EvidenceStore, "flight")
+		// Workflow fitness evidence is emitted under Source "workflow" so the
+		// GA WorkflowGenome (which filters on that source) consumes it.
+		c.workflowCollector = evidence.NewCollector(cfg.EvidenceStore, "workflow")
+		// Recovery fitness evidence is emitted under Source "recovery" so the
+		// GA RecoveryGenome (which filters on that source) consumes it.
+		c.recoveryCollector = evidence.NewCollector(cfg.EvidenceStore, "recovery")
+		// Scheduler fitness evidence is emitted under Source "scheduler" so the
+		// GA SchedulerGenome (which filters on that source) consumes it.
+		c.schedulerCollector = evidence.NewCollector(cfg.EvidenceStore, "scheduler")
 	}
 	return c
 }
@@ -149,8 +166,42 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 		c.handleTaskStart(evt)
 	case ares_events.EventTaskCompleted, ares_events.EventTaskFailed:
 		c.handleTaskEnd(evt)
+		// Emit workflow fitness evidence consumed by the GA WorkflowGenome:
+		// the mean value across task outcomes (1.0 completed / 0.0 failed)
+		// scores the DAG topology that actually executed. Emitted under
+		// Source "workflow" so the genome's filter matches.
+		successValue := 1.0
+		if evt.Type == ares_events.EventTaskFailed {
+			successValue = 0.0
+		}
+		if c.workflowCollector != nil {
+			_ = c.workflowCollector.Emit(ctx, evidence.KindFitness,
+				map[string]any{keyFitnessValue: successValue},
+			)
+		}
+		// Scheduler fitness evidence: the GA SchedulerGenome consumes the mean
+		// scheduling-outcome value to score the scheduler policy selected by
+		// evolution. A completed task is a scheduling win (1.0); a failed task
+		// is a loss (0.0).
+		if c.schedulerCollector != nil {
+			_ = c.schedulerCollector.Emit(ctx, evidence.KindFitness,
+				map[string]any{keyFitnessValue: successValue},
+			)
+		}
 	case ares_events.EventFailoverTriggered, ares_events.EventFailoverCompleted:
 		c.handleFailover(evt)
+		// Emit recovery fitness evidence: the GA RecoveryGenome consumes the
+		// mean value across failover outcomes (1.0 completed / 0.0 triggered
+		// without completion) to score the recovery strategy actually used.
+		recoveryValue := 0.0
+		if evt.Type == ares_events.EventFailoverCompleted {
+			recoveryValue = 1.0
+		}
+		if c.recoveryCollector != nil {
+			_ = c.recoveryCollector.Emit(ctx, evidence.KindFitness,
+				map[string]any{keyFitnessValue: recoveryValue},
+			)
+		}
 	case ares_events.EventMemoryDistilled:
 		c.handleMemoryDistilled(evt)
 	case ares_events.EventLLMCall:

@@ -8,8 +8,18 @@ import (
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 )
+
+// EvidenceEmitter is the minimal interface the retriever uses to report
+// retrieval outcomes to the unified Evidence Store. It is kept minimal to
+// avoid a direct import of internal/evidence from this package (mirrors the
+// pattern used by ProductionMemoryManager). The GA MemoryGenome consumes the
+// mean retrieval-hit value (1.0 hit / 0.0 miss) under Source "memory".
+type EvidenceEmitter interface {
+	Emit(ctx context.Context, kind evidence.EvidenceKind, payload any, opts ...evidence.EvidenceOption) error
+}
 
 // ExperienceSearcher is the minimal retrieval contract needed by
 // MemoryRetriever. It is a strict subset of distillation.ExperienceRepository
@@ -70,6 +80,11 @@ type MemoryRetriever struct {
 	expRepo  ExperienceSearcher
 	tenantID string
 	minScore float64
+
+	// evidenceEmitter reports retrieval hit/miss outcomes to the unified
+	// Evidence Store. Optional: nil disables emission entirely, so the
+	// retriever keeps working in minimal configurations that lack wiring.
+	evidenceEmitter EvidenceEmitter
 }
 
 // NewMemoryRetriever constructs a MemoryRetriever.
@@ -123,6 +138,15 @@ func NewMemoryRetriever(
 		tenantID: tenantID,
 		minScore: minScore,
 	}, nil
+}
+
+// SetEvidenceEmitter configures an optional evidence emitter. Retrieval
+// outcomes (hit/miss) are reported under Source "memory" so the GA
+// MemoryGenome can score memory quality from real usage. Nil disables
+// emission. It is safe to call before or after Retrieve; the emitter is
+// only read under the retriever's own serialized execution.
+func (r *MemoryRetriever) SetEvidenceEmitter(em EvidenceEmitter) {
+	r.evidenceEmitter = em
 }
 
 // Retrieve queries the experience repository for experiences that are
@@ -180,6 +204,23 @@ func (r *MemoryRetriever) Retrieve(
 	if len(snippets) > topK {
 		snippets = snippets[:topK]
 	}
+
+	// Report the retrieval outcome to the unified Evidence Store. The GA
+	// MemoryGenome aggregates the mean hit value (1.0 hit / 0.0 miss) under
+	// Source "memory". Only real searches emit — the empty-input short-circuit
+	// above returns before this point.
+	if r.evidenceEmitter != nil {
+		hitValue := 0.0
+		if len(snippets) > 0 {
+			hitValue = 1.0
+		}
+		_ = r.evidenceEmitter.Emit(ctx, evidence.KindFitness,
+			map[string]any{"value": hitValue},
+			evidence.WithMetadata("source", "memory"),
+			evidence.WithMetadata("type", "retrieval"),
+		)
+	}
+
 	return snippets, nil
 }
 

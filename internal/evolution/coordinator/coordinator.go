@@ -107,12 +107,19 @@ type PolicyGenome struct {
 }
 
 // DefaultPolicy returns a sensible default Coordinator policy.
+//
+// ApplyFitnessThreshold is set to 100.0 (the max possible fitness) to
+// effectively DISABLE GA auto-application while the evidence-backed fitness
+// pipeline is being validated (fitness reflects real runtime evidence now,
+// and it must be trusted before the GA is allowed to mutate the live runtime
+// without review). GA patches therefore land in the delay bucket for review
+// until the threshold is deliberately lowered.
 func DefaultPolicy() PolicyGenome {
 	return PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   4,
 		MinFitnessThreshold:   30.0,
-		ApplyFitnessThreshold: 60.0,
+		ApplyFitnessThreshold: 100.0,
 		SelfHealingEnabled:    false,
 		SelfHealingMaxRetries: 3,
 	}

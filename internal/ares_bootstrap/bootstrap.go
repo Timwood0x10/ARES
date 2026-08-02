@@ -216,20 +216,24 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	knowRt := BuildKnowledgeRuntime()
 	comp.KnowledgeRuntime = knowRt
 
-	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
-	// KnowledgeRetriever (AKG entries) into the MemoryManager so every
-	// BuildContext / BuildPromptMessages call augments the prompt with
-	// retrieved context when config.EnableRAG is true. Best-effort: skips
-	// retrievers whose dependencies (embedding client, experience repo, AKG
-	// runtime) are unavailable, so minimal configs are unaffected.
-	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt)
-
 	newEvol, err := ProvideNewEvolution(dag, knowRt, liveMemoryStore)
 	if err != nil {
 		runCleanups()
 		return nil, err
 	}
 	comp.NewEvolution = newEvol
+
+	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
+	// KnowledgeRetriever (AKG entries) into the MemoryManager so every
+	// BuildContext / BuildPromptMessages call augments the prompt with
+	// retrieved context when config.EnableRAG is true. Best-effort: skips
+	// retrievers whose dependencies (embedding client, experience repo, AKG
+	// runtime) are unavailable, so minimal configs are unaffected.
+	//
+	// Runs after ProvideNewEvolution so the retriever can emit retrieval
+	// evidence to the shared evidence store (Source "memory") consumed by the
+	// GA MemoryGenome.
+	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt, newEvol.EvidenceStore)
 
 	// Track C (C-Safe): wire the DeploymentPipeline into the Coordinator so
 	// generated patches are safely promoted to the live runtime. Gated by

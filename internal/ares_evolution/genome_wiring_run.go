@@ -117,6 +117,12 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 		return buildScorer(a.scorer)
 	}
 
+	// heuristicScorer is the fallback for when the tiered/memory-aware
+	// scorer fails at runtime: we degrade to the adapter-level heuristic
+	// instead of returning a constant 50.0, which would make every failed
+	// strategy look identically average (M3).
+	heuristicScorer := buildScorer(a.scorer)
+
 	// Reset per-generation budget at the start of each cycle.
 	a.tieredScorer.ResetForGeneration()
 
@@ -149,16 +155,16 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 				el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic", "error", err,
 					"strategy_id", s.ID,
 				)
-				return 50.0
+				return heuristicScorer(s)
 			}
 			return score
 		}
 		score, _, err := a.tieredScorer.Score(ctx, s)
 		if err != nil {
-			el.Warn(ctx, "Run", "tiered scorer failed, using baseline", "error", err,
+			el.Warn(ctx, "Run", "tiered scorer failed, using heuristic", "error", err,
 				"strategy_id", s.ID,
 			)
-			return 50.0 // fallback baseline on error
+			return heuristicScorer(s)
 		}
 		return score
 	}
@@ -443,7 +449,42 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 		})
 	}
 	if len(patches) > 0 {
+		// Record how many decisions already exist so the logging below only
+		// surfaces decisions produced by THIS Evaluate call (a delta cursor).
+		decidedBefore := len(a.coordinator.DecisionHistory())
 		a.coordinator.Evaluate(ctx)
+		decisions := a.coordinator.DecisionHistory()
+
+		// Surface the coordinator's decisions for GA proposals so a rejected
+		// or delayed patch is observable instead of silently dropped. The
+		// coordinator itself is a pure decision package (no logger); the GA
+		// adapter owns observability for the patches it submits.
+		for i := decidedBefore; i < len(decisions); i++ {
+			d := decisions[i]
+			if d.Proposal.Source != coordinator.SourceGA {
+				continue
+			}
+			switch d.Decision {
+			case coordinator.DecisionApply:
+				el.Info(ctx, "Run", "GA patch applied by coordinator",
+					"type", d.Proposal.Patch.Type,
+					"reason", d.Reason,
+				)
+			case coordinator.DecisionReject:
+				el.Warn(ctx, "Run", "GA patch rejected by coordinator (silent drop avoided)",
+					"type", d.Proposal.Patch.Type,
+					"fitness", d.Proposal.Fitness,
+					"reason", d.Reason,
+				)
+			case coordinator.DecisionDelay:
+				el.Info(ctx, "Run", "GA patch delayed by coordinator for review",
+					"type", d.Proposal.Patch.Type,
+					"fitness", d.Proposal.Fitness,
+					"reason", d.Reason,
+					"retry_count", d.Proposal.RetryCount,
+				)
+			}
+		}
 	}
 }
 

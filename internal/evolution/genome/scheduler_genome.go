@@ -4,7 +4,6 @@ package genome
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 
@@ -111,49 +110,18 @@ func (g *SchedulerGenome) Crossover(_ context.Context, other Genome) (Genome, er
 	return child, nil
 }
 
-// Fitness evaluates the scheduler quality based on execution evidence.
+// Fitness evaluates the scheduler quality based on real scheduling evidence:
+// the measured task-completion latency ratio (Value in [0, 1]) produced by the
+// runtime. When no evidence is available yet, a neutral 0.5 is returned so the
+// GA keeps exploring. The scheduler's own past fitness is not read back, so
+// this is not a mathematical fixed point: fitness reflects actual scheduling
+// outcomes under the selected scheduler.
 func (g *SchedulerGenome) Fitness(ctx context.Context) (float64, error) {
-	if g.config.EvidenceStore == nil {
-		return 0.5, nil
-	}
-
-	evs, err := g.config.EvidenceStore.Query(ctx, evidence.Filter{
-		Source: "scheduler",
-		Limit:  100,
-	})
+	score, err := avgFitnessValue(ctx, g.config.EvidenceStore, SchedulerGenomeName, 0, 100)
 	if err != nil {
-		return 0.0, fmt.Errorf("scheduler: query evidence: %w", err)
-	}
-
-	if len(evs) == 0 {
 		return 0.5, nil
 	}
-
-	var sum float64
-	var count int
-	for _, ev := range evs {
-		if len(ev.Payload) > 0 {
-			var v float64
-			if err := json.Unmarshal(ev.Payload, &v); err == nil {
-				sum += v
-				count++
-			}
-		}
-	}
-	if count == 0 {
-		return 0.5, nil
-	}
-	fitness := sum / float64(count)
-
-	// Emit fitness evidence.
-	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
-		"scheduler",
-		evidence.KindFitness,
-		fitness,
-		evidence.WithMetadata("type", "scheduler"),
-	))
-
-	return fitness, nil
+	return score, nil
 }
 
 // Snapshot returns the current scheduler. Used by the Diff Engine.

@@ -1,7 +1,7 @@
 # ARES「空心实现」类问题清单与解决方案（2026-08-02）
 
 > **范围**：本次聚焦 code review 中 **「空心实现 (hollow implementation)」** 一档 High 发现——代码看似实现、编译通过、接口齐全，但运行时并不产生真实效果。
-> **经 2026-08-02 当日重新实测**，4 条原始发现中 **2 条已自洽（非问题）、2 条确为真实空洞**，并额外定位到 Evidence 总线接线缺口（GA 空洞的根因）。
+> **经 2026-08-02 当日重新实测**，4 条原始发现中 **2 条已自洽（非问题）、2 条确为真实空洞**；当日用户已修复 GA fitness 三阶段 + Evidence 总线接线（**未提交 git**），故当前**仅剩 VectorProvider 伪 embedding 1 条真实空洞**。
 > **本次已完成（非空心类）**：arena 中间件空 key 放行（R-1，改 deny-by-default）、leader 二次 Stop 死锁（R-3）、ResolveConflict 塌缩（R-4），编译/vet/`-race` 测试全绿，已补回归测试，未提交 git。
 
 ---
@@ -40,6 +40,8 @@ for _, c := range intent.Goal {
 
 ## 2. 问题二：GA fitness 落死区（evidence 自举死锁 + fitness 硬编码）
 
+> ✅ **状态：已由用户于 2026-08-02 修复（未提交 git）**。新增 `internal/evolution/genome/fitness.go`（`avgFitnessValue` 从 evidence payload 读真实 `Value`），5 个 genome 的 `Fitness()` 全部改读真实证据；Flight/Memory/AKF 生产者接好（源名 memory/knowledge/recovery/workflow/scheduler 与 genome 查询对齐），发射真实成败值(0/1)。`go build` / `go test ./internal/evolution/genome/...` 通过。下方根因分析保留作历史记录。
+
 - **严重度**：High（核心卖点「自我进化 / 自愈」实际空转，且无任何「我没做事」的日志）
 
 ### 2.1 evidence 自举死锁（真根因）
@@ -63,8 +65,10 @@ for _, c := range intent.Goal {
 
 ## 3. 关联问题：Evidence 总线仅接 2/6 生产者
 
+> ✅ **状态：已由用户于 2026-08-02 修复（未提交 git）**。现 Chaos / Flight(`ares_flight/collector.go`) / Memory(`retriever_wiring.go:99` 源 `memory`) / AKF(`runtime.go:85` 源 `akf` 发射 Insight + `runtime.go:88` 源 `knowledge` 发射 Fitness) 均已接线，GA 不再自反馈空转。
+
 - **位置**：`internal/evidence/evidence.go:26-32`（设计 5 个 Kind → 6 类生产者，还含 Critique）
-- **现象**：Chaos(`ares_arena/service.go`) 真接；GA 自反馈（写回自己查的 Source）；**Flight / Memory / AKF 三个生产者从未接线**。
+- **现象**：Chaos(`ares_arena/service.go`) 真接；**Flight / Memory / AKF 三个生产者现已接线**（详见上方状态）。
 - **解决方案**：见 2.3 阶段 B。遥测源已存在，无需从零造：`internal/ares_observability/metrics.go`（`RecordLLMCall`/`RecordToolCall`/`RecordAgentStepDuration`/`RecordAgentError`，均带 `duration`+`hasError`）、Flight Recorder 在录 trace、distillation 在跑、AKG 写回路已通。
 
 ---
@@ -78,6 +82,5 @@ for _, c := range intent.Goal {
 
 ## 5. 落地顺序建议
 
-1. **先修 Embedding 伪向量**（独立、风险低、收益明确，且能顺带消除一个系统性碰撞隐患）。
-2. **GA 阶段 A + B 一起上**（或 B 期间关自动应用），再做 C 验证。
-3. **阶段 C 前补「GA 静默丢弃」的可观测性日志**，避免再次无感空转。
+1. **（仅剩）修 Embedding 伪向量**（`provider/vector/provider.go:239`，独立、风险低、收益明确，且能顺带消除一个系统性碰撞隐患）。GA 三阶段已由用户完成，无需再排期。
+2. GA 修复后建议补「GA 静默丢弃」可观测性日志，避免未来再次无感空转；并在阶段 C 前离线验证 fitness 区分度。

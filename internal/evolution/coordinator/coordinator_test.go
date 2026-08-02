@@ -37,7 +37,7 @@ func TestDefaultPolicy(t *testing.T) {
 	assert.Equal(t, 8, p.AutoApplyThreshold)
 	assert.Equal(t, 4, p.MaxPatchesPerMinute)
 	assert.Equal(t, 30.0, p.MinFitnessThreshold)
-	assert.Equal(t, 60.0, p.ApplyFitnessThreshold)
+	assert.Equal(t, 100.0, p.ApplyFitnessThreshold)
 }
 
 // ── EvolutionCoordinator ────────────────────

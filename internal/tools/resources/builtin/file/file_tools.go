@@ -88,14 +88,19 @@ func resolveSecurePath(path string) (string, error) {
 	return resolved, nil
 }
 
-// isPathAllowed reports whether targetPath is contained within allowedDir.
+// isPathAllowed reports whether targetPath is contained within allowedDir
+// and returns the symlink-resolved secure path to use for the actual
+// filesystem operation. Using the returned path (instead of the caller's
+// original path) closes the TOCTOU window between validation and access: a
+// symlink swapped in after the check cannot redirect the operation outside
+// the allowed directory (M11).
 //
 // Both paths are resolved to their absolute, symlink-evaluated forms before
 // the check. A relative path that escapes the allowed directory (via ".." or
 // a symlink) is rejected.
-func (t *FileTools) isPathAllowed(targetPath string) error {
+func (t *FileTools) isPathAllowed(targetPath string) (string, error) {
 	if t.allowedDir == "" {
-		return fmt.Errorf("file tools have no allowedDir configured; refusing to operate")
+		return "", fmt.Errorf("file tools have no allowedDir configured; refusing to operate")
 	}
 
 	resolvedTarget, err := resolveSecurePath(targetPath)
@@ -104,18 +109,18 @@ func (t *FileTools) isPathAllowed(targetPath string) error {
 		// EvalSymlinks fails. Fall back to evaluating the existing prefix.
 		resolvedTarget, err = resolveSecurePathPrefix(targetPath)
 		if err != nil {
-			return fmt.Errorf("resolve target path %q: %w", targetPath, err)
+			return "", fmt.Errorf("resolve target path %q: %w", targetPath, err)
 		}
 	}
 
 	rel, err := filepath.Rel(t.allowedDir, resolvedTarget)
 	if err != nil {
-		return fmt.Errorf("compute relative path from %q to %q: %w", t.allowedDir, resolvedTarget, err)
+		return "", fmt.Errorf("compute relative path from %q to %q: %w", t.allowedDir, resolvedTarget, err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("access denied: path %s is outside allowed directory %s", targetPath, t.allowedDir)
+		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s", targetPath, t.allowedDir)
 	}
-	return nil
+	return resolvedTarget, nil
 }
 
 // resolveSecurePathPrefix evaluates symlinks for the longest existing prefix
@@ -245,20 +250,13 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 	}
 
 	// Security: validate path is within allowed directory BEFORE any filesystem access.
-	if err := t.isPathAllowed(filePath); err != nil {
+	// Use the symlink-resolved secure path for the actual read so a symlink
+	// swapped in after validation cannot redirect the read (M11).
+	safePath, err := t.isPathAllowed(filePath)
+	if err != nil {
 		return core.NewErrorResult(err.Error()), nil
 	}
-
-	// Convert relative path to absolute path
-	if !filepath.IsAbs(filePath) {
-		absPath, err := filepath.Abs(filePath)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
-		}
-		filePath = absPath
-	}
-
-	filePath = filepath.Clean(filePath)
+	filePath = safePath
 
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -332,20 +330,13 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 	}
 
 	// Security: validate path is within allowed directory BEFORE any filesystem access.
-	if err := t.isPathAllowed(filePath); err != nil {
+	// Use the symlink-resolved secure path for the actual write so a symlink
+	// swapped in after validation cannot redirect the write (M11).
+	safePath, err := t.isPathAllowed(filePath)
+	if err != nil {
 		return core.NewErrorResult(err.Error()), nil
 	}
-
-	// Convert relative path to absolute path
-	if !filepath.IsAbs(filePath) {
-		absPath, err := filepath.Abs(filePath)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
-		}
-		filePath = absPath
-	}
-
-	filePath = filepath.Clean(filePath)
+	filePath = safePath
 
 	// Get write mode
 	mode := getString(params, paramMode)
@@ -415,9 +406,13 @@ func (t *FileTools) listFiles(ctx context.Context, params map[string]interface{}
 	dirPath = filepath.Clean(dirPath)
 
 	// Security: validate path is within allowed directory BEFORE any filesystem access.
-	if err := t.isPathAllowed(dirPath); err != nil {
+	// Use the symlink-resolved secure path for the actual listing so a
+	// symlink swapped in after validation cannot redirect the walk (M11).
+	safePath, err := t.isPathAllowed(dirPath)
+	if err != nil {
 		return core.NewErrorResult(err.Error()), nil
 	}
+	dirPath = safePath
 
 	// Check if directory exists
 	info, err := os.Stat(dirPath)

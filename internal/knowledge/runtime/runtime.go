@@ -36,7 +36,8 @@ type KnowledgeRuntime struct {
 	planMu sync.RWMutex
 
 	evStore evidence.Store      // optional: unified Evidence Store
-	evColl  *evidence.Collector // optional: evidence emitter
+	evColl  *evidence.Collector // optional: evidence emitter (Source "akf")
+	fitColl *evidence.Collector // optional: knowledge fitness emitter (Source "knowledge")
 }
 
 // New creates a KnowledgeRuntime with the given components.
@@ -76,11 +77,15 @@ func (r *KnowledgeRuntime) WithPatchRegistry(pr *patch.Registry) *KnowledgeRunti
 	return r
 }
 
-// WithEvidenceStore sets the runtime's evidence store for emitting AKF insights.
+// WithEvidenceStore sets the runtime's evidence store for emitting AKF insights
+// and knowledge fitness evidence.
 func (r *KnowledgeRuntime) WithEvidenceStore(store evidence.Store) *KnowledgeRuntime {
 	r.evStore = store
 	if store != nil {
 		r.evColl = evidence.NewCollector(store, "akf")
+		// Knowledge fitness evidence is emitted under Source "knowledge" so the
+		// GA KnowledgeGenome (which filters on that source) consumes it.
+		r.fitColl = evidence.NewCollector(store, "knowledge")
 	}
 	return r
 }
@@ -176,6 +181,16 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 				"budget_used": budget.ForGraph,
 			},
 			"goal", goal,
+		)
+	}
+
+	// Emit knowledge fitness evidence under Source "knowledge": a successful
+	// AKG graph produced within budget is a win (1.0). The GA KnowledgeGenome
+	// aggregates the mean value to score the planner/reducer strategies it
+	// evolves.
+	if r.fitColl != nil {
+		_ = r.fitColl.Emit(ctx, evidence.KindFitness,
+			map[string]any{"value": 1.0},
 		)
 	}
 

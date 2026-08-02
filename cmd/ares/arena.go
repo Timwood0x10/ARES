@@ -15,6 +15,7 @@ import (
 	"time"
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/spf13/cobra"
 )
 
@@ -199,7 +200,13 @@ var arenaServeCmd = &cobra.Command{
 	Short: "Start arena HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		inj := arena.NewInjector(nil, nil)
-		svc := arena.NewService(inj, nil, nil)
+		// Share the evolution components' evidence store so chaos failures land
+		// in the same store the GA genomes consume for fitness evaluation.
+		var evStore evidence.Store
+		if ev := getNewEvolution(); ev != nil && ev.EvidenceStore != nil {
+			evStore = ev.EvidenceStore
+		}
+		svc := arena.NewService(inj, nil, evStore)
 
 		// Wire the evolution bridge: chaos fault detection → coordinator.
 		if ev := getNewEvolution(); ev != nil && ev.Coordinator != nil {

@@ -14,7 +14,7 @@ type fixedScorer struct {
 	err   error
 }
 
-func (s *fixedScorer) Score(input any) (float64, error) {
+func (s *fixedScorer) Score(_ context.Context, input any) (float64, error) {
 	return s.score, s.err
 }
 
@@ -61,7 +61,7 @@ func TestEnsembleScorer_WeightedAverage(t *testing.T) {
 		t.Fatalf("NewEnsembleScorer failed: %v", err)
 	}
 
-	score, err := es.Score("test")
+	score, err := es.Score(ctx, "test")
 	if err != nil {
 		t.Fatalf("Score failed: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestEnsembleScorer_EqualWeights(t *testing.T) {
 		t.Fatalf("NewEnsembleScorer failed: %v", err)
 	}
 
-	score, err := es.Score("test")
+	score, err := es.Score(ctx, "test")
 	if err != nil {
 		t.Fatalf("Score failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEnsembleScorer_ClampToRange(t *testing.T) {
 		t.Fatalf("NewEnsembleScorer failed: %v", err)
 	}
 
-	score, err := es.Score("test")
+	score, err := es.Score(ctx, "test")
 	if err != nil {
 		t.Fatalf("Score failed: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestEnsembleScorer_SubScorerError(t *testing.T) {
 		t.Fatalf("NewEnsembleScorer failed: %v", err)
 	}
 
-	_, err = es.Score("test")
+	_, err = es.Score(ctx, "test")
 	if err == nil {
 		t.Fatal("expected error from sub-scorer")
 	}
@@ -125,7 +125,7 @@ func TestExactMatchScorer_Match(t *testing.T) {
 		func(input any) string { return "expected" },
 		func(input any) string { return "expected" },
 	)
-	score, err := s.Score("ignored")
+	score, err := s.Score(ctx, "ignored")
 	if err != nil {
 		t.Fatalf("Score failed: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestExactMatchScorer_NoMatch(t *testing.T) {
 		func(input any) string { return "expected" },
 		func(input any) string { return "actual" },
 	)
-	score, err := s.Score("ignored")
+	score, err := s.Score(ctx, "ignored")
 	if err != nil {
 		t.Fatalf("Score failed: %v", err)
 	}
@@ -149,10 +149,10 @@ func TestExactMatchScorer_NoMatch(t *testing.T) {
 }
 
 func TestMapScorer(t *testing.T) {
-	s := NewMapScorer(func(input any) (float64, error) {
+	s := NewMapScorer(func(_ context.Context, input any) (float64, error) {
 		return 0.42, nil
 	})
-	score, err := s.Score("test")
+	score, err := s.Score(ctx, "test")
 	if err != nil {
 		t.Fatalf("Score failed: %v", err)
 	}
@@ -167,13 +167,13 @@ func TestAdaptiveRegression_EarlyStop(t *testing.T) {
 		"new": {scores: []float64{0.8, 0.85, 0.82, 0.88, 0.81, 0.86, 0.83, 0.87, 0.84, 0.89}},
 	}
 
-	composite := NewMapScorer(func(input any) (float64, error) {
+	composite := NewMapScorer(func(_ context.Context, input any) (float64, error) {
 		key, _ := unwrapInput(input).(string)
 		s, ok := scoresByKey[key]
 		if !ok {
 			return 0, nil
 		}
-		return s.Score(nil)
+		return s.Score(ctx, nil)
 	})
 
 	tester, err := NewRegressionTester(&Service{}, composite)
@@ -211,13 +211,13 @@ func TestAdaptiveRegression_NoDiff(t *testing.T) {
 		"new": {scores: newScores},
 	}
 
-	composite := NewMapScorer(func(input any) (float64, error) {
+	composite := NewMapScorer(func(_ context.Context, input any) (float64, error) {
 		key, _ := unwrapInput(input).(string)
 		s, ok := scoresByKey[key]
 		if !ok {
 			return 0, nil
 		}
-		return s.Score(nil)
+		return s.Score(ctx, nil)
 	})
 
 	tester, err := NewRegressionTester(&Service{}, composite)
@@ -249,13 +249,13 @@ func TestAdaptiveRegression_CompositeScorerRouteByKey(t *testing.T) {
 		"new": {scores: []float64{0.9, 0.92, 0.91, 0.93, 0.9, 0.92, 0.91, 0.93, 0.9, 0.92}},
 	}
 
-	composite := NewMapScorer(func(input any) (float64, error) {
+	composite := NewMapScorer(func(_ context.Context, input any) (float64, error) {
 		key, _ := unwrapInput(input).(string)
 		s, ok := scoresByKey[key]
 		if !ok {
 			return 0, nil
 		}
-		return s.Score(nil)
+		return s.Score(ctx, nil)
 	})
 
 	tester, err := NewRegressionTester(&Service{}, composite)

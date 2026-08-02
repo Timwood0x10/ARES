@@ -60,6 +60,13 @@ type SearchResult = storage.SearchResult
 // Search performs a vector similarity search.
 // This is a simplified implementation that uses pgvector if available.
 func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []float64, limit int) ([]*SearchResult, error) {
+	// Reject a negative limit: PostgreSQL interprets a negative LIMIT as
+	// "no limit" and would return every row, turning a bounded search into
+	// an unbounded query (M2).
+	if limit < 0 {
+		return nil, fmt.Errorf("limit must not be negative: %d", limit)
+	}
+
 	// Validate table name against whitelist (consistent with base_repository.go).
 	safeTable, err := validateTable(table)
 	if err != nil {

@@ -417,7 +417,11 @@ func (t *SSEServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) erro
 		t.sessionsMu.Unlock()
 		return ctx.Err()
 	default:
-		// Client buffer full; drop to avoid blocking the server loop.
+		// Client buffer full: report the failure instead of silently
+		// dropping the response, which would leave the caller waiting
+		// forever for a reply that never arrives (M10).
+		t.sessionsMu.Unlock()
+		return fmt.Errorf("sse: client buffer full, response for session %q dropped", sessionID)
 	}
 	t.sessionsMu.Unlock()
 	return nil

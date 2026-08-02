@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -28,7 +29,9 @@ func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.T
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}
-	if len(prompt) > c.promptMaxLength() {
+	// Count runes, not bytes: CJK and other multi-byte characters would
+	// otherwise be wrongly rejected against a character-based limit (M8).
+	if utf8.RuneCountInString(prompt) > c.promptMaxLength() {
 		err := fmt.Errorf("prompt exceeds maximum length of %d characters", c.promptMaxLength())
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
@@ -316,7 +319,11 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 			},
 		},
 		"max_tokens": anthropicMaxTokens,
-		"top_k":      o.applyTopK(0),
+	}
+	// Anthropic rejects top_k=0 with an API 400; only send it when a
+	// positive override is present (M9).
+	if topK := o.applyTopK(0); topK > 0 {
+		requestBody["top_k"] = topK
 	}
 
 	jsonBody, err := json.Marshal(requestBody)

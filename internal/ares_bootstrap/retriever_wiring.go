@@ -11,6 +11,7 @@ import (
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_memory/experienceadapters"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -45,6 +46,9 @@ type retrieverSetter interface {
 //	embClient  - embedding client for query embedding. Nil skips memory retriever.
 //	expRepo    - PostgreSQL experience repo. Nil skips memory retriever.
 //	knowRt     - AKG KnowledgeRuntime. Nil skips knowledge retriever.
+//	evStore    - shared evidence store; when non-nil, the memory retriever
+//	            reports retrieval hit/miss outcomes under Source "memory" for
+//	            the GA MemoryGenome to consume.
 func wireRetrievers(
 	ctx context.Context,
 	cfg *aresconfig.Config,
@@ -52,6 +56,7 @@ func wireRetrievers(
 	embClient *embedding.EmbeddingClient,
 	expRepo repositories.ExperienceRepositoryInterface,
 	knowRt *knowledgeruntime.KnowledgeRuntime,
+	evStore *evidence.MemoryStore,
 ) {
 	setter, ok := mem.(retrieverSetter)
 	if !ok {
@@ -87,6 +92,12 @@ func wireRetrievers(
 				log.Warn("bootstrap: memory retriever construction failed; skipping",
 					"error", err)
 			} else {
+				// Report retrieval hit/miss outcomes to the shared evidence
+				// store (Source "memory") so the GA MemoryGenome scores memory
+				// quality from real usage.
+				if evStore != nil {
+					mr.SetEvidenceEmitter(evidence.NewCollector(evStore, "memory"))
+				}
 				retrievers = append(retrievers, mr)
 				log.Info("bootstrap: memory retriever wired (distilled experiences → RAG)",
 					"tenant", defaultDistillTenant, "min_score", minScore)

@@ -111,46 +111,20 @@ func (g *MemoryGenome) Crossover(_ context.Context, other Genome) (Genome, error
 	return child, nil
 }
 
-// Fitness evaluates this genome's quality based on memory usage evidence.
+// Fitness evaluates this genome's quality based on real memory quality
+// evidence: the measured retrieval hit rate (Value in [0, 1]) produced by the
+// memory retriever and distillation paths. When no evidence is available yet,
+// a neutral 0.5 is returned so the GA keeps exploring.
+//
+// MaxHistory/MaxSessions are deliberately not baked into the score: fitness
+// reflects actual memory usefulness (hit rate) so the GA converges to the
+// configuration that demonstrably retrieves the most relevant memories.
 func (g *MemoryGenome) Fitness(ctx context.Context) (float64, error) {
-	if g.config.EvidenceStore == nil {
-		return 0.5, nil
-	}
-	evs, err := g.config.EvidenceStore.Query(ctx, evidence.Filter{
-		Source: MemoryGenomeName,
-		Limit:  50,
-	})
+	score, err := avgFitnessValue(ctx, g.config.EvidenceStore, MemoryGenomeName, 0, 50)
 	if err != nil {
-		return 0.0, fmt.Errorf("memory: query evidence: %w", err)
-	}
-	if len(evs) == 0 {
 		return 0.5, nil
 	}
-
-	// Heuristic: moderate history depth is optimal.
-	baseFit := 0.7
-	if g.config.MaxHistory >= 5 && g.config.MaxHistory <= 20 {
-		baseFit = 0.8
-	}
-	// Penalise very large session counts.
-	sessionPenalty := float64(g.config.MaxSessions) / 1000.0
-	if sessionPenalty > 0.3 {
-		sessionPenalty = 0.3
-	}
-	fitness := baseFit - sessionPenalty
-
-	// Emit fitness evidence.
-	if g.config.EvidenceStore != nil {
-		_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
-			MemoryGenomeName,
-			evidence.KindFitness,
-			fitness,
-			evidence.WithMetadata("max_history", fmt.Sprintf("%d", g.config.MaxHistory)),
-			evidence.WithMetadata("max_sessions", fmt.Sprintf("%d", g.config.MaxSessions)),
-		))
-	}
-
-	return fitness, nil
+	return score, nil
 }
 
 // Snapshot returns the current config as the serializable state.

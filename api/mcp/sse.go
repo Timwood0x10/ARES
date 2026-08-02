@@ -104,13 +104,16 @@ func (tr *sseTransport) readEndpointEvent() (string, error) {
 	return "", fmt.Errorf("sse stream ended without endpoint event")
 }
 
-func (tr *sseTransport) roundTrip(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+func (tr *sseTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(tr.sseCtx, http.MethodPost, tr.messageURL, bytes.NewReader(body))
+	// Use the per-request context so a caller timeout or cancellation can
+	// abort a hung POST instead of waiting on the transport's own context,
+	// which has no deadline (M13).
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tr.messageURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("post request: %w", err)
 	}
