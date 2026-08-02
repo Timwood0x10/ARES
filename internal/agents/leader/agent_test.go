@@ -42,6 +42,9 @@ func (m *mockMemoryManager) BuildContext(ctx context.Context, input string, sess
 func (m *mockMemoryManager) CreateTask(ctx context.Context, sessionID, userID, input string) (string, error) {
 	return "task-123", nil
 }
+func (m *mockMemoryManager) CreateTaskWithID(ctx context.Context, taskID, sessionID, userID, input string) error {
+	return nil
+}
 func (m *mockMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, output string) error {
 	return nil
 }

@@ -416,23 +416,41 @@ func (t *Team) synthesize(ctx context.Context, input, plan string, results []Sub
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+// extractFilePaths extracts file paths from read_directory-style output.
+// It accepts common source/document extensions (not just .md) and skips
+// markdown list/list-item markers and byte-size suffixes.
 func extractFilePaths(s string) []string {
 	lines := strings.Split(s, "\n")
+	knownExtensions := []string{
+		".md", ".go", ".py", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".h",
+		".yaml", ".yml", ".json", ".toml", ".sql", ".sh", ".txt", ".csv",
+	}
 	var files []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		// Look for lines containing .md (likely file paths from read_directory).
-		if strings.Contains(line, ".md") && !strings.HasPrefix(line, "[") && !strings.HasPrefix(line, "(") {
-			// Extract the path part before " (N bytes)" if present.
-			if idx := strings.Index(line, " ("); idx > 0 {
-				line = line[:idx]
+		// Skip markdown list markers and check for a known extension.
+		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, "(") {
+			continue
+		}
+		hasKnownExt := false
+		for _, ext := range knownExtensions {
+			if strings.Contains(line, ext) {
+				hasKnownExt = true
+				break
 			}
-			// Clean up markdown list markers.
-			line = strings.TrimLeft(line, "- *")
-			line = strings.TrimSpace(line)
-			if line != "" && strings.Contains(line, ".") {
-				files = append(files, line)
-			}
+		}
+		if !hasKnownExt {
+			continue
+		}
+		// Extract the path part before " (N bytes)" if present.
+		if idx := strings.Index(line, " ("); idx > 0 {
+			line = line[:idx]
+		}
+		// Clean up markdown list markers.
+		line = strings.TrimLeft(line, "- *")
+		line = strings.TrimSpace(line)
+		if line != "" && strings.Contains(line, ".") {
+			files = append(files, line)
 		}
 	}
 	return files

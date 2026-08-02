@@ -267,6 +267,9 @@ func WithAPIKey(key string) Option {
 // configuration object from a YAML file or shared config store.
 func WithLLMConfig(cfg *core.LLMConfig) Option {
 	return func(c *config) error {
+		if cfg == nil {
+			return fmt.Errorf("with llm config: config is nil")
+		}
 		c.llmCfg = cfg
 		return nil
 	}

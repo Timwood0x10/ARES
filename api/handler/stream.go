@@ -144,30 +144,32 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 			return
 		}
 
-		// Stream events to client
-		for event := range eventCh {
-			// Check if client disconnected
+		// Stream events to client. Use a select so a client disconnect
+		// aborts the loop even when the processor never closes eventCh
+		// (otherwise `range eventCh` would block forever).
+		for {
 			select {
 			case <-ctx.Done():
 				log.Debug("Client disconnected, stopping stream")
 				return
-			default:
+			case event, ok := <-eventCh:
+				if !ok {
+					// Processor closed the channel — stream complete.
+					if err = h.sendSSE(w, flusher, "done", map[string]string{keyStatus: "complete"}); err != nil {
+						log.Warn("Failed to send done event", "error", err)
+					}
+					return
+				}
+
+				// Convert event to SSE response
+				resp := h.convertEvent(event)
+
+				// Send SSE event
+				if err := h.sendSSE(w, flusher, resp.Event, resp.Data); err != nil {
+					log.Warn("Failed to send SSE event", "error", err)
+					return
+				}
 			}
-
-			// Convert event to SSE response
-			resp := h.convertEvent(event)
-
-			// Send SSE event
-			if err := h.sendSSE(w, flusher, resp.Event, resp.Data); err != nil {
-				log.Warn("Failed to send SSE event", "error", err)
-				return
-			}
-		}
-
-		// Send done event
-		if err = h.sendSSE(w, flusher, "done", map[string]string{keyStatus: "complete"}); err != nil {
-			log.Warn("Failed to send done event", "error", err)
-			return
 		}
 	}
 }

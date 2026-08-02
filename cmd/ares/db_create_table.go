@@ -42,7 +42,6 @@ func runDbCreateTable() error {
 	dbname = strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() { _ = adminDB.Close() }()
 
 	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {

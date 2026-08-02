@@ -87,10 +87,18 @@ func (h *Handler) RetryWithBackoff(ctx context.Context, appErr *AppError, attemp
 
 	// Only apply backoff on retry attempts (attempt > 0), not on first attempt
 	if attempt > 0 {
-		// Exponential backoff: base * 2^(attempt-1)
-		// Cap at maxBackoff to prevent excessive waiting
+		// Exponential backoff: base * 2^(attempt-1).
+		// Cap at maxBackoff to prevent excessive waiting.
 		maxBackoff := 30 * time.Second
-		backoff := strategy.Backoff * time.Duration(1<<(attempt-1))
+		// Clamp the exponent before shifting: 1<<(attempt-1) overflows to a
+		// negative value once attempt-1 >= 63, which would defeat the cap
+		// below and turn the backoff timer into a hot loop. 2^30 seconds far
+		// exceeds maxBackoff, so nothing is lost by clamping.
+		exp := attempt - 1
+		if exp > 30 {
+			exp = 30
+		}
+		backoff := strategy.Backoff * time.Duration(1<<exp)
 		if backoff > maxBackoff {
 			backoff = maxBackoff
 		}

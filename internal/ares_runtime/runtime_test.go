@@ -191,6 +191,10 @@ func (m *mockMemoryManager) CreateTask(_ context.Context, _, _, _ string) (strin
 	return "", nil
 }
 
+func (m *mockMemoryManager) CreateTaskWithID(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
 func (m *mockMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -280,6 +284,10 @@ func (m *errMemoryManager) BuildContext(_ context.Context, _, _ string) (string,
 
 func (m *errMemoryManager) CreateTask(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil
+}
+
+func (m *errMemoryManager) CreateTaskWithID(_ context.Context, _, _, _, _ string) error {
+	return nil
 }
 
 func (m *errMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) error {

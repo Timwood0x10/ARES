@@ -462,6 +462,20 @@ func (m *memoryManager) CreateTask(ctx context.Context, sessionID, userID, input
 	return taskID, nil
 }
 
+// CreateTaskWithID creates a task using a caller-assigned ID. It validates
+// the ID is non-empty, then stores the task under that exact ID so the
+// caller's tracking ID matches the stored task (and any cached result).
+func (m *memoryManager) CreateTaskWithID(ctx context.Context, taskID, sessionID, userID, input string) error {
+	if taskID == "" {
+		return errors.Wrap(errors.ErrInvalidArgument, "create task with id")
+	}
+	if err := m.taskMemory.Set(ctx, taskID, sessionID, userID, input); err != nil {
+		return errors.Wrap(err, "create task with id")
+	}
+	log.Debug("Task created with id", "task_id", taskID, "session_id", sessionID)
+	return nil
+}
+
 // UpdateTaskOutput updates the task output.
 func (m *memoryManager) UpdateTaskOutput(ctx context.Context, taskID, output string) error {
 	if err := m.taskMemory.UpdateOutput(ctx, taskID, output); err != nil {

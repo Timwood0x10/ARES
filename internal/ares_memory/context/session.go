@@ -144,6 +144,8 @@ func (m *SessionMemory) Cleanup(ctx context.Context) int {
 }
 
 // Get retrieves session data and updates access time.
+// A deep copy is returned so callers cannot mutate the stored session
+// (messages slice and context map are copied, not shared).
 func (m *SessionMemory) Get(ctx context.Context, sessionID string) (*SessionData, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -160,7 +162,23 @@ func (m *SessionMemory) Get(ctx context.Context, sessionID string) (*SessionData
 
 	// Update access time (requires write lock).
 	session.AccessedAt = time.Now()
-	return session, true
+
+	// Deep copy messages and context so the caller cannot mutate the
+	// internal session state.
+	messages := make([]Message, len(session.Messages))
+	copy(messages, session.Messages)
+	contextCopy := make(map[string]interface{}, len(session.Context))
+	for k, v := range session.Context {
+		contextCopy[k] = v
+	}
+	return &SessionData{
+		SessionID:  session.SessionID,
+		UserID:     session.UserID,
+		Messages:   messages,
+		Context:    contextCopy,
+		AccessedAt: session.AccessedAt,
+		CreatedAt:  session.CreatedAt,
+	}, true
 }
 
 // Set stores session data.

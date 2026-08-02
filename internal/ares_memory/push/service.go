@@ -338,11 +338,7 @@ func (s *DefaultPushService) Stop() {
 
 // scheduledLoop runs a periodic push on the configured interval until ctx is cancelled.
 func (s *DefaultPushService) scheduledLoop(ctx context.Context) {
-	defer func() {
-		s.runMu.Lock()
-		close(s.doneCh)
-		s.runMu.Unlock()
-	}()
+	defer s.finishLoop()
 
 	ticker := time.NewTicker(s.config.Interval)
 	defer ticker.Stop()
@@ -363,12 +359,23 @@ func (s *DefaultPushService) scheduledLoop(ctx context.Context) {
 // eventLoop keeps the service alive for event-triggered pushes.
 // It does nothing itself; external callers invoke PushRelevant when events arrive.
 func (s *DefaultPushService) eventLoop(ctx context.Context) {
-	defer func() {
-		s.runMu.Lock()
-		close(s.doneCh)
-		s.runMu.Unlock()
-	}()
+	defer s.finishLoop()
 
 	<-ctx.Done()
 	slog.InfoContext(ctx, "[PushService] event loop stopped")
+}
+
+// finishLoop resets the lifecycle state when a loop exits, whether via Stop
+// or via external context cancellation. Without the isRunning reset, a
+// loop cancelled by its ctx (rather than Stop) would leave the service
+// permanently stuck in ErrAlreadyRunning on the next Start.
+func (s *DefaultPushService) finishLoop() {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.doneCh != nil {
+		close(s.doneCh)
+	}
+	s.isRunning = false
+	s.cancelFn = nil
+	s.doneCh = nil
 }

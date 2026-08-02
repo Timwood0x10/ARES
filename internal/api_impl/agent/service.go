@@ -41,6 +41,15 @@ func (s *Service) CreateAgent(ctx context.Context, agentID, name, agentType stri
 		return nil, ErrInvalidAgentID
 	}
 
+	// Reject duplicate agent IDs instead of silently overwriting the
+	// existing agent (which would also leak its old session).
+	s.agentsMu.RLock()
+	_, exists := s.agents[agentID]
+	s.agentsMu.RUnlock()
+	if exists {
+		return nil, ErrAgentAlreadyExists
+	}
+
 	// Create session for the agent
 	sessionID, err := s.memoryMgr.CreateSession(ctx, agentID)
 	if err != nil {
@@ -243,10 +252,23 @@ func (s *Service) ExecuteTask(ctx context.Context, agentID, taskID string, paylo
 		input = string(data)
 	}
 
-	// Create task via memory manager.
-	createdTaskID, err := s.memoryMgr.CreateTask(ctx, agent.SessionID, agentID, input)
-	if err != nil {
-		return "", fmt.Errorf("create task: %w", err)
+	// Create task via memory manager. Use the caller-assigned taskID when
+	// provided so the returned ID matches the caller's tracking ID (and the
+	// upper layer's result cache key); otherwise let the manager generate one.
+	var (
+		createdTaskID string
+		err           error
+	)
+	if taskID != "" {
+		if err := s.memoryMgr.CreateTaskWithID(ctx, taskID, agent.SessionID, agentID, input); err != nil {
+			return "", fmt.Errorf("create task with id: %w", err)
+		}
+		createdTaskID = taskID
+	} else {
+		createdTaskID, err = s.memoryMgr.CreateTask(ctx, agent.SessionID, agentID, input)
+		if err != nil {
+			return "", fmt.Errorf("create task: %w", err)
+		}
 	}
 
 	return createdTaskID, nil

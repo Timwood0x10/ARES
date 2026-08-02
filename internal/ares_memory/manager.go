@@ -47,6 +47,11 @@ type MemoryManager interface {
 	// CreateTask creates a new task and returns the task ID.
 	CreateTask(ctx context.Context, sessionID, userID, input string) (string, error)
 
+	// CreateTaskWithID creates a task with a caller-assigned ID. This lets
+	// upper layers track a task by its own ID instead of a generated one,
+	// keeping cached results and the returned task ID consistent.
+	CreateTaskWithID(ctx context.Context, taskID, sessionID, userID, input string) error
+
 	// UpdateTaskOutput updates the task output.
 	UpdateTaskOutput(ctx context.Context, taskID, output string) error
 

@@ -35,26 +35,30 @@ func (m *memoryManager) retrieveForPrompt(ctx context.Context, input string) []M
 }
 
 // runRetrieval is the shared retrieval path used by both retrieveContextString
-// and retrieveForPrompt. It snapshots the retrievers under the config lock,
-// checks the EnableRAG gate, and delegates to memctx.RunRetrieval which applies
-// the canonical DefaultTopK / DefaultMinScore normalization.
+// and retrieveForPrompt. It snapshots the retrievers and the RAG config under
+// the config lock (MemoryPatchExecutor.Apply mutates config fields under the
+// same lock), checks the EnableRAG gate, and delegates to memctx.RunRetrieval
+// which applies the canonical DefaultTopK / DefaultMinScore normalization.
 func (m *memoryManager) runRetrieval(ctx context.Context, input string) []memctx.ContextSnippet {
-	if !m.config.EnableRAG || input == "" {
-		return nil
-	}
-
-	// Snapshot retrievers under the lock so concurrent SetRetrievers calls
-	// do not race with retrieval.
+	// Snapshot config + retrievers under the lock so concurrent SetRetrievers
+	// calls and config patches do not race with retrieval reads.
 	m.mu.RLock()
+	enableRAG := m.config.EnableRAG
+	ragTopK := m.config.RAGTopK
+	ragMinScore := m.config.RAGMinScore
 	retrievers := make([]memctx.ContextRetriever, len(m.retrievers))
 	copy(retrievers, m.retrievers)
 	m.mu.RUnlock()
+
+	if !enableRAG || input == "" {
+		return nil
+	}
 
 	if len(retrievers) == 0 {
 		return nil
 	}
 
-	snippets, err := memctx.RunRetrieval(ctx, retrievers, input, m.config.RAGTopK, m.config.RAGMinScore)
+	snippets, err := memctx.RunRetrieval(ctx, retrievers, input, ragTopK, ragMinScore)
 	if err != nil {
 		log.Warn("RAG retrieval reported partial failures, proceeding with available snippets",
 			"error", err, "snippet_count", len(snippets))

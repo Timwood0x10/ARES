@@ -515,9 +515,18 @@ func ares_configFromService(cfg *ServiceConfig) (*ares_config.Config, error) {
 // background goroutines managed by the errgroup to finish.
 func (s *Service) Wait() {
 	<-s.ctx.Done()
-	_ = s.httpServer.Shutdown(context.Background())
-	// Wait for all errgroup-managed goroutines to finish before returning.
+	// Bound the HTTP shutdown so a stuck connection cannot block shutdown
+	// forever; a graceful-drain failure is logged rather than silent.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Warn("http server shutdown failed", "error", err)
+	}
+	// Wait for all errgroup-managed goroutines to finish and surface the
+	// first error instead of silently discarding it.
 	if s.g != nil {
-		_ = s.g.Wait()
+		if err := s.g.Wait(); err != nil {
+			log.Error("background service goroutine failed during shutdown", "error", err)
+		}
 	}
 }

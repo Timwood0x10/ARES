@@ -106,6 +106,10 @@ func (m *mockMemoryMgr) CreateTask(ctx context.Context, sessionID, userID, input
 	return args.String(0), args.Error(1)
 }
 
+func (m *mockMemoryMgr) CreateTaskWithID(ctx context.Context, taskID, sessionID, userID, input string) error {
+	return m.Called(ctx, taskID, sessionID, userID, input).Error(0)
+}
+
 func (m *mockMemoryMgr) UpdateTaskOutput(ctx context.Context, taskID, output string) error {
 	return m.Called(ctx, taskID, output).Error(0)
 }
