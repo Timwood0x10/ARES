@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/storage"
@@ -57,6 +58,13 @@ type Config struct {
 	// Most vector stores return a similarity score; this is only used when
 	// the search result's score is 0.
 	DefaultScore float64
+
+	// Embedder optionally provides real query embedding. When set, Stream uses
+	// it to embed the intent goal so vector search compares semantically
+	// meaningful vectors instead of a deterministic hash fallback. When nil,
+	// the provider degrades to a deterministic hash vector so it keeps working
+	// without an external embedding service.
+	Embedder embedding.EmbeddingService
 }
 
 // DefaultConfig returns a sensible default configuration.
@@ -138,11 +146,15 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 		defer close(objCh)
 		defer close(errCh)
 
-		// Generate a query embedding from the intent goal.
-		// In production this would use an embedding model (OpenAI, BGE, etc.).
-		// For now we generate a random vector + simple keyword heuristic so
-		// the provider works without an external embedding service.
-		queryVec := p.generateQueryVector(intent)
+		// Generate a query embedding from the intent goal. When an
+		// EmbeddingService is configured, the goal is embedded with the real
+		// model so vector search is semantically meaningful. Otherwise fall
+		// back to a deterministic hash vector (no external service needed).
+		queryVec, err := p.generateQueryVector(gCtx, intent)
+		if err != nil {
+			errCh <- fmt.Errorf("vector search %s: %w", p.config.Collection, err)
+			return nil
+		}
 
 		limit := intent.Scope.MaxObjects
 		if limit <= 0 {
@@ -223,10 +235,35 @@ func (p *VectorProvider) resultToObject(r *storage.SearchResult) *knowledge.Know
 }
 
 // generateQueryVector produces a query vector from the intent goal.
-// Uses a deterministic hash-based approach so the same goal always produces
-// the same vector (important for reproducibility and caching).
-// In production, replace this with a real embedding model call.
-func (p *VectorProvider) generateQueryVector(intent knowledge.Intent) []float64 {
+//
+// When an EmbeddingService is configured, the goal is embedded with the real
+// model (prefixed "query:" to match how documents are stored under the
+// "passage:" prefix) and normalized to unit length for cosine similarity. An
+// embedding failure returns a wrapped error — the provider does NOT silently
+// fall back to the hash vector, so a misconfigured embedder is observable
+// instead of silently degrading search quality.
+//
+// When no embedder is configured, a deterministic hash vector is used so the
+// provider still works without an external embedding service (e.g. in minimal
+// configs). Same goal → same vector, preserving reproducibility.
+func (p *VectorProvider) generateQueryVector(ctx context.Context, intent knowledge.Intent) ([]float64, error) {
+	if p.config.Embedder != nil {
+		vec, err := p.config.Embedder.EmbedWithPrefix(ctx, intent.Goal, "query:")
+		if err != nil {
+			return nil, fmt.Errorf("vector provider %s: embed query: %w", p.config.Name, err)
+		}
+		if len(vec) == 0 {
+			return nil, fmt.Errorf("vector provider %s: embedder returned empty vector", p.config.Name)
+		}
+		return normalizeUnit(vec), nil
+	}
+
+	return p.hashQueryVector(intent), nil
+}
+
+// hashQueryVector derives a deterministic unit vector from the goal text.
+// It is the fallback path used only when no EmbeddingService is configured.
+func (p *VectorProvider) hashQueryVector(intent knowledge.Intent) []float64 {
 	dim := p.config.VectorDimension
 	if dim <= 0 {
 		dim = 1024
@@ -244,20 +281,28 @@ func (p *VectorProvider) generateQueryVector(intent knowledge.Intent) []float64 
 	//nolint:gosec // deterministic seed from goal text, not security-sensitive
 	rng := rand.New(rand.NewSource(seed))
 	vec := make([]float64, dim)
-	var sum float64
 	for i := range vec {
 		vec[i] = rng.Float64()*2 - 1 // [-1, 1]
-		sum += vec[i] * vec[i]
 	}
-	// Normalize to unit length for cosine similarity.
-	magnitude := 1.0
-	if sum > 0 {
-		magnitude = 1.0 / sqrt(sum)
+	return normalizeUnit(vec)
+}
+
+// normalizeUnit scales vec to unit length so cosine similarity compares
+// direction only. A zero vector is returned unchanged (magnitude 0).
+func normalizeUnit(vec []float64) []float64 {
+	var sum float64
+	for _, v := range vec {
+		sum += v * v
 	}
-	for i := range vec {
-		vec[i] *= magnitude
+	if sum == 0 {
+		return vec
 	}
-	return vec
+	mag := 1.0 / sqrt(sum)
+	out := make([]float64, len(vec))
+	for i, v := range vec {
+		out[i] = v * mag
+	}
+	return out
 }
 
 // sqrt is a simple Newton‑Raphson sqrt for float64.

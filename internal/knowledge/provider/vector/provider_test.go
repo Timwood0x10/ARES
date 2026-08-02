@@ -2,8 +2,10 @@ package vector
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/storage"
@@ -222,3 +224,161 @@ func TestVectorProvider_Validation(t *testing.T) {
 
 // compile-time check.
 var _ storage.VectorStore = (*memVectorStore)(nil)
+
+// mockEmbedder is a deterministic EmbeddingService for tests: it maps text to
+// a fixed-dimension vector derived from rune values, and can be told to fail.
+type mockEmbedder struct {
+	dim    int
+	fail   bool
+	called int
+}
+
+func (m *mockEmbedder) Embed(_ context.Context, text string) ([]float64, error) {
+	return m.EmbedWithPrefix(context.Background(), text, "")
+}
+
+func (m *mockEmbedder) EmbedWithPrefix(_ context.Context, text, _ string) ([]float64, error) {
+	m.called++
+	if m.fail {
+		return nil, fmt.Errorf("mock embedder: forced failure")
+	}
+	vec := make([]float64, m.dim)
+	for i, c := range text {
+		if i >= m.dim {
+			break
+		}
+		vec[i] = float64(c%97)/97.0 + 0.01
+	}
+	return vec, nil
+}
+
+func (m *mockEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float64, error) {
+	out := make([][]float64, 0, len(texts))
+	for _, t := range texts {
+		v, err := m.Embed(context.Background(), t)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (m *mockEmbedder) HealthCheck(context.Context) error { return nil }
+func (m *mockEmbedder) GetModel() string                  { return "mock" }
+func (m *mockEmbedder) GetTimeout() time.Duration         { return time.Second }
+
+func TestVectorProvider_HashQueryVector_Deterministic(t *testing.T) {
+	store := newMemVectorStore()
+	p, err := NewVectorProvider(store, Config{Name: "vec", Collection: "docs", VectorDimension: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	intent := knowledge.Intent{Goal: "semantic search example"}
+	v1, err := p.generateQueryVector(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("generateQueryVector: %v", err)
+	}
+	v2, err := p.generateQueryVector(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("generateQueryVector: %v", err)
+	}
+
+	if len(v1) != 8 {
+		t.Fatalf("dim = %d, want 8", len(v1))
+	}
+	for i := range v1 {
+		if v1[i] != v2[i] {
+			t.Fatalf("deterministic hash should be identical across calls, got diff at %d", i)
+		}
+	}
+
+	// Vector must be unit length (normalized for cosine similarity).
+	var sum float64
+	for _, v := range v1 {
+		sum += v * v
+	}
+	if sum < 0.99 || sum > 1.01 {
+		t.Errorf("hash vector not unit length: sum(sq)=%f", sum)
+	}
+}
+
+func TestVectorProvider_GenerateQueryVector_UsesEmbedder(t *testing.T) {
+	store := newMemVectorStore()
+	em := &mockEmbedder{dim: 8}
+	p, err := NewVectorProvider(store, Config{
+		Name: "vec", Collection: "docs", VectorDimension: 8, Embedder: em,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	intent := knowledge.Intent{Goal: "semantic query"}
+	vec, err := p.generateQueryVector(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("generateQueryVector: %v", err)
+	}
+	if em.called == 0 {
+		t.Fatal("expected embedder to be called when configured")
+	}
+	if len(vec) != 8 {
+		t.Fatalf("dim = %d, want 8", len(vec))
+	}
+	// Embedder output must be normalized to unit length.
+	var sum float64
+	for _, v := range vec {
+		sum += v * v
+	}
+	if sum < 0.99 || sum > 1.01 {
+		t.Errorf("embedder vector not unit length: sum(sq)=%f", sum)
+	}
+}
+
+func TestVectorProvider_GenerateQueryVector_EmbedderError(t *testing.T) {
+	store := newMemVectorStore()
+	em := &mockEmbedder{dim: 8, fail: true}
+	p, err := NewVectorProvider(store, Config{
+		Name: "vec", Collection: "docs", VectorDimension: 8, Embedder: em,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = p.generateQueryVector(context.Background(), knowledge.Intent{Goal: "x"})
+	if err == nil {
+		t.Fatal("expected error when embedder fails (no silent hash fallback)")
+	}
+}
+
+func TestVectorProvider_GenerateQueryVector_EmbedderEmptyVector(t *testing.T) {
+	store := newMemVectorStore()
+	em := &emptyVectorEmbedder{}
+	p, err := NewVectorProvider(store, Config{
+		Name: "vec", Collection: "docs", VectorDimension: 8, Embedder: em,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = p.generateQueryVector(context.Background(), knowledge.Intent{Goal: "x"})
+	if err == nil {
+		t.Fatal("expected error when embedder returns empty vector")
+	}
+}
+
+// emptyVectorEmbedder returns an empty vector to exercise the empty-result path.
+type emptyVectorEmbedder struct{}
+
+func (e *emptyVectorEmbedder) Embed(_ context.Context, _ string) ([]float64, error) {
+	return nil, nil
+}
+func (e *emptyVectorEmbedder) EmbedWithPrefix(_ context.Context, _, _ string) ([]float64, error) {
+	return nil, nil
+}
+func (e *emptyVectorEmbedder) EmbedBatch(_ context.Context, _ []string) ([][]float64, error) {
+	return nil, nil
+}
+func (e *emptyVectorEmbedder) HealthCheck(context.Context) error { return nil }
+func (e *emptyVectorEmbedder) GetModel() string                  { return "empty" }
+func (e *emptyVectorEmbedder) GetTimeout() time.Duration         { return time.Second }

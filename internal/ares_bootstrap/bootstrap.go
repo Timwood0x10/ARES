@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -44,7 +45,12 @@ type Components struct {
 	// patches (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual
 	// runtime used by the agent's knowledge tools.
 	KnowledgeRuntime *knowledgeruntime.KnowledgeRuntime
-	wg               sync.WaitGroup
+	// VectorStore backs the knowledge runtime's VectorProvider (semantic
+	// search over embedded documents). It is nil when distillation/vector
+	// storage is not wired, in which case the runtime skips the vector
+	// provider entirely.
+	VectorStore storage.VectorStore
+	wg          sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -212,8 +218,11 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 
 	// Create the KnowledgeRuntime once and share it between the evolution
 	// system and the agent's AKF tools so knowledge genome patches affect
-	// the actual runtime used by the agent's knowledge tools.
-	knowRt := BuildKnowledgeRuntime()
+	// the actual runtime used by the agent's knowledge tools. The vector
+	// provider is registered when postgres vector storage + embedding are
+	// wired (comp.VectorStore / embClient); otherwise the runtime uses only
+	// the memory/code providers.
+	knowRt := BuildKnowledgeRuntime(comp.VectorStore, embClient)
 	comp.KnowledgeRuntime = knowRt
 
 	newEvol, err := ProvideNewEvolution(dag, knowRt, liveMemoryStore)

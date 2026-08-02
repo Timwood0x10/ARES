@@ -12,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	_ "github.com/lib/pq"
 )
@@ -38,6 +39,11 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			if deps.ExpRepo == nil {
 				deps.ExpRepo = expRepo
 			}
+			// Back the knowledge runtime's VectorProvider with the same PG
+			// pool, so AKF vector search reads the same embedded corpus the
+			// distillation path writes. Best-effort: nil embedding config uses
+			// defaults.
+			comp.VectorStore = postgres.NewVectorSearcher(pool, nil)
 			// The postgres pool must be closed if bootstrap fails later.
 			*cleanups = append(*cleanups, func() { _ = pool.Close() })
 			log.Info("bootstrap: experience distillation wired",

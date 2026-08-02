@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	apiembedding "github.com/Timwood0x10/ares/api/embedding"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
@@ -20,7 +21,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	provider_code "github.com/Timwood0x10/ares/internal/knowledge/provider/code"
 	provider_memory "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider/vector"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
@@ -387,10 +390,19 @@ func (e *noopKnowledgeExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 var _ patch.RuntimeComponent = (*noopKnowledgeExecutor)(nil)
 
 // BuildKnowledgeRuntime creates a KnowledgeRuntime for the evolution
-// system with registered providers (memory, code) that work without an
-// external database. This enables the KnowledgePatchExecutor to process
-// knowledge/planner patches meaningfully instead of being a no-op.
-func BuildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
+// system with registered providers (memory, code, optional vector) that work
+// without an external database. This enables the KnowledgePatchExecutor to
+// process knowledge/planner patches meaningfully instead of being a no-op.
+//
+// The vector provider is registered only when both a VectorStore and an
+// EmbeddingService are supplied (e.g. postgres pgvector + the shared embedding
+// client). When either is nil, the runtime skips the vector provider and keeps
+// working with the memory/code providers — vector search is a best-effort
+// capability, not a hard dependency.
+func BuildKnowledgeRuntime(
+	vecStore storage.VectorStore,
+	emb apiembedding.EmbeddingService,
+) *knowledgeruntime.KnowledgeRuntime {
 	knowPipe := knowledge.NewKnowledgePipeline(
 		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
 		[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.6}},
@@ -411,6 +423,28 @@ func BuildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
 		}
 	} else {
 		log.Warn("bootstrap: create code provider for knowledge runtime", "error", err)
+	}
+	// Vector provider — semantic search over embedded documents (best-effort).
+	// Needs both a VectorStore (pgvector) and an EmbeddingService; without
+	// either there is no corpus to search and no query embedding to produce.
+	if vecStore != nil && emb != nil {
+		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
+			Name:            "knowledge-vectors",
+			Namespace:       "knowledge",
+			Collection:      "knowledge_chunks_1024",
+			IntentTags:      []string{"knowledge", "doc", "guide"},
+			VectorDimension: 1024,
+			Embedder:        emb,
+		})
+		if err != nil {
+			log.Warn("bootstrap: create vector provider for knowledge runtime", "error", err)
+		} else if err := reg.Register(vp); err != nil {
+			log.Warn("bootstrap: register vector provider for knowledge runtime", "error", err)
+		} else {
+			log.Info("bootstrap: vector provider wired for knowledge runtime",
+				"collection", "knowledge_chunks_1024",
+				"embedding_model", emb.GetModel())
+		}
 	}
 
 	knowDiscovery := planner.NewSourceDiscovery(
