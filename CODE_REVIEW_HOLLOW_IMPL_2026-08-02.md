@@ -30,11 +30,13 @@ for _, c := range intent.Goal {
 
 **根因**：仓库已有真 embedding 客户端 `internal/storage/postgres/embedding/client.go`（真 HTTP `POST /embed`、Redis 缓存、批量 `EmbedBatch`、超时与 `fallback.go` 降级），但 vector provider 没接线，自己造了个伪函数。
 
-**解决方案**（用户决策：接真客户端，但不可硬依赖——服务不可用时降级为关键词检索 + 告警，绝不用伪向量顶替）
-1. `provider.go` 注入 `*postgres.EmbeddingClient`（依赖注入，非包级单例）。
-2. `Embed` / `EmbedBatch` 调用真 client；client 返回错误时降级为关键词/字面量检索，并记录 `WARN` 级告警（含失败原因）。
-3. **彻底删除** `seed += int64(c)` 伪向量分支——降级路径必须与伪向量互斥，避免「降级后又静默回退到假向量」。
-4. 加单测：同一字符串两种重排 → 向量必须不同；client 不可用时 → 降级且不 panic、有 WARN 日志。
+**解决方案（已实现，2026-08-02，未提交 git）**
+- `provider.go` 注入 `Config.Embedder apiembedding.EmbeddingService`（接口依赖注入，非包级单例、非具体 `*postgres.EmbeddingClient`）。
+- `generateQueryVector` 拆为：真实路径 `Embedder.EmbedWithPrefix(ctx, goal, "query:")` + `normalizeUnit`；`hashQueryVector`（无 embedder 时的确定性回退）；`normalizeUnit`（共享归一化）。
+- **embedder 配置后失败 / 返回空向量 → 返回 error，不静默降级**（与最初"降级为关键词检索+告警"的方向决策不同：最终选择 fail-loud，使 misconfig 可观测）；仅当 `Embedder == nil` 才走 `hashQueryVector` 回退（dev/offline 可用）。
+- **彻底删除** `seed += int64(c)` 伪向量分支（原字母重排碰撞伪随机已移除）。
+- 单测覆盖：embedder 路径 / embedder 失败 / 空向量 / hash 确定性 4 个用例；bootstrap 侧 `BuildKnowledgeRuntime` 有/无依赖构造测试。
+- 受影响包 `go build` / `go vet` / `go test -race` / `golangci-lint` / `gofmt` 全绿。
 
 ---
 
