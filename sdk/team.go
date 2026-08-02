@@ -232,6 +232,16 @@ func (t *Team) buildAssignments(input string, files []string) []memberAssignment
 		}
 	}
 
+	// Degrade gracefully when no executor is available (zero members, or the
+	// only member is also the verifier): fall back to all members so the team
+	// still makes progress instead of panicking on an empty modulo.
+	if len(available) == 0 {
+		if len(t.members) == 0 {
+			return assignments
+		}
+		available = t.members
+	}
+
 	if len(files) == 0 {
 		// No files found — each member works on the original input.
 		for _, m := range available {

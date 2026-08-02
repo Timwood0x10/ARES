@@ -138,7 +138,7 @@ func (s *Service) ListAgents(ctx context.Context, filter *AgentFilter) ([]*Agent
 	out := make([]*Agent, 0, len(s.agents))
 	for _, a := range s.agents {
 		if filter != nil {
-			if filter.Type != "" && string(a.Status) != filter.Type {
+			if filter.Type != "" && a.Type != filter.Type {
 				continue
 			}
 			if filter.Status != "" && a.Status != filter.Status {
@@ -148,6 +148,8 @@ func (s *Service) ListAgents(ctx context.Context, filter *AgentFilter) ([]*Agent
 		// Return a copy to avoid external modification.
 		out = append(out, &Agent{
 			ID:        a.ID,
+			Name:      a.Name,
+			Type:      a.Type,
 			SessionID: a.SessionID,
 			Status:    a.Status,
 			CreatedAt: a.CreatedAt,
