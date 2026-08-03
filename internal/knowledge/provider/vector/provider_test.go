@@ -163,6 +163,14 @@ func TestVectorProvider_Stream(t *testing.T) {
 	if obj.Summary != "PostgreSQL connection pooling with pgx" {
 		t.Errorf("object Summary = %q, want %q", obj.Summary, "PostgreSQL connection pooling with pgx")
 	}
+	// Confidence is the reliability prior (not the vector score).
+	if obj.Confidence != vectorReliability {
+		t.Errorf("object Confidence = %v, want %v (reliability prior)", obj.Confidence, vectorReliability)
+	}
+	// Relevance carries the vector similarity score.
+	if obj.Relevance != 0.85 {
+		t.Errorf("object Relevance = %v, want 0.85 (vector score)", obj.Relevance)
+	}
 }
 
 func TestVectorProvider_Stream_EmptyCollection(t *testing.T) {

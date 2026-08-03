@@ -431,7 +431,7 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 	if fitnessCount > 0 {
 		fitness = fitnessSum / float64(fitnessCount)
 	}
-	// Coordinator thresholds are 0-100 (see DefaultPolicy: ApplyFitnessThreshold=60,
+	// Coordinator thresholds are 0-100 (see DefaultPolicy: ApplyFitnessThreshold=70,
 	// MinFitnessThreshold=30). FitnessGenome scores are [0,1], so scale up.
 	fitness *= 100.0
 	if fitness > 100.0 {
@@ -449,42 +449,77 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 		})
 	}
 	if len(patches) > 0 {
-		// Record how many decisions already exist so the logging below only
-		// surfaces decisions produced by THIS Evaluate call (a delta cursor).
+		policy := a.coordinator.Policy()
 		decidedBefore := len(a.coordinator.DecisionHistory())
 		a.coordinator.Evaluate(ctx)
 		decisions := a.coordinator.DecisionHistory()
 
-		// Surface the coordinator's decisions for GA proposals so a rejected
-		// or delayed patch is observable instead of silently dropped. The
-		// coordinator itself is a pure decision package (no logger); the GA
-		// adapter owns observability for the patches it submits.
+		// Surface every coordinator decision for GA proposals so the
+		// apply/reject/delay/drop outcome is observable instead of silently
+		// discarded. The coordinator is a pure decision package (no logger);
+		// the GA adapter owns observability for the patches it submits, and
+		// surfaces the policy thresholds alongside each decision so an
+		// operator can see exactly which gate produced the outcome.
 		for i := decidedBefore; i < len(decisions); i++ {
 			d := decisions[i]
 			if d.Proposal.Source != coordinator.SourceGA {
 				continue
 			}
-			switch d.Decision {
-			case coordinator.DecisionApply:
-				el.Info(ctx, "Run", "GA patch applied by coordinator",
-					"type", d.Proposal.Patch.Type,
-					"reason", d.Reason,
-				)
-			case coordinator.DecisionReject:
-				el.Warn(ctx, "Run", "GA patch rejected by coordinator (silent drop avoided)",
-					"type", d.Proposal.Patch.Type,
-					"fitness", d.Proposal.Fitness,
-					"reason", d.Reason,
-				)
-			case coordinator.DecisionDelay:
-				el.Info(ctx, "Run", "GA patch delayed by coordinator for review",
-					"type", d.Proposal.Patch.Type,
-					"fitness", d.Proposal.Fitness,
-					"reason", d.Reason,
-					"retry_count", d.Proposal.RetryCount,
-				)
-			}
+			logCoordinatorDecision(ctx, d, policy, fitness)
 		}
+	}
+}
+
+// logCoordinatorDecision emits a structured log entry for a single GA
+// coordinator decision. Each branch carries the proposal's fitness, the
+// policy thresholds that produced the decision, and the retry count so an
+// operator can trace exactly why a patch was applied, rejected, delayed, or
+// dropped. Apply failures (ApplyError) are elevated to Warn so a "successful
+// decision but failed apply" is never silently swallowed.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//	d - the coordinator decision to surface.
+//	policy - the coordinator policy snapshot at decision time.
+//	fitness - the fitness value the GA submitted with this proposal (0-100).
+func logCoordinatorDecision(
+	ctx context.Context,
+	d coordinator.PatchDecision,
+	policy coordinator.PolicyGenome,
+	fitness float64,
+) {
+	baseAttrs := []any{
+		"type", d.Proposal.Patch.Type,
+		"target", d.Proposal.Patch.Target,
+		"fitness", d.Proposal.Fitness,
+		"apply_threshold", policy.ApplyFitnessThreshold,
+		"min_threshold", policy.MinFitnessThreshold,
+		"retry_count", d.Proposal.RetryCount,
+		"reason", d.Reason,
+		"submitted_fitness", fitness,
+	}
+	switch d.Decision {
+	case coordinator.DecisionApply:
+		if d.ApplyError != nil {
+			el.Warn(ctx, "Run", "GA patch apply failed by coordinator",
+				append(baseAttrs, "error", d.ApplyError)...)
+			return
+		}
+		el.Info(ctx, "Run", "GA patch applied by coordinator", baseAttrs...)
+	case coordinator.DecisionReject:
+		el.Warn(ctx, "Run", "GA patch rejected by coordinator", baseAttrs...)
+	case coordinator.DecisionDelay:
+		el.Info(ctx, "Run", "GA patch delayed by coordinator for review", baseAttrs...)
+	case coordinator.DecisionDrop:
+		// Drop is elevated to Warn: a permanently discarded patch is a
+		// signal the GA is producing patches the coordinator won't act on,
+		// which is exactly the "silent failure" the closure plan targets.
+		el.Warn(ctx, "Run", "GA patch dropped by coordinator (retry budget exhausted)",
+			baseAttrs...)
+	default:
+		el.Warn(ctx, "Run", "GA patch has unknown coordinator decision",
+			append(baseAttrs, "decision", d.Decision.String())...)
 	}
 }
 

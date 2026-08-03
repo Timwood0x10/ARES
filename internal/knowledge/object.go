@@ -70,6 +70,14 @@ type KnowledgeObject struct {
 	Relations []Relation `json:"relations,omitempty"`
 	// EmbeddingModel records the model used for the current vector, for migration.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// Relevance is the query-time relevance of this object to the retrieval
+	// intent, in [0, 1]. It is set by providers at stream time and by the
+	// store HybridSearch path from FinalScore. Relevance is distinct from
+	// Confidence: Confidence is the stored reliability of a fact, Relevance
+	// is how well it matches the current query. The retriever ranks and
+	// filters on Relevance, NOT Confidence. Relevance is transient: it is
+	// not a persisted property and should be recomputed per query.
+	Relevance float64 `json:"relevance,omitempty"`
 }
 
 // ObjectStatus is the lifecycle state of a KnowledgeObject.

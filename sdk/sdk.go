@@ -170,6 +170,14 @@ type memSearcher struct {
 // SearchResult.ID; the "input" payload field (set by SearchSimilarTasks
 // on the manager) maps to Summary. Tasks without an input payload fall
 // back to the TaskID as the summary.
+//
+// SearchResult.Score is intentionally left 0: models.Task has no
+// similarity-score field today, so there is no real query-relevance signal
+// to forward. The MemoryProvider's relevanceFromScore handles Score=0 by
+// deriving a rank-based Relevance from result ordering (first result → 1.0,
+// decaying to a 0.1 floor), which is a honest signal rather than a fake
+// constant. If a future Task revision adds a score field, populate it here
+// and the provider will use it automatically.
 func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]memprovider.SearchResult, error) {
 	results, err := s.svc.SearchSimilarTasks(ctx, query, limit)
 	if err != nil {
@@ -189,6 +197,7 @@ func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limi
 			ID:        r.TaskID,
 			Summary:   summary,
 			Timestamp: r.CreatedAt,
+			// Score intentionally 0: see method comment.
 		})
 	}
 	return out, nil

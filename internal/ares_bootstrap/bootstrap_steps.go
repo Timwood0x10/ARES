@@ -15,6 +15,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	_ "github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 )
 
 // wireDistillation conditionally wires experience distillation (Track A) and
@@ -27,7 +28,7 @@ import (
 func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) (evolution.GuidanceProvider, *embedding.EmbeddingClient) {
 	var guidanceProvider evolution.GuidanceProvider
 	var embClient *embedding.EmbeddingClient
-	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Embedding.Enabled {
+	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Embedding.Enabled {
 		pool, client, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
 		if wireErr != nil {
 			log.Warn("bootstrap: experience distillation not wired", "error", wireErr)
@@ -54,8 +55,10 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 }
 
 // subscribeDistillationEvents starts the background distillation loop that
-// turns task-completed/failed events into experiences. It is a no-op when
-// distillation or the event store is unavailable.
+// turns task-completed/failed events into experiences (experience
+// distillation) and, when the AKG DistillBridge is wired, into AKG
+// knowledge facts (write side of the AKG loop). It is a no-op when the
+// experience distillation service or the event store is unavailable.
 func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 	if comp.Distillation == nil || comp.EventStore == nil {
 		return
@@ -75,6 +78,9 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 			log.Warn("bootstrap: distillation event subscription failed", "error", err)
 			return
 		}
+		// akgEg runs AKG distillations off the subscriber loop so a slow
+		// bridge call (LLM/embedding) cannot block experience distillation.
+		akgEg, akgCtx := errgroup.WithContext(ctx)
 		for {
 			select {
 			case ev, ok := <-ch:
@@ -82,6 +88,9 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 					return
 				}
 				HandleTaskCompletedForDistillation(ctx, comp.Distillation, ev)
+				if comp.AKGBridge != nil {
+					triggerAKGBridge(akgCtx, akgEg, ev, comp.AKGBridge)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -104,7 +113,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// falling back to the in-memory store when no database is available.
 	// The PG store ensures evolution results survive process restarts.
 	var memStore evolution.StrategyStore
-	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Storage.Host != "" {
+	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Storage.Host != "" {
 		pgStore, err := newPGStrategyStore(cfg)
 		if err != nil {
 			log.WarnContext(ctx, "bootstrap: PG strategy store init failed, falling back to in-memory", "error", err)
@@ -301,7 +310,7 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username,
 		cfg.Storage.Password, cfg.Storage.Database, cfg.Storage.SSLMode)
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open(storageTypePostgres, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: open db: %w", err)
 	}

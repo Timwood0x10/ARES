@@ -107,6 +107,12 @@ func TestStream_ReturnsResults(t *testing.T) {
 	assert.Equal(t, "test_1", objs[0].ID)
 	assert.Equal(t, "test_2", objs[1].ID)
 	assert.Equal(t, knowledge.ObjectMemory, objs[0].Type)
+	// Confidence is the reliability prior (not query relevance).
+	assert.Equal(t, defaultReliability, objs[0].Confidence)
+	assert.Equal(t, defaultReliability, objs[1].Confidence)
+	// Relevance is rank-derived (Score=0 → first=1.0, second=0.5 for n=2).
+	assert.Equal(t, 1.0, objs[0].Relevance)
+	assert.Equal(t, 0.5, objs[1].Relevance)
 }
 
 func TestStream_EmptyResults(t *testing.T) {
@@ -250,4 +256,32 @@ func TestStream_SummaryTruncation(t *testing.T) {
 	// Summary should be truncated to 200 chars + "..."
 	assert.Equal(t, 203, len(objs[0].Summary))
 	assert.Contains(t, objs[0].Summary, "...")
+}
+
+// TestStream_ScoreBackedRelevance verifies that when the backing search
+// engine returns a real similarity score, the provider uses it as Relevance
+// directly instead of falling back to rank-based derivation.
+func TestStream_ScoreBackedRelevance(t *testing.T) {
+	now := time.Now()
+	searcher := &mockSearcher{
+		results: []SearchResult{
+			{ID: "1", Summary: "high score match", Timestamp: now, Score: 0.92},
+			{ID: "2", Summary: "low score match", Timestamp: now, Score: 0.31},
+		},
+	}
+	p := New("test", searcher)
+
+	intent := knowledge.Intent{Goal: "query", Scope: knowledge.Scope{MaxObjects: 10}}
+	objCh, _ := p.Stream(context.Background(), intent)
+
+	var objs []*knowledge.KnowledgeObject
+	for obj := range objCh {
+		objs = append(objs, obj)
+	}
+	require.Len(t, objs, 2)
+	// Score-backed Relevance is used directly (not rank-derived).
+	assert.Equal(t, 0.92, objs[0].Relevance)
+	assert.Equal(t, 0.31, objs[1].Relevance)
+	// Confidence is still the reliability prior.
+	assert.Equal(t, defaultReliability, objs[0].Confidence)
 }

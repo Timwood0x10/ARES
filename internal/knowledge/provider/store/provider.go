@@ -137,6 +137,15 @@ func (p *StoreProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-
 			if s.Object == nil {
 				continue
 			}
+			// Relevance is a transient query-time field (see object.go): it
+			// is not persisted by the store. The StoreProvider is the runtime
+			// path's view of HybridSearch, so it must populate Relevance from
+			// FinalScore — the same signal the retriever's direct store path
+			// uses — otherwise collectSnippets would see Relevance=0 on
+			// every AKG-distilled object and filter them all out as noise.
+			// Mutating s.Object is safe: HybridSearch returns fresh pointers
+			// per call, not aliases into stored state.
+			s.Object.Relevance = s.FinalScore
 			select {
 			case objCh <- s.Object:
 			case <-gCtx.Done():

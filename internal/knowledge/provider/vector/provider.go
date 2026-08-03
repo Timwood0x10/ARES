@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage"
 	"golang.org/x/sync/errgroup"
 )
@@ -190,13 +191,23 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 	return objCh, errCh
 }
 
+// vectorReliability is the Confidence assigned to every vector-recalled
+// object. It is a reliability prior, NOT a query-relevance score: vector
+// embeddings are assumed to index reliable stored facts (documents, code,
+// decisions), so their reliability as facts is high. The true query-relevance
+// signal is the vector similarity score, which is carried on
+// KnowledgeObject.Relevance (NOT Confidence) so the retriever ranks and
+// filters on the right signal.
+const vectorReliability = 1.0
+
 // resultToObject converts a VectorStore SearchResult into a KnowledgeObject.
 func (p *VectorProvider) resultToObject(r *storage.SearchResult) *knowledge.KnowledgeObject {
 	obj := &knowledge.KnowledgeObject{
 		ID:         fmt.Sprintf("%s:%s", p.config.Namespace, r.ID),
 		Type:       knowledge.ObjectDocument,
 		Namespace:  p.config.Namespace,
-		Confidence: r.Score,
+		Confidence: vectorReliability,
+		Relevance:  scoreutil.ClampUnit(r.Score),
 		CreatedAt:  time.Now(),
 		Representations: map[string]string{
 			"vector": r.ID, // link to the vector embedding

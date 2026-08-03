@@ -237,6 +237,12 @@ func TestStoreProvider_Stream_WithEmbedding_UsesQueryVector(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "akg:vec:1" {
 		t.Errorf("expected akg:vec:1 recalled via vector, got %v", got)
 	}
+	// StoreProvider must populate Relevance from FinalScore so the
+	// retriever's collectSnippets (which filters on Relevance) does not
+	// drop AKG-distilled facts as zero-relevance noise.
+	if got[0].Relevance <= 0 {
+		t.Errorf("expected Relevance > 0 (mirrored from FinalScore), got %v", got[0].Relevance)
+	}
 }
 
 func TestStoreProvider_Stream_EmbedErrorFallsBackToLexical(t *testing.T) {

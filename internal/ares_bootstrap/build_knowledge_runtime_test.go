@@ -5,15 +5,17 @@ import (
 	"testing"
 	"time"
 
+	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/stretchr/testify/require"
 )
 
 // TestBuildKnowledgeRuntime_NoVectorDeps verifies the runtime is created
-// successfully (and without the vector provider) when neither a VectorStore
-// nor an EmbeddingService is supplied — the "works without a database" path.
+// successfully (and without the vector/store providers) when no VectorStore,
+// EmbeddingService, or KnowledgeStore is supplied — the "works without a
+// database" path.
 func TestBuildKnowledgeRuntime_NoVectorDeps(t *testing.T) {
-	rt := BuildKnowledgeRuntime(nil, nil)
+	rt := BuildKnowledgeRuntime(nil, nil, nil)
 	require.NotNil(t, rt)
 }
 
@@ -23,7 +25,7 @@ func TestBuildKnowledgeRuntime_NoVectorDeps(t *testing.T) {
 func TestBuildKnowledgeRuntime_WithVectorDeps(t *testing.T) {
 	store := newTestVectorStore()
 	emb := &testEmbedder{}
-	rt := BuildKnowledgeRuntime(store, emb)
+	rt := BuildKnowledgeRuntime(store, emb, nil)
 	require.NotNil(t, rt)
 }
 
@@ -33,7 +35,15 @@ func TestBuildKnowledgeRuntime_WithVectorDeps(t *testing.T) {
 // only assert construction here — runtime execution of the AKF pipeline is
 // exercised by knowledge/runtime tests.
 func TestBuildKnowledgeRuntime_VectorDepsExecute(t *testing.T) {
-	rt := BuildKnowledgeRuntime(newTestVectorStore(), &testEmbedder{})
+	rt := BuildKnowledgeRuntime(newTestVectorStore(), &testEmbedder{}, nil)
+	require.NotNil(t, rt)
+}
+
+// TestBuildKnowledgeRuntime_WithStoreDeps verifies the runtime is created
+// successfully when a KnowledgeStore and an embedding service are supplied —
+// the AKG store provider registration path must not fail.
+func TestBuildKnowledgeRuntime_WithStoreDeps(t *testing.T) {
+	rt := BuildKnowledgeRuntime(nil, &testEmbedder{}, memstore.New())
 	require.NotNil(t, rt)
 }
 

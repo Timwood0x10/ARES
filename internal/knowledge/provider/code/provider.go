@@ -21,9 +21,92 @@ import (
 // since AKF only distinguishes "code" at the object level — finer-grained
 // classification is done via Tags.
 const (
-	typeCode    knowledge.ObjectType = knowledge.ObjectCode
-	tagFunction                      = "function"
+	typeCode        knowledge.ObjectType = knowledge.ObjectCode
+	tagFunction                          = "function"
+	codeReliability                      = 0.9
 )
+
+// relevanceFromNameMatch derives a query-time Relevance score in [0, 1] for a
+// code symbol by measuring token overlap between the symbol's name (and its
+// doc summary when available) and the retrieval intent goal.
+//
+// Scoring:
+//   - 0.9 when every goal token appears in the name/summary (full containment),
+//   - 0.5 when at least one (but not all) goal token appears (partial match),
+//   - 0.1 when no goal token appears (the symbol is kept rankable but
+//     strongly de-prioritised rather than dropped outright — the retriever's
+//     minRelevance gate decides whether it survives).
+//
+// The goal and name are lowercased and split on non-alphanumeric runs so
+// "HandleAuth" matches "auth" and "handle". An empty goal returns the neutral
+// 0.1 floor so the provider still streams symbols for an unconstrained scan.
+func relevanceFromNameMatch(name, summary, goal string) float64 {
+	goalTokens := tokenize(goal)
+	if len(goalTokens) == 0 {
+		return 0.1
+	}
+	nameTokens := tokenize(name + " " + summary)
+	if len(nameTokens) == 0 {
+		return 0.1
+	}
+	nameSet := make(map[string]bool, len(nameTokens))
+	for _, t := range nameTokens {
+		nameSet[t] = true
+	}
+	matched := 0
+	for _, t := range goalTokens {
+		if nameSet[t] {
+			matched++
+		}
+	}
+	switch {
+	case matched == len(goalTokens):
+		return 0.9
+	case matched > 0:
+		return 0.5
+	default:
+		return 0.1
+	}
+}
+
+// tokenize splits s into lowercase alphanumeric tokens, breaking on
+// non-alphanumeric runs AND on camelCase boundaries (lowercase→uppercase
+// transitions). This matters for Go symbol names: "HandleAuth" splits into
+// ["handle", "auth"] so a goal containing "auth" matches it. Without
+// camelCase splitting, "HandleAuth" would be a single opaque token and
+// relevance matching would miss obvious symbol-name overlaps.
+func tokenize(s string) []string {
+	out := make([]string, 0, 8)
+	var buf []byte
+	flush := func() {
+		if len(buf) > 0 {
+			out = append(out, string(buf))
+			buf = buf[:0]
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		// Split on camelCase boundary: lowercase followed by uppercase.
+		if i > 0 {
+			prev := s[i-1]
+			if prev >= 'a' && prev <= 'z' && c >= 'A' && c <= 'Z' {
+				flush()
+			}
+		}
+		lower := c
+		if c >= 'A' && c <= 'Z' {
+			lower = c + ('a' - 'A')
+		}
+		alnum := (lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9')
+		if alnum {
+			buf = append(buf, lower)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return out
+}
 
 // CodeProvider scans a Go source directory and streams its symbols
 // (functions, structs, interfaces) as KnowledgeObjects.
@@ -137,7 +220,7 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 					return filepath.SkipAll
 				}
 
-				objs := p.declToObject(decl, file, relPath, fset)
+				objs := p.declToObject(decl, file, relPath, fset, intent.Goal)
 				for _, obj := range objs {
 					if count >= maxResults {
 						return filepath.SkipAll
@@ -166,12 +249,15 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 // declToObject converts a Go AST declaration to one or more KnowledgeObjects.
 // A single GenDecl may declare multiple types (e.g. `type ( A int; B string )`),
 // so the return type is a slice to ensure every TypeSpec is emitted.
-func (p *CodeProvider) declToObject(decl ast.Decl, file *ast.File, relPath string, fset *token.FileSet) []*knowledge.KnowledgeObject {
+//
+// goal is the retrieval intent goal text used to compute per-object Relevance
+// via relevanceFromNameMatch; it is NOT stored on the object.
+func (p *CodeProvider) declToObject(decl ast.Decl, file *ast.File, relPath string, fset *token.FileSet, goal string) []*knowledge.KnowledgeObject {
 	switch d := decl.(type) {
 	case *ast.GenDecl:
-		return p.genDeclToObject(d, file, relPath)
+		return p.genDeclToObject(d, file, relPath, goal)
 	case *ast.FuncDecl:
-		obj := p.funcDeclToObject(d, file, relPath, fset)
+		obj := p.funcDeclToObject(d, file, relPath, fset, goal)
 		if obj == nil {
 			return nil
 		}
@@ -181,7 +267,7 @@ func (p *CodeProvider) declToObject(decl ast.Decl, file *ast.File, relPath strin
 	}
 }
 
-func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath string) []*knowledge.KnowledgeObject {
+func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath string, goal string) []*knowledge.KnowledgeObject {
 	var objs []*knowledge.KnowledgeObject
 	for _, spec := range d.Specs {
 		ts, ok := spec.(*ast.TypeSpec)
@@ -207,7 +293,8 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 			Type:       objType,
 			Namespace:  p.name,
 			Summary:    summary,
-			Confidence: 0.9,
+			Confidence: codeReliability,
+			Relevance:  relevanceFromNameMatch(typeName, summary, goal),
 			CreatedAt:  time.Now(),
 			UpdatedAt:  time.Now(),
 			Tags:       []string{string(objType), file.Name.Name},
@@ -216,7 +303,7 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 	return objs
 }
 
-func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath string, fset *token.FileSet) *knowledge.KnowledgeObject {
+func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath string, fset *token.FileSet, goal string) *knowledge.KnowledgeObject {
 	funcName := d.Name.Name
 	pos := fset.Position(d.Pos())
 
@@ -236,7 +323,8 @@ func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath
 		Type:       knowledge.ObjectCode,
 		Namespace:  p.name,
 		Summary:    summary,
-		Confidence: 0.9,
+		Confidence: codeReliability,
+		Relevance:  relevanceFromNameMatch(funcName, summary, goal),
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 		Tags:       []string{tagFunction, file.Name.Name},

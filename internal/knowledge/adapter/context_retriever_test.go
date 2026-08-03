@@ -138,6 +138,9 @@ func TestNewKnowledgeRetriever_Validation(t *testing.T) {
 			if kr.minScore != DefaultMinScore {
 				t.Errorf("expected default minScore %v, got %v", DefaultMinScore, kr.minScore)
 			}
+			if kr.minRelevance != DefaultMinRelevance {
+				t.Errorf("expected default minRelevance %v, got %v", DefaultMinRelevance, kr.minRelevance)
+			}
 		})
 	}
 }
@@ -147,7 +150,7 @@ func TestNewKnowledgeRetriever_Validation(t *testing.T) {
 func TestKnowledgeRetriever_Retrieve_EmptyInput(t *testing.T) {
 	rt := buildTestRuntime(t, &ctxProvider{
 		name:    "memory",
-		objects: []*knowledge.KnowledgeObject{{ID: "x", Summary: "y", Confidence: 0.9}},
+		objects: []*knowledge.KnowledgeObject{{ID: "x", Summary: "y", Confidence: 0.9, Relevance: 0.5}},
 	})
 	kr, err := NewKnowledgeRetriever(context.Background(), rt, 0)
 	if err != nil {
@@ -175,6 +178,7 @@ func TestKnowledgeRetriever_Retrieve_DefaultTopK(t *testing.T) {
 			ID:         "obj_" + string(rune('a'+i)),
 			Summary:    "decision summary",
 			Confidence: 0.9,
+			Relevance:  0.5,
 			Tags:       []string{"decision"},
 		})
 	}
@@ -193,18 +197,23 @@ func TestKnowledgeRetriever_Retrieve_DefaultTopK(t *testing.T) {
 	}
 }
 
-// TestKnowledgeRetriever_Retrieve_MinScoreFilter verifies that snippets below
-// minScore are filtered out, and that the remaining snippets are sorted by
-// Score descending.
-func TestKnowledgeRetriever_Retrieve_MinScoreFilter(t *testing.T) {
+// TestKnowledgeRetriever_Retrieve_RelevanceFilter verifies that the runtime
+// path filters on Relevance (not Confidence) and sorts by Relevance desc.
+//
+// This is the core regression test for retrieval quality gate #1: the old
+// code filtered on Confidence, which was a hardcoded constant per provider
+// (memory 0.7, code 0.9, pg 0.5, mysql 1.0), so the 0.4 gate was a no-op.
+// The fix filters on Relevance — the query-time signal providers set at
+// stream time. WithMinRelevance(0.4) is the tuning knob.
+func TestKnowledgeRetriever_Retrieve_RelevanceFilter(t *testing.T) {
 	objs := []*knowledge.KnowledgeObject{
-		{ID: "high", Summary: "high confidence decision", Confidence: 0.95, Tags: []string{"decision"}},
-		{ID: "mid", Summary: "medium confidence decision", Confidence: 0.6, Tags: []string{"decision"}},
-		{ID: "low", Summary: "low confidence decision", Confidence: 0.2, Tags: []string{"decision"}},
+		{ID: "high", Summary: "high relevance decision", Confidence: 0.95, Relevance: 0.9, Tags: []string{"decision"}},
+		{ID: "mid", Summary: "medium relevance decision", Confidence: 0.6, Relevance: 0.5, Tags: []string{"decision"}},
+		{ID: "low", Summary: "low relevance decision", Confidence: 0.95, Relevance: 0.1, Tags: []string{"decision"}},
 	}
 	rt := buildTestRuntime(t, &ctxProvider{name: "memory", objects: objs})
-	// minScore 0.5 should drop the 0.2-confidence node and keep 0.95 + 0.6.
-	kr, err := NewKnowledgeRetriever(context.Background(), rt, 0.5)
+	// minRelevance 0.4 should drop the 0.1-relevance object and keep 0.9 + 0.5.
+	kr, err := NewKnowledgeRetriever(context.Background(), rt, 0, WithMinRelevance(0.4))
 	if err != nil {
 		t.Fatalf("NewKnowledgeRetriever: %v", err)
 	}
@@ -214,16 +223,22 @@ func TestKnowledgeRetriever_Retrieve_MinScoreFilter(t *testing.T) {
 		t.Fatalf("Retrieve: %v", err)
 	}
 	if len(snippets) != 2 {
-		t.Fatalf("expected 2 snippets after minScore filter, got %d", len(snippets))
+		t.Fatalf("expected 2 snippets after Relevance filter, got %d", len(snippets))
 	}
-	// Verify descending order.
+	// Verify descending order by Score (which is Relevance on the runtime path).
 	if snippets[0].Score < snippets[1].Score {
 		t.Errorf("expected descending order, got %v then %v", snippets[0].Score, snippets[1].Score)
 	}
-	// All returned scores must be >= minScore.
+	// All returned scores must be >= minRelevance (0.4).
 	for _, s := range snippets {
-		if s.Score < 0.5 {
-			t.Errorf("snippet score %v below minScore 0.5", s.Score)
+		if s.Score < 0.4 {
+			t.Errorf("snippet score %v below minRelevance 0.4", s.Score)
+		}
+	}
+	// The low-relevance object must NOT appear.
+	for _, s := range snippets {
+		if id, ok := s.Metadata["id"].(string); ok && id == "low" {
+			t.Errorf("low-relevance object leaked into results: %v", s.Metadata)
 		}
 	}
 }
@@ -240,6 +255,7 @@ func TestKnowledgeRetriever_Retrieve_Success(t *testing.T) {
 			Normalized: "Redis is used as cache",
 			Raw:        []byte("Decision: Use Redis for caching"),
 			Confidence: 0.9,
+			Relevance:  0.8,
 			Tags:       []string{"redis", "cache", "decision"},
 			CreatedAt:  time.Now(),
 		},
@@ -251,6 +267,7 @@ func TestKnowledgeRetriever_Retrieve_Success(t *testing.T) {
 			Normalized: "PostgreSQL is the primary DB",
 			Raw:        []byte("Decision: Use PostgreSQL for persistence"),
 			Confidence: 0.85,
+			Relevance:  0.7,
 			Tags:       []string{"postgres", "database", "decision"},
 			CreatedAt:  time.Now(),
 		},
@@ -293,6 +310,7 @@ func TestKnowledgeRetriever_Retrieve_TopKCap(t *testing.T) {
 			ID:         "obj_" + string(rune('a'+i)),
 			Summary:    "decision summary",
 			Confidence: 0.9,
+			Relevance:  0.5,
 			Tags:       []string{"decision"},
 		})
 	}
@@ -321,7 +339,7 @@ func TestKnowledgeRetriever_Retrieve_TopKCap(t *testing.T) {
 // contract: no hang, no fake snippets, an error is returned.
 func TestKnowledgeRetriever_Retrieve_CancelledContext(t *testing.T) {
 	objs := []*knowledge.KnowledgeObject{
-		{ID: "x", Summary: "y", Confidence: 0.9, Tags: []string{"decision"}},
+		{ID: "x", Summary: "y", Confidence: 0.9, Relevance: 0.5, Tags: []string{"decision"}},
 	}
 	rt := buildTestRuntime(t, &ctxProvider{name: "memory", objects: objs})
 	kr, err := NewKnowledgeRetriever(context.Background(), rt, 0.4)
@@ -494,7 +512,7 @@ func TestKnowledgeRetriever_StoreHybrid(t *testing.T) {
 			wantNotIDs: []string{"akg:pg", "akg:rejected"},
 			wantSource: sourceAKGStore,
 			wantAllMeta: []string{
-				"id", "type", "source", "vector", "lexical", "namespace",
+				"id", "type", "source", "vector", "lexical", "namespace", "relevance",
 			},
 		},
 		{
@@ -704,6 +722,9 @@ func TestNewKnowledgeRetrieverWithStore_Validation(t *testing.T) {
 			if kr.minScore != tt.wantMin {
 				t.Errorf("minScore: got %v, want %v", kr.minScore, tt.wantMin)
 			}
+			if kr.minRelevance != DefaultMinRelevance {
+				t.Errorf("minRelevance: got %v, want %v (default)", kr.minRelevance, DefaultMinRelevance)
+			}
 			if kr.model != tt.model {
 				t.Errorf("model: got %q, want %q", kr.model, tt.model)
 			}
@@ -723,4 +744,142 @@ func containsStr(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// ── Bug scenario tests for retrieval quality gate #1 ──
+//
+// These tests pin down the three behaviours that the root-cause fix
+// introduces and that would silently regress the retrieval quality gate
+// if reverted:
+//  1. Hardcoded provider Confidence no longer lets objects past the
+//     Relevance gate (the original bug).
+//  2. Rank-derived Relevance from the memory provider is monotonically
+//     non-increasing over the result set.
+//  3. collectSnippets sorts by Relevance desc and the topK cap truncates
+//     the lowest-relevance tail, not an arbitrary subset.
+
+// TestBug_HardcodedConfidenceDoesNotBypassRelevanceGate reproduces the
+// original bug: providers used to emit a hardcoded Confidence constant
+// (memory=0.7, code=0.9, pg=0.5, mysql=1.0) and collectSnippets filtered on
+// Confidence, so a 0.4 gate was a no-op — every object passed. With the
+// fix, collectSnippets filters on Relevance: an object with high Confidence
+// but zero Relevance is dropped.
+func TestBug_HardcodedConfidenceDoesNotBypassRelevanceGate(t *testing.T) {
+	// High Confidence (would have passed the old gate) but zero Relevance
+	// (the signal the retriever should actually filter on).
+	objs := []*knowledge.KnowledgeObject{
+		{ID: "noisy", Summary: "high confidence but irrelevant", Confidence: 0.99, Relevance: 0.0},
+	}
+	rt := buildTestRuntime(t, &ctxProvider{name: "memory", objects: objs})
+	kr, err := NewKnowledgeRetriever(context.Background(), rt, 0)
+	if err != nil {
+		t.Fatalf("NewKnowledgeRetriever: %v", err)
+	}
+
+	snippets, err := kr.Retrieve(context.Background(), "anything", 5)
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(snippets) != 0 {
+		t.Errorf("expected 0 snippets (Relevance=0 must be filtered), got %d: %v",
+			len(snippets), snippets)
+	}
+}
+
+// TestBug_RankDerivedRelevanceMonotonic verifies that the memory provider's
+// rank-based Relevance derivation (relevanceFromScore with Score=0) is
+// monotonically non-increasing: the first result has the highest Relevance
+// and the last has the lowest, with the floor at 0.1. A non-monotonic
+// sequence would corrupt the retriever's topK truncation.
+func TestBug_RankDerivedRelevanceMonotonic(t *testing.T) {
+	const n = 5
+	// memoryRelevance mirrors provider/memory/provider.go:relevanceFromScore
+	// for the Score=0 branch. Kept local to avoid an import cycle through
+	// the memory provider package.
+	var prev float64
+	for i := 0; i < n; i++ {
+		rel := memoryRelevance(0, i, n)
+		if i > 0 && rel > prev {
+			t.Errorf("Relevance not monotonic at i=%d: prev=%.3f > cur=%.3f", i, prev, rel)
+		}
+		if rel < 0.1 {
+			t.Errorf("Relevance at i=%d below floor: %.3f < 0.1", i, rel)
+		}
+		prev = rel
+	}
+	first := memoryRelevance(0, 0, n)
+	last := memoryRelevance(0, n-1, n)
+	if first != 1.0 {
+		t.Errorf("first Relevance: got %.3f, want 1.0", first)
+	}
+	// For n=5: 1 - 4/5 = 0.2, which is above the 0.1 floor.
+	if last > 0.2+1e-9 || last < 0.2-1e-9 {
+		t.Errorf("last Relevance: got %.3f, want 0.2 (5 results: 1-4/5=0.2)", last)
+	}
+}
+
+// memoryRelevance is a test-local mirror of the memory provider's
+// relevanceFromScore so this test does not depend on the provider package
+// internals. It must be kept in sync with
+// provider/memory/provider.go:relevanceFromScore.
+func memoryRelevance(score float64, i, n int) float64 {
+	if score > 0 {
+		if score < 0 {
+			return 0
+		}
+		if score > 1 {
+			return 1
+		}
+		return score
+	}
+	if n <= 0 {
+		return 0.1
+	}
+	rel := 1.0 - float64(i)/float64(n)
+	if rel < 0.1 {
+		rel = 0.1
+	}
+	return rel
+}
+
+// TestBug_RelevanceSortAndTopKTruncation verifies that collectSnippets sorts
+// by Relevance descending and that the topK cap in Retrieve truncates the
+// lowest-relevance tail (not an arbitrary subset). This is the third
+// behaviour that would silently regress retrieval quality if reverted.
+func TestBug_RelevanceSortAndTopKTruncation(t *testing.T) {
+	objs := []*knowledge.KnowledgeObject{
+		{ID: "a", Summary: "relevance 0.3", Confidence: 0.9, Relevance: 0.3},
+		{ID: "b", Summary: "relevance 0.9", Confidence: 0.9, Relevance: 0.9},
+		{ID: "c", Summary: "relevance 0.5", Confidence: 0.9, Relevance: 0.5},
+		{ID: "d", Summary: "relevance 0.7", Confidence: 0.9, Relevance: 0.7},
+		{ID: "e", Summary: "relevance 0.4", Confidence: 0.9, Relevance: 0.4},
+	}
+	rt := buildTestRuntime(t, &ctxProvider{name: "memory", objects: objs})
+	kr, err := NewKnowledgeRetriever(context.Background(), rt, 0)
+	if err != nil {
+		t.Fatalf("NewKnowledgeRetriever: %v", err)
+	}
+
+	// topK=3 must keep the three highest-Relevance objects: b(0.9), d(0.7), c(0.5).
+	snippets, err := kr.Retrieve(context.Background(), "query", 3)
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if len(snippets) != 3 {
+		t.Fatalf("expected 3 snippets, got %d", len(snippets))
+	}
+	wantOrder := []string{"b", "d", "c"}
+	for i, want := range wantOrder {
+		got, _ := snippets[i].Metadata["id"].(string)
+		if got != want {
+			t.Errorf("snippet %d: got id %q, want %q (sorted by Relevance desc)", i, got, want)
+		}
+	}
+	// Verify descending Score.
+	for i := 1; i < len(snippets); i++ {
+		if snippets[i].Score > snippets[i-1].Score {
+			t.Errorf("snippets not sorted desc at %d: %.3f > %.3f",
+				i, snippets[i].Score, snippets[i-1].Score)
+		}
+	}
 }

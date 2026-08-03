@@ -12,6 +12,7 @@ import (
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -46,6 +47,10 @@ type retrieverSetter interface {
 //	embClient  - embedding client for query embedding. Nil skips memory retriever.
 //	expRepo    - PostgreSQL experience repo. Nil skips memory retriever.
 //	knowRt     - AKG KnowledgeRuntime. Nil skips knowledge retriever.
+//	knowStore  - AKG KnowledgeStore; when non-nil the knowledge retriever
+//	            takes the AKG read loop (HybridSearch over AKG-distilled
+//	            facts) instead of provider streaming. Nil falls back to
+//	            runtime.Execute.
 //	evStore    - shared evidence store; when non-nil, the memory retriever
 //	            reports retrieval hit/miss outcomes under Source "memory" for
 //	            the GA MemoryGenome to consume.
@@ -56,6 +61,7 @@ func wireRetrievers(
 	embClient *embedding.EmbeddingClient,
 	expRepo repositories.ExperienceRepositoryInterface,
 	knowRt *knowledgeruntime.KnowledgeRuntime,
+	knowStore knowledge.KnowledgeStore,
 	evStore *evidence.MemoryStore,
 ) {
 	setter, ok := mem.(retrieverSetter)
@@ -105,20 +111,34 @@ func wireRetrievers(
 		}
 	}
 
-	// Knowledge retriever: surfaces AKG entries via the KnowledgeRuntime.
-	// Skipped when knowRt is nil (no AKG configured). The minScore is
-	// sourced from Knowledge config; adapter.DefaultMinScore (0.4) applies
-	// when zero.
+	// Knowledge retriever: surfaces AKG entries. When a KnowledgeStore is
+	// wired (knowStore != nil) the retriever takes the AKG read loop —
+	// HybridSearch over AKG-distilled facts instead of provider streaming,
+	// closing the AKG loop for the leader's prompt injection. Skipped when
+	// knowRt is nil (no AKG configured). The minScore is sourced from
+	// Knowledge config; adapter.DefaultMinScore (0.4) applies when zero.
 	if knowRt != nil {
 		minScore := cfg.Knowledge.MinScore
-		kr, err := adapter.NewKnowledgeRetriever(ctx, knowRt, minScore)
+		var kr *adapter.KnowledgeRetriever
+		var err error
+		if knowStore != nil {
+			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, akgModelName(embClient), minScore)
+			if err == nil {
+				log.Info("bootstrap: knowledge retriever wired (AKG store → RAG)",
+					"min_score", minScore, "backend", akgStoreBackend(cfg))
+			}
+		} else {
+			kr, err = adapter.NewKnowledgeRetriever(ctx, knowRt, minScore)
+			if err == nil {
+				log.Info("bootstrap: knowledge retriever wired (AKG runtime → RAG)",
+					"min_score", minScore)
+			}
+		}
 		if err != nil {
 			log.Warn("bootstrap: knowledge retriever construction failed; skipping",
 				"error", err)
 		} else {
 			retrievers = append(retrievers, experienceadapters.NewKnowledgeRetrieverAdapter(kr))
-			log.Info("bootstrap: knowledge retriever wired (AKG → RAG)",
-				"min_score", minScore)
 		}
 	}
 

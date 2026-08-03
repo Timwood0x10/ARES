@@ -208,8 +208,15 @@ func Join(parts []string, sep string) string {
 		if objs[i].Namespace != "code" {
 			t.Errorf("expected namespace 'code', got %q", objs[i].Namespace)
 		}
-		if objs[i].Confidence != 0.9 {
-			t.Errorf("expected confidence 0.9, got %.2f", objs[i].Confidence)
+		if objs[i].Confidence != codeReliability {
+			t.Errorf("expected confidence %v, got %.2f", codeReliability, objs[i].Confidence)
+		}
+		// Relevance is rank-derived from name/doc vs intent.Goal match.
+		// With an empty Goal (default Intent above), relevanceFromNameMatch
+		// returns the 0.1 floor for every symbol.
+		if objs[i].Relevance != 0.1 {
+			t.Errorf("object %d %q: expected Relevance 0.1 (empty goal floor), got %.2f",
+				i, objs[i].ID, objs[i].Relevance)
 		}
 	}
 
@@ -344,5 +351,90 @@ func TestStreamSkipVendor(t *testing.T) {
 	}
 	if objs[0].ID != "test:main.Main" {
 		t.Fatalf("expected main.Main, got %q", objs[0].ID)
+	}
+}
+
+// TestRelevanceFromNameMatch verifies the token-overlap scoring that drives
+// per-symbol Relevance for the code provider. This is the query-time signal
+// the retriever ranks on (replacing the old hardcoded Confidence=0.9).
+func TestRelevanceFromNameMatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		symbol  string
+		summary string
+		goal    string
+		want    float64
+	}{
+		{"full containment", "HandleAuth", "auth handler", "handle auth", 0.9},
+		{"partial match", "HandleAuth", "auth handler", "auth bypass", 0.5},
+		{"no match", "HandleAuth", "auth handler", "cache redis", 0.1},
+		{"empty goal floor", "HandleAuth", "auth handler", "", 0.1},
+		{"summary contributes tokens", "X", "redis cache layer", "redis cache", 0.9},
+		{"case insensitive", "HandleAuth", "", "HANDLE AUTH", 0.9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := relevanceFromNameMatch(tt.symbol, tt.summary, tt.goal)
+			if got != tt.want {
+				t.Errorf("relevanceFromNameMatch(%q, %q, %q) = %.2f, want %.2f",
+					tt.symbol, tt.summary, tt.goal, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStream_GoalDrivenRelevance verifies that symbols whose names match the
+// intent goal get a higher Relevance than unrelated symbols, and that the
+// retriever's Relevance-based ranking would therefore surface them first.
+func TestStream_GoalDrivenRelevance(t *testing.T) {
+	dir := t.TempDir()
+	src := `package util
+
+// HandleAuth processes authentication requests.
+func HandleAuth(token string) bool { return true }
+
+// ParseConfig reads the config file.
+func ParseConfig(path string) ([]byte, error) { return nil, nil }
+`
+	if err := os.WriteFile(filepath.Join(dir, "auth.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New("code", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objCh, _ := p.Stream(context.Background(), knowledge.Intent{
+		Goal:  "handle auth",
+		Scope: knowledge.Scope{MaxObjects: 10},
+	})
+	var objs []*knowledge.KnowledgeObject
+	for obj := range objCh {
+		objs = append(objs, obj)
+	}
+	if len(objs) != 2 {
+		t.Fatalf("expected 2 objects, got %d", len(objs))
+	}
+
+	// Find the auth handler and the config parser.
+	var authObj, cfgObj *knowledge.KnowledgeObject
+	for _, o := range objs {
+		switch o.ID {
+		case "code:util.HandleAuth":
+			authObj = o
+		case "code:util.ParseConfig":
+			cfgObj = o
+		}
+	}
+	if authObj == nil || cfgObj == nil {
+		t.Fatalf("missing expected objects: auth=%v cfg=%v", authObj, cfgObj)
+	}
+	// HandleAuth matches both goal tokens → 0.9.
+	if authObj.Relevance != 0.9 {
+		t.Errorf("HandleAuth Relevance: got %.2f, want 0.9 (full goal match)", authObj.Relevance)
+	}
+	// ParseConfig matches no goal tokens → 0.1.
+	if cfgObj.Relevance != 0.1 {
+		t.Errorf("ParseConfig Relevance: got %.2f, want 0.1 (no goal match)", cfgObj.Relevance)
 	}
 }

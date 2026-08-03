@@ -16,6 +16,8 @@ import (
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
+	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -50,7 +52,18 @@ type Components struct {
 	// storage is not wired, in which case the runtime skips the vector
 	// provider entirely.
 	VectorStore storage.VectorStore
-	wg          sync.WaitGroup
+	// KnowledgeStore backs the AKG read/write loop: the DistillBridge
+	// (write side) persists AKG facts here and the knowledge runtime's
+	// StoreProvider / the leader's KnowledgeRetriever (read side) recall
+	// them. In-memory by default; PostgreSQL when storage is configured.
+	// Nil when AKG is not enabled (cfg.Knowledge.RetrievalEnabled).
+	KnowledgeStore knowledge.KnowledgeStore
+	// AKGBridge distills conversations into KnowledgeStore on task
+	// lifecycle events (write side of the AKG loop). Nil when AKG or its
+	// write dependencies (embedding client, experience repo) are
+	// unavailable.
+	AKGBridge *adapter.DistillBridge
+	wg        sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -156,6 +169,18 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// embClient is reused by wireRetrievers to build the MemoryRetriever, so
 	// the distillation and RAG retrieval paths share one embedding client.
 	guidanceProvider, embClient := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
+
+	// AKG closed loop (0.2.9): build the KnowledgeStore (in-memory default,
+	// PG optional) and the write-side DistillBridge, gated on
+	// cfg.Knowledge.RetrievalEnabled. Best-effort: when AKG or its deps are
+	// unavailable the loop is skipped with a warning, leaving the system
+	// fully functional (read-only mode keeps the store when write deps
+	// are missing). The store is shared by the knowledge runtime's
+	// StoreProvider (read side) and the leader's KnowledgeRetriever.
+	knowStore, akgBridge := wireAKGLoop(cfg, deps, embClient)
+	comp.KnowledgeStore = knowStore
+	comp.AKGBridge = akgBridge
+
 	subscribeDistillationEvents(ctx, &comp)
 
 	// 6. Dashboard
@@ -222,7 +247,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// provider is registered when postgres vector storage + embedding are
 	// wired (comp.VectorStore / embClient); otherwise the runtime uses only
 	// the memory/code providers.
-	knowRt := BuildKnowledgeRuntime(comp.VectorStore, embClient)
+	knowRt := BuildKnowledgeRuntime(comp.VectorStore, embClient, knowStore)
 	comp.KnowledgeRuntime = knowRt
 
 	newEvol, err := ProvideNewEvolution(dag, knowRt, liveMemoryStore)
@@ -242,7 +267,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// Runs after ProvideNewEvolution so the retriever can emit retrieval
 	// evidence to the shared evidence store (Source "memory") consumed by the
 	// GA MemoryGenome.
-	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt, newEvol.EvidenceStore)
+	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt, knowStore, newEvol.EvidenceStore)
 
 	// Track C (C-Safe): wire the DeploymentPipeline into the Coordinator so
 	// generated patches are safely promoted to the live runtime. Gated by
