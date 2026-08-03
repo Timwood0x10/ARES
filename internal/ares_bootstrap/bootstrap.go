@@ -12,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
@@ -63,7 +64,15 @@ type Components struct {
 	// write dependencies (embedding client, experience repo) are
 	// unavailable.
 	AKGBridge *adapter.DistillBridge
-	wg        sync.WaitGroup
+	// FlightRecorder is the single shared flight recorder (collector
+	// subscribes to comp.EventStore and emits workflow/scheduler/recovery
+	// fitness evidence into the shared evidence store). It is created and
+	// started by Bootstrap independently of ProvideEvolution so the fitness
+	// write loop works even when the legacy evolution deps (ExpRepo) are
+	// absent; ProvideEvolution and the api_impl launcher reuse it instead of
+	// building their own. Nil when the event store is unavailable.
+	FlightRecorder *flight.FlightRecorder
+	wg             sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -196,19 +205,12 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		}
 	})
 
-	// 7. Evolution — only if all required deps are wired
-	if deps.EventStore != nil && deps.ExpRepo != nil {
-		evol, err := ProvideEvolution(ctx, &cfg.Evolution,
-			comp.EventStore, deps.ExpRepo,
-			comp.LLM.CallbackReg,
-			deps.LLMClient,
-		)
-		if err != nil {
-			runCleanups()
-			return nil, err
-		}
-		comp.Evolution = evol
-	}
+	// 7+8. Evolution wiring order matters: ProvideNewEvolution (below) creates
+	// the shared evidence store (newEvol.EvidenceStore); ProvideEvolution's
+	// flight recorder must be built AFTER it so the flight collector's
+	// workflow/scheduler/recovery fitness evidence lands in the same store
+	// the GA genomes read (previously the recorder got a nil EvidenceStore
+	// and those three fitness signals were silently dropped).
 
 	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
 	// Always created; uses a minimal MutableDAG so workflow/scheduler/recovery
@@ -256,6 +258,43 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		return nil, err
 	}
 	comp.NewEvolution = newEvol
+
+	// Single shared flight recorder — created and started here, independent
+	// of the legacy evolution deps (ExpRepo). Its collector subscribes to
+	// comp.EventStore and emits workflow/scheduler/recovery fitness evidence
+	// into newEvol.EvidenceStore (the same store the GA genomes read), so the
+	// fitness write loop works on every production path (ares serve / ares
+	// start) even when ProvideEvolution is skipped. ProvideEvolution and the
+	// api_impl launcher reuse this instance instead of building their own.
+	if comp.EventStore != nil {
+		comp.FlightRecorder = flight.NewFlightRecorder(flight.FlightRecorderConfig{
+			EventStore:    comp.EventStore,
+			EvidenceStore: newEvol.EvidenceStore,
+		})
+		if err := comp.FlightRecorder.Start(ctx); err != nil {
+			log.WarnContext(ctx, "bootstrap: flight recorder start failed (fitness evidence disabled)",
+				"error", err)
+		}
+		cleanups = append(cleanups, comp.FlightRecorder.Stop)
+	}
+
+	// 7. Evolution (legacy system) — only if all required deps are wired.
+	// Built after the shared recorder so it reuses comp.FlightRecorder
+	// (which shares the evidence store with the GA genomes) instead of
+	// constructing a second recorder.
+	if deps.EventStore != nil && deps.ExpRepo != nil {
+		evol, err := ProvideEvolution(ctx, &cfg.Evolution,
+			comp.EventStore, deps.ExpRepo,
+			comp.LLM.CallbackReg,
+			deps.LLMClient,
+			comp.FlightRecorder,
+		)
+		if err != nil {
+			runCleanups()
+			return nil, err
+		}
+		comp.Evolution = evol
+	}
 
 	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
 	// KnowledgeRetriever (AKG entries) into the MemoryManager so every

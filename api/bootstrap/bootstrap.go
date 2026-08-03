@@ -130,7 +130,14 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 
 	var flightRec *flightsvc.Recorder
 	if cfg.Flight != nil {
-		flightRec = flightsvc.New(comp.EventStore)
+		// Share the evolution evidence store so the flight collector's
+		// workflow/scheduler/recovery fitness evidence lands in the same
+		// store the GA genomes read (closes the flight fitness write loop).
+		var evStore evidence.Store
+		if comp.NewEvolution != nil {
+			evStore = comp.NewEvolution.EvidenceStore
+		}
+		flightRec = flightsvc.NewWithEvidenceStore(comp.EventStore, evStore)
 	}
 
 	return &ARES{

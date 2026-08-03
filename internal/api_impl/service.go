@@ -247,9 +247,24 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	s.orch = orch
 
 	// --- Flight Recorder ---
-	fr := flight.NewFlightRecorder(flight.FlightRecorderConfig{EventStore: eventStore})
-	if startErr := fr.Start(ctx); startErr != nil {
-		log.Warn("flight recorder start failed", "error", startErr)
+	// Reuse the single shared recorder built and started by Bootstrap
+	// (comp.FlightRecorder): it subscribes to the same event store and
+	// already emits workflow/scheduler/recovery fitness evidence into the
+	// shared evidence store the GA genomes read. Building a second recorder
+	// here would double-emit every fitness event (duplicate evidence plus an
+	// extra collector goroutine).
+	var fr *flight.FlightRecorder
+	if s.bootstrap != nil && s.bootstrap.FlightRecorder != nil {
+		fr = s.bootstrap.FlightRecorder
+	} else {
+		// Fallback: Bootstrap could not build a recorder (no event store).
+		// Build a local one so the orchestrator still gets flight data.
+		fr = flight.NewFlightRecorder(flight.FlightRecorderConfig{
+			EventStore: eventStore,
+		})
+		if startErr := fr.Start(ctx); startErr != nil {
+			log.Warn("flight recorder start failed", "error", startErr)
+		}
 	}
 	orch.SetFlightRecorder(fr)
 

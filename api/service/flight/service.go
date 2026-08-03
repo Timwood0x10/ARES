@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	internal "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // Config re-exports internal's flight recorder config.
@@ -18,8 +19,17 @@ type Recorder struct {
 
 // New creates a new flight recorder.
 func New(eventStore ares_events.EventStore) *Recorder {
+	return NewWithEvidenceStore(eventStore, nil)
+}
+
+// NewWithEvidenceStore creates a flight recorder that also emits
+// workflow/scheduler/recovery fitness evidence into the given evidence
+// store (the same store the GA genomes read). evStore may be nil, in which
+// case the flight collector skips fitness emission (legacy behavior).
+func NewWithEvidenceStore(eventStore ares_events.EventStore, evStore evidence.Store) *Recorder {
 	inner := internal.NewFlightRecorder(internal.FlightRecorderConfig{
-		EventStore: eventStore,
+		EventStore:    eventStore,
+		EvidenceStore: evStore,
 	})
 	return &Recorder{inner: inner}
 }

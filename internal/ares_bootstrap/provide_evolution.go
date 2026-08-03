@@ -23,10 +23,23 @@ type EvolutionComponents struct {
 	DreamCycle        interface{}
 	FeedbackService   *experience.FeedbackService
 	EvaluatorRegistry *ares_eval.EvaluatorRegistry
+	// FlightRecorder is the recorder created for the Flight→Experience
+	// adapter. It is exposed so Bootstrap can start/stop it explicitly:
+	// without Start the collector never subscribes to events and the GA
+	// workflow/scheduler/recovery fitness evidence is never emitted.
+	FlightRecorder *flight.FlightRecorder
 }
 
 // ProvideEvolution wires the full evolution system: adapter, scheduler, dream cycle,
 // feedback service, and evaluators.
+//
+// fr is the shared flight recorder built and started by Bootstrap
+// (comp.FlightRecorder). It is reused here — not constructed — so there is
+// exactly one recorder per process: its collector subscribes to the event
+// store and emits workflow/scheduler/recovery fitness evidence into the
+// shared evidence store (the same store the GA genomes read). May be nil
+// when Bootstrap could not build one (no event store); the Flight→Experience
+// adapter then degrades gracefully.
 func ProvideEvolution(
 	ctx context.Context,
 	cfg *ares_config.EvolutionConfig,
@@ -34,18 +47,15 @@ func ProvideEvolution(
 	expRepo repositories.ExperienceRepositoryInterface,
 	callbackReg *ares_callbacks.Registry,
 	llmClient ares_eval.LLMClient,
+	fr *flight.FlightRecorder,
 ) (*EvolutionComponents, error) {
 	if eventStore == nil || expRepo == nil || callbackReg == nil {
 		return nil, fmt.Errorf("bootstrap: evolution skipped (missing dependencies)")
 	}
 
-	// Create flight recorder from event store
-	flightRecorder := flight.NewFlightRecorder(flight.FlightRecorderConfig{
-		EventStore: eventStore,
-	})
-
-	// 1. Flight → Experience adapter
-	flightWrapper := &flightRecorderWrapper{recorder: flightRecorder}
+	// 1. Flight → Experience adapter (reuses the shared recorder — do NOT
+	// construct a second one here, that would double-emit fitness evidence).
+	flightWrapper := &flightRecorderWrapper{recorder: fr}
 	expAdapter := &expRepoAdapter{inner: expRepo}
 	adapter := evolution.NewFlightToExperienceAdapter(flightWrapper, expAdapter)
 
@@ -85,6 +95,7 @@ func ProvideEvolution(
 		DreamCycle:        dreamCycle,
 		FeedbackService:   feedbackSvc,
 		EvaluatorRegistry: evalRegistry,
+		FlightRecorder:    fr,
 	}, nil
 }
 
