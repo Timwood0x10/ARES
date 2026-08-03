@@ -68,6 +68,10 @@ type Service struct {
 	// Bootstrap components — wired via ares_bootstrap.Bootstrap for autonomous
 	// runtime, memory, evolution, and service discovery.
 	bootstrap *ares_bootstrap.Components
+	// flightRecorder is the recorder owned by this service: either the shared
+	// bootstrap instance (reused, already started by Bootstrap) or a local
+	// fallback built when Bootstrap could not build one. Stopped on Service.Stop.
+	flightRecorder *flight.FlightRecorder
 }
 
 // StartService connects LLM, all MCP servers, creates orchestrator, starts
@@ -266,6 +270,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 			log.Warn("flight recorder start failed", "error", startErr)
 		}
 	}
+	s.flightRecorder = fr
 	orch.SetFlightRecorder(fr)
 
 	// --- Dashboard HTTP server (unified Gin engine) ---
@@ -418,6 +423,11 @@ func (s *Service) Stop(ctx context.Context) error {
 	if s.hub != nil {
 		s.hub.Stop()
 	}
+	// Stop the flight recorder's collector goroutine (shared bootstrap
+	// instance or local fallback). Safe when no recorder was built (nil guard).
+	if s.flightRecorder != nil {
+		s.flightRecorder.Stop()
+	}
 	if s.eventStore != nil {
 		if closeErr := s.eventStore.RawStore().Close(); closeErr != nil {
 			errs = append(errs, fmt.Errorf("event store close: %w", closeErr))
@@ -543,5 +553,11 @@ func (s *Service) Wait() {
 		if err := s.g.Wait(); err != nil {
 			log.Error("background service goroutine failed during shutdown", "error", err)
 		}
+	}
+	// Wait for Bootstrap's background goroutines (distillation subscriber, GA
+	// evolution ticker, LLM suggestion ticker). Safe to call after ctx is
+	// cancelled (they exit on ctx.Done()); nil guard covers bootstrap-less runs.
+	if s.bootstrap != nil {
+		s.bootstrap.WaitBackground()
 	}
 }

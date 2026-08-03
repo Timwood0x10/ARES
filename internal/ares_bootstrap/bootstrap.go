@@ -75,6 +75,18 @@ type Components struct {
 	wg             sync.WaitGroup
 }
 
+// WaitBackground blocks until all background goroutines started by Bootstrap
+// (distillation event subscriber, GA evolution ticker, LLM suggestion ticker)
+// have exited. It must be called after the bootstrap context is cancelled;
+// each goroutine exits on ctx.Done() and this ensures no goroutine is left
+// running across a graceful shutdown.
+func (c *Components) WaitBackground() {
+	if c == nil {
+		return
+	}
+	c.wg.Wait()
+}
+
 // LLMComponents holds LLM client and callback registry.
 type LLMComponents struct {
 	Client      interface{}

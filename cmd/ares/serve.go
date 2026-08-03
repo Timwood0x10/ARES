@@ -87,6 +87,10 @@ func runServe() error {
 	shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
 
 	g, ctx := errgroup.WithContext(ctx)
+	// comp is assigned by Bootstrap below; the signal goroutine references it
+	// for shutdown (WaitBackground). Declared here so the closure compiles;
+	// the nil guard on WaitBackground covers the bootstrap-failure path.
+	var comp *ares_bootstrap.Components
 	g.Go(func() error {
 		select {
 		case <-sigCh:
@@ -102,6 +106,10 @@ func runServe() error {
 			cancel()
 		case <-ctx.Done():
 		}
+		// Wait for Bootstrap's background goroutines (distillation subscriber,
+		// GA evolution ticker, LLM suggestion ticker) to exit after the
+		// context is cancelled, so none outlives the graceful shutdown.
+		comp.WaitBackground()
 		return nil
 	})
 
@@ -122,7 +130,7 @@ func runServe() error {
 	// MCP setup is handled separately below for registry bridging. The store
 	// is passed via deps so Bootstrap wires Runtime/Memory against the real
 	// archive-enabled store instead of creating a throwaway MemoryEventStore.
-	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
+	comp, err = ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
 		EventStore: compactableStore,
 	})
 	if err != nil {
@@ -350,6 +358,18 @@ func runServe() error {
 		return mgr.Stop()
 	}); err != nil {
 		return fmt.Errorf("register runtime shutdown hook: %w", err)
+	}
+	// Stop the flight recorder's collector goroutine explicitly on graceful
+	// shutdown. It is also safe when Bootstrap built no recorder (nil guard):
+	// the collector exits promptly because Stop cancels its internal context
+	// before waiting on the loop goroutine.
+	if comp.FlightRecorder != nil {
+		if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
+			comp.FlightRecorder.Stop()
+			return nil
+		}); err != nil {
+			return fmt.Errorf("register flight recorder shutdown hook: %w", err)
+		}
 	}
 
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).

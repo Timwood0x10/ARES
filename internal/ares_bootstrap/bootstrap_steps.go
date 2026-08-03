@@ -3,7 +3,9 @@ package ares_bootstrap
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -12,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	_ "github.com/lib/pq"
@@ -85,6 +88,14 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
+					// Channel closed: stop the loop and join in-flight AKG
+					// distillations so no goroutine is abandoned on shutdown.
+					// Each distillation is bounded by akgBridgeTimeout (30s),
+					// and cancel() makes them return promptly.
+					cancel()
+					if waitErr := akgEg.Wait(); waitErr != nil {
+						log.Warn("bootstrap: AKG distillation group error during shutdown", "error", waitErr)
+					}
 					return
 				}
 				HandleTaskCompletedForDistillation(ctx, comp.Distillation, ev)
@@ -92,6 +103,11 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 					triggerAKGBridge(akgCtx, akgEg, ev, comp.AKGBridge)
 				}
 			case <-ctx.Done():
+				// Context cancelled: join in-flight AKG distillations before
+				// exiting so the subscriber goroutine does not leak them.
+				if waitErr := akgEg.Wait(); waitErr != nil {
+					log.Warn("bootstrap: AKG distillation group error during shutdown", "error", waitErr)
+				}
 				return
 			}
 		}
@@ -216,9 +232,8 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 					case <-suggestTicker.C:
 						// Generate a suggestion prompt for the LLM based on
 						// current evolution state and recent evidence.
-						prompt := "Examine the current system state and suggest one evolution improvement. " +
-							"Use one of: insert node, remove node, replace node, add edge, remove edge, " +
-							"change scheduler, change topk, change reducer, change planner, change recovery."
+						prompt := buildEvolutionSuggestionPrompt(ctx,
+							newEvol.EvidenceStore, newEvol.StrategyStore)
 						resp, err := llmClient.Generate(ctx, prompt)
 						if err != nil {
 							log.WarnContext(ctx, "[bootstrap] LLM suggestion generation failed",
@@ -335,4 +350,103 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 		return nil, fmt.Errorf("pg strategy store: init: %w", err)
 	}
 	return store, nil
+}
+
+// fitnessSourceOrder is the stable ordering of GA genome sources whose recent
+// fitness evidence is summarized into the LLM suggestion prompt.
+var fitnessSourceOrder = []string{"workflow", "scheduler", "recovery", "memory", "knowledge"}
+
+// buildEvolutionSuggestionPrompt builds an LLM suggestion prompt grounded in
+// the current evolution state: the mean fitness value of the most recent
+// evidence per genome source plus the currently deployed strategy. When no
+// evidence or strategy exists yet, it falls back to the generic prompt so the
+// LLM still has the instruction it needs. Returns the prompt string.
+//
+// The summary makes the LLM's suggestions state-aware instead of blind: it can
+// see which genome has low fitness (and thus deserves a patch) and which
+// strategy is live (and thus should be mutated with care).
+func buildEvolutionSuggestionPrompt(
+	ctx context.Context,
+	evStore *evidence.MemoryStore,
+	strategyStore evolution.StrategyStore,
+) string {
+	base := "Examine the current system state and suggest one evolution improvement. " +
+		"Use one of: insert node, remove node, replace node, add edge, remove edge, " +
+		"change scheduler, change topk, change reducer, change planner, change recovery."
+
+	var sb strings.Builder
+	sb.WriteString(base)
+
+	if evStore != nil {
+		var lines []string
+		for _, src := range fitnessSourceOrder {
+			mean, count, ok := recentFitnessSummary(ctx, evStore, src, fitnessWindowSize)
+			if !ok {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- %s: mean fitness %.2f over %d evidence records", src, mean, count))
+		}
+		if len(lines) > 0 {
+			sb.WriteString("\n\nCurrent evolution state (recent fitness evidence):\n")
+			sb.WriteString(strings.Join(lines, "\n"))
+		}
+	}
+
+	if strategyStore != nil {
+		if st, err := strategyStore.GetActive(ctx); err == nil && st != nil {
+			sb.WriteString("\n\nCurrently deployed strategy: ")
+			sb.WriteString(fmt.Sprintf("id=%s version=%d", st.ID, st.Version))
+			if st.Score >= 0 {
+				sb.WriteString(fmt.Sprintf(" score=%.2f", st.Score))
+			}
+			if st.MutationDesc != "" {
+				sb.WriteString(fmt.Sprintf(" mutation=%q", st.MutationDesc))
+			}
+		}
+	}
+
+	sb.WriteString("\n\nRespond with exactly one suggestion in the allowed format.")
+	return sb.String()
+}
+
+// fitnessWindowSize bounds how many evidence records are summarized per genome
+// source so a long-running process does not read the whole store each cycle.
+const fitnessWindowSize = 50
+
+// recentFitnessSummary computes the mean fitness value over the most recent
+// fitness evidence records for one genome source. It returns ok=false when
+// the store is nil or no usable numeric record exists in the window.
+func recentFitnessSummary(ctx context.Context, store *evidence.MemoryStore, source string, limit int) (mean float64, count int, ok bool) {
+	if store == nil {
+		return 0, 0, false
+	}
+	evs, err := store.Query(ctx, evidence.Filter{
+		Source: source,
+		Kind:   evidence.KindFitness,
+		Limit:  limit,
+	})
+	if err != nil {
+		return 0, 0, false
+	}
+	var sum float64
+	for _, ev := range evs {
+		if len(ev.Payload) == 0 {
+			continue
+		}
+		var fe struct {
+			Value float64 `json:"value"`
+		}
+		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
+			continue
+		}
+		if fe.Value < 0 || fe.Value > 1 {
+			continue
+		}
+		sum += fe.Value
+		count++
+	}
+	if count == 0 {
+		return 0, 0, false
+	}
+	return sum / float64(count), count, true
 }

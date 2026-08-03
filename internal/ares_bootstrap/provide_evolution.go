@@ -20,7 +20,6 @@ import (
 type EvolutionComponents struct {
 	Adapter           interface{}
 	Scheduler         interface{}
-	DreamCycle        interface{}
 	FeedbackService   *experience.FeedbackService
 	EvaluatorRegistry *ares_eval.EvaluatorRegistry
 	// FlightRecorder is the recorder created for the Flight→Experience
@@ -74,10 +73,7 @@ func ProvideEvolution(
 	scheduler := evolution.NewEvolutionScheduler(callbackReg, adapter, opts...)
 	scheduler.Register()
 
-	// 3. Dream cycle (optional — requires mutator + tester wired externally)
-	var dreamCycle *evolution.DreamCycle
-
-	// 4. Evaluators (optional — requires LLM client).
+	// 3. Evaluators (optional — requires LLM client).
 	var evalRegistry *ares_eval.EvaluatorRegistry
 	if llmClient != nil {
 		evalRegistry, err = setupEvaluators(llmClient)
@@ -86,13 +82,12 @@ func ProvideEvolution(
 		}
 	}
 
-	// 5. Feedback service (best-effort)
+	// 4. Feedback service (best-effort)
 	feedbackSvc := setupFeedbackService(expRepo)
 
 	return &EvolutionComponents{
 		Adapter:           adapter,
 		Scheduler:         scheduler,
-		DreamCycle:        dreamCycle,
 		FeedbackService:   feedbackSvc,
 		EvaluatorRegistry: evalRegistry,
 		FlightRecorder:    fr,
