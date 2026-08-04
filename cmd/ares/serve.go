@@ -13,6 +13,7 @@ import (
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
@@ -65,6 +66,9 @@ func runServe() error {
 	// --- Config ---
 	cfg, err := loadServeConfig()
 	if err != nil {
+		return err
+	}
+	if err := validateServeConfig(cfg); err != nil {
 		return err
 	}
 
@@ -138,8 +142,9 @@ func runServe() error {
 	memMgr := comp.Memory
 	mgr := comp.Runtime
 
-	// Attach event store to memory for event-driven memory operations
-	memMgr.SetEventStore(store, "memory")
+	// Stage 3 fix (B01): EventStore is wired into Memory during Bootstrap,
+	// not post-Bootstrap here. validateServeConfig has already enforced that
+	// the full agent-serving entry point has its required Memory component.
 
 	// --- LLM adapter with fallback ---
 	llmAdapter, err := createLLMAdapterWithFallback(cfg)
@@ -202,8 +207,13 @@ func runServe() error {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
 	// Wire the GA's deployed strategy into live agents so the running
-	// agents read the active prompt/params at runtime.
-	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	// agents read the active prompt/params at runtime. When evolution is
+	// disabled (comp.NewEvolution == nil) no strategy source is injected,
+	// so serve continues without GA strategy guidance.
+	var strategySrc agents.StrategySource
+	if comp.NewEvolution != nil {
+		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	}
 	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		return fmt.Errorf("create agents: %w", err)
@@ -487,6 +497,21 @@ func loadServeConfig() (*ares_config.Config, error) {
 		cfg.Server.Port = servePort
 	}
 	return cfg, nil
+}
+
+// validateServeConfig enforces the dependencies required by the full agent
+// serving entry point before Bootstrap starts any component. Memory is optional
+// for the library/bootstrap layer, but the current Leader contract requires a
+// MemoryManager, so disabling it here is a configuration error rather than a
+// late nil dereference or a no-op substitute.
+func validateServeConfig(cfg *ares_config.Config) error {
+	if cfg == nil {
+		return errors.New("serve: config is required")
+	}
+	if !cfg.Memory.Enabled {
+		return errors.New("serve: memory.enabled must be true because the leader agent requires the Memory component")
+	}
+	return nil
 }
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.

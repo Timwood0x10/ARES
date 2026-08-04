@@ -59,8 +59,15 @@ func ProvideEvolution(
 	adapter := evolution.NewFlightToExperienceAdapter(flightWrapper, expAdapter)
 
 	// 2. Scheduler
+	// The legacy scheduler must be gated by cfg.Evolution.Enabled (F02): when
+	// evolution is disabled, the scheduler must not force itself on. Callers
+	// that gate on Enabled (wireLegacyEvolution) pass true here; direct callers
+	// get the config-honest value instead of a hardcoded true.
 	var err error
-	opts := []evolution.SchedulerOption{evolution.WithEnabled(true)}
+	// Enabled only when the config explicitly turns evolution on (F02); a nil
+	// config keeps the legacy default (enabled) for direct callers.
+	schedulerEnabled := cfg == nil || cfg.Enabled
+	opts := []evolution.SchedulerOption{evolution.WithEnabled(schedulerEnabled)}
 	if cfg != nil && cfg.MinInterval != "" {
 		if d, err := time.ParseDuration(cfg.MinInterval); err == nil {
 			opts = append(opts, evolution.WithMinInterval(d))

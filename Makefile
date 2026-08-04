@@ -90,7 +90,7 @@ lint-vet:
 lint-staticcheck:
 	@echo "Running staticcheck..."
 	@if command -v staticcheck >/dev/null 2>&1; then \
-		staticcheck ./...; \
+		staticcheck ./... && \
 		echo "staticcheck: PASSED"; \
 	else \
 		echo "WARNING: staticcheck not installed. Install with: go install honnef.co/go/tools/cmd/staticcheck@latest"; \
@@ -99,7 +99,7 @@ lint-staticcheck:
 lint-golangci:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m; \
+		golangci-lint run --timeout=5m && \
 		echo "golangci-lint: PASSED"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \

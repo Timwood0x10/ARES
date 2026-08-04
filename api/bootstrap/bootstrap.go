@@ -5,6 +5,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -116,7 +117,7 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		}
 	}
 
-	arenaSvc := arenasvc.New(cfg.ArenaInjector, comp.EventStore, comp.NewEvolution.EvidenceStore)
+	arenaSvc := arenasvc.New(cfg.ArenaInjector, comp.EventStore, comp.EvidenceStore)
 
 	// MCP manager — always use from Bootstrap to avoid double instances.
 	mcpMgr := comp.MCP
@@ -130,30 +131,68 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 
 	var flightRec *flightsvc.Recorder
 	if cfg.Flight != nil {
-		// Share the evolution evidence store so the flight collector's
-		// workflow/scheduler/recovery fitness evidence lands in the same
-		// store the GA genomes read (closes the flight fitness write loop).
-		var evStore evidence.Store
-		if comp.NewEvolution != nil {
-			evStore = comp.NewEvolution.EvidenceStore
-		}
-		flightRec = flightsvc.NewWithEvidenceStore(comp.EventStore, evStore)
+		// Use the always-set shared evidence store (Components.EvidenceStore),
+		// so the flight collector's workflow/scheduler/recovery fitness evidence
+		// lands in the same store the GA genomes read even when evolution is
+		// disabled — the field is guaranteed non-nil by Bootstrap.
+		flightRec = flightsvc.NewWithEvidenceStore(comp.EventStore, comp.EvidenceStore)
 	}
 
 	return &ARES{
-		Runtime:    comp.Runtime,
-		Memory:     memSvc,
-		Evolution:  evo,
-		Arena:      arenaSvc,
-		MCP:        mcpMgr,
-		Dashboard:  dash,
-		Flight:     flightRec,
-		EventStore: comp.EventStore,
-		RuntimeEvolution: &runtimeEvoService{
-			components: comp.NewEvolution,
-		},
+		Runtime:          comp.Runtime,
+		Memory:           memSvc,
+		Evolution:        evo,
+		Arena:            arenaSvc,
+		MCP:              mcpMgr,
+		Dashboard:        dash,
+		Flight:           flightRec,
+		EventStore:       comp.EventStore,
+		RuntimeEvolution: newRuntimeEvolution(comp.NewEvolution),
 	}, nil
 }
+
+// ErrRuntimeEvolutionDisabled is returned by RuntimeEvolution methods when the
+// evolution system is disabled by config (Evolution.Enabled=false). It replaces
+// a nil-pointer panic on the unset components with a stable, actionable error.
+var ErrRuntimeEvolutionDisabled = errors.New("bootstrap: runtime evolution disabled")
+
+// newRuntimeEvolution returns the live runtime evolution service backed by the
+// bootstrap components, or a disabled implementation when evolution is not
+// enabled (comp.NewEvolution == nil). The wrapper is never nil, so consumers
+// can call it unconditionally and receive ErrRuntimeEvolutionDisabled instead
+// of panicking on nil internals.
+func newRuntimeEvolution(components *ares_bootstrap.NewEvolutionComponents) core.RuntimeEvolution {
+	if components == nil {
+		return disabledRuntimeEvolution{}
+	}
+	return &runtimeEvoService{components: components}
+}
+
+// disabledRuntimeEvolution is the stable no-op RuntimeEvolution used when the
+// evolution system is disabled. Every method returns ErrRuntimeEvolutionDisabled.
+type disabledRuntimeEvolution struct{}
+
+func (disabledRuntimeEvolution) RunCycle(context.Context) (*core.RuntimeCycleResult, error) {
+	return nil, ErrRuntimeEvolutionDisabled
+}
+
+func (disabledRuntimeEvolution) Status() (*core.RuntimeEvolutionStatus, error) {
+	return nil, ErrRuntimeEvolutionDisabled
+}
+
+func (disabledRuntimeEvolution) Propose(context.Context, core.RuntimeProposal) error {
+	return ErrRuntimeEvolutionDisabled
+}
+
+func (disabledRuntimeEvolution) QueryEvidence(context.Context, core.EvidenceFilter) ([]core.Evidence, error) {
+	return nil, ErrRuntimeEvolutionDisabled
+}
+
+func (disabledRuntimeEvolution) RegisterComponent(context.Context, core.RuntimeComponent) error {
+	return ErrRuntimeEvolutionDisabled
+}
+
+var _ core.RuntimeEvolution = (disabledRuntimeEvolution{})
 
 // Start starts all modules that need explicit startup.
 func (a *ARES) Start(ctx context.Context) error {

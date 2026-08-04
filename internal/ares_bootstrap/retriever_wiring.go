@@ -122,7 +122,14 @@ func wireRetrievers(
 		var kr *adapter.KnowledgeRetriever
 		var err error
 		if knowStore != nil {
-			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, akgModelName(embClient), minScore)
+			// Convert nil *EmbeddingClient to empty model name to avoid the
+			// Go nil-interface-trap where a nil typed pointer wrapped in a
+			// non-nil EmbeddingService interface panics on GetModel().
+			modelName := ""
+			if embClient != nil {
+				modelName = akgModelName(embClient)
+			}
+			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, modelName, minScore)
 			if err == nil {
 				log.Info("bootstrap: knowledge retriever wired (AKG store → RAG)",
 					"min_score", minScore, "backend", akgStoreBackend(cfg))

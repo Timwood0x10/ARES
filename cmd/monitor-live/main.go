@@ -24,6 +24,7 @@ import (
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -64,6 +65,9 @@ func main() {
 	if err := ares_config.LoadFromEnv(cfg); err != nil {
 		log.Fatalf("load env: %v", err)
 	}
+	if !cfg.Memory.Enabled {
+		log.Fatal("config: memory.enabled must be true because monitor-live's leader agent requires the Memory component")
+	}
 
 	// --- Context with signal handling ---
 	ctx, cancel := context.WithCancel(context.Background())
@@ -99,8 +103,7 @@ func main() {
 	memMgr := comp.Memory
 	mgr := comp.Runtime
 
-	// Attach event store to memory for event-driven memory operations
-	memMgr.SetEventStore(store, "memory")
+	// EventStore is already wired into Memory during Bootstrap (B01).
 
 	// --- LLM adapter with fallback ---
 	llmAdapter, err := createLLMAdapterWithFallback(cfg)
@@ -141,8 +144,12 @@ func main() {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
 	// Wire the GA's deployed strategy into live agents so the running
-	// agents read the active prompt/params at runtime.
-	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	// agents read the active prompt/params at runtime. When evolution is
+	// disabled (comp.NewEvolution == nil) no strategy source is injected.
+	var strategySrc agents.StrategySource
+	if comp.NewEvolution != nil {
+		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	}
 	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		cancel()

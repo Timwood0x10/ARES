@@ -28,8 +28,9 @@ func TestBootstrapDashboardHealth(t *testing.T) {
 
 	// 1. Bootstrap core infrastructure.
 	cfg := &ares_config.Config{
-		MCP: ares_config.MCPConfig{Servers: make([]ares_config.MCPServerEntry, 0)},
-		LLM: ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
+		MCP:    ares_config.MCPConfig{Servers: make([]ares_config.MCPServerEntry, 0)},
+		LLM:    ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
+		Memory: ares_config.MemoryConfig{Enabled: true},
 	}
 	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 	if err != nil {
