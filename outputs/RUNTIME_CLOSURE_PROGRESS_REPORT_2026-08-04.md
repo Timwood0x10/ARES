@@ -5,9 +5,9 @@
 | 阶段 | 状态 | 关键修复 |
 |---|---|---|
 | 阶段 0: 基线 | ✅ 完成 | 33 组件清单, 20 闭环测试, nil-interface-trap bug 修复 |
-| 阶段 1: System Runtime | ✅ 完成 | `internal/system_runtime/` 包 (interfaces + state machine + registry + orchestrator + snapshot) |
+| 阶段 1: System Runtime | ⚠️ 部分完成 | `internal/system_runtime/` 包 + 直接测试；**Bootstrap 已接入 Orchestrator/Registry/Snapshot**（step 11），serve 入口输出启动/关闭快照；仅 CLI/API/SDK 入口尚未接入 |
 | 阶段 2: 配置门控 | ✅ 完成 | F01: Memory.Enabled 门控, F02: Evolution.Enabled 门控 |
-| 阶段 3: live binding | ✅ 部分 | B01: EventStore 在构造期间装配 (serve.go 旁路已删除) |
+| 阶段 3: live binding | ✅ 部分 | B01: EventStore 在构造期间装配 (serve.go 旁路已删除)；F04: live DAG 绑定前移至 Start 前（当前无 live DAG 注册，为 no-op + 显式警告，Track C 延后） |
 | 阶段 4-7 | 📋 待授权 | 数据反馈环, Tools/MCP, 入口统一, 长稳验收 |
 
 ## 已修复的差距
@@ -55,14 +55,18 @@
 ### 闭环测试 (closure build tag)
 
 ```
-20 tests: 19 PASS, 1 SKIP
+20 tests: 16 PASS, 4 SKIP
 - TestClosure_MemoryDisabled_NotConstructed: PASS (F01 fixed)
 - TestClosure_EvolutionDisabled_NoGATicker: PASS (F02 fixed)
 - TestClosure_KnowledgeRetrievalEnabled: PASS (nil-interface-trap fixed)
-- TestClosure_Ready_AllExecutorsBoundToLiveTargets: PASS
+- TestClosure_Ready_AllExecutorsBoundToLiveTargets: SKIP (F04 — needs entry-level test)
 - TestClosure_Lifecycle_*: 7 PASS, 1 SKIP
-- TestSharedInstance_*: 6 PASS
+- TestSharedInstance_*: 5 PASS, 1 SKIP (PatchRegistry — F04)
 ```
+
+> 说明：F03（知识检索缺写依赖未 Ready）、F04（live-DAG 绑定）与 PatchRegistry
+> 一致性检查已显式 Skip——其硬断言需要注册表报告 Degraded 状态或入口级测试，
+> 不再以 PASS + t.Logf 记录差距（R09）。
 
 ### 常规测试 (make check)
 

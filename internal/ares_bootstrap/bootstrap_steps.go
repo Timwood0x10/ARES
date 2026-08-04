@@ -66,9 +66,7 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 	if comp.Distillation == nil || comp.EventStore == nil {
 		return
 	}
-	comp.wg.Add(1)
-	go func() {
-		defer comp.wg.Done()
+	comp.bgGroup.Go(func() error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		ch, err := comp.EventStore.Subscribe(ctx, ares_events.EventFilter{
@@ -79,7 +77,7 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 		})
 		if err != nil {
 			log.Warn("bootstrap: distillation event subscription failed", "error", err)
-			return
+			return nil
 		}
 		// akgEg runs AKG distillations off the subscriber loop so a slow
 		// bridge call (LLM/embedding) cannot block experience distillation.
@@ -96,7 +94,7 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 					if waitErr := akgEg.Wait(); waitErr != nil {
 						log.Warn("bootstrap: AKG distillation group error during shutdown", "error", waitErr)
 					}
-					return
+					return nil
 				}
 				HandleTaskCompletedForDistillation(ctx, comp.Distillation, ev)
 				if comp.AKGBridge != nil {
@@ -108,10 +106,10 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 				if waitErr := akgEg.Wait(); waitErr != nil {
 					log.Warn("bootstrap: AKG distillation group error during shutdown", "error", waitErr)
 				}
-				return
+				return nil
 			}
 		}
-	}()
+	})
 }
 
 // Parameter keys used in evolution strategy configurations.
@@ -198,12 +196,9 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// Start a background ticker that triggers evolution even when no
 	// agents are running (event-driven scheduler won't fire without agents).
 	// This ensures the GA continuously evolves over time.
-	comp.wg.Add(1)
-	go func() {
-		ctx := ctx
+	comp.bgGroup.Go(func() error {
 		evoTicker := time.NewTicker(5 * time.Minute)
 		defer evoTicker.Stop()
-		defer comp.wg.Done()
 		for {
 			select {
 			case <-evoTicker.C:
@@ -212,21 +207,19 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 						"error", err)
 				}
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
-	}()
+	})
 
 	// Wire the LLMAdapter into the Coordinator's suggestion pipeline.
 	// When an LLM client is available, periodically generate and submit
 	// evolution suggestions (LLM → Parse → PatchProposal → Coordinator.Evaluate).
 	if newEvol.LLMAdapter != nil && comp.LLM != nil && comp.LLM.Client != nil {
 		if llmClient, ok := comp.LLM.Client.(evoService.LLMClient); ok {
-			comp.wg.Add(1)
-			go func() {
+			comp.bgGroup.Go(func() error {
 				suggestTicker := time.NewTicker(15 * time.Minute)
 				defer suggestTicker.Stop()
-				defer comp.wg.Done()
 				for {
 					select {
 					case <-suggestTicker.C:
@@ -253,10 +246,10 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 						}
 						newEvol.Coordinator.Evaluate(ctx)
 					case <-ctx.Done():
-						return
+						return nil
 					}
 				}
-			}()
+			})
 			log.InfoContext(ctx, "[bootstrap] LLM suggestion pipeline wired into Coordinator")
 		}
 	}

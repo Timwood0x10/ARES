@@ -3,6 +3,10 @@
 > Date: 2026-08-04
 > Stage: 0 (Baseline)
 > Status: Complete — gaps documented, tests in place, bugs fixed
+>
+> **Update (2026-08-04)**: F01/F02 (config gate bypass) and the nil-interface-trap
+> bug have been fixed in Stage 2; the fail-first contract tests now PASS. See
+> `outputs/RUNTIME_CLOSURE_PROGRESS_REPORT_2026-08-04.md` for the current state.
 
 ---
 

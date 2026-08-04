@@ -150,42 +150,6 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"side_effects": "false",
 		}),
 
-		// Knowledge capability
-		base.WithToolTags(builtin_knowledge.NewKnowledgeSearch(d.KnowledgeSearcher), map[string]string{
-			"domain": "knowledge", "input_type": "text", "output_type": "json",
-			"side_effects": "false",
-		}),
-		base.WithToolTags(builtin_knowledge.NewKnowledgeAdd(d.KnowledgeService), map[string]string{
-			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
-			"side_effects": "true", "mutates_state": "true",
-		}),
-		base.WithToolTags(builtin_knowledge.NewKnowledgeUpdate(d.KnowledgeService), map[string]string{
-			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
-			"side_effects": "true", "mutates_state": "true",
-		}),
-		base.WithToolTags(builtin_knowledge.NewKnowledgeDelete(d.KnowledgeService), map[string]string{
-			"domain": "knowledge", "input_type": "text", "output_type": "boolean",
-			"side_effects": "true", "mutates_state": "true",
-		}),
-		base.WithToolTags(builtin_knowledge.NewCorrectKnowledge(d.KnowledgeRepo), map[string]string{
-			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
-			"side_effects": "true", "mutates_state": "true",
-		}),
-
-		// Memory capability
-		base.WithToolTags(builtin_memory.NewMemorySearch(d.MemoryMgr), map[string]string{
-			"domain": "memory", "input_type": "text", "output_type": "json",
-			"side_effects": "false",
-		}),
-		base.WithToolTags(builtin_memory.NewUserProfile(d.MemoryMgr, d.DistilledRepo), map[string]string{
-			"domain": "memory", "input_type": "text", "output_type": "json",
-			"side_effects": "false",
-		}),
-		base.WithToolTags(builtin_memory.NewDistilledMemorySearch(d.DistilledRepo), map[string]string{
-			"domain": "memory", "input_type": "text", "output_type": "json",
-			"side_effects": "false",
-		}),
-
 		// System capability
 		base.WithToolTags(builtin_system.NewIDGenerator(), map[string]string{
 			"domain": "system", "input_type": "text", "output_type": "text",
@@ -196,12 +160,6 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 		base.WithToolTags(builtin_execution.NewCodeRunner(), map[string]string{
 			"domain": "execution", "input_type": "text", "output_type": "text",
 			"side_effects": "true",
-		}),
-
-		// Planning capability
-		base.WithToolTags(builtin_planning.NewTaskPlanner(d.LLMClient), map[string]string{
-			"domain": "planning", "input_type": "text", "output_type": "json",
-			"side_effects": "false",
 		}),
 
 		// Embedding capability
@@ -227,6 +185,64 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"domain": "pdf", "input_type": "file", "output_type": "text",
 			"side_effects": "false",
 		}),
+	}
+
+	// Dependency-backed tools (Stage 5): registered only when their backend
+	// dependency is actually wired, so no tool is registered that is known to
+	// fail at call time (no "registered but always fails" tools). Knowledge
+	// tools need the AKG store adapter; memory tools need the live MemoryManager
+	// and/or the distilled-memory repo; the planner needs an LLM client.
+	if d.KnowledgeSearcher != nil {
+		tools = append(tools, base.WithToolTags(builtin_knowledge.NewKnowledgeSearch(d.KnowledgeSearcher), map[string]string{
+			"domain": "knowledge", "input_type": "text", "output_type": "json",
+			"side_effects": "false",
+		}))
+	}
+	if d.KnowledgeService != nil {
+		tools = append(tools,
+			base.WithToolTags(builtin_knowledge.NewKnowledgeAdd(d.KnowledgeService), map[string]string{
+				"domain": "knowledge", "input_type": "json", "output_type": "boolean",
+				"side_effects": "true", "mutates_state": "true",
+			}),
+			base.WithToolTags(builtin_knowledge.NewKnowledgeUpdate(d.KnowledgeService), map[string]string{
+				"domain": "knowledge", "input_type": "json", "output_type": "boolean",
+				"side_effects": "true", "mutates_state": "true",
+			}),
+			base.WithToolTags(builtin_knowledge.NewKnowledgeDelete(d.KnowledgeService), map[string]string{
+				"domain": "knowledge", "input_type": "text", "output_type": "boolean",
+				"side_effects": "true", "mutates_state": "true",
+			}),
+		)
+	}
+	if d.KnowledgeRepo != nil {
+		tools = append(tools, base.WithToolTags(builtin_knowledge.NewCorrectKnowledge(d.KnowledgeRepo), map[string]string{
+			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
+			"side_effects": "true", "mutates_state": "true",
+		}))
+	}
+	if d.MemoryMgr != nil {
+		tools = append(tools, base.WithToolTags(builtin_memory.NewMemorySearch(d.MemoryMgr), map[string]string{
+			"domain": "memory", "input_type": "text", "output_type": "json",
+			"side_effects": "false",
+		}))
+	}
+	if d.MemoryMgr != nil && d.DistilledRepo != nil {
+		tools = append(tools, base.WithToolTags(builtin_memory.NewUserProfile(d.MemoryMgr, d.DistilledRepo), map[string]string{
+			"domain": "memory", "input_type": "text", "output_type": "json",
+			"side_effects": "false",
+		}))
+	}
+	if d.DistilledRepo != nil {
+		tools = append(tools, base.WithToolTags(builtin_memory.NewDistilledMemorySearch(d.DistilledRepo), map[string]string{
+			"domain": "memory", "input_type": "text", "output_type": "json",
+			"side_effects": "false",
+		}))
+	}
+	if d.LLMClient != nil {
+		tools = append(tools, base.WithToolTags(builtin_planning.NewTaskPlanner(d.LLMClient), map[string]string{
+			"domain": "planning", "input_type": "text", "output_type": "json",
+			"side_effects": "false",
+		}))
 	}
 
 	var (

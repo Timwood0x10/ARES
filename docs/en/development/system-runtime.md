@@ -1,7 +1,7 @@
 # System Runtime Architecture
 
 > Date: 2026-08-04
-> Status: Stage 0-3 implemented
+> Status: Stage 0-2 complete; Stage 3 partial (B01 done; F04 live-DAG binding moved pre-Start, currently no-op with explicit warning — no live DAG registered yet, Track C deferred)
 
 ## Overview
 
@@ -129,7 +129,7 @@ comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 
 ```go
 cfg := &ares_config.Config{
-    LM: ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
+    LLM: ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
     // Memory and Evolution are disabled by default
 }
 comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
@@ -176,7 +176,11 @@ Closure tests are behind the `closure` build tag:
 go test -tags closure ./internal/ares_bootstrap/...
 ```
 
-All 20 closure tests pass (19 PASS, 1 SKIP).
+All 20 closure tests run green (16 PASS, 4 SKIP). The F03 (knowledge retrieval
+not-Ready with missing write deps), F04 (live-DAG binding), and PatchRegistry
+identity checks are explicitly skipped: their hard assertions need the registry
+to report a Degraded state or an entry-level test, and they are no longer PASS
+entries that merely log known gaps (R09).
 
 ## Files Changed
 

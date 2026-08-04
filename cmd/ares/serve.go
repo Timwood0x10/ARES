@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,9 +91,10 @@ func runServe() error {
 
 	g, ctx := errgroup.WithContext(ctx)
 	// comp is assigned by Bootstrap below; the signal goroutine references it
-	// for shutdown (WaitBackground). Declared here so the closure compiles;
-	// the nil guard on WaitBackground covers the bootstrap-failure path.
-	var comp *ares_bootstrap.Components
+	// for shutdown (WaitBackground + snapshot). The pointer is exchanged via
+	// atomic.Store/Load so the goroutine never races with the Bootstrap
+	// assignment on the main goroutine.
+	var compPtr atomic.Pointer[ares_bootstrap.Components]
 	g.Go(func() error {
 		select {
 		case <-sigCh:
@@ -107,6 +109,15 @@ func runServe() error {
 			}
 			cancel()
 		case <-ctx.Done():
+		}
+		comp := compPtr.Load()
+		if comp == nil {
+			return nil
+		}
+		// Record the pre-shutdown component snapshot for shutdown diagnostics
+		// (which components were still running before background exit).
+		if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
+			log.Printf("system_runtime snapshot (shutdown): %s", string(snapJSON))
 		}
 		// Wait for Bootstrap's background goroutines (distillation subscriber,
 		// GA evolution ticker, LLM suggestion ticker) to exit after the
@@ -132,12 +143,15 @@ func runServe() error {
 	// MCP setup is handled separately below for registry bridging. The store
 	// is passed via deps so Bootstrap wires Runtime/Memory against the real
 	// archive-enabled store instead of creating a throwaway MemoryEventStore.
-	comp, err = ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
 		EventStore: compactableStore,
 	})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
+	// Publish the assembled components to the signal goroutine via the atomic
+	// pointer so the shutdown snapshot/WaitBackground reads never race.
+	compPtr.Store(comp)
 	store := comp.EventStore
 	memMgr := comp.Memory
 	mgr := comp.Runtime
@@ -145,6 +159,15 @@ func runServe() error {
 	// Stage 3 fix (B01): EventStore is wired into Memory during Bootstrap,
 	// not post-Bootstrap here. validateServeConfig has already enforced that
 	// the full agent-serving entry point has its required Memory component.
+
+	// Stage 1 observability: report the System Runtime component snapshot
+	// (names, modes, lifecycle states) so operators can confirm which
+	// components were assembled and reached Ready at startup.
+	if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
+		log.Printf("system_runtime snapshot (startup): %s", string(snapJSON))
+	} else {
+		log.Printf("system_runtime snapshot unavailable: %v", snapErr)
+	}
 
 	// --- LLM adapter with fallback ---
 	llmAdapter, err := createLLMAdapterWithFallback(cfg)
@@ -298,15 +321,18 @@ func runServe() error {
 		return nil
 	})
 
+	// Attempt to inject the live agent DAGs into the evolution system's
+	// executors before mgr.Start, replacing the synthetic placeholder DAG
+	// created at bootstrap time. NOTE: the leader's live DAG is not yet
+	// registered anywhere (only the synthetic "evolution" DAG exists), so
+	// this is currently a no-op that logs a warning — the F04 gap remains
+	// open until a live DAG supply chain is wired (Track C, deferred).
+	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
+
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("start runtime: %w", err)
 	}
-
-	// Inject the live agent DAGs into the evolution system's executors,
-	// replacing the synthetic placeholder DAG created at bootstrap time.
-	// This ensures workflow/scheduler/recovery patches hit real runtime state.
-	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
 
 	// --- Submit real tasks ---
 	g.Go(func() error {
@@ -417,6 +443,12 @@ func wireEvolutionLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Ma
 	for _, id := range []string{leaderID} {
 		dag, ok := mgr.GetAgentDAG(id)
 		if !ok || dag == nil {
+			// Fail-loud: no live DAG is registered for this agent (the live
+			// DAG supply chain is Track C, deferred), so workflow/scheduler/
+			// recovery patches still hit synthetic executors. The warning is
+			// expected on every startup until a live DAG is wired.
+			log.Printf("serve: live DAG not registered for agent %q before Start; "+
+				"workflow patches will hit synthetic executors (F04 gap, Track C deferred)", id)
 			continue
 		}
 		liveDAG, dagOk := dag.(*engine.MutableDAG)

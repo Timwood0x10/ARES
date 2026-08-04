@@ -1,7 +1,7 @@
 # System Runtime 架构
 
 > 日期：2026-08-04
-> 状态：阶段 0-3 已实现
+> 状态：阶段 0-2 完成；阶段 3 部分完成（B01 已完成；F04 live-DAG 绑定已前移至 Start 前，当前为 no-op 并显式警告——尚无 live DAG 注册，Track C 延后）
 
 ## 概述
 
@@ -127,4 +127,4 @@ comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 go test -tags closure ./internal/ares_bootstrap/...
 ```
 
-全部 20 个闭环测试通过（19 PASS，1 SKIP）。
+全部 20 个闭环测试运行通过（16 PASS，4 SKIP）。F03（知识检索缺写依赖未 Ready）、F04（live-DAG 绑定）与 PatchRegistry 一致性检查已显式 Skip——其硬断言需要注册表报告 Degraded 状态或入口级测试，不再以 PASS + t.Logf 记录差距（R09）。

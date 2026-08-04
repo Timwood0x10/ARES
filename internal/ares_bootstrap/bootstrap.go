@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
@@ -24,7 +23,10 @@ import (
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // DAG step identifiers used in the minimal evolution graph.
@@ -79,7 +81,18 @@ type Components struct {
 	// disabled, so downstream consumers (api/bootstrap, integration) can
 	// reference it without nil guards.
 	EvidenceStore *evidence.MemoryStore
-	wg            sync.WaitGroup
+	// SystemRuntime is the system-level control plane (Stage 1): an
+	// orchestrator that observes the assembled component graph and provides
+	// lifecycle states, a shared root context, and status snapshots. It is
+	// created at the end of Bootstrap; nil when wiring is skipped on failure.
+	SystemRuntime *system_runtime.Orchestrator
+	// SystemRegistry backs SystemRuntime with one entry per constructed
+	// component, enabling dependency-aware lookup and snapshot queries.
+	SystemRegistry *system_runtime.Registry
+	// bgGroup manages all Bootstrap background goroutines (distillation
+	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
+	// (F06: no bare goroutines). WaitBackground blocks on it during shutdown.
+	bgGroup errgroup.Group
 }
 
 // WaitBackground blocks until all background goroutines started by Bootstrap
@@ -91,7 +104,38 @@ func (c *Components) WaitBackground() {
 	if c == nil {
 		return
 	}
-	c.wg.Wait()
+	if err := c.bgGroup.Wait(); err != nil {
+		log.Warn("bootstrap: background group error during shutdown", "error", err)
+	}
+}
+
+// Snapshot returns the system-level component status snapshot (Stage 1
+// observability). It returns an empty snapshot when the System Runtime
+// registry is not wired (Bootstrap failed before wiring completed), so
+// callers can always consume a valid value without nil guards.
+func (c *Components) Snapshot() system_runtime.Snapshot {
+	if c == nil || c.SystemRegistry == nil {
+		return system_runtime.Snapshot{}
+	}
+	return c.SystemRegistry.Snapshot()
+}
+
+// ComponentStatus returns the status of one managed component by name.
+// The bool is false when the component is not registered.
+func (c *Components) ComponentStatus(name string) (system_runtime.ComponentStatus, bool) {
+	if c == nil || c.SystemRegistry == nil {
+		return system_runtime.ComponentStatus{}, false
+	}
+	return c.SystemRegistry.GetStatus(name)
+}
+
+// IsSystemReady reports whether all Required components reached Ready and no
+// component is Failed. Returns false when the registry is not wired.
+func (c *Components) IsSystemReady() bool {
+	if c == nil || c.SystemRegistry == nil {
+		return false
+	}
+	return c.SystemRegistry.IsReady()
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -316,7 +360,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	if cfg.Evolution.Enabled && cfg.Evolution.Deployment.Enabled && comp.NewEvolution != nil {
 		dp := deployment.NewDeploymentPipeline(
 			cfg.Evolution.Deployment,
-			&deploymentStagingRuntime{reg: comp.NewEvolution.PatchReg},
+			&deploymentStagingRuntime{reg: comp.NewEvolution.PatchReg, evidenceStore: comp.EvidenceStore},
 			&deploymentLiveRuntime{reg: comp.NewEvolution.PatchReg},
 		)
 		comp.NewEvolution.Coordinator.SetDeployer(&deploymentAdapter{dp: dp})
@@ -354,6 +398,18 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	default:
 		comp.Discovery = discoveryComp
 	}
+
+	// 11. System Runtime (Stage 1): register the assembled component graph
+	// with the system-level control plane so entry points observe a uniform
+	// component list, lifecycle state, and readiness snapshot. Observational
+	// only — construction and startup stay with Bootstrap.
+	orch, sysReg, sysErr := wireSystemRuntime(ctx, cfg, &comp)
+	if sysErr != nil {
+		runCleanups()
+		return nil, sysErr
+	}
+	comp.SystemRuntime = orch
+	comp.SystemRegistry = sysReg
 
 	return &comp, nil
 }

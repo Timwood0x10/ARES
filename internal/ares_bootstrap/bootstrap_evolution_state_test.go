@@ -127,15 +127,15 @@ func TestWaitBackground_NilReceiver(t *testing.T) {
 }
 
 // TestWaitBackground_WaitsForGoroutines verifies WaitBackground blocks until
-// background goroutines registered via wg have exited after ctx cancellation.
+// background goroutines registered via bgGroup have exited after ctx
+// cancellation.
 func TestWaitBackground_WaitsForGoroutines(t *testing.T) {
 	comp := &Components{}
-	comp.wg.Add(1)
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		defer comp.wg.Done()
+	comp.bgGroup.Go(func() error {
 		<-ctx.Done()
-	}()
+		return nil
+	})
 	cancel()
 
 	done := make(chan struct{})

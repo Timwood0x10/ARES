@@ -169,23 +169,14 @@ func TestClosure_KnowledgeRetrievalEnabled_MissingWriteDeps_NotReady(t *testing.
 			"got non-nil AKGBridge (F03: silent degradation)")
 	}
 
-	// The key assertion: when retrieval is enabled, the system must
-	// explicitly declare itself as not-Ready via a status API.
-	// Since no status API exists yet, we check that the KnowledgeRuntime
-	// has no store provider — which means retrieval is silently inert.
-	if comp.KnowledgeRuntime != nil {
-		// KnowledgeRuntime exists but has no vector/store providers
-		// because embedding/storage is not configured. This is the
-		// silent degradation the plan calls out.
-		// In Stage 2, this should be explicit Degraded status.
-		t.Logf("KnowledgeRuntime exists but retrieval is silently inert " +
-			"(no vector/store providers) — F03: silent degradation. " +
-			"Stage 2 should make this explicit.")
-	}
-
-	// This test documents the gap. It passes now because we use t.Logf
-	// instead of t.Errorf for the retrieval check. When Stage 2 adds
-	// a status API, replace t.Logf with a hard assertion.
+	// The remaining F03 check requires the registry to report a non-Ready /
+	// Degraded state for the knowledge component when write deps are missing.
+	// The observational runtimeComponentAdapter implements no ReadinessChecker,
+	// so the registry currently marks the knowledge component Ready regardless
+	// — the assertion cannot pass until the registry drives Degraded state.
+	// Mark the gap explicitly instead of passing while only logging it (R09).
+	t.Skipf("F03 gap: registry has no readiness/Degraded signal for a knowledge " +
+		"component with missing write deps; assertion lands with Degraded state")
 }
 
 // ---------------------------------------------------------------------------
@@ -235,29 +226,16 @@ func TestClosure_Ready_AllExecutorsBoundToLiveTargets(t *testing.T) {
 			t.Errorf("Expected synthetic DAG registered for 'evolution' agent; "+
 				"got dag=%v ok=%v (F04: synthetic DAG not registered)", dag, ok)
 		}
-
-		// The DAG registered at Bootstrap is synthetic. A live agent DAG
-		// is only registered later (in serve.go). This means at Ready
-		// time, the workflow/scheduler/recovery genomes operate on a
-		// toy graph, not real runtime state.
-		t.Logf("Bootstrap registered synthetic DAG for 'evolution' agent — " +
-			"F04: live DAG binding happens post-Start. " +
-			"Stage 3 should move live binding before Ready.")
 	}
 
-	// Target behavior: At Ready, the PatchRegistry's fallback executor
-	// should be a LiveDAGPatchExecutor, not a synthetic placeholder.
-	// Current behavior: The fallback is set only in wireEvolutionLiveDAGs
-	// which runs post-Start in serve.go.
-	//
-	// We can check this by verifying that the PatchRegistry does not
-	// have a fallback registered (since wireEvolutionLiveDAGs hasn't run).
-	// In Stage 3, the fallback should be set before Ready.
-
-	// This test documents the gap. It passes now because we use t.Logf
-	// for the synthetic DAG check. When Stage 3 implements live binding
-	// before Ready, replace with a hard assertion that the fallback
-	// executor is a LiveDAGPatchExecutor.
+	// F04 live binding now happens in serve.go BEFORE mgr.Start (so Ready
+	// never observes synthetic executors at the entry level). Bootstrap itself
+	// still constructs synthetic executors, and verifying the live fallback
+	// requires running the serve entry — not available in this package-level
+	// test. Mark the remaining gap explicitly instead of passing on t.Logf
+	// (R09).
+	t.Skipf("F04 gap: live DAG binding verified at serve entry (pre-Start); " +
+		"Bootstrap-level live-fallback assertion needs an entry-level test")
 }
 
 // ---------------------------------------------------------------------------
