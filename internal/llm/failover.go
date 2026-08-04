@@ -296,7 +296,11 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 				if !ok {
 					return
 				}
-				wrappedCh <- first
+				select {
+				case wrappedCh <- first:
+				case <-ctx.Done():
+					return
+				}
 			case <-time.After(fc.timeout):
 				return
 			case <-ctx.Done():

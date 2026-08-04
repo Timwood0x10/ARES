@@ -194,14 +194,17 @@ func (l *WeightedSemaphoreLimiter) Release(key string, weight int) {
 	}
 }
 
-// Allow checks if request is allowed.
-func (l *WeightedSemaphoreLimiter) Allow(ctx context.Context, weight int) (bool, error) {
+// Allow checks if a request is allowed and records the granted weight under
+// key so Release(key, weight) can later free the capacity. This is a
+// non-blocking try-acquire; callers that get a denial must not call Release.
+func (l *WeightedSemaphoreLimiter) Allow(ctx context.Context, key string, weight int) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if l.available >= weight {
 		l.available -= weight
 		l.used += weight
+		l.weighted[key] += weight
 		return true, nil
 	}
 

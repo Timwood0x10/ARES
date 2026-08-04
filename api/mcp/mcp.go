@@ -23,6 +23,7 @@ import (
 // transport abstracts MCP transport (stdio, SSE, etc.).
 type transport interface {
 	roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error)
+	notify(ctx context.Context, notif jsonrpcNotification) error
 	close() error
 }
 
@@ -160,17 +161,12 @@ func (c *Client) sendRequest(ctx context.Context, req jsonrpcRequest) (*jsonrpcR
 }
 
 func (c *Client) sendNotification(ctx context.Context, notif jsonrpcNotification) error {
-	// Notifications don't expect a response; for SSE transport they're
-	// sent as POST requests that we intentionally ignore the response.
-	// For stdio transport, notifications are fire-and-forget writes.
-	// Use roundTrip which works for both transports.
-	req := jsonrpcRequest{
-		JSONRPC: notif.JSONRPC,
-		Method:  notif.Method,
-		Params:  notif.Params,
-	}
-	_, _ = c.transport.roundTrip(ctx, req)
-	return nil
+	// Notifications never receive a response. Write directly on the transport
+	// instead of roundTrip, which for stdio waits up to 30s for a reply that
+	// never arrives (and then closes stdin, killing the connection).
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.transport.notify(ctx, notif)
 }
 
 func (c *Client) nextID() int {

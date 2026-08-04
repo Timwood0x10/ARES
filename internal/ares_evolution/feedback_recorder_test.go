@@ -31,7 +31,7 @@ func (m *mockRepoFR) Update(_ context.Context, _ *storageModels.Experience) erro
 	return nil
 }
 
-func (m *mockRepoFR) Delete(_ context.Context, _ string) error {
+func (m *mockRepoFR) Delete(_ context.Context, _, _ string) error {
 	return nil
 }
 

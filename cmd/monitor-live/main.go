@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,6 +67,11 @@ func main() {
 
 	// --- Context with signal handling ---
 	ctx, cancel := context.WithCancel(context.Background())
+	// httpSrv is created later in main; declared here so the signal handler
+	// can shut it down gracefully. Without this, Ctrl+C never stops the
+	// blocking ListenAndServe below.
+	var httpSrv *http.Server
+	var httpSrvMu sync.Mutex
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -73,6 +79,14 @@ func main() {
 		<-sigCh
 		fmt.Println("\nShutting down...")
 		cancel()
+		httpSrvMu.Lock()
+		srv := httpSrv
+		httpSrvMu.Unlock()
+		if srv != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx) //nolint: errcheck
+		}
 	}()
 
 	// --- Bootstrap: infrastructure components via single wiring hub ---
@@ -219,14 +233,16 @@ func main() {
 	server := monitoring.NewHTTPServer(plugin)
 	handler := &actionHandler{inner: server, mgr: mgr, tools: registry}
 
-	httpSrv := &http.Server{
+	httpSrvMu.Lock()
+	httpSrv = &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	if err := httpSrv.ListenAndServe(); err != nil {
+	httpSrvMu.Unlock()
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		cancel()
 		log.Fatal(err)
 	}

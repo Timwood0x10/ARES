@@ -104,6 +104,39 @@ func (tr *stdioTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*j
 	}
 }
 
+func (tr *stdioTransport) notify(ctx context.Context, notif jsonrpcNotification) error {
+	data, err := json.Marshal(notif)
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	// A wedged child process that stops draining stdin would block the pipe
+	// write forever while the client mutex is held. Bound the write: on ctx
+	// cancellation or timeout, close stdin to unblock the writer and return.
+	writeCh := make(chan error, 1)
+	go func() {
+		_, err := fmt.Fprintf(tr.stdin, "%s\n", data)
+		writeCh <- err
+	}()
+	select {
+	case err := <-writeCh:
+		if err != nil {
+			return fmt.Errorf("write notification: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		_ = tr.stdin.Close()
+		return ctx.Err()
+	case <-time.After(30 * time.Second):
+		_ = tr.stdin.Close()
+		return fmt.Errorf("timeout writing notification")
+	}
+}
+
 func (tr *stdioTransport) close() error {
 	if tr.cmd == nil || tr.cmd.Process == nil {
 		return nil

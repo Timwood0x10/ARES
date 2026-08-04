@@ -28,7 +28,7 @@ func (m *mockExperienceRepo) Update(ctx context.Context, exp *storage_models.Exp
 	return nil
 }
 
-func (m *mockExperienceRepo) Delete(ctx context.Context, id string) error {
+func (m *mockExperienceRepo) Delete(ctx context.Context, id, tenantID string) error {
 	return nil
 }
 

@@ -15,7 +15,9 @@ import (
 
 // ConfigOption configures the Runtime during construction using a YAML file.
 // Loads ares.yaml from the given path and converts it to internal options.
-type ConfigOption func(*config) error
+// It is an alias of Option so WithConfig/WithConfigFromEnv can be passed
+// directly to New/NewRuntime.
+type ConfigOption = Option
 
 // WithConfig loads configuration from a YAML file, parses and validates it,
 // then converts it to internal options and applies them.

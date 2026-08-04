@@ -31,28 +31,30 @@ const defaultAPIKey = ""
 
 // Router provides HTTP routing for the API.
 type Router struct {
-	mux        *http.ServeMux
-	streamH    *handler.StreamHandler
-	evoH       *handler.EvolutionHandler
-	workflowH  *handler.WorkflowHandler
-	agentH     *handler.AgentHandler
-	memoryH    *handler.MemoryHandler
-	arenaH     *handler.ArenaHandler
-	runtimeH   *handler.RuntimeHandler
-	retrievalH *handler.RetrievalHandler
-	evalH      *handler.EvalHandler
-	flightH    *handler.FlightHandler
-	llmH       *handler.LLMHandler
-	apiKey     string
+	mux         *http.ServeMux
+	streamH     *handler.StreamHandler
+	evoH        *handler.EvolutionHandler
+	workflowH   *handler.WorkflowHandler
+	agentH      *handler.AgentHandler
+	memoryH     *handler.MemoryHandler
+	arenaH      *handler.ArenaHandler
+	runtimeH    *handler.RuntimeHandler
+	retrievalH  *handler.RetrievalHandler
+	evalH       *handler.EvalHandler
+	flightH     *handler.FlightHandler
+	llmH        *handler.LLMHandler
+	apiKey      string
+	authEnabled bool
 }
 
 // NewRouter creates a new router with the default API key.
 // Use WithAPIKey to override the key for production.
 func NewRouter() *Router {
 	return &Router{
-		mux:     http.NewServeMux(),
-		streamH: handler.NewStreamHandler(),
-		apiKey:  defaultAPIKey,
+		mux:         http.NewServeMux(),
+		streamH:     handler.NewStreamHandler(),
+		apiKey:      defaultAPIKey,
+		authEnabled: true, // deny-by-default until WithAPIKey sets a key
 	}
 }
 
@@ -64,11 +66,24 @@ func (r *Router) WithAPIKey(key string) *Router {
 	return r
 }
 
+// WithAuthEnabled enables or disables API key authentication. Default is true
+// (deny-by-default until WithAPIKey is set). Pass false to serve endpoints
+// without an API key, e.g. trusted local-only deployments.
+func (r *Router) WithAuthEnabled(enabled bool) *Router {
+	r.authEnabled = enabled
+	return r
+}
+
 // authMiddleware wraps an http.HandlerFunc with API key authentication.
 // The key must be provided via the X-API-Key header.
 // When apiKey is empty, all requests are denied (deny-by-default).
 func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		if !r.authEnabled {
+			// Authentication explicitly disabled — allow all requests.
+			next(w, req)
+			return
+		}
 		if r.apiKey == "" {
 			http.Error(w, "401: unauthorized — API key not configured", http.StatusUnauthorized)
 			return
@@ -84,11 +99,17 @@ func (r *Router) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 // RegisterStreamEndpoint registers the streaming endpoint with a processor.
 func (r *Router) RegisterStreamEndpoint(processor handler.AgentProcessor) {
+	if r == nil || r.mux == nil || processor == nil {
+		return
+	}
 	r.mux.HandleFunc("POST /api/v1/stream", r.authMiddleware(r.streamH.HandleStream(processor)))
 }
 
 // RegisterEvolutionEndpoints registers evolution HTTP endpoints.
 func (r *Router) RegisterEvolutionEndpoints(evolutionHandler *handler.EvolutionHandler) {
+	if r == nil || r.mux == nil || evolutionHandler == nil {
+		return
+	}
 	r.evoH = evolutionHandler
 	for _, route := range []struct {
 		method string

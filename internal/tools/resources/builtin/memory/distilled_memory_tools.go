@@ -51,6 +51,10 @@ func NewDistilledMemorySearch(repo repositories.DistilledMemoryRepositoryInterfa
 
 // Execute searches distilled memories.
 func (t *DistilledMemorySearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if t.repo == nil {
+		return core.NewErrorResult("distilled memory search unavailable: repository not configured"), nil
+	}
+
 	tenantID, ok := params["tenant_id"].(string)
 	if !ok || tenantID == "" {
 		return core.NewErrorResult("tenant_id is required"), nil

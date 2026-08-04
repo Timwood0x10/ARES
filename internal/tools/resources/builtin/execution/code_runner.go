@@ -421,6 +421,12 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			if cmd.Process != nil {
+				// Best-effort kill of the whole process group; the child
+				// processes spawned by the script must not outlive the
+				// timeout. Ignore errors on this cleanup path.
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
 			return core.NewResult(false, map[string]interface{}{
 				"operation":      "run_python",
 				"success":        false,
@@ -475,6 +481,12 @@ func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSi
 
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			if cmd.Process != nil {
+				// Best-effort kill of the whole process group; the child
+				// processes spawned by the script must not outlive the
+				// timeout. Ignore errors on this cleanup path.
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
 			return core.NewResult(false, map[string]interface{}{
 				"operation":      "run_js",
 				"success":        false,

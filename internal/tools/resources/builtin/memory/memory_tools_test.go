@@ -142,7 +142,7 @@ func (m *MockDistilledMemoryRepository) SearchByVector(ctx context.Context, vect
 	return []*repositories.DistilledMemory{}, nil
 }
 
-func (m *MockDistilledMemoryRepository) UpdateAccessCount(ctx context.Context, id string) error {
+func (m *MockDistilledMemoryRepository) UpdateAccessCount(ctx context.Context, id, tenantID string) error {
 	return nil
 }
 

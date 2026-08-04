@@ -93,3 +93,38 @@ func TestPDFTool_ExtractTextFromRealPDF(t *testing.T) {
 		assert.NotEmpty(t, result.Error)
 	}
 }
+
+// TestPDFTool_AllowedDir_AcceptsInside verifies that a file inside the
+// configured allowed directory passes the sandbox check (it must reach the
+// PDF parser rather than being rejected by the sandbox).
+func TestPDFTool_AllowedDir_AcceptsInside(t *testing.T) {
+	allowed := filepath.Join("testdata")
+	tool := NewPDFTool(WithAllowedDir(allowed))
+	ctx := context.Background()
+
+	result, err := tool.Execute(ctx, map[string]interface{}{
+		"operation": "extract_text",
+		"file_path": filepath.Join(allowed, "hello.pdf"),
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	// The sandbox must not reject the path; the file reaches the parser,
+	// which may fail on this minimal fixture.
+	assert.NotContains(t, result.Error, "access denied")
+}
+
+// TestPDFTool_AllowedDir_RejectsOutside verifies that a file outside the
+// configured allowed directory is rejected before any filesystem access.
+func TestPDFTool_AllowedDir_RejectsOutside(t *testing.T) {
+	allowed := filepath.Join("testdata")
+	tool := NewPDFTool(WithAllowedDir(allowed))
+	ctx := context.Background()
+
+	result, err := tool.Execute(ctx, map[string]interface{}{
+		"operation": "extract_text",
+		"file_path": "/etc/passwd",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Contains(t, result.Error, "access denied")
+}

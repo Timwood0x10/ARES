@@ -39,6 +39,7 @@ type CircuitBreaker struct {
 	lastCleanupTime  time.Time
 	stopCh           chan struct{}
 	cleanupStopped   atomic.Bool
+	cleanupWg        sync.WaitGroup // Waits for the cleanup goroutine to exit in Close.
 }
 
 // NewCircuitBreaker creates a new CircuitBreaker instance.
@@ -62,7 +63,8 @@ func NewCircuitBreaker(failureThreshold int, openTimeout time.Duration) *Circuit
 		stopCh:           make(chan struct{}),
 	}
 
-	// Start cleanup goroutine to prevent halfOpenInflight leaks
+	// Start cleanup goroutine to prevent halfOpenInflight leaks.
+	cb.cleanupWg.Add(1)
 	go cb.cleanupLoop()
 
 	return cb
@@ -191,6 +193,7 @@ func (cb *CircuitBreaker) State() CircuitBreakerState {
 func (cb *CircuitBreaker) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute) // Check every 5 minutes
 	defer ticker.Stop()
+	defer cb.cleanupWg.Done()
 
 	for {
 		select {
@@ -206,6 +209,7 @@ func (cb *CircuitBreaker) cleanupLoop() {
 func (cb *CircuitBreaker) Close() {
 	if cb.cleanupStopped.CompareAndSwap(false, true) {
 		close(cb.stopCh)
+		cb.cleanupWg.Wait()
 	}
 }
 

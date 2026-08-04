@@ -181,7 +181,7 @@ func TestExperienceRepository_Delete(t *testing.T) {
 	id := exp.ID
 
 	// Delete the experience
-	err = repo.Delete(ctx, id)
+	err = repo.Delete(ctx, id, "tenant-1")
 	require.NoError(t, err)
 
 	// Verify deletion

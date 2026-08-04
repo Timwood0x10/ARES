@@ -234,7 +234,7 @@ func (r *DistillationRepo) Delete(ctx context.Context, id string) error {
 	if r == nil || r.Repo == nil {
 		return fmt.Errorf("distillation repo: repository is nil")
 	}
-	if err := r.Repo.Delete(ctx, id); err != nil {
+	if err := r.Repo.Delete(ctx, id, r.DefaultTenant); err != nil {
 		return fmt.Errorf("distillation repo delete: %w", err)
 	}
 	return nil
@@ -249,7 +249,7 @@ func (r *DistillationRepo) DeleteBatch(ctx context.Context, ids []string) error 
 		return fmt.Errorf("distillation repo: repository is nil")
 	}
 	for _, id := range ids {
-		if err := r.Repo.Delete(ctx, id); err != nil {
+		if err := r.Repo.Delete(ctx, id, r.DefaultTenant); err != nil {
 			return fmt.Errorf("distillation repo delete batch %s: %w", id, err)
 		}
 	}

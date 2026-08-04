@@ -112,6 +112,11 @@ func NewProductionMemoryManager(
 	if config == nil {
 		config = DefaultMemoryConfig()
 	}
+	// A zero SessionTTL would make every message expire immediately; fall
+	// back to the default so partial configs keep the prior 24h behavior.
+	if config.SessionTTL <= 0 {
+		config.SessionTTL = 24 * time.Hour
+	}
 
 	if dbPool == nil {
 		return nil, fmt.Errorf("database pool is required")
@@ -421,7 +426,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		AgentID:   "style-agent",
 		Role:      role,
 		Content:   content,
-		ExpiresAt: time.Now().Add(24 * time.Hour), // 24 hour TTL as per design
+		ExpiresAt: time.Now().Add(m.config.SessionTTL),
 	}
 
 	if err := m.conversationRepository.Create(ctx, conv); err != nil {
@@ -544,7 +549,7 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		Role:      msg.Role,
 		Content:   msg.Content,
 		Metadata:  metadata,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ExpiresAt: time.Now().Add(m.config.SessionTTL),
 		CreatedAt: msgTime,
 	}
 

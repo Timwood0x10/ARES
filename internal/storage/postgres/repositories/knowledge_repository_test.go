@@ -343,7 +343,7 @@ func TestKnowledgeRepository_Delete(t *testing.T) {
 	id := chunk.ID
 
 	// Delete the chunk
-	err = repo.Delete(ctx, id)
+	err = repo.Delete(ctx, id, "tenant-1")
 	require.NoError(t, err)
 
 	// Verify deletion
@@ -364,7 +364,7 @@ func TestKnowledgeRepository_Delete_NotFound(t *testing.T) {
 	repo := NewKnowledgeRepository(db, db)
 	ctx := context.Background()
 
-	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000")
+	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000", "tenant-1")
 	assert.Error(t, err)
 }
 

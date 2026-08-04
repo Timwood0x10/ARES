@@ -312,7 +312,7 @@ func TestTaskResultRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the task result
-	err = repo.Delete(ctx, result.ID)
+	err = repo.Delete(ctx, result.ID, result.TenantID)
 	require.NoError(t, err)
 
 	// Verify it's deleted
@@ -334,7 +334,7 @@ func TestTaskResultRepository_Delete_NotFound(t *testing.T) {
 	repo := NewTaskResultRepository(db)
 	ctx := context.Background()
 
-	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000")
+	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000", "tenant-1")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }

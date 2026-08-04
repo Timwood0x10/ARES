@@ -122,6 +122,11 @@ func (t *Calculator) buildEnvironment() map[string]interface{} {
 	}
 }
 
+// maxCompiledPrograms caps the size of the compiled expression cache so a
+// long-running process cannot grow it without limit from arbitrary unique
+// expressions.
+const maxCompiledPrograms = 512
+
 // getOrCompileProgram gets cached program or compiles new one.
 // Thread-safe: uses RWMutex to allow concurrent reads while serializing writes.
 func (t *Calculator) getOrCompileProgram(expression string, env map[string]interface{}) (*vm.Program, error) {
@@ -141,8 +146,12 @@ func (t *Calculator) getOrCompileProgram(expression string, env map[string]inter
 		return nil, fmt.Errorf("invalid expression: %v", err)
 	}
 
-	// Write to cache under Lock.
+	// Write to cache under Lock, bounding the cache size so a long-running
+	// process cannot grow it without limit from arbitrary unique expressions.
 	t.mu.Lock()
+	if len(t.compiled) >= maxCompiledPrograms {
+		t.compiled = make(map[string]*vm.Program)
+	}
 	t.compiled[expression] = program
 	t.mu.Unlock()
 	return program, nil

@@ -215,8 +215,8 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 // ctx - database operation context.
 // id - experience identifier.
 // Returns error if delete operation fails.
-func (r *ExperienceRepository) Delete(ctx context.Context, id string) error {
-	return postgres.DeleteByID(ctx, r.db, "experiences_1024", id, "")
+func (r *ExperienceRepository) Delete(ctx context.Context, id, tenantID string) error {
+	return postgres.DeleteByID(ctx, r.db, "experiences_1024", id, tenantID)
 }
 
 // SearchByVector performs vector similarity search for experiences.

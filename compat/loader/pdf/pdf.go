@@ -24,14 +24,46 @@ type Loader struct{}
 // The config schema is reserved for future options (OCR fallback, password).
 func New(_ map[string]any) (*Loader, error) { return &Loader{}, nil }
 
-// Load reads all bytes from r, extracts plain text via ledongthuc/pdf,
+// maxBytes caps the size of a single loaded document (32 MiB). PDF text
+// extraction is fully buffered in-memory because ledongthuc/pdf requires an
+// io.ReaderAt with a known size.
+const maxBytes = 32 << 20
+
+// readAllLimited reads at most limit bytes from r, polling ctx between reads
+// so a cancelled context aborts promptly without leaking a goroutine.
+func readAllLimited(ctx context.Context, r io.Reader, limit int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var buf []byte
+	tmp := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		n, err := r.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			if int64(len(buf)) > limit {
+				return nil, fmt.Errorf("document exceeds %d byte limit", limit)
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return buf, nil
+			}
+			return nil, err
+		}
+	}
+}
+
+// Load reads at most maxBytes from r, extracts plain text via ledongthuc/pdf,
 // and returns a Document with the concatenated page text and page-count metadata.
 //
-// The reader is fully buffered in-memory because ledongthuc/pdf requires
-// an io.ReaderAt with a known size. For very large PDFs callers should
-// pre-chunk; this loader is designed for typical document sizes (<100MB).
-func (*Loader) Load(_ context.Context, source string, r io.Reader) (*loader.Document, error) {
-	buf, err := io.ReadAll(r)
+// For very large PDFs callers should pre-chunk; this loader is designed for
+// typical document sizes (up to the maxBytes cap).
+func (*Loader) Load(ctx context.Context, source string, r io.Reader) (*loader.Document, error) {
+	buf, err := readAllLimited(ctx, r, maxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("compat/loader/pdf: read: %w", err)
 	}
@@ -49,7 +81,7 @@ func (*Loader) Load(_ context.Context, source string, r io.Reader) (*loader.Docu
 	if err != nil {
 		return nil, fmt.Errorf("compat/loader/pdf: extract: %w", err)
 	}
-	plain, err := io.ReadAll(plainReader)
+	plain, err := readAllLimited(ctx, plainReader, maxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("compat/loader/pdf: read text: %w", err)
 	}

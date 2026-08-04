@@ -108,8 +108,16 @@ func (e *KnowledgePatchExecutor) SetRuntime(r *KnowledgeRuntime) {
 func (e *KnowledgePatchExecutor) Name() string { return "knowledge" }
 
 // Snapshot returns the current plan configuration as a snapshot for diffing.
+// It reads the live value from the wrapped KnowledgeRuntime so generations
+// and rollbacks diff against the real applied config instead of an empty
+// PlanConfig.
 func (e *KnowledgePatchExecutor) Snapshot(_ context.Context) (any, error) {
-	return PlanConfig{}, nil
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runtime == nil {
+		return nil, fmt.Errorf("knowledge executor: runtime is nil")
+	}
+	return e.runtime.PlanConfig(), nil
 }
 
 // Ensure KnowledgePatchExecutor implements patch.RuntimeComponent.

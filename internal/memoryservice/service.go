@@ -48,6 +48,10 @@ func NewService(config *Config) (*Service, error) {
 		}
 	}
 
+	if config.Repo == nil {
+		return nil, ErrInvalidConfig
+	}
+
 	return &Service{
 		repo:      config.Repo,
 		memoryMgr: config.MemoryMgr,

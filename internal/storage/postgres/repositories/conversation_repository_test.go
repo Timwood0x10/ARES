@@ -302,7 +302,7 @@ func TestConversationRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the conversation
-	err = repo.Delete(ctx, conv.ID)
+	err = repo.Delete(ctx, conv.ID, conv.TenantID)
 	require.NoError(t, err)
 
 	// Verify it's deleted
@@ -324,7 +324,7 @@ func TestConversationRepository_Delete_NotFound(t *testing.T) {
 	repo := NewConversationRepository(db)
 	ctx := context.Background()
 
-	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000")
+	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000", "tenant-1")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }

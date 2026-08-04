@@ -99,9 +99,26 @@ func (d *dreamCycleAdapter) TaskCount() int64 {
 
 func NewDreamCycle(scheduler, mutator any, opts ...any) (DreamCycle, error) {
 	// Caller provides wired internal components.
-	sched := scheduler.(*evolve.EvolutionScheduler)
-	mut := mutator.(evolve.MutatorInterface)
-	inner, err := evolve.NewDreamCycle(sched, mut, nil, nil)
+	sched, ok := scheduler.(*evolve.EvolutionScheduler)
+	if !ok {
+		return nil, fmt.Errorf("NewDreamCycle: scheduler must be *evolve.EvolutionScheduler, got %T", scheduler)
+	}
+	mut, ok := mutator.(evolve.MutatorInterface)
+	if !ok {
+		return nil, fmt.Errorf("NewDreamCycle: mutator must be evolve.MutatorInterface, got %T", mutator)
+	}
+	// Forward option functions (e.g. WithDreamCycleConfig, WithDreamCycleTester)
+	// so configuration/tester are no longer silently discarded. opts is untyped
+	// because internal option types cannot be exposed through the public API.
+	innerOpts := make([]evolve.DreamCycleOption, 0, len(opts))
+	for i, opt := range opts {
+		o, ok := opt.(evolve.DreamCycleOption)
+		if !ok {
+			return nil, fmt.Errorf("NewDreamCycle: opts[%d] must be evolve.DreamCycleOption, got %T", i, opt)
+		}
+		innerOpts = append(innerOpts, o)
+	}
+	inner, err := evolve.NewDreamCycle(sched, mut, nil, nil, innerOpts...)
 	if err != nil {
 		return nil, err
 	}

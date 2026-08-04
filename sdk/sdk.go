@@ -225,6 +225,9 @@ func (s *memStrategyStore) GetActive(_ context.Context) (*ares_evolution.Strateg
 func (s *memStrategyStore) GetHistory(_ context.Context, _ string, n int) ([]*ares_evolution.Strategy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n < 0 {
+		n = 0
+	}
 	if n > len(s.history) {
 		n = len(s.history)
 	}

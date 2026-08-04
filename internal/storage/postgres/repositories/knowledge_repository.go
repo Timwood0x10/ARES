@@ -415,8 +415,8 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 // ctx - database operation context.
 // id - knowledge chunk identifier.
 // Returns error if delete operation fails.
-func (r *KnowledgeRepository) Delete(ctx context.Context, id string) error {
-	return postgres.DeleteByID(ctx, r.db, "knowledge_chunks_1024", id, "")
+func (r *KnowledgeRepository) Delete(ctx context.Context, id, tenantID string) error {
+	return postgres.DeleteByID(ctx, r.db, "knowledge_chunks_1024", id, tenantID)
 }
 
 // SearchByVector performs vector similarity search.

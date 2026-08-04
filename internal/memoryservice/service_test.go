@@ -151,17 +151,17 @@ func TestNewService(t *testing.T) {
 		require.Nil(t, s)
 		require.ErrorIs(t, err, ErrInvalidConfig)
 	})
-	t.Run("valid config", func(t *testing.T) {
+	t.Run("nil repo rejected", func(t *testing.T) {
 		s, err := NewService(&Config{})
+		require.Nil(t, s)
+		require.ErrorIs(t, err, ErrInvalidConfig)
+	})
+	t.Run("valid config", func(t *testing.T) {
+		s, err := NewService(&Config{Repo: &mockMemoryRepo{}})
 		require.NoError(t, err)
 		require.NotNil(t, s)
 		require.NotNil(t, s.config)
-	})
-	t.Run("nil repos allowed", func(t *testing.T) {
-		s, err := NewService(&Config{})
-		require.NoError(t, err)
-		require.Nil(t, s.repo)
-		require.Nil(t, s.memoryMgr)
+		require.NotNil(t, s.repo)
 	})
 }
 

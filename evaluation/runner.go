@@ -41,6 +41,13 @@ func runWithTimeout(ctx context.Context, runner Runner, task string, timeout tim
 	case r := <-done:
 		return r.m, r.err
 	case <-ctx.Done():
+		// Join the runner goroutine with a bounded grace period so a
+		// non-cooperative runner (one that ignores ctx) cannot hang the
+		// caller forever; the goroutine is still reaped when it finishes.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 		return nil, fmt.Errorf("task %q timed out after %v", task, timeout)
 	}
 }

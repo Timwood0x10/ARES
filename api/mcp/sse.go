@@ -75,6 +75,34 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	return c, nil
 }
 
+// notify POSTs a JSON-RPC notification to the SSE message endpoint. The server
+// sends no response for notifications; the body is drained and closed.
+func (tr *sseTransport) notify(ctx context.Context, notif jsonrpcNotification) error {
+	body, err := json.Marshal(notif)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tr.messageURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("post request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpResp, err := tr.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("post: %w", err)
+	}
+	defer func() {
+		if err := httpResp.Body.Close(); err != nil {
+			log.Warn("mcp: close http response body", "error", err)
+		}
+	}()
+	if httpResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("post: unexpected status %d", httpResp.StatusCode)
+	}
+	return nil
+}
+
 // readEndpointEvent reads SSE events until an "endpoint" event is received.
 func (tr *sseTransport) readEndpointEvent() (string, error) {
 	scanner := bufio.NewScanner(tr.sseBody)

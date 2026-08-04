@@ -463,3 +463,110 @@
 - **最值得优先修**：上表 10 个 🔴（多集中在"宣传入口不可用/未接线"与"资源/容量泄漏"两类）；其次是 🟡 中的几个高影响项：`evolution/patch.Registry` 无锁 map（并发竞态）、MySQL/PG provider 的 errCh 第二错误死锁、`knowledge/service.Query` no-op stub、`ares_mcp` 工厂泄漏、leader/sub 心跳与 checkpoint 未接线。
 - **后续建议**：按 🔴 → 高影响 🟡 的顺序分批修复；每个修复遵循 `plan/rules/code_rules.md`（errgroup、不忽略 error、注释英文、补测试）。
 
+---
+
+## 8. 补审遗漏模块（第二轮，`go list ./...` 全量核对后补齐）
+
+> 第一轮审查基于目录树派发 explore，遗漏了 `compat/`、`evaluation`、`internal/storage/*`、`internal/tools/*`、`internal/llm*`、`internal/logger`、`internal/memoryservice`、`internal/retrievalservice`、`internal/plugins/resurrection`、`internal/truncate`、`internal/knowledge/runtime`、`internal/ares_memory`（根包）、`services/embedding`、`examples` 嵌套子包。经 `go list ./...` 全量清单逐项比对后补齐，本节省略全部包，仅列有问题的包。
+
+### 8.1 compat/ 层（15 包 + evaluation）
+
+- compat — ⚪ `registry.go:35-40` `ErrNotFound`/`ErrAlreadyRegistered` 哨兵死代码（子 registry 各自定义）。
+- compat/llm — OK
+- compat/llm/ollama — OK（薄包装，required-model 检查正确）
+- compat/llm/openai — OK（api_key 必填、model 默认、错误包装）
+- compat/loader — OK
+- compat/loader/html — 2 issues：🟡 `html.go:23-29` 文档化的骨架实现——"real adapter" 只是 `<[^>]+>` 正则剥标签（无 tokenizer、实体/脚本未处理）；🟡 `Load` 忽略 ctx 且无上限 `io.ReadAll`（大输入 DoS）。
+- compat/loader/markdown — ⚪ `markdown.go:21-24` 忽略 ctx，无上限 ReadAll。
+- compat/loader/pdf — 🟡 `pdf.go:33-35` 忽略 ctx，整个文件载入内存（文档标注 <100MB 但无守卫），无 reader 上限。
+- compat/protocol — OK
+- compat/protocol/mcp — 2 issues：🟡 `mcp.go:137-146` `tools/call` 对缺失/空 `params`（`json.Unmarshal(nil,...)` 失败）返回 `InvalidParams` 而非按空参数处理（部分 MCP 客户端省略 params）；⚪ `mcp.go:122,143,149,155,164` `resp, _ := NewErrorResponse(...)` 忽略错误。
+- compat/protocol/openai_api — 4 issues：🔴 `openai_api.go:133-143` 字符串 `input` 的 Embeddings 请求（OpenAI API 合法）被误路由到 Responses API 并返回 chat 响应而非 embedding — 闭环断裂；🟡 `openai_api.go:658-745` "流式"是模拟：阻塞调 `Generate` 后一次性整包吐 SSE，无增量 token；⚪ `openai_api.go:1082-1117` 图像生成/音频转录/审核端点是恒返回 `not_implemented` 的 stub；⚪ `openai_api.go:530,584` `json.Unmarshal` 错误静默丢弃。
+- compat/tool — OK
+- compat/tool/builtin — 2 issues：🟡 `builtin.go:20-42` 骨架包——只有 `Noop` 占位，文档化的 filesystem/shell/http 工具不存在；⚪ `builtin.go:45` `var _ = fmt.Sprintf` 死代码 hack 钉住未用 import。
+- compat/vector — OK
+- compat/vector/pgvector — 3 issues：🟡 `pgvector.go:42-48` `table` 配置是死的——`KnowledgeRepository.Create/SearchByVector` 硬编码 `knowledge_chunks_1024`，自定义表名被静默忽略；🟡 `pgvector.go:89-109` `Upsert` 逐条 `repo.Create` 无事务（中途失败部分写入），且无 upsert-on-conflict 语义（Create 用 `ON CONFLICT (content_hash)` 而非 ID）；⚪ `pgvector.go:168` `var _ = sql.ErrNoRows` 死代码。
+- evaluation — 🟡 `runner.go:32-45` 裸 `go func` 无 errgroup/waitgroup：超时时 `runWithTimeout` 返回但 runner goroutine 继续跑（ctx 已取消却可能被忽略），从不 join — 可无限泄漏；goroutine 内无 panic recovery。
+
+### 8.2 internal/storage/*（9 包）
+
+- internal/storage — OK（纯接口）
+- internal/storage/memory — 🟡 `vector.go:79` `Search()` 在 `limit < 0` 时 panic（`limit > len(results)` 钳制后仍为负，`make(..., limit)` panic）。
+- internal/storage/postgres — 3 issues：🟡 `circuit_breaker.go:66` `NewCircuitBreaker` 启动裸 `go cb.cleanupLoop()`，不调 `Close()` 即泄漏（尤其每次 `NewRetrievalGuard` 一个）；🟡 `repository.go:79` `Transaction()` 无 defer 回滚——`fn` 内 panic 留下悬挂 tx/conn；⚪ `pool.go:307-321` `QueryRow` 在取连接失败时返回假 row，`Scan` 报 "context canceled" 掩盖真实错误。
+- internal/storage/postgres/adapters — ⚪ `secret_adapter.go:186-208` `convertToYAML` 手写 YAML 不转义含 `:`、`#`、换行的值 → 畸形 YAML。
+- internal/storage/postgres/embedding — 🟡 `fallback.go:70,127` 兜底缓存查询用 method `"query"`，而 `EmbedWithPrefix/EmbedBatch` 用 `"query:"` 前缀写 key → `FallbackToCache`/`getBatchFromCache` 恒 miss — 兜底闭环断裂。
+- internal/storage/postgres/models — OK
+- internal/storage/postgres/query — OK（MemoryQueryCache LRU/TTL/清理 goroutine 生命周期正确）
+- internal/storage/postgres/repositories — 3 issues：🟡 `distilled_memory_repository.go:298,389,410` `UpdateAccessCount/DeleteBatch/DeleteExpired` 走裸 `r.db`（无 `withTenantTx`）且不查 `RowsAffected` → RLS 生效时静默 no-op；🟡 `conversation_repository.go:240` 等 4 处 `Delete()` 调 `DeleteByID(..., tenantID="")` — 跨租户按 ID 删，租户隔离全靠 RLS（而 RLS 实际无效，见 services）；⚪ `strategy_repository.go:153-154` 死代码。
+- internal/storage/postgres/services — 3 issues：🟡 `retrieval_service.go:300` `tenantGuard.SetTenantContext` 在临时池连接上设 `app.tenant_id`，随后所有 repo 搜索走不同池连接 → RLS `current_setting` 上下文丢失，租户隔离仅剩显式 `WHERE tenant_id=$2`；🟡 `simple_retrieval_service.go:108,129` `Search` 读 `s.config` 不持 `s.mu`，与 `SetConfig` 竞态；🟡 `simple_retrieval_service.go:75` `embedQuery` 无 nil 守卫解引用 `s.embedding`。
+
+### 8.3 internal/tools/*（18 包）
+
+- internal/tools/planner — 4 issues：🟡 `executor.go:45-52 + capability.go:49-53` subsumption 丢弃 `PDFParsing` 但 `dependenciesFor("TextExtraction")` 仍发 `DependsOn:["PDFParsing"]` → DAGValidator 报 missing_dependency 且 bridge 硬阻 TextExtraction-only intent；🟡 `provider.go:23` `NewRegistryProvider(nil)` 存 nil registry，`ListTools/GetToolCapabilities` 解引用 nil → panic；⚪ `analyzer.go:228-231` `extractConstraints` 是 no-op stub（恒空 map）；⚪ `extractor.go:253-254` 死 `var _ = math.Round`。
+- internal/tools/resources/base — OK
+- internal/tools/resources/builtin — 2 issues：🔴 `builtin.go:121-154,169` `RegisterGeneralTools` 以 nil 依赖注册 `knowledge_search/add/update/delete`、`correct_knowledge`、`distilled_memory_search`、`task_planner` → 除有守卫者外经 registry 调用即 panic；🟡 `builtin.go:38-47` `ARES_FILE_TOOLS_ALLOWED_DIR` 未设时静默回退 CWD（或 /tmp）— 文件沙箱比文档弱。
+- internal/tools/resources/builtin/embedding — OK
+- internal/tools/resources/builtin/execution — 🟡 `code_runner.go:400,454` `Setpgid: true` 但超时只 SIGKILL 直接 PID，脚本派生的子进程存活。
+- internal/tools/resources/builtin/file — OK（路径校验/symlink 解析/TOCTOU 处理扎实）
+- internal/tools/resources/builtin/hash — OK
+- internal/tools/resources/builtin/knowledge — 🔴 `knowledge_base.go:130,224,257,345,407; correct_knowledge.go:57` 五个知识工具调用 `t.searcher/t.service/t.repo` 无 nil 检查，`RegisterGeneralTools` 以 nil 接线 → 执行即 panic。
+- internal/tools/resources/builtin/math — 2 issues：🟡 `calculator.go:127-148` 编译表达式缓存无界不淘汰 → 内存耗尽；⚪ `calculator.go:485-496` `toFloat64` 静默把非数值转 0。
+- internal/tools/resources/builtin/memory — 2 issues：🔴 `distilled_memory_tools.go:61` `DistilledMemorySearch.Execute` 解引用 nil `t.repo`（`NewDistilledMemorySearch(nil)` 注册）→ 走 user_id 路径即 panic；🟡 `distilled_memory_tools.go:94-101` 向量搜索路径是 stub：恒返回空 memories + "requires embedding generation" 文案。
+- internal/tools/resources/builtin/network — OK（SSRF allowlist、dial 时 IP 复核、重定向复查、响应上限齐全）
+- internal/tools/resources/builtin/pdf — 🟡 `pdf.go:69-101` `pdf_tool` 读任意绝对路径文件，无 allowed-dir 限制 — 绕过 file_tools 沙箱边界。
+- internal/tools/resources/builtin/planning — OK（nil LLM client 处理；estimate_time 常量兜底是文档化行为）
+- internal/tools/resources/builtin/stringutils — OK
+- internal/tools/resources/builtin/system — OK
+- internal/tools/resources/builtin/text — OK（RE2 + 尺寸上限防 ReDoS）
+- internal/tools/resources/core — OK
+- internal/tools/toolsource — OK
+
+### 8.4 其余 internal 散包 + services
+
+- internal/llm — 3 issues：🟡 `failover.go:299` `GenerateStream` 无条件阻塞 `wrappedCh <- first`，调用方不 cancel 即泄漏；🟡 `failover.go:307` 转发循环 `wrappedCh <- chunk` 在 64 槽缓冲满且消费者停止读且 ctx 未取消时永久阻塞；🟡 `client.go:295-296` `NewClientFromEnv` 对 provider "openai" 也设 `DefaultOpenRouterBaseURL` → OpenAI 未配 `LLM_BASE_URL` 时被静默路由到 OpenRouter。
+- internal/llm/output — 2 issues：🟡 `openai.go:293 / openrouter.go:271 / ollama.go:207` 流生产 goroutine 只在 `ch <-` 前 select `ctx.Done()`，消费者停止读且不取消 ctx 则永久阻塞 — goroutine 泄漏；⚪ `validator_ext.go:110-136` `ValidateJSONDepth` 死代码（任何 `Parse*` 路径都不调用，`MaxJSONDepth` 从未生效）。
+- internal/logger — OK
+- internal/memoryservice — 2 issues：🟡 `service.go:51` `NewService` 不校验 `config.Repo != nil`，nil repo 首次调用即 panic；⚪ `service.go:290-299` `DistillTask` 无 memoryMgr 兜底存空 input/output + 字面量摘要 "Task distillation without memory manager" — 近 no-op 占位。
+- internal/retrievalservice — 🟡 `service.go:45` 同款：不校验 `config.Repo != nil`，nil 即 panic。
+- internal/plugins/resurrection — 3 issues：🟡 `resurrection.go:372` `onFailure` 调 `s.g.Go(...)` 无 `s.g` nil 守卫（构造时注册回调、Start 前超时触发 → panic）；🟡 `resurrection.go:497-530` `resurrect` 用 `resCtx`（WithTimeout）起新 agent 并立即 `cancel()` — 从 Start ctx 派生运行循环/后台 goroutine 的 agent 复活即死；⚪ `resurrection.go:253-274` `Stop` 后 `isStopped=true` 永置，无重启路径（与 ProductionMemoryManager 支持重启不一致）。
+- internal/truncate — OK（两函数 rune 安全截断正确）
+- internal/knowledge/runtime — 2 issues：🟡 `patcher.go:111-113` `KnowledgePatchExecutor.Snapshot` 恒返回空 `PlanConfig{}`，与文档 "returns the current plan configuration as a snapshot" 不符 — 空实现，破坏 diff/rollback；🟡 `lazy_graph.go:91-93` `NewLazyGraph` 对 `expandFn != nil` 的节点也置 `Loaded: true`（实际未展开），与 `NewLazyGraphFromSummaries` 行为不一致，读取方会误判数据完整。
+- internal/ares_memory（根包）— 4 issues：🟡 `production_manager.go:424,547` `AddMessage/AddStructuredMessage` 硬编码 `ExpiresAt: now+24h`，忽略 `config.SessionTTL`；🟡 `production_manager_tasks.go:246` `_ = s.evidenceCollector.Emit(...)` 吞错无日志；⚪ `manager_impl.go:692-694` `GetLatestSessionForLeader` 恒返回 `ErrLeaderCheckpointNotSupported` — 文档化 stub（内存后端），但非生产 manager 路径永久不可用；⚪ `memory_patcher.go:69-73` `NewMinimalMemoryManager` 返回 nil dbPool/tenantGuard/writeBuffer 的 ProductionMemoryManager，任何真实内存操作即 nil panic — 文档化 "config-only" stub。
+- services/embedding — 2 issues：🟡 `bridge.go:70` `srv.ListenAndServe()` 错误忽略 — bind 失败静默退出；⚪ `bridge.go:19,24` 请求体读/反序列化错误忽略（回退空串/零结构而非 400）。
+
+### 8.5 examples 嵌套子包（4 包）
+
+- examples/11-knowledge-import/akg — 3 issues：🟡 `main.go:53` `postEnricher.Stream` 返回 `out, nil` 且 `for range errCh {}` 静默丢弃内层 provider 错误 — 违反 provider.Stream 错误通道契约；🟡 `main.go:49-51` errCh 仅在 objCh 关闭后排空，内层 PGProvider errCh cap-1，≥2 错误时生产者在 `errCh <-` 阻塞、objCh 永不关 → 死锁；🟡 `main.go:38` 裸 `go func` 无 errgroup、无 ctx select，`out <- obj` 可无限阻塞。
+- examples/runtime_evolution/basic — 4 issues：🟡 `main.go:164` `bestChild` 无 nil 守卫（full 版有 `if best == nil`），全候选 score≤0 时 `bestChild.Snapshot` panic；🟡 `main.go:168-170` `schedGenome.Mutate/Snapshot` 错误忽略且 `schedChildren[0]` 无长度检查；🟡 `main.go:138-140` `child.Snapshot` 错误忽略后无检查类型断言 `cs.(*engine.DAG)`；🟡 `main.go:140-145` 变异接受判据只看节点数变化 — 纯边变异（swap/serialize/parallelize）永不被接受，10 次重试后 `log.Fatalf` 误中止 demo。
+- examples/runtime_evolution/full — 4 issues：🟡 `main.go:53-60` graph.Node/Edge/Start 错误全弃（`_, _ =`）— 图静默残缺，后续 patch 应用期失败；🟡 `main.go:135-136` `genomeReg.Get`/`gm.Snapshot` 错误忽略，Get 失败时 nil-genome 解引用；⚪ `main.go:167` `f.Fitness` 错误忽略；⚪ `main.go:90` 等 `patchReg.Register` 错误丢弃。
+- examples/runtime_evolution/knowledge — 3 issues：🟡 `main.go:96` 无检查类型断言 `child.(*genome.KnowledgeGenome)`，Mutate 返回异型即 panic；`f.Fitness` 错误忽略；🟡 `main.go:106` `bestChild.Snapshot` 无 nil 守卫；⚪ `main.go:44` `_ = rt` 死语句。
+
+---
+
+## 9. 全量覆盖核对（`go list ./...` 逐项比对）
+
+以下为 `go list ./...`（去 testdata）全部 185 个包，逐一标注审查批次，**全部覆盖，无遗漏**：
+
+| 分组 | 包数 | 审查批次 |
+|------|------|---------|
+| api/（含 service/* 13 个子包） | 34 | 批次1（3 个 explore）|
+| cmd/ | 11 | 批次3 |
+| compat/ + evaluation | 16 | 第二轮补审 |
+| examples/ 顶层（19）+ 嵌套（akg、runtime_evolution×3） | 23 | 批次3 + 第二轮补审 |
+| internal/agents/*、agentloop、api_impl/* | 7 | 批次2 |
+| internal/ares_* 核心子系统 | 32 | 批次2 + 第二轮（ares_memory 根包）|
+| internal/core、detector、discovery、errors、evidence、dashboard | 9 | 批次3 |
+| internal/evolution/*（6 包） | 6 | 批次2 |
+| internal/knowledge/*（含 runtime，23 包） | 23 | 批次2 + 第二轮（runtime）|
+| internal/llm、llm/output、logger、memoryservice、retrievalservice、plugins/resurrection、truncate、scoreutil、llmservice | 9 | 第二轮补审 |
+| internal/monitoring/*（6 包） | 6 | 批次2 |
+| internal/storage/*（9 包） | 9 | 第二轮补审 |
+| internal/tools/*（18 包） | 18 | 第二轮补审 |
+| internal/workflow/*（3 包） | 3 | 批次2 |
+| sdk | 1 | 批次3 |
+| services/embedding | 1 | 第二轮补审 |
+| **合计** | **~185** | 12 个 explore（批次1-3）+ 5 个 explore（第二轮补审）= 17 个 |
+
+> 说明：`internal/ares_protocol`（根）无非测试 Go 文件、`internal/core`（根）无 Go 文件、`internal/cmdutil` 不存在（仅 docs 提及）、`plugins/` 顶层不存在 — 已在相应小节标注，非遗漏。
+
+
