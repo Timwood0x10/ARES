@@ -219,23 +219,27 @@ func TestClosure_Ready_AllExecutorsBoundToLiveTargets(t *testing.T) {
 	// F04: At Bootstrap time, executors are bound to synthetic targets.
 	// This is the core bypass the plan calls out.
 
-	// Verify the synthetic DAG exists (the 3-step placeholder).
+	// Verify the synthetic DAG exists (the 3-step placeholder) AND is isolated
+	// to the "evolution" key: the leader's live DAG key must NOT be occupied by
+	// the synthetic graph, so the serve entry (buildLeaderLiveDAG, pre-Start)
+	// is the sole source of the production DAG. This is the F04 hard assertion:
+	// synthetic placeholders never masquerade as a live agent DAG.
 	if comp.NewEvolution != nil && comp.Runtime != nil {
 		dag, ok := comp.Runtime.GetAgentDAG("evolution")
-		if !ok || dag == nil {
-			t.Errorf("Expected synthetic DAG registered for 'evolution' agent; "+
-				"got dag=%v ok=%v (F04: synthetic DAG not registered)", dag, ok)
+		require.True(t, ok, "synthetic DAG must be registered under 'evolution'")
+		require.NotNil(t, dag, "synthetic DAG must not be nil")
+
+		leaderKey := "leader-live"
+		if _, leaderOK := comp.Runtime.GetAgentDAG(leaderKey); leaderOK {
+			t.Errorf("F04: live DAG key %q must not be populated at Bootstrap "+
+				"(synthetic isolation violated)", leaderKey)
 		}
 	}
 
-	// F04 live binding now happens in serve.go BEFORE mgr.Start (so Ready
-	// never observes synthetic executors at the entry level). Bootstrap itself
-	// still constructs synthetic executors, and verifying the live fallback
-	// requires running the serve entry — not available in this package-level
-	// test. Mark the remaining gap explicitly instead of passing on t.Logf
-	// (R09).
-	t.Skipf("F04 gap: live DAG binding verified at serve entry (pre-Start); " +
-		"Bootstrap-level live-fallback assertion needs an entry-level test")
+	// The live DAG supply chain (buildLeaderLiveDAG → RegisterAgentDAG →
+	// wireEvolutionLiveDAGs) is verified at the serve entry in
+	// cmd/ares/serve_live_dag_test.go; this Bootstrap-level test asserts the
+	// isolation half of F04 (synthetic graph confined to the "evolution" key).
 }
 
 // ---------------------------------------------------------------------------

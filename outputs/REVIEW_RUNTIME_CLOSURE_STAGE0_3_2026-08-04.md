@@ -1,8 +1,23 @@
 # Runtime Closure 阶段 0–3 提交前审查
 
+> **⚠️ 已过时（2026-08-04 后续修复覆盖）**
+>
+> 本报告的 **BLOCK 结论已被后续修复覆盖**，不再代表当前代码状态：
+>
+> - R01/R02（serve/monitor-live nil 路径）→ 已修复：`validateServeConfig` fail-fast + `log.Fatal` 门控 + `NewEvolution` nil guard；
+> - R03-R05（system_runtime 缺失依赖/rollback/Shutdown）→ 已修复并有直接测试（`registry_test.go` / `orchestrator_test.go`）；
+> - R06（api bootstrap EvidenceStore 统一 + disabled RuntimeEvolution）→ 已修复；
+> - R07（Legacy Evolution 绕过 F02）→ 已修复（`wireLegacyEvolution` 门控）；
+> - R08 未接入生产路径 → **已部分落地**：Bootstrap 已接入 Orchestrator/Registry/Snapshot（step 11），serve 输出启动/关闭快照；CLI/API/SDK 入口接入属阶段 8 后续整合决策；
+> - R09（t.Logf 假绿）→ 已显式 Skip 或转硬断言；R10（make lint 假成功）→ 已修复退出码；R11（文档超前）→ 已修正措辞。
+>
+> 当前准确状态以 `outputs/RUNTIME_CLOSURE_FINAL_ACCEPTANCE_2026-08-04.md` 为准。
+>
+> 本报告保留仅作历史审查记录。
+
 > 日期：2026-08-04  
 > 审查方式：只读源码核验 + 独立构建/测试/静态检查  
-> 结论：**BLOCK — 暂缓提交**
+> 结论：**BLOCK — 暂缓提交**（已过时，见上方标记）
 
 ## 一、结论先行
 

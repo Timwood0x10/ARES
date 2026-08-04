@@ -73,12 +73,15 @@ func TestEvolutionHotUpdateWiring(t *testing.T) {
 			wantEvoComponents: false,
 		},
 		{
-			// Knowledge off → kw.rt is nil → evoComponents must be nil even
-			// when evolution is on (the wiring requires a live runtime).
-			name:              "disabled_when_knowledge_off",
+			// Stage 8 (SDK unification): evoComponents now comes from the
+			// Bootstrap kernel's NewEvolution, which is wired whenever
+			// Evolution.Enabled is true — matching serve/start semantics. The
+			// SDK knowledge flag no longer gates it, so with evolution on the
+			// component is present even when SDK knowledge is off.
+			name:              "evolution_wired_when_knowledge_off",
 			evoEnabled:        true,
 			knowledgeEnabled:  false,
-			wantEvoComponents: false,
+			wantEvoComponents: true,
 		},
 		{
 			// Both on → evoComponents must be non-nil. This is the happy path

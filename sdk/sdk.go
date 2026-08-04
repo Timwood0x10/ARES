@@ -141,6 +141,14 @@ type Runtime struct {
 	eventStore    ares_events.EventStore
 	mcpClients    []*mcp.Client
 	trace         bool
+	// bootstrap holds the Bootstrap-assembled core components (Stage 8): when
+	// non-nil, the SDK reuses the same EventStore / NewEvolution / System
+	// Runtime instances as serve and start instead of a parallel graph, and
+	// Close drains Bootstrap's background goroutines via WaitBackground.
+	bootstrap *ares_bootstrap.Components
+	// bootstrapCancel cancels the Bootstrap lifecycle context; stored so Close
+	// stops Bootstrap's background goroutines before WaitBackground drains them.
+	bootstrapCancel context.CancelFunc
 	// ctx governs the lifetime of background goroutines (event-driven
 	// distillation subscriber). Cancelled in Close so subscribers exit cleanly.
 	ctx context.Context
@@ -625,6 +633,24 @@ func New(opts ...Option) (*Runtime, error) {
 
 	toolReg := tools.NewRegistry()
 
+	// ---- Stage 8: assemble the core component graph through the single
+	// Bootstrap kernel so the SDK reuses the same EventStore / NewEvolution /
+	// System Runtime instances as serve and start. Falls back to SDK wiring
+	// when the config is not Bootstrap-capable (sqlite/extra providers) or
+	// assembly fails, preserving prior behavior.
+	// The bootstrap ctx is cancelled in Close so Bootstrap's background
+	// goroutines exit before WaitBackground drains them. Ownership is
+	// transferred to the Runtime on the success path; on any error path the
+	// deferred cancel prevents a context leak (vet lostcancel).
+	bootstrapCtx, bootstrapCancel := context.WithCancel(context.Background())
+	bootstrapCancelTaken := false
+	defer func() {
+		if !bootstrapCancelTaken {
+			bootstrapCancel()
+		}
+	}()
+	bootstrapComp := newBootstrapCore(bootstrapCtx, cfg)
+
 	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
 	var memMgr memory.MemoryManager
 	var distillCleanup func()
@@ -666,8 +692,13 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- Evolution hot-update (wires the live KnowledgeRuntime into the
-	// evolution patch system so knowledge patches affect the running engine) ----
+	// evolution patch system so knowledge patches affect the running engine).
+	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
+	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
 	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt)
+	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil {
+		evoComponents = bootstrapComp.NewEvolution
+	}
 
 	// ---- RAG retriever wiring (best-effort, non-fatal) ----
 	if cfg.memCfg.EnableRAG && memMgr != nil {
@@ -678,9 +709,25 @@ func New(opts ...Option) (*Runtime, error) {
 	// ---- AKG DistillBridge (write loop: conversations → knowledge store) ----
 	akgBridge := buildAKGBridge(cfg, akgDistiller, kw.store, embClient, embModelForAKG)
 
-	rtCtx, rtCancel, eg, eventStore := newEventBackend(distillSvc, akgBridge)
+	// ---- Event backend ----
+	// Stage 8: when the Bootstrap core is available, subscribe distillation to
+	// Bootstrap's shared EventStore (single store across entry points) instead
+	// of a private SDK store; otherwise fall back to the SDK event backend.
+	var rtCtx context.Context
+	var rtCancel context.CancelFunc
+	eg := &errgroup.Group{}
+	var eventStore ares_events.EventStore
+	if bootstrapComp != nil && bootstrapComp.EventStore != nil {
+		eventStore = bootstrapComp.EventStore
+		rtCtx, rtCancel = context.WithCancel(context.Background())
+		if distillSvc != nil || akgBridge != nil {
+			wireDistillationSubscriber(rtCtx, eg, eventStore, distillSvc, akgBridge)
+		}
+	} else {
+		rtCtx, rtCancel, eg, eventStore = newEventBackend(distillSvc, akgBridge)
+	}
 
-	return &Runtime{
+	runtime := &Runtime{
 		llmSvc:           llmSvc,
 		toolReg:          toolReg,
 		memMgr:           memMgr,
@@ -695,12 +742,18 @@ func New(opts ...Option) (*Runtime, error) {
 		eventStore:       eventStore,
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
+		bootstrap:        bootstrapComp,
+		bootstrapCancel:  bootstrapCancel,
 		ctx:              rtCtx,
 		cancel:           rtCancel,
 		eg:               eg,
 		distillSvc:       distillSvc,
 		akgBridge:        akgBridge,
-	}, nil
+	}
+	// Transfer Bootstrap ctx ownership to the Runtime on the success path so
+	// the deferred cancel above does not fire; Close owns cancellation now.
+	bootstrapCancelTaken = true
+	return runtime, nil
 }
 
 // Close releases all resources held by the Runtime (LLM connections, memory
@@ -715,6 +768,18 @@ func (r *Runtime) Close() {
 	}
 	if r.eg != nil {
 		_ = r.eg.Wait()
+	}
+	// Stage 8 (SDK unification): when the Runtime is backed by the Bootstrap
+	// core, cancel its lifecycle context FIRST (so Bootstrap's background
+	// goroutines — distillation subscriber, GA ticker, LLM suggestion ticker —
+	// exit on ctx.Done()), then drain them through the SAME lifecycle kernel as
+	// serve/start — WaitBackground — so no goroutine outlives Close. Fallback
+	// SDK wiring (sqlite/extra providers) has no Bootstrap core and is skipped.
+	if r.bootstrap != nil {
+		if r.bootstrapCancel != nil {
+			r.bootstrapCancel()
+		}
+		r.bootstrap.WaitBackground()
 	}
 	r.llmSvc.Close()
 	if r.memMgr != nil {

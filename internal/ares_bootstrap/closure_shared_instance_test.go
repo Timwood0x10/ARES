@@ -284,13 +284,20 @@ func TestSharedInstance_PatchRegistry_Identity(t *testing.T) {
 	require.NotNil(t, comp.NewEvolution.PatchReg,
 		"PatchRegistry must exist")
 
-	// F04: At Bootstrap time, the PatchRegistry has executors bound to
-	// synthetic targets. The live DAG executor is only registered in
-	// wireEvolutionLiveDAGs (serve.go, now pre-Start). Verifying the live
-	// fallback requires running the serve entry, which this package-level
-	// test cannot do — mark the remaining gap explicitly (R09).
-	t.Skipf("F04 gap: live DAG fallback binding verified at serve entry " +
-		"(pre-Start); Bootstrap-level assertion needs an entry-level test")
+	// F04 (Stage 8, hard assertion): the PatchRegistry's executors must NOT be
+	// bound to a live agent DAG at Bootstrap — the leader's live DAG key is
+	// populated only by the serve entry (buildLeaderLiveDAG, pre-Start). The
+	// synthetic graph stays confined to the "evolution" key, so it can never
+	// masquerade as a live target in the production agent path.
+	require.NotNil(t, comp.Runtime, "Runtime must be wired")
+	if _, leaderOK := comp.Runtime.GetAgentDAG("leader-live"); leaderOK {
+		t.Errorf("F04: live DAG key must not be populated at Bootstrap " +
+			"(synthetic isolation violated)")
+	}
+	if dag, ok := comp.Runtime.GetAgentDAG("evolution"); !ok || dag == nil {
+		t.Errorf("F04: synthetic DAG must remain registered under 'evolution' "+
+			"for the serve entry to replace; got dag=%v ok=%v", dag, ok)
+	}
 
 	cancel()
 	comp.WaitBackground()

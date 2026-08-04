@@ -33,13 +33,16 @@ const (
 )
 
 // runtimeComponentAdapter adapts an already-constructed Bootstrap component
-// to the System Runtime Component interface for registry and observability.
-// It intentionally does not implement Binder/Starter/ReadinessChecker/Stopper:
-// Bootstrap owns construction and startup; the adapter exposes only identity
-// and dependency metadata so the registry can order and report them.
+// to the System Runtime Component interface. Identity and dependency metadata
+// drive registry ordering; optional stop/wait hooks let the orchestrator's
+// Shutdown drive real teardown in reverse topological order (Stage 9) instead
+// of leaving teardown only to entry-point shutdown managers. Nil hooks are
+// safe no-ops, so components without a dedicated teardown still transition.
 type runtimeComponentAdapter struct {
-	name string
-	deps []string
+	name   string
+	deps   []string
+	stopFn func(ctx context.Context) error
+	waitFn func() error
 }
 
 // Name returns the stable component identifier.
@@ -48,15 +51,33 @@ func (a *runtimeComponentAdapter) Name() string { return a.name }
 // Dependencies returns the names of components that must be Ready first.
 func (a *runtimeComponentAdapter) Dependencies() []string { return a.deps }
 
+// Stop delegates to the optional teardown hook; nil hook is a no-op.
+func (a *runtimeComponentAdapter) Stop(ctx context.Context) error {
+	if a.stopFn == nil {
+		return nil
+	}
+	return a.stopFn(ctx)
+}
+
+// Wait delegates to the optional wait hook; nil hook is a no-op.
+func (a *runtimeComponentAdapter) Wait() error {
+	if a.waitFn == nil {
+		return nil
+	}
+	return a.waitFn()
+}
+
 // registerSystemComponent registers one component when it was actually
-// constructed (present == true). Registration failures are logged, never
-// fatal: the registry is observational and a metadata problem must not block
-// Bootstrap on an otherwise healthy assembly.
-func registerSystemComponent(reg *system_runtime.Registry, name string, present bool, deps []string) {
+// constructed (present == true), attaching optional teardown hooks so the
+// orchestrator's Shutdown drives real Stop/Wait in reverse topological order.
+// Registration failures are logged, never fatal: the registry is observational
+// and a metadata problem must not block Bootstrap on an otherwise healthy
+// assembly.
+func registerSystemComponent(reg *system_runtime.Registry, name string, present bool, deps []string, stopFn func(ctx context.Context) error, waitFn func() error) {
 	if !present {
 		return
 	}
-	adapter := &runtimeComponentAdapter{name: name, deps: deps}
+	adapter := &runtimeComponentAdapter{name: name, deps: deps, stopFn: stopFn, waitFn: waitFn}
 	if err := reg.Register(adapter, system_runtime.ModeRequired); err != nil {
 		log.Warn("system_runtime: component registration skipped",
 			"component", name, "error", err)
@@ -66,6 +87,8 @@ func registerSystemComponent(reg *system_runtime.Registry, name string, present 
 // wireSystemRuntime registers every constructed component with the System
 // Runtime registry and creates the orchestrator that observes their states.
 // It runs after construction completes so the full component graph is known.
+// Teardown hooks (Stage 9) let Orchestrator.Shutdown own real Stop/Wait in
+// reverse topological order, so entry points no longer duplicate teardown.
 //
 // Args:
 // ctx - bootstrap context used as the orchestrator's root context.
@@ -79,17 +102,22 @@ func registerSystemComponent(reg *system_runtime.Registry, name string, present 
 func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Components) (*system_runtime.Orchestrator, *system_runtime.Registry, error) {
 	reg := system_runtime.NewRegistry()
 
-	registerSystemComponent(reg, sysCompEventStore, comp.EventStore != nil, nil)
-	registerSystemComponent(reg, sysCompRuntime, comp.Runtime != nil, []string{sysCompEventStore})
-	registerSystemComponent(reg, sysCompMemory, comp.Memory != nil, []string{sysCompEventStore})
-	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil)
-	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil)
-	registerSystemComponent(reg, sysCompDashboard, comp.Dashboard != nil, []string{sysCompMCP})
-	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil)
-	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore})
-	registerSystemComponent(reg, sysCompKnowledge, comp.KnowledgeRuntime != nil, nil)
-	registerSystemComponent(reg, sysCompNewEvolution, comp.NewEvolution != nil, []string{sysCompEvidenceStore})
-	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil)
+	registerSystemComponent(reg, sysCompEventStore, comp.EventStore != nil, nil, nil, nil)
+	registerSystemComponent(reg, sysCompRuntime, comp.Runtime != nil, []string{sysCompEventStore},
+		func(ctx context.Context) error { return comp.Runtime.Stop() }, nil)
+	registerSystemComponent(reg, sysCompMemory, comp.Memory != nil, []string{sysCompEventStore},
+		func(ctx context.Context) error { return comp.Memory.Stop(ctx) }, nil)
+	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil,
+		func(ctx context.Context) error { return comp.MCP.Stop(ctx) }, nil)
+	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil, nil, nil)
+	registerSystemComponent(reg, sysCompDashboard, comp.Dashboard != nil, []string{sysCompMCP},
+		func(ctx context.Context) error { return comp.Dashboard.Stop(ctx) }, nil)
+	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil, nil, nil)
+	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore},
+		func(ctx context.Context) error { comp.FlightRecorder.Stop(); return nil }, nil)
+	registerSystemComponent(reg, sysCompKnowledge, comp.KnowledgeRuntime != nil, nil, nil, nil)
+	registerSystemComponent(reg, sysCompNewEvolution, comp.NewEvolution != nil, []string{sysCompEvidenceStore}, nil, nil)
+	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil, nil, nil)
 
 	orch := system_runtime.NewOrchestrator(reg, ctx)
 	if err := orch.Start(ctx); err != nil {

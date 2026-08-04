@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -107,6 +108,7 @@ func runServe() error {
 			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
 				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
 			}
+			shutdownSystemRuntime(&compPtr, shutdownCtx)
 			cancel()
 		case <-ctx.Done():
 		}
@@ -321,12 +323,20 @@ func runServe() error {
 		return nil
 	})
 
-	// Attempt to inject the live agent DAGs into the evolution system's
-	// executors before mgr.Start, replacing the synthetic placeholder DAG
-	// created at bootstrap time. NOTE: the leader's live DAG is not yet
-	// registered anywhere (only the synthetic "evolution" DAG exists), so
-	// this is currently a no-op that logs a warning — the F04 gap remains
-	// open until a live DAG supply chain is wired (Track C, deferred).
+	// F04 (Stage 8): build the leader's real workflow DAG from the configured
+	// sub-agents and register it with the runtime manager BEFORE mgr.Start, so
+	// wireEvolutionLiveDAGs binds workflow/scheduler/recovery executors to the
+	// live DAG instead of the bootstrap synthetic placeholder.
+	liveDAG, dagErr := buildLeaderLiveDAG(cfg)
+	if dagErr != nil {
+		return fmt.Errorf("build leader live dag: %w", dagErr)
+	}
+	mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
+
+	// Inject the live agent DAGs into the evolution system's executors before
+	// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
+	// time. The leader's live DAG is now registered above, so the binding is
+	// real (F04 closed) rather than a no-op.
 	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
 
 	// --- Start runtime ---
@@ -401,34 +411,81 @@ func startServeHTTPAndHooks(
 	})
 
 	// Register graceful-shutdown hooks now that the server, MCP, and runtime
-	// are initialized. Each hook performs a real teardown (no no-ops).
+	// are initialized. Only the HTTP server stays here: MCP, Runtime, and
+	// FlightRecorder teardown now lives in the System Runtime orchestrator
+	// (Stage 9), which drives real Stop in reverse topological order during
+	// the graceful shutdown sequence — removing the old duplicated teardown.
 	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
 		return httpSrv.Shutdown(ctx)
 	}); err != nil {
 		return nil, fmt.Errorf("register http shutdown hook: %w", err)
 	}
-	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, comp.MCP.Stop); err != nil {
-		return nil, fmt.Errorf("register mcp shutdown hook: %w", err)
-	}
-	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
-		return mgr.Stop()
-	}); err != nil {
-		return nil, fmt.Errorf("register runtime shutdown hook: %w", err)
-	}
-	// Stop the flight recorder's collector goroutine explicitly on graceful
-	// shutdown. It is also safe when Bootstrap built no recorder (nil guard):
-	// the collector exits promptly because Stop cancels its internal context
-	// before waiting on the loop goroutine.
-	if comp.FlightRecorder != nil {
-		if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
-			comp.FlightRecorder.Stop()
-			return nil
-		}); err != nil {
-			return nil, fmt.Errorf("register flight recorder shutdown hook: %w", err)
-		}
-	}
 
 	return httpSrv, nil
+}
+
+// shutdownSystemRuntime drives the System Runtime orchestration kernel through
+// the same graceful shutdown so the managed component graph transitions to
+// Stopped and the snapshot reflects the orderly teardown. Adapters now carry
+// Stopper hooks (Stage 9), so the orchestrator stops MCP/Runtime/Flight in
+// reverse topological order; nil guards keep this safe on the bootstrap-failure
+// path. Extracted from runServe to keep its cyclomatic complexity within lint
+// limits.
+func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], ctx context.Context) {
+	comp := compPtr.Load()
+	if comp == nil || comp.SystemRuntime == nil {
+		return
+	}
+	if err := comp.SystemRuntime.Shutdown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "system_runtime shutdown error: %v\n", err)
+	}
+}
+
+// buildLeaderLiveDAG constructs the leader's real workflow DAG from the
+// configured sub-agents: input (leader) → one step per sub-agent → output
+// (leader). This replaces the bootstrap synthetic 3-step placeholder so
+// workflow/scheduler/recovery evolution patches hit the actual agent topology
+// (F04, Stage 8).
+//
+// Args:
+// cfg - fully resolved serve configuration; cfg.Agents.Sub is read.
+//
+// Returns:
+// dag - the live MutableDAG, nil on error.
+// err - error if a step ID is empty/duplicate or dependencies are invalid.
+func buildLeaderLiveDAG(cfg *ares_config.Config) (*engine.MutableDAG, error) {
+	steps := []*engine.Step{
+		{ID: "input", Name: "Input", AgentType: cfg.Agents.Leader.ID, Input: "parse input"},
+	}
+	subIDs := make([]string, 0, len(cfg.Agents.Sub))
+	for _, s := range cfg.Agents.Sub {
+		stepID := strings.TrimSpace(s.ID)
+		if stepID == "" {
+			stepID = strings.TrimSpace(s.Type)
+		}
+		if stepID == "" {
+			// Fail-loud instead of silently registering a broken DAG edge.
+			return nil, fmt.Errorf("sub-agent has empty ID and empty type")
+		}
+		steps = append(steps, &engine.Step{
+			ID:        stepID,
+			Name:      s.Type,
+			AgentType: s.Type,
+			Input:     stepID,
+			DependsOn: []string{"input"},
+		})
+		subIDs = append(subIDs, stepID)
+	}
+	// Output step depends on every sub-agent step (or just input when none).
+	outputDeps := append([]string{"input"}, subIDs...)
+	steps = append(steps, &engine.Step{
+		ID:        "output",
+		Name:      "Output",
+		AgentType: cfg.Agents.Leader.ID,
+		Input:     "format",
+		DependsOn: outputDeps,
+	})
+	return engine.NewMutableDAG(steps)
 }
 
 // wireEvolutionLiveDAGs injects the live agent DAGs into the evolution

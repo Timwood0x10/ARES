@@ -446,6 +446,51 @@ Config/Secrets
 
 ---
 
+## 阶段 8：live DAG 真实接线与 SDK 入口统一（必做）
+
+**目的**：消灭两项"已显式标记但未落地"的闭环缺口——workflow/scheduler/recovery patch 必须命中真实运行时 DAG，SDK 必须复用同一装配内核，而不是自建双轨资源图。本阶段是阶段 3（F04）与阶段 6（SDK）的收口，**不再作为延后项**。
+
+### 8.1 F04：live DAG 接线（必做）
+
+**背景**：当前 `wireEvolutionLiveDAGs` 已前移至 `mgr.Start` 之前，但 leader agent 的 live DAG 在仓库中没有任何注册来源（全仓仅 bootstrap 注册了合成 "evolution" DAG），导致该调用是 no-op + fail-loud 警告，workflow/scheduler/recovery patches 仍命中合成 executor。
+
+### 工作项
+
+1. 在 Agent 构造/装配路径建立 live DAG 供给链：leader agent 的真实 workflow DAG（`*engine.MutableDAG`）在 Runtime Start 前通过 `mgr.RegisterAgentDAG(leaderID, liveDAG)` 注册；
+2. `wireEvolutionLiveDAGs` 改为对已注册的 live DAG 生效：注册 `LiveDAGPatchExecutor` 为组件 + fallback，并 `UpdateLiveDAG` / `WorkflowGenome.SetDAG`；
+3. 删除或隔离仅用于测试的 minimal synthetic DAG，不允许其进入生产 Ready；
+4. KnowledgePatchExecutor 在 Bind 阶段绑定唯一 KnowledgeRuntime（不再 post-Start 补线）；
+5. 新增集成测试：`snapshot → apply → observe → rollback` 对每种 patch 类型各跑一遍；patch 对合成对象生效但 live 状态不变时测试必须失败；
+6. 将 closure 测试中 F04 相关的 `t.Skipf` 转为硬断言（fallback executor 必须是 `LiveDAGPatchExecutor`）。
+
+### 完成门禁
+
+- Runtime Start 前，五个 genome 的读写目标全部绑定 live target；
+- 仓库中不存在 `Runtime.Start()` 之后调用 `wireEvolutionLiveDAGs` 的生产路径；
+- 全仓除测试 fixture 外不再注册合成 DAG 进入生产 Ready；
+- F04 closure 测试不再 Skip，全部硬断言通过。
+
+### 8.2 SDK 统一走 Bootstrap / System Runtime（必做）
+
+**背景**：`sdk/sdk.go` 自建另一套 Runtime 资源图（`wireEvolutionHotUpdate` 直连 `ProvideNewEvolution`、自带 MCP client / tool registry / event store），与 serve/start/api_impl 的 Bootstrap 装配双轨并存，后续容易漂移。
+
+### 工作项
+
+1. SDK 的 `New`/`NewRuntime` 改为通过 `ares_bootstrap.Bootstrap` + System Runtime（Orchestrator/Registry/Snapshot）装配核心组件，SDK 层只保留适配与对外 API；
+2. 删除 SDK 自建的 `wireEvolutionHotUpdate` 双轨装配，改用 `comp.NewEvolution` / `comp.KnowledgeRuntime` 等共享实例；
+3. SDK `Close` 与 System Runtime `Stop` 使用同一生命周期内核（Orchestrator.Shutdown），不再各自关闭；
+4. 统一 EventStore、Memory、MCP、AKG、GA、ToolRegistry 的构造与关闭顺序；
+5. 新增契约测试：相同配置下 SDK 与 serve/start 的核心组件图等价（名称、模式、依赖、共享实例约束一致）。
+
+### 完成门禁
+
+- SDK 核心组件（EventStore/Memory/MCP/Knowledge/Evolution/ToolRegistry）不再自建，全部来自 Bootstrap；
+- 三入口（serve/start/SDK）执行相同闭环场景得到等价结果；
+- SDK `Close` 与 System Runtime `Stop` 走同一生命周期内核；
+- SDK 双轨代码移除后全仓测试通过（`go test ./sdk/...` 全绿）。
+
+---
+
 ## 7. 组件闭环验收矩阵
 
 | 组件 | Runtime 输入 | 输出/副作用 | Ready 断言 | 闭环断言 |
@@ -565,6 +610,8 @@ go test -race ./internal/ares_runtime/... ./internal/ares_bootstrap/... ./intern
 阶段 6 三入口统一
   ↓
 阶段 7 shadow/故障/长稳/发布
+  ↓
+阶段 8 live DAG 真实接线 + SDK 入口统一（必做，收口 F04 与 SDK 双轨）
 ```
 
 每阶段结束必须停线 review，不得跨阶段批量推进。出现以下情况立即停止：
