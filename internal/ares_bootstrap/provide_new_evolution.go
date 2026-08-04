@@ -436,9 +436,9 @@ func BuildKnowledgeRuntime(
 	if vecStore != nil && emb != nil {
 		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
 			Name:            "knowledge-vectors",
-			Namespace:       "knowledge",
+			Namespace:       fitnessSourceKnowledge,
 			Collection:      "knowledge_chunks_1024",
-			IntentTags:      []string{"knowledge", "doc", "guide"},
+			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
 			VectorDimension: 1024,
 			Embedder:        emb,
 		})

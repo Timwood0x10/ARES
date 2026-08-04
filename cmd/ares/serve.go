@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -72,10 +74,6 @@ func runServe() error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	// Declare httpSrv here so the signal handler below can reference it.
-	// The actual server is constructed after bootstrap/agent setup is complete.
-	var httpSrv *http.Server
 
 	// Graceful shutdown coordinator (internal/ares_shutdown). Real teardown
 	// hooks (HTTP server, MCP, runtime) are registered below once those
@@ -158,7 +156,7 @@ func runServe() error {
 	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
 	// single set of connections; its Stop hook is registered below) and bridge
 	// its tools into the internal + public registries. ---
-	internalReg, err := setupMCP(ctx, comp.MCP, registry)
+	internalReg, err := setupMCP(ctx, comp.MCP, registry, ares_bootstrap.ToolDepsFromComponents(comp))
 	if err != nil {
 		return fmt.Errorf("MCP setup: %w", err)
 	}
@@ -306,7 +304,32 @@ func runServe() error {
 		return nil
 	})
 
-	// --- HTTP server ---
+	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
+	// cyclomatic complexity within lint limits) ---
+	if _, err := startServeHTTPAndHooks(ctx, g, cfg, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
+		return err
+	}
+
+	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
+	return g.Wait()
+}
+
+// startServeHTTPAndHooks builds the console HTTP server, starts it in the
+// background, and registers the graceful-shutdown hooks (HTTP → MCP → runtime
+// → flight recorder) now that those components are initialized. It returns
+// the started server so the caller can assign it to its signal-handler
+// closure for a graceful Ctrl+C shutdown.
+func startServeHTTPAndHooks(
+	ctx context.Context,
+	g *errgroup.Group,
+	cfg *ares_config.Config,
+	plugin *monitoring.MonitorPlugin,
+	mgr *ares_runtime.Manager,
+	registry *api_tools.Registry,
+	toolBinder sub.ToolBinder,
+	shutdownMgr *ares_shutdown.Manager,
+	comp *ares_bootstrap.Components,
+) (*http.Server, error) {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Println("=== ARES Console — Live Runtime ===")
 	fmt.Printf("Console:  http://localhost%s/console/\n", addr)
@@ -326,7 +349,7 @@ func runServe() error {
 	}
 	handler := &actionHandler{inner: server, mgr: mgr, tools: registry, apiKey: serveAPIKey}
 
-	httpSrv = &http.Server{
+	httpSrv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
@@ -344,20 +367,17 @@ func runServe() error {
 	// Register graceful-shutdown hooks now that the server, MCP, and runtime
 	// are initialized. Each hook performs a real teardown (no no-ops).
 	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
-		if httpSrv != nil {
-			return httpSrv.Shutdown(ctx)
-		}
-		return nil
+		return httpSrv.Shutdown(ctx)
 	}); err != nil {
-		return fmt.Errorf("register http shutdown hook: %w", err)
+		return nil, fmt.Errorf("register http shutdown hook: %w", err)
 	}
 	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, comp.MCP.Stop); err != nil {
-		return fmt.Errorf("register mcp shutdown hook: %w", err)
+		return nil, fmt.Errorf("register mcp shutdown hook: %w", err)
 	}
 	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
 		return mgr.Stop()
 	}); err != nil {
-		return fmt.Errorf("register runtime shutdown hook: %w", err)
+		return nil, fmt.Errorf("register runtime shutdown hook: %w", err)
 	}
 	// Stop the flight recorder's collector goroutine explicitly on graceful
 	// shutdown. It is also safe when Bootstrap built no recorder (nil guard):
@@ -368,12 +388,11 @@ func runServe() error {
 			comp.FlightRecorder.Stop()
 			return nil
 		}); err != nil {
-			return fmt.Errorf("register flight recorder shutdown hook: %w", err)
+			return nil, fmt.Errorf("register flight recorder shutdown hook: %w", err)
 		}
 	}
 
-	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
-	return g.Wait()
+	return httpSrv, nil
 }
 
 // wireEvolutionLiveDAGs injects the live agent DAGs into the evolution

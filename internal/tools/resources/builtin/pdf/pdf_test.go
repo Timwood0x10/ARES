@@ -98,7 +98,7 @@ func TestPDFTool_ExtractTextFromRealPDF(t *testing.T) {
 // configured allowed directory passes the sandbox check (it must reach the
 // PDF parser rather than being rejected by the sandbox).
 func TestPDFTool_AllowedDir_AcceptsInside(t *testing.T) {
-	allowed := filepath.Join("testdata")
+	allowed := "testdata"
 	tool := NewPDFTool(WithAllowedDir(allowed))
 	ctx := context.Background()
 
@@ -116,7 +116,7 @@ func TestPDFTool_AllowedDir_AcceptsInside(t *testing.T) {
 // TestPDFTool_AllowedDir_RejectsOutside verifies that a file outside the
 // configured allowed directory is rejected before any filesystem access.
 func TestPDFTool_AllowedDir_RejectsOutside(t *testing.T) {
-	allowed := filepath.Join("testdata")
+	allowed := "testdata"
 	tool := NewPDFTool(WithAllowedDir(allowed))
 	ctx := context.Background()
 

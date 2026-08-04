@@ -352,9 +352,17 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 	return store, nil
 }
 
+// fitnessSourceKnowledge is the AKG genome source name used in fitness
+// evidence summaries (shared with the knowledge runtime vector provider).
+const fitnessSourceKnowledge = "knowledge"
+
+// fitnessSourceMemory is the memory genome source name used in fitness
+// evidence summaries (shared with the memory retriever emitter).
+const fitnessSourceMemory = "memory"
+
 // fitnessSourceOrder is the stable ordering of GA genome sources whose recent
 // fitness evidence is summarized into the LLM suggestion prompt.
-var fitnessSourceOrder = []string{"workflow", "scheduler", "recovery", "memory", "knowledge"}
+var fitnessSourceOrder = []string{"workflow", "scheduler", "recovery", fitnessSourceMemory, fitnessSourceKnowledge}
 
 // buildEvolutionSuggestionPrompt builds an LLM suggestion prompt grounded in
 // the current evolution state: the mean fitness value of the most recent
@@ -395,12 +403,12 @@ func buildEvolutionSuggestionPrompt(
 	if strategyStore != nil {
 		if st, err := strategyStore.GetActive(ctx); err == nil && st != nil {
 			sb.WriteString("\n\nCurrently deployed strategy: ")
-			sb.WriteString(fmt.Sprintf("id=%s version=%d", st.ID, st.Version))
+			fmt.Fprintf(&sb, "id=%s version=%d", st.ID, st.Version)
 			if st.Score >= 0 {
-				sb.WriteString(fmt.Sprintf(" score=%.2f", st.Score))
+				fmt.Fprintf(&sb, " score=%.2f", st.Score)
 			}
 			if st.MutationDesc != "" {
-				sb.WriteString(fmt.Sprintf(" mutation=%q", st.MutationDesc))
+				fmt.Fprintf(&sb, " mutation=%q", st.MutationDesc)
 			}
 		}
 	}

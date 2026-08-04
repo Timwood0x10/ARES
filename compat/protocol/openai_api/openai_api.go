@@ -32,11 +32,12 @@ import (
 )
 
 const (
-	defaultEndpoint   = "chat/completions"
-	responsesEndpoint = "responses"
-	streamObject      = "chat.completion.chunk"
-	finishReasonStop  = "stop"
-	roleAssistant     = "assistant"
+	defaultEndpoint    = "chat/completions"
+	responsesEndpoint  = "responses"
+	embeddingsEndpoint = "embeddings"
+	streamObject       = "chat.completion.chunk"
+	finishReasonStop   = "stop"
+	roleAssistant      = "assistant"
 )
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ func (a *Adapter) Serve(ctx context.Context, raw []byte) ([]byte, error) {
 	switch ep {
 	case "models":
 		return a.handleModels(ctx, raw)
-	case "embeddings":
+	case embeddingsEndpoint:
 		return a.handleEmbeddings(ctx, raw)
 	case "completions":
 		return a.handleLegacyCompletions(ctx, raw)
@@ -148,7 +149,7 @@ func detectEndpoint(raw []byte) string {
 			}
 			return responsesEndpoint
 		}
-		return "embeddings"
+		return embeddingsEndpoint
 	}
 	return defaultEndpoint
 }

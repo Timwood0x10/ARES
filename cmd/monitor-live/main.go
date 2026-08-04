@@ -117,7 +117,7 @@ func main() {
 	}
 
 	// --- MCP servers (codegraph + codebase-memory-mcp) ---
-	internalReg, err := setupMCP(ctx, cfg, registry)
+	internalReg, err := setupMCP(ctx, cfg, registry, ares_bootstrap.ToolDepsFromComponents(comp))
 	if err != nil {
 		cancel()
 		log.Fatalf("setup MCP: %v", err)
@@ -312,14 +312,15 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 // It returns the internal core.Registry for use by the ToolBinder (tool schemas for
 // LLM Chat API). Registration failures abort startup instead of silently leaving
 // agents with zero tools.
-func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) (*core.Registry, error) {
+func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry, deps builtintools.GeneralToolsDeps) (*core.Registry, error) {
 	internalReg := core.NewRegistry()
 
 	// Register builtin general tools into the internal registry so sub-agents
 	// receive them through the ToolBinder (closure of the tools module, P2.1).
-	// A failure here means agents would silently receive zero tools, so we
-	// abort startup rather than continue with a broken state.
-	if err := builtintools.RegisterGeneralTools(internalReg); err != nil {
+	// Real backends (knowledge store adapter, memory manager, LLM client) are
+	// injected via deps so the knowledge/memory/planning tools are usable,
+	// not just nil-guarded.
+	if err := builtintools.RegisterGeneralTools(internalReg, deps); err != nil {
 		return internalReg, fmt.Errorf("register general tools: %w", err)
 	}
 

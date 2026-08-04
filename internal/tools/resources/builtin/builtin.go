@@ -8,7 +8,10 @@ import (
 
 	stderrors "errors"
 
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	builtin_embedding "github.com/Timwood0x10/ares/internal/tools/resources/builtin/embedding"
 	builtin_execution "github.com/Timwood0x10/ares/internal/tools/resources/builtin/execution"
@@ -46,18 +49,48 @@ func resolveFileToolsAllowedDir() string {
 	return dir
 }
 
+// GeneralToolsDeps carries the optional runtime dependencies for the
+// knowledge / memory / planning tools registered by RegisterGeneralTools.
+// A nil field keeps the tool registered with a nil guard: Execute returns a
+// clear error instead of panicking (see knowledge_base.go, distilled_memory_tools.go).
+// Production callers wire real dependencies from the bootstrap Components so
+// the tools are actually usable, not just crash-safe.
+type GeneralToolsDeps struct {
+	// KnowledgeSearcher backs knowledge_search.
+	KnowledgeSearcher builtin_knowledge.KnowledgeSearcher
+	// KnowledgeService backs knowledge_add / knowledge_update / knowledge_delete.
+	KnowledgeService builtin_knowledge.KnowledgeService
+	// KnowledgeRepo backs correct_knowledge.
+	KnowledgeRepo repositories.KnowledgeRepositoryInterface
+	// DistilledRepo backs distilled_memory_search and user_profile.
+	DistilledRepo repositories.DistilledMemoryRepositoryInterface
+	// MemoryMgr backs memory_search and user_profile.
+	MemoryMgr memory.MemoryManager
+	// LLMClient backs task_planner.
+	LLMClient *llm.Client
+}
+
 // RegisterGeneralTools registers all general-purpose tools into the provided
 // registry. The caller owns the registry instance (typically the internal
 // core.Registry bridged to agent ToolBinders), which keeps tool wiring
 // explicit and avoids hidden global state.
 //
+// Optional deps provide real backends for the knowledge/memory/planning
+// tools; when omitted the tools register with nil guards (Execute returns an
+// error rather than panicking). Production callers should wire the deps from
+// their bootstrap Components.
+//
 // SECURITY: FileTools is registered with WithAllowedDir so that path traversal
 // is blocked by default. CodeRunner is registered with Python DISABLED by
 // default — operators must opt in via EnablePython(true). HTTPRequest and
 // WebScraper enforce SSRF filtering at the HTTP client layer.
-func RegisterGeneralTools(reg *core.Registry) error {
+func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	if reg == nil {
 		return errors.New("register general tools: registry cannot be nil")
+	}
+	var d GeneralToolsDeps
+	if len(deps) > 0 {
+		d = deps[0]
 	}
 	tools := []core.Tool{
 		// Math capability
@@ -118,37 +151,37 @@ func RegisterGeneralTools(reg *core.Registry) error {
 		}),
 
 		// Knowledge capability
-		base.WithToolTags(builtin_knowledge.NewKnowledgeSearch(nil), map[string]string{
+		base.WithToolTags(builtin_knowledge.NewKnowledgeSearch(d.KnowledgeSearcher), map[string]string{
 			"domain": "knowledge", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}),
-		base.WithToolTags(builtin_knowledge.NewKnowledgeAdd(nil), map[string]string{
+		base.WithToolTags(builtin_knowledge.NewKnowledgeAdd(d.KnowledgeService), map[string]string{
 			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
 			"side_effects": "true", "mutates_state": "true",
 		}),
-		base.WithToolTags(builtin_knowledge.NewKnowledgeUpdate(nil), map[string]string{
+		base.WithToolTags(builtin_knowledge.NewKnowledgeUpdate(d.KnowledgeService), map[string]string{
 			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
 			"side_effects": "true", "mutates_state": "true",
 		}),
-		base.WithToolTags(builtin_knowledge.NewKnowledgeDelete(nil), map[string]string{
+		base.WithToolTags(builtin_knowledge.NewKnowledgeDelete(d.KnowledgeService), map[string]string{
 			"domain": "knowledge", "input_type": "text", "output_type": "boolean",
 			"side_effects": "true", "mutates_state": "true",
 		}),
-		base.WithToolTags(builtin_knowledge.NewCorrectKnowledge(nil), map[string]string{
+		base.WithToolTags(builtin_knowledge.NewCorrectKnowledge(d.KnowledgeRepo), map[string]string{
 			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
 			"side_effects": "true", "mutates_state": "true",
 		}),
 
 		// Memory capability
-		base.WithToolTags(builtin_memory.NewMemorySearch(nil), map[string]string{
+		base.WithToolTags(builtin_memory.NewMemorySearch(d.MemoryMgr), map[string]string{
 			"domain": "memory", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}),
-		base.WithToolTags(builtin_memory.NewUserProfile(nil, nil), map[string]string{
+		base.WithToolTags(builtin_memory.NewUserProfile(d.MemoryMgr, d.DistilledRepo), map[string]string{
 			"domain": "memory", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}),
-		base.WithToolTags(builtin_memory.NewDistilledMemorySearch(nil), map[string]string{
+		base.WithToolTags(builtin_memory.NewDistilledMemorySearch(d.DistilledRepo), map[string]string{
 			"domain": "memory", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}),
@@ -166,7 +199,7 @@ func RegisterGeneralTools(reg *core.Registry) error {
 		}),
 
 		// Planning capability
-		base.WithToolTags(builtin_planning.NewTaskPlanner(nil), map[string]string{
+		base.WithToolTags(builtin_planning.NewTaskPlanner(d.LLMClient), map[string]string{
 			"domain": "planning", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}),

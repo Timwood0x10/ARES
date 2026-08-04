@@ -15,12 +15,15 @@ import (
 // by Bootstrap (comp.MCP) instead of creating a second manager, so server
 // connections are not duplicated and the single manager's Stop hook (already
 // registered at shutdown) covers every connection.
-func setupMCP(_ context.Context, mcpMgr *ares_mcp.MCPManager, registry *api_tools.Registry) (*core.Registry, error) {
+func setupMCP(_ context.Context, mcpMgr *ares_mcp.MCPManager, registry *api_tools.Registry, deps builtintools.GeneralToolsDeps) (*core.Registry, error) {
 	internalReg := core.NewRegistry()
 
 	// Register builtin general tools into the internal registry so sub-agents
 	// receive them through the ToolBinder (closure of the tools module, P2.1).
-	if err := builtintools.RegisterGeneralTools(internalReg); err != nil {
+	// Real backends (knowledge store adapter, memory manager, LLM client) are
+	// injected via deps so the knowledge/memory/planning tools are usable,
+	// not just nil-guarded.
+	if err := builtintools.RegisterGeneralTools(internalReg, deps); err != nil {
 		return internalReg, fmt.Errorf("register general tools: %w", err)
 	}
 
