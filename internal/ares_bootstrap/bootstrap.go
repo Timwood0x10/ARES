@@ -22,6 +22,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
@@ -80,7 +81,7 @@ type Components struct {
 	// and (when enabled) the GA genomes. Always set, even when evolution is
 	// disabled, so downstream consumers (api/bootstrap, integration) can
 	// reference it without nil guards.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 	// SystemRuntime is the system-level control plane (Stage 1): an
 	// orchestrator that observes the assembled component graph and provides
 	// lifecycle states, a shared root context, and status snapshots. It is
@@ -155,6 +156,10 @@ type BootstrapDeps struct {
 // It is the single wiring hub — used by api/bootstrap, cmd/ares serve, and tests.
 // On partial failure, already-created components are cleaned up in reverse
 // order before returning the error.
+// extracted for each major component group (wireMemory, wireNewEvolution, etc.)
+// and the remaining complexity is inherent to the assembly orchestration.
+//
+//nolint:gocyclo // Bootstrap is a complex wiring hub; sub-functions are
 func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps) (*Components, error) {
 	var comp Components
 
@@ -297,7 +302,34 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	knowRt := BuildKnowledgeRuntime(comp.VectorStore, embForRuntime, knowStore)
 	comp.KnowledgeRuntime = knowRt
 
-	newEvol, evStore, evErr := wireNewEvolution(cfg.Evolution.Enabled, dag, knowRt, liveMemoryStore)
+	// T1 (evidence persistence): when PostgreSQL is configured, use a
+	// persistent evidence store instead of the default in-memory one.
+	// Fail-loud: configured Postgres that cannot connect blocks startup.
+	var evidenceStore evidence.Store
+	if cfg.Storage.Enabled && cfg.Storage.Host != "" {
+		pgCfg := &postgres.Config{
+			Host:     cfg.Storage.Host,
+			Port:     cfg.Storage.Port,
+			User:     cfg.Storage.Username,
+			Password: cfg.Storage.Password,
+			Database: cfg.Storage.Database,
+			SSLMode:  cfg.Storage.SSLMode,
+		}
+		pgPool, pgErr := postgres.NewPool(pgCfg)
+		if pgErr != nil {
+			runCleanups()
+			return nil, fmt.Errorf("evidence: create postgres pool: %w", pgErr)
+		}
+		pgStore, storeErr := evidence.NewPostgresStore(pgPool)
+		if storeErr != nil {
+			runCleanups()
+			return nil, fmt.Errorf("evidence: create postgres store: %w", storeErr)
+		}
+		evidenceStore = pgStore
+		cleanups = append(cleanups, func() { _ = pgPool.Close() })
+	}
+
+	newEvol, evStore, evErr := wireNewEvolution(cfg.Evolution.Enabled, dag, knowRt, liveMemoryStore, evidenceStore)
 	if evErr != nil {
 		runCleanups()
 		return nil, evErr
@@ -486,11 +518,11 @@ func resolveLiveMemoryStore(mem ares_memory.MemoryManager) ares_memory.MemoryCon
 // fitness evidence flowing without a NewEvolution instance.
 //
 //nolint:nilnil // nil components + nil error is the documented "disabled" contract.
-func wireNewEvolution(enabled bool, dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore ares_memory.MemoryConfigStore) (*NewEvolutionComponents, *evidence.MemoryStore, error) {
+func wireNewEvolution(enabled bool, dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore ares_memory.MemoryConfigStore, evStore evidence.Store) (*NewEvolutionComponents, evidence.Store, error) {
 	if !enabled {
 		return nil, evidence.NewMemoryStore(), nil
 	}
-	newEvol, err := ProvideNewEvolution(dag, rt, memoryStore)
+	newEvol, err := ProvideNewEvolution(dag, rt, memoryStore, evStore)
 	if err != nil {
 		return nil, nil, err
 	}

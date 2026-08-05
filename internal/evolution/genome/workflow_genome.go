@@ -54,7 +54,7 @@ type WorkflowGenomeConfig struct {
 
 	// EvidenceStore provides execution evidence for fitness evaluation.
 	// May be nil; fitness falls back to a constant when nil.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 }
 
 // DefaultWorkflowGenomeConfig returns a sensible default configuration.

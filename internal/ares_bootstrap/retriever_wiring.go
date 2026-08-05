@@ -62,7 +62,7 @@ func wireRetrievers(
 	expRepo repositories.ExperienceRepositoryInterface,
 	knowRt *knowledgeruntime.KnowledgeRuntime,
 	knowStore knowledge.KnowledgeStore,
-	evStore *evidence.MemoryStore,
+	evStore evidence.Store,
 ) {
 	setter, ok := mem.(retrieverSetter)
 	if !ok {

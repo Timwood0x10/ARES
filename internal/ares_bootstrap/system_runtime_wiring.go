@@ -38,11 +38,14 @@ const (
 // Shutdown drive real teardown in reverse topological order (Stage 9) instead
 // of leaving teardown only to entry-point shutdown managers. Nil hooks are
 // safe no-ops, so components without a dedicated teardown still transition.
+// An optional readyFn lets a Degraded-mode component report a missing
+// capability instead of silently claiming Ready (F03, Stage 9).
 type runtimeComponentAdapter struct {
-	name   string
-	deps   []string
-	stopFn func(ctx context.Context) error
-	waitFn func() error
+	name    string
+	deps    []string
+	stopFn  func(ctx context.Context) error
+	waitFn  func() error
+	readyFn func(ctx context.Context) error
 }
 
 // Name returns the stable component identifier.
@@ -67,18 +70,29 @@ func (a *runtimeComponentAdapter) Wait() error {
 	return a.waitFn()
 }
 
+// Ready reports whether the component is fully operational. A nil readyFn
+// means no readiness constraint (component is Ready by construction). A
+// non-nil readyFn returning an error signals a missing capability, which the
+// orchestrator records as Degraded for Degraded-mode components (F03).
+func (a *runtimeComponentAdapter) Ready(ctx context.Context) error {
+	if a.readyFn == nil {
+		return nil
+	}
+	return a.readyFn(ctx)
+}
+
 // registerSystemComponent registers one component when it was actually
-// constructed (present == true), attaching optional teardown hooks so the
-// orchestrator's Shutdown drives real Stop/Wait in reverse topological order.
+// constructed (present == true), attaching optional teardown and readiness
+// hooks so the orchestrator drives real Stop/Wait and Degraded reporting.
 // Registration failures are logged, never fatal: the registry is observational
 // and a metadata problem must not block Bootstrap on an otherwise healthy
 // assembly.
-func registerSystemComponent(reg *system_runtime.Registry, name string, present bool, deps []string, stopFn func(ctx context.Context) error, waitFn func() error) {
+func registerSystemComponent(reg *system_runtime.Registry, name string, present bool, deps []string, mode system_runtime.Mode, stopFn func(ctx context.Context) error, waitFn func() error, readyFn func(ctx context.Context) error) {
 	if !present {
 		return
 	}
-	adapter := &runtimeComponentAdapter{name: name, deps: deps, stopFn: stopFn, waitFn: waitFn}
-	if err := reg.Register(adapter, system_runtime.ModeRequired); err != nil {
+	adapter := &runtimeComponentAdapter{name: name, deps: deps, stopFn: stopFn, waitFn: waitFn, readyFn: readyFn}
+	if err := reg.Register(adapter, mode); err != nil {
 		log.Warn("system_runtime: component registration skipped",
 			"component", name, "error", err)
 	}
@@ -102,22 +116,36 @@ func registerSystemComponent(reg *system_runtime.Registry, name string, present 
 func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Components) (*system_runtime.Orchestrator, *system_runtime.Registry, error) {
 	reg := system_runtime.NewRegistry()
 
-	registerSystemComponent(reg, sysCompEventStore, comp.EventStore != nil, nil, nil, nil)
-	registerSystemComponent(reg, sysCompRuntime, comp.Runtime != nil, []string{sysCompEventStore},
-		func(ctx context.Context) error { return comp.Runtime.Stop() }, nil)
-	registerSystemComponent(reg, sysCompMemory, comp.Memory != nil, []string{sysCompEventStore},
-		func(ctx context.Context) error { return comp.Memory.Stop(ctx) }, nil)
-	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil,
-		func(ctx context.Context) error { return comp.MCP.Stop(ctx) }, nil)
-	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil, nil, nil)
-	registerSystemComponent(reg, sysCompDashboard, comp.Dashboard != nil, []string{sysCompMCP},
-		func(ctx context.Context) error { return comp.Dashboard.Stop(ctx) }, nil)
-	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil, nil, nil)
-	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore},
-		func(ctx context.Context) error { comp.FlightRecorder.Stop(); return nil }, nil)
-	registerSystemComponent(reg, sysCompKnowledge, comp.KnowledgeRuntime != nil, nil, nil, nil)
-	registerSystemComponent(reg, sysCompNewEvolution, comp.NewEvolution != nil, []string{sysCompEvidenceStore}, nil, nil)
-	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil, nil, nil)
+	registerSystemComponent(reg, sysCompEventStore, comp.EventStore != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompRuntime, comp.Runtime != nil, []string{sysCompEventStore}, system_runtime.ModeRequired,
+		func(ctx context.Context) error { return comp.Runtime.Stop() }, nil, nil)
+	registerSystemComponent(reg, sysCompMemory, comp.Memory != nil, []string{sysCompEventStore}, system_runtime.ModeRequired,
+		func(ctx context.Context) error { return comp.Memory.Stop(ctx) }, nil, nil)
+	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil, system_runtime.ModeRequired,
+		func(ctx context.Context) error { return comp.MCP.Stop(ctx) }, nil, nil)
+	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompDashboard, comp.Dashboard != nil, []string{sysCompMCP}, system_runtime.ModeRequired,
+		func(ctx context.Context) error { return comp.Dashboard.Stop(ctx) }, nil, nil)
+	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore}, system_runtime.ModeRequired,
+		func(ctx context.Context) error { comp.FlightRecorder.Stop(); return nil }, nil, nil)
+
+	// Knowledge component: when AKG retrieval is enabled but the write-side
+	// dependency (DistillBridge) is missing, the component must NOT silently
+	// claim Ready — it registers as Degraded with a readiness error (F03).
+	// Otherwise it is a normal Required component.
+	knowledgeMode := system_runtime.ModeRequired
+	var knowledgeReady func(ctx context.Context) error
+	if cfg.Knowledge.RetrievalEnabled && comp.AKGBridge == nil {
+		knowledgeMode = system_runtime.ModeDegraded
+		knowledgeReady = func(ctx context.Context) error {
+			return fmt.Errorf("knowledge: AKG retrieval enabled but write deps missing (AKGBridge nil)")
+		}
+	}
+	registerSystemComponent(reg, sysCompKnowledge, comp.KnowledgeRuntime != nil, nil, knowledgeMode, nil, nil, knowledgeReady)
+
+	registerSystemComponent(reg, sysCompNewEvolution, comp.NewEvolution != nil, []string{sysCompEvidenceStore}, system_runtime.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
 
 	orch := system_runtime.NewOrchestrator(reg, ctx)
 	if err := orch.Start(ctx); err != nil {

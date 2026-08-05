@@ -67,7 +67,7 @@ func emitTaskEvent(t *testing.T, store ares_events.EventStore, eventType ares_ev
 
 // queryFitness waits (bounded) for the collector to process the event and
 // returns fitness evidence for the given source, or fails the test on timeout.
-func queryFitness(t *testing.T, store *evidence.MemoryStore, source string) []evidence.Evidence {
+func queryFitness(t *testing.T, store evidence.Store, source string) []evidence.Evidence {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

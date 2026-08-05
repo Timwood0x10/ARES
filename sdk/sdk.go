@@ -49,6 +49,7 @@ import (
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -550,11 +551,18 @@ func buildAKGBridge(
 // (no-op) when evolution or knowledge is disabled, or when wiring fails
 // (non-fatal: a warning is logged). Extracted from New() to keep the
 // constructor under the 100-line limit.
-func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime) *ares_bootstrap.NewEvolutionComponents {
+//
+// Branch B (T2.0): SDK has no live DAG, so workflow/scheduler/recovery
+// evolution is serve-only; the nil-DAG path is explicitly logged.
+func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime, memMgr memory.MemoryConfigStore, evStore evidence.Store) *ares_bootstrap.NewEvolutionComponents {
 	if !cfg.evoCfg.Enabled || knowRt == nil {
 		return nil
 	}
-	comps, err := ares_bootstrap.ProvideNewEvolution(nil, knowRt, nil)
+	// Branch B: SDK has no live DAG — workflow/scheduler/recovery evolution
+	// is serve-only. Explicit log to eliminate silent synthetic-executor gap.
+	slog.Info("sdk: evolution hot-update: dag=nil (workflow/scheduler/recovery " +
+		"evolution is serve-only; SDK provides knowledge/memory evolution)")
+	comps, err := ares_bootstrap.ProvideNewEvolution(nil, knowRt, memMgr, evStore)
 	if err != nil {
 		slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
 			"error", err)
@@ -684,6 +692,16 @@ func New(opts ...Option) (*Runtime, error) {
 		return nil, err
 	}
 
+	// ---- Stage 9 (SDK unification): keep the SDK's own KnowledgeRuntime
+	// (its providers carry the live memSearcher/embedding backends) and bind
+	// the Bootstrap NewEvolution's KnowledgePatchExecutor to THAT instance via
+	// UpdateLiveKnowledgeRuntime. This satisfies §5.2 (KnowledgePatchExecutor
+	// and AKF tools share one runtime) without replacing the SDK runtime with
+	// the Bootstrap one, whose memory provider has no searcher.
+	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil && kw.rt != nil {
+		bootstrapComp.NewEvolution.UpdateLiveKnowledgeRuntime(kw.rt)
+	}
+
 	// ---- AKF knowledge tools (auto-registered so the agent can call them) ----
 	if cfg.knlCfg.Enabled && kw.rt != nil {
 		if err := registerAKFTools(toolReg, kw.rt); err != nil {
@@ -695,7 +713,7 @@ func New(opts ...Option) (*Runtime, error) {
 	// evolution patch system so knowledge patches affect the running engine).
 	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
 	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
-	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt)
+	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt, nil, nil)
 	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil {
 		evoComponents = bootstrapComp.NewEvolution
 	}

@@ -34,7 +34,7 @@ type KnowledgeGenomeConfig struct {
 
 	// EvidenceStore provides retrieval quality evidence for fitness evaluation.
 	// May be nil; fitness falls back to a constant when nil.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 }
 
 // DefaultKnowledgeGenomeConfig returns sensible default knowledge parameters.

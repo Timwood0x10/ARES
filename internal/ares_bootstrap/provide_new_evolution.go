@@ -31,7 +31,7 @@ import (
 
 // NewEvolutionComponents holds the new evolution system components.
 type NewEvolutionComponents struct {
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 	GenomeReg     *genome.Registry
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
@@ -72,11 +72,17 @@ type NewEvolutionComponents struct {
 //	dag - optional MutableDAG for WorkflowGenome and executors (may be nil).
 //	rt  - optional KnowledgeRuntime for KnowledgePatchExecutor (may be nil).
 //	memoryStore - optional MemoryConfigStore for MemoryPatchExecutor (may be nil).
+//	evStore - optional persistent evidence store (may be nil). When nil, an
+//	in-memory evidence store is used (default, dev/offline semantics).
 //
 // When dag, rt, or memoryStore is nil, their corresponding executors are skipped.
-func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore) (*NewEvolutionComponents, error) {
+func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore, evStore evidence.Store) (*NewEvolutionComponents, error) {
 	// 1. Evidence Store — central logging for all runtime evidence.
-	evStore := evidence.NewMemoryStore()
+	// T1 (evidence persistence): an explicit non-nil store (e.g. Postgres)
+	// survives restarts; nil falls back to the in-memory store.
+	if evStore == nil {
+		evStore = evidence.NewMemoryStore()
+	}
 
 	// 2. Genome Registry — register all available genomes.
 	genomeReg := genome.NewRegistry()

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -162,21 +163,21 @@ func TestClosure_KnowledgeRetrievalEnabled_MissingWriteDeps_NotReady(t *testing.
 	// 2. AKGBridge should be nil (no write path).
 	// 3. KnowledgeStore should be nil (no backing store).
 
-	// F03: The system silently degrades. This assertion will fail until
-	// Stage 2 implements explicit Degraded status.
+	// F03 (Stage 9, hard assertion): the knowledge component must report
+	// Degraded — NOT Ready — when AKG retrieval is enabled but the write-side
+	// dependency is missing. The registry now carries a readiness hook for
+	// this exact case (wireSystemRuntime registers Degraded mode + readyFn),
+	// so the closure contract is asserted instead of skipped.
 	if comp.AKGBridge != nil {
 		t.Errorf("AKGBridge should be nil when write deps are missing; " +
 			"got non-nil AKGBridge (F03: silent degradation)")
 	}
 
-	// The remaining F03 check requires the registry to report a non-Ready /
-	// Degraded state for the knowledge component when write deps are missing.
-	// The observational runtimeComponentAdapter implements no ReadinessChecker,
-	// so the registry currently marks the knowledge component Ready regardless
-	// — the assertion cannot pass until the registry drives Degraded state.
-	// Mark the gap explicitly instead of passing while only logging it (R09).
-	t.Skipf("F03 gap: registry has no readiness/Degraded signal for a knowledge " +
-		"component with missing write deps; assertion lands with Degraded state")
+	status, ok := comp.ComponentStatus(sysCompKnowledge)
+	require.True(t, ok, "knowledge component must be registered in System Runtime")
+	assert.Equal(t, system_runtime.StateDegraded, status.State,
+		"knowledge component must report Degraded when AKG write deps are missing (F03)")
+	assert.NotEmpty(t, status.Reason, "Degraded state must carry a reason")
 }
 
 // ---------------------------------------------------------------------------

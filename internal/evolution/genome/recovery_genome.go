@@ -24,7 +24,7 @@ type RecoveryGenomeConfig struct {
 
 	// EvidenceStore provides recovery performance evidence for fitness evaluation.
 	// May be nil; fitness falls back to a constant when nil.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 }
 
 // DefaultRecoveryGenomeConfig returns a sensible default configuration.

@@ -31,7 +31,7 @@ type MemoryGenomeConfig struct {
 
 	// EvidenceStore provides memory quality evidence for fitness evaluation.
 	// May be nil; fitness falls back to a constant when nil.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 }
 
 // DefaultMemoryGenomeConfig returns sensible default memory parameters.

@@ -16,7 +16,7 @@ import (
 // constant 1.0 that let every patch through.
 type deploymentStagingRuntime struct {
 	reg           *patch.Registry
-	evidenceStore *evidence.MemoryStore
+	evidenceStore evidence.Store
 	applyCount    int
 }
 

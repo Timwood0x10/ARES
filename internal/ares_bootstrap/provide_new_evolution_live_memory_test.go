@@ -34,7 +34,7 @@ func TestProvideNewEvolution_LiveMemoryStore(t *testing.T) {
 	liveStore.Unlock()
 
 	// Wire ProvideNewEvolution with the LIVE memory store.
-	components, err := ProvideNewEvolution(nil, nil, liveStore)
+	components, err := ProvideNewEvolution(nil, nil, liveStore, nil)
 	require.NoError(t, err)
 	require.NotNil(t, components.PatchReg)
 
@@ -65,7 +65,7 @@ func TestProvideNewEvolution_LiveMemoryStore(t *testing.T) {
 // Pre-fix: ProvideNewEvolution always registered the executor because
 // memoryMgr was never nil (bootstrap passed a Minimal manager).
 func TestProvideNewEvolution_NilMemoryStoreSkipsExecutor(t *testing.T) {
-	components, err := ProvideNewEvolution(nil, nil, nil)
+	components, err := ProvideNewEvolution(nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	// Apply a patch targeted at "memory" — should fail with "no executor".

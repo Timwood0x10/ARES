@@ -953,7 +953,7 @@ func getArenaEvolution() *ares_bootstrap.NewEvolutionComponents {
 	if err != nil {
 		return nil
 	}
-	ev, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager())
+	ev, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager(), nil)
 	if err != nil {
 		return nil
 	}

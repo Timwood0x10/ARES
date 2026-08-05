@@ -368,7 +368,7 @@ var fitnessSourceOrder = []string{"workflow", "scheduler", "recovery", fitnessSo
 // strategy is live (and thus should be mutated with care).
 func buildEvolutionSuggestionPrompt(
 	ctx context.Context,
-	evStore *evidence.MemoryStore,
+	evStore evidence.Store,
 	strategyStore evolution.StrategyStore,
 ) string {
 	base := "Examine the current system state and suggest one evolution improvement. " +
@@ -417,7 +417,7 @@ const fitnessWindowSize = 50
 // recentFitnessSummary computes the mean fitness value over the most recent
 // fitness evidence records for one genome source. It returns ok=false when
 // the store is nil or no usable numeric record exists in the window.
-func recentFitnessSummary(ctx context.Context, store *evidence.MemoryStore, source string, limit int) (mean float64, count int, ok bool) {
+func recentFitnessSummary(ctx context.Context, store evidence.Store, source string, limit int) (mean float64, count int, ok bool) {
 	if store == nil {
 		return 0, 0, false
 	}

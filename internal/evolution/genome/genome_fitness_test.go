@@ -14,7 +14,7 @@ import (
 // buildGenome constructs a fresh genome of the given name wired to the
 // provided evidence store. The store may be nil to exercise the nil-store
 // fallback path.
-func buildGenome(t *testing.T, name string, store *evidence.MemoryStore) Genome {
+func buildGenome(t *testing.T, name string, store evidence.Store) Genome {
 	t.Helper()
 	switch name {
 	case WorkflowGenomeName:

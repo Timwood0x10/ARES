@@ -28,7 +28,7 @@ type fitnessEvidence struct {
 
 // queryEvidenceSince returns the evidence records matching the filter, limited
 // to the trailing window. A zero window disables the time cut.
-func queryEvidenceSince(ctx context.Context, store *evidence.MemoryStore, source evidence.EvidenceKind, window time.Duration, limit int) ([]evidence.Evidence, error) {
+func queryEvidenceSince(ctx context.Context, store evidence.Store, source evidence.EvidenceKind, window time.Duration, limit int) ([]evidence.Evidence, error) {
 	if store == nil {
 		return nil, errNoEvidence
 	}
@@ -49,7 +49,7 @@ func queryEvidenceSince(ctx context.Context, store *evidence.MemoryStore, source
 // avgFitnessValue extracts the normalized Value field from each evidence record
 // and returns its mean in [0, 1]. Records whose payload has no numeric Value
 // are skipped. Returns errNoEvidence when nothing is usable.
-func avgFitnessValue(ctx context.Context, store *evidence.MemoryStore, source string, window time.Duration, limit int) (float64, error) {
+func avgFitnessValue(ctx context.Context, store evidence.Store, source string, window time.Duration, limit int) (float64, error) {
 	evs, err := queryEvidenceSince(ctx, store, evidence.EvidenceKind(source), window, limit)
 	if err != nil {
 		return 0, err

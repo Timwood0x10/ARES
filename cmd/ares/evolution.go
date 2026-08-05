@@ -56,7 +56,7 @@ func getNewEvolution() *ares_bootstrap.NewEvolutionComponents {
 		if err != nil {
 			log.Fatalf("create mutable dag: %v", err)
 		}
-		comp, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager())
+		comp, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager(), nil)
 		if err != nil {
 			log.Fatalf("bootstrap evolution: %v", err)
 		}
