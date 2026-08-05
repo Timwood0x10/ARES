@@ -346,7 +346,7 @@ func buildAKGDistiller(
 func buildPostgresPool(ctx context.Context, cfg databaseCfg) (*postgres.Pool, error) {
 	sslMode := cfg.SSLMode
 	if sslMode == "" {
-		sslMode = "disable"
+		sslMode = sslModeDisable
 	}
 	pgCfg := &postgres.Config{
 		Host:     cfg.Host,

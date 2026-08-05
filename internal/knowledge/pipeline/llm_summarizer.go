@@ -23,7 +23,7 @@ const (
 
 // DefaultLLMSummaryLanguage is the output language used when no option is
 // supplied. It preserves the historical behavior of the original prompt,
-// which hardcoded "用中文" / "in Chinese".
+// which hardcoded a Chinese-language instruction (and its English equivalent).
 const DefaultLLMSummaryLanguage = LanguageChinese
 
 // LLMSummarizerOption configures an LLMSummarizer.

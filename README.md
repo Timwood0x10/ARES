@@ -55,6 +55,15 @@ ares doctor
 ares run -c ares.yaml "What is Go?"
 ```
 
+Or assemble from a YAML config in code:
+
+```go
+rt := sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml")) // LLM / memory / distillation / evolution / tools, all from one file
+defer rt.Close()
+```
+
+> 📖 **Config guide**: see [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) / [config.yaml 配置指南 (中文)](docs/articles/zh/25-config-yaml-guide.zh.md) for the full reference — LLM, distillation, GA evolution, knowledge, tools, and chaos-related switches.
+
 Or run examples directly:
 
 ```bash
@@ -221,6 +230,7 @@ Deep dives into ARES internals:
 | [GA Promoter](docs/articles/en/24.4-ga-promoter.md) | [GA 晋升系统](docs/articles/zh/24.4-ga-promoter.md) |
 | [GA Genealogy](docs/articles/en/24.5-ga-genealogy.md) | [GA 谱系记录](docs/articles/zh/24.5-ga-genealogy.md) |
 | [GA in the Trenches](docs/articles/en/24.6-ga-in-the-trenches.md) | [GA 实战经验](docs/articles/zh/24.6-ga-in-the-trenches.md) |
+| [config.yaml Guide](docs/articles/en/25-config-yaml-guide.en.md) | [config.yaml 配置指南](docs/articles/zh/25-config-yaml-guide.zh.md) |
 
 ## Architecture
 

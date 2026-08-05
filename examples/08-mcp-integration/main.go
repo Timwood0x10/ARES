@@ -79,4 +79,15 @@ Use the echo tool when asked to echo something.`),
 	}
 
 	fmt.Println("\n✅ MCP integration demo completed")
+
+	// ── 5. Show system runtime snapshot (Stage 1 observability) ──
+	//      The Snapshot() method returns the component status from the
+	//      Bootstrap core: names, modes, lifecycle states (Constructed /
+	//      Bound / Started / Ready / Stopped) and a readiness summary.
+	//      Available on any SDK Runtime backed by the Bootstrap core.
+	if snapJSON, snapErr := rt.Snapshot().JSON(); snapErr == nil {
+		fmt.Printf("System Runtime snapshot: %s\n", string(snapJSON))
+	} else {
+		fmt.Printf("System Runtime snapshot unavailable: %v\n", snapErr)
+	}
 }

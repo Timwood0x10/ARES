@@ -26,7 +26,7 @@ func IsProblem(text string) bool {
 	// Negative keywords - these should NOT be treated as problems.
 	// English acknowledgments use whitespace boundaries; Chinese has no
 	// word separators, so unambiguous Chinese acknowledgment phrases are
-	// matched as substrings. "请"/"请问" are deliberately excluded: they
+	// matched as substrings. Polite-prefix tokens (e.g. Chinese "please") are deliberately excluded: they
 	// introduce genuine questions rather than acknowledgments.
 	englishNegativeKeywords := []string{
 		// English acknowledgments
@@ -46,8 +46,8 @@ func IsProblem(text string) bool {
 		"听起来不错", "有道理", "收到了", "不用谢", "再见", "拜拜",
 	}
 	// Short Chinese acknowledgment words that double as common content
-	// words or greeting openers inside real questions (e.g. "你好，请问…",
-	// "欢迎来到…"); matched only as a whole message.
+	// words or greeting openers inside real questions (e.g. "Hello, please...",
+	// "Welcome to..."); matched only as a whole message.
 	chineseExactNegativeKeywords := []string{
 		"好的", "行", "可以", "不错", "很棒", "完美", "优秀",
 		"是的", "对", "正确", "同意", "酷", "很好", "你好", "欢迎",

@@ -436,7 +436,7 @@ func (c *Crossover) selectPromptTemplate(a, b *mutation.Strategy) string {
 
 // halfSplitPromptCrossover performs half-split crossover on prompt templates.
 // The child inherits the first half of parent A's template and the second half
-// of parent B's template. This is the "半句交叉" (half-sentence crossover)
+// of parent B's template. This is the "half-sentence crossover"
 // from the genetic algorithm design document.
 //
 // If either template is empty, falls back to selectPromptTemplate behavior.

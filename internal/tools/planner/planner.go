@@ -145,7 +145,7 @@ func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, err
 	}
 
 	// Step 6: Extract parameters from the user request for each step.
-	// This fills in tool parameters (e.g., expression="1+1" from "计算1+1")
+	// This fills in tool parameters (e.g., expression="1+1" from a Chinese math phrase such as "calculate 1+1")
 	// so the plan is ready for execution without manual param filling.
 	for i := range plan.Steps {
 		capability := plan.Steps[i].CapabilityName

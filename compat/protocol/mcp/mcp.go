@@ -3,7 +3,7 @@
 // It exposes ARES agents/tools over the MCP wire format so MCP-compatible
 // clients (Claude Desktop, IDE plugins, …) can call into ARES.
 //
-// The adapter binds internal/ares_mcp.MCPClient's公开 surface (ListTools,
+// The adapter binds internal/ares_mcp.MCPClient's public surface (ListTools,
 // CallTool, ServerCapabilities) to the compat/protocol.ProtocolAdapter
 // interface. Each Serve call decodes one inbound JSON-RPC 2.0 message,
 // dispatches it through a thin JSON-RPC layer (initialize/tools/list/

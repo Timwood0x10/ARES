@@ -183,7 +183,8 @@ func Migrate(ctx context.Context, pool *Pool) error {
 // The migration list is a flat set of idempotent DDL statements without a
 // version table, so a precise rollback is not possible. It validates the
 // pool and returns a clear error instead of pretending success.
-// TODO: introduce a schema_migrations version table to enable real rollback.
+// TODO: introduce a schema_migrations version table to enable real rollback
+// (expected by 2026-12-31).
 func RollbackLast(ctx context.Context, pool *Pool) error {
 	if pool == nil {
 		return errors.Wrap(errors.ErrNilPointer, "rollback last migration")

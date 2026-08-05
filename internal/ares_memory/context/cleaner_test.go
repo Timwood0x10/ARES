@@ -315,7 +315,7 @@ func TestTruncateContent(t *testing.T) {
 	})
 
 	t.Run("multi-byte UTF-8", func(t *testing.T) {
-		// 5 runes: 日本語です. maxLen=3 equals ellipsis length, so the string
+		// 5 runes in the CJK sample. maxLen=3 equals ellipsis length, so the string
 		// is truncated to 3 runes without an ellipsis suffix.
 		s := "日本語です"
 		got := truncpkg.WithEllipsis(s, 3)

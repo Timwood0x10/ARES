@@ -49,7 +49,12 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// defaults.
 			comp.VectorStore = postgres.NewVectorSearcher(pool, nil)
 			// The postgres pool must be closed if bootstrap fails later.
-			*cleanups = append(*cleanups, func() { _ = pool.Close() })
+			*cleanups = append(*cleanups, func() {
+				if cerr := pool.Close(); cerr != nil {
+					log.Warn("bootstrap: close distillation postgres pool",
+						"error", cerr)
+				}
+			})
 			log.Info("bootstrap: experience distillation wired",
 				"embedding_model", cfg.Embedding.Model)
 		}

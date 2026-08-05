@@ -263,7 +263,7 @@ type Bridge = planner.ToolExecutionBridge
 //	reg := tools.NewRegistry()
 //	p, err := tools.NewPlanner(reg)
 //	if err != nil { ... }
-//	plan, err := p.Plan(ctx, "计算1+1")
+//	plan, err := p.Plan(ctx, "calculate 1+1")
 func NewPlanner(r *Registry) (*Planner, error) {
 	provider := r.PlannerProvider()
 	resolver, err := planner.NewToolResolver(provider)
@@ -297,7 +297,7 @@ func NewPlanner(r *Registry) (*Planner, error) {
 //	reg := tools.NewRegistry()
 //	p, _ := tools.NewPlanner(reg)
 //	bridge, _ := tools.NewBridge(reg, p)
-//	result, err := bridge.Execute(ctx, "", nil, "计算1+1")
+//	result, err := bridge.Execute(ctx, "", nil, "calculate 1+1")
 func NewBridge(r *Registry, p *Planner) (*Bridge, error) {
 	store := planner.NewMemoryEvidenceStore()
 	coreReg, err := r.CoreRegistry()

@@ -606,14 +606,14 @@ func TestAddUniqueString(t *testing.T) {
 			initialStack:     []string{"Go", "Python"},
 			value:            "GO",
 			expectedLen:      2,
-			expectedContains: true, // Bug: 实际行为是会添加，而不是检查重复
+			expectedContains: true, // Bug: actual behavior appends instead of deduplicating
 		},
 		{
 			name:             "add duplicate (exact)",
 			initialStack:     []string{"Go", "Python"},
 			value:            "Go",
 			expectedLen:      2,
-			expectedContains: true, // Bug: 实际行为是会添加，而不是检查重复
+			expectedContains: true, // Bug: actual behavior appends instead of deduplicating
 		},
 	}
 
@@ -668,13 +668,13 @@ func TestExtractPreferences(t *testing.T) {
 		{
 			name:             "simple dislike",
 			content:          "我不喜欢 C++",
-			expectedLikes:    1, // Bug: "不喜欢" 被误识别为 "喜欢"
+			expectedLikes:    1, // Bug: negation token is misrecognized as a like
 			expectedDislikes: 1,
 		},
 		{
 			name:             "multiple preferences",
 			content:          "我喜欢 Rust，不喜欢 Java，喜欢 Python",
-			expectedLikes:    1, // Bug: 实际只提取了第一个"喜欢"，后面的被忽略了
+			expectedLikes:    1, // Bug: only the first like token is extracted; later ones are dropped
 			expectedDislikes: 1,
 		},
 		{

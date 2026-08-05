@@ -401,6 +401,8 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 
 ARES 是**唯一**内置完整遗传算法（GA）自主进化能力的框架，通过 `ares_evolution` 包实现策略的自动优化和演化：
 
+**v0.2.9 流水线（六 genome，真实反馈闭环）**：workflow（DAG 拓扑：插入/删除/替换/并行化/串行化）、scheduler、knowledge（检索参数）、recovery、memory、prompt 六个 genome 共同进化运行时策略。反馈环为真实数据流：`Event → Evidence(fitness) → GA → StrategyStore(active strategy) → Agent 下一次执行 → outcome 写回 experience`（Track A 已闭环）。证据持久化（`evidence.PostgresStore`）支持 GA 反馈跨重启累积（内存版重启清零；经 `database` 配置块 opt-in，fail-loud）。
+
 ```mermaid
 flowchart LR
     fb[经验反馈] --> ts[锦标赛选择]
@@ -746,7 +748,7 @@ flowchart TD
 - **低启动开销**: Go 静态编译，毫秒级启动
 - **热更新**: fsnotify 文件监听，无需重启
 - **混沌工程**: 内置 ares\_arena 混沌工程层，13 种故障注入 + Survival/Scenario 模式 + 做市混沌 + 弹性评分，唯一具备生产级韧性验证的框架
-- **自主进化 (GA)**: 完整遗传算法流水线——锦标赛选择、均匀交叉、5 种突变类型、自适应分布、引导突变、三级评分（Cache/Heuristic/LLM）、记忆感知评分、Dream Cycle 两阶段评估、FitnessSharing、进化护栏和谱系追踪
+- **自主进化 (GA)**: v0.2.9 六 genome 闭环流水线——workflow/scheduler/knowledge/recovery/memory/prompt，锦标赛选择、均匀交叉、5 种突变类型、自适应分布、引导突变、三级评分（Cache/Heuristic/LLM）、记忆感知评分、Dream Cycle 两阶段评估、FitnessSharing、进化护栏和谱系追踪；Event→Evidence→GA→Strategy→Agent 真实反馈环 + outcome 写回 experience + Postgres 证据持久化
 - **可变 DAG**: 5 种运行时图突变操作（AddNode/RemoveNode/AddEdge/RemoveEdge/ReplaceNode）、BFS 循环检测、GraphEventHub 事件总线、DynamicExecutor 双模式、StepRecoveryHandler 三种恢复策略、HITL 人机交互
 
 **劣势**:
@@ -754,7 +756,7 @@ flowchart TD
 - **项目早期**: v0.2.3，2 名贡献者，生态远未建立
 - **缺少状态检查点**: 状态在内存中，崩溃即丢失
 - **缺少循环支持**: DAG 禁止环路，无法实现 LangGraph 的 Agent 循环
-- **自主进化尚在早期**: 遗传算法流水线处于 v0.1 阶段，大规模生产验证尚在进行中
+- **自主进化仍待规模化验证**: 六 genome 闭环流水线已落地（v0.2.9），但大规模生产收敛速度的量化验证仍在进行中（24h 长稳 soak 属发布验收项）
 - **条件边未完全实现**: 工作流动态路由能力有限
 - **社区小**: 学习资源、第三方集成、插件生态远不如 LangChain
 

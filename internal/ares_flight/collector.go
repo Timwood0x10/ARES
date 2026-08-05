@@ -7,6 +7,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	"golang.org/x/sync/errgroup"
 )
 
 // keyFitnessValue is the JSON payload key that carries the normalized fitness
@@ -28,7 +29,7 @@ type Collector struct {
 	diag               *DiagnosticsEngine
 	pipelines          map[string]*MemoryPipeline
 	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
+	eg                 errgroup.Group
 	mu                 sync.RWMutex
 }
 
@@ -77,8 +78,10 @@ func (c *Collector) Start(ctx context.Context) error {
 		return err
 	}
 
-	c.wg.Add(1)
-	go c.collectLoop(ctx, ch)
+	c.eg.Go(func() error {
+		c.collectLoop(ctx, ch)
+		return nil
+	})
 
 	return nil
 }
@@ -88,7 +91,7 @@ func (c *Collector) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	c.wg.Wait()
+	_ = c.eg.Wait()
 }
 
 // Timeline returns the execution timeline.
@@ -124,8 +127,6 @@ func (c *Collector) Pipeline(sessionID string) *MemoryPipeline {
 
 // collectLoop reads ares_events and routes them to the appropriate data structure.
 func (c *Collector) collectLoop(ctx context.Context, ch <-chan *ares_events.Event) {
-	defer c.wg.Done()
-
 	for {
 		select {
 		case <-ctx.Done():

@@ -2,7 +2,7 @@
 //
 // This is a placeholder skeleton. The real adapter will strip tags via a
 // tokenizer (e.g. bluemonday) and preserve title/meta. The stub extracts
-// text via a naive regex strip that is sufficient for骨架 wiring tests.
+// text via a naive regex strip that is sufficient for skeleton wiring tests.
 package html
 
 import (

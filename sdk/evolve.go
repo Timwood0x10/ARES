@@ -234,7 +234,8 @@ func applyEvolvedParams(agent *Agent, params map[string]any) {
 	}
 	// TODO: wire search_depth/scheduler_strategy/memory_threshold/recovery_strategy
 	// into Agent fields (e.g. discovery depth, scheduler, RAG threshold, retry
-	// policy) and consume them inside Run; until then they cannot be applied.
+	// policy) and consume them inside Run; until then they cannot be applied
+	// (expected by 2026-12-31).
 	for _, key := range []string{paramSearchDepth, paramSchedulerStrategy, paramMemoryThreshold, paramRecoveryStrategy} {
 		if v, ok := params[key]; ok {
 			log.Printf("[ares:evolve] TODO: %s=%v not wired to Agent field yet", key, v)

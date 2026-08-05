@@ -2,9 +2,9 @@ package flight
 
 import (
 	"context"
-	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"golang.org/x/sync/errgroup"
 )
 
 // GenealogyCollector subscribes to EventStore and populates a Genealogy tree.
@@ -12,7 +12,7 @@ type GenealogyCollector struct {
 	genealogy  *Genealogy
 	eventStore ares_events.EventStore
 	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	eg         errgroup.Group
 }
 
 // NewGenealogyCollector creates a new genealogy collector.
@@ -36,8 +36,10 @@ func (c *GenealogyCollector) Start(ctx context.Context) error {
 		return err
 	}
 
-	c.wg.Add(1)
-	go c.collectLoop(ctx, ch)
+	c.eg.Go(func() error {
+		c.collectLoop(ctx, ch)
+		return nil
+	})
 
 	return nil
 }
@@ -47,7 +49,7 @@ func (c *GenealogyCollector) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	c.wg.Wait()
+	_ = c.eg.Wait()
 }
 
 // Genealogy returns the genealogy tree.
@@ -57,8 +59,6 @@ func (c *GenealogyCollector) Genealogy() *Genealogy {
 
 // collectLoop reads ares_events and updates the genealogy.
 func (c *GenealogyCollector) collectLoop(ctx context.Context, ch <-chan *ares_events.Event) {
-	defer c.wg.Done()
-
 	for {
 		select {
 		case <-ctx.Done():

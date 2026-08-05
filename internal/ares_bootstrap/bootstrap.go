@@ -326,7 +326,12 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 			return nil, fmt.Errorf("evidence: create postgres store: %w", storeErr)
 		}
 		evidenceStore = pgStore
-		cleanups = append(cleanups, func() { _ = pgPool.Close() })
+		cleanups = append(cleanups, func() {
+			if cerr := pgPool.Close(); cerr != nil {
+				log.Warn("bootstrap: close evidence postgres pool",
+					"error", cerr)
+			}
+		})
 	}
 
 	newEvol, evStore, evErr := wireNewEvolution(cfg.Evolution.Enabled, dag, knowRt, liveMemoryStore, evidenceStore)

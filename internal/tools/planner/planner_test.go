@@ -37,7 +37,7 @@ func TestRuleBasedAnalyzer_EmptyRequest(t *testing.T) {
 
 func TestRuleBasedAnalyzer_Summation(t *testing.T) {
 	a := NewRuleBasedAnalyzer()
-	// "计算1到一百万的和" contains "计算" which matches the arithmetic rule.
+	// A Chinese math phrase (sum from 1 to a million) contains the arithmetic trigger matching the rule.
 	// The arithmetic rule still allows calculator to perform the sum.
 	intent, err := a.Analyze(context.Background(), "计算1到一百万的和")
 	require.NoError(t, err)
@@ -48,7 +48,7 @@ func TestRuleBasedAnalyzer_Summation(t *testing.T) {
 
 func TestRuleBasedAnalyzer_SummationChineseExact(t *testing.T) {
 	a := NewRuleBasedAnalyzer()
-	// "累加" explicitly triggers the summation rule.
+	// The summation keyword explicitly triggers the summation rule.
 	intent, err := a.Analyze(context.Background(), "从1累加到100万")
 	require.NoError(t, err)
 	require.NotNil(t, intent)

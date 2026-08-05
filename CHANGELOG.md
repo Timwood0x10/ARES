@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] - 2026-08-05
+
+> Runtime closure & persistence release: System Runtime lifecycle kernel, PostgreSQL evidence persistence, SDK/Bootstrap unification, closed-loop GA feedback, and config-driven assembly.
+> This release closes the Runtime Component Closure plan (stages 0–9): one lifecycle kernel (Orchestrator) shared by serve/start/SDK, real feedback loops (Event → Evidence → GA → Strategy → Agent → experience), persistent evidence across restarts, and a single config-driven entry path (`sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))`).
+
+### System Runtime Lifecycle Kernel
+
+A unified component lifecycle kernel replaces per-entry startup/shutdown wiring:
+
+- **Orchestrator** (`internal/system_runtime/orchestrator.go`): Reverse-topological Start/Stop across the registered component graph with state transitions (Constructed → Bound → Started → Ready → Stopping → Stopped) and error aggregation.
+- **Registry + Snapshot** (`internal/system_runtime/`): `Registry.Register`/`Names`/`GetMode`, `Snapshot()` returns per-component status JSON (`ComponentStatus`/`IsSystemReady`), wired into Bootstrap as `comp.SystemRuntime`.
+- **Degraded state (F03)**: Adapters implement `ReadinessChecker`; a component with missing write deps (e.g. AKG retrieval enabled without DistillBridge) reports **Degraded** with a reason instead of silently claiming Ready. Closure test is a hard assertion.
+- **Entry unification**: serve, start (monitor-live), and SDK all assemble through `ares_bootstrap.Bootstrap`; component graph equivalence across entries is locked by contract tests (`closure_entry_equivalence_test.go`).
+
+### Evidence Persistence (PostgreSQL)
+
+GA feedback and runtime evidence survive restarts instead of resetting to baseline:
+
+- **`evidence.PostgresStore`** (`internal/evidence/postgres_store.go`): `Append`/`Query`/`Aggregate` over a `evidence_records` table (source/kind/payload/metadata/ts), mirroring MemoryStore semantics with time-window filtering.
+- **Interface-ized store**: `EvidenceStore` fields changed from `*evidence.MemoryStore` to `evidence.Store` across Bootstrap, evolution genomes, and the deployment staging runtime; `ProvideNewEvolution` accepts an optional persistent store (nil → in-memory default).
+- **Entry opt-in, fail-loud**: Bootstrap wires PostgresStore when `storage` is configured; SDK wires it when `database.host` is set and the SDK-owned evolution path is active. Connection failure blocks startup (no silent fallback).
+
+### GA Feedback Loop (closed)
+
+- **Track A closed**: strategy outcomes are written back to the experience store (`recordStrategyOutcome` in `provide_distillation.go`) so the next mutation round reads real hints — previously a silent no-op.
+- **Six genomes** evolve runtime strategies (workflow topology, scheduler, knowledge retrieval, recovery, memory, prompt) with a real `Event → Evidence(fitness) → GA → StrategyStore → Agent` loop; feedback-loop tests assert real data flow (fitness 1.0/0.0 observed in the shared store).
+
+### SDK / Bootstrap Unification
+
+- SDK `New()` assembles the core component graph through `ares_bootstrap.Bootstrap`; EventStore / NewEvolution / System Runtime instances are shared, not duplicated (`bootstrap_runtime.go`, `bootstrap_shared_instance_test.go`).
+- `Runtime.Close()` drains Bootstrap background goroutines via `WaitBackground()` (same lifecycle kernel as serve); PostgreSQL evidence pool is closed on Close (leak fixed).
+- **F04 live DAG**: `buildLeaderLiveDAG` (serve) registers the leader's real workflow DAG pre-Start; `wireEvolutionLiveDAGs` binds executors to it instead of the synthetic placeholder. Synthetic DAGs are isolated to the `"evolution"` key (hard assertion).
+
+### Reliability & Hardening
+
+- **Chaos fault injection** (`b5a8ae2a`): injected failures, failover, survival tests, self-healing.
+- **SSRF defense** (`102fb75b`): hardened network transport with import allowlist; sandbox/streaming paths repaired (`bd7d3816`).
+- **MCP-style tool discovery** (`9a8c7f1d`): `tool_discovery` + tool source registration.
+- **AKG closed loop** (`fb4e06e0`, `7d430b5f`, `147d8c8b`): full AKG loop with relevance scoring + LLM-free knowledge graph implementations.
+- **State-aware LLM evolution suggestions** (`ac69f066`) + graceful shutdown fixes; flight fitness write loop closed across all deployment paths (`dcad4236`).
+- **Config gating / shutdown timeout / null-pointer fixes** in bootstrap (`95e7c1d9`); memory system cleanup and auth/tooling hardening (`d5f3aed3`).
+
+### Documentation & Examples
+
+- **New `config.yaml` guide** (EN/ZH): `docs/articles/en/25-config-yaml-guide.en.md` / `docs/articles/zh/25-config-yaml-guide.zh.md` — LLM, distillation, GA evolution, knowledge, tools, and chaos-related switches, verified against actual `yaml:` tags.
+- **README / README_CN / framework comparisons updated** to v0.2.9 capabilities (System Runtime, evidence persistence, six-genome loop).
+- **Examples**: `08-mcp-integration` demonstrates the System Runtime `Snapshot()` API; live-DAG entry tests (`cmd/ares/serve_live_dag_test.go`).
+- Cleanup: removed stale review artifacts (`outputs/`), obsolete plans (`AKG_DEV_PLAN_029`, `MASTER_DEV_PLAN`, `EXTERNAL_API_GUIDE`), and unreferenced top-level docs.
+
 ## [0.2.8] - 2026-07-29
 
 > Public API layer + Unified DAG Runner + Context Compression Archive + Logic closure fixes.

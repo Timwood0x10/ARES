@@ -4,7 +4,7 @@
 // (explicit EventStore via BootstrapDeps) and the start-style path (nil deps,
 // Bootstrap creates its own store) produces the identical System Runtime
 // component graph: same names, modes, and dependency edges. This locks the
-// "入口等价" contract — a single assembly kernel (Bootstrap) driving all
+// "entry equivalence" contract — a single assembly kernel (Bootstrap) driving all
 // entry points instead of per-entry wiring drifting apart.
 //
 //go:build closure
@@ -53,7 +53,7 @@ func graphEdges(t *testing.T, comp *Components) []componentEdge {
 
 // TestClosure_EntryComponentGraphEquivalence_ServeVsStart verifies the serve
 // entry (explicit EventStore dep) and the start entry (nil deps) produce the
-// identical component graph for the same config (Stage 6: 入口等价).
+// identical component graph for the same config (Stage 6: entry equivalence).
 func TestClosure_EntryComponentGraphEquivalence_ServeVsStart(t *testing.T) {
 	cfg := &ares_config.Config{
 		LLM: ares_config.LLMConfig{

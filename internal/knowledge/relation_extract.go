@@ -22,15 +22,16 @@ type RelationExtractor struct {
 // NewRelationExtractor returns an extractor with the default bilingual rule set
 // (Chinese + English) for the fixes/depends_on/calls/belongs_to predicates.
 //
-// Chinese verbs tolerate the 了 particle and direct concatenation (Chinese has
-// no word separators), so the separator is `(?:了|\s)*` (zero or more). English
+// Chinese verbs tolerate the aspect particle and direct concatenation (Chinese has
+// no word separators), so the separator allows zero or more aspect particles or
+// whitespace. English
 // verbs require whitespace after the verb and a leading word boundary so that
 // "fix" does not match inside words like "prefix" or "fixing".
 func NewRelationExtractor() *RelationExtractor {
 	return &RelationExtractor{
 		entityDict: make(map[string]string),
 		patterns: []RelationPattern{
-			// fixes — Chinese (修复/解决), tolerating the 了 particle.
+			// fixes — Chinese and English variants, tolerating the aspect particle.
 			{
 				Predicate:   RelFixes,
 				Regex:       regexp.MustCompile(`修复了?\s*(.+)`),
@@ -47,7 +48,7 @@ func NewRelationExtractor() *RelationExtractor {
 				Regex:       regexp.MustCompile(`(?i)\bfix(?:ed|es)?\s+(.+)`),
 				EntityGroup: 1,
 			},
-			// depends_on — Chinese 依赖 + English "depends on".
+			// depends_on — Chinese and English variants of "depends on".
 			{
 				Predicate:   RelDependsOn,
 				Regex:       regexp.MustCompile(`依赖\s*(.+)`),
@@ -58,13 +59,13 @@ func NewRelationExtractor() *RelationExtractor {
 				Regex:       regexp.MustCompile(`(?i)depends?\s+on\s+(.+)`),
 				EntityGroup: 1,
 			},
-			// calls — Chinese 调用.
+			// calls — Chinese and English variants of "calls".
 			{
 				Predicate:   RelCalls,
 				Regex:       regexp.MustCompile(`调用了?\s*(.+)`),
 				EntityGroup: 1,
 			},
-			// belongs_to — Chinese 属于.
+			// belongs_to — Chinese and English variants of "belongs to".
 			{
 				Predicate:   RelBelongsTo,
 				Regex:       regexp.MustCompile(`属于\s*(.+)`),
@@ -110,7 +111,7 @@ func (e *RelationExtractor) Extract(obj *KnowledgeObject) []Relation {
 }
 
 // stripTrailingPunct removes trailing punctuation and whitespace so captured
-// targets like "鉴权bug。" or "auth bug," become clean entity text.
+// targets like "auth-bug" or "auth bug," become clean entity text.
 func stripTrailingPunct(s string) string {
 	s = strings.TrimRight(s, " \t\n\r.,;:。，；：、!?！？")
 	return s

@@ -3,7 +3,7 @@
 // Verifies the SDK, when backed by the Bootstrap core (Stage 8), assembles the
 // SAME component graph as a direct Bootstrap call with the equivalent config:
 // identical component names, modes, and dependency edges. This locks the
-// "三入口等价" contract on the SDK entry — no drifting dual-track graph.
+// "three-entry equivalence" contract on the SDK entry — no drifting dual-track graph.
 package sdk
 
 import (
@@ -46,7 +46,7 @@ func sdkGraphEdges(t *testing.T, comp *ares_bootstrap.Components) []sdkGraphEdge
 
 // TestSDK_ComponentGraph_EquivalentToBootstrap verifies the SDK's Bootstrap
 // core assembles the identical component graph as a direct Bootstrap call with
-// the equivalent config (三入口等价 on the SDK entry).
+// the equivalent config (three-entry equivalence on the SDK entry).
 func TestSDK_ComponentGraph_EquivalentToBootstrap(t *testing.T) {
 	// Build the SDK Runtime backed by the Bootstrap core.
 	rt, err := New(

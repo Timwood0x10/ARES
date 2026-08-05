@@ -20,11 +20,8 @@ var ErrTaskNotStarted = errors.New("task not started: cancelled by concurrent ta
 // DefaultDispatcherAgentID is the legacy sender identity used when no
 // WithDispatcherAgentID option is supplied. It preserves the pre-fix behavior
 // for tests that never exercise the message-sender path. Production callers
-// should always pass the real leader ID via WithDispatcherAgentID so
-// distributed messages carry the correct sender.
-//
-// TODO(tech-debt): make agentID required once all construction sites
-// (including tests) are migrated to pass a real ID.
+// (cmd/ares, cmd/monitor-live) always pass the real leader ID via
+// WithDispatcherAgentID so distributed messages carry the correct sender.
 const DefaultDispatcherAgentID = "leader"
 
 // TaskExecutorFunc is a function type for executing tasks directly.

@@ -674,7 +674,7 @@ func TestTruncateForLog_WithUnicode(t *testing.T) {
 	// Test with mixed unicode characters
 	// Note: truncate.WithEllipsis counts runes, not bytes
 	result := truncate.WithEllipsis("Hello 世界 🌍", 10)
-	// "Hello 世界 🌍" has 9 runes: H-e-l-l-o-space-world-space-emoji
+	// The mixed-script sample has 9 runes: H-e-l-l-o-space-world-space-emoji
 	// With maxLen=10, it should return the full string without truncation
 	expected := "Hello 世界 🌍"
 	if result != expected {

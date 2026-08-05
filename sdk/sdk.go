@@ -50,6 +50,7 @@ import (
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -65,6 +66,7 @@ import (
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
 	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -84,6 +86,9 @@ const (
 	roleUser      = "user"
 	roleAssistant = "assistant"
 	roleTool      = "tool"
+	// sslModeDisable is the SDK convention for local/dev PostgreSQL when no
+	// ssl_mode is configured (empty means "disable").
+	sslModeDisable = "disable"
 )
 
 // Runtime is the top-level container for an ARES agent system (a "new ARES runtime").
@@ -150,6 +155,12 @@ type Runtime struct {
 	// bootstrapCancel cancels the Bootstrap lifecycle context; stored so Close
 	// stops Bootstrap's background goroutines before WaitBackground drains them.
 	bootstrapCancel context.CancelFunc
+	// evidencePool, when non-nil, is a PostgreSQL pool created for the
+	// evidence store (T1.3). Closed in Close() to prevent connection leaks.
+	// Typed as *postgres.Pool (not io.Closer) so a nil pool stays a nil
+	// pointer — assigning a nil *postgres.Pool to an interface would make
+	// the interface non-nil and Close() would dereference a nil db.
+	evidencePool *postgres.Pool
 	// ctx governs the lifetime of background goroutines (event-driven
 	// distillation subscriber). Cancelled in Close so subscribers exit cleanly.
 	ctx context.Context
@@ -486,7 +497,7 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 	case cfg.dbCfg.Host != "":
 		sslMode := cfg.dbCfg.SSLMode
 		if sslMode == "" {
-			sslMode = "disable"
+			sslMode = sslModeDisable
 		}
 		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 			cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
@@ -544,6 +555,57 @@ func buildAKGBridge(
 		gate, knowledge.NewRelationExtractor(),
 		akgNamespace, embModel,
 	)
+}
+
+// buildSDKEvidenceStore creates a persistent evidence store (Postgres) only
+// when it will actually be consumed by the SDK's own evolution wiring —
+// evolution enabled, an SDK-owned knowledge runtime exists, and the Bootstrap
+// core does not supply its own NewEvolution (which would discard evStore).
+// This avoids hard-failing startup for a configured-but-unused Postgres and
+// avoids an idle connection pool. SSLMode normalization mirrors
+// buildKnowledgeStore/buildPostgresPool (empty means "disable"). The returned
+// pool (when non-nil) is owned by the caller and closed in Runtime.Close().
+//
+// Args:
+//
+//	cfg           - fully applied SDK config; evoCfg/dbCfg are read.
+//	knowRt        - SDK-owned knowledge runtime; nil when knowledge is disabled.
+//	bootstrapComp - Bootstrap core (may be nil); its NewEvolution would
+//	                replace the SDK evolution wiring and discard evStore.
+//
+// Returns:
+//
+//	evStore - the evidence store (nil when unused → default in-memory store).
+//	pgPool  - the Postgres pool backing evStore; nil when not created.
+//	err     - fail-loud error when configured Postgres cannot be created.
+func buildSDKEvidenceStore(cfg *config, knowRt *khruntime.KnowledgeRuntime, bootstrapComp *ares_bootstrap.Components) (evidence.Store, *postgres.Pool, error) {
+	if !cfg.evoCfg.Enabled || knowRt == nil ||
+		(bootstrapComp != nil && bootstrapComp.NewEvolution != nil) ||
+		cfg.dbCfg.Host == "" {
+		return nil, nil, nil
+	}
+	sslMode := cfg.dbCfg.SSLMode
+	if sslMode == "" {
+		sslMode = sslModeDisable
+	}
+	pgCfg := &postgres.Config{
+		Host:     cfg.dbCfg.Host,
+		Port:     cfg.dbCfg.Port,
+		User:     cfg.dbCfg.User,
+		Password: cfg.dbCfg.Password,
+		Database: cfg.dbCfg.Database,
+		SSLMode:  sslMode,
+	}
+	pgPool, pgErr := postgres.NewPool(pgCfg)
+	if pgErr != nil {
+		return nil, nil, fmt.Errorf("sdk: evidence postgres pool: %w", pgErr)
+	}
+	pgStore, storeErr := evidence.NewPostgresStore(pgPool)
+	if storeErr != nil {
+		_ = pgPool.Close()
+		return nil, nil, fmt.Errorf("sdk: evidence postgres store: %w", storeErr)
+	}
+	return pgStore, pgPool, nil
 }
 
 // wireEvolutionHotUpdate wires the live KnowledgeRuntime into the evolution
@@ -713,7 +775,18 @@ func New(opts ...Option) (*Runtime, error) {
 	// evolution patch system so knowledge patches affect the running engine).
 	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
 	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
-	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt, nil, nil)
+	// T1.3 (evidence persistence): create the persistent evidence store only
+	// when it will actually be consumed — evolution enabled, an SDK-owned
+	// knowledge runtime exists, and the Bootstrap core does not supply its own
+	// NewEvolution (which would discard evStore). This avoids hard-failing
+	// startup for a configured-but-unused Postgres and avoids an idle pool.
+	// SSLMode normalization mirrors buildKnowledgeStore/buildPostgresPool
+	// (empty means "disable" for local/dev PostgreSQL).
+	evStore, pgPool, err := buildSDKEvidenceStore(cfg, kw.rt, bootstrapComp)
+	if err != nil {
+		return nil, err
+	}
+	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt, nil, evStore)
 	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil {
 		evoComponents = bootstrapComp.NewEvolution
 	}
@@ -762,6 +835,7 @@ func New(opts ...Option) (*Runtime, error) {
 		trace:            cfg.trace,
 		bootstrap:        bootstrapComp,
 		bootstrapCancel:  bootstrapCancel,
+		evidencePool:     pgPool,
 		ctx:              rtCtx,
 		cancel:           rtCancel,
 		eg:               eg,
@@ -799,6 +873,11 @@ func (r *Runtime) Close() {
 		}
 		r.bootstrap.WaitBackground()
 	}
+	// Close the evidence PostgreSQL pool to prevent connection leaks (T1.3).
+	// The pool is nil when no Postgres was configured, so this is a safe no-op.
+	if r.evidencePool != nil {
+		_ = r.evidencePool.Close()
+	}
 	r.llmSvc.Close()
 	if r.memMgr != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -811,6 +890,18 @@ func (r *Runtime) Close() {
 	for _, c := range r.mcpClients {
 		_ = c.Close()
 	}
+}
+
+// Snapshot returns the system-level component status snapshot from the
+// Bootstrap core (Stage 1 observability). Returns an empty snapshot when
+// the Runtime is not backed by Bootstrap (SDK-only options) or when
+// Bootstrap failed before wiring completed — callers can always consume
+// a valid value without nil guards.
+func (r *Runtime) Snapshot() system_runtime.Snapshot {
+	if r.bootstrap == nil {
+		return system_runtime.Snapshot{}
+	}
+	return r.bootstrap.Snapshot()
 }
 
 // ToolRegistry returns the internal tool registry. Use this to register custom
