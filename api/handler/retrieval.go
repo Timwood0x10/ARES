@@ -34,10 +34,10 @@ type SearchRequest struct {
 
 // AddKnowledgeRequest is the request body for POST /api/v1/knowledge.
 type AddKnowledgeRequest struct {
-	TenantID string `json:"tenant_id"`
-	Content  string `json:"content"`
-	Source   string `json:"source,omitempty"`
-	Metadata string `json:"metadata,omitempty"`
+	TenantID string        `json:"tenant_id"`
+	Content  string        `json:"content"`
+	Source   string        `json:"source,omitempty"`
+	Metadata core.Metadata `json:"metadata,omitempty"`
 }
 
 // HandleSearch performs a knowledge base search.
@@ -87,6 +87,7 @@ func (h *RetrievalHandler) HandleAddKnowledge(w http.ResponseWriter, r *http.Req
 		TenantID: req.TenantID,
 		Content:  req.Content,
 		Source:   req.Source,
+		Metadata: req.Metadata,
 	}
 
 	created, err := h.retrieval.AddKnowledge(r.Context(), item)

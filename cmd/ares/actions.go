@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"math/rand"
 	"net/http"
@@ -17,10 +18,40 @@ import (
 //   - Agent lifecycle (kill/resume/retry)
 //   - Chaos engineering (random-kill/kill-all/recover)
 //   - Tool API (list/call)
+//
+// All destructive endpoints (agents, chaos, tools/call) require API key
+// authentication via the Authorization: Bearer header. When apiKey is empty,
+// all destructive requests are denied (deny-by-default).
 type actionHandler struct {
-	inner http.Handler
-	mgr   *ares_runtime.Manager
-	tools *api_tools.Registry
+	inner  http.Handler
+	mgr    *ares_runtime.Manager
+	tools  *api_tools.Registry
+	apiKey string
+}
+
+// checkAuth enforces API key authentication on destructive endpoints.
+// Returns true if the request is authorized, false otherwise.
+// When apiKey is empty, all requests are denied (deny-by-default).
+func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	if h.apiKey == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "API key not configured"})
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "missing or invalid Authorization header"})
+		return false
+	}
+	token := strings.TrimPrefix(auth, prefix)
+	if subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) != 1 {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid API key"})
+		return false
+	}
+	return true
 }
 
 func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -28,6 +59,9 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Agent lifecycle: POST /api/agents/:id/{kill,resume,retry}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/agents/") {
+		if !h.checkAuth(w, r) {
+			return
+		}
 		parts := strings.Split(strings.TrimPrefix(path, "/api/agents/"), "/")
 		if len(parts) == 2 {
 			agentID, action := parts[0], parts[1]
@@ -46,12 +80,18 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/chaos/") {
+		if !h.checkAuth(w, r) {
+			return
+		}
 		h.handleChaos(w, r, strings.TrimPrefix(path, "/api/chaos/"))
 		return
 	}
 
 	// Tool API: POST /api/tools/call
 	if r.Method == "POST" && path == "/api/tools/call" {
+		if !h.checkAuth(w, r) {
+			return
+		}
 		h.handleCallTool(w, r)
 		return
 	}

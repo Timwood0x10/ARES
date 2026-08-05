@@ -21,7 +21,7 @@ func TestEvolutionHotUpdateWiring(t *testing.T) {
 		// the path New() would take if it ever called ProvideNewEvolution
 		// without a live runtime, and it is the contract the SDK relies on to
 		// keep bootstrap non-fatal.
-		comps, err := ares_bootstrap.ProvideNewEvolution(nil, nil, nil)
+		comps, err := ares_bootstrap.ProvideNewEvolution(nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("ProvideNewEvolution(nil,nil,nil) error: %v", err)
 		}
@@ -42,7 +42,7 @@ func TestEvolutionHotUpdateWiring(t *testing.T) {
 		// can mutate knowledge config. This is the focused equivalent of the
 		// SDK's New() hot-update path without paying for LLM construction.
 		rt := newTestKnowledgeRuntime()
-		comps, err := ares_bootstrap.ProvideNewEvolution(nil, rt, nil)
+		comps, err := ares_bootstrap.ProvideNewEvolution(nil, rt, nil, nil)
 		if err != nil {
 			t.Fatalf("ProvideNewEvolution with runtime error: %v", err)
 		}
@@ -73,12 +73,15 @@ func TestEvolutionHotUpdateWiring(t *testing.T) {
 			wantEvoComponents: false,
 		},
 		{
-			// Knowledge off → kw.rt is nil → evoComponents must be nil even
-			// when evolution is on (the wiring requires a live runtime).
-			name:              "disabled_when_knowledge_off",
+			// Stage 8 (SDK unification): evoComponents now comes from the
+			// Bootstrap kernel's NewEvolution, which is wired whenever
+			// Evolution.Enabled is true — matching serve/start semantics. The
+			// SDK knowledge flag no longer gates it, so with evolution on the
+			// component is present even when SDK knowledge is off.
+			name:              "evolution_wired_when_knowledge_off",
 			evoEnabled:        true,
 			knowledgeEnabled:  false,
-			wantEvoComponents: false,
+			wantEvoComponents: true,
 		},
 		{
 			// Both on → evoComponents must be non-nil. This is the happy path

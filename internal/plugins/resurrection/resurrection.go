@@ -369,7 +369,18 @@ func (s *Supervisor) onFailure(agentID string) {
 
 	log.Warn("resurrection: failure detected, starting resurrection", "agent_id", agentID)
 
-	s.g.Go(func() error {
+	// Guard against the health checker invoking the callback before Start
+	// initialized the errgroup (or after Stop). Calling Go on a nil group
+	// would panic.
+	s.mu.RLock()
+	g := s.g
+	s.mu.RUnlock()
+	if g == nil {
+		log.Warn("resurrection: failure callback before supervisor start; skipping",
+			"agent_id", agentID)
+		return
+	}
+	g.Go(func() error {
 		s.resurrect(agentID)
 		return nil
 	})
@@ -520,13 +531,19 @@ func (s *Supervisor) resurrect(agentID string) {
 			}
 		}
 
-		if err := newAgent.Start(resCtx); err != nil {
+		// Start the agent under s.gctx (the supervisor's lifecycle context),
+		// not resCtx: resCtx is bounded by ResurrectTimeout and would kill the
+		// resurrected agent once the timer fires (and the old code cancelled it
+		// immediately after Start, so the agent died right away).
+		if err := newAgent.Start(s.gctx); err != nil {
 			lastErr = errors.Wrap(err, "resurrection: start failed")
 			cancel()
 			s.backoffWait(attempt, &backoff)
 			continue
 		}
 
+		// resCtx was only needed for the bounded snapshot-recovery phase above;
+		// release its timer now that the agent no longer depends on it.
 		cancel()
 		lastErr = nil
 		break

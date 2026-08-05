@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -10,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 )
 
 func TestMCPToolsRegistration(t *testing.T) {
@@ -217,5 +219,167 @@ func TestToolNames(t *testing.T) {
 		if tool.Execute == nil {
 			t.Error("tool execute should not be nil")
 		}
+	}
+}
+
+// failingSaveStore wraps an in-memory store but returns a sentinel error on
+// Save so the distill_memory error path can be exercised without a real DB.
+type failingSaveStore struct {
+	*memorystore.Store
+	err error
+}
+
+func (f *failingSaveStore) Save(_ context.Context, _ ...*knowledge.KnowledgeObject) error {
+	return f.err
+}
+
+// TestDistillMemory covers the post-0.2.9 behavior: the object runs through
+// the quality gate (Confidence no longer hardcoded to 1.0), is persisted
+// when a store is wired, and is promoted to active only when its final
+// score clears the gate threshold.
+func TestDistillMemory(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		store       knowledge.KnowledgeStore
+		gate        knowledge.QualityGateConfig
+		wantErr     bool
+		wantSaved   bool
+		wantStatus  knowledge.ObjectStatus
+		wantPromote bool
+	}{
+		{
+			// No store wired (NewAKFService path): the object is scored but
+			// never persisted; status stays candidate.
+			name:       "no_store_backward_compat",
+			content:    "user prefers concise answers in code reviews",
+			store:      nil,
+			gate:       knowledge.DefaultQualityGateConfig(),
+			wantErr:    false,
+			wantSaved:  false,
+			wantStatus: knowledge.StatusCandidate,
+		},
+		{
+			// Default gate (MinFinalScore 0.55): a fresh, well-extracted
+			// memory clears the threshold and is promoted to active.
+			name:        "store_promotes_above_threshold",
+			content:     "user prefers concise answers in code reviews",
+			store:       memorystore.New(),
+			gate:        knowledge.DefaultQualityGateConfig(),
+			wantErr:     false,
+			wantSaved:   true,
+			wantStatus:  knowledge.StatusActive,
+			wantPromote: true,
+		},
+		{
+			// Gate threshold raised above any achievable score: the object
+			// is saved as a candidate but never promoted.
+			name:       "store_keeps_candidate_below_threshold",
+			content:    "short note",
+			store:      memorystore.New(),
+			gate:       knowledge.QualityGateConfig{MinFinalScore: 0.99},
+			wantErr:    false,
+			wantSaved:  true,
+			wantStatus: knowledge.StatusCandidate,
+		},
+		{
+			// Save failure surfaces as a wrapped error.
+			name:    "save_error_propagates",
+			content: "user prefers concise answers in code reviews",
+			store: &failingSaveStore{
+				Store: memorystore.New(),
+				err:   errors.New("disk full"),
+			},
+			gate:    knowledge.DefaultQualityGateConfig(),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewAKFServiceWithStore(nil, &testCompiler{}, tt.store, tt.gate)
+
+			input, _ := json.Marshal(map[string]any{
+				"content": tt.content,
+				"type":    "memory",
+				"tags":    []string{"pref"},
+			})
+
+			out, err := svc.handleDistillMemory(context.Background(), string(input))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+				t.Fatalf("result is not valid JSON: %v", err)
+			}
+
+			// Confidence must be derived from the gate, not hardcoded to 1.0.
+			conf, ok := parsed["confidence"].(float64)
+			if !ok {
+				t.Fatalf("expected numeric confidence, got %T", parsed["confidence"])
+			}
+			if conf <= 0 || conf >= 1.0 {
+				t.Errorf("confidence %v should be in (0,1) — gate-derived, not hardcoded 1.0", conf)
+			}
+
+			if got := parsed["status"]; got != string(tt.wantStatus) {
+				t.Errorf("status = %v, want %v", got, tt.wantStatus)
+			}
+
+			if parsed["object_id"] == nil || parsed["object_id"] == "" {
+				t.Errorf("expected non-empty object_id, got %v", parsed["object_id"])
+			}
+			if parsed["summary"] != tt.content {
+				t.Errorf("summary = %v, want %v", parsed["summary"], tt.content)
+			}
+			if parsed["type"] != "memory" {
+				t.Errorf("type = %v, want memory", parsed["type"])
+			}
+
+			// Verify persistence side-effects against the real store.
+			if tt.store == nil {
+				return
+			}
+			if ms, ok := tt.store.(*memorystore.Store); ok {
+				if tt.wantSaved && ms.Count() != 1 {
+					t.Errorf("expected 1 saved object, got %d", ms.Count())
+				}
+				objID, _ := parsed["object_id"].(string)
+				saved, gErr := ms.Get(context.Background(), objID)
+				if gErr != nil {
+					t.Fatalf("saved object not retrievable: %v", gErr)
+				}
+				if saved.Status != tt.wantStatus {
+					t.Errorf("persisted status = %v, want %v", saved.Status, tt.wantStatus)
+				}
+				if tt.wantPromote && saved.Quality == nil {
+					t.Errorf("expected Quality to be recorded on promotion")
+				}
+			}
+		})
+	}
+}
+
+func TestDistillMemoryMissingContent(t *testing.T) {
+	svc := NewAKFService(nil, nil)
+	_, err := svc.handleDistillMemory(context.Background(), `{}`)
+	if err == nil {
+		t.Error("expected error for missing content")
+	}
+}
+
+func TestDistillMemoryInvalidJSON(t *testing.T) {
+	svc := NewAKFService(nil, nil)
+	_, err := svc.handleDistillMemory(context.Background(), `not json`)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
 	}
 }

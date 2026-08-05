@@ -21,9 +21,9 @@ import (
 
 // Node represents an executable unit in the graph.
 //
-// TODO(P2): All Node implementations must satisfy ares_runtime.Executable
-// once the single Runner is built. The adapter will map between *State
-// (graph-local) and *ExecutionContext (unified scope).
+// Node implementations are adapted to ares_runtime.Executable by the unified
+// Runner's adapter layer: the adapter maps between *State (graph-local) and
+// *ExecutionContext (unified scope) at execution time.
 type Node interface {
 	// Execute runs the node with the given state.
 	Execute(ctx context.Context, state *State) error
@@ -146,6 +146,11 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 
 	startTime := time.Now()
 	toolName := n.tool.Name()
+	// nodeID drives the state key and event correlation IDs. It prefers the
+	// custom ID set via WithNodeID so that two packages reusing the same tool
+	// do not collide on the "node.<id>" state key; it falls back to the tool
+	// name only when no custom node ID is configured, preserving backward
+	// compatibility for callers that never set one.
 	nodeID := n.nodeID
 	if nodeID == "" {
 		nodeID = toolName
@@ -212,9 +217,9 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 	}
 
 	if result.Success {
-		state.Set("node."+toolName, result.Data)
+		state.Set("node."+nodeID, result.Data)
 	} else {
-		state.Set("node."+toolName, result.Error)
+		state.Set("node."+nodeID, result.Error)
 	}
 	return nil
 }

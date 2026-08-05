@@ -368,6 +368,8 @@ func (c *ConfigFile) setDefaults() {
 			c.LLM.BaseURL = "https://openrouter.ai/api/v1"
 		case core.LLMProviderOpenAI:
 			c.LLM.BaseURL = "https://api.openai.com/v1"
+		case core.LLMProviderAnthropic:
+			c.LLM.BaseURL = "https://api.anthropic.com/v1"
 		}
 	}
 	if c.LLM.Model == "" {
@@ -378,6 +380,8 @@ func (c *ConfigFile) setDefaults() {
 			c.LLM.Model = "meta-llama/llama-3.1-8b-instruct"
 		case core.LLMProviderOpenAI:
 			c.LLM.Model = "gpt-4o"
+		case core.LLMProviderAnthropic:
+			c.LLM.Model = "claude-sonnet-4-20250514"
 		}
 	}
 

@@ -138,7 +138,7 @@ func (d *DLQ) RemoveBySession(sessionID string) {
 
 	var newMessages []*DLQEntry
 	for _, entry := range d.messages {
-		if entry.Message.SessionID != sessionID {
+		if entry.Message != nil && entry.Message.SessionID != sessionID {
 			newMessages = append(newMessages, entry)
 		}
 	}

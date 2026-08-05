@@ -1,5 +1,3 @@
-// Package evolution provides a GraphProvider that reads from the evolution
-// system's StrategyStore and streams strategies as KnowledgeObjects.
 package evolution
 
 import (
@@ -42,6 +40,12 @@ func New(name string, store StrategyStore) *EvolutionProvider {
 
 // Name returns the provider identifier.
 func (p *EvolutionProvider) Name() string { return p.name }
+
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *EvolutionProvider) ProviderType() provider.ProviderType { return provider.ProviderEvolution }
+
+// Compile-time guard that EvolutionProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*EvolutionProvider)(nil)
 
 // IntentMatch returns 0.9 for decision/evolution intents, 0.3 otherwise.
 func (p *EvolutionProvider) IntentMatch(intent knowledge.Intent) float64 {

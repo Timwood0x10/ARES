@@ -1,10 +1,3 @@
-// Package mysql implements a GraphProvider for external MySQL databases.
-// It reads table rows via SQL queries and converts them to KnowledgeObjects.
-//
-// Usage:
-//
-//	db, _ := sql.Open("mysql", "user:pass@tcp(host:3306)/dbname")
-//	provider, _ := mysql.NewMySQLProvider(db, cfg, mapping)
 package mysql
 
 import (
@@ -18,6 +11,21 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"golang.org/x/sync/errgroup"
 )
+
+// defaultMySQLReliability is the Confidence assigned to every mysql-recalled
+// object. It is a reliability prior, NOT a query-relevance score: rows read
+// from an external MySQL table are treated as reliable stored facts.
+const defaultMySQLReliability = 1.0
+
+// defaultMySQLRelevance is the Relevance assigned to every mysql-recalled
+// object. It is a NEUTRAL PRIOR, not a real query-relevance signal: the
+// MySQL provider does a full-table scan with no relevance ranking, so
+// claiming any non-neutral relevance would be a lie (§9: no fake constant
+// returns). The neutral 0.5 keeps MySQL objects rankable alongside other
+// providers without pretending to know how well they match the query.
+// Actual query-time filtering is delegated to collectSnippets' topK + the
+// real Relevance scores produced by other providers (vector, memory, code).
+const defaultMySQLRelevance = 0.5
 
 // MySQLProvider connects to an external MySQL database and streams table rows
 // as KnowledgeObjects. The caller is responsible for opening the *sql.DB with
@@ -63,6 +71,12 @@ func NewMySQLProvider(db *sql.DB, cfg provider.ProviderConfig, mapping provider.
 
 // Name returns the provider identifier.
 func (p *MySQLProvider) Name() string { return p.config.Name }
+
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *MySQLProvider) ProviderType() provider.ProviderType { return provider.ProviderMySQL }
+
+// Compile-time guard that MySQLProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*MySQLProvider)(nil)
 
 // IntentMatch returns a relevance score based on type/goal overlap.
 func (p *MySQLProvider) IntentMatch(intent knowledge.Intent) float64 {
@@ -199,9 +213,12 @@ func (p *MySQLProvider) scanRow(scanner interface {
 		ID:         objectID,
 		Summary:    summary,
 		Namespace:  p.config.Namespace,
-		Confidence: 1.0,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		Confidence: defaultMySQLReliability,
+		// Relevance is the neutral prior documented above: the MySQL provider
+		// does not compute query relevance, so we do not fake one.
+		Relevance: defaultMySQLRelevance,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	if content.Valid {

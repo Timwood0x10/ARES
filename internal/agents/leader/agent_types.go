@@ -107,12 +107,15 @@ type leaderAgent struct {
 	conversationSummary string
 	lastInteractionTime time.Time
 
+	// stopCh is allocated by Start/ensureInitialized and closed by Stop, both
+	// under mu. Stop performs an idempotent close via select rather than a
+	// sync.Once, so that a restarted agent (which gets a fresh stopCh) can be
+	// stopped again. See Stop in agent.go.
 	stopCh       chan struct{}
 	distillWg    sync.WaitGroup
 	distillEg    *errgroup.Group
 	streamEg     *errgroup.Group
 	processingMu sync.Mutex
-	cleanupOnce  sync.Once
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.

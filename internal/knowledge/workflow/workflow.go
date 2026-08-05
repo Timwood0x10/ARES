@@ -1,6 +1,3 @@
-// Package workflow integrates AKF (ARES Knowledge Fabric) with the DAG
-// workflow engine. It wraps KnowledgeRuntime as a base.Agent so that AKF
-// pipelines can be registered as workflow steps.
 package workflow
 
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown

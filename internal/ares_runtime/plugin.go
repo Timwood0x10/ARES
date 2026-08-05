@@ -21,6 +21,7 @@ const (
 	CapEvolution  Capability = "evolution"
 	CapTool       Capability = "tool"
 	CapRecovery   Capability = "recovery"
+	CapInterrupt  Capability = "interrupt"
 )
 
 // RuntimePlugin is the interface all plugins must implement.

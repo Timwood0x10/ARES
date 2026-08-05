@@ -376,7 +376,7 @@ func TestToolRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the tool
-	err = repo.Delete(ctx, tool.ID)
+	err = repo.Delete(ctx, tool.ID, tool.TenantID)
 	require.NoError(t, err)
 
 	// Verify it's deleted
@@ -398,7 +398,7 @@ func TestToolRepository_Delete_NotFound(t *testing.T) {
 	repo := NewToolRepository(db)
 	ctx := context.Background()
 
-	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000")
+	err := repo.Delete(ctx, "00000000-0000-0000-0000-000000000000", "tenant-1")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }

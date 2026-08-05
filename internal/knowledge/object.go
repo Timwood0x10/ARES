@@ -1,9 +1,3 @@
-// Package knowledge provides core types for the ARES Knowledge Fabric (AKF).
-//
-// KnowledgeObject is the universal knowledge representation. Every external
-// data source (PostgreSQL, MySQL, Git, Memory, Code, etc.) is converted into
-// KnowledgeObject via GraphProvider. The three-layer structure (Raw → Normalized
-// → Summary) preserves original data while optimizing for LLM consumption.
 package knowledge
 
 import "time"
@@ -65,6 +59,54 @@ type KnowledgeObject struct {
 	// Representations maps model name → representation ID for external embeddings.
 	// Example: {"openai-text-3-large": "rep_abc123", "bge-m3": "rep_def456"}
 	Representations map[string]string `json:"representations,omitempty"`
+
+	// ===== 0.2.9 fields =====
+	// Status controls the fact lifecycle: candidate → active → superseded → rejected.
+	// Empty status is treated as active for backward compatibility with pre-0.2.9 data.
+	Status ObjectStatus `json:"status,omitempty"`
+	// Quality holds the multi-dimensional quality scores used for recall ranking.
+	Quality *Quality `json:"quality,omitempty"`
+	// Relations are explicit outgoing relations extracted by rules (not LLM).
+	Relations []Relation `json:"relations,omitempty"`
+	// EmbeddingModel records the model used for the current vector, for migration.
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// Relevance is the query-time relevance of this object to the retrieval
+	// intent, in [0, 1]. It is set by providers at stream time and by the
+	// store HybridSearch path from FinalScore. Relevance is distinct from
+	// Confidence: Confidence is the stored reliability of a fact, Relevance
+	// is how well it matches the current query. The retriever ranks and
+	// filters on Relevance, NOT Confidence. Relevance is transient: it is
+	// not a persisted property and should be recomputed per query.
+	Relevance float64 `json:"relevance,omitempty"`
+}
+
+// ObjectStatus is the lifecycle state of a KnowledgeObject.
+type ObjectStatus string
+
+const (
+	StatusCandidate  ObjectStatus = "candidate"  // written, not yet verified
+	StatusActive     ObjectStatus = "active"     // passed the quality gate
+	StatusSuperseded ObjectStatus = "superseded" // replaced by a newer fact
+	StatusRejected   ObjectStatus = "rejected"   // conflicting or low quality
+)
+
+// Quality holds multi-dimensional quality scores, each in [0, 1].
+type Quality struct {
+	ExtractionScore  float64 `json:"extraction_score"`
+	ConsistencyScore float64 `json:"consistency_score"`
+	FreshnessScore   float64 `json:"freshness_score"`
+	UsageScore       float64 `json:"usage_score"`
+	ManualVerified   bool    `json:"manual_verified"`
+}
+
+// AllowedPredicates restricts the relation predicate vocabulary so rule-based
+// extraction (and any future LLM helper) cannot mint arbitrary relation types.
+// Predicates that have a Rel* constant (see relation.go) use it; the remainder
+// are string literals because no constant is defined for them yet.
+var AllowedPredicates = map[string]bool{
+	RelDependsOn: true, RelCalls: true, "produces": true, "consumes": true,
+	RelFixes: true, RelCauses: true, RelBelongsTo: true, "derived_from": true,
+	RelSimilarTo: true, "contradicts": true, RelSupersedes: true, "related_to": true,
 }
 
 // Representation stores an embedding vector for a KnowledgeObject.

@@ -295,17 +295,25 @@ func (r *DistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, u
 }
 
 // UpdateAccessCount updates the access count and last accessed time.
-func (r *DistilledMemoryRepository) UpdateAccessCount(ctx context.Context, id string) error {
+func (r *DistilledMemoryRepository) UpdateAccessCount(ctx context.Context, id, tenantID string) error {
 	query := `
         UPDATE distilled_memories
         SET access_count = access_count + 1,
             last_accessed_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND tenant_id = $2
     `
 
-	_, err := r.db.ExecContext(ctx, query, id)
+	result, err := r.db.ExecContext(ctx, query, id, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update access count")
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return errors.Wrap(err, "get rows affected")
+	}
+	if rows == 0 {
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -386,13 +394,13 @@ func (r *DistilledMemoryRepository) CountByMemoryType(ctx context.Context, tenan
 }
 
 // DeleteBatch removes multiple memories by their IDs.
-func (r *DistilledMemoryRepository) DeleteBatch(ctx context.Context, ids []string) error {
+func (r *DistilledMemoryRepository) DeleteBatch(ctx context.Context, tenantID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	// Build parameterized query: id IN ($1, $2, ..., $n)
+	// Build parameterized query: id IN ($1, $2, ..., $n) AND tenant_id = $n+1
 	query := `DELETE FROM distilled_memories WHERE id IN (`
-	params := make([]any, len(ids))
+	params := make([]any, len(ids)+1)
 	for i, id := range ids {
 		if i > 0 {
 			query += ", "
@@ -400,13 +408,23 @@ func (r *DistilledMemoryRepository) DeleteBatch(ctx context.Context, ids []strin
 		query += fmt.Sprintf("$%d", i+1)
 		params[i] = id
 	}
-	query += `)`
+	query += `) AND tenant_id = $` + fmt.Sprintf("%d", len(ids)+1)
+	params[len(ids)] = tenantID
 
-	_, err := r.db.ExecContext(ctx, query, params...)
-	return errors.Wrap(err, "batch delete distilled memories")
+	result, err := r.db.ExecContext(ctx, query, params...)
+	if err != nil {
+		return errors.Wrap(err, "batch delete distilled memories")
+	}
+	if _, err := result.RowsAffected(); err != nil {
+		return errors.Wrap(err, "get rows affected")
+	}
+	return nil
 }
 
 // DeleteExpired removes expired memories.
+// This is an intentional cross-tenant global cleanup; it must NOT be
+// tenant-scoped because expired rows for all tenants are garbage-collected
+// together.
 func (r *DistilledMemoryRepository) DeleteExpired(ctx context.Context) (int64, error) {
 	query := `DELETE FROM distilled_memories WHERE expires_at <= NOW()`
 

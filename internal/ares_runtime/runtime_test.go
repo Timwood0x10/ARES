@@ -191,6 +191,10 @@ func (m *mockMemoryManager) CreateTask(_ context.Context, _, _, _ string) (strin
 	return "", nil
 }
 
+func (m *mockMemoryManager) CreateTaskWithID(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
 func (m *mockMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -280,6 +284,10 @@ func (m *errMemoryManager) BuildContext(_ context.Context, _, _ string) (string,
 
 func (m *errMemoryManager) CreateTask(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil
+}
+
+func (m *errMemoryManager) CreateTaskWithID(_ context.Context, _, _, _, _ string) error {
+	return nil
 }
 
 func (m *errMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) error {
@@ -1098,7 +1106,7 @@ func TestManager_RestoreAgent_AgentNotStatefulAgent(t *testing.T) {
 
 	// GetAgent should return the restored agent.
 	got := m.GetAgent("a1")
-	assert.Equal(t, restoredAgent, got)
+	assert.Equal(t, restoredAgent, chaosUnwrap(got))
 }
 
 // TestManager_RestoreAgent_EventStoreError verifies that when the EventStore returns
@@ -1479,7 +1487,7 @@ func TestManager_GetAgent_AfterRestore(t *testing.T) {
 
 	// GetAgent should return the original agent.
 	gotBefore := m.GetAgent("a1")
-	assert.Equal(t, original, gotBefore, "GetAgent should return the original agent")
+	assert.Equal(t, original, chaosUnwrap(gotBefore), "GetAgent should return the original agent")
 
 	// RestoreAgent creates a new instance from the factory.
 	err := m.RestoreAgent(ctx, "a1", factory.create())
@@ -1489,10 +1497,10 @@ func TestManager_GetAgent_AfterRestore(t *testing.T) {
 	// GetAgent should now return the new (restored) agent, not the original.
 	gotAfter := m.GetAgent("a1")
 	require.NotNil(t, gotAfter, "GetAgent should return the restored agent")
-	assert.NotEqual(t, original, gotAfter, "GetAgent should return the new agent, not the original")
+	assert.NotEqual(t, original, chaosUnwrap(gotAfter), "GetAgent should return the new agent, not the original")
 
 	// The restored agent should be a StatefulAgent from the factory.
 	newAgent := factory.lastAgent()
 	require.NotNil(t, newAgent)
-	assert.Equal(t, newAgent, gotAfter)
+	assert.Equal(t, newAgent, chaosUnwrap(gotAfter))
 }

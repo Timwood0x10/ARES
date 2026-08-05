@@ -9,11 +9,13 @@
 
 ## 0. 当前框架定位（ARES）
 
-**ARES — Agent Runtime & Evolution System**（Go，Apache-2.0，`github.com/Timwood0x10/ares`）。
+**ARES — Agent Runtime & Evolution System**（Go，Apache-2.0，`github.com/Timwood0x10/ares`）。版本：**v0.2.9**。
 
-- 统一 SDK：`sdk.MustNew()` 一把梭管理 LLM / 工具 / 记忆 / 进化。
-- **AKF 知识编织**（核心差异化，`AKG.md`/`AKG_plan.md`）：把任意数据源实时编织成"针对当前任务的认知图"——`KnowledgeObject`(Raw/Normalized/Summary) → 流式 `GraphProvider` → `Pipeline`(Normalizer/Resolver/Summarizer) → `Planner` → `Graph Runtime`(Loader/Linker/Reducer) → `Context Compiler`(多格式)，可选 `KnowledgeStore`，全程 `Evidence` 血缘追踪。
-- **自进化**：遗传算法自动优化 prompt 与策略（闭环，极少框架具备）。
+- 统一 SDK：`sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))` 一份 YAML 装配 LLM / 工具 / 记忆 / 蒸馏 / 进化 / 知识（`config.yaml` 指南：`docs/articles/zh/25-config-yaml-guide.zh.md`）。
+- **System Runtime 生命周期内核**（v0.2.9）：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / start / SDK 三入口共用同一内核（组件图等价有契约测试锁定）。
+- **证据持久化**（v0.2.9）：`evidence.PostgresStore` 支持 GA 反馈跨重启累积（原内存版重启清零），serve/SDK 双接入口 opt-in + fail-loud。
+- **AKF 知识编织**（核心差异化，`AKG.md`）：把任意数据源实时编织成"针对当前任务的认知图"——`KnowledgeObject`(Raw/Normalized/Summary) → 流式 `GraphProvider` → `Pipeline`(Normalizer/Resolver/Summarizer) → `Planner` → `Graph Runtime`(Loader/Linker/Reducer) → `Context Compiler`(多格式)，可选 `KnowledgeStore`，全程 `Evidence` 血缘追踪。
+- **自进化**：六 genome 遗传算法（workflow/scheduler/knowledge/recovery/memory/prompt）自动优化 prompt 与策略，Event→Evidence→GA→Strategy→Agent 真实反馈环 + outcome 写回 experience。
 - **混沌工程**：故障注入、failover、生存测试、自愈——可靠性内建。
 - DAG 工作流（条件分支/恢复/checkpoint）、MCP 接入、Leader/Sub 多智能体 + failover。
 - 可观测：OpenTelemetry traces + 结构化日志 + Prometheus metrics。
@@ -26,7 +28,7 @@
 
 | 框架 | 语言 | 核心范式 | 记忆 / 知识(RAG) | 规划 / 工作流 | 工具 / MCP | 多智能体 | 可观测 / 韧性 | 成熟度 | 许可证 | 独特卖点 |
 |------|------|----------|------------------|---------------|------------|----------|----------------|--------|--------|----------|
-| **ARES（当前）** | Go | 统一SDK + DAG + 自进化 + 知识编织 | 会话+蒸馏+向量；**AKF 动态认知图** | DAG 动态图(分支/恢复/checkpoint) | 工具+MCP | Leader/Sub+failover | OTel+Prometheus / **混沌工程自愈** | 新兴·活跃·单作者主导 | Apache-2.0 | 自进化(遗传算法)+混沌韧性+知识编织，Go 原生高性能 |
+| **ARES（当前）** | Go | 统一SDK + DAG + 自进化 + 知识编织 | 会话+蒸馏+向量；**AKF 动态认知图** | DAG 动态图(分支/恢复/checkpoint) | 工具+MCP | Leader/Sub+failover | OTel+Prometheus / **混沌工程自愈** | 新兴·活跃·单作者主导 | Apache-2.0 | 自进化(遗传算法)+混沌韧性+知识编织+**SystemRuntime 生命周期内核/证据持久化**，Go 原生高性能 |
 | **Eino**（字节） | Go | 链式/图编排(LangChain 启发,Go 原生) | 组件化 memory；**RAG 组件强**(Retriever/Indexer) | Graph API + Workflow(state/interrupt/checkpoint) | Tool 抽象；MCP(较新) | 靠图编排，无内建 leader/sub | Callback 可接 OTel / 一般 | 2026-03 开源·字节背书·增长快 | Apache-2.0 | 最成熟 Go LLM 框架，组件化、RAG 全 |
 | **tRPC-Agent-Go**（腾讯） | Go | 模块化组件+事件驱动；多 Agent 类型(LLM/Chain/Parallel/Cycle/Graph) | Session(Redis/内存/MySQL/PG/SQLite)+Memory(mem0)+Knowledge(RAG/ES向量) | GraphAgent 图工作流+Planner(内置,DeepSeek v4) | Function/MCP/DuckDuckGo/Web/code-exec；**MCP 一等公民** | Team/Swarm + **A2A** + AG-UI | OTel 全链路+调试 UI / **代码沙箱**(bubblewrap/Seatbelt)+自进化(SKILL 提取, -30% token) | 2025-09 开源·腾讯背书·元宝等生产·1781+ commits 活跃 | Apache-2.0 | 腾讯 tRPC 生态闭环、多 Agent 类型全、A2A、生产打磨深 |
 | **LangChain** | Py | 链/代理抽象，生态最大 | 多 memory 模块；Retriever+向量库(生态最全) | 早期 AgentExecutor；复杂编排转 LangGraph | Tool/AgentToolkit；MCP 适配 | 靠 LangGraph | LangSmith(商业)+回调 / 中 | 成熟(生态最大) | MIT | 集成最广、社区最大 |
@@ -70,10 +72,11 @@
 ### 3.1 相对市面框架的独特优势
 
 1. **知识编织 AKF（动态认知图）**：区别于传统 RAG（静态索引）和 LangGraph（纯编排无知识层）。AKF 按"当前任务"实时把多源编织成图，遵循 SoT / Graph-Ephemeral / Pluggable 三原则，并带 `Evidence` 血缘。这是 ARES 最深的护城河。
-2. **自进化（遗传算法）**：自动优化 prompt 与策略，形成"运行→评估→变异→择优"闭环。LangGraph / Eino / LlamaIndex / CrewAI 均无此能力。
+2. **自进化（遗传算法）**：六 genome（workflow/scheduler/knowledge/recovery/memory/prompt）自动优化 prompt 与策略，Event→Evidence→GA→Strategy→Agent 真实反馈环 + outcome 写回 experience，形成"运行→评估→变异→择优"闭环。LangGraph / Eino / LlamaIndex / CrewAI 均无此能力。
 3. **混沌工程内建**：故障注入、failover、生存测试、自愈——可靠性作为一等公民。其他框架多依赖外部重试/熔断。
-4. **Go 原生部署**：单二进制、低内存、goroutine 高并发，天然适配云原生与生产常驻。
-5. **统一面**：SDK + DAG + MCP + Leader/Sub 多 agent + OTel/Prometheus 可观测，能力面完整。
+4. **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停 + 组件快照可观测 + 缺依赖报 Degraded；serve/start/SDK 三入口共用同一内核与组件图。
+5. **Go 原生部署**：单二进制、低内存、goroutine 高并发，天然适配云原生与生产常驻。
+6. **统一面**：SDK + DAG + MCP + Leader/Sub 多 agent + OTel/Prometheus 可观测，能力面完整。
 
 ### 3.2 差距与风险
 

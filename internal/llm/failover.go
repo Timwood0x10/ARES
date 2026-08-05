@@ -235,6 +235,12 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 // successful stream. Failed providers are cooled down with the same policy
 // as Generate (rate-limit = full cooldown, other errors = shorter cooldown).
 //
+// The stream itself runs under the caller's context (a streaming-specific
+// deadline), NOT the request-level fc.timeout: a fixed 30s request timeout
+// would cut long outputs off mid-stream (H8). fc.timeout is only used to
+// bound the wait for the FIRST chunk, which covers the connection/handshake
+// phase so a silent provider still fails over.
+//
 // NOTE: Failover only covers stream creation (HTTP handshake). Once a stream
 // is established and chunks are being delivered, mid-stream errors (e.g.,
 // connection drops) are reported to the caller via StreamChunk.Err and are
@@ -254,10 +260,8 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
-		ch, err := client.GenerateStream(cctx, prompt)
+		ch, err := client.GenerateStream(ctx, prompt)
 		if err != nil {
-			cancel()
 			lastErr = err
 			cd := fc.cooldownForError(err)
 			fc.markCooldown(key)
@@ -279,16 +283,35 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		// On success, wrap the channel so cancel() is called when the
-		// stream completes. We cannot call cancel() immediately because
-		// the streaming goroutine needs the context to remain active.
+		// On success, wrap the channel. The first chunk must arrive within
+		// fc.timeout (handshake bound); afterwards the stream runs until
+		// the caller's context is done or the provider finishes, so long
+		// outputs are not cut off by a fixed request timeout.
 		fc.clearCooldown(key)
 		wrappedCh := make(chan StreamChunk, defaultStreamBuffer)
 		go func() {
 			defer close(wrappedCh)
-			defer cancel()
+			select {
+			case first, ok := <-ch:
+				if !ok {
+					return
+				}
+				select {
+				case wrappedCh <- first:
+				case <-ctx.Done():
+					return
+				}
+			case <-time.After(fc.timeout):
+				return
+			case <-ctx.Done():
+				return
+			}
 			for chunk := range ch {
-				wrappedCh <- chunk
+				select {
+				case wrappedCh <- chunk:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
 		return wrappedCh, nil

@@ -6,14 +6,18 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 
 // ---- Config options ----
 
 // ConfigOption configures the Runtime during construction using a YAML file.
 // Loads ares.yaml from the given path and converts it to internal options.
-type ConfigOption func(*config) error
+// It is an alias of Option so WithConfig/WithConfigFromEnv can be passed
+// directly to New/NewRuntime.
+type ConfigOption = Option
 
 // WithConfig loads configuration from a YAML file, parses and validates it,
 // then converts it to internal options and applies them.
@@ -115,6 +119,17 @@ type evolutionCfg struct {
 
 type knowledgeCfg struct {
 	Enabled bool
+	// QualityGate configures the AKG fact quality gate. Zero value falls back
+	// to knowledge.DefaultQualityGateConfig at apply time.
+	QualityGate knowledge.QualityGateConfig
+	// EmbeddingModel selects the embedding model used to vectorize distilled
+	// facts and retrieval queries. Empty falls back to the embedding service
+	// default.
+	EmbeddingModel string
+	// EmbeddingBaseURL is the embedding service endpoint used by the AKG
+	// distillation pipeline and StoreProvider. Empty falls back to the
+	// embedding service configured via WithEmbeddingService.
+	EmbeddingBaseURL string
 }
 
 // databaseCfg holds PostgreSQL connection parameters. Empty host signals
@@ -164,7 +179,12 @@ func defaultConfig() *config {
 			RequestTimeout: 60,
 			MaxRetries:     3,
 		},
-		memCfg: memoryCfg{Enabled: false},
+		// memCfg.Enabled defaults to true so users no longer need
+		// WithDefaultMemory() for the quickstart path. wireMemory falls back
+		// to compression-only memory when no embedding service is available
+		// (see sdk/memory_wiring.go), so this is safe without an embedding
+		// service. Use WithoutMemory() to opt out.
+		memCfg: memoryCfg{Enabled: true},
 		evoCfg: evolutionCfg{Enabled: false},
 		trace:  true,
 		// dbCfg, embedCfg, distillCfg, knowledgeRT default to zero values,
@@ -249,6 +269,9 @@ func WithAPIKey(key string) Option {
 // configuration object from a YAML file or shared config store.
 func WithLLMConfig(cfg *core.LLMConfig) Option {
 	return func(c *config) error {
+		if cfg == nil {
+			return fmt.Errorf("with llm config: config is nil")
+		}
 		c.llmCfg = cfg
 		return nil
 	}
@@ -267,9 +290,24 @@ func WithFallbackLLM(cfg *core.LLMConfig) Option {
 
 // WithDefaultMemory enables in-memory session storage. Each Run call creates a
 // session and conversation history is available to the LLM on subsequent calls.
+//
+// As of the defaultConfig flip, memory is enabled by default, so this option is
+// now a no-op kept for backward compatibility. Use it to make the intent
+// explicit in code that relies on default memory.
 func WithDefaultMemory() Option {
 	return func(c *config) error {
 		c.memCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithoutMemory disables the memory subsystem, overriding the
+// defaultConfig-enabled memory. Use this when a Runtime should not maintain
+// session history (e.g. stateless CLI tools or tests that assert the
+// memory-off path).
+func WithoutMemory() Option {
+	return func(c *config) error {
+		c.memCfg.Enabled = false
 		return nil
 	}
 }
@@ -400,7 +438,12 @@ func WithKnowledgeConfig(cfg KnowledgeFileConfig) Option {
 				return fmt.Errorf("knowledge min_score %v: %w", cfg.MinScore, ErrInvalidRange)
 			}
 		}
-		c.knowledgeRT = knowledgeRTCfg(cfg)
+		c.knowledgeRT = knowledgeRTCfg{
+			ChunkSize:    cfg.ChunkSize,
+			ChunkOverlap: cfg.ChunkOverlap,
+			TopK:         cfg.TopK,
+			MinScore:     cfg.MinScore,
+		}
 		return nil
 	}
 }
@@ -424,6 +467,45 @@ func WithEvolution() Option {
 func WithKnowledge() Option {
 	return func(c *config) error {
 		c.knlCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithAKGQualityGate configures the AKG fact quality gate. The gate controls
+// fact promotion: distilled candidates whose computed Confidence clears
+// gate.MinFinalScore are promoted to active and become retrievable by the
+// StoreProvider. A zero-value QualityGateConfig falls back to
+// knowledge.DefaultQualityGateConfig at apply time.
+//
+// Args:
+//
+//	q - AKG quality gate configuration; MinFinalScore, DedupThreshold and
+//	     MaxFactsPerIngest drive promotion and dedup behaviour.
+func WithAKGQualityGate(q knowledge.QualityGateConfig) Option {
+	return func(c *config) error {
+		c.knlCfg.QualityGate = q
+		return nil
+	}
+}
+
+// WithAKGEmbedding configures the embedding model and endpoint used by the
+// AKG distillation pipeline to vectorize distilled facts and by the
+// StoreProvider to embed retrieval queries. When WithKnowledge is enabled this
+// arms both the write side (DistillBridge) and the read side (StoreProvider)
+// with vector recall.
+//
+// Args:
+//
+//	model   - embedding model name (e.g. "intfloat/e5-large-v2"); required.
+//	baseURL - embedding service endpoint; empty defers to the service
+//	          configured via WithEmbeddingService.
+func WithAKGEmbedding(model, baseURL string) Option {
+	return func(c *config) error {
+		if model == "" {
+			return fmt.Errorf("akg embedding model: %w", ErrMissingValue)
+		}
+		c.knlCfg.EmbeddingModel = model
+		c.knlCfg.EmbeddingBaseURL = baseURL
 		return nil
 	}
 }
@@ -565,6 +647,19 @@ type agentConfig struct {
 	tools       []tools.Tool
 	humanInput  HumanInputFunc
 	maxIter     int
+	// discovery enables runtime tool discovery: when true the agent exposes a
+	// discover_tools meta-tool so the LLM can search the tool pool at runtime
+	// and expand its active tool set on demand. Default is off (backward
+	// compatible: identical to the legacy WithTools-only path).
+	discovery bool
+	// toolSource, when non-nil, is the ToolSource used for discovery. When nil
+	// and discovery is on, the SDK defaults to a RegistrySource over the
+	// Runtime's tool registry.
+	toolSource toolsource.ToolSource
+	// selector, when non-nil, narrows the available tool pool before each run.
+	// When nil and discovery is on, the SDK defaults to AllSelector (expose all
+	// available tools — zero behaviour change vs. legacy).
+	selector toolsource.ToolSelector
 }
 
 func defaultAgentConfig() *agentConfig {
@@ -607,5 +702,42 @@ func WithMaxIterations(n int) AgentOption {
 		if n > 0 {
 			c.maxIter = n
 		}
+	}
+}
+
+// WithToolDiscovery enables runtime tool discovery. When enabled, the agent
+// exposes a discover_tools meta-tool so the LLM can search the available tool
+// pool at runtime by name/description/tag and expand its active tool set on
+// demand. Tools discovered at runtime are expanded via the agentloop engine's
+// ToolExpander path (no second execution loop).
+//
+// Default is off: behaviour is byte-for-byte identical to the legacy
+// WithTools-only path (no meta-tool, no expander, Engine.Tools = registry).
+func WithToolDiscovery() AgentOption {
+	return func(c *agentConfig) {
+		c.discovery = true
+	}
+}
+
+// WithToolSource sets the ToolSource used to discover available tools for
+// each run. Setting a source also implies discovery on (equivalent to also
+// calling WithToolDiscovery). When discovery is on and no source is set, the
+// SDK defaults to a RegistrySource over the Runtime's tool registry.
+func WithToolSource(s toolsource.ToolSource) AgentOption {
+	return func(c *agentConfig) {
+		c.toolSource = s
+		c.discovery = true
+	}
+}
+
+// WithToolSelector sets the ToolSelector used to narrow the available tool
+// pool before each run. Setting a selector also implies discovery on
+// (equivalent to also calling WithToolDiscovery). When discovery is on and no
+// selector is set, the SDK defaults to AllSelector (expose all available
+// tools — zero behaviour change vs. legacy).
+func WithToolSelector(s toolsource.ToolSelector) AgentOption {
+	return func(c *agentConfig) {
+		c.selector = s
+		c.discovery = true
 	}
 }

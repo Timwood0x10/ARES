@@ -72,6 +72,9 @@ func (s *SimpleRetrievalService) embedQuery(ctx context.Context, query string) (
 		}
 		return vec, nil
 	}
+	if s.embedding == nil {
+		return nil, errors.New("embedding client is not configured")
+	}
 	return s.embedding.EmbedWithPrefix(ctx, query, config.QueryPrefix)
 }
 
@@ -105,8 +108,8 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 	log.Info("SimpleRetrievalService.Search",
 		"tenant_id", tenantID,
 		"query", query,
-		"top_k", s.config.TopK,
-		"min_score", s.config.MinScore)
+		"top_k", s.GetConfig().TopK,
+		"min_score", s.GetConfig().MinScore)
 
 	// Check if precision mode should be used
 	if s.isPrecisionMode(query) {
@@ -126,7 +129,7 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 	// Perform pure vector similarity search
 	// SearchByVector returns chunks with similarity in metadata
 	// Use larger limit to get more candidates before filtering
-	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, s.config.TopK*5)
+	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, s.GetConfig().TopK*5)
 	if err != nil {
 		log.Error("Vector search failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")
@@ -146,7 +149,7 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 		}
 
 		// Filter by min_score threshold
-		if similarity < s.config.MinScore {
+		if similarity < s.GetConfig().MinScore {
 			continue
 		}
 
@@ -158,13 +161,13 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 	}
 
 	// Limit to TopK results
-	if len(results) > s.config.TopK {
-		results = results[:s.config.TopK]
+	if len(results) > s.GetConfig().TopK {
+		results = results[:s.GetConfig().TopK]
 	}
 
 	log.Info("Search completed",
 		"results_count", len(results),
-		"min_score", s.config.MinScore)
+		"min_score", s.GetConfig().MinScore)
 
 	return results, nil
 }
@@ -232,7 +235,7 @@ func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, 
 func (s *SimpleRetrievalService) searchExact(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	log.Debug("Running exact match search", "query", query)
 
-	chunks, err := s.repo.SearchBySubstring(ctx, query, tenantID, s.config.TopK)
+	chunks, err := s.repo.SearchBySubstring(ctx, query, tenantID, s.GetConfig().TopK)
 	if err != nil {
 		log.Error("Exact match search failed", "error", err)
 		return nil, errors.Wrap(err, "exact match search")
@@ -258,7 +261,7 @@ func (s *SimpleRetrievalService) searchExact(ctx context.Context, tenantID, quer
 func (s *SimpleRetrievalService) searchKeyword(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	log.Debug("Running keyword search", "query", query)
 
-	chunks, err := s.repo.SearchByKeyword(ctx, query, tenantID, s.config.TopK)
+	chunks, err := s.repo.SearchByKeyword(ctx, query, tenantID, s.GetConfig().TopK)
 	if err != nil {
 		log.Error("Keyword search failed", "error", err)
 		return nil, errors.Wrap(err, "keyword search")
@@ -298,7 +301,7 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 		return nil, errors.Wrap(err, "embed query")
 	}
 
-	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, s.config.TopK)
+	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, s.GetConfig().TopK)
 	if err != nil {
 		log.Error("Vector search failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")
@@ -318,7 +321,7 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 		}
 
 		// Apply min_score filter, consistent with normal Search path behavior
-		if score < s.config.MinScore {
+		if score < s.GetConfig().MinScore {
 			continue
 		}
 

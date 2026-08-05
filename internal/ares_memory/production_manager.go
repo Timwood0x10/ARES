@@ -7,8 +7,8 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -111,6 +111,11 @@ func NewProductionMemoryManager(
 ) (*ProductionMemoryManager, error) {
 	if config == nil {
 		config = DefaultMemoryConfig()
+	}
+	// A zero SessionTTL would make every message expire immediately; fall
+	// back to the default so partial configs keep the prior 24h behavior.
+	if config.SessionTTL <= 0 {
+		config.SessionTTL = 24 * time.Hour
 	}
 
 	if dbPool == nil {
@@ -345,13 +350,13 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 
 	// Manage cache size
 	if len(m.sessionCache) > m.maxCacheSize {
-		// Remove oldest entry (simple LRU)
+		// Remove least recently used entry (by UpdatedAt).
 		var oldestKey string
 		var oldestTime time.Time
 		for k, v := range m.sessionCache {
-			if oldestKey == "" || v.CreatedAt.Before(oldestTime) {
+			if oldestKey == "" || v.UpdatedAt.Before(oldestTime) {
 				oldestKey = k
-				oldestTime = v.CreatedAt
+				oldestTime = v.UpdatedAt
 			}
 		}
 		if oldestKey != "" {
@@ -421,7 +426,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		AgentID:   "style-agent",
 		Role:      role,
 		Content:   content,
-		ExpiresAt: time.Now().Add(24 * time.Hour), // 24 hour TTL as per design
+		ExpiresAt: time.Now().Add(m.config.SessionTTL),
 	}
 
 	if err := m.conversationRepository.Create(ctx, conv); err != nil {
@@ -544,7 +549,7 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		Role:      msg.Role,
 		Content:   msg.Content,
 		Metadata:  metadata,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ExpiresAt: time.Now().Add(m.config.SessionTTL),
 		CreatedAt: msgTime,
 	}
 
@@ -688,8 +693,7 @@ func (m *ProductionMemoryManager) DeleteSession(ctx context.Context, sessionID s
 func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
 	messages, err := m.GetMessages(ctx, sessionID)
 	if err != nil {
-		log.Warn("Failed to get messages, using raw input", "error", err)
-		return input, nil
+		return "", errors.Wrap(err, "get messages")
 	}
 
 	// Keep only last N messages to avoid long context
@@ -771,9 +775,9 @@ func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context,
 
 	var sessionID string
 	if err := row.Scan(&sessionID); err != nil {
-		// Handle both sql.ErrNoRows (database/sql driver) and pgx.ErrNoRows (pgx driver)
-		// to support different database drivers.
-		if err == sql.ErrNoRows || strings.Contains(err.Error(), "no rows in result set") {
+		// Handle both sql.ErrNoRows (database/sql driver) and pgx.ErrNoRows
+		// (pgx driver) to support different database drivers.
+		if stderrors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
 		return "", errors.Wrap(err, "get latest session for leader")

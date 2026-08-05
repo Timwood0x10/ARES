@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +37,7 @@ func TestRuleBasedAnalyzer_EmptyRequest(t *testing.T) {
 
 func TestRuleBasedAnalyzer_Summation(t *testing.T) {
 	a := NewRuleBasedAnalyzer()
-	// "计算1到一百万的和" contains "计算" which matches the arithmetic rule.
+	// A Chinese math phrase (sum from 1 to a million) contains the arithmetic trigger matching the rule.
 	// The arithmetic rule still allows calculator to perform the sum.
 	intent, err := a.Analyze(context.Background(), "计算1到一百万的和")
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestRuleBasedAnalyzer_Summation(t *testing.T) {
 
 func TestRuleBasedAnalyzer_SummationChineseExact(t *testing.T) {
 	a := NewRuleBasedAnalyzer()
-	// "累加" explicitly triggers the summation rule.
+	// The summation keyword explicitly triggers the summation rule.
 	intent, err := a.Analyze(context.Background(), "从1累加到100万")
 	require.NoError(t, err)
 	require.NotNil(t, intent)
@@ -414,4 +415,62 @@ func TestPlanner_PDFRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, plan)
 	assert.Equal(t, "document processing", plan.Intent.Goal)
+}
+
+// ── extractConstraints ─────────────────────────────────────
+
+// TestExtractConstraints_Empty verifies an empty request yields no constraints.
+func TestExtractConstraints_Empty(t *testing.T) {
+	constraints := extractConstraints("")
+	assert.Empty(t, constraints)
+}
+
+// TestExtractConstraints_Limit verifies numeric limit/top_k extraction.
+func TestExtractConstraints_Limit(t *testing.T) {
+	constraints := extractConstraints("find 5 results limit 10")
+	assert.Equal(t, "10", constraints["limit"])
+}
+
+// TestExtractConstraints_TopK verifies top_k extraction.
+func TestExtractConstraints_TopK(t *testing.T) {
+	constraints := extractConstraints("return the top_k 20 items")
+	assert.Equal(t, "20", constraints["top_k"])
+}
+
+// TestExtractConstraints_Qualitative verifies speed/accuracy preferences.
+func TestExtractConstraints_Qualitative(t *testing.T) {
+	constraints := extractConstraints("fast and accurate answer")
+	assert.Equal(t, "fast", constraints["speed"])
+	assert.Equal(t, "high", constraints["accuracy"])
+}
+
+// TestExtractConstraints_NoMatch verifies unrecognized text yields nothing.
+func TestExtractConstraints_NoMatch(t *testing.T) {
+	constraints := extractConstraints("please summarize the document")
+	assert.Empty(t, constraints)
+}
+
+// ── RegistryProvider nil-safety ────────────────────────────
+
+// TestRegistryProvider_NilRegistry verifies nil-registry constructors do not
+// panic and return empty results instead.
+func TestRegistryProvider_NilRegistry(t *testing.T) {
+	provider := NewRegistryProvider(nil)
+	require.NotNil(t, provider)
+
+	tools := provider.ListTools()
+	assert.Empty(t, tools)
+
+	caps, err := provider.GetToolCapabilities("anything")
+	require.NoError(t, err)
+	assert.Nil(t, caps)
+}
+
+// TestRegistryProvider_UnknownTool verifies unknown tools return an error.
+func TestRegistryProvider_UnknownTool(t *testing.T) {
+	registry := core.NewRegistry()
+	provider := NewRegistryProvider(registry)
+
+	_, err := provider.GetToolCapabilities("definitely-not-registered")
+	require.Error(t, err)
 }

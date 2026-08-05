@@ -39,6 +39,12 @@ jobs:
         with:
           version: "latest"
 
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          timeout: 10m
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -55,8 +61,17 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
 
-      - name: Unit tests
-        run: go test -race -count=1 -timeout=300s ./...
+      - name: Unit tests with coverage
+        run: go test -race -count=1 -timeout=300s -coverprofile=cover.out ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=cover.out | tail -1
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: cover.out
 
       - name: Build all examples
         run: make examples

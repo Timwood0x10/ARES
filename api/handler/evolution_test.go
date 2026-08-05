@@ -270,46 +270,34 @@ func TestRuntimeEvolutionHandler_EvidenceQuery_Failure(t *testing.T) {
 	}
 }
 
-func TestRuntimeEvolutionHandler_RegisterComponent_RequiresName(t *testing.T) {
+func TestRuntimeEvolutionHandler_RegisterComponent_NotImplementedOverHTTP(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockRuntimeEvolution{}
 	_, srv := newRuntimeEvolutionHandler(mock)
 	defer srv.Close()
 
-	// No name query parameter → 400.
-	resp, err := http.Post(srv.URL+"/api/v1/evolution/runtime/components", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST components: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
-	}
-}
-
-func TestRuntimeEvolutionHandler_RegisterComponent_PlaceholderResponse(t *testing.T) {
-	t.Parallel()
-
-	mock := &mockRuntimeEvolution{}
-	_, srv := newRuntimeEvolutionHandler(mock)
-	defer srv.Close()
-
-	// With name → placeholder 200 (REST registration not yet supported).
+	// Registration requires an in-process RuntimeComponent implementation; the
+	// HTTP endpoint cannot transport executable Go methods, so it must NOT
+	// pretend success (200). It must respond honestly with 501 and never call
+	// the underlying RegisterComponent.
 	resp, err := http.Post(srv.URL+"/api/v1/evolution/runtime/components?name=my-component", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST components: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("expected 501 Not Implemented, got %d", resp.StatusCode)
 	}
 	var result map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.Contains(result["status"], "SDK") {
-		t.Fatalf("expected placeholder status mentioning SDK, got %q", result["status"])
+	if !strings.Contains(result["error"], "SDK") {
+		t.Fatalf("expected error message pointing to the SDK, got %q", result["error"])
+	}
+	if len(mock.registeredComps) != 0 {
+		t.Fatalf("expected no component to be registered, got %v", mock.registeredComps)
 	}
 }
 

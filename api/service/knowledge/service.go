@@ -1,11 +1,3 @@
-// Package knowledge provides the public HTTP API for AKF.
-//
-// Endpoints:
-//
-//	POST /kg/build     — build a WorkingGraph from a goal
-//	POST /kg/context   — build + compile into LLM-ready formats
-//	POST /kg/query     — query knowledge via Intent → Graph → Compile
-//	POST /kg/distill   — distill content into KnowledgeObjects
 package knowledge
 
 import (

@@ -9,6 +9,16 @@
 
 ```
 
+**⚠️  WARNING: AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL STAGE**
+
+This is the **FIRST attempt to build a knowledge graph WITHOUT relying on LLMs**. The current implementation uses:
+- Rule-based relation extraction (regex patterns, no generative AI)
+- Hybrid search (BM25-style lexical + vector cosine similarity)
+- Deterministic quality scoring (no LLM evaluation)
+
+Feature status: **EXPERIMENTAL — API may change, not production-ready**. Please use for experimentation and feedback only.
+
+---
 **ARES** — Agent Runtime & Evolution System.
 
 Build resilient, self-evolving AI agents in Go. Unified SDK, DAG workflow, chaos engineering, MCP support.
@@ -20,15 +30,20 @@ Build resilient, self-evolving AI agents in Go. Unified SDK, DAG workflow, chaos
 ```go
 package main
 
-import "github.com/Timwood0x10/ares/sdk"
+import (
+    "context"
+    "fmt"
+
+    "github.com/Timwood0x10/ares/sdk"
+)
 
 func main() {
-    rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
+    rt := sdk.MustNew() // auto-detects Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY; use sdk.New(opts...) for fine-grained config
     defer rt.Close()
 
-    agent := rt.NewAgent("assistant")
-    result, _ := agent.Run(ctx, "Say hello")
-    println(result.Output)
+    agent := rt.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
+    result, _ := agent.Run(context.Background(), "hello")
+    fmt.Println(result.Output)
 }
 ```
 
@@ -39,6 +54,15 @@ go install github.com/Timwood0x10/ares/cmd/ares@latest
 ares doctor
 ares run -c ares.yaml "What is Go?"
 ```
+
+Or assemble from a YAML config in code:
+
+```go
+rt := sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml")) // LLM / memory / distillation / evolution / tools, all from one file
+defer rt.Close()
+```
+
+> 📖 **Config guide**: see [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) / [config.yaml 配置指南 (中文)](docs/articles/zh/25-config-yaml-guide.zh.md) for the full reference — LLM, distillation, GA evolution, knowledge, tools, and chaos-related switches.
 
 Or run examples directly:
 
@@ -60,9 +84,56 @@ make examples          # build all 24 examples
 | **DAG Workflow** | Dynamic graphs with conditional branching and recovery |
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
 | **Memory** | Session context, task distillation, vector similarity search |
+| **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Leader/sub orchestration with automatic failover |
 | **Observability** | OpenTelemetry traces, structured logs, Prometheus metrics |
+
+## AKG — Knowledge Graph Without LLMs (Experimental)
+
+**⚠️ AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL stage. The API may change; it is not production-ready. Use it for experimentation and feedback.**
+
+### Exploration goal
+
+AKG is an experiment with one question: **can we build a precise, queryable knowledge graph from source material WITHOUT a generative LLM in the extraction loop?** The current pipeline uses only embeddings + rules + deterministic scoring — no LLM calls during the write/build/retrieve path. The goal is to measure how far rule-based extraction and hybrid retrieval can go before an LLM becomes a necessity, and to keep the knowledge layer cheap, reproducible, and fully offline-capable.
+
+### How the LLM-free loop works
+
+```
+Write:  source → KnowledgeObject (Raw/Normalized/Summary) → RelationExtractor (rules)
+                → EmbeddingService → QualityGate → KnowledgeStore
+Retrieve: query → EmbeddingService → HybridSearch (0.7·vector + 0.3·lexical)
+                → ranked KnowledgeObjects → ContextSnippet
+Inject:   ContextSnippets → the Agent's reasoning LLM (the ONLY place an LLM is involved)
+```
+
+The LLM never participates in extraction or build — it only consumes the retrieved facts at inference time.
+
+### Current capabilities (no LLM in the loop)
+
+- **Three-layer `KnowledgeObject`** (Raw → Normalized → Summary) with evidence/provenance tracing.
+- **Rule-based relation extraction** over a closed predicate vocabulary: `calls`, `fixes`, `depends_on`, `belongs_to`, `similar_to`, `supersedes`, `causes`, `related_to`.
+- **Multi-dimensional QualityGate** (extraction / consistency / freshness / usage) driving a `candidate → active → superseded/rejected` lifecycle with promotion.
+- **HybridSearch**: vector cosine + lexical Jaccard, filtered by namespace and status.
+- **Multi-backend persistence**: Memory, SQLite, PostgreSQL, **MySQL** (driver-free).
+
+### Honest limitations
+
+- No entity disambiguation — two facts about "Redis" are not merged into one entity.
+- No semantic relation inference — only rule-pattern matches are extracted.
+- No abstractive summarization — `Summary` is extracted/normalized text, not LLM-generated.
+- Rule regexes can be greedy on unusual formatting.
+- Vector recall is in-process brute-force cosine — fine for tens of thousands of vectors, not millions.
+
+### Extensibility — the architecture is open
+
+| Extension point | What to do | Interface touched |
+|---|---|---|
+| **New database backend** | Add `internal/knowledge/store/<name>/store.go` implementing `KnowledgeStore`. Shipped: Memory, SQLite, PostgreSQL, **MySQL** (no driver dependency — the consumer blank-imports their MySQL driver). CockroachDB / TiDB / Spanner are one file each. | `KnowledgeStore` (unchanged for new backends) |
+| **Professional vector DB** | Implement the `VectorIndex` interface (`Upsert` / `Search` / `Delete`) for pgvector, Milvus, Weaviate, Qdrant. `InMemoryVectorIndex` is the default. Stores delegate recall to a `VectorIndex` internally. | `VectorIndex` (new seam) — **`KnowledgeStore` stays unchanged** |
+| **Multi-tenancy** | Every `KnowledgeObject` carries a `Namespace`; `Query`, `HybridSearch`, and `ListByStatus` filter by it, so tenants sharing one store never see each other's facts. | No new interface |
+
+> Design invariant: `KnowledgeStore` is the single persistence contract. Adding a database or a vector index never changes it — only new implementations appear. This is what keeps the upper runtime logic untouched as the storage layer evolves.
 
 ## Module Map
 
@@ -92,7 +163,7 @@ ares version            # Show version
 ## SDK
 
 ```go
-rt := sdk.MustNew(
+rt, err := sdk.New(
     sdk.WithOpenAI("gpt-4o-mini"),          // or WithOllama, WithAnthropic
     sdk.WithDefaultMemory(),                 // session history
     sdk.WithEvolution(),                     // strategy evolution
@@ -100,6 +171,9 @@ rt := sdk.MustNew(
         Name: "my-server", Command: "/path/to/server", Args: []string{"serve"},
     }),
 )
+if err != nil {
+    log.Fatal(err)
+}
 defer rt.Close()
 
 // Agent with tools and human-in-the-loop.
@@ -156,6 +230,7 @@ Deep dives into ARES internals:
 | [GA Promoter](docs/articles/en/24.4-ga-promoter.md) | [GA 晋升系统](docs/articles/zh/24.4-ga-promoter.md) |
 | [GA Genealogy](docs/articles/en/24.5-ga-genealogy.md) | [GA 谱系记录](docs/articles/zh/24.5-ga-genealogy.md) |
 | [GA in the Trenches](docs/articles/en/24.6-ga-in-the-trenches.md) | [GA 实战经验](docs/articles/zh/24.6-ga-in-the-trenches.md) |
+| [config.yaml Guide](docs/articles/en/25-config-yaml-guide.en.md) | [config.yaml 配置指南](docs/articles/zh/25-config-yaml-guide.zh.md) |
 
 ## Architecture
 
@@ -338,51 +413,51 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **Key design**: LLM is a **participant**, not the leader. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
-### Benchmarks (Apple M3 Max, 2026-07-16)
+### Benchmarks (Apple M3 Max, 2026-07-31)
 
 ```
 === Runtime Evolution (internal/evolution) ===
-BenchmarkWorkflowGenome_Mutate     309k   7.1µs  11.4KB  155 allocs
-BenchmarkSchedulerGenome_Mutate    3.3M   0.4µs   719B    15 allocs
-BenchmarkKnowledgeGenome_Mutate    2.8M   0.4µs   960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.2M   0.5µs  1.1KB    21 allocs
-BenchmarkDiffEngine_Workflow       2.9M   0.4µs   256B     3 allocs
-BenchmarkCoordinator_Evaluate      217M   5.4ns     0B      0 allocs
-BenchmarkFullEvolutionCycle        206k   5.3µs  8.0KB   109 allocs
+BenchmarkWorkflowGenome_Mutate     245k   7.28µs  11.7KB  157 allocs
+BenchmarkSchedulerGenome_Mutate    3.07M  386ns    720B    16 allocs
+BenchmarkKnowledgeGenome_Mutate    2.78M  434ns    960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.13M  561ns    1.1KB   21 allocs
+BenchmarkDiffEngine_Workflow       2.83M  425ns    304B     3 allocs
+BenchmarkCoordinator_Evaluate      221M   5.4ns      0B      0 allocs
+BenchmarkFullEvolutionCycle        355k   3.27µs  6.3KB    82 allocs
 
 === Event System (internal/ares_events) ===
-BenchmarkMemoryStore_Append           226k   516ns    596B    7 allocs
-BenchmarkMemoryStore_AppendBatch      27k    3.96µs   8.4KB   1 alloc
-BenchmarkMemoryStore_Read             28k    4.33µs   17.5KB  11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 165k   667ns    619B    6 allocs
+BenchmarkMemoryStore_Append           2.36M  500ns    624B     7 allocs
+BenchmarkMemoryStore_AppendBatch      303k   4.33µs   8.8KB    1 alloc
+BenchmarkMemoryStore_Read             184k   6.26µs   17.5KB  11 allocs
+BenchmarkMemoryStore_ConcurrentAppend 1.0M   1.26µs   626B     6 allocs
 
 === Evaluation Framework (internal/ares_eval) ===
-BenchmarkExactMatchEvaluator_Evaluate    39.2M   3.1ns      0B      0 allocs
-BenchmarkToolUsageEvaluator_Evaluate      4.2M   28.7ns     0B      0 allocs
-BenchmarkAgentTestRunner_RunSingle       372k    315ns    320B      5 allocs
-BenchmarkReportGenerator_GenerateMarkdown 33k     3.5µs   4.3KB    76 allocs
-BenchmarkLoader_Load                      2.5k    47.3µs  34.1KB   601 allocs
+BenchmarkExactMatchEvaluator_Evaluate    372M    3.07ns     0B      0 allocs
+BenchmarkToolUsageEvaluator_Evaluate     42.1M   28.4ns     0B      0 allocs
+BenchmarkAgentTestRunner_RunSingle       3.66M   327ns     320B      5 allocs
+BenchmarkReportGenerator_GenerateMarkdown 332k   3.73µs    4.3KB    76 allocs
+BenchmarkLoader_Load                      23.2k  51.6µs    34.1KB   601 allocs
 
 === AKG Knowledge Fabric (internal/knowledge) ===
 --- Linkers ---
-DecisionLinker (100 objs)           8.4k   15.1µs  10.9KB  295 allocs
-ArchitectureLinker (100 objs)       3.7k   34.1µs 102.6KB   85 allocs
-TimelineLinker (100 objs)          61.2k   2.01µs   3.1KB   11 allocs
-SimilarityLinker (100 objs)          74    1.96ms   3.2MB 20216 allocs
+DecisionLinker (100 objs)           78.7k  15.3µs  10.9KB  295 allocs
+ArchitectureLinker (100 objs)       33.4k  36.0µs 167.0KB    85 allocs
+TimelineLinker (100 objs)           613k   1.84µs   3.1KB   11 allocs
+SimilarityLinker (100 objs)          664   1.84ms   4.7MB 20217 allocs
 --- Compiler ---
-DefaultCompiler Prompt (100 nodes) 2.6k   45.6µs  73.3KB  819 allocs
-DefaultCompiler All Formats (100)    478   263.7µs 365.2KB 3476 allocs
+DefaultCompiler Prompt (100 nodes)  27.1k  44.5µs  73.3KB  819 allocs
+DefaultCompiler All Formats (100)    5.1k 237.7µs 365.2KB 3476 allocs
 --- Memory Store ---
-Store_Save                          213k   503ns    586B    11 allocs
-Store_Get                          2.09M    56ns     13B     1 alloc
-Store_QueryByType                  22.8k   5.16µs  4.5KB    11 allocs
-Store_Search                        1.3k   77.2µs  69.4KB  1514 allocs
+Store_Save                           1.97M  615ns    719B    11 allocs
+Store_Get                           18.4M   61.4ns    13B     1 alloc
+Store_QueryByType                   198k    6.06µs   4.5KB   11 allocs
+Store_Search                        14.7k   80.9µs  69.4KB  1514 allocs
 --- Pipeline ---
-DefaultNormalizer_Normalize        254k    476ns    607B     9 allocs
+DefaultNormalizer_Normalize         2.28M   508ns    688B    10 allocs
 --- Planner ---
-KnowledgePlanner_Plan              170k    720ns    928B    14 allocs
+KnowledgePlanner_Plan               1.50M   767ns    1.0KB   14 allocs
 --- Retriever (end-to-end) ---
-Retrieve (100 objs)                  16   10.8ms  23.8MB 132959 allocs
+Retrieve (100 objs)                  133   9.00ms  16.2MB 129675 allocs
 ```
 
 ### CLI
@@ -426,19 +501,19 @@ Beyond runtime-level evolution, ARES includes a **strategy-level Genetic Algorit
 | **Generation History** | Per-generation snapshots with metadata |
 | **Experience System** | 3-tier pipeline: ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### Benchmarks (Apple M3 Max, 2026-07-16)
+### Benchmarks (Apple M3 Max, 2026-07-31)
 
 ```
 === GA Genome (internal/ares_evolution/genome) ===
-CrossoverUniform (10 params)        500k   2.4µs    2.9KB   29 allocs
-CrossoverUniform (100 params)        68k  17.7µs   21.0KB   36 allocs
-TruncationSelection (pop=100)       200k   6.2µs        —    —
-TournamentSelection (pop=50,k=2)    380k   3.2µs        —    —
-RouletteWheelSelection (pop=100)    410k   2.9µs        —    —
-Evolve_OneGeneration (pop=10)       437k     281ns   344B     6 allocs
-Evolve_MultipleGenerations (100)     3.7k    28µs   34.4KB  600 allocs
-ApplyFitnessSharing (pop=100)         88   1.35ms    540KB 106 allocs
-RealWorldEvolution (100 gen)          12    9.87ms  4.43MB  59894 allocs
+CrossoverUniform (10 params)        496k   2.40µs   3.1KB   31 allocs
+CrossoverUniform (100 params)       69.6k  24.5µs   21.2KB  38 allocs
+TruncationSelection (pop=100)       205k   5.76µs       —    —
+TournamentSelection (pop=50,k=2)    282k   4.41µs       —    —
+RouletteWheelSelection (pop=100)    398k   2.98µs       —    —
+Evolve_OneGeneration (pop=10)       4.15M    303ns   344B     6 allocs
+Evolve_MultipleGenerations (100)    43.9k   28.4µs   34.4KB 600 allocs
+ApplyFitnessSharing (pop=100)         892   1.35ms    540KB 106 allocs
+RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
 ```
 
 ### Examples

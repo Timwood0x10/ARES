@@ -3,6 +3,15 @@ package models
 
 import "time"
 
+// TaskResultsTable is the PostgreSQL table name for task results.
+//
+// The "_1024" suffix encodes the embedding dimension of the
+// `embedding VECTOR(1024)` column. Changing the dimension requires a new
+// table plus a DB migration to backfill; this constant makes the suffix
+// explicit at every call site so a dimension change does not silently
+// diverge between files. Do NOT rename without coordinating a migration.
+const TaskResultsTable = "task_results_1024"
+
 // TaskResult represents the execution result of an agent task.
 // This stores task outputs with vector embedding for future reference and learning.
 type TaskResult struct {
@@ -23,9 +32,9 @@ type TaskResult struct {
 	CreatedAt        time.Time              `json:"created_at"`
 }
 
-// TableName returns the table name for this model.
+// TableName returns the PostgreSQL table name for this model.
 func (t *TaskResult) TableName() string {
-	return "task_results_1024"
+	return TaskResultsTable
 }
 
 // TaskStatus constants.

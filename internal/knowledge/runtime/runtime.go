@@ -1,5 +1,3 @@
-// Package runtime provides the KnowledgeRuntime — the core execution engine
-// of AKF. It orchestrates the Plan → Load → Link → Reduce → Lazy Graph pipeline.
 package runtime
 
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
@@ -30,8 +28,16 @@ type KnowledgeRuntime struct {
 	patchRegMu sync.RWMutex
 	patchReg   *patch.Registry
 
+	// planMu guards the planner field so SetPlanConfig (writer) and PlanConfig
+	// (reader, used by the patch executor to capture rollback values) are
+	// race-free. The Execute hot path reads planner without this lock (pre-
+	// existing); plan config swaps do not run concurrently with Execute in
+	// practice.
+	planMu sync.RWMutex
+
 	evStore evidence.Store      // optional: unified Evidence Store
-	evColl  *evidence.Collector // optional: evidence emitter
+	evColl  *evidence.Collector // optional: evidence emitter (Source "akf")
+	fitColl *evidence.Collector // optional: knowledge fitness emitter (Source "knowledge")
 }
 
 // New creates a KnowledgeRuntime with the given components.
@@ -71,11 +77,15 @@ func (r *KnowledgeRuntime) WithPatchRegistry(pr *patch.Registry) *KnowledgeRunti
 	return r
 }
 
-// WithEvidenceStore sets the runtime's evidence store for emitting AKF insights.
+// WithEvidenceStore sets the runtime's evidence store for emitting AKF insights
+// and knowledge fitness evidence.
 func (r *KnowledgeRuntime) WithEvidenceStore(store evidence.Store) *KnowledgeRuntime {
 	r.evStore = store
 	if store != nil {
 		r.evColl = evidence.NewCollector(store, "akf")
+		// Knowledge fitness evidence is emitted under Source "knowledge" so the
+		// GA KnowledgeGenome (which filters on that source) consumes it.
+		r.fitColl = evidence.NewCollector(store, "knowledge")
 	}
 	return r
 }
@@ -85,6 +95,12 @@ type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)
 	LazyLoading            bool // Enable lazy graph mode (default false)
 }
+
+// maxLazyForGraph caps the graph budget in lazy mode before Reduce.
+// DefaultReducer estimates ~50 tokens per node, so this limits the returned
+// WorkingGraph to at most 40 nodes, approximating a lazy graph until a
+// full *LazyGraph return type is implemented (see the clamp in Execute).
+const maxLazyForGraph = 2000
 
 // Execute runs the full AKF pipeline: Plan → Load → Link → Reduce → Graph.
 func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget knowledge.TokenBudget, cfg *Config) (*knowledge.WorkingGraph, error) {
@@ -128,25 +144,31 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("link: %w", err)
 	}
 
-	// 5. Reduce: prune and compress to fit budget.
+	// Lazy loading is approximated by clamping budget.ForGraph to
+	// maxLazyForGraph before Reduce. The reducer then prunes the graph to a
+	// smaller size, so the returned WorkingGraph is genuinely smaller.
+	//
+	// Known limitation: this is not a full LazyGraph. Execute still loads
+	// every object from the providers and returns *knowledge.WorkingGraph;
+	// only the final graph size is reduced. A complete implementation would
+	// return *LazyGraph built from summaries with an expandFn that fetches
+	// full objects on demand.
+	//
+	// Future direction: change Execute's return type to *LazyGraph (or add a
+	// parallel ExecuteLazy) and defer object loading until Expand is called.
+	// Until then the clamp below is the lazy-loading mechanism.
+	if cfg.LazyLoading && budget.ForGraph > maxLazyForGraph {
+		log.Info("lazy loading: clamping graph budget",
+			"original", budget.ForGraph,
+			"clamped", maxLazyForGraph)
+		budget.ForGraph = maxLazyForGraph
+	}
+
+	// 5. Reduce: prune and compress to fit budget (uses clamped budget when lazy).
 	graph := &knowledge.WorkingGraph{Nodes: objects, Edges: edges}
 	graph, err = r.reduce(ctx, graph, budget)
 	if err != nil {
 		return nil, fmt.Errorf("reduce: %w", err)
-	}
-
-	// If lazy loading is requested, apply a tighter budget so the reducer
-	// produces a smaller graph. Full lazy graph support (LazyGraph return type)
-	// requires future API changes; for now this provides real lazy behavior
-	// by limiting the output before the expensive reduce step.
-	if cfg.LazyLoading {
-		maxLazyBudget := knowledge.TokenBudget{ForGraph: 2000}
-		if budget.ForGraph > maxLazyBudget.ForGraph {
-			log.Info("lazy loading: clamping graph budget",
-				"original", budget.ForGraph,
-				"clamped", maxLazyBudget.ForGraph)
-			budget = maxLazyBudget
-		}
 	}
 
 	// Emit insight evidence to the unified Evidence Store.
@@ -159,6 +181,16 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 				"budget_used": budget.ForGraph,
 			},
 			"goal", goal,
+		)
+	}
+
+	// Emit knowledge fitness evidence under Source "knowledge": a successful
+	// AKG graph produced within budget is a win (1.0). The GA KnowledgeGenome
+	// aggregates the mean value to score the planner/reducer strategies it
+	// evolves.
+	if r.fitColl != nil {
+		_ = r.fitColl.Emit(ctx, evidence.KindFitness,
+			map[string]any{"value": 1.0},
 		)
 	}
 

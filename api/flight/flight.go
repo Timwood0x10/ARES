@@ -7,6 +7,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	aresflight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,10 @@ type FlightRecorder struct {
 type Config struct {
 	EventStore ares_events.EventStore
 	Genealogy  *Genealogy
+	// EvidenceStore, when non-nil, receives workflow/scheduler/recovery
+	// fitness evidence emitted by the flight collector — the same store the
+	// GA genomes read, closing the flight fitness write loop.
+	EvidenceStore evidence.Store
 }
 
 // New creates a flight recorder.
@@ -31,8 +36,9 @@ func New(cfg Config) *FlightRecorder {
 		g = cfg.Genealogy.inner
 	}
 	inner := aresflight.NewFlightRecorder(aresflight.FlightRecorderConfig{
-		EventStore: cfg.EventStore,
-		Genealogy:  g,
+		EventStore:    cfg.EventStore,
+		Genealogy:     g,
+		EvidenceStore: cfg.EvidenceStore,
 	})
 	return &FlightRecorder{inner: inner}
 }

@@ -47,7 +47,7 @@ func (c *MemoryClassifier) ClassifyMemory(experience *Experience) MemoryType {
 
 	// Check for rule type
 	if c.isRule(content) {
-		return MemoryProfile
+		return MemoryKnowledge
 	}
 
 	// Default to fact type
@@ -58,7 +58,7 @@ func (c *MemoryClassifier) ClassifyMemory(experience *Experience) MemoryType {
 func (c *MemoryClassifier) isSolution(content string) bool {
 	solutionKeywords := []string{
 		"fix", "solution", "error", "issue", "problem", "resolve",
-		"debug", "troubleshoot", "resolve", "workaround", "patch",
+		"debug", "troubleshoot", "workaround", "patch",
 		"error:", "exception", "fail", "failure", "bug",
 		"restart", "update", "change", "modify", "adjust",
 		"correct", "repair", "heal", "recover",
@@ -121,6 +121,8 @@ func GetMemoryTypeFromString(s string) MemoryType {
 	case "solution":
 		return MemoryInteraction
 	case "rule":
+		return MemoryKnowledge
+	case "profile":
 		return MemoryProfile
 	default:
 		return MemoryKnowledge

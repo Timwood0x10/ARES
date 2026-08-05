@@ -66,7 +66,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 		// Insert with auto-generated ID
 		if createdAtIsZero {
 			query = `
-				INSERT INTO task_results_1024
+				INSERT INTO ` + storage_models.TaskResultsTable + `
 				(tenant_id, session_id, task_type, agent_id, input, output, embedding,
 				 embedding_model, embedding_version, status, error, latency_ms, metadata, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8, $9, $10, $11, $12, $13, NOW())
@@ -80,7 +80,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 			}
 		} else {
 			query = `
-				INSERT INTO task_results_1024
+				INSERT INTO ` + storage_models.TaskResultsTable + `
 				(tenant_id, session_id, task_type, agent_id, input, output, embedding,
 				 embedding_model, embedding_version, status, error, latency_ms, metadata, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8, $9, $10, $11, $12, $13, $14)
@@ -97,7 +97,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 		// Insert with specified ID
 		if createdAtIsZero {
 			query = `
-				INSERT INTO task_results_1024
+				INSERT INTO ` + storage_models.TaskResultsTable + `
 				(id, tenant_id, session_id, task_type, agent_id, input, output, embedding,
 				 embedding_model, embedding_version, status, error, latency_ms, metadata, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10, $11, $12, $13, $14, NOW())
@@ -111,7 +111,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 			}
 		} else {
 			query = `
-				INSERT INTO task_results_1024
+				INSERT INTO ` + storage_models.TaskResultsTable + `
 				(id, tenant_id, session_id, task_type, agent_id, input, output, embedding,
 				 embedding_model, embedding_version, status, error, latency_ms, metadata, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10, $11, $12, $13, $14, $15)
@@ -150,7 +150,7 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 	query := `
 		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
-		FROM task_results_1024
+		FROM ` + storage_models.TaskResultsTable + `
 		WHERE id = $1
 	`
 
@@ -223,7 +223,7 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 	embeddingStr := postgres.FormatVector(result.Embedding)
 
 	query := `
-		UPDATE task_results_1024
+		UPDATE ` + storage_models.TaskResultsTable + `
 		SET task_type = $2, agent_id = $3, input = $4, output = $5, embedding = $6::vector,
 			embedding_model = $7, embedding_version = $8, status = $9, error = $10,
 			latency_ms = $11, metadata = $12
@@ -258,7 +258,7 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 // tenantID - tenant identifier for isolation.
 // Returns error if delete operation fails.
 func (r *TaskResultRepository) Delete(ctx context.Context, id, tenantID string) error {
-	return postgres.DeleteByID(ctx, r.db, "task_results_1024", id, tenantID)
+	return postgres.DeleteByID(ctx, r.db, storage_models.TaskResultsTable, id, tenantID)
 }
 
 // SearchByVector performs vector similarity search for task results.
@@ -281,7 +281,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at,
 			   1 - (embedding <=> $1::vector) as similarity
-		FROM task_results_1024
+		FROM ` + storage_models.TaskResultsTable + `
 		WHERE tenant_id = $2
 		  AND embedding IS NOT NULL
 		  AND status = 'completed'
@@ -385,7 +385,7 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 	query := `
 		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
-		FROM task_results_1024
+		FROM ` + storage_models.TaskResultsTable + `
 		WHERE task_type = $1 AND tenant_id = $2
 		ORDER BY created_at DESC
 		LIMIT $3
@@ -471,7 +471,7 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 	query := `
 		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
-		FROM task_results_1024
+		FROM ` + storage_models.TaskResultsTable + `
 		WHERE session_id = $1 AND tenant_id = $2
 		ORDER BY created_at DESC
 		LIMIT $3
@@ -548,7 +548,7 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, e
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
-		UPDATE task_results_1024
+		UPDATE ` + storage_models.TaskResultsTable + `
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4
 		WHERE id = $1
 	`
@@ -580,7 +580,7 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, e
 // Returns error if update operation fails.
 func (r *TaskResultRepository) UpdateStatus(ctx context.Context, id, status, errorMsg string, latencyMs int) error {
 	query := `
-		UPDATE task_results_1024
+		UPDATE ` + storage_models.TaskResultsTable + `
 		SET status = $2, error = $3, latency_ms = $4
 		WHERE id = $1
 	`
@@ -613,7 +613,7 @@ func (r *TaskResultRepository) GetStatistics(ctx context.Context, tenantID strin
 			task_type,
 			status,
 			COUNT(*) as count
-		FROM task_results_1024
+		FROM ` + storage_models.TaskResultsTable + `
 		WHERE tenant_id = $1
 		GROUP BY task_type, status
 	`

@@ -296,10 +296,10 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 		req.Plan = DefaultRetrievalPlan()
 	}
 
-	// Apply tenant isolation
-	if err := s.tenantGuard.SetTenantContext(ctx, req.TenantID); err != nil {
-		return nil, errors.Wrap(err, "set tenant context")
-	}
+	// Tenant isolation is enforced by the explicit tenant_id filters in every
+	// repository query below; the RLS context approach is ineffective here
+	// because set_config on a pooled connection is transaction-local and is
+	// not visible to queries served by other pooled connections.
 
 	// Check rate limiting and circuit breaker
 	if err := s.retrievalGuard.AllowRateLimit(); err != nil {

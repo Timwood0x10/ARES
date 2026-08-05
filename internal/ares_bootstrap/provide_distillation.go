@@ -76,11 +76,69 @@ func provideDistillation(
 			}
 			return hints, nil
 		},
-		// RecordStrategyOutcome is currently never invoked by the GA core; the
-		// FuncGuidanceProvider treats a nil RecordFunc as a successful no-op.
+		// RecordStrategyOutcome persists the actual strategy result back into
+		// the experience store (Track A write side). Previously the GA core
+		// invoked RecordStrategyOutcome but the FuncGuidanceProvider treated a
+		// nil RecordFunc as a successful no-op — the outcome was silently
+		// dropped. Now it is written so the next round's mutation guidance can
+		// read the outcome (Strategy → Experience → Guidance loop, Stage 4.3).
+		RecordFunc: func(ctx context.Context, outcome evolution.StrategyOutcome) error {
+			return recordStrategyOutcome(ctx, expRepo, outcome)
+		},
 	}
 
 	return pool, embClient, expRepo, distSvc, guidProv, nil
+}
+
+// recordStrategyOutcome persists a GA strategy outcome as an experience so the
+// Strategy → Experience → Guidance loop closes: the next mutation reads the
+// recorded outcome via HintsForTask. Failures are returned (never swallowed),
+// so a broken write side is visible instead of a silent no-op.
+//
+// Args:
+//
+//	ctx - cancellation context forwarded to the repository.
+//	repo - the experience repository; must be non-nil.
+//	outcome - the strategy outcome produced by the GA core.
+//
+// Returns:
+//
+//	err - repository or validation error; nil on success.
+func recordStrategyOutcome(ctx context.Context, repo repositories.ExperienceRepositoryInterface, outcome evolution.StrategyOutcome) error {
+	if repo == nil {
+		return fmt.Errorf("record strategy outcome: experience repository is nil")
+	}
+	expType := "failure"
+	if outcome.Success {
+		expType = "success"
+	}
+	exp := &storage_models.Experience{
+		TenantID: defaultDistillTenant,
+		Type:     expType,
+		// Problem/Input carry the task type so HintsForTask(taskType) retrieves
+		// the outcome by the same key the GA queries hints with.
+		Problem: outcome.TaskType,
+		Input:   outcome.TaskType,
+		// Solution/Output carry the strategy identity and achieved score.
+		Solution: fmt.Sprintf("strategy=%s score=%.4f", outcome.StrategyID, outcome.Score),
+		Output:   fmt.Sprintf("strategy=%s score=%.4f", outcome.StrategyID, outcome.Score),
+		Score:    outcome.Score,
+		Success:  outcome.Success,
+		Metadata: map[string]interface{}{
+			"strategy_id": outcome.StrategyID,
+			"cost":        outcome.Cost,
+		},
+	}
+	if err := repo.Create(ctx, exp); err != nil {
+		return fmt.Errorf("record strategy outcome: %w", err)
+	}
+	log.Info("bootstrap: strategy outcome recorded to experience store",
+		"strategy_id", outcome.StrategyID,
+		"task_type", outcome.TaskType,
+		"success", outcome.Success,
+		"score", outcome.Score,
+	)
+	return nil
 }
 
 // fetchExperiences retrieves candidate experiences for the GA's hint lookup.

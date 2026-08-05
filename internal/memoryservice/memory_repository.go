@@ -4,6 +4,7 @@ package memoryservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -269,11 +270,14 @@ func (r *MemoryRepository) SearchSimilarTasks(ctx context.Context, query *core.S
 			}
 		}
 
-		// Check if task input contains query text
-		if !matched && len(task.Input) > 0 && len(query.Query) > 0 {
-			// Simple text matching (not actual semantic search)
-			// In production, this would use vector similarity
-			matched = true
+		// Check if task input or summary contains the query text
+		// (case-insensitive substring match; not semantic search).
+		if !matched && len(query.Query) > 0 {
+			q := strings.ToLower(query.Query)
+			if strings.Contains(strings.ToLower(task.Input), q) ||
+				strings.Contains(strings.ToLower(task.Summary), q) {
+				matched = true
+			}
 		}
 
 		if matched {

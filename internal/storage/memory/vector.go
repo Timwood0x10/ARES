@@ -72,6 +72,9 @@ func (v *VectorStore) Search(_ context.Context, table string, embedding []float6
 		return results[i].score > results[j].score
 	})
 
+	if limit < 0 {
+		limit = 0
+	}
 	if limit > len(results) {
 		limit = len(results)
 	}

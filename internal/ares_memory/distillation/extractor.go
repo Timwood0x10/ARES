@@ -260,22 +260,28 @@ func (e *ExperienceExtractor) extractCoreSolution(solution string) string {
 		}
 	}
 
-	// If solution is too long, truncate to first few sentences
-	if len(solution) > 500 {
-		// Find first period, newline, or end of first block
-		// Leave room for "..." suffix (3 chars)
+	// If solution is too long (measured in runes so multi-byte characters
+	// such as CJK count as one character), truncate to the first few
+	// sentences. Truncation operates on runes and never splits a rune.
+	if len([]rune(solution)) > 500 {
+		runes := []rune(solution)
+		// Find first period, newline, or end of first block.
+		// Leave room for "..." suffix (3 chars).
 		truncateAt := 497
-		for i, c := range solution {
+		for i, c := range runes {
 			if i > 200 && (c == '.' || c == '\n') {
 				truncateAt = i + 1
 				break
 			}
 		}
-		// Ensure we don't exceed 500 characters total including "..."
+		// Ensure we don't exceed 500 characters total including "...".
 		if truncateAt > 497 {
 			truncateAt = 497
 		}
-		solution = solution[:truncateAt] + "..."
+		if truncateAt >= len(runes) {
+			return solution
+		}
+		solution = string(runes[:truncateAt]) + "..."
 	}
 
 	return solution

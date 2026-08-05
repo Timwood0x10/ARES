@@ -517,9 +517,17 @@ func (s *MCPServer) handleResourcesList(msg *JSONRPCMessage) *JSONRPCMessage {
 // A placeholder that is the last template part matches all remaining URI
 // segments (greedy); otherwise each placeholder matches exactly one segment.
 func matchURITemplate(uri string, tmpl string) bool {
-	// Decode URL-encoded characters for more flexible matching.
-	decodedURI, _ := url.PathUnescape(uri)
-	decodedTmpl, _ := url.PathUnescape(tmpl)
+	// Decode URL-encoded characters for more flexible matching. On decode
+	// failure (invalid percent-encoding), fall back to the raw input so a
+	// malformed URI does not silently mismatch.
+	decodedURI := uri
+	if d, err := url.PathUnescape(uri); err == nil {
+		decodedURI = d
+	}
+	decodedTmpl := tmpl
+	if d, err := url.PathUnescape(tmpl); err == nil {
+		decodedTmpl = d
+	}
 
 	tmplParts := splitTemplate(decodedTmpl)
 	uriParts := splitURI(decodedURI)

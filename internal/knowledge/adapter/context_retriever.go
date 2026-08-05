@@ -1,8 +1,3 @@
-// Package adapter provides bridges between existing ARES subsystems and AKF.
-//
-// This file implements KnowledgeRetriever — an adapter that exposes the AKG
-// (Adaptive Knowledge Graph) via the ContextRetriever interface so the
-// chat-loop context builder can inject AKG knowledge into the LLM prompt.
 package adapter
 
 import (
@@ -35,7 +30,57 @@ type ContextRetriever interface {
 
 // DefaultMinScore is the minimum Confidence score for a KnowledgeObject to be
 // returned as a ContextSnippet when no explicit minScore is provided.
+//
+// NOTE: This constant is retained for the store (HybridSearch) path, where
+// MinScore filters on FinalScore — a real query-relevance score produced by
+// the store's hybrid ranking. For the runtime path, collectSnippets now
+// filters on Relevance (see DefaultMinRelevance) and Confidence reliability
+// floor (see minReliabilityFloor), NOT on Confidence as a relevance score.
 const DefaultMinScore = 0.4
+
+// DefaultMinRelevance is the minimum Relevance score for a KnowledgeObject to
+// be returned as a ContextSnippet from the runtime path when no explicit
+// minRelevance is provided via WithMinRelevance. Objects whose providers did
+// not produce a real query-relevance signal (e.g. PG/MySQL full-table scans)
+// carry a neutral 0.5 prior, so a 0.3 floor lets them through while still
+// dropping obvious noise.
+const DefaultMinRelevance = 0.3
+
+// minReliabilityFloor is the absolute Confidence floor below which an object
+// is dropped as obvious garbage regardless of its Relevance. It is a
+// reliability check (not a relevance check) and is intentionally low so it
+// only catches clearly broken facts (Confidence near 0). It is a named
+// constant rather than a parameter because it encodes a system invariant,
+// not a deployment-specific tuning knob.
+const minReliabilityFloor = 0.1
+
+// Option configures a KnowledgeRetriever at construction time. Unknown or
+// unneeded options are silently ignored by the constructors, so adding new
+// options is backward-compatible with existing callers.
+type Option func(*KnowledgeRetriever)
+
+// WithMinRelevance sets the minimum Relevance score for the runtime path's
+// collectSnippets filter. Values <= 0 are ignored so the DefaultMinRelevance
+// (0.3) applies. This is the recommended way to tune retrieval strictness:
+// raise it to surface only high-relevance hits, lower it to admit more
+// candidates into the topK window.
+func WithMinRelevance(v float64) Option {
+	return func(r *KnowledgeRetriever) {
+		if v > 0 {
+			r.minRelevance = v
+		}
+	}
+}
+
+// Shared metadata keys and source identifiers used by both the store path and
+// the runtime path (and their tests). Centralised so the literals are not
+// repeated across the package (goconst).
+const (
+	sourceAKGStore   = "akg_store"
+	metaKeyType      = "type"
+	metaKeyNamespace = "namespace"
+	metaKeyRelevance = "relevance"
+)
 
 // defaultTopK is the default maximum number of snippets returned by Retrieve
 // when the caller passes topK <= 0.
@@ -61,9 +106,23 @@ const defaultMaxConcurrentProviders = 5
 // The underlying KnowledgeRuntime is responsible for its own internal locking
 // (see runtime.loadAndProcess); this adapter holds no mutable state and is
 // safe for concurrent use across goroutines.
+//
+// When a KnowledgeStore is wired (store != nil) Retrieve takes the AKG read
+// loop: HybridSearch against the store's AKG-distilled facts instead of
+// re-running provider streaming. With store == nil it falls back to the
+// original runtime.Execute path. The model field names the embedding model
+// the store should compare against (empty = lexical-only search).
 type KnowledgeRetriever struct {
 	runtime  *knowledgeruntime.KnowledgeRuntime
+	store    knowledge.KnowledgeStore // optional; nil = fall back to runtime.Execute
+	model    string                   // embedding model name for HybridSearch
 	minScore float64
+	// minRelevance is the runtime-path Relevance filter: collectSnippets
+	// drops objects with Relevance < minRelevance. Defaults to
+	// DefaultMinRelevance (0.3). The store path uses minScore (forwarded to
+	// HybridSearch.MinScore) because HybridSearch produces real relevance
+	// scores (FinalScore) and the store layer applies the filter itself.
+	minRelevance float64
 }
 
 // NewKnowledgeRetriever creates a KnowledgeRetriever backed by the given
@@ -73,8 +132,12 @@ type KnowledgeRetriever struct {
 //   - ctx: context reserved for future initialization I/O (currently unused
 //     but kept to satisfy §4.3 constructor conventions).
 //   - runtime: AKG KnowledgeRuntime. Must be non-nil.
-//   - minScore: minimum Confidence score for a snippet to be returned.
-//     Pass 0 (or any value <= 0) to use DefaultMinScore (0.4).
+//   - minScore: minimum Confidence score for a snippet to be returned on
+//     the store path (forwarded to HybridSearch.MinScore). Pass 0 (or any
+//     value <= 0) to use DefaultMinScore (0.4). For the runtime path this
+//     value is NOT used for filtering — see WithMinRelevance instead.
+//   - opts: optional configuration (e.g. WithMinRelevance). Unknown options
+//     are ignored.
 //
 // Returns:
 //   - retriever: ready to serve Retrieve calls.
@@ -83,6 +146,7 @@ func NewKnowledgeRetriever(
 	_ context.Context,
 	runtime *knowledgeruntime.KnowledgeRuntime,
 	minScore float64,
+	opts ...Option,
 ) (*KnowledgeRetriever, error) {
 	if runtime == nil {
 		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
@@ -90,14 +154,77 @@ func NewKnowledgeRetriever(
 	if minScore <= 0 {
 		minScore = DefaultMinScore
 	}
-	return &KnowledgeRetriever{
-		runtime:  runtime,
-		minScore: minScore,
-	}, nil
+	r := &KnowledgeRetriever{
+		runtime:      runtime,
+		minScore:     minScore,
+		minRelevance: DefaultMinRelevance,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	return r, nil
+}
+
+// NewKnowledgeRetrieverWithStore creates a KnowledgeRetriever that takes the
+// AKG read loop: when store is non-nil, Retrieve calls store.HybridSearch to
+// read AKG-distilled facts instead of re-running provider streaming via
+// runtime.Execute. Pass store == nil to behave like NewKnowledgeRetriever
+// (fall back to runtime.Execute).
+//
+// Args:
+//   - ctx: context reserved for future initialization I/O (currently unused
+//     but kept to satisfy §4.3 constructor conventions).
+//   - runtime: AKG KnowledgeRuntime. Must be non-nil even when store is set,
+//     because the fallback path needs it. The store path itself does not call
+//     runtime.Execute.
+//   - store: optional KnowledgeStore. nil = fall back to runtime.Execute.
+//   - model: embedding model name passed to HybridSearch (selects which
+//     Representation the store compares against). Empty = lexical-only.
+//   - minScore: minimum Confidence score for a snippet to be returned on
+//     the store path. Pass 0 (or any value <= 0) to use DefaultMinScore
+//     (0.4). For the store path this is forwarded as
+//     HybridSearchRequest.MinScore; the store layer applies the filter, so
+//     Retrieve does NOT filter again. For the runtime fallback path this
+//     value is NOT used for filtering — see WithMinRelevance instead.
+//   - opts: optional configuration (e.g. WithMinRelevance). Unknown options
+//     are ignored.
+//
+// Returns:
+//   - retriever: ready to serve Retrieve calls.
+//   - err: wrapped error if runtime is nil.
+func NewKnowledgeRetrieverWithStore(
+	_ context.Context,
+	runtime *knowledgeruntime.KnowledgeRuntime,
+	store knowledge.KnowledgeStore,
+	model string,
+	minScore float64,
+	opts ...Option,
+) (*KnowledgeRetriever, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+	}
+	if minScore <= 0 {
+		minScore = DefaultMinScore
+	}
+	r := &KnowledgeRetriever{
+		runtime:      runtime,
+		store:        store,
+		model:        model,
+		minScore:     minScore,
+		minRelevance: DefaultMinRelevance,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	return r, nil
 }
 
 // Retrieve queries the AKG for knowledge entries matching the input and
-// returns them as ContextSnippets sorted by Score descending.
+// returns them as ContextSnippets sorted by Score (Relevance) descending.
 //
 // Args:
 //   - ctx: cancellation context. Honoured by KnowledgeRuntime.Execute.
@@ -106,8 +233,12 @@ func NewKnowledgeRetriever(
 //   - topK: maximum number of snippets to return. Defaults to 5 when <= 0.
 //
 // Returns:
-//   - snippets: at most topK ContextSnippets with Score >= minScore, sorted
-//     by Score descending. Empty (not nil) when no matches qualify.
+//   - snippets: at most topK ContextSnippets. On the store path, Score is
+//     HybridSearch FinalScore and the store layer applies MinScore + FinalK.
+//     On the runtime path, Score is the object's Relevance (set by the
+//     streaming provider), and collectSnippets applies the minRelevance
+//     filter plus the minReliabilityFloor Confidence floor. Empty (not nil)
+//     when no matches qualify.
 //   - err: wrapped error if the AKG pipeline fails.
 func (r *KnowledgeRetriever) Retrieve(
 	ctx context.Context,
@@ -127,6 +258,50 @@ func (r *KnowledgeRetriever) Retrieve(
 		topK = defaultTopK
 	}
 
+	// AKG read loop: when a KnowledgeStore is wired, read AKG-distilled facts
+	// via HybridSearch instead of re-running provider streaming. The store
+	// layer applies MinScore and the TopK/FinalK caps, so we do not filter or
+	// cap again here. Vector recall (TopK) is over-fetched 3x relative to the
+	// caller's topK so the FinalK ranking has a richer candidate pool.
+	if r.store != nil {
+		req := knowledge.HybridSearchRequest{
+			Query:        input,
+			TopK:         topK * 3,
+			FinalK:       topK,
+			MinScore:     r.minScore,
+			Model:        r.model,
+			StatusFilter: []knowledge.ObjectStatus{knowledge.StatusActive},
+		}
+		scored, err := r.store.HybridSearch(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge retriever: hybrid search: %w", err)
+		}
+		snippets := make([]ContextSnippet, 0, len(scored))
+		for _, s := range scored {
+			if s.Object == nil {
+				continue
+			}
+			// Mirror FinalScore into the snippet's Relevance metadata so
+			// downstream consumers (prompt renderers, evidence collectors)
+			// see a consistent relevance signal across both code paths.
+			snippets = append(snippets, ContextSnippet{
+				Source:  sourceAKGStore,
+				Content: snippetContent(s.Object),
+				Score:   s.FinalScore,
+				Metadata: map[string]any{
+					"id":             s.Object.ID,
+					metaKeyType:      string(s.Object.Type),
+					"source":         sourceAKGStore,
+					"vector":         s.VectorScore,
+					"lexical":        s.LexicalScore,
+					metaKeyRelevance: s.FinalScore,
+					metaKeyNamespace: s.Object.Namespace,
+				},
+			})
+		}
+		return snippets, nil
+	}
+
 	// Run the AKG pipeline: Plan → Load → Link → Reduce.
 	// KnowledgeRuntime.Execute accepts natural-language text directly — no
 	// embedder is required because providers stream their own object sets
@@ -143,12 +318,8 @@ func (r *KnowledgeRetriever) Retrieve(
 	}
 
 	snippets := r.collectSnippets(graph.Nodes)
-	// Sort by Score descending (stable enough — ties keep insertion order).
-	sort.SliceStable(snippets, func(i, j int) bool {
-		return snippets[i].Score > snippets[j].Score
-	})
-
-	// Cap at topK.
+	// collectSnippets already sorts by Score (Relevance) descending, so we
+	// only need to apply the topK cap here.
 	if len(snippets) > topK {
 		snippets = snippets[:topK]
 	}
@@ -156,7 +327,23 @@ func (r *KnowledgeRetriever) Retrieve(
 }
 
 // collectSnippets converts the runtime's KnowledgeObject map into a slice of
-// ContextSnippets, applying the minScore filter and skipping nil entries.
+// ContextSnippets, applying the Relevance filter and the Confidence
+// reliability floor, and sorting by Relevance descending.
+//
+// Filter rules (root-cause fix for retrieval quality gate #1):
+//   - Drop objects with Confidence < minReliabilityFloor (0.1): these are
+//     obvious garbage regardless of relevance. Confidence is a reliability
+//     prior, not a query-relevance score, so it is only used as a floor.
+//   - Drop objects with Relevance < r.minRelevance (default 0.3): Relevance
+//     is the query-time signal providers set at stream time. Filtering on
+//     Relevance (not Confidence) is the fix — the old code filtered on
+//     Confidence, which was a hardcoded constant per provider (memory 0.7,
+//     code 0.9, pg 0.5, mysql 1.0) so the 0.4 gate was a no-op.
+//
+// Sort: Relevance descending so the topK cap in Retrieve keeps the most
+// relevant hits. The snippet's Score field is set to Relevance so the
+// downstream sort in Retrieve (by Score desc) agrees with this ordering.
+//
 // Non-blocking: pure transformation, no I/O.
 func (r *KnowledgeRetriever) collectSnippets(
 	nodes map[string]*knowledge.KnowledgeObject,
@@ -166,23 +353,34 @@ func (r *KnowledgeRetriever) collectSnippets(
 		if obj == nil {
 			continue
 		}
-		score := scoreutil.ClampUnit(obj.Confidence)
-		if score < r.minScore {
+		reliability := scoreutil.ClampUnit(obj.Confidence)
+		if reliability < minReliabilityFloor {
+			continue
+		}
+		relevance := scoreutil.ClampUnit(obj.Relevance)
+		if relevance < r.minRelevance {
 			continue
 		}
 		snippets = append(snippets, ContextSnippet{
 			Source:  "knowledge",
 			Content: snippetContent(obj),
-			Score:   score,
+			Score:   relevance,
 			Metadata: map[string]any{
-				"id":        obj.ID,
-				"type":      string(obj.Type),
-				"namespace": obj.Namespace,
-				"tags":      obj.Tags,
-				"version":   obj.Version,
+				"id":             obj.ID,
+				metaKeyType:      string(obj.Type),
+				metaKeyNamespace: obj.Namespace,
+				"tags":           obj.Tags,
+				"version":        obj.Version,
+				metaKeyRelevance: relevance,
+				"confidence":     reliability,
 			},
 		})
 	}
+	// Sort by Relevance descending (stable — ties keep insertion order so
+	// provider emit order is preserved across equal-relevance objects).
+	sort.SliceStable(snippets, func(i, j int) bool {
+		return snippets[i].Score > snippets[j].Score
+	})
 	return snippets
 }
 

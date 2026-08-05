@@ -9,10 +9,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	api_tools "github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -65,6 +70,9 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	if err := validateServeConfig(cfg); err != nil {
+		return err
+	}
 
 	// --- Context with signal handling ---
 	ctx, cancel := context.WithCancel(context.Background())
@@ -72,10 +80,6 @@ func runServe() error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	// Declare httpSrv here so the signal handler below can reference it.
-	// The actual server is constructed after bootstrap/agent setup is complete.
-	var httpSrv *http.Server
 
 	// Graceful shutdown coordinator (internal/ares_shutdown). Real teardown
 	// hooks (HTTP server, MCP, runtime) are registered below once those
@@ -87,6 +91,11 @@ func runServe() error {
 	shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
 
 	g, ctx := errgroup.WithContext(ctx)
+	// comp is assigned by Bootstrap below; the signal goroutine references it
+	// for shutdown (WaitBackground + snapshot). The pointer is exchanged via
+	// atomic.Store/Load so the goroutine never races with the Bootstrap
+	// assignment on the main goroutine.
+	var compPtr atomic.Pointer[ares_bootstrap.Components]
 	g.Go(func() error {
 		select {
 		case <-sigCh:
@@ -99,9 +108,23 @@ func runServe() error {
 			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
 				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
 			}
+			shutdownSystemRuntime(&compPtr, shutdownCtx)
 			cancel()
 		case <-ctx.Done():
 		}
+		comp := compPtr.Load()
+		if comp == nil {
+			return nil
+		}
+		// Record the pre-shutdown component snapshot for shutdown diagnostics
+		// (which components were still running before background exit).
+		if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
+			log.Printf("system_runtime snapshot (shutdown): %s", string(snapJSON))
+		}
+		// Wait for Bootstrap's background goroutines (distillation subscriber,
+		// GA evolution ticker, LLM suggestion ticker) to exit after the
+		// context is cancelled, so none outlives the graceful shutdown.
+		comp.WaitBackground()
 		return nil
 	})
 
@@ -128,12 +151,25 @@ func runServe() error {
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
+	// Publish the assembled components to the signal goroutine via the atomic
+	// pointer so the shutdown snapshot/WaitBackground reads never race.
+	compPtr.Store(comp)
 	store := comp.EventStore
 	memMgr := comp.Memory
 	mgr := comp.Runtime
 
-	// Attach event store to memory for event-driven memory operations
-	memMgr.SetEventStore(store, "memory")
+	// Stage 3 fix (B01): EventStore is wired into Memory during Bootstrap,
+	// not post-Bootstrap here. validateServeConfig has already enforced that
+	// the full agent-serving entry point has its required Memory component.
+
+	// Stage 1 observability: report the System Runtime component snapshot
+	// (names, modes, lifecycle states) so operators can confirm which
+	// components were assembled and reached Ready at startup.
+	if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
+		log.Printf("system_runtime snapshot (startup): %s", string(snapJSON))
+	} else {
+		log.Printf("system_runtime snapshot unavailable: %v", snapErr)
+	}
 
 	// --- LLM adapter with fallback ---
 	llmAdapter, err := createLLMAdapterWithFallback(cfg)
@@ -147,8 +183,10 @@ func runServe() error {
 		return fmt.Errorf("create tool registry: %w", err)
 	}
 
-	// --- MCP servers via ares_bootstrap.SetupMCP (handles registry bridging) ---
-	internalReg, err := setupMCP(ctx, cfg, registry)
+	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
+	// single set of connections; its Stop hook is registered below) and bridge
+	// its tools into the internal + public registries. ---
+	internalReg, err := setupMCP(ctx, comp.MCP, registry, ares_bootstrap.ToolDepsFromComponents(comp))
 	if err != nil {
 		return fmt.Errorf("MCP setup: %w", err)
 	}
@@ -194,8 +232,13 @@ func runServe() error {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
 	// Wire the GA's deployed strategy into live agents so the running
-	// agents read the active prompt/params at runtime.
-	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	// agents read the active prompt/params at runtime. When evolution is
+	// disabled (comp.NewEvolution == nil) no strategy source is injected,
+	// so serve continues without GA strategy guidance.
+	var strategySrc agents.StrategySource
+	if comp.NewEvolution != nil {
+		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	}
 	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		return fmt.Errorf("create agents: %w", err)
@@ -280,15 +323,26 @@ func runServe() error {
 		return nil
 	})
 
+	// F04 (Stage 8): build the leader's real workflow DAG from the configured
+	// sub-agents and register it with the runtime manager BEFORE mgr.Start, so
+	// wireEvolutionLiveDAGs binds workflow/scheduler/recovery executors to the
+	// live DAG instead of the bootstrap synthetic placeholder.
+	liveDAG, dagErr := buildLeaderLiveDAG(cfg)
+	if dagErr != nil {
+		return fmt.Errorf("build leader live dag: %w", dagErr)
+	}
+	mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
+
+	// Inject the live agent DAGs into the evolution system's executors before
+	// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
+	// time. The leader's live DAG is now registered above, so the binding is
+	// real (F04 closed) rather than a no-op.
+	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
+
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("start runtime: %w", err)
 	}
-
-	// Inject the live agent DAGs into the evolution system's executors,
-	// replacing the synthetic placeholder DAG created at bootstrap time.
-	// This ensures workflow/scheduler/recovery patches hit real runtime state.
-	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
 
 	// --- Submit real tasks ---
 	g.Go(func() error {
@@ -296,7 +350,32 @@ func runServe() error {
 		return nil
 	})
 
-	// --- HTTP server ---
+	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
+	// cyclomatic complexity within lint limits) ---
+	if _, err := startServeHTTPAndHooks(ctx, g, cfg, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
+		return err
+	}
+
+	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
+	return g.Wait()
+}
+
+// startServeHTTPAndHooks builds the console HTTP server, starts it in the
+// background, and registers the graceful-shutdown hooks (HTTP → MCP → runtime
+// → flight recorder) now that those components are initialized. It returns
+// the started server so the caller can assign it to its signal-handler
+// closure for a graceful Ctrl+C shutdown.
+func startServeHTTPAndHooks(
+	ctx context.Context,
+	g *errgroup.Group,
+	cfg *ares_config.Config,
+	plugin *monitoring.MonitorPlugin,
+	mgr *ares_runtime.Manager,
+	registry *api_tools.Registry,
+	toolBinder sub.ToolBinder,
+	shutdownMgr *ares_shutdown.Manager,
+	comp *ares_bootstrap.Components,
+) (*http.Server, error) {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Println("=== ARES Console — Live Runtime ===")
 	fmt.Printf("Console:  http://localhost%s/console/\n", addr)
@@ -306,9 +385,17 @@ func runServe() error {
 	fmt.Println()
 
 	server := monitoring.NewHTTPServer(plugin)
-	handler := &actionHandler{inner: server, mgr: mgr, tools: registry}
 
-	httpSrv = &http.Server{
+	// API key for destructive endpoints (agents/chaos/tools). When empty,
+	// all destructive requests are denied (deny-by-default). Configure via
+	// ARES_API_KEY environment variable.
+	serveAPIKey := os.Getenv("ARES_API_KEY")
+	if serveAPIKey != "" {
+		server = monitoring.NewHTTPServer(plugin, monitoring.WithAPIKey(serveAPIKey))
+	}
+	handler := &actionHandler{inner: server, mgr: mgr, tools: registry, apiKey: serveAPIKey}
+
+	httpSrv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
@@ -324,26 +411,81 @@ func runServe() error {
 	})
 
 	// Register graceful-shutdown hooks now that the server, MCP, and runtime
-	// are initialized. Each hook performs a real teardown (no no-ops).
+	// are initialized. Only the HTTP server stays here: MCP, Runtime, and
+	// FlightRecorder teardown now lives in the System Runtime orchestrator
+	// (Stage 9), which drives real Stop in reverse topological order during
+	// the graceful shutdown sequence — removing the old duplicated teardown.
 	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
-		if httpSrv != nil {
-			return httpSrv.Shutdown(ctx)
-		}
-		return nil
+		return httpSrv.Shutdown(ctx)
 	}); err != nil {
-		return fmt.Errorf("register http shutdown hook: %w", err)
-	}
-	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, comp.MCP.Stop); err != nil {
-		return fmt.Errorf("register mcp shutdown hook: %w", err)
-	}
-	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
-		return mgr.Stop()
-	}); err != nil {
-		return fmt.Errorf("register runtime shutdown hook: %w", err)
+		return nil, fmt.Errorf("register http shutdown hook: %w", err)
 	}
 
-	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
-	return g.Wait()
+	return httpSrv, nil
+}
+
+// shutdownSystemRuntime drives the System Runtime orchestration kernel through
+// the same graceful shutdown so the managed component graph transitions to
+// Stopped and the snapshot reflects the orderly teardown. Adapters now carry
+// Stopper hooks (Stage 9), so the orchestrator stops MCP/Runtime/Flight in
+// reverse topological order; nil guards keep this safe on the bootstrap-failure
+// path. Extracted from runServe to keep its cyclomatic complexity within lint
+// limits.
+func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], ctx context.Context) {
+	comp := compPtr.Load()
+	if comp == nil || comp.SystemRuntime == nil {
+		return
+	}
+	if err := comp.SystemRuntime.Shutdown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "system_runtime shutdown error: %v\n", err)
+	}
+}
+
+// buildLeaderLiveDAG constructs the leader's real workflow DAG from the
+// configured sub-agents: input (leader) → one step per sub-agent → output
+// (leader). This replaces the bootstrap synthetic 3-step placeholder so
+// workflow/scheduler/recovery evolution patches hit the actual agent topology
+// (F04, Stage 8).
+//
+// Args:
+// cfg - fully resolved serve configuration; cfg.Agents.Sub is read.
+//
+// Returns:
+// dag - the live MutableDAG, nil on error.
+// err - error if a step ID is empty/duplicate or dependencies are invalid.
+func buildLeaderLiveDAG(cfg *ares_config.Config) (*engine.MutableDAG, error) {
+	steps := []*engine.Step{
+		{ID: "input", Name: "Input", AgentType: cfg.Agents.Leader.ID, Input: "parse input"},
+	}
+	subIDs := make([]string, 0, len(cfg.Agents.Sub))
+	for _, s := range cfg.Agents.Sub {
+		stepID := strings.TrimSpace(s.ID)
+		if stepID == "" {
+			stepID = strings.TrimSpace(s.Type)
+		}
+		if stepID == "" {
+			// Fail-loud instead of silently registering a broken DAG edge.
+			return nil, fmt.Errorf("sub-agent has empty ID and empty type")
+		}
+		steps = append(steps, &engine.Step{
+			ID:        stepID,
+			Name:      s.Type,
+			AgentType: s.Type,
+			Input:     stepID,
+			DependsOn: []string{"input"},
+		})
+		subIDs = append(subIDs, stepID)
+	}
+	// Output step depends on every sub-agent step (or just input when none).
+	outputDeps := append([]string{"input"}, subIDs...)
+	steps = append(steps, &engine.Step{
+		ID:        "output",
+		Name:      "Output",
+		AgentType: cfg.Agents.Leader.ID,
+		Input:     "format",
+		DependsOn: outputDeps,
+	})
+	return engine.NewMutableDAG(steps)
 }
 
 // wireEvolutionLiveDAGs injects the live agent DAGs into the evolution
@@ -358,6 +500,12 @@ func wireEvolutionLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Ma
 	for _, id := range []string{leaderID} {
 		dag, ok := mgr.GetAgentDAG(id)
 		if !ok || dag == nil {
+			// Fail-loud: no live DAG is registered for this agent (the live
+			// DAG supply chain is Track C, deferred), so workflow/scheduler/
+			// recovery patches still hit synthetic executors. The warning is
+			// expected on every startup until a live DAG is wired.
+			log.Printf("serve: live DAG not registered for agent %q before Start; "+
+				"workflow patches will hit synthetic executors (F04 gap, Track C deferred)", id)
 			continue
 		}
 		liveDAG, dagOk := dag.(*engine.MutableDAG)
@@ -438,6 +586,21 @@ func loadServeConfig() (*ares_config.Config, error) {
 		cfg.Server.Port = servePort
 	}
 	return cfg, nil
+}
+
+// validateServeConfig enforces the dependencies required by the full agent
+// serving entry point before Bootstrap starts any component. Memory is optional
+// for the library/bootstrap layer, but the current Leader contract requires a
+// MemoryManager, so disabling it here is a configuration error rather than a
+// late nil dereference or a no-op substitute.
+func validateServeConfig(cfg *ares_config.Config) error {
+	if cfg == nil {
+		return errors.New("serve: config is required")
+	}
+	if !cfg.Memory.Enabled {
+		return errors.New("serve: memory.enabled must be true because the leader agent requires the Memory component")
+	}
+	return nil
 }
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.

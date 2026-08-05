@@ -235,7 +235,7 @@ func TestWireSDKRetrievers(t *testing.T) {
 		memMgr := mustBuildManager(t, cfg)
 
 		// All deps nil; helper must log warnings and return without panicking.
-		wireSDKRetrievers(context.Background(), cfg, memMgr, nil, nil, nil)
+		wireSDKRetrievers(context.Background(), cfg, memMgr, nil, nil, nil, nil, "")
 	})
 
 	t.Run("with_knowledge_runtime_no_panic", func(t *testing.T) {
@@ -245,7 +245,7 @@ func TestWireSDKRetrievers(t *testing.T) {
 
 		// Real KnowledgeRuntime but no embedding/expRepo: knowledge retriever
 		// may wire, memory retriever skipped. Must not panic or error.
-		wireSDKRetrievers(context.Background(), cfg, memMgr, nil, nil, knowRt)
+		wireSDKRetrievers(context.Background(), cfg, memMgr, nil, nil, knowRt, nil, "")
 	})
 
 	t.Run("nil_manager_no_panic", func(t *testing.T) {
@@ -254,7 +254,7 @@ func TestWireSDKRetrievers(t *testing.T) {
 
 		// nil memMgr: type assertion yields (nil, false), helper logs and
 		// returns. Critical: must not panic on the nil interface assertion.
-		wireSDKRetrievers(context.Background(), cfg, nil, nil, nil, knowRt)
+		wireSDKRetrievers(context.Background(), cfg, nil, nil, nil, knowRt, nil, "")
 	})
 }
 

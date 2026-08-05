@@ -22,7 +22,7 @@ const shutdownTimeout = 3 * time.Second
 // context, cancel, errgroup, and store must all be non-nil.
 func TestNewEventBackend(t *testing.T) {
 	t.Run("nil_distillSvc_skips_subscriber_clean_teardown", func(t *testing.T) {
-		ctx, cancel, eg, store := newEventBackend(nil)
+		ctx, cancel, eg, store := newEventBackend(nil, nil)
 		if ctx == nil {
 			t.Fatal("expected non-nil ctx")
 		}
@@ -45,7 +45,7 @@ func TestNewEventBackend(t *testing.T) {
 		// The returned store must be a working EventStore: appending an event
 		// must succeed. This guards against newEventBackend returning a nil
 		// wrapper by mistake.
-		ctx, cancel, eg, store := newEventBackend(nil)
+		ctx, cancel, eg, store := newEventBackend(nil, nil)
 		defer cancel()
 		defer waitOrTimeout(t, eg, shutdownTimeout)
 
@@ -76,7 +76,7 @@ func TestWireDistillationSubscriber(t *testing.T) {
 
 		// nil distSvc is safe: with no events emitted the goroutine never
 		// reaches HandleTaskCompletedForDistillation.
-		wireDistillationSubscriber(ctx, eg, store, nil)
+		wireDistillationSubscriber(ctx, eg, store, nil, nil)
 
 		// Cancel and wait. The subscriber goroutine must exit via ctx.Done()
 		// and eg.Wait must return nil within the timeout.
@@ -92,7 +92,7 @@ func TestWireDistillationSubscriber(t *testing.T) {
 		store := ares_events.NewMemoryEventStore()
 		defer func() { _ = store.Close() }()
 
-		wireDistillationSubscriber(ctx, eg, store, nil)
+		wireDistillationSubscriber(ctx, eg, store, nil, nil)
 
 		cancel()
 		waitOrTimeout(t, eg, shutdownTimeout)

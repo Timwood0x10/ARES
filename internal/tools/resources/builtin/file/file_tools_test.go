@@ -234,8 +234,15 @@ func TestFileToolsRead_Success(t *testing.T) {
 		t.Errorf("operation = %v, want 'read'", data["operation"])
 	}
 
-	if data["file_path"] != testFile {
-		t.Errorf("file_path = %v, want %s", data["file_path"], testFile)
+	// The operation reports the symlink-resolved secure path (M11), which
+	// may differ from the input on platforms where TempDir passes through a
+	// symlink (e.g. macOS /var -> /private/var).
+	resolvedFile, err := filepath.EvalSymlinks(testFile)
+	if err != nil {
+		t.Fatalf("Failed to resolve test file: %v", err)
+	}
+	if data["file_path"] != resolvedFile {
+		t.Errorf("file_path = %v, want %s", data["file_path"], resolvedFile)
 	}
 
 	lineCount, ok := data["line_count"].(int)

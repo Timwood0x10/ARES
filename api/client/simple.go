@@ -37,18 +37,22 @@ type SimpleClient struct {
 //	}
 //	fmt.Println(result)
 func NewSimpleClient(configPath string) (*SimpleClient, error) {
-	// Load config
+	// Load config ONCE and build the underlying client from the loaded
+	// config. Previously this called NewClientFromConfigPath, which loads
+	// the same file a second time (double I/O and a second chance for the
+	// file to change between loads).
 	loader := NewConfigLoader()
 	config, err := loader.Load(configPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "load config")
 	}
 
-	// Create underlying client
-	underlyingClient, err := NewClientFromConfigPath(configPath)
+	clientConfig := config.ToClientConfig()
+	underlyingClient, err := NewClient(clientConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "create client")
 	}
+	underlyingClient.configFile = config
 
 	return &SimpleClient{
 		client: underlyingClient,

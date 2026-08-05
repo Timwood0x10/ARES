@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -13,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 )
 
 type e2eProvider struct {
@@ -237,6 +239,143 @@ func TestAKFE2E_CompileAllFormats(t *testing.T) {
 		content, ok := compiled.Formats[f]
 		if !ok || content == "" {
 			t.Errorf("missing or empty format: %s", f)
+		}
+	}
+}
+
+// TestAKG_WriteReadLoop verifies the AKG write→read closed loop using only the
+// knowledge package + memstore (no adapter DistillBridge, which is owned by
+// the P2 agent and may not exist yet):
+//
+//  1. Save active KnowledgeObjects to the store (write side).
+//  2. HybridSearch recalls them by goal text (read side).
+//  3. Quality gate Evaluate → ComputeFinal → Promote transitions a candidate
+//     to active, and ListByStatus(StatusActive) observes the promotion.
+//  4. A candidate-status object must NOT leak into an active-only search.
+//
+// When adapter.NewDistillBridgeWithGate lands this test should gain a
+// DistillBridge round-trip case (see AKG_DEV_PLAN_029.md §7.1).
+func TestAKG_WriteReadLoop(t *testing.T) {
+	ctx := context.Background()
+	ms := memorystore.New()
+
+	// 1. Seed active objects (the write side of the loop).
+	seed := []*knowledge.KnowledgeObject{
+		{
+			ID: "akg:auth:1", Type: knowledge.ObjectMemory, Namespace: "default",
+			Summary:    "router.go fixes the auth bypass in middleware",
+			Normalized: "router.go fixes auth bypass middleware",
+			Status:     knowledge.StatusActive, Confidence: 0.8, CreatedAt: time.Now(),
+		},
+		{
+			ID: "akg:cache:1", Type: knowledge.ObjectDecision, Namespace: "default",
+			Summary:    "chose redis for the caching layer",
+			Normalized: "redis caching layer decision",
+			Status:     knowledge.StatusActive, Confidence: 0.85, CreatedAt: time.Now(),
+		},
+	}
+	if err := ms.Save(ctx, seed...); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	// 2. HybridSearch recalls the auth fact by goal text (read side).
+	scored, err := ms.HybridSearch(ctx, knowledge.HybridSearchRequest{
+		Query:        "auth bypass",
+		Namespace:    "default",
+		TopK:         10,
+		FinalK:       5,
+		MinScore:     0,
+		Model:        "test-model",
+		StatusFilter: []knowledge.ObjectStatus{knowledge.StatusActive},
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(scored) == 0 {
+		t.Fatal("expected at least one recalled object, got none")
+	}
+	foundAuth := false
+	for _, s := range scored {
+		if s.Object != nil && s.Object.ID == "akg:auth:1" {
+			foundAuth = true
+		}
+	}
+	if !foundAuth {
+		t.Error("expected akg:auth:1 to be recalled by 'auth bypass' query")
+	}
+
+	// 3. Quality gate: Evaluate a candidate, ComputeFinal, Promote, then
+	//    ListByStatus(StatusActive) sees the promoted object.
+	gate := knowledge.DefaultQualityGateConfig()
+	candidate := &knowledge.KnowledgeObject{
+		ID: "akg:candidate:1", Type: knowledge.ObjectDecision, Namespace: "default",
+		Summary:    "switched session store from cookie to redis",
+		Normalized: "session store switched from cookie to redis",
+		Status:     knowledge.StatusCandidate,
+		Relations:  []knowledge.Relation{{Predicate: knowledge.RelFixes, ObjectText: "cookie session bug"}},
+		Evidence:   []knowledge.Evidence{{Source: "distill", Ref: "conv1", Weight: 0.8, Timestamp: time.Now()}},
+		CreatedAt:  time.Now(),
+	}
+	if err := ms.Save(ctx, candidate); err != nil {
+		t.Fatalf("candidate save: %v", err)
+	}
+
+	q := gate.Evaluate(candidate)
+	if q == nil {
+		t.Fatal("Evaluate returned nil Quality")
+	}
+	candidate.Quality = q
+	finalScore := gate.ComputeFinal(q)
+	candidate.Confidence = finalScore
+	if finalScore < gate.MinFinalScore {
+		t.Fatalf("final score %v below MinFinalScore %v", finalScore, gate.MinFinalScore)
+	}
+
+	if err := ms.Promote(ctx, candidate.ID, q); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+
+	active, err := ms.ListByStatus(ctx, "default", knowledge.StatusActive, 100)
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	foundPromoted := false
+	for _, o := range active {
+		if o.ID == "akg:candidate:1" && o.Status == knowledge.StatusActive {
+			foundPromoted = true
+		}
+	}
+	if !foundPromoted {
+		t.Error("expected promoted candidate to appear in ListByStatus(StatusActive)")
+	}
+
+	// 4. A pure candidate (never promoted) must NOT leak into an active-only
+	//    search — proving the status filter enforces the lifecycle boundary.
+	pureCandidate := &knowledge.KnowledgeObject{
+		ID: "akg:purecandidate:1", Type: knowledge.ObjectMemory, Namespace: "default",
+		Summary:    "unverified rumour about connection pool",
+		Normalized: "unverified rumour connection pool",
+		Status:     knowledge.StatusCandidate,
+		CreatedAt:  time.Now(),
+	}
+	if err := ms.Save(ctx, pureCandidate); err != nil {
+		t.Fatalf("pure candidate save: %v", err)
+	}
+	res, err := ms.HybridSearch(ctx, knowledge.HybridSearchRequest{
+		Query:        "connection pool rumour",
+		Namespace:    "default",
+		TopK:         10,
+		FinalK:       10,
+		MinScore:     0,
+		Model:        "test-model",
+		StatusFilter: []knowledge.ObjectStatus{knowledge.StatusActive},
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch pure candidate: %v", err)
+	}
+	for _, s := range res {
+		if s.Object != nil && s.Object.ID == "akg:purecandidate:1" {
+			t.Error("candidate-status object leaked into active-only search")
 		}
 	}
 }

@@ -43,29 +43,40 @@ import (
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agentloop"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/system_runtime"
+	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/linker"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
+	storeprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/store"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
 	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 const strategyPriority = "priority"
+
+// akgNamespace is the default namespace assigned to AKG-distilled
+// KnowledgeObjects and used to filter recall in the StoreProvider. It matches
+// ares_events.DefaultTenantID so AKG facts are visible to the same
+// single-tenant consumers that read distilled experiences.
+const akgNamespace = "default"
 
 // ---- public types ----
 
@@ -75,6 +86,9 @@ const (
 	roleUser      = "user"
 	roleAssistant = "assistant"
 	roleTool      = "tool"
+	// sslModeDisable is the SDK convention for local/dev PostgreSQL when no
+	// ssl_mode is configured (empty means "disable").
+	sslModeDisable = "disable"
 )
 
 // Runtime is the top-level container for an ARES agent system (a "new ARES runtime").
@@ -103,8 +117,20 @@ const (
 //	    sdk.WithInstruction("You are helpful."),
 //	)
 //	result, _ := agent.Run(ctx, "hello")
+
+// llmService is the subset of the LLM service the sdk uses. It is an
+// unexported interface so tests can inject a mock LLM (see sdk_test.go)
+// without spinning up a real provider. *llm.Service satisfies it; the field
+// is assigned the concrete service in New().
+type llmService interface {
+	Generate(ctx context.Context, req *core.GenerateRequest) (*core.GenerateResponse, error)
+	GetProvider() core.LLMProvider
+	GetModel() string
+	Close()
+}
+
 type Runtime struct {
-	llmSvc           *llm.Service
+	llmSvc           llmService
 	toolReg          *tools.Registry
 	memMgr           memory.MemoryManager
 	distillCleanup   func()
@@ -121,6 +147,20 @@ type Runtime struct {
 	eventStore    ares_events.EventStore
 	mcpClients    []*mcp.Client
 	trace         bool
+	// bootstrap holds the Bootstrap-assembled core components (Stage 8): when
+	// non-nil, the SDK reuses the same EventStore / NewEvolution / System
+	// Runtime instances as serve and start instead of a parallel graph, and
+	// Close drains Bootstrap's background goroutines via WaitBackground.
+	bootstrap *ares_bootstrap.Components
+	// bootstrapCancel cancels the Bootstrap lifecycle context; stored so Close
+	// stops Bootstrap's background goroutines before WaitBackground drains them.
+	bootstrapCancel context.CancelFunc
+	// evidencePool, when non-nil, is a PostgreSQL pool created for the
+	// evidence store (T1.3). Closed in Close() to prevent connection leaks.
+	// Typed as *postgres.Pool (not io.Closer) so a nil pool stays a nil
+	// pointer — assigning a nil *postgres.Pool to an interface would make
+	// the interface non-nil and Close() would dereference a nil db.
+	evidencePool *postgres.Pool
 	// ctx governs the lifetime of background goroutines (event-driven
 	// distillation subscriber). Cancelled in Close so subscribers exit cleanly.
 	ctx context.Context
@@ -131,6 +171,11 @@ type Runtime struct {
 	// distillSvc consumes TaskCompleted events and distills them into long-term
 	// experiences. Nil when distillation is disabled or its deps are unavailable.
 	distillSvc *aresexp.DistillationService
+	// akgBridge distills conversations into AKG KnowledgeObjects and persists
+	// them through the quality gate into the knowledge store. Triggered
+	// best-effort from the event subscriber alongside distillSvc. Nil when the
+	// AKG distiller or knowledge store is unavailable.
+	akgBridge *adapter.DistillBridge
 }
 
 // memSearcher adapts memory.MemoryManager to the memory.TaskSearcher
@@ -145,6 +190,14 @@ type memSearcher struct {
 // SearchResult.ID; the "input" payload field (set by SearchSimilarTasks
 // on the manager) maps to Summary. Tasks without an input payload fall
 // back to the TaskID as the summary.
+//
+// SearchResult.Score is intentionally left 0: models.Task has no
+// similarity-score field today, so there is no real query-relevance signal
+// to forward. The MemoryProvider's relevanceFromScore handles Score=0 by
+// deriving a rank-based Relevance from result ordering (first result → 1.0,
+// decaying to a 0.1 floor), which is a honest signal rather than a fake
+// constant. If a future Task revision adds a score field, populate it here
+// and the provider will use it automatically.
 func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]memprovider.SearchResult, error) {
 	results, err := s.svc.SearchSimilarTasks(ctx, query, limit)
 	if err != nil {
@@ -164,6 +217,7 @@ func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limi
 			ID:        r.TaskID,
 			Summary:   summary,
 			Timestamp: r.CreatedAt,
+			// Score intentionally 0: see method comment.
 		})
 	}
 	return out, nil
@@ -191,6 +245,9 @@ func (s *memStrategyStore) GetActive(_ context.Context) (*ares_evolution.Strateg
 func (s *memStrategyStore) GetHistory(_ context.Context, _ string, n int) ([]*ares_evolution.Strategy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n < 0 {
+		n = 0
+	}
 	if n > len(s.history) {
 		n = len(s.history)
 	}
@@ -206,6 +263,15 @@ type Agent struct {
 	runtime     *Runtime
 	humanInput  HumanInputFunc
 	maxIter     int
+	// discovery gates runtime tool discovery (see WithToolDiscovery). When
+	// false, Agent.Run is byte-for-byte identical to the legacy path.
+	discovery bool
+	// toolSource is the discovery source; nil means default (RegistrySource
+	// over the Runtime registry). Only consulted when discovery is true.
+	toolSource toolsource.ToolSource
+	// selector narrows the available pool before each run; nil means
+	// AllSelector. Only consulted when discovery is true.
+	selector toolsource.ToolSelector
 }
 
 // HumanInputFunc is called when the agent needs human approval before executing
@@ -325,15 +391,24 @@ type knowledgeWiring struct {
 //
 // Args:
 //
-//	cfg     - fully applied SDK config; knlCfg/evoCfg/dbCfg/sqliteStorePath are read.
-//	memMgr  - memory manager; when non-nil, a memory provider is auto-registered
-//	          into the knowledge provider registry so past tasks surface in the AKG.
+//	cfg      - fully applied SDK config; knlCfg/evoCfg/dbCfg/sqliteStorePath are read.
+//	memMgr   - memory manager; when non-nil, a memory provider is auto-registered
+//	           into the knowledge provider registry so past tasks surface in the AKG.
+//	embClient - embedding service used by the StoreProvider for vector recall;
+//	            nil signals lexical-only search.
+//	embModel - embedding model name selecting which Representation the store
+//	           compares against; empty is valid when embClient is nil.
 //
 // Returns:
 //
 //	*knowledgeWiring - rt/store/evolutionStore are nil when knowledge is disabled.
-//	error            - wrapped error if a knowledge store or provider fails to init.
-func wireKnowledge(cfg *config, memMgr memory.MemoryManager) (*knowledgeWiring, error) {
+//	error             - wrapped error if a knowledge store or provider fails to init.
+func wireKnowledge(
+	cfg *config,
+	memMgr memory.MemoryManager,
+	embClient apiembed.EmbeddingService,
+	embModel string,
+) (*knowledgeWiring, error) {
 	if !cfg.knlCfg.Enabled {
 		return &knowledgeWiring{}, nil
 	}
@@ -347,6 +422,16 @@ func wireKnowledge(cfg *config, memMgr memory.MemoryManager) (*knowledgeWiring, 
 	store, err := buildKnowledgeStore(cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	// Register the StoreProvider so AKG-distilled facts written to the store
+	// by the DistillBridge are readable by the KnowledgeRuntime as a
+	// KnowledgeObject source. This closes the 0.2.9 write→read loop.
+	if store != nil {
+		sp := storeprovider.New("akg_store", store, embClient, embModel, akgNamespace)
+		if err := reg.Register(sp); err != nil {
+			return nil, fmt.Errorf("knowledge: register store provider: %w", err)
+		}
 	}
 
 	var evoStore *memStrategyStore
@@ -412,7 +497,7 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 	case cfg.dbCfg.Host != "":
 		sslMode := cfg.dbCfg.SSLMode
 		if sslMode == "" {
-			sslMode = "disable"
+			sslMode = sslModeDisable
 		}
 		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 			cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
@@ -432,6 +517,121 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 	default:
 		return memstore.New(), nil
 	}
+}
+
+// resolveAKGEmbeddingModel picks the embedding model for the AKG loop. The
+// AKG-specific model (cfg.knlCfg.EmbeddingModel) takes precedence so users can
+// pin a different model for fact distillation than the one used by the memory
+// distiller. Falls back to the base embedding service model when unset.
+func resolveAKGEmbeddingModel(cfg *config) string {
+	if cfg.knlCfg.EmbeddingModel != "" {
+		return cfg.knlCfg.EmbeddingModel
+	}
+	return cfg.embedCfg.Model
+}
+
+// buildAKGBridge constructs the DistillBridge that distills conversations into
+// AKG KnowledgeObjects and persists them through the quality gate. Returns nil
+// (no-op) when either the distiller or the store is unavailable, so the caller
+// can unconditionally assign the result. The quality gate falls back to the
+// knowledge package default when left at zero, matching WithAKGQualityGate's
+// documented "zero value = default" contract.
+func buildAKGBridge(
+	cfg *config,
+	distiller adapter.ConversationDistiller,
+	store knowledge.KnowledgeStore,
+	embClient apiembed.EmbeddingService,
+	embModel string,
+) *adapter.DistillBridge {
+	if distiller == nil || store == nil {
+		return nil
+	}
+	gate := cfg.knlCfg.QualityGate
+	if gate.MinFinalScore == 0 {
+		gate = knowledge.DefaultQualityGateConfig()
+	}
+	return adapter.NewDistillBridgeWithGate(
+		distiller, nil, store, embClient,
+		gate, knowledge.NewRelationExtractor(),
+		akgNamespace, embModel,
+	)
+}
+
+// buildSDKEvidenceStore creates a persistent evidence store (Postgres) only
+// when it will actually be consumed by the SDK's own evolution wiring —
+// evolution enabled, an SDK-owned knowledge runtime exists, and the Bootstrap
+// core does not supply its own NewEvolution (which would discard evStore).
+// This avoids hard-failing startup for a configured-but-unused Postgres and
+// avoids an idle connection pool. SSLMode normalization mirrors
+// buildKnowledgeStore/buildPostgresPool (empty means "disable"). The returned
+// pool (when non-nil) is owned by the caller and closed in Runtime.Close().
+//
+// Args:
+//
+//	cfg           - fully applied SDK config; evoCfg/dbCfg are read.
+//	knowRt        - SDK-owned knowledge runtime; nil when knowledge is disabled.
+//	bootstrapComp - Bootstrap core (may be nil); its NewEvolution would
+//	                replace the SDK evolution wiring and discard evStore.
+//
+// Returns:
+//
+//	evStore - the evidence store (nil when unused → default in-memory store).
+//	pgPool  - the Postgres pool backing evStore; nil when not created.
+//	err     - fail-loud error when configured Postgres cannot be created.
+func buildSDKEvidenceStore(cfg *config, knowRt *khruntime.KnowledgeRuntime, bootstrapComp *ares_bootstrap.Components) (evidence.Store, *postgres.Pool, error) {
+	if !cfg.evoCfg.Enabled || knowRt == nil ||
+		(bootstrapComp != nil && bootstrapComp.NewEvolution != nil) ||
+		cfg.dbCfg.Host == "" {
+		return nil, nil, nil
+	}
+	sslMode := cfg.dbCfg.SSLMode
+	if sslMode == "" {
+		sslMode = sslModeDisable
+	}
+	pgCfg := &postgres.Config{
+		Host:     cfg.dbCfg.Host,
+		Port:     cfg.dbCfg.Port,
+		User:     cfg.dbCfg.User,
+		Password: cfg.dbCfg.Password,
+		Database: cfg.dbCfg.Database,
+		SSLMode:  sslMode,
+	}
+	pgPool, pgErr := postgres.NewPool(pgCfg)
+	if pgErr != nil {
+		return nil, nil, fmt.Errorf("sdk: evidence postgres pool: %w", pgErr)
+	}
+	pgStore, storeErr := evidence.NewPostgresStore(pgPool)
+	if storeErr != nil {
+		_ = pgPool.Close()
+		return nil, nil, fmt.Errorf("sdk: evidence postgres store: %w", storeErr)
+	}
+	return pgStore, pgPool, nil
+}
+
+// wireEvolutionHotUpdate wires the live KnowledgeRuntime into the evolution
+// patch system so knowledge patches affect the running engine. Returns nil
+// (no-op) when evolution or knowledge is disabled, or when wiring fails
+// (non-fatal: a warning is logged). Extracted from New() to keep the
+// constructor under the 100-line limit.
+//
+// Branch B (T2.0): SDK has no live DAG, so workflow/scheduler/recovery
+// evolution is serve-only; the nil-DAG path is explicitly logged.
+func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime, memMgr memory.MemoryConfigStore, evStore evidence.Store) *ares_bootstrap.NewEvolutionComponents {
+	if !cfg.evoCfg.Enabled || knowRt == nil {
+		return nil
+	}
+	// Branch B: SDK has no live DAG — workflow/scheduler/recovery evolution
+	// is serve-only. Explicit log to eliminate silent synthetic-executor gap.
+	slog.Info("sdk: evolution hot-update: dag=nil (workflow/scheduler/recovery " +
+		"evolution is serve-only; SDK provides knowledge/memory evolution)")
+	comps, err := ares_bootstrap.ProvideNewEvolution(nil, knowRt, memMgr, evStore)
+	if err != nil {
+		slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
+			"error", err)
+		return nil
+	}
+	slog.Info("sdk: evolution hot-update wired (knowledge runtime patchable by evolution)")
+	return comps
 }
 
 // wireMCPClients connects to each configured MCP server, lists its tools, and
@@ -498,10 +698,28 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 	llmSvc, err := llm.NewService(llmCfg)
 	if err != nil {
-		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
+		return nil, agentloop.FriendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
 
 	toolReg := tools.NewRegistry()
+
+	// ---- Stage 8: assemble the core component graph through the single
+	// Bootstrap kernel so the SDK reuses the same EventStore / NewEvolution /
+	// System Runtime instances as serve and start. Falls back to SDK wiring
+	// when the config is not Bootstrap-capable (sqlite/extra providers) or
+	// assembly fails, preserving prior behavior.
+	// The bootstrap ctx is cancelled in Close so Bootstrap's background
+	// goroutines exit before WaitBackground drains them. Ownership is
+	// transferred to the Runtime on the success path; on any error path the
+	// deferred cancel prevents a context leak (vet lostcancel).
+	bootstrapCtx, bootstrapCancel := context.WithCancel(context.Background())
+	bootstrapCancelTaken := false
+	defer func() {
+		if !bootstrapCancelTaken {
+			bootstrapCancel()
+		}
+	}()
+	bootstrapComp := newBootstrapCore(bootstrapCtx, cfg)
 
 	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
 	var memMgr memory.MemoryManager
@@ -509,6 +727,7 @@ func New(opts ...Option) (*Runtime, error) {
 	var embClient apiembed.EmbeddingService
 	var expRepo repositories.ExperienceRepositoryInterface
 	var distillSvc *aresexp.DistillationService
+	var akgDistiller adapter.ConversationDistiller
 	if cfg.memCfg.Enabled {
 		w, err := wireMemory(context.Background(), cfg)
 		if err != nil {
@@ -519,6 +738,7 @@ func New(opts ...Option) (*Runtime, error) {
 		expRepo = w.expRepo
 		distillCleanup = w.cleanup
 		distillSvc = w.distillSvc
+		akgDistiller = w.akgDistiller
 	}
 
 	// ---- MCP ----
@@ -528,9 +748,20 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- AKF Knowledge Fabric ----
-	kw, err := wireKnowledge(cfg, memMgr)
+	embModelForAKG := resolveAKGEmbeddingModel(cfg)
+	kw, err := wireKnowledge(cfg, memMgr, embClient, embModelForAKG)
 	if err != nil {
 		return nil, err
+	}
+
+	// ---- Stage 9 (SDK unification): keep the SDK's own KnowledgeRuntime
+	// (its providers carry the live memSearcher/embedding backends) and bind
+	// the Bootstrap NewEvolution's KnowledgePatchExecutor to THAT instance via
+	// UpdateLiveKnowledgeRuntime. This satisfies §5.2 (KnowledgePatchExecutor
+	// and AKF tools share one runtime) without replacing the SDK runtime with
+	// the Bootstrap one, whose memory provider has no searcher.
+	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil && kw.rt != nil {
+		bootstrapComp.NewEvolution.UpdateLiveKnowledgeRuntime(kw.rt)
 	}
 
 	// ---- AKF knowledge tools (auto-registered so the agent can call them) ----
@@ -541,27 +772,53 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- Evolution hot-update (wires the live KnowledgeRuntime into the
-	// evolution patch system so knowledge patches affect the running engine) ----
-	var evoComponents *ares_bootstrap.NewEvolutionComponents
-	if cfg.evoCfg.Enabled && kw.rt != nil {
-		comps, err := ares_bootstrap.ProvideNewEvolution(nil, kw.rt, nil)
-		if err != nil {
-			slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
-				"error", err)
-		} else {
-			evoComponents = comps
-			slog.Info("sdk: evolution hot-update wired (knowledge runtime patchable by evolution)")
-		}
+	// evolution patch system so knowledge patches affect the running engine).
+	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
+	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
+	// T1.3 (evidence persistence): create the persistent evidence store only
+	// when it will actually be consumed — evolution enabled, an SDK-owned
+	// knowledge runtime exists, and the Bootstrap core does not supply its own
+	// NewEvolution (which would discard evStore). This avoids hard-failing
+	// startup for a configured-but-unused Postgres and avoids an idle pool.
+	// SSLMode normalization mirrors buildKnowledgeStore/buildPostgresPool
+	// (empty means "disable" for local/dev PostgreSQL).
+	evStore, pgPool, err := buildSDKEvidenceStore(cfg, kw.rt, bootstrapComp)
+	if err != nil {
+		return nil, err
+	}
+	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt, nil, evStore)
+	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil {
+		evoComponents = bootstrapComp.NewEvolution
 	}
 
 	// ---- RAG retriever wiring (best-effort, non-fatal) ----
 	if cfg.memCfg.EnableRAG && memMgr != nil {
-		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo, kw.rt)
+		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo,
+			kw.rt, kw.store, embModelForAKG)
 	}
 
-	rtCtx, rtCancel, eg, eventStore := newEventBackend(distillSvc)
+	// ---- AKG DistillBridge (write loop: conversations → knowledge store) ----
+	akgBridge := buildAKGBridge(cfg, akgDistiller, kw.store, embClient, embModelForAKG)
 
-	return &Runtime{
+	// ---- Event backend ----
+	// Stage 8: when the Bootstrap core is available, subscribe distillation to
+	// Bootstrap's shared EventStore (single store across entry points) instead
+	// of a private SDK store; otherwise fall back to the SDK event backend.
+	var rtCtx context.Context
+	var rtCancel context.CancelFunc
+	eg := &errgroup.Group{}
+	var eventStore ares_events.EventStore
+	if bootstrapComp != nil && bootstrapComp.EventStore != nil {
+		eventStore = bootstrapComp.EventStore
+		rtCtx, rtCancel = context.WithCancel(context.Background())
+		if distillSvc != nil || akgBridge != nil {
+			wireDistillationSubscriber(rtCtx, eg, eventStore, distillSvc, akgBridge)
+		}
+	} else {
+		rtCtx, rtCancel, eg, eventStore = newEventBackend(distillSvc, akgBridge)
+	}
+
+	runtime := &Runtime{
 		llmSvc:           llmSvc,
 		toolReg:          toolReg,
 		memMgr:           memMgr,
@@ -576,11 +833,19 @@ func New(opts ...Option) (*Runtime, error) {
 		eventStore:       eventStore,
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
+		bootstrap:        bootstrapComp,
+		bootstrapCancel:  bootstrapCancel,
+		evidencePool:     pgPool,
 		ctx:              rtCtx,
 		cancel:           rtCancel,
 		eg:               eg,
 		distillSvc:       distillSvc,
-	}, nil
+		akgBridge:        akgBridge,
+	}
+	// Transfer Bootstrap ctx ownership to the Runtime on the success path so
+	// the deferred cancel above does not fire; Close owns cancellation now.
+	bootstrapCancelTaken = true
+	return runtime, nil
 }
 
 // Close releases all resources held by the Runtime (LLM connections, memory
@@ -596,6 +861,23 @@ func (r *Runtime) Close() {
 	if r.eg != nil {
 		_ = r.eg.Wait()
 	}
+	// Stage 8 (SDK unification): when the Runtime is backed by the Bootstrap
+	// core, cancel its lifecycle context FIRST (so Bootstrap's background
+	// goroutines — distillation subscriber, GA ticker, LLM suggestion ticker —
+	// exit on ctx.Done()), then drain them through the SAME lifecycle kernel as
+	// serve/start — WaitBackground — so no goroutine outlives Close. Fallback
+	// SDK wiring (sqlite/extra providers) has no Bootstrap core and is skipped.
+	if r.bootstrap != nil {
+		if r.bootstrapCancel != nil {
+			r.bootstrapCancel()
+		}
+		r.bootstrap.WaitBackground()
+	}
+	// Close the evidence PostgreSQL pool to prevent connection leaks (T1.3).
+	// The pool is nil when no Postgres was configured, so this is a safe no-op.
+	if r.evidencePool != nil {
+		_ = r.evidencePool.Close()
+	}
 	r.llmSvc.Close()
 	if r.memMgr != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -608,6 +890,18 @@ func (r *Runtime) Close() {
 	for _, c := range r.mcpClients {
 		_ = c.Close()
 	}
+}
+
+// Snapshot returns the system-level component status snapshot from the
+// Bootstrap core (Stage 1 observability). Returns an empty snapshot when
+// the Runtime is not backed by Bootstrap (SDK-only options) or when
+// Bootstrap failed before wiring completed — callers can always consume
+// a valid value without nil guards.
+func (r *Runtime) Snapshot() system_runtime.Snapshot {
+	if r.bootstrap == nil {
+		return system_runtime.Snapshot{}
+	}
+	return r.bootstrap.Snapshot()
 }
 
 // ToolRegistry returns the internal tool registry. Use this to register custom
@@ -634,194 +928,6 @@ func (r *Runtime) KnowledgeStore() knowledge.KnowledgeStore {
 	return r.knowledgeStore
 }
 
-// Evolve runs an evolution cycle to improve an agent's instruction. It uses the
-// LLM to generate variations, evaluates them against the given task, and returns
-// the best-evolved instruction.
-func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string, error) {
-	if agent == nil {
-		return "", fmt.Errorf("evolve: agent is nil")
-	}
-	if !r.evoEnabled {
-		return "", fmt.Errorf("evolution not enabled (use WithEvolution())")
-	}
-
-	if r.trace {
-		log.Printf("[ares:evolve] evolving agent %q on task: %s", agent.name, task)
-	}
-
-	// Create base strategy with meaningful dimensions: tool selection,
-	// workflow topology, scheduler strategy, memory retrieval, recovery.
-	base := &mutation.Strategy{
-		ID:        fmt.Sprintf("sdk-%s", agent.name),
-		Version:   1,
-		Score:     -1,
-		CreatedAt: time.Now(),
-		Params: map[string]any{
-			"tool_selector":      "auto",  // auto / manual / priority
-			"search_depth":       3,       // 1-5: how deep to search
-			"scheduler_strategy": "fifo",  // fifo / priority / round_robin
-			"memory_threshold":   0.7,     // 0.0-1.0: similarity threshold
-			"recovery_strategy":  "retry", // retry / replace / fallback
-		},
-		PromptTemplate: agent.instruction,
-	}
-
-	// Create mutator for meaningful dimensions.
-	mutator, err := mutation.NewMutator(
-		mutation.WithParamRanges(evolvableParams()),
-	)
-	if err != nil {
-		return "", fmt.Errorf("create mutator: %w", err)
-	}
-
-	// Create crossover operator (uses PyGAD-inspired operators).
-	crosser, err := genome.NewCrossover(
-		genome.WithSeed(42),
-		genome.WithCrossoverType(genome.CrossoverUniform),
-	)
-	if err != nil {
-		return "", fmt.Errorf("create crossover: %w", err)
-	}
-
-	// Create GA population.
-	pop, err := genome.NewPopulation(ctx, base, mutator,
-		genome.WithPopulationSize(10),
-		genome.WithEliteCount(2),
-		genome.WithMutationRate(0.3),
-		genome.WithSurvivalRate(0.5),
-		genome.WithSelectionStrategy("tournament"),
-		genome.WithTournamentSelection(3),
-	)
-	if err != nil {
-		return "", fmt.Errorf("create population: %w", err)
-	}
-
-	// Run evolution using actual execution as scorer (no LLM).
-	scorer := func(s *mutation.Strategy) float64 {
-		return executeAndScore(ctx, r, agent, task, s)
-	}
-
-	for gen := 0; gen < 3; gen++ {
-		pop.ScoreAgents(scorer)
-		if err := pop.Evolve(ctx, mutator, crosser); err != nil {
-			return "", fmt.Errorf("evolve generation %d: %w", gen, err)
-		}
-	}
-
-	// Get the best strategy.
-	best := pop.BestStrategy()
-	if best == nil {
-		return "", fmt.Errorf("evolution produced no viable strategy")
-	}
-
-	if r.trace {
-		stats := pop.Stats()
-		log.Printf("[ares:evolve] GA evolution complete: gen=%d, best=%.1f, avg=%.1f, strategy=%v",
-			stats.Generation, stats.BestScore, stats.AvgScore, best.Params)
-	}
-
-	// Apply the evolved strategy's params to the agent.
-	applyEvolvedParams(agent, best.Params)
-
-	// Return the evolved strategy summary.
-	return fmt.Sprintf("evolved: tool=%v depth=%v scheduler=%v memory=%.2f recovery=%v",
-		best.Params["tool_selector"], best.Params["search_depth"],
-		best.Params["scheduler_strategy"], best.Params["memory_threshold"],
-		best.Params["recovery_strategy"]), nil
-}
-
-// evolvableParams returns the parameter ranges for meaningful evolution dimensions.
-func evolvableParams() map[string]mutation.ParamRange {
-	return map[string]mutation.ParamRange{
-		"tool_selector":      {Values: []any{"auto", "manual", strategyPriority}},
-		"search_depth":       {Values: []any{1, 2, 3, 4, 5}},
-		"scheduler_strategy": {Values: []any{"fifo", strategyPriority, "round_robin"}},
-		"memory_threshold":   {Values: []any{0.3, 0.5, 0.7, 0.9}},
-		"recovery_strategy":  {Values: []any{"retry", "replace", "fallback"}},
-	}
-}
-
-// executeAndScore runs the task with a given strategy and scores based on
-// actual execution results: success, latency, and token efficiency.
-// No LLM involved — pure execution-based evaluation.
-func executeAndScore(ctx context.Context, r *Runtime, agent *Agent, task string, s *mutation.Strategy) float64 {
-	evolvedAgent := &Agent{
-		name:        agent.name,
-		instruction: s.PromptTemplate,
-		tools:       applyToolSelector(agent.tools, s.Params),
-		runtime:     agent.runtime,
-		humanInput:  agent.humanInput,
-		maxIter:     agent.maxIter,
-	}
-
-	start := time.Now()
-	result, err := evolvedAgent.Run(ctx, task)
-	duration := time.Since(start)
-
-	if err != nil {
-		log.Printf("[ares:evolve] execution failed: %v", err)
-		return 10.0
-	}
-
-	successBonus := 50.0
-	if result != nil && result.Output != "" {
-		successBonus = 60.0
-	}
-
-	speedScore := 30.0 * (1.0 - min(1.0, duration.Seconds()/30.0))
-
-	efficiencyScore := 10.0
-	if result != nil && result.TokenUsage.Total > 0 {
-		efficiencyScore = 20.0 * (1.0 - min(1.0, float64(result.TokenUsage.Total)/2000.0))
-	}
-
-	return successBonus + speedScore + efficiencyScore
-}
-
-// applyToolSelector filters the agent's tool list based on the strategy.
-func applyToolSelector(toolList []tools.Tool, params map[string]any) []tools.Tool {
-	selector, _ := params["tool_selector"].(string)
-	switch selector {
-	case "priority":
-		if len(toolList) > 3 {
-			return toolList[:3]
-		}
-		return toolList
-	case "manual":
-		var filtered []tools.Tool
-		for _, t := range toolList {
-			if t.Name() == "search" || t.Name() == "read" {
-				filtered = append(filtered, t)
-			}
-		}
-		if len(filtered) > 0 {
-			return filtered
-		}
-		return toolList
-	default:
-		return toolList
-	}
-}
-
-// applyEvolvedParams applies the evolved strategy params to the agent.
-func applyEvolvedParams(agent *Agent, params map[string]any) {
-	if v, ok := params["tool_selector"]; ok {
-		log.Printf("[ares:evolve] applied tool_selector=%v", v)
-	}
-	if v, ok := params["search_depth"]; ok {
-		log.Printf("[ares:evolve] applied search_depth=%v", v)
-	}
-	if v, ok := params["scheduler_strategy"]; ok {
-		log.Printf("[ares:evolve] applied scheduler_strategy=%v", v)
-	}
-	if v, ok := params["memory_threshold"]; ok {
-		log.Printf("[ares:evolve] applied memory_threshold=%v", v)
-	}
-	if v, ok := params["recovery_strategy"]; ok {
-		log.Printf("[ares:evolve] applied recovery_strategy=%v", v)
-	}
-}
-
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,
 // an optional system instruction, and an optional set of tools.
 func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
@@ -836,20 +942,24 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 		runtime:     r,
 		humanInput:  ac.humanInput,
 		maxIter:     ac.maxIter,
+		discovery:   ac.discovery,
+		toolSource:  ac.toolSource,
+		selector:    ac.selector,
 	}
 }
 
 // ---- Agent ----
 
 // Run executes the agent against the given input and returns the result.
-// It runs a ReAct loop:
+// It builds the message list (system instruction + memory/knowledge context +
+// input), creates the memory session, then delegates the ReAct loop
+// (LLM call → tool execution → feed back) to agentloop.Engine. The engine is
+// the single execution path; Run no longer inlines the loop.
 //
-//  1. Build the message list (system instruction + memory context + input).
-//  2. Call the LLM (with tool definitions).
-//  3. If the LLM calls tools, execute them and feed results back.
-//  4. Repeat until the LLM produces a final answer.
-//  5. Store the conversation in memory (if enabled).
-//  6. Return the final output and metadata.
+//  1. Create the memory session (when memory is enabled).
+//  2. Build the message list (system instruction + memory context + input).
+//  3. Delegate the ReAct loop to agentloop.Engine.
+//  4. Map the engine Result back into the sdk Result.
 func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	start := time.Now()
 
@@ -862,164 +972,55 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	}
 
 	messages := a.buildMessages(ctx, input, sessionID)
+	// resolveTools returns the LLM tool defs, the tool executor, and (when
+	// discovery is on) a runtime tool expander. When discovery is OFF this is
+	// byte-for-byte identical to the legacy path: (toCoreTools(a.tools),
+	// a.runtime.toolReg, nil).
+	llmTools, toolExecutor, toolExpander := a.resolveTools(ctx, input)
 
-	// ---- convert tools to core.Tool format ----
-	coreTools := a.toCoreTools(a.tools)
-	totalInputTokens := 0
-	totalOutputTokens := 0
-	toolCallCount := 0
-	maxIter := a.maxIter
-	if maxIter <= 0 {
-		maxIter = defaultMaxIterations
+	eng := &agentloop.Engine{
+		LLM:            a.runtime.llmSvc,
+		Tools:          toolExecutor,
+		Events:         a.runtime.eventStore,
+		Memory:         a.runtime.memMgr,
+		Tracer:         a.traceTracer(),
+		MemEnabled:     a.runtime.memEnabled,
+		DistillEnabled: a.runtime.distillSvc != nil,
 	}
-
-	for iter := 0; iter < maxIter; iter++ {
-		if a.runtime.trace {
-			log.Printf("[ares:trace] %s → LLM call (iter %d, %d msgs)",
-				a.name, iter, len(messages))
-		}
-
-		resp, err := a.runtime.llmSvc.Generate(ctx, &core.GenerateRequest{
-			Messages: messages,
-			Tools:    coreTools,
-		})
-		if err != nil {
-			return nil, friendlyErr("llm generate", a.runtime.llmSvc.GetProvider(), err)
-		}
-
-		totalInputTokens += resp.Usage.PromptTokens
-		totalOutputTokens += resp.Usage.CompletionTokens
-
-		// Store assistant message
-		messages = append(messages, &core.LLMMessage{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-
-		if a.runtime.memEnabled && a.runtime.memMgr != nil {
-			_ = a.runtime.memMgr.AddMessage(ctx, sessionID, "assistant", resp.Content)
-		}
-
-		// ---- tool calling loop ----
-		if len(resp.ToolCalls) == 0 {
-			// Final answer
-			if a.runtime.trace {
-				log.Printf("[ares:trace] %s ✓ done (%d tools, %d total tokens, %v)",
-					a.name, toolCallCount, totalInputTokens+totalOutputTokens,
-					time.Since(start).Round(time.Millisecond))
-			}
-			// Emit TaskCompleted so the event-driven distillation subscriber
-			// can distill this conversation into a long-term experience. Gated
-			// on both the event store and distillSvc so non-distilling Runtimes
-			// pay zero overhead.
-			if a.runtime.eventStore != nil && a.runtime.distillSvc != nil {
-				ares_events.Emit(ctx, a.runtime.eventStore, sessionID,
-					ares_events.EventTaskCompleted, "runtime",
-					map[string]any{
-						ares_events.EventKeyTask:     input,
-						ares_events.EventKeyResult:   resp.Content,
-						ares_events.EventKeyTenantID: ares_events.DefaultTenantID,
-						"agent_id":                   a.name,
-					})
-			}
-			return &Result{
-				Output:     resp.Content,
-				ToolCalls:  toolCallCount,
-				MemoryUsed: a.runtime.memEnabled,
-				TokenUsage: TokenUsage{
-					Input:  totalInputTokens,
-					Output: totalOutputTokens,
-					Total:  totalInputTokens + totalOutputTokens,
-				},
-				Duration: time.Since(start),
-			}, nil
-		}
-
-		// Execute each tool call
-		for _, tc := range resp.ToolCalls {
-			args := parseArgs(tc.Function.Arguments)
-
-			// Human-in-the-loop check.
-			if a.humanInput != nil {
-				approved, err := a.humanInput(ctx, tc.Function.Name, args)
-				if err != nil {
-					return nil, fmt.Errorf("human input: %w", err)
-				}
-				if !approved {
-					if a.runtime.trace {
-						log.Printf("[ares:trace] %s → tool call REJECTED by human: %s",
-							a.name, tc.Function.Name)
-					}
-					messages = append(messages, &core.LLMMessage{
-						Role:       roleTool,
-						ToolCallID: tc.ID,
-						Content:    fmt.Sprintf("Tool call %s was rejected by human operator", tc.Function.Name),
-					})
-					continue
-				}
-			}
-
-			toolCallCount++
-			if a.runtime.eventStore != nil {
-				_ = a.runtime.eventStore.Append(ctx, a.name, []*ares_events.Event{{
-					Type:     ares_events.EventToolCallStarted,
-					StreamID: a.name,
-					Payload:  map[string]any{roleTool: tc.Function.Name, "args": tc.Function.Arguments},
-					Version:  int64(toolCallCount),
-				}}, int64(toolCallCount-1))
-			}
-			if a.runtime.trace {
-				log.Printf("[ares:trace] %s → tool call: %s(%s)",
-					a.name, tc.Function.Name, tc.Function.Arguments)
-			}
-
-			result, err := a.runtime.toolReg.Execute(ctx, tc.Function.Name, args)
-			resultContent := ""
-			if err != nil {
-				resultContent = fmt.Sprintf("Error: %v", err)
-			} else {
-				resultContent = fmt.Sprintf("%v", result.Data)
-			}
-
-			messages = append(messages, &core.LLMMessage{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    resultContent,
-			})
-
-			if a.runtime.eventStore != nil {
-				_ = a.runtime.eventStore.Append(ctx, a.name, []*ares_events.Event{{
-					Type:     ares_events.EventToolCallCompleted,
-					StreamID: a.name,
-					Payload: map[string]any{
-						"tool":    tc.Function.Name,
-						"args":    tc.Function.Arguments,
-						"result":  resultContent,
-						"success": err == nil,
-					},
-					Version: int64(toolCallCount),
-				}}, int64(toolCallCount-1))
-			}
-		}
-
-		// Continue loop — the LLM will either call more tools or produce a final answer
-	}
-
-	if a.runtime.trace {
-		log.Printf("[ares:trace] %s ⚠ max iterations reached (%d)", a.name, maxIter)
+	res, err := eng.Run(ctx, &agentloop.Request{
+		Messages:     messages,
+		Tools:        llmTools,
+		MaxIter:      a.maxIter,
+		AgentName:    a.name,
+		SessionID:    sessionID,
+		Input:        input,
+		HumanInput:   agentloop.HumanInputFunc(a.humanInput),
+		ToolExpander: toolExpander,
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &Result{
-		Output:     "max iterations reached",
-		ToolCalls:  toolCallCount,
-		MemoryUsed: a.runtime.memEnabled,
+		Output:     res.Output,
+		ToolCalls:  res.ToolCalls,
+		MemoryUsed: res.MemoryUsed,
 		TokenUsage: TokenUsage{
-			Input:  totalInputTokens,
-			Output: totalOutputTokens,
-			Total:  totalInputTokens + totalOutputTokens,
+			Input:  res.InputTokens,
+			Output: res.OutputTokens,
+			Total:  res.InputTokens + res.OutputTokens,
 		},
 		Duration: time.Since(start),
 	}, nil
+}
+
+// traceTracer returns log.Printf when tracing is enabled, nil otherwise. The
+// agentloop engine treats a nil Tracer as "no trace logging", so this preserves
+// the original a.runtime.trace gating without the engine needing a trace bool.
+func (a *Agent) traceTracer() func(format string, args ...any) {
+	if a.runtime.trace {
+		return log.Printf
+	}
+	return nil
 }
 
 // ---- internal helpers ----
@@ -1142,19 +1143,4 @@ func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (too
 		sb.WriteString(c.Text)
 	}
 	return tools.Result{Success: !result.IsError, Data: sb.String()}, nil
-}
-
-// friendlyErr wraps an LLM error with an actionable hint based on the provider.
-func friendlyErr(scope string, provider core.LLMProvider, origErr error) error {
-	hints := map[core.LLMProvider]string{
-		core.LLMProviderOpenAI:     "→ Set OPENAI_API_KEY or check https://platform.openai.com/account/api-keys",
-		core.LLMProviderAnthropic:  "→ Set ANTHROPIC_API_KEY or check https://console.anthropic.com/",
-		core.LLMProviderOpenRouter: "→ Set OPENROUTER_API_KEY or check https://openrouter.ai/keys",
-		core.LLMProviderOllama:     "→ Run: ollama run llama3.2  (Ollama may not be running)",
-	}
-	msg := fmt.Sprintf("%s: %v", scope, origErr)
-	if hint, ok := hints[provider]; ok {
-		msg += "\n  " + hint
-	}
-	return fmt.Errorf("%s", msg)
 }

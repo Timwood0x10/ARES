@@ -192,14 +192,48 @@ func (c *Client) GetConfig() *ConfigFile {
 }
 
 // Health returns a structured health report.
+//
+// Each configured service is probed individually: the LLM service via
+// checkLLMHealth (IsEnabled + latency), and the memory/retrieval/workflow
+// services via checkServiceHealth (nil-ness). Unconfigured services are
+// omitted from the overall Healthy computation, so a client with no services
+// configured is considered healthy as long as it is not closed. A closed
+// client is never healthy, regardless of service status.
 func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
-	return &HealthReport{
-		Healthy:   !c.closed,
-		Timestamp: time.Now(),
-	}, nil
+	c.mu.RLock()
+	closed := c.closed
+	llmSvc := c.llmService
+	memSvc := c.memoryService
+	retSvc := c.retrievalService
+	wfSvc := c.workflowService
+	c.mu.RUnlock()
+
+	var llm, memory, retrieval, workflow ServiceStatus
+	if llmSvc != nil {
+		llm = checkLLMHealth(ctx, llmSvc)
+	}
+	if memSvc != nil {
+		memory = checkServiceHealth("memory", memSvc)
+	}
+	if retSvc != nil {
+		retrieval = checkServiceHealth("retrieval", retSvc)
+	}
+	if wfSvc != nil {
+		workflow = checkServiceHealth("workflow", wfSvc)
+	}
+
+	report := buildHealthReport(llm, memory, retrieval, workflow)
+	if closed {
+		// A closed client has released its resources; it is never healthy
+		// even if individual service probes happened to succeed.
+		report.Healthy = false
+	}
+	return &report, nil
 }
 
 // Ping checks if the client is operational.
 func (c *Client) Ping(ctx context.Context) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return !c.closed
 }

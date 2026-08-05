@@ -59,10 +59,22 @@ func (g *Graph) AddNode(node *GraphNode) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	if node == nil {
+		return
+	}
+
 	g.nodes[node.ID] = node
 
 	if node.ParentID == "" {
 		g.root = node
+		return
+	}
+
+	// Guard against self-parenting: a node whose ParentID equals its own ID
+	// would become its own child, creating a cycle that makes the recursive
+	// traversals (Depth, ExportMermaid, ExportDOT) recurse forever and
+	// overflow the stack (M12).
+	if node.ParentID == node.ID {
 		return
 	}
 
@@ -122,12 +134,26 @@ func (g *Graph) Depth() int {
 }
 
 func nodeDepth(n *GraphNode, current int) int {
-	if len(n.Children) == 0 {
+	return nodeDepthVisited(n, current, make(map[string]bool))
+}
+
+// nodeDepthVisited is nodeDepth with cycle detection: a node already visited
+// on the current path (a cycle in Children) stops recursion instead of
+// overflowing the stack (M12).
+func nodeDepthVisited(n *GraphNode, current int, visited map[string]bool) int {
+	if n == nil || len(n.Children) == 0 {
 		return current
 	}
+	if visited[n.ID] {
+		return current
+	}
+	visited[n.ID] = true
 	maxChild := current
 	for _, c := range n.Children {
-		if d := nodeDepth(c, current+1); d > maxChild {
+		if c == nil {
+			continue
+		}
+		if d := nodeDepthVisited(c, current+1, visited); d > maxChild {
 			maxChild = d
 		}
 	}
@@ -151,15 +177,28 @@ func (g *Graph) ExportMermaid() string {
 }
 
 func (g *Graph) writeMermaidNode(b *strings.Builder, n *GraphNode, indent string) {
+	g.writeMermaidNodeVisited(b, n, indent, make(map[string]bool))
+}
+
+// writeMermaidNodeVisited is writeMermaidNode with cycle detection so a
+// cyclic Children graph cannot recurse forever (M12).
+func (g *Graph) writeMermaidNodeVisited(b *strings.Builder, n *GraphNode, indent string, visited map[string]bool) {
+	if n == nil || visited[n.ID] {
+		return
+	}
+	visited[n.ID] = true
 	icon := nodeIcon(n.Type)
 	label := fmt.Sprintf("%s%s %s", icon, n.Name, statusEmoji(n.Status))
 	nodeID := sanitizeID(n.ID)
 	fmt.Fprintf(b, "%s%s[\"%s\"]\n", indent, nodeID, label)
 
 	for _, child := range n.Children {
+		if child == nil {
+			continue
+		}
 		childID := sanitizeID(child.ID)
 		fmt.Fprintf(b, "%s%s --> %s\n", indent, nodeID, childID)
-		g.writeMermaidNode(b, child, indent)
+		g.writeMermaidNodeVisited(b, child, indent, visited)
 	}
 }
 
@@ -213,13 +252,26 @@ func (g *Graph) ExportDOT() string {
 }
 
 func (g *Graph) writeDOTNode(b *strings.Builder, n *GraphNode) {
+	g.writeDOTNodeVisited(b, n, make(map[string]bool))
+}
+
+// writeDOTNodeVisited is writeDOTNode with cycle detection so a cyclic
+// Children graph cannot recurse forever (M12).
+func (g *Graph) writeDOTNodeVisited(b *strings.Builder, n *GraphNode, visited map[string]bool) {
+	if n == nil || visited[n.ID] {
+		return
+	}
+	visited[n.ID] = true
 	color := nodeColor(n.Status)
 	fmt.Fprintf(b, "  \"%s\" [label=\"%s\\n%s\", fillcolor=\"%s\", style=\"rounded,filled\"];\n",
 		n.ID, string(n.Type), n.Name, color)
 
 	for _, child := range n.Children {
+		if child == nil {
+			continue
+		}
 		fmt.Fprintf(b, "  \"%s\" -> \"%s\";\n", n.ID, child.ID)
-		g.writeDOTNode(b, child)
+		g.writeDOTNodeVisited(b, child, visited)
 	}
 }
 

@@ -1,0 +1,10 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/errors
+cpu: Apple M3 Max
+BenchmarkWrap-14                      	1000000000	         0.2724 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFmtErrorfW-14                	13996174	        88.12 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWrapMultipleWraps-14         	1000000000	         0.5837 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFmtErrorfMultipleWraps-14    	 4212994	       279.2 ns/op	     216 B/op	       6 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/errors	4.001s

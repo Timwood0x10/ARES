@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -212,11 +213,12 @@ func (c *QueryCache) getCacheKey(req *SearchRequest) string {
 	// Normalize query for consistent key generation
 	normalizedQuery := normalizeText(req.Query)
 
-	// Sort filter keys for consistent hash
-	sortedFilters := c.sortFilters(req.Filters)
+	// Build a deterministic filter representation so identical filter maps
+	// hash to the same key regardless of Go's randomized map iteration order.
+	filterKey := c.filtersKey(req.Filters)
 
 	// Combine all factors for unique key
-	keyData := fmt.Sprintf("query:%s:%s:%v:%d", req.TenantID, normalizedQuery, sortedFilters, req.TopK)
+	keyData := fmt.Sprintf("query:%s:%s:%s:%d", req.TenantID, normalizedQuery, filterKey, req.TopK)
 
 	// Use BLAKE2b-256 and truncate to 128 bits for security and performance
 	hash := blake2b.Sum256([]byte(keyData))
@@ -225,26 +227,29 @@ func (c *QueryCache) getCacheKey(req *SearchRequest) string {
 	return fmt.Sprintf("query_cache:%s", hex.EncodeToString(hash[:16]))
 }
 
-// sortFilters sorts filter keys for consistent hash generation.
-func (c *QueryCache) sortFilters(filters map[string]interface{}) map[string]interface{} {
+// filtersKey returns a deterministic string representation of filters with
+// keys sorted lexicographically. Sorting the actual keys (rather than
+// building a new map, which Go iterates in random order) is what makes the
+// resulting cache key stable across calls with the same filter contents.
+func (c *QueryCache) filtersKey(filters map[string]interface{}) string {
 	if filters == nil {
-		return nil
+		return ""
 	}
 
-	// Get sorted keys
 	keys := make([]string, 0, len(filters))
 	for k := range filters {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// Create sorted map
-	sorted := make(map[string]interface{})
-	for _, k := range keys {
-		sorted[k] = filters[k]
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%s=%v", k, filters[k])
 	}
-
-	return sorted
+	return b.String()
 }
 
 // serializeResults serializes search results to bytes.
@@ -277,11 +282,12 @@ func (c *QueryCache) deserializeResults(data []byte) ([]*SearchResult, error) {
 }
 
 // normalizeText normalizes query text for consistent key generation.
+// It uses strings.ToLower, which applies Unicode case folding, so non-ASCII
+// text (e.g. "Époque"/"époque", Cyrillic) folds to the same form instead of
+// producing spurious cache misses. strings.TrimSpace trims all Unicode
+// whitespace, not just ASCII spaces.
 func normalizeText(text string) string {
-	// Simple normalization: lowercase and trim
-	text = toLower(text)
-	text = trimSpace(text)
-	return text
+	return strings.TrimSpace(strings.ToLower(text))
 }
 
 // CacheStats represents cache statistics.
@@ -320,36 +326,6 @@ type RedisClient interface {
 	Del(ctx context.Context, keys ...string) error
 	Keys(ctx context.Context, pattern string) ([]string, error)
 	Scan(ctx context.Context, cursor uint64, match string, count int64) (uint64, []string, error)
-}
-
-// Simple string functions to avoid external dependencies
-func toLower(s string) string {
-	result := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
-		result[i] = c
-	}
-	return string(result)
-}
-
-func trimSpace(s string) string {
-	start := 0
-	end := len(s)
-
-	// Trim leading spaces
-	for start < end && s[start] == ' ' {
-		start++
-	}
-
-	// Trim trailing spaces
-	for end > start && s[end-1] == ' ' {
-		end--
-	}
-
-	return s[start:end]
 }
 
 // Register types for gob encoding.

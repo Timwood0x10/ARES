@@ -1,5 +1,3 @@
-// Package memory provides a GraphProvider that wraps a memory service,
-// converting historical task data into KnowledgeObject streams.
 package memory
 
 import (
@@ -8,6 +6,8 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -17,11 +17,24 @@ type TaskSearcher interface {
 }
 
 // SearchResult is a single task returned by TaskSearcher.
+//
+// Score carries the backing search engine's similarity score in [0, 1] when
+// available (e.g. cosine similarity from a vector index). When the backing
+// engine does not expose a score, Score is left 0 and the MemoryProvider
+// derives a rank-based Relevance from result ordering instead.
 type SearchResult struct {
 	ID        string
 	Summary   string
 	Timestamp time.Time
+	Score     float64
 }
+
+// defaultReliability is the Confidence assigned to every memory object. It is
+// a reliability prior, NOT a query-relevance score: memories distilled from
+// past tasks are assumed moderately reliable as facts. Query relevance is
+// captured separately on KnowledgeObject.Relevance at stream time and is the
+// signal the retriever ranks/filters on.
+const defaultReliability = 0.7
 
 // MemoryProvider wraps a TaskSearcher as a GraphProvider.
 // It maps the user's intent.Goal to a similarity search over past tasks.
@@ -37,6 +50,12 @@ func New(name string, searcher TaskSearcher) *MemoryProvider {
 
 // Name returns the provider identifier.
 func (p *MemoryProvider) Name() string { return p.name }
+
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *MemoryProvider) ProviderType() provider.ProviderType { return provider.ProviderMemory }
+
+// Compile-time guard that MemoryProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*MemoryProvider)(nil)
 
 // IntentMatch scores relevance based on intent type overlap.
 // Returns a moderated score [0.1, 0.8] — high for memory/decision types, low for
@@ -82,7 +101,7 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			return nil
 		}
 
-		for _, r := range results {
+		for i, r := range results {
 			summary := r.Summary
 			if len(summary) > 200 {
 				summary = summary[:200] + "..."
@@ -93,7 +112,8 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 				Type:       knowledge.ObjectMemory,
 				Namespace:  p.name,
 				Summary:    summary,
-				Confidence: 0.7,
+				Confidence: defaultReliability,
+				Relevance:  relevanceFromScore(r.Score, i, len(results)),
 				CreatedAt:  r.Timestamp,
 				UpdatedAt:  time.Now(),
 			}
@@ -108,4 +128,33 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 	})
 
 	return objCh, errCh
+}
+
+// relevanceFromScore derives the query-time Relevance for a memory object.
+//
+// When the backing search engine returns a real similarity score (>0), it is
+// used directly: it is the truest query-relevance signal available. When no
+// score is available (score <= 0), Relevance is derived from the result rank
+// position i within a result set of size n: the first result gets 1.0 and
+// relevance decays linearly to a floor of 0.1 so even the last result keeps
+// a non-zero signal. This keeps memory objects rankable without lying about
+// having a real similarity score.
+//
+// Args:
+//
+//	score - backing engine similarity score, 0 means "not available".
+//	i     - zero-based rank index of this result within the result slice.
+//	n     - total number of results returned by the backing engine.
+func relevanceFromScore(score float64, i, n int) float64 {
+	if score > 0 {
+		return scoreutil.ClampUnit(score)
+	}
+	if n <= 0 {
+		return 0.1
+	}
+	rel := 1.0 - float64(i)/float64(n)
+	if rel < 0.1 {
+		rel = 0.1
+	}
+	return rel
 }

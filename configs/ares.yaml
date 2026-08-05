@@ -1,0 +1,177 @@
+# ═══════════════════════════════════════════════════════════════
+# ARES Agent — canonical configuration (configs/ares.yaml)
+#
+# Usage:
+#   cfg, _ := sdk.LoadConfigFile("configs/ares.yaml")
+#   opts, _ := cfg.ToOptions()
+#   rt := sdk.MustNew(opts...)
+#
+# All fields are optional — omit or set to zero to use component defaults.
+# Override config path via the ARES_YAML environment variable.
+# ═══════════════════════════════════════════════════════════════
+
+# ── LLM provider ─────────────────────────────────────────────
+llm:
+  # provider: openai | ollama | anthropic | openrouter
+  provider: ollama
+  # model: model name (e.g. gpt-4o, llama3.2, claude-3-5-sonnet)
+  model: llama3.2
+  # api_key: API key (may also be set via OPENAI_API_KEY / ANTHROPIC_API_KEY env vars)
+  # api_key: sk-...
+  # base_url: custom API endpoint (OpenAI-compatible proxies / self-hosted)
+  # base_url: https://api.openai.com/v1
+  # temperature: generation temperature [0-2], default 0.7
+  # temperature: 0.7
+  # max_tokens: max output tokens, default 4096
+  # max_tokens: 4096
+
+# ── Memory / Distillation / RAG ──────────────────────────────
+memory:
+  # enabled: enable the memory subsystem (session history + distillation + RAG)
+  enabled: false
+  # max_history: max conversation history messages to keep, 0 = component default
+  # max_history: 50
+  # max_sessions: max number of sessions, 0 = component default
+  # max_sessions: 100
+  # enable_distillation: when true, raw conversation is distilled into structured
+  #   Experience records after each dialogue round
+  enable_distillation: false
+  # distillation_threshold: fire distillation every N rounds. 3 = every 3rd
+  #   conversation round. 0 = fire on every event (legacy ungated behaviour)
+  distillation_threshold: 3
+  # enable_rag: when true, past experiences and AKG knowledge are retrieved
+  #   and injected into the LLM prompt during agent.BuildContext
+  enable_rag: false
+  # rag_top_k: max number of retrieved snippets to inject. Must be >= 1 when
+  #   enable_rag is true
+  rag_top_k: 5
+  # rag_min_score: minimum similarity score for a snippet to be included [0-1]
+  rag_min_score: 0.4
+
+# ── Knowledge Graph (AKG / AKF Knowledge Fabric) ────────────
+knowledge:
+  # chunk_size: document chunk size. When > 0 the AKG knowledge engine is
+  #   automatically started and wired into the RAG pipeline
+  # chunk_size: 512
+  # chunk_overlap: chunk overlap size
+  # chunk_overlap: 64
+  # top_k: number of top results returned on retrieval
+  # top_k: 5
+  # min_score: minimum similarity score for retrieval results
+  # min_score: 0.4
+
+  # ── AKG 0.2.9 quality gate ──────────────────────────────────
+  # Controls the fact lifecycle: candidates whose computed Confidence clears
+  # min_final_score are promoted to active and become retrievable by the
+  # StoreProvider. min_final_score replaces the old hardcoded 0.4 threshold.
+  quality:
+    min_extraction: 0.5
+    min_consistency: 0.5
+    min_final_score: 0.55
+    max_facts_per_ingest: 50
+    enable_dedup: true
+    dedup_threshold: 0.85
+
+  # ── AKG 0.2.9 embedding service ────────────────────────────
+  # Arms both the write side (DistillBridge vectorizing distilled facts) and
+  # the read side (StoreProvider embedding retrieval queries) with vector
+  # recall. Empty model falls back to the embedding service configured under
+  # the top-level `embedding:` section.
+  embedding:
+    model: "intfloat/e5-large-v2"
+    base_url: "http://localhost:8000"
+
+# ── Evolution system ─────────────────────────────────────────
+evolution:
+  # enabled: when true, the strategy evolution engine (GA) optimises agent
+  #   behaviour (tool selection, search depth, scheduler) over time
+  enabled: false
+
+# ── Tool system ──────────────────────────────────────────────
+tools:
+  # builtin: load built-in tools (calculator, web_search, file, etc.)
+  builtin: true
+  # mcp: list of MCP server commands to connect via stdio. Each command is
+  #   started as a subprocess and its tools are automatically registered
+  # mcp:
+  #   - npx @modelcontextprotocol/server-filesystem ./data
+  #   - uvx mcp-server-git
+
+# ── Reflection (agent self-assessment) ───────────────────────
+reflection:
+  # enabled: when true, the agent reflects on its own outputs
+  enabled: false
+
+# ── Database (knowledge store backend) ───────────────────────
+database:
+  # host: PostgreSQL host address
+  # host: localhost
+  # port: 5432
+  # user: postgres
+  # password: postgres
+  # database: ares
+  # ssl_mode: disable | require | verify-full
+  # ssl_mode: disable
+
+# ── Embedding service (required for distillation + RAG) ──────
+embedding:
+  # service_url: embedding service endpoint (OpenAI-compatible API)
+  # service_url: http://localhost:8080/v1/embeddings
+  # model: embedding model name
+  # model: text-embedding-ada-002
+
+# ═══════════════════════════════════════════════════════════════
+# Minimal config (starts a basic agent):
+#
+#   llm:
+#     provider: ollama
+#     model: llama3.2
+#
+# ═══════════════════════════════════════════════════════════════
+# Full-featured config (distillation + RAG + AKG + evolution):
+#
+#   llm:
+#     provider: openai
+#     model: gpt-4o
+#     api_key: ${OPENAI_API_KEY}
+#
+#   memory:
+#     enabled: true
+#     enable_distillation: true
+#     distillation_threshold: 3
+#     enable_rag: true
+#     rag_top_k: 5
+#     rag_min_score: 0.4
+#
+#   knowledge:
+#     chunk_size: 512
+#     chunk_overlap: 64
+#     top_k: 5
+#     min_score: 0.4
+#     quality:
+#       min_extraction: 0.5
+#       min_consistency: 0.5
+#       min_final_score: 0.55
+#       max_facts_per_ingest: 50
+#       enable_dedup: true
+#       dedup_threshold: 0.85
+#     embedding:
+#       model: "intfloat/e5-large-v2"
+#       base_url: "http://localhost:8000"
+#
+#   evolution:
+#     enabled: true
+#
+#   tools:
+#     builtin: true
+#
+#   database:
+#     host: localhost
+#     port: 5432
+#     user: postgres
+#     password: postgres
+#     database: ares
+#
+#   embedding:
+#     service_url: http://localhost:8080/v1/embeddings
+#     model: text-embedding-ada-002

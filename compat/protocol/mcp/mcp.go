@@ -3,7 +3,7 @@
 // It exposes ARES agents/tools over the MCP wire format so MCP-compatible
 // clients (Claude Desktop, IDE plugins, …) can call into ARES.
 //
-// The adapter binds internal/ares_mcp.MCPClient's公开 surface (ListTools,
+// The adapter binds internal/ares_mcp.MCPClient's public surface (ListTools,
 // CallTool, ServerCapabilities) to the compat/protocol.ProtocolAdapter
 // interface. Each Serve call decodes one inbound JSON-RPC 2.0 message,
 // dispatches it through a thin JSON-RPC layer (initialize/tools/list/
@@ -139,10 +139,18 @@ func (a *Adapter) handleToolsCall(ctx context.Context, id int64, params json.Raw
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
+	// Some MCP clients omit `params` for argument-less tools; treat an absent
+	// or null params as an empty object instead of InvalidParams.
+	if len(params) == 0 {
+		params = []byte("{}")
+	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		resp, _ := aresmcp.NewErrorResponse(id, aresmcp.InvalidParams,
 			fmt.Sprintf("invalid params: %v", err), nil)
 		return resp
+	}
+	if p.Arguments == nil {
+		p.Arguments = map[string]any{}
 	}
 	result, err := a.client.CallTool(ctx, p.Name, p.Arguments)
 	if err != nil {

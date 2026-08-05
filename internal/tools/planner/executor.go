@@ -44,10 +44,13 @@ func (p *executionPlanner) Plan(_ context.Context, intent *Intent, requirements 
 
 		depStepIDs := make([]string, 0, len(req.DependsOn))
 		for _, dep := range req.DependsOn {
+			// Skip dependencies that are not part of the plan (e.g. a
+			// capability that was subsumed by a broader one). Appending the
+			// raw capability name would create a dangling step ID that
+			// DAGValidator rejects as missing_dependency; the dependency is
+			// either satisfied transitively or no longer needed.
 			if depID, ok := capaToStepID[dep]; ok {
 				depStepIDs = append(depStepIDs, depID)
-			} else {
-				depStepIDs = append(depStepIDs, dep)
 			}
 		}
 

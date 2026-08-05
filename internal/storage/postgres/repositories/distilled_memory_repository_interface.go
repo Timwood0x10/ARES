@@ -17,7 +17,7 @@ type DistilledMemoryRepositoryInterface interface {
 	GetByUserID(ctx context.Context, tenantID, userID string, limit int) ([]*DistilledMemory, error)
 
 	// UpdateAccessCount updates the access count for a memory.
-	UpdateAccessCount(ctx context.Context, id string) error
+	UpdateAccessCount(ctx context.Context, id, tenantID string) error
 
 	// DeleteExpired deletes expired memories and returns the count.
 	DeleteExpired(ctx context.Context) (int64, error)

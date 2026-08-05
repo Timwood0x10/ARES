@@ -177,7 +177,9 @@ func TestRuntimeResurrection_FullCycle(t *testing.T) {
 	// received the session_id from EventSessionCreated ares_events.
 	newAgent := mgr.GetAgent("res-agent-1")
 	require.NotNil(t, newAgent)
-	statefulAgent, ok := newAgent.(*resurrectionAgent)
+	// The runtime wraps every agent in a chaos-injection decorator, so peel it
+	// back to reach the concrete resurrectionAgent before asserting the type.
+	statefulAgent, ok := ares_runtime.UnwrapAgent(newAgent).(*resurrectionAgent)
 	require.True(t, ok, "restored agent should be resurrectionAgent")
 
 	deadline = time.Now().Add(2 * time.Second)
@@ -385,7 +387,8 @@ func TestRuntimeResurrection_EventStoreUnavailable(t *testing.T) {
 	// The new agent should NOT have any restored state (no ares_events to replay).
 	newAgent := mgr.GetAgent("no-store-agent")
 	require.NotNil(t, newAgent)
-	stateful, ok := newAgent.(*resurrectionAgent)
+	// Peel the chaos-injection decorator to reach the concrete resurrectionAgent.
+	stateful, ok := ares_runtime.UnwrapAgent(newAgent).(*resurrectionAgent)
 	require.True(t, ok)
 
 	// With nil EventStore, replayEvents returns nil, so no state is restored.

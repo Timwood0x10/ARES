@@ -115,6 +115,10 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 
 // Execute performs the knowledge base search.
 func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if t.searcher == nil {
+		return core.NewErrorResult("knowledge search unavailable: searcher not configured"), nil
+	}
+
 	tenantID, ok := params[paramTenantID].(string)
 	if !ok || tenantID == "" {
 		return core.NewErrorResult("tenant_id is required"), nil
@@ -204,6 +208,10 @@ func NewKnowledgeUpdate(service KnowledgeService) *KnowledgeUpdate {
 
 // Execute updates a knowledge item.
 func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if t.service == nil {
+		return core.NewErrorResult("knowledge update unavailable: service not configured"), nil
+	}
+
 	tenantID, ok := params["tenant_id"].(string)
 	if !ok || tenantID == "" {
 		return core.NewErrorResult("tenant_id is required"), nil
@@ -311,6 +319,10 @@ func NewKnowledgeAdd(service KnowledgeService) *KnowledgeAdd {
 
 // Execute adds a new knowledge item.
 func (t *KnowledgeAdd) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if t.service == nil {
+		return core.NewErrorResult("knowledge add unavailable: service not configured"), nil
+	}
+
 	tenantID, ok := params["tenant_id"].(string)
 	if !ok || tenantID == "" {
 		return core.NewErrorResult("tenant_id is required"), nil
@@ -392,6 +404,10 @@ func NewKnowledgeDelete(service KnowledgeService) *KnowledgeDelete {
 
 // Execute deletes a knowledge item.
 func (t *KnowledgeDelete) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if t.service == nil {
+		return core.NewErrorResult("knowledge delete unavailable: service not configured"), nil
+	}
+
 	tenantID, ok := params["tenant_id"].(string)
 	if !ok || tenantID == "" {
 		return core.NewErrorResult("tenant_id is required"), nil

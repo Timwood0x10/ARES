@@ -230,6 +230,10 @@ func (m *MCPManager) ListServers() []MCPServerStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Report every configured, enabled server — including those not yet
+	// connected — so a Required-server outage surfaces as Connected=false
+	// (Degraded) instead of being invisible (Stage 5 observability).
+	seen := make(map[string]bool, len(m.clients))
 	statuses := make([]MCPServerStatus, 0, len(m.clients))
 	for _, mc := range m.clients {
 		status := MCPServerStatus{
@@ -244,7 +248,22 @@ func (m *MCPManager) ListServers() []MCPServerStatus {
 		if caps := mc.client.ServerCapabilities(); caps != nil {
 			status.Version = "connected"
 		}
+		seen[mc.config.Name] = true
 		statuses = append(statuses, status)
+	}
+
+	if m.config != nil {
+		for _, sc := range m.config.Servers {
+			if !sc.Enabled || seen[sc.Name] {
+				continue
+			}
+			// Configured but never connected: report the disconnected state.
+			statuses = append(statuses, MCPServerStatus{
+				Name:      sc.Name,
+				Connected: false,
+				Error:     "not connected",
+			})
+		}
 	}
 
 	return statuses
@@ -260,6 +279,24 @@ func (m *MCPManager) GetClient(serverName string) (*MCPClient, bool) {
 		return nil, false
 	}
 	return mc.client, true
+}
+
+// RegisteredTools returns the tools currently registered by connected MCP
+// servers. It is the read-side counterpart of the internal registry, letting
+// callers bridge MCP tools into another registry without holding a second
+// manager instance (and thus without duplicating server connections).
+func (m *MCPManager) RegisteredTools() []core.Tool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	names := m.registry.List()
+	tools := make([]core.Tool, 0, len(names))
+	for _, name := range names {
+		if t, ok := m.registry.Get(name); ok {
+			tools = append(tools, t)
+		}
+	}
+	return tools
 }
 
 // registerTools creates MCPTool instances and registers them in the registry.

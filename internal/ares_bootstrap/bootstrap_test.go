@@ -38,6 +38,7 @@ func TestBootstrap_WithMinimalConfig(t *testing.T) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
+		Memory: ares_config.MemoryConfig{Enabled: true},
 	}
 	comp, err := Bootstrap(ctx, cfg, nil)
 	require.NoError(t, err)
@@ -51,7 +52,9 @@ func TestBootstrap_WithMinimalConfig(t *testing.T) {
 
 func TestBootstrap_WithDeps(t *testing.T) {
 	ctx := context.Background()
-	cfg := &ares_config.Config{}
+	cfg := &ares_config.Config{
+		Memory: ares_config.MemoryConfig{Enabled: true},
+	}
 	comp, err := Bootstrap(ctx, cfg, &BootstrapDeps{
 		LLMClient: &mockLLMClient{},
 	})

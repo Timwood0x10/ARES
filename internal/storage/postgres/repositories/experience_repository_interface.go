@@ -19,7 +19,7 @@ type ExperienceRepositoryInterface interface {
 	Update(ctx context.Context, exp *storage_models.Experience) error
 
 	// Delete removes an experience by its ID.
-	Delete(ctx context.Context, id string) error
+	Delete(ctx context.Context, id, tenantID string) error
 
 	// SearchByVector performs vector similarity search for experiences.
 	SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Experience, error)

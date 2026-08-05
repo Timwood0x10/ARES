@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	apiembedding "github.com/Timwood0x10/ares/api/embedding"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
@@ -20,14 +21,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	provider_code "github.com/Timwood0x10/ares/internal/knowledge/provider/code"
 	provider_memory "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
+	storeprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/store"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider/vector"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // NewEvolutionComponents holds the new evolution system components.
 type NewEvolutionComponents struct {
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 	GenomeReg     *genome.Registry
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
@@ -68,11 +72,17 @@ type NewEvolutionComponents struct {
 //	dag - optional MutableDAG for WorkflowGenome and executors (may be nil).
 //	rt  - optional KnowledgeRuntime for KnowledgePatchExecutor (may be nil).
 //	memoryStore - optional MemoryConfigStore for MemoryPatchExecutor (may be nil).
+//	evStore - optional persistent evidence store (may be nil). When nil, an
+//	in-memory evidence store is used (default, dev/offline semantics).
 //
 // When dag, rt, or memoryStore is nil, their corresponding executors are skipped.
-func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore) (*NewEvolutionComponents, error) {
+func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore, evStore evidence.Store) (*NewEvolutionComponents, error) {
 	// 1. Evidence Store — central logging for all runtime evidence.
-	evStore := evidence.NewMemoryStore()
+	// T1 (evidence persistence): an explicit non-nil store (e.g. Postgres)
+	// survives restarts; nil falls back to the in-memory store.
+	if evStore == nil {
+		evStore = evidence.NewMemoryStore()
+	}
 
 	// 2. Genome Registry — register all available genomes.
 	genomeReg := genome.NewRegistry()
@@ -387,10 +397,24 @@ func (e *noopKnowledgeExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 var _ patch.RuntimeComponent = (*noopKnowledgeExecutor)(nil)
 
 // BuildKnowledgeRuntime creates a KnowledgeRuntime for the evolution
-// system with registered providers (memory, code) that work without an
-// external database. This enables the KnowledgePatchExecutor to process
-// knowledge/planner patches meaningfully instead of being a no-op.
-func BuildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
+// system with registered providers (memory, code, optional vector + store)
+// that work without an external database. This enables the
+// KnowledgePatchExecutor to process knowledge/planner patches meaningfully
+// instead of being a no-op.
+//
+// The vector provider is registered only when both a VectorStore and an
+// EmbeddingService are supplied (e.g. postgres pgvector + the shared embedding
+// client). The AKG store provider is registered when both a KnowledgeStore
+// and an EmbeddingService are supplied — this closes the AKG read loop so
+// facts written by the DistillBridge are recalled through the runtime. When
+// a dependency is nil the corresponding provider is skipped and the runtime
+// keeps working with the memory/code providers — best-effort, not a hard
+// dependency.
+func BuildKnowledgeRuntime(
+	vecStore storage.VectorStore,
+	emb apiembedding.EmbeddingService,
+	store knowledge.KnowledgeStore,
+) *knowledgeruntime.KnowledgeRuntime {
 	knowPipe := knowledge.NewKnowledgePipeline(
 		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
 		[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.6}},
@@ -411,6 +435,43 @@ func BuildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
 		}
 	} else {
 		log.Warn("bootstrap: create code provider for knowledge runtime", "error", err)
+	}
+	// Vector provider — semantic search over embedded documents (best-effort).
+	// Needs both a VectorStore (pgvector) and an EmbeddingService; without
+	// either there is no corpus to search and no query embedding to produce.
+	if vecStore != nil && emb != nil {
+		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
+			Name:            "knowledge-vectors",
+			Namespace:       fitnessSourceKnowledge,
+			Collection:      "knowledge_chunks_1024",
+			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
+			VectorDimension: 1024,
+			Embedder:        emb,
+		})
+		if err != nil {
+			log.Warn("bootstrap: create vector provider for knowledge runtime", "error", err)
+		} else if err := reg.Register(vp); err != nil {
+			log.Warn("bootstrap: register vector provider for knowledge runtime", "error", err)
+		} else {
+			log.Info("bootstrap: vector provider wired for knowledge runtime",
+				"collection", "knowledge_chunks_1024",
+				"embedding_model", emb.GetModel())
+		}
+	}
+
+	// AKG store provider — recalls AKG-distilled facts written by the
+	// DistillBridge (write side of the AKG closed loop). Needs both a
+	// KnowledgeStore and an EmbeddingService; without either there is no
+	// corpus to search and no query embedding to produce. The provider is
+	// skipped with a warning when AKG is not enabled (store nil).
+	if store != nil && emb != nil {
+		sp := storeprovider.New("akg_store", store, emb, akgModelName(emb), akgNamespace)
+		if err := reg.Register(sp); err != nil {
+			log.Warn("bootstrap: register AKG store provider for knowledge runtime", "error", err)
+		} else {
+			log.Info("bootstrap: AKG store provider wired for knowledge runtime",
+				"namespace", akgNamespace, "model", akgModelName(emb))
+		}
 	}
 
 	knowDiscovery := planner.NewSourceDiscovery(

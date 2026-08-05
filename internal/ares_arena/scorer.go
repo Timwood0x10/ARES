@@ -1,6 +1,7 @@
 package arena
 
 import (
+	"context"
 	"fmt"
 	"math"
 )
@@ -57,10 +58,12 @@ func NewEnsembleScorer(pairs ...any) (*EnsembleScorer, error) {
 
 // Score calls each sub-scorer and returns the weighted average.
 // If any sub-scorer fails, the error is returned immediately.
-func (es *EnsembleScorer) Score(input any) (float64, error) {
+// The context is forwarded to sub-scorers so slow (LLM-backed) scorers
+// can observe cancellation (M4).
+func (es *EnsembleScorer) Score(ctx context.Context, input any) (float64, error) {
 	var weightedSum float64
 	for i, s := range es.scorers {
-		score, err := s.Score(input)
+		score, err := s.Score(ctx, input)
 		if err != nil {
 			return 0, fmt.Errorf("arena: ensemble scorer[%d]: %w", i, err)
 		}
@@ -101,7 +104,7 @@ func NewExactMatchScorer(expected, actual func(any) string) *ExactMatchScorer {
 }
 
 // Score returns 1.0 on exact match, 0.0 otherwise.
-func (s *ExactMatchScorer) Score(input any) (float64, error) {
+func (s *ExactMatchScorer) Score(_ context.Context, input any) (float64, error) {
 	expected := s.Expected(input)
 	actual := s.Actual(input)
 	if actual == expected {
@@ -112,15 +115,17 @@ func (s *ExactMatchScorer) Score(input any) (float64, error) {
 
 // MapScorer wraps a function as a Scorer.
 type MapScorer struct {
-	fn func(any) (float64, error)
+	fn func(ctx context.Context, input any) (float64, error)
 }
 
 // NewMapScorer creates a scorer from an arbitrary scoring function.
-func NewMapScorer(fn func(any) (float64, error)) *MapScorer {
+// The wrapped function receives the context so slow scorers can observe
+// cancellation (M4).
+func NewMapScorer(fn func(ctx context.Context, input any) (float64, error)) *MapScorer {
 	return &MapScorer{fn: fn}
 }
 
 // Score delegates to the wrapped function.
-func (s *MapScorer) Score(input any) (float64, error) {
-	return s.fn(input)
+func (s *MapScorer) Score(ctx context.Context, input any) (float64, error) {
+	return s.fn(ctx, input)
 }

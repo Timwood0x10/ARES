@@ -43,6 +43,10 @@ func NewCorrectKnowledge(repo repositories.KnowledgeRepositoryInterface) *Correc
 
 // Execute corrects knowledge content.
 func (t *CorrectKnowledge) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if t.repo == nil {
+		return core.NewErrorResult("knowledge correction unavailable: repository not configured"), nil
+	}
+
 	chunkID, ok := params["chunk_id"].(string)
 	if !ok || chunkID == "" {
 		return core.NewErrorResult("chunk_id is required"), nil

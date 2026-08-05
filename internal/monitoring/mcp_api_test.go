@@ -149,7 +149,7 @@ func TestMonitorPlugin_ListMCPTools(t *testing.T) {
 		{
 			name:    "nil manager",
 			mcp:     nil,
-			wantErr: ErrNotImplemented,
+			wantErr: ErrNotConfigured,
 		},
 		{
 			name: "with manager",
@@ -183,7 +183,7 @@ func TestMonitorPlugin_CallMCPTool(t *testing.T) {
 		{
 			name:    "nil manager",
 			mcp:     nil,
-			wantErr: ErrNotImplemented,
+			wantErr: ErrNotConfigured,
 		},
 		{
 			name: "with manager",

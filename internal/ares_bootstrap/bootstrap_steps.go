@@ -3,7 +3,9 @@ package ares_bootstrap
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -12,8 +14,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	_ "github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 )
 
 // wireDistillation conditionally wires experience distillation (Track A) and
@@ -26,7 +31,7 @@ import (
 func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) (evolution.GuidanceProvider, *embedding.EmbeddingClient) {
 	var guidanceProvider evolution.GuidanceProvider
 	var embClient *embedding.EmbeddingClient
-	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Embedding.Enabled {
+	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Embedding.Enabled {
 		pool, client, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
 		if wireErr != nil {
 			log.Warn("bootstrap: experience distillation not wired", "error", wireErr)
@@ -38,8 +43,18 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			if deps.ExpRepo == nil {
 				deps.ExpRepo = expRepo
 			}
+			// Back the knowledge runtime's VectorProvider with the same PG
+			// pool, so AKF vector search reads the same embedded corpus the
+			// distillation path writes. Best-effort: nil embedding config uses
+			// defaults.
+			comp.VectorStore = postgres.NewVectorSearcher(pool, nil)
 			// The postgres pool must be closed if bootstrap fails later.
-			*cleanups = append(*cleanups, func() { _ = pool.Close() })
+			*cleanups = append(*cleanups, func() {
+				if cerr := pool.Close(); cerr != nil {
+					log.Warn("bootstrap: close distillation postgres pool",
+						"error", cerr)
+				}
+			})
 			log.Info("bootstrap: experience distillation wired",
 				"embedding_model", cfg.Embedding.Model)
 		}
@@ -48,15 +63,15 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 }
 
 // subscribeDistillationEvents starts the background distillation loop that
-// turns task-completed/failed events into experiences. It is a no-op when
-// distillation or the event store is unavailable.
+// turns task-completed/failed events into experiences (experience
+// distillation) and, when the AKG DistillBridge is wired, into AKG
+// knowledge facts (write side of the AKG loop). It is a no-op when the
+// experience distillation service or the event store is unavailable.
 func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 	if comp.Distillation == nil || comp.EventStore == nil {
 		return
 	}
-	comp.wg.Add(1)
-	go func() {
-		defer comp.wg.Done()
+	comp.bgGroup.Go(func() error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		ch, err := comp.EventStore.Subscribe(ctx, ares_events.EventFilter{
@@ -67,20 +82,39 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 		})
 		if err != nil {
 			log.Warn("bootstrap: distillation event subscription failed", "error", err)
-			return
+			return nil
 		}
+		// akgEg runs AKG distillations off the subscriber loop so a slow
+		// bridge call (LLM/embedding) cannot block experience distillation.
+		akgEg, akgCtx := errgroup.WithContext(ctx)
 		for {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
-					return
+					// Channel closed: stop the loop and join in-flight AKG
+					// distillations so no goroutine is abandoned on shutdown.
+					// Each distillation is bounded by akgBridgeTimeout (30s),
+					// and cancel() makes them return promptly.
+					cancel()
+					if waitErr := akgEg.Wait(); waitErr != nil {
+						log.Warn("bootstrap: AKG distillation group error during shutdown", "error", waitErr)
+					}
+					return nil
 				}
 				HandleTaskCompletedForDistillation(ctx, comp.Distillation, ev)
+				if comp.AKGBridge != nil {
+					triggerAKGBridge(akgCtx, akgEg, ev, comp.AKGBridge)
+				}
 			case <-ctx.Done():
-				return
+				// Context cancelled: join in-flight AKG distillations before
+				// exiting so the subscriber goroutine does not leak them.
+				if waitErr := akgEg.Wait(); waitErr != nil {
+					log.Warn("bootstrap: AKG distillation group error during shutdown", "error", waitErr)
+				}
+				return nil
 			}
 		}
-	}()
+	})
 }
 
 // Parameter keys used in evolution strategy configurations.
@@ -98,7 +132,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// falling back to the in-memory store when no database is available.
 	// The PG store ensures evolution results survive process restarts.
 	var memStore evolution.StrategyStore
-	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Storage.Host != "" {
+	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Storage.Host != "" {
 		pgStore, err := newPGStrategyStore(cfg)
 		if err != nil {
 			log.WarnContext(ctx, "bootstrap: PG strategy store init failed, falling back to in-memory", "error", err)
@@ -167,12 +201,9 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// Start a background ticker that triggers evolution even when no
 	// agents are running (event-driven scheduler won't fire without agents).
 	// This ensures the GA continuously evolves over time.
-	comp.wg.Add(1)
-	go func() {
-		ctx := ctx
+	comp.bgGroup.Go(func() error {
 		evoTicker := time.NewTicker(5 * time.Minute)
 		defer evoTicker.Stop()
-		defer comp.wg.Done()
 		for {
 			select {
 			case <-evoTicker.C:
@@ -181,29 +212,26 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 						"error", err)
 				}
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
-	}()
+	})
 
 	// Wire the LLMAdapter into the Coordinator's suggestion pipeline.
 	// When an LLM client is available, periodically generate and submit
 	// evolution suggestions (LLM → Parse → PatchProposal → Coordinator.Evaluate).
 	if newEvol.LLMAdapter != nil && comp.LLM != nil && comp.LLM.Client != nil {
 		if llmClient, ok := comp.LLM.Client.(evoService.LLMClient); ok {
-			comp.wg.Add(1)
-			go func() {
+			comp.bgGroup.Go(func() error {
 				suggestTicker := time.NewTicker(15 * time.Minute)
 				defer suggestTicker.Stop()
-				defer comp.wg.Done()
 				for {
 					select {
 					case <-suggestTicker.C:
 						// Generate a suggestion prompt for the LLM based on
 						// current evolution state and recent evidence.
-						prompt := "Examine the current system state and suggest one evolution improvement. " +
-							"Use one of: insert node, remove node, replace node, add edge, remove edge, " +
-							"change scheduler, change topk, change reducer, change planner, change recovery."
+						prompt := buildEvolutionSuggestionPrompt(ctx,
+							newEvol.EvidenceStore, newEvol.StrategyStore)
 						resp, err := llmClient.Generate(ctx, prompt)
 						if err != nil {
 							log.WarnContext(ctx, "[bootstrap] LLM suggestion generation failed",
@@ -223,10 +251,10 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 						}
 						newEvol.Coordinator.Evaluate(ctx)
 					case <-ctx.Done():
-						return
+						return nil
 					}
 				}
-			}()
+			})
 			log.InfoContext(ctx, "[bootstrap] LLM suggestion pipeline wired into Coordinator")
 		}
 	}
@@ -295,7 +323,7 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username,
 		cfg.Storage.Password, cfg.Storage.Database, cfg.Storage.SSLMode)
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open(storageTypePostgres, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: open db: %w", err)
 	}
@@ -320,4 +348,111 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 		return nil, fmt.Errorf("pg strategy store: init: %w", err)
 	}
 	return store, nil
+}
+
+// fitnessSourceKnowledge is the AKG genome source name used in fitness
+// evidence summaries (shared with the knowledge runtime vector provider).
+const fitnessSourceKnowledge = "knowledge"
+
+// fitnessSourceMemory is the memory genome source name used in fitness
+// evidence summaries (shared with the memory retriever emitter).
+const fitnessSourceMemory = "memory"
+
+// fitnessSourceOrder is the stable ordering of GA genome sources whose recent
+// fitness evidence is summarized into the LLM suggestion prompt.
+var fitnessSourceOrder = []string{"workflow", "scheduler", "recovery", fitnessSourceMemory, fitnessSourceKnowledge}
+
+// buildEvolutionSuggestionPrompt builds an LLM suggestion prompt grounded in
+// the current evolution state: the mean fitness value of the most recent
+// evidence per genome source plus the currently deployed strategy. When no
+// evidence or strategy exists yet, it falls back to the generic prompt so the
+// LLM still has the instruction it needs. Returns the prompt string.
+//
+// The summary makes the LLM's suggestions state-aware instead of blind: it can
+// see which genome has low fitness (and thus deserves a patch) and which
+// strategy is live (and thus should be mutated with care).
+func buildEvolutionSuggestionPrompt(
+	ctx context.Context,
+	evStore evidence.Store,
+	strategyStore evolution.StrategyStore,
+) string {
+	base := "Examine the current system state and suggest one evolution improvement. " +
+		"Use one of: insert node, remove node, replace node, add edge, remove edge, " +
+		"change scheduler, change topk, change reducer, change planner, change recovery."
+
+	var sb strings.Builder
+	sb.WriteString(base)
+
+	if evStore != nil {
+		var lines []string
+		for _, src := range fitnessSourceOrder {
+			mean, count, ok := recentFitnessSummary(ctx, evStore, src, fitnessWindowSize)
+			if !ok {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- %s: mean fitness %.2f over %d evidence records", src, mean, count))
+		}
+		if len(lines) > 0 {
+			sb.WriteString("\n\nCurrent evolution state (recent fitness evidence):\n")
+			sb.WriteString(strings.Join(lines, "\n"))
+		}
+	}
+
+	if strategyStore != nil {
+		if st, err := strategyStore.GetActive(ctx); err == nil && st != nil {
+			sb.WriteString("\n\nCurrently deployed strategy: ")
+			fmt.Fprintf(&sb, "id=%s version=%d", st.ID, st.Version)
+			if st.Score >= 0 {
+				fmt.Fprintf(&sb, " score=%.2f", st.Score)
+			}
+			if st.MutationDesc != "" {
+				fmt.Fprintf(&sb, " mutation=%q", st.MutationDesc)
+			}
+		}
+	}
+
+	sb.WriteString("\n\nRespond with exactly one suggestion in the allowed format.")
+	return sb.String()
+}
+
+// fitnessWindowSize bounds how many evidence records are summarized per genome
+// source so a long-running process does not read the whole store each cycle.
+const fitnessWindowSize = 50
+
+// recentFitnessSummary computes the mean fitness value over the most recent
+// fitness evidence records for one genome source. It returns ok=false when
+// the store is nil or no usable numeric record exists in the window.
+func recentFitnessSummary(ctx context.Context, store evidence.Store, source string, limit int) (mean float64, count int, ok bool) {
+	if store == nil {
+		return 0, 0, false
+	}
+	evs, err := store.Query(ctx, evidence.Filter{
+		Source: source,
+		Kind:   evidence.KindFitness,
+		Limit:  limit,
+	})
+	if err != nil {
+		return 0, 0, false
+	}
+	var sum float64
+	for _, ev := range evs {
+		if len(ev.Payload) == 0 {
+			continue
+		}
+		var fe struct {
+			Value float64 `json:"value"`
+		}
+		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
+			continue
+		}
+		if fe.Value < 0 || fe.Value > 1 {
+			continue
+		}
+		sum += fe.Value
+		count++
+	}
+	if count == 0 {
+		return 0, 0, false
+	}
+	return sum / float64(count), count, true
 }

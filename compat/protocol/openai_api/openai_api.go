@@ -32,11 +32,12 @@ import (
 )
 
 const (
-	defaultEndpoint   = "chat/completions"
-	responsesEndpoint = "responses"
-	streamObject      = "chat.completion.chunk"
-	finishReasonStop  = "stop"
-	roleAssistant     = "assistant"
+	defaultEndpoint    = "chat/completions"
+	responsesEndpoint  = "responses"
+	embeddingsEndpoint = "embeddings"
+	streamObject       = "chat.completion.chunk"
+	finishReasonStop   = "stop"
+	roleAssistant      = "assistant"
 )
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ func (a *Adapter) Serve(ctx context.Context, raw []byte) ([]byte, error) {
 	switch ep {
 	case "models":
 		return a.handleModels(ctx, raw)
-	case "embeddings":
+	case embeddingsEndpoint:
 		return a.handleEmbeddings(ctx, raw)
 	case "completions":
 		return a.handleLegacyCompletions(ctx, raw)
@@ -131,16 +132,24 @@ func detectEndpoint(raw []byte) string {
 		return "completions"
 	}
 	if len(env.Input) > 0 {
-		// Responses API: input is a string (not array), has instructions, no messages.
+		// Responses API requests are identified by Responses-specific fields
+		// such as instructions.
 		if env.Instructions != "" {
 			return responsesEndpoint
 		}
-		// Check if input is a plain string (Responses) vs array (Embeddings).
+		// Disambiguate by input shape: a bare string `input` is legal for both
+		// the Responses API (chat) and the Embeddings API (single document);
+		// route string inputs by model prefix so embedding models reach the
+		// embeddings handler. An array `input` is only legal for Embeddings,
+		// so it always routes there regardless of the model name.
 		var inputStr string
-		if json.Unmarshal(env.Input, &inputStr) == nil && inputStr != "" {
+		if json.Unmarshal(env.Input, &inputStr) == nil {
+			if strings.HasPrefix(env.Model, "text-embedding-") {
+				return "embeddings"
+			}
 			return responsesEndpoint
 		}
-		return "embeddings"
+		return embeddingsEndpoint
 	}
 	return defaultEndpoint
 }

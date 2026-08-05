@@ -468,3 +468,74 @@ func TestHandleLLMFailure_InvalidJSON(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+// TestAPIKeyAuthMiddleware_DenyByDefault pins the arena auth posture.
+//
+// The middleware previously treated an unset API key as "auth disabled" and
+// passed every request through. Because arena exposes destructive endpoints
+// (leader/agent kill, node removal, memory corruption), a missing key must be
+// read as a misconfiguration and denied. Anonymous access is only permitted
+// when a caller opts in explicitly via AllowAnonymous.
+func TestAPIKeyAuthMiddleware_DenyByDefault(t *testing.T) {
+	newGuarded := func(configure func(h *Handler)) http.Handler {
+		h, _ := setupHandler(nil, nil)
+		configure(h)
+		reached := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		return h.APIKeyAuthMiddleware(reached)
+	}
+
+	tests := []struct {
+		name       string
+		configure  func(h *Handler)
+		headerKey  string
+		wantStatus int
+	}{
+		{
+			name:       "no key configured is denied",
+			configure:  func(*Handler) {},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "no key configured still denied when caller sends one",
+			configure:  func(*Handler) {},
+			headerKey:  "guessed",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "explicit anonymous opt-in allows access",
+			configure:  func(h *Handler) { h.AllowAnonymous(true) },
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "configured key rejects missing header",
+			configure:  func(h *Handler) { h.SetAPIKey("secret") },
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "configured key rejects wrong header",
+			configure:  func(h *Handler) { h.SetAPIKey("secret") },
+			headerKey:  "wrong",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "configured key accepts matching header",
+			configure:  func(h *Handler) { h.SetAPIKey("secret") },
+			headerKey:  "secret",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/arena/leader/kill", nil)
+			if tt.headerKey != "" {
+				req.Header.Set(apiKeyHeader, tt.headerKey)
+			}
+			rec := httptest.NewRecorder()
+			newGuarded(tt.configure).ServeHTTP(rec, req)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}

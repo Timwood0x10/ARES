@@ -23,8 +23,12 @@ func IsProblem(text string) bool {
 
 	lower := strings.TrimSpace(strings.ToLower(text))
 
-	// Negative keywords - these should NOT be treated as problems (English and Chinese)
-	negativeKeywords := []string{
+	// Negative keywords - these should NOT be treated as problems.
+	// English acknowledgments use whitespace boundaries; Chinese has no
+	// word separators, so unambiguous Chinese acknowledgment phrases are
+	// matched as substrings. Polite-prefix tokens (e.g. Chinese "please") are deliberately excluded: they
+	// introduce genuine questions rather than acknowledgments.
+	englishNegativeKeywords := []string{
 		// English acknowledgments
 		"thanks", "thank you", "ok", "okay", "got it", "understood",
 		"alright", "sure", "fine", "good", "great", "perfect",
@@ -33,18 +37,39 @@ func IsProblem(text string) bool {
 		"that works", "makes sense", "got it, thanks", "thanks for the",
 		"you're welcome", "glad i could", "appreciate", "welcome",
 		"show me", "tell me", "what's happening", "what is this",
-		// Chinese acknowledgments
-		"谢谢", "感谢", "好的", "没问题", "明白了", "知道了",
-		"好的的", "行", "可以", "不错", "很棒", "太好了",
-		"完美", "优秀", "是的", "对", "正确", "同意",
-		"酷", "很好", "听起来不错", "有道理", "收到了",
-		"欢迎", "不用谢", "请", "请问", "你好", "hi",
-		"hello", "再见", "拜拜",
+		"hi", "hello",
+	}
+	// Multi-character Chinese acknowledgment phrases that never appear
+	// inside genuine questions; matched as substrings.
+	chineseNegativeKeywords := []string{
+		"谢谢", "感谢", "没问题", "明白了", "知道了", "太好了",
+		"听起来不错", "有道理", "收到了", "不用谢", "再见", "拜拜",
+	}
+	// Short Chinese acknowledgment words that double as common content
+	// words or greeting openers inside real questions (e.g. "Hello, please...",
+	// "Welcome to..."); matched only as a whole message.
+	chineseExactNegativeKeywords := []string{
+		"好的", "行", "可以", "不错", "很棒", "完美", "优秀",
+		"是的", "对", "正确", "同意", "酷", "很好", "你好", "欢迎",
 	}
 
-	// Check negative keywords - return false immediately if matched
-	for _, keyword := range negativeKeywords {
+	// Check English negative keywords with whitespace boundaries.
+	for _, keyword := range englishNegativeKeywords {
 		if lower == keyword || strings.HasPrefix(lower, keyword+" ") || strings.HasSuffix(lower, " "+keyword) {
+			return false
+		}
+	}
+
+	// Check Chinese acknowledgment phrases by substring match.
+	for _, keyword := range chineseNegativeKeywords {
+		if strings.Contains(lower, keyword) {
+			return false
+		}
+	}
+
+	// Check short Chinese acknowledgment words by exact match only.
+	for _, keyword := range chineseExactNegativeKeywords {
+		if lower == keyword {
 			return false
 		}
 	}

@@ -9,6 +9,16 @@
 
 ```
 
+**⚠️ 警告：AKG（自适应知识图谱）处于 BETA 实验阶段**
+
+这是**首次尝试在不依赖 LLM 的前提下构建知识图谱**。当前实现使用：
+- 基于规则的关系抽取（正则模式，无生成式 AI）
+- 混合检索（BM25 风格词法 + 向量余弦相似度）
+- 确定性质量评分（无 LLM 评估）
+
+功能状态：**实验性 —— API 可能变化，非生产就绪**。仅用于实验与反馈。
+
+---
 **ARES** — 智能体运行时与进化系统（Agent Runtime & Evolution System）。
 
 用 Go 构建高韧性、自进化的 AI Agent。统一 SDK、DAG 工作流、混沌工程、MCP 支持。
@@ -20,17 +30,31 @@
 ```go
 package main
 
-import "github.com/Timwood0x10/ares/sdk"
+import (
+    "context"
+    "fmt"
+
+    "github.com/Timwood0x10/ares/sdk"
+)
 
 func main() {
-    rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
+    rt := sdk.MustNew() // 零参数：自动检测 Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY；需要精细配置时使用 sdk.New(opts...)
     defer rt.Close()
 
-    agent := rt.NewAgent("assistant")
-    result, _ := agent.Run(ctx, "Say hello")
-    println(result.Output)
+    agent := rt.NewAgent("assistant", sdk.WithInstruction("你是一个有用的助手。"))
+    result, _ := agent.Run(context.Background(), "你好")
+    fmt.Println(result.Output)
 }
 ```
+
+或从 YAML 配置装配（推荐，一份配置驱动 LLM / 记忆 / 蒸馏 / 进化 / 工具）：
+
+```go
+rt := sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml")) // 详见 config.yaml 配置指南
+defer rt.Close()
+```
+
+> 📖 **配置指南**：[config.yaml 配置指南（中文）](docs/articles/zh/25-config-yaml-guide.zh.md) / [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) —— LLM、蒸馏、GA 进化、知识、工具与混沌相关开关的完整参考。
 
 安装 CLI：
 
@@ -53,16 +77,65 @@ make examples          # 构建全部 24 个示例
 
 | 特性 | 说明 |
 |---|---|
-| **统一 SDK** | 单一 `sdk.MustNew()` API，统一管理 LLM、工具、记忆、进化 |
+| **统一 SDK** | 单一 `sdk.MustNew()` API，统一管理 LLM、工具、记忆、进化；支持 `sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))` 配置驱动装配 |
+| **System Runtime 生命周期内核** | Orchestrator 逆拓扑启停 + 组件快照可观测 + 缺依赖报 Degraded；serve / start / SDK 三入口共用同一内核 |
+| **证据持久化** | `evidence.PostgresStore` 支持 GA 反馈跨重启累积（内存版重启清零），serve/SDK 双接入口 opt-in + fail-loud |
 | **运行时进化** | Genome + Diff Engine + Coordinator 持续进化 DAG、调度器、规划器、恢复策略 |
-| **策略 GA** | 基于种群的策略优化 — NSGA-II 多目标、稳态 GA、三种交叉类型、六种变异类型 |
+| **策略 GA** | 六 genome 闭环：基于种群的策略优化 — 锦标赛选择、均匀交叉、变异、三级评分；Event→Evidence→GA→Strategy→Agent 真实反馈环 + outcome 写回 experience |
 | **证据驱动** | 每次执行事件、故障、洞察都产生 Evidence，驱动进化决策 |
 | **DAG 工作流** | 动态图编排，支持条件分支和自动恢复 |
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
+| **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
 | **多 Agent** | 领导/成员编排，支持自动故障切换 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
+
+## AKG —— 无需 LLM 的知识图谱（实验性）
+
+**⚠️ AKG（自适应知识图谱）处于 BETA 实验阶段。API 可能变化，非生产就绪。仅用于实验与反馈。**
+
+### 探索目标
+
+AKG 是一个围绕单一问题展开的实验：**能否在不引入生成式 LLM 参与抽取循环的前提下，从原始材料构建出精确、可查询的知识图谱？** 当前流水线仅使用 embedding + 规则 + 确定性评分 —— 在写入/构建/检索路径上没有任何 LLM 调用。目标是量化"规则抽取 + 混合检索"能走多远，直到 LLM 成为必需；并让知识层保持廉价、可复现、可完全离线。
+
+### 无 LLM 闭环如何工作
+
+```
+写入：  源 → KnowledgeObject（Raw/Normalized/Summary）→ RelationExtractor（规则）
+              → EmbeddingService → QualityGate → KnowledgeStore
+检索：  query → EmbeddingService → HybridSearch（0.7·向量 + 0.3·词法）
+              → 排序后的 KnowledgeObjects → ContextSnippet
+注入：  ContextSnippets → Agent 的推理 LLM（唯一涉及 LLM 的环节）
+```
+
+LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事实。
+
+### 当前能力（闭环内无 LLM）
+
+- **三层 `KnowledgeObject`**（Raw → Normalized → Summary），带 evidence/溯源追踪。
+- **基于规则的关系抽取**，谓词词表封闭：`calls`、`fixes`、`depends_on`、`belongs_to`、`similar_to`、`supersedes`、`causes`、`related_to`。
+- **多维 QualityGate**（抽取/一致性/新鲜度/使用度），驱动 `candidate → active → superseded/rejected` 生命周期与晋升。
+- **HybridSearch**：向量余弦 + 词法 Jaccard，按 namespace 与 status 过滤。
+- **多后端持久化**：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖）。
+
+### 诚实的局限
+
+- 无实体消歧 —— 关于 "Redis" 的两条事实不会合并为同一实体。
+- 无语义关系推理 —— 仅抽取规则模式命中的关系。
+- 无抽象式摘要 —— `Summary` 是抽取/归一化后的文本，非 LLM 生成。
+- 规则正则在异常格式上可能贪婪匹配。
+- 向量召回为进程内暴力余弦 —— 适合数万级向量，不适合百万级。
+
+### 可扩展性 —— 架构完全开放
+
+| 扩展点 | 做法 | 涉及接口 |
+|---|---|---|
+| **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖 —— 消费方自行 blank-import MySQL 驱动）。CockroachDB / TiDB / Spanner 各只需一个文件。 | `KnowledgeStore`（新增后端时不变） |
+| **专业向量库** | 实现 `VectorIndex` 接口（`Upsert` / `Search` / `Delete`）接入 pgvector、Milvus、Weaviate、Qdrant。`InMemoryVectorIndex` 为默认实现。Store 在内部将召回委托给 `VectorIndex`。 | `VectorIndex`（新接缝）—— **`KnowledgeStore` 保持不变** |
+| **多租户** | 每个 `KnowledgeObject` 携带 `Namespace`；`Query`、`HybridSearch`、`ListByStatus` 均按其过滤，共享同一 store 的租户互不可见。 | 无新接口 |
+
+> 设计不变量：`KnowledgeStore` 是唯一的持久化契约。新增数据库或向量索引永远不改变它 —— 只会出现新的实现。这正是存储层演进时上层 runtime 逻辑不受影响的根本原因。
 
 ## CLI 命令
 
@@ -80,7 +153,7 @@ ares evolution   # 运行时进化：status / run
 ## SDK 用法
 
 ```go
-rt := sdk.MustNew(
+rt, err := sdk.New(
     sdk.WithOpenAI("gpt-4o-mini"),          // 或 WithOllama、WithAnthropic
     sdk.WithDefaultMemory(),                 // 开启会话记忆
     sdk.WithEvolution(),                     // 开启策略进化
@@ -88,6 +161,9 @@ rt := sdk.MustNew(
         Name: "my-server", Command: "/path/to/server", Args: []string{"serve"},
     }),
 )
+if err != nil {
+    log.Fatal(err)
+}
 defer rt.Close()
 
 // 带工具和人工审批的 Agent
@@ -287,8 +363,8 @@ go run examples/06-chaos-resilience/main.go
 
 | 语言 | 文档 |
 |---|---|
-| English | [Architecture](docs/articles/en/01-architecture-overview-deep-dive.md), [Agent Harmony](docs/articles/en/02-agent-harmony-protocol.md), [Memory & Distillation](docs/articles/en/03-memory-distillation-deep-dive.md), [Workflow Engine](docs/articles/en/04-workflow-engine-deep-dive.md), [Tool System](docs/articles/en/05-tool-system-deep-dive.md), [Security & Observability](docs/articles/en/06-security-observability-deep-dive.md), [Runtime Lifecycle](docs/articles/en/07-runtime-lifecycle-deep-dive.md), [Event System](docs/articles/en/08-event-system-deep-dive.md), [Chaos Arena](docs/articles/en/09-arena-fault-injection-deep-dive.md), [Retrieval System](docs/articles/en/10-retrieval-system-deep-dive.md), [Autonomous Evolution](docs/articles/en/11-autonomous-evolution-deep-dive.md), [Security Hardening](docs/articles/en/12-security-hardening-deep-dive.md), [Bootstrap & API](docs/articles/en/13-bootstrap-api-deep-dive.md), [Plugin System](docs/articles/en/14-plugin-system-deep-dive.md), [MCP Integration](docs/articles/en/15-mcp-integration-deep-dive.md), [Flight Recorder](docs/articles/en/16-flight-recorder-deep-dive.md), [SDK Layer](docs/articles/en/17-sdk-layer.md), [Knowledge Graph Build](docs/articles/en/18-knowledge-graph-build.md), [Storage Layer](docs/articles/en/19-storage-layer.md), [LLM Client Layer](docs/articles/en/20-llm-client-layer.md), [Evaluation Framework](docs/articles/en/21-evaluation-framework.md), [Config System](docs/articles/en/22-config-system.md), [Quant Trading Module](docs/articles/en/23-quant-trading.md), [GA Deep Dive](docs/articles/en/24.1-ga-deep-dive.md), [GA Tiered Scorer](docs/articles/en/24.2-ga-tiered-scorer.md), [GA Selection Benchmark](docs/articles/en/24.3-ga-selection-benchmark.md), [GA Promoter](docs/articles/en/24.4-ga-promoter.md), [GA Genealogy](docs/articles/en/24.5-ga-genealogy.md), [GA in the Trenches](docs/articles/en/24.6-ga-in-the-trenches.md) |
-| 中文 | [架构](docs/articles/zh/01-architecture-overview-deep-dive.md), [Agent 通信协议](docs/articles/zh/02-agent-harmony-protocol.md), [记忆与蒸馏](docs/articles/zh/03-memory-distillation-deep-dive.md), [工作流引擎](docs/articles/zh/04-workflow-engine-deep-dive.md), [工具系统](docs/articles/zh/05-tool-system-deep-dive.md), [安全与可观测性](docs/articles/zh/06-security-observability-deep-dive.md), [运行时生命周期](docs/articles/zh/07-runtime-lifecycle-deep-dive.md), [事件系统](docs/articles/zh/08-event-system-deep-dive.md), [混沌测试](docs/articles/zh/09-arena-fault-injection-deep-dive.md), [检索系统](docs/articles/zh/10-retrieval-system-deep-dive.md), [自主进化](docs/articles/zh/11-autonomous-evolution-deep-dive.md), [安全加固](docs/articles/zh/12-security-hardening-deep-dive.md), [Bootstrap 与 API](docs/articles/zh/13-bootstrap-api-deep-dive.md), [插件系统](docs/articles/zh/14-plugin-system-deep-dive.md), [MCP 集成](docs/articles/zh/15-mcp-integration-deep-dive.md), [Flight Recorder](docs/articles/zh/16-flight-recorder-deep-dive.md), [SDK 层](docs/articles/zh/17-sdk-layer.md), [知识图谱构建](docs/articles/zh/18-knowledge-graph-build.md), [存储层](docs/articles/zh/19-storage-layer.md), [LLM 客户端层](docs/articles/zh/20-llm-client-layer.md), [评估框架](docs/articles/zh/21-evaluation-framework.md), [配置系统](docs/articles/zh/22-config-system.md), [量化交易模块](docs/articles/zh/23-quant-trading.md), [GA 深度解析](docs/articles/zh/24.1-ga-deep-dive.md), [GA 分层评分](docs/articles/zh/24.2-ga-tiered-scorer.md), [GA 选择算子对比](docs/articles/zh/24.3-ga-selection-benchmark.md), [GA 晋升系统](docs/articles/zh/24.4-ga-promoter.md), [GA 谱系记录](docs/articles/zh/24.5-ga-genealogy.md), [GA 实战经验](docs/articles/zh/24.6-ga-in-the-trenches.md) |
+| English | [Architecture](docs/articles/en/01-architecture-overview-deep-dive.md), [Agent Harmony](docs/articles/en/02-agent-harmony-protocol.md), [Memory & Distillation](docs/articles/en/03-memory-distillation-deep-dive.md), [Workflow Engine](docs/articles/en/04-workflow-engine-deep-dive.md), [Tool System](docs/articles/en/05-tool-system-deep-dive.md), [Security & Observability](docs/articles/en/06-security-observability-deep-dive.md), [Runtime Lifecycle](docs/articles/en/07-runtime-lifecycle-deep-dive.md), [Event System](docs/articles/en/08-event-system-deep-dive.md), [Chaos Arena](docs/articles/en/09-arena-fault-injection-deep-dive.md), [Retrieval System](docs/articles/en/10-retrieval-system-deep-dive.md), [Autonomous Evolution](docs/articles/en/11-autonomous-evolution-deep-dive.md), [Security Hardening](docs/articles/en/12-security-hardening-deep-dive.md), [Bootstrap & API](docs/articles/en/13-bootstrap-api-deep-dive.md), [Plugin System](docs/articles/en/14-plugin-system-deep-dive.md), [MCP Integration](docs/articles/en/15-mcp-integration-deep-dive.md), [Flight Recorder](docs/articles/en/16-flight-recorder-deep-dive.md), [SDK Layer](docs/articles/en/17-sdk-layer.md), [Knowledge Graph Build](docs/articles/en/18-knowledge-graph-build.md), [Storage Layer](docs/articles/en/19-storage-layer.md), [LLM Client Layer](docs/articles/en/20-llm-client-layer.md), [Evaluation Framework](docs/articles/en/21-evaluation-framework.md), [Config System](docs/articles/en/22-config-system.md), [Quant Trading Module](docs/articles/en/23-quant-trading.md), [GA Deep Dive](docs/articles/en/24.1-ga-deep-dive.md), [GA Tiered Scorer](docs/articles/en/24.2-ga-tiered-scorer.md), [GA Selection Benchmark](docs/articles/en/24.3-ga-selection-benchmark.md), [GA Promoter](docs/articles/en/24.4-ga-promoter.md), [GA Genealogy](docs/articles/en/24.5-ga-genealogy.md), [GA in the Trenches](docs/articles/en/24.6-ga-in-the-trenches.md), [config.yaml Guide](docs/articles/en/25-config-yaml-guide.en.md) |
+| 中文 | [架构](docs/articles/zh/01-architecture-overview-deep-dive.md), [Agent 通信协议](docs/articles/zh/02-agent-harmony-protocol.md), [记忆与蒸馏](docs/articles/zh/03-memory-distillation-deep-dive.md), [工作流引擎](docs/articles/zh/04-workflow-engine-deep-dive.md), [工具系统](docs/articles/zh/05-tool-system-deep-dive.md), [安全与可观测性](docs/articles/zh/06-security-observability-deep-dive.md), [运行时生命周期](docs/articles/zh/07-runtime-lifecycle-deep-dive.md), [事件系统](docs/articles/zh/08-event-system-deep-dive.md), [混沌测试](docs/articles/zh/09-arena-fault-injection-deep-dive.md), [检索系统](docs/articles/zh/10-retrieval-system-deep-dive.md), [自主进化](docs/articles/zh/11-autonomous-evolution-deep-dive.md), [安全加固](docs/articles/zh/12-security-hardening-deep-dive.md), [Bootstrap 与 API](docs/articles/zh/13-bootstrap-api-deep-dive.md), [插件系统](docs/articles/zh/14-plugin-system-deep-dive.md), [MCP 集成](docs/articles/zh/15-mcp-integration-deep-dive.md), [Flight Recorder](docs/articles/zh/16-flight-recorder-deep-dive.md), [SDK 层](docs/articles/zh/17-sdk-layer.md), [知识图谱构建](docs/articles/zh/18-knowledge-graph-build.md), [存储层](docs/articles/zh/19-storage-layer.md), [LLM 客户端层](docs/articles/zh/20-llm-client-layer.md), [评估框架](docs/articles/zh/21-evaluation-framework.md), [配置系统](docs/articles/zh/22-config-system.md), [量化交易模块](docs/articles/zh/23-quant-trading.md), [GA 深度解析](docs/articles/zh/24.1-ga-deep-dive.md), [GA 分层评分](docs/articles/zh/24.2-ga-tiered-scorer.md), [GA 选择算子对比](docs/articles/zh/24.3-ga-selection-benchmark.md), [GA 晋升系统](docs/articles/zh/24.4-ga-promoter.md), [GA 谱系记录](docs/articles/zh/24.5-ga-genealogy.md), [GA 实战经验](docs/articles/zh/24.6-ga-in-the-trenches.md), [config.yaml 配置指南](docs/articles/zh/25-config-yaml-guide.zh.md) |
 
 ## 项目结构
 
@@ -337,16 +413,17 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
 
-### 基准测试（Apple M3 Max）
+### 基准测试（Apple M3 Max，2026-07-31）
 
 ```
-BenchmarkWorkflowGenome_Mutate     309k   7.1µs  11.4KB  155 allocs
-BenchmarkSchedulerGenome_Mutate    3.3M   0.4µs   719B    15 allocs
-BenchmarkKnowledgeGenome_Mutate    2.8M   0.4µs   960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.2M   0.5µs  1.1KB    21 allocs
-BenchmarkDiffEngine_Workflow       2.9M   0.4µs   256B     3 allocs
-BenchmarkCoordinator_Evaluate      217M   5.4ns     0B      0 allocs
-BenchmarkFullEvolutionCycle        206k   5.3µs  8.0KB   109 allocs
+=== 运行时进化（internal/evolution） ===
+BenchmarkWorkflowGenome_Mutate     245k   7.28µs  11.7KB  157 allocs
+BenchmarkSchedulerGenome_Mutate    3.07M  386ns    720B    16 allocs
+BenchmarkKnowledgeGenome_Mutate    2.78M  434ns    960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.13M  561ns    1.1KB   21 allocs
+BenchmarkDiffEngine_Workflow       2.83M  425ns    304B     3 allocs
+BenchmarkCoordinator_Evaluate      221M   5.4ns      0B      0 allocs
+BenchmarkFullEvolutionCycle        355k   3.27µs  6.3KB    82 allocs
 ```
 
 ### CLI
@@ -390,14 +467,19 @@ go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Exe
 | **世代历史** | 每代快照及元数据 |
 | **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### 基准测试（Apple M3 Max）
+### 基准测试（Apple M3 Max，2026-07-31）
 
 ```
-BenchmarkPopulation_Init-10           100   11.7ms    2.5MB   32 allocs
-BenchmarkPopulation_Select-10         300    4.1ms    1.1MB   12 allocs
-BenchmarkPopulation_Mutate-10         500    2.5ms    708KB   10 allocs
-BenchmarkDreamCycle_FullCycle-10       50   24.3ms    5.8MB   55 allocs
-BenchmarkNondominatedSort-10         1000    1.8ms    256KB    8 allocs
+=== GA Genome（internal/ares_evolution/genome） ===
+CrossoverUniform (10 params)        496k   2.40µs   3.1KB   31 allocs
+CrossoverUniform (100 params)       69.6k  24.5µs   21.2KB  38 allocs
+TruncationSelection (pop=100)       205k   5.76µs       —    —
+TournamentSelection (pop=50,k=2)    282k   4.41µs       —    —
+RouletteWheelSelection (pop=100)    398k   2.98µs       —    —
+Evolve_OneGeneration (pop=10)       4.15M    303ns   344B     6 allocs
+Evolve_MultipleGenerations (100)    43.9k   28.4µs   34.4KB 600 allocs
+ApplyFitnessSharing (pop=100)         892   1.35ms    540KB 106 allocs
+RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
 ```
 
 ### 示例

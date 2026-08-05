@@ -207,11 +207,45 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 	}
 }
 
-// importPattern matches import statements with word boundaries.
-var importPattern = regexp.MustCompile(`\bimport\s+\w+`)
+// importPattern matches an `import` statement and captures the comma-separated
+// module list that follows it, up to a semicolon or newline. Capturing the full
+// list (not just the first token) prevents bypasses like `import math, os` where
+// only `math` was previously validated. The `;` boundary ensures statements such
+// as `import math; import os` yield a separate match per statement.
+var importPattern = regexp.MustCompile(`\bimport\s+([^;\n]+)`)
 
-// fromImportPattern matches `from X import Y` statements.
-var fromImportPattern = regexp.MustCompile(`\bfrom\s+(\w+)\s+import`)
+// fromImportPattern matches `from <module> import` statements, capturing the
+// possibly-dotted module name so its top-level package can be allowlisted.
+var fromImportPattern = regexp.MustCompile(`\bfrom\s+([\w.]+)\s+import`)
+
+// splitImportList parses a comma-separated import list such as
+// "math, os as o, json" and returns the top-level module names
+// ["math", "os", "json"]. It strips `as` aliases and reduces dotted
+// paths like "os.path" to their top-level package "os".
+func splitImportList(s string) []string {
+	var modules []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		// Strip an `as alias` suffix: keep the first whitespace-delimited token.
+		if fields := strings.Fields(part); len(fields) > 0 {
+			part = fields[0]
+		}
+		modules = append(modules, topLevelModule(part))
+	}
+	return modules
+}
+
+// topLevelModule returns the top-level package of a dotted module path,
+// e.g. "os.path" -> "os". Non-dotted names are returned unchanged.
+func topLevelModule(mod string) string {
+	if idx := strings.IndexByte(mod, '.'); idx >= 0 {
+		return mod[:idx]
+	}
+	return mod
+}
 
 // stripPythonComments removes single-line comments from Python code.
 func stripPythonComments(code string) string {
@@ -245,6 +279,29 @@ func stripPythonComments(code string) string {
 	return strings.Join(result, "\n")
 }
 
+// foldLineContinuations merges backslash-continued lines (Python's explicit
+// line continuation) into a single logical line. Without this, validation
+// would only see the first fragment of `import math \` + newline + `, os`,
+// letting `os` slip past the allowlist while Python still imports it.
+func foldLineContinuations(code string) string {
+	lines := strings.Split(code, "\n")
+	var b strings.Builder
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimRight(lines[i], " \t")
+		if strings.HasSuffix(trimmed, "\\") {
+			// Drop the continuation backslash and join with a space.
+			b.WriteString(strings.TrimSuffix(trimmed, "\\"))
+			b.WriteString(" ")
+			continue
+		}
+		b.WriteString(lines[i])
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 // validateCode checks code for potential security issues.
 //
 // When strictAllowlist is true (the default), only the modules listed in
@@ -254,7 +311,7 @@ func (t *CodeRunner) validateCode(code string) error {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	stripped := stripPythonComments(code)
+	stripped := foldLineContinuations(stripPythonComments(code))
 	lowerCode := strings.ToLower(stripped)
 
 	// Defense-in-depth: reject known dangerous builtins.
@@ -265,24 +322,28 @@ func (t *CodeRunner) validateCode(code string) error {
 	}
 
 	if t.strictAllowlist {
-		// Validate `import X` statements. Use lowercased code so that
-		// case-insensitive variants like "IMPORT OS" are also caught.
-		matches := importPattern.FindAllString(lowerCode, -1)
-		for _, match := range matches {
-			parts := strings.Fields(match)
-			if len(parts) >= 2 {
-				moduleName := parts[1]
-				if !t.allowedImports[moduleName] {
-					return fmt.Errorf("import not in allowlist: %s", moduleName)
+		// Strip `from X import Y` statements so the `import X` check below does
+		// not falsely match the `import` keyword inside them (e.g. `from json
+		// import loads` would otherwise be parsed as `import loads`).
+		importCode := fromImportPattern.ReplaceAllString(lowerCode, "")
+
+		// Validate `import X[, Y, ...]` statements. Each module is reduced to
+		// its top-level package and checked against the allowlist.
+		for _, m := range importPattern.FindAllStringSubmatch(importCode, -1) {
+			for _, module := range splitImportList(m[1]) {
+				if !t.allowedImports[module] {
+					return fmt.Errorf("import not in allowlist: %s", module)
 				}
 			}
 		}
 
-		// Validate `from X import Y` statements.
-		fromMatches := fromImportPattern.FindAllStringSubmatch(lowerCode, -1)
-		for _, m := range fromMatches {
-			if len(m) >= 2 && !t.allowedImports[m[1]] {
-				return fmt.Errorf("import not in allowlist: %s", m[1])
+		// Validate `from X import Y` statements. The possibly-dotted module is
+		// reduced to its top-level package before allowlist lookup.
+		for _, m := range fromImportPattern.FindAllStringSubmatch(lowerCode, -1) {
+			if len(m) >= 2 {
+				if module := topLevelModule(m[1]); !t.allowedImports[module] {
+					return fmt.Errorf("import not in allowlist: %s", module)
+				}
 			}
 		}
 	}
@@ -360,6 +421,12 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			if cmd.Process != nil {
+				// Best-effort kill of the whole process group; the child
+				// processes spawned by the script must not outlive the
+				// timeout. Ignore errors on this cleanup path.
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
 			return core.NewResult(false, map[string]interface{}{
 				"operation":      "run_python",
 				"success":        false,
@@ -414,6 +481,12 @@ func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSi
 
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			if cmd.Process != nil {
+				// Best-effort kill of the whole process group; the child
+				// processes spawned by the script must not outlive the
+				// timeout. Ignore errors on this cleanup path.
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
 			return core.NewResult(false, map[string]interface{}{
 				"operation":      "run_js",
 				"success":        false,

@@ -86,7 +86,9 @@ func DefaultRegressionConfig() RegressionConfig {
 type Scorer interface {
 	// Score evaluates a strategy and returns a numeric score.
 	// The input can be a strategy object, execution result, or any relevant data.
-	Score(input any) (float64, error)
+	// The context allows slow (e.g., LLM-backed) scorers to observe
+	// cancellation and timeout instead of hanging the caller (M4).
+	Score(ctx context.Context, input any) (float64, error)
 }
 
 // RegressionTester performs A/B style comparison tests on strategies.
@@ -373,7 +375,7 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 				}
 			}
 
-			score, err := rt.scorer.Score(input)
+			score, err := rt.scorer.Score(runCtx, input)
 			if err != nil {
 				errOnce.Do(func() {
 					runErr = fmt.Errorf("arena: score run %d: %w", i, err)

@@ -4,7 +4,6 @@ package genome
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 
@@ -55,7 +54,7 @@ type WorkflowGenomeConfig struct {
 
 	// EvidenceStore provides execution evidence for fitness evaluation.
 	// May be nil; fitness falls back to a constant when nil.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 }
 
 // DefaultWorkflowGenomeConfig returns a sensible default configuration.
@@ -167,52 +166,18 @@ func (g *WorkflowGenome) Crossover(_ context.Context, other Genome) (Genome, err
 	return child, nil
 }
 
-// Fitness evaluates this genome's quality.
-// Uses evidence from the store when available; falls back to 0.5.
+// Fitness evaluates this genome's quality based on real workflow execution
+// evidence: the measured task success rate (Value in [0, 1]) produced by the
+// flight recorder. When no evidence is available yet, a neutral 0.5 is returned
+// so the GA keeps exploring. The workflow's own past fitness is not read back,
+// so this is not a mathematical fixed point: fitness reflects actual execution
+// outcomes under the current DAG topology.
 func (g *WorkflowGenome) Fitness(ctx context.Context) (float64, error) {
-	if g.config.EvidenceStore == nil {
-		return 0.5, nil
-	}
-
-	evs, err := g.config.EvidenceStore.Query(ctx, evidence.Filter{
-		Source: WorkflowGenomeName,
-		Limit:  100,
-	})
+	score, err := avgFitnessValue(ctx, g.config.EvidenceStore, WorkflowGenomeName, 0, 100)
 	if err != nil {
-		return 0.0, fmt.Errorf("workflow: query evidence: %w", err)
-	}
-
-	if len(evs) == 0 {
 		return 0.5, nil
 	}
-
-	// Simple heuristic: average of numeric payload values.
-	var sum float64
-	var count int
-	for _, ev := range evs {
-		if len(ev.Payload) > 0 {
-			var v float64
-			if err := json.Unmarshal(ev.Payload, &v); err == nil {
-				sum += v
-				count++
-			}
-		}
-	}
-	if count == 0 {
-		return 0.5, nil
-	}
-	fitness := sum / float64(count)
-
-	// Emit fitness evidence so other subsystems can consume GA results.
-	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
-		WorkflowGenomeName,
-		evidence.KindFitness,
-		fitness,
-		evidence.WithMetadata("type", "workflow"),
-		evidence.WithMetadata("version", fmt.Sprintf("%d", g.dag.Version())),
-	))
-
-	return fitness, nil
+	return score, nil
 }
 
 // Snapshot returns a serializable snapshot of the current DAG state.

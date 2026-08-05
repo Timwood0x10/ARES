@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // Scannable is satisfied by *sql.Row and *sql.Rows.
@@ -24,23 +25,23 @@ var (
 )
 
 var allowedTables = map[string]struct{}{
-	"knowledge_chunks_1024": {},
-	"experiences_1024":      {},
-	"embeddings":            {},
-	"recommendations":       {},
-	"sessions":              {},
-	userProfilesTable:       {},
-	"secrets":               {},
-	"embedding_queue":       {},
-	"embedding_dead_letter": {},
-	"tasks":                 {},
-	"task_results":          {},
-	"task_results_1024":     {},
-	"tools":                 {},
-	"strategies":            {},
-	"distilled_memories":    {},
-	"conversations":         {},
-	"leader_checkpoints":    {},
+	"knowledge_chunks_1024":         {},
+	"experiences_1024":              {},
+	"embeddings":                    {},
+	"recommendations":               {},
+	"sessions":                      {},
+	userProfilesTable:               {},
+	"secrets":                       {},
+	"embedding_queue":               {},
+	"embedding_dead_letter":         {},
+	"tasks":                         {},
+	"task_results":                  {},
+	storage_models.TaskResultsTable: {},
+	"tools":                         {},
+	"strategies":                    {},
+	"distilled_memories":            {},
+	"conversations":                 {},
+	"leader_checkpoints":            {},
 }
 
 // quoteIdentifier quotes a SQL identifier (table/column name) for safe

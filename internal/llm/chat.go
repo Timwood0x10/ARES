@@ -83,10 +83,12 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 	duration := time.Since(start)
 	promptSummary := summarizeMessages(messages)
 	var responseContent string
+	var tokenCount int
 	if result != nil {
 		responseContent = result.Content
+		tokenCount = result.Usage.TotalTokens
 	}
-	c.recordLLMCall(ctx, promptSummary, responseContent, 0, start, err)
+	c.recordLLMCall(ctx, promptSummary, responseContent, tokenCount, start, err)
 
 	if err != nil {
 		c.emitCallback(&ares_callbacks.Context{
@@ -300,6 +302,13 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		// Usage carries token counts so the caller's cost tracking is not
+		// stuck at zero (M7).
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
 		return nil, errors.Wrap(err, "decode openai chat response")
@@ -346,8 +355,11 @@ func buildOpenAIChatMessages(messages []*core.LLMMessage) []map[string]any {
 					"id":   tc.ID,
 					"type": tc.Type,
 					"function": map[string]any{
-						"name":      tc.Function.Name,
-						"arguments": tryParseJSON(tc.Function.Arguments),
+						"name": tc.Function.Name,
+						// OpenAI API requires function.arguments to be a string,
+						// not a parsed JSON object. Sending an object causes
+						// invalid_request_error on multi-turn tool calls.
+						"arguments": tc.Function.Arguments,
 					},
 				})
 			}
@@ -367,16 +379,6 @@ func buildOpenAIChatMessages(messages []*core.LLMMessage) []map[string]any {
 		}
 	}
 	return result
-}
-
-// tryParseJSON attempts to parse a JSON string into an object.
-// Ollama and some other providers expect arguments as a JSON object, not a string.
-func tryParseJSON(s string) any {
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err == nil {
-		return v
-	}
-	return s
 }
 
 // buildOpenAIChatTools converts core.Tool slice to OpenAI tools format.
@@ -424,7 +426,11 @@ func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage,
 		"model":      c.config.Model,
 		"messages":   chatMsgs,
 		"max_tokens": maxTokens,
-		"top_k":      o.applyTopK(0),
+	}
+	// Anthropic rejects top_k=0 with an API 400; only send it when a
+	// positive override is present (M9).
+	if topK := o.applyTopK(0); topK > 0 {
+		reqBody["top_k"] = topK
 	}
 	if systemPrompt != "" {
 		reqBody["system"] = systemPrompt
@@ -481,12 +487,24 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 			Input any    `json:"input,omitempty"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
+		// Usage carries token counts so the caller's cost tracking is not
+		// stuck at zero (M7).
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
 		return nil, errors.Wrap(err, "decode anthropic chat response")
 	}
 
-	respCore := &core.GenerateResponse{}
+	respCore := &core.GenerateResponse{
+		Usage: core.TokenUsage{
+			PromptTokens:     chatResp.Usage.InputTokens,
+			CompletionTokens: chatResp.Usage.OutputTokens,
+			TotalTokens:      chatResp.Usage.InputTokens + chatResp.Usage.OutputTokens,
+		},
+	}
 	for _, block := range chatResp.Content {
 		switch block.Type {
 		case "text":

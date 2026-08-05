@@ -142,22 +142,24 @@ func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID stri
 		}
 	}
 
-	// 2. Memory update — advise memory plugin for round completion
+	// 2. Memory update — advise memory plugin for round completion.
+	// OnRoundEnd only receives the executionID and round number, so the
+	// RouteState is populated with those real fields. Richer turn data
+	// (step output, variables, collector history) is not available at this
+	// boundary and would require expanding the OnRoundEnd signature.
 	for _, mp := range pb.PluginsByCap(CapMemory) {
 		if mem, ok := mp.(MemoryPlugin); ok {
-			state := ExecutionState{
+			state := RouteState{
 				ExecutionID: executionID,
+				Variables:   map[string]any{"round": round},
 			}
-			if _, err := mem.AdviseRoute(ctx, RouteState{
-				ExecutionID: executionID,
-			}); err != nil {
+			if _, err := mem.AdviseRoute(ctx, state); err != nil {
 				log.Warn("loop: memory advise failed",
 					"round", round,
 					"execution_id", executionID,
 					"error", err,
 				)
 			}
-			_ = state // round data could feed into memory context
 		}
 	}
 

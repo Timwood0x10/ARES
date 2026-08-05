@@ -41,6 +41,15 @@ func (s *Service) CreateAgent(ctx context.Context, agentID, name, agentType stri
 		return nil, ErrInvalidAgentID
 	}
 
+	// Reject duplicate agent IDs instead of silently overwriting the
+	// existing agent (which would also leak its old session).
+	s.agentsMu.RLock()
+	_, exists := s.agents[agentID]
+	s.agentsMu.RUnlock()
+	if exists {
+		return nil, ErrAgentAlreadyExists
+	}
+
 	// Create session for the agent
 	sessionID, err := s.memoryMgr.CreateSession(ctx, agentID)
 	if err != nil {
@@ -138,7 +147,7 @@ func (s *Service) ListAgents(ctx context.Context, filter *AgentFilter) ([]*Agent
 	out := make([]*Agent, 0, len(s.agents))
 	for _, a := range s.agents {
 		if filter != nil {
-			if filter.Type != "" && string(a.Status) != filter.Type {
+			if filter.Type != "" && a.Type != filter.Type {
 				continue
 			}
 			if filter.Status != "" && a.Status != filter.Status {
@@ -148,6 +157,8 @@ func (s *Service) ListAgents(ctx context.Context, filter *AgentFilter) ([]*Agent
 		// Return a copy to avoid external modification.
 		out = append(out, &Agent{
 			ID:        a.ID,
+			Name:      a.Name,
+			Type:      a.Type,
 			SessionID: a.SessionID,
 			Status:    a.Status,
 			CreatedAt: a.CreatedAt,
@@ -191,6 +202,10 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 			if v, ok := val.(string); ok {
 				agent.Status = Status(v)
 			}
+		case "config":
+			if v, ok := val.(map[string]interface{}); ok {
+				agent.Config = v
+			}
 		}
 	}
 
@@ -201,6 +216,7 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    agent.Status,
+		Config:    agent.Config,
 		CreatedAt: agent.CreatedAt,
 	}, nil
 }
@@ -236,10 +252,23 @@ func (s *Service) ExecuteTask(ctx context.Context, agentID, taskID string, paylo
 		input = string(data)
 	}
 
-	// Create task via memory manager.
-	createdTaskID, err := s.memoryMgr.CreateTask(ctx, agent.SessionID, agentID, input)
-	if err != nil {
-		return "", fmt.Errorf("create task: %w", err)
+	// Create task via memory manager. Use the caller-assigned taskID when
+	// provided so the returned ID matches the caller's tracking ID (and the
+	// upper layer's result cache key); otherwise let the manager generate one.
+	var (
+		createdTaskID string
+		err           error
+	)
+	if taskID != "" {
+		if err := s.memoryMgr.CreateTaskWithID(ctx, taskID, agent.SessionID, agentID, input); err != nil {
+			return "", fmt.Errorf("create task with id: %w", err)
+		}
+		createdTaskID = taskID
+	} else {
+		createdTaskID, err = s.memoryMgr.CreateTask(ctx, agent.SessionID, agentID, input)
+		if err != nil {
+			return "", fmt.Errorf("create task: %w", err)
+		}
 	}
 
 	return createdTaskID, nil
@@ -253,12 +282,13 @@ type AgentFilter struct {
 
 // Agent represents an AI agent with session management.
 type Agent struct {
-	ID        string `json:"id"`
-	Name      string `json:"name,omitempty"`
-	Type      string `json:"type,omitempty"`
-	SessionID string `json:"session_id"`
-	Status    Status `json:"status"`
-	CreatedAt int64  `json:"created_at"`
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name,omitempty"`
+	Type      string                 `json:"type,omitempty"`
+	SessionID string                 `json:"session_id"`
+	Status    Status                 `json:"status"`
+	Config    map[string]interface{} `json:"config,omitempty"`
+	CreatedAt int64                  `json:"created_at"`
 }
 
 // Status represents the current status of an agent.

@@ -20,12 +20,19 @@ type RegistryProvider struct {
 
 // NewRegistryProvider creates a ToolProvider that reads tools and their
 // capabilities directly from a core.Registry.
+// A nil registry is tolerated: ListTools and GetToolCapabilities return
+// empty results instead of panicking.
 func NewRegistryProvider(reg *core.Registry) *RegistryProvider {
 	return &RegistryProvider{reg: reg}
 }
 
 // ListTools returns all registered tool names.
+// If the provider has no backing registry, it returns an empty slice so
+// callers do not panic.
 func (p *RegistryProvider) ListTools() []string {
+	if p == nil || p.reg == nil {
+		return []string{}
+	}
 	return p.reg.List()
 }
 
@@ -72,6 +79,9 @@ var broadToGranular = map[string][]string{
 // Returns nil (no error) if the tool is not found — the resolver treats this
 // as "no dynamic capabilities" and falls back to the static capability mapping.
 func (p *RegistryProvider) GetToolCapabilities(toolName string) ([]string, error) {
+	if p == nil || p.reg == nil {
+		return nil, nil
+	}
 	tool, exists := p.reg.Get(toolName)
 	if !exists {
 		return nil, fmt.Errorf("tool %q not found", toolName)

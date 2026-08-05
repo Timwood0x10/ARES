@@ -270,6 +270,15 @@ func (b *PluginBus) Subscribe(ctx context.Context, filter ares_events.EventFilte
 	return ch, nil
 }
 
+// Stats returns runtime metrics for the bus. Currently exposes the count of
+// events dropped because a subscriber's channel buffer was full, enabling
+// monitoring/debugging of data loss in the event pipeline.
+func (b *PluginBus) Stats() map[string]int64 {
+	return map[string]int64{
+		"dropped_events": b.droppedEvents.Load(),
+	}
+}
+
 // PluginsByCap returns a copy of the registered plugins with the given capability.
 func (b *PluginBus) PluginsByCap(cap Capability) []RuntimePlugin {
 	b.mu.RLock()

@@ -76,14 +76,24 @@ func (r *Repository) Transaction(ctx context.Context, fn func(repo *Repository) 
 		tx:        tx,
 	}
 
-	if err := fn(txRepo); err != nil {
-		if rbErr := tx.Rollback(); rbErr != nil {
-			return errors.Wrapf(err, "transaction failed: rollback error: %v", rbErr)
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil && rbErr != sql.ErrTxDone {
+				log.Warn("transaction rollback failed", "error", rbErr)
+			}
 		}
+	}()
+
+	if err := fn(txRepo); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // WithTransaction creates a new repository bound to a transaction.

@@ -1,5 +1,3 @@
-// Package postgres implements a GraphProvider for external PostgreSQL databases.
-// It reads table rows via SQL queries and converts them to KnowledgeObjects.
 package postgres
 
 import (
@@ -13,6 +11,23 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"golang.org/x/sync/errgroup"
 )
+
+// defaultPGReliability is the Confidence assigned to every postgres-recalled
+// object. It is a reliability prior, NOT a query-relevance score: rows read
+// from an external Postgres table are assumed moderately reliable as facts
+// (they are operational data, not rumours).
+const defaultPGReliability = 0.5
+
+// defaultPGRelevance is the Relevance assigned to every postgres-recalled
+// object when the table exposes no rank/score column. It is a NEUTRAL PRIOR,
+// not a real query-relevance signal: the PG provider does a full-table scan
+// with no relevance ranking, so claiming any non-neutral relevance would be
+// a lie (§9: no fake constant returns). The neutral 0.5 keeps PG objects
+// rankable alongside other providers without pretending to know how well
+// they match the query. Actual query-time filtering is delegated to
+// collectSnippets' topK + the real Relevance scores produced by other
+// providers (vector, memory, code).
+const defaultPGRelevance = 0.5
 
 // PGProvider connects to an external PostgreSQL database and streams table rows
 // as KnowledgeObjects. Configuration is provided via ProviderConfig.
@@ -77,6 +92,12 @@ func NewPGProvider(dsn string, cfg provider.ProviderConfig, mapping provider.Col
 
 // Name returns the provider identifier.
 func (p *PGProvider) Name() string { return p.config.Name }
+
+// ProviderType returns the backing data source type for query-planning routing.
+func (p *PGProvider) ProviderType() provider.ProviderType { return provider.ProviderPostgres }
+
+// Compile-time guard that PGProvider satisfies TypedProvider.
+var _ provider.TypedProvider = (*PGProvider)(nil)
 
 // IntentMatch scores based on configured intent tags.
 func (p *PGProvider) IntentMatch(intent knowledge.Intent) float64 {
@@ -238,7 +259,10 @@ func (p *PGProvider) scanRow(rows *sql.Rows) (*knowledge.KnowledgeObject, error)
 		Type:       knowledge.ObjectDocument,
 		Namespace:  p.config.Namespace,
 		Summary:    summary,
-		Confidence: 0.5,
+		Confidence: defaultPGReliability,
+		// Relevance is the neutral prior documented above: the PG provider
+		// does not compute query relevance, so we do not fake one.
+		Relevance: defaultPGRelevance,
 	}
 
 	if content.Valid {

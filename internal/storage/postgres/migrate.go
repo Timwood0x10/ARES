@@ -180,14 +180,32 @@ func Migrate(ctx context.Context, pool *Pool) error {
 }
 
 // RollbackLast rolls back the last migration.
+// The migration list is a flat set of idempotent DDL statements without a
+// version table, so a precise rollback is not possible. It validates the
+// pool and returns a clear error instead of pretending success.
+// TODO: introduce a schema_migrations version table to enable real rollback
+// (expected by 2026-12-31).
 func RollbackLast(ctx context.Context, pool *Pool) error {
-	// Note: This is a simplified implementation
-	// In production, use a proper migration tool like golang-migrate
-	return errors.ErrQueryFailed
+	if pool == nil {
+		return errors.Wrap(errors.ErrNilPointer, "rollback last migration")
+	}
+	return errors.Wrap(errors.ErrRollbackUnsupported, "rollback last migration")
 }
 
 // Seed creates seed data for testing.
+// It inserts a sample user profile idempotently so tests and demo setups
+// have baseline data without requiring an external fixture.
 func Seed(ctx context.Context, pool *Pool) error {
-	// Add sample data for testing
+	if pool == nil {
+		return errors.Wrap(errors.ErrNilPointer, "seed data")
+	}
+	query := `
+		INSERT INTO user_profiles (user_id, name, created_at, updated_at)
+		VALUES ('seed-user', 'Seed User', NOW(), NOW())
+		ON CONFLICT (user_id) DO NOTHING
+	`
+	if _, err := pool.Exec(ctx, query); err != nil {
+		return errors.Wrap(err, "seed user profile")
+	}
 	return nil
 }

@@ -106,6 +106,10 @@ func (m *mockMemoryMgr) CreateTask(ctx context.Context, sessionID, userID, input
 	return args.String(0), args.Error(1)
 }
 
+func (m *mockMemoryMgr) CreateTaskWithID(ctx context.Context, taskID, sessionID, userID, input string) error {
+	return m.Called(ctx, taskID, sessionID, userID, input).Error(0)
+}
+
 func (m *mockMemoryMgr) UpdateTaskOutput(ctx context.Context, taskID, output string) error {
 	return m.Called(ctx, taskID, output).Error(0)
 }
@@ -147,17 +151,17 @@ func TestNewService(t *testing.T) {
 		require.Nil(t, s)
 		require.ErrorIs(t, err, ErrInvalidConfig)
 	})
-	t.Run("valid config", func(t *testing.T) {
+	t.Run("nil repo rejected", func(t *testing.T) {
 		s, err := NewService(&Config{})
+		require.Nil(t, s)
+		require.ErrorIs(t, err, ErrInvalidConfig)
+	})
+	t.Run("valid config", func(t *testing.T) {
+		s, err := NewService(&Config{Repo: &mockMemoryRepo{}})
 		require.NoError(t, err)
 		require.NotNil(t, s)
 		require.NotNil(t, s.config)
-	})
-	t.Run("nil repos allowed", func(t *testing.T) {
-		s, err := NewService(&Config{})
-		require.NoError(t, err)
-		require.Nil(t, s.repo)
-		require.Nil(t, s.memoryMgr)
+		require.NotNil(t, s.repo)
 	})
 }
 
@@ -514,7 +518,12 @@ func TestMemoryRepository(t *testing.T) {
 		})
 		require.NoError(t, err)
 		err = r3.StoreDistilledTask(ctx, &core.DistilledTask{
-			TaskID: "search2", Tags: []string{"other"}, Input: "more",
+			TaskID: "search2", Tags: []string{"other"}, Input: "test payload",
+		})
+		require.NoError(t, err)
+		// Unrelated task must be excluded by the query comparison.
+		err = r3.StoreDistilledTask(ctx, &core.DistilledTask{
+			TaskID: "search3", Tags: []string{"other"}, Input: "unrelated",
 		})
 		require.NoError(t, err)
 
@@ -526,7 +535,7 @@ func TestMemoryRepository(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, results, 2)
 		ids := []string{results[0].TaskID, results[1].TaskID}
-		require.Contains(t, ids, "search1")
-		require.Contains(t, ids, "search2")
+		require.Contains(t, ids, "search1") // tag match
+		require.Contains(t, ids, "search2") // query-text match
 	})
 }

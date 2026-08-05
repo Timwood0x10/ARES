@@ -44,6 +44,10 @@ func TestKnowledgePatchExecutor_Apply_ChangeBudget(t *testing.T) {
 	rt := buildTestRuntime(t)
 	exec := NewKnowledgePatchExecutor(rt)
 
+	// Seed an initial budget so the rollback has a real old value to capture
+	// (instead of the previous hardcoded 0).
+	rt.SetPlanConfig(PlanConfig{MaxResults: 10, ReducerStrategy: "strict"})
+
 	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
 		Type:   patch.PatchChangeBudget,
 		Target: "knowledge.planner.max_results",
@@ -52,6 +56,18 @@ func TestKnowledgePatchExecutor_Apply_ChangeBudget(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rollback)
 	assert.Equal(t, patch.PatchChangeBudget, rollback.Type)
+	// Rollback must capture the previous budget, not a hardcoded 0.
+	assert.Equal(t, 10, rollback.Value)
+
+	// A budget change must not wipe the unrelated reducer strategy.
+	cfg := rt.PlanConfig()
+	assert.Equal(t, 42, cfg.MaxResults)
+	assert.Equal(t, "strict", cfg.ReducerStrategy)
+
+	// Applying the rollback restores the previous budget precisely.
+	_, err = exec.Apply(context.Background(), *rollback)
+	require.NoError(t, err)
+	assert.Equal(t, 10, rt.PlanConfig().MaxResults)
 }
 
 func TestKnowledgePatchExecutor_Apply_ChangeBudget_InvalidValue(t *testing.T) {
@@ -69,6 +85,9 @@ func TestKnowledgePatchExecutor_Apply_ChangePlanner(t *testing.T) {
 	rt := buildTestRuntime(t)
 	exec := NewKnowledgePatchExecutor(rt)
 
+	// Seed an initial strategy so the rollback has a real old value.
+	rt.SetPlanConfig(PlanConfig{MaxResults: 5, ReducerStrategy: "strict"})
+
 	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
 		Type:   patch.PatchChangePlanner,
 		Target: "knowledge.planner.strategy",
@@ -77,11 +96,21 @@ func TestKnowledgePatchExecutor_Apply_ChangePlanner(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rollback)
 	assert.Equal(t, patch.PatchChangePlanner, rollback.Type)
+	// Rollback captures the previous strategy (not a hardcoded "default").
+	assert.Equal(t, "strict", rollback.Value)
+
+	cfg := rt.PlanConfig()
+	assert.Equal(t, "memory-first", cfg.ReducerStrategy)
+	// A planner change must not wipe the unrelated budget.
+	assert.Equal(t, 5, cfg.MaxResults)
 }
 
 func TestKnowledgePatchExecutor_Apply_ChangeReducer(t *testing.T) {
 	rt := buildTestRuntime(t)
 	exec := NewKnowledgePatchExecutor(rt)
+
+	// Seed an initial strategy so the rollback has a real old value.
+	rt.SetPlanConfig(PlanConfig{MaxResults: 7, ReducerStrategy: "relaxed"})
 
 	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
 		Type:   patch.PatchChangeReducer,
@@ -91,6 +120,13 @@ func TestKnowledgePatchExecutor_Apply_ChangeReducer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rollback)
 	assert.Equal(t, patch.PatchChangeReducer, rollback.Type)
+	// Rollback captures the previous strategy, not a hardcoded default.
+	assert.Equal(t, "relaxed", rollback.Value)
+
+	cfg := rt.PlanConfig()
+	assert.Equal(t, "strict", cfg.ReducerStrategy)
+	// A reducer change must not wipe the unrelated budget.
+	assert.Equal(t, 7, cfg.MaxResults)
 }
 
 func TestKnowledgePatchExecutor_Apply_ChangeReducer_InvalidValue(t *testing.T) {

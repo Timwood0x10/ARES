@@ -236,8 +236,8 @@ func (r *ConversationRepository) DeleteBySession(ctx context.Context, sessionID,
 // ctx - database operation context.
 // id - conversation message identifier.
 // Returns error if delete operation fails.
-func (r *ConversationRepository) Delete(ctx context.Context, id string) error {
-	return postgres.DeleteByID(ctx, r.db, "conversations", id, "")
+func (r *ConversationRepository) Delete(ctx context.Context, id, tenantID string) error {
+	return postgres.DeleteByID(ctx, r.db, "conversations", id, tenantID)
 }
 
 // GetByUser retrieves recent conversation messages for a specific user.

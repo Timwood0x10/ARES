@@ -23,11 +23,23 @@ const (
 // mockTransport implements the transport interface for testing.
 type mockTransport struct {
 	roundTripFn func(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error)
+	notifyFn    func(ctx context.Context, notif jsonrpcNotification) error
 	closeCalled bool
 }
 
 func (m *mockTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 	return m.roundTripFn(ctx, req)
+}
+
+func (m *mockTransport) notify(ctx context.Context, notif jsonrpcNotification) error {
+	if m.notifyFn != nil {
+		return m.notifyFn(ctx, notif)
+	}
+	// Preserve existing tests that only configure roundTripFn by routing
+	// notifications through it.
+	req := jsonrpcRequest{JSONRPC: notif.JSONRPC, Method: notif.Method, Params: notif.Params}
+	_, err := m.roundTrip(ctx, req)
+	return err
 }
 
 func (m *mockTransport) close() error {

@@ -113,7 +113,7 @@ func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, p patch.RuntimeP
 		node = n
 	} else {
 		// Create a FuncNode with the target ID.
-		fn, err := NewFuncNode(p.Target, defaultNodeExecute)
+		fn, err := NewFuncNode(p.Target, placeholderNodeExecute(p.Target))
 		if err != nil {
 			return nil, fmt.Errorf("graph executor: create func node: %w", err)
 		}
@@ -173,7 +173,7 @@ func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, p patch.Runtime
 	if n, ok := p.Value.(Node); ok {
 		newNode = n
 	} else {
-		fn, err := NewFuncNode(p.Target, defaultNodeExecute)
+		fn, err := NewFuncNode(p.Target, placeholderNodeExecute(p.Target))
 		if err != nil {
 			return nil, fmt.Errorf("graph executor: create replacement func node: %w", err)
 		}
@@ -230,14 +230,22 @@ func (e *GraphPatchExecutor) applyRemoveEdge(_ context.Context, p patch.RuntimeP
 	}, nil
 }
 
-func (e *GraphPatchExecutor) applyChangeScheduler(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func (e *GraphPatchExecutor) applyChangeScheduler(
+	_ context.Context,
+	p patch.RuntimePatch,
+) (*patch.RuntimePatch, error) {
 	newSched, ok := p.Value.(Scheduler)
 	if !ok {
 		return nil, fmt.Errorf("graph executor: change scheduler value must be a Scheduler")
 	}
 
-	// Capture old scheduler for rollback.
+	// Capture old scheduler for rollback. e.graph.scheduler is guarded by
+	// e.graph.mu (SetScheduler writes it under the write lock), so the read
+	// must hold the read lock too — matching the pattern used by the sibling
+	// apply* functions and avoiding a data race with concurrent SetScheduler.
+	e.graph.mu.RLock()
 	oldSched := e.graph.scheduler
+	e.graph.mu.RUnlock()
 
 	_, err := e.graph.SetScheduler(newSched)
 	if err != nil {
@@ -251,10 +259,37 @@ func (e *GraphPatchExecutor) applyChangeScheduler(_ context.Context, p patch.Run
 	}, nil
 }
 
-// ── defaultNodeExecute is a no-op execution function for evolved nodes. ──
+// PlaceholderResult is the output written to state by structural placeholder
+// nodes — evolution-inserted or replaced nodes that have no real tool/agent
+// executor backing them. It explicitly signals that no real work was performed
+// so downstream nodes and observers can distinguish a genuine no-op placeholder
+// from a node that produced real output. This is NOT a fabricated success: the
+// Placeholder flag and Reason make the absence of real work observable, which
+// is the honest counterpart to the previous silent no-op that returned success
+// doing nothing.
+type PlaceholderResult struct {
+	Placeholder bool   `json:"placeholder"`
+	NodeID      string `json:"node_id"`
+	Reason      string `json:"reason"`
+}
 
-func defaultNodeExecute(_ context.Context, state *State) error {
-	// Evolved nodes are structural placeholders; real execution comes from
-	// agent-backed nodes. This no-op ensures the DAG stays valid.
-	return nil
+// placeholderNodeExecute returns a FuncNode executor for evolution-inserted
+// structural nodes that have no real tool/agent backing. Rather than silently
+// returning success (which would pretend work was done), it writes a
+// PlaceholderResult into state under "node.<id>" so the absence of real work is
+// explicitly observable by callers. It returns nil so the DAG stays
+// topologically valid for topology-only evolution; callers that need real
+// output must later replace the node with a real executor via PatchReplaceNode.
+func placeholderNodeExecute(nodeID string) func(context.Context, *State) error {
+	return func(_ context.Context, state *State) error {
+		if state == nil {
+			return nil
+		}
+		state.Set("node."+nodeID, PlaceholderResult{
+			Placeholder: true,
+			NodeID:      nodeID,
+			Reason:      "structural placeholder: no executor configured",
+		})
+		return nil
+	}
 }

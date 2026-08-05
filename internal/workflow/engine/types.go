@@ -97,6 +97,10 @@ type RecoveryPolicy struct {
 	Strategy         RecoveryStrategy `json:"strategy"`
 	MaxAttempts      int              `json:"max_attempts,omitempty"`
 	ReplacementAgent string           `json:"replacement_agent,omitempty"`
+	// Backoff is the delay applied before each recovery retry. A zero value
+	// means "no delay" and is distinct from an unset policy field, which is
+	// why rollback restores the captured prior value rather than forcing zero.
+	Backoff time.Duration `json:"backoff,omitempty"`
 }
 
 // StepFailure contains the context for a step failure that may be recoverable.

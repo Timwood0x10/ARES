@@ -24,7 +24,7 @@ func newMockScorer(scores map[int]float64) *mockScorer {
 }
 
 // Score returns the predetermined score for the current call index.
-func (m *mockScorer) Score(runResult any) (float64, error) {
+func (m *mockScorer) Score(_ context.Context, runResult any) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -554,7 +554,7 @@ type sequentialScorer struct {
 }
 
 // Score returns the next score in sequence.
-func (s *sequentialScorer) Score(runResult any) (float64, error) {
+func (s *sequentialScorer) Score(_ context.Context, runResult any) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -572,7 +572,7 @@ type slowScorer struct {
 }
 
 // Score sleeps before returning to simulate slow processing.
-func (s *slowScorer) Score(runResult any) (float64, error) {
+func (s *slowScorer) Score(_ context.Context, runResult any) (float64, error) {
 	time.Sleep(s.delay)
 	return 75.0, nil
 }
@@ -585,7 +585,7 @@ type compositeScorer struct {
 
 // Score routes to the appropriate scorer based on the input key.
 // If the input is a TestCaseInput, it unpacks the embedded strategy as the key.
-func (c *compositeScorer) Score(input any) (float64, error) {
+func (c *compositeScorer) Score(ctx context.Context, input any) (float64, error) {
 	key := input
 	if tci, ok := input.(TestCaseInput); ok {
 		key = tci.Strategy
@@ -598,7 +598,7 @@ func (c *compositeScorer) Score(input any) (float64, error) {
 	if !ok {
 		return 0.0, fmt.Errorf("composite scorer: no scorer for input %v", input)
 	}
-	return scorer.Score(key)
+	return scorer.Score(ctx, key)
 }
 
 // mathAbs is a helper to avoid importing math in test file.

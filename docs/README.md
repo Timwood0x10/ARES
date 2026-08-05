@@ -25,6 +25,7 @@ Welcome to the ARES framework documentation center.
 | Architecture | [架构设计](./zh/architecture/arch.md) | [Architecture](./en/architecture/arch.md) |
 | Integration | [集成指南](./zh/development/integration-guide.md) | [Integration Guide](./en/development/integration-guide.md) |
 | Testing | [测试指南](./zh/development/testing-guide.md) | [Testing Guide](./en/development/testing-guide.md) |
+| config.yaml Guide | [config.yaml 配置指南](../articles/zh/25-config-yaml-guide.zh.md) | [config.yaml Guide](../articles/en/25-config-yaml-guide.en.md) |
 | API Reference | — | [API Reference](./en/api-reference.md) |
 
 ## Coding Standards / 编码规范

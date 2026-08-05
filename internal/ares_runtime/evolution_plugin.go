@@ -106,10 +106,13 @@ func (p *defaultEvolutionPlugin) Stop(_ context.Context) error {
 
 // Recommend returns a runtime recommendation based on the current strategy.
 // Results are cached according to CacheTTL. Returns nil, nil if no provider
-// is configured or no recommendation is available.
+// is configured or no recommendation is available (per the StrategyProvider
+// contract: a nil recommendation with a nil error means "no recommendation").
 func (p *defaultEvolutionPlugin) Recommend(ctx context.Context, _ ExecutionState) (*RuntimeRecommendation, error) {
+	// No provider configured is a valid "evolution disabled" state, not an
+	// error: return an empty recommendation per the documented contract.
 	if p.provider == nil {
-		return nil, fmt.Errorf("evolution: no recommendation provider configured")
+		return nil, nil //nolint:nilnil // documented "no provider" contract.
 	}
 
 	p.mu.Lock()
@@ -140,8 +143,10 @@ func (p *defaultEvolutionPlugin) Recommend(ctx context.Context, _ ExecutionState
 		)
 	}
 
+	// A nil recommendation with a nil error is the documented "no
+	// recommendation available" success result — not a failure.
 	if rec == nil {
-		return nil, fmt.Errorf("evolution: provider returned nil recommendation")
+		return nil, nil //nolint:nilnil // documented "no recommendation" contract.
 	}
 	cp := *rec
 	return &cp, nil

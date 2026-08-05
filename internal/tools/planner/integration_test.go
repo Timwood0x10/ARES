@@ -143,7 +143,7 @@ func TestIntegration_ToolNotFoundWithPlannerFallback(t *testing.T) {
 	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
-	// "unknown_tool" doesn't exist, but planner fallback should resolve "计算1+1".
+	// "unknown_tool" doesn't exist, but planner fallback should resolve a simple math expression.
 	result, err := bridge.Execute(context.Background(), "unknown_tool", nil, "计算1+1")
 	require.NoError(t, err)
 	require.True(t, result.Success)
@@ -525,7 +525,7 @@ func TestExtractor_CalculatPrefix(t *testing.T) {
 		{request: "算2*3", capability: "Arithmetic", want: "2*3"},
 		{request: "运算100/5", capability: "Arithmetic", want: "100/5"},
 		{request: "计算", capability: "Arithmetic", want: ""},        // no expression after prefix
-		{request: "我在计算今天的数据", capability: "Arithmetic", want: ""}, // "计算" in middle, not a prefix
+		{request: "我在计算今天的数据", capability: "Arithmetic", want: ""}, // trigger token in middle, not a prefix
 	}
 
 	for _, tt := range tests {

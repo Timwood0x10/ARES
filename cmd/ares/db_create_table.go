@@ -42,7 +42,6 @@ func runDbCreateTable() error {
 	dbname = strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() { _ = adminDB.Close() }()
 
 	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {
@@ -100,11 +99,18 @@ func runDbCreateTable() error {
 	if _, err := pool.ExecContext(ctx, `ALTER TABLE distilled_memories ENABLE ROW LEVEL SECURITY`); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to enable RLS: %v\n", err)
 	}
-	rlsSQL := `CREATE POLICY IF NOT EXISTS tenant_isolation_distilled_memories ON distilled_memories USING (tenant_id = current_setting('app.tenant_id', true))`
+	// PostgreSQL has no CREATE POLICY IF NOT EXISTS; DROP+CREATE inside a DO
+	// block is idempotent and atomic (runs in one transaction).
+	rlsSQL := `DO $$
+BEGIN
+    DROP POLICY IF EXISTS tenant_isolation_distilled_memories ON distilled_memories;
+    CREATE POLICY tenant_isolation_distilled_memories ON distilled_memories USING (tenant_id = current_setting('app.tenant_id', true));
+END $$;`
 	if _, err := pool.ExecContext(ctx, rlsSQL); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to create RLS policy: %v\n", err)
+	} else {
+		fmt.Println("Row Level Security enabled")
 	}
-	fmt.Println("Row Level Security enabled")
 
 	return nil
 }

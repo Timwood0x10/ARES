@@ -15,6 +15,7 @@ import (
 	"time"
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/spf13/cobra"
 )
 
@@ -59,6 +60,7 @@ var arenaRunCmd = &cobra.Command{
 			return fmt.Errorf("create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		setArenaAuthHeader(req)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -182,12 +184,29 @@ var arenaListCmd = &cobra.Command{
 	},
 }
 
+// setArenaAuthHeader attaches the arena API key from the environment to an
+// outgoing request. Client subcommands need this because the arena server
+// denies unauthenticated requests by default; without it every CLI call would
+// 401 against a properly configured server, pushing operators towards
+// --allow-anonymous and undoing the hardening.
+func setArenaAuthHeader(req *http.Request) {
+	if key := os.Getenv("ARENA_API_KEY"); key != "" {
+		req.Header.Set("X-API-Key", key)
+	}
+}
+
 var arenaServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start arena HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		inj := arena.NewInjector(nil, nil)
-		svc := arena.NewService(inj, nil, nil)
+		// Share the evolution components' evidence store so chaos failures land
+		// in the same store the GA genomes consume for fitness evaluation.
+		var evStore evidence.Store
+		if ev := getNewEvolution(); ev != nil && ev.EvidenceStore != nil {
+			evStore = ev.EvidenceStore
+		}
+		svc := arena.NewService(inj, nil, evStore)
 
 		// Wire the evolution bridge: chaos fault detection → coordinator.
 		if ev := getNewEvolution(); ev != nil && ev.Coordinator != nil {
@@ -196,11 +215,20 @@ var arenaServeCmd = &cobra.Command{
 		}
 
 		handler := arena.NewHandler(svc)
-		// Enable API key auth when configured via env or flag.
-		if arenaServeAPIKey != "" {
-			handler.SetAPIKey(arenaServeAPIKey)
-		} else if key := os.Getenv("ARENA_API_KEY"); key != "" {
-			handler.SetAPIKey(key)
+		// Enable API key auth when configured via env or flag. Without a key,
+		// the middleware denies every request unless anonymous access was
+		// explicitly requested (local development only).
+		apiKey := arenaServeAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("ARENA_API_KEY")
+		}
+		if apiKey != "" {
+			handler.SetAPIKey(apiKey)
+		} else if arenaServeAllowAnon {
+			handler.AllowAnonymous(true)
+		} else {
+			return fmt.Errorf("arena serve requires an API key: set --api-key or ARENA_API_KEY, " +
+				"or pass --allow-anonymous to run without authentication (local development only)")
 		}
 
 		mux := http.NewServeMux()
@@ -217,10 +245,11 @@ var arenaServeCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Arena server listening on %s\n", arenaServeAddr)
-		if arenaServeAPIKey != "" || os.Getenv("ARENA_API_KEY") != "" {
+		if apiKey != "" {
 			fmt.Printf("Auth: API key enabled (header: X-API-Key)\n")
 		} else {
-			fmt.Printf("Auth: WARNING no API key set (set ARENA_API_KEY or --api-key)\n")
+			fmt.Printf("Auth: DISABLED via --allow-anonymous — destructive endpoints " +
+				"are reachable without credentials. Do not expose this port.\n")
 		}
 		fmt.Printf("Endpoints:\n")
 		fmt.Printf("  POST /arena/scenario/run       Run a scenario\n")
@@ -273,6 +302,7 @@ var arenaSurvivalCmd = &cobra.Command{
 			return fmt.Errorf("create start request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		setArenaAuthHeader(req)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -366,6 +396,7 @@ var (
 	arenaValidateAddr       string
 	arenaServeAddr          string
 	arenaServeAPIKey        string
+	arenaServeAllowAnon     bool
 	arenaSurvivalAddr       string
 	arenaSurvivalDuration   time.Duration
 	arenaSurvivalInterval   time.Duration
@@ -389,6 +420,8 @@ func init() {
 	arenaCmd.AddCommand(arenaServeCmd)
 	arenaServeCmd.Flags().StringVar(&arenaServeAddr, "addr", ":8080", "Listen address")
 	arenaServeCmd.Flags().StringVar(&arenaServeAPIKey, "api-key", "", "API key required for all arena endpoints (also via ARENA_API_KEY env)")
+	arenaServeCmd.Flags().BoolVar(&arenaServeAllowAnon, "allow-anonymous", false,
+		"Serve arena endpoints without authentication (local development only; destructive endpoints become unprotected)")
 
 	arenaCmd.AddCommand(arenaSurvivalCmd)
 	arenaSurvivalCmd.Flags().StringVar(&arenaSurvivalAddr, "addr", "http://localhost:8080", "Arena server address")
@@ -423,6 +456,7 @@ func validateRemote(scenarioPath, addr string) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setArenaAuthHeader(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

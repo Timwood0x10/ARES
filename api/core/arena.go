@@ -35,6 +35,7 @@ const (
 	FaultMemoryCorrupt    FaultType = "memory_corrupt"
 	FaultMCPDisconnect    FaultType = "mcp_disconnect"
 	FaultLLMFailure       FaultType = "llm_failure"
+	FaultLatencySpike     FaultType = "latency_spike"
 )
 
 // ResilienceScore holds the resilience evaluation result.

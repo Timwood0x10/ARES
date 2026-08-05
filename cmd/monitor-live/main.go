@@ -19,10 +19,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -63,9 +65,17 @@ func main() {
 	if err := ares_config.LoadFromEnv(cfg); err != nil {
 		log.Fatalf("load env: %v", err)
 	}
+	if !cfg.Memory.Enabled {
+		log.Fatal("config: memory.enabled must be true because monitor-live's leader agent requires the Memory component")
+	}
 
 	// --- Context with signal handling ---
 	ctx, cancel := context.WithCancel(context.Background())
+	// httpSrv is created later in main; declared here so the signal handler
+	// can shut it down gracefully. Without this, Ctrl+C never stops the
+	// blocking ListenAndServe below.
+	var httpSrv *http.Server
+	var httpSrvMu sync.Mutex
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -73,6 +83,14 @@ func main() {
 		<-sigCh
 		fmt.Println("\nShutting down...")
 		cancel()
+		httpSrvMu.Lock()
+		srv := httpSrv
+		httpSrvMu.Unlock()
+		if srv != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx) //nolint: errcheck
+		}
 	}()
 
 	// --- Bootstrap: infrastructure components via single wiring hub ---
@@ -85,8 +103,7 @@ func main() {
 	memMgr := comp.Memory
 	mgr := comp.Runtime
 
-	// Attach event store to memory for event-driven memory operations
-	memMgr.SetEventStore(store, "memory")
+	// EventStore is already wired into Memory during Bootstrap (B01).
 
 	// --- LLM adapter with fallback ---
 	llmAdapter, err := createLLMAdapterWithFallback(cfg)
@@ -103,7 +120,7 @@ func main() {
 	}
 
 	// --- MCP servers (codegraph + codebase-memory-mcp) ---
-	internalReg, err := setupMCP(ctx, cfg, registry)
+	internalReg, err := setupMCP(ctx, cfg, registry, ares_bootstrap.ToolDepsFromComponents(comp))
 	if err != nil {
 		cancel()
 		log.Fatalf("setup MCP: %v", err)
@@ -127,8 +144,12 @@ func main() {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
 	// Wire the GA's deployed strategy into live agents so the running
-	// agents read the active prompt/params at runtime.
-	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	// agents read the active prompt/params at runtime. When evolution is
+	// disabled (comp.NewEvolution == nil) no strategy source is injected.
+	var strategySrc agents.StrategySource
+	if comp.NewEvolution != nil {
+		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	}
 	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		cancel()
@@ -219,14 +240,16 @@ func main() {
 	server := monitoring.NewHTTPServer(plugin)
 	handler := &actionHandler{inner: server, mgr: mgr, tools: registry}
 
-	httpSrv := &http.Server{
+	httpSrvMu.Lock()
+	httpSrv = &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	if err := httpSrv.ListenAndServe(); err != nil {
+	httpSrvMu.Unlock()
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		cancel()
 		log.Fatal(err)
 	}
@@ -296,14 +319,15 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 // It returns the internal core.Registry for use by the ToolBinder (tool schemas for
 // LLM Chat API). Registration failures abort startup instead of silently leaving
 // agents with zero tools.
-func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) (*core.Registry, error) {
+func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry, deps builtintools.GeneralToolsDeps) (*core.Registry, error) {
 	internalReg := core.NewRegistry()
 
 	// Register builtin general tools into the internal registry so sub-agents
 	// receive them through the ToolBinder (closure of the tools module, P2.1).
-	// A failure here means agents would silently receive zero tools, so we
-	// abort startup rather than continue with a broken state.
-	if err := builtintools.RegisterGeneralTools(internalReg); err != nil {
+	// Real backends (knowledge store adapter, memory manager, LLM client) are
+	// injected via deps so the knowledge/memory/planning tools are usable,
+	// not just nil-guarded.
+	if err := builtintools.RegisterGeneralTools(internalReg, deps); err != nil {
 		return internalReg, fmt.Errorf("register general tools: %w", err)
 	}
 

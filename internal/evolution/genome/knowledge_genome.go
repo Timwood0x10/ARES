@@ -34,7 +34,7 @@ type KnowledgeGenomeConfig struct {
 
 	// EvidenceStore provides retrieval quality evidence for fitness evaluation.
 	// May be nil; fitness falls back to a constant when nil.
-	EvidenceStore *evidence.MemoryStore
+	EvidenceStore evidence.Store
 }
 
 // DefaultKnowledgeGenomeConfig returns sensible default knowledge parameters.
@@ -121,43 +121,20 @@ func (g *KnowledgeGenome) Crossover(_ context.Context, other Genome) (Genome, er
 	return child, nil
 }
 
-// Fitness evaluates this genome's quality based on knowledge retrieval evidence.
+// Fitness evaluates this genome's quality based on real knowledge retrieval
+// quality evidence: the measured relevance ratio (Value in [0, 1]) produced by
+// the AKF runtime. When no evidence is available yet, a neutral 0.5 is returned
+// so the GA keeps exploring.
+//
+// MaxResults/ReducerStrategy/PlannerStrategy are deliberately not baked into
+// the score: fitness reflects actual retrieval quality so the GA converges to
+// whichever configuration demonstrably retrieves the most relevant knowledge.
 func (g *KnowledgeGenome) Fitness(ctx context.Context) (float64, error) {
-	if g.config.EvidenceStore == nil {
-		return 0.5, nil
-	}
-
-	evs, err := g.config.EvidenceStore.Query(ctx, evidence.Filter{
-		Source: KnowledgeGenomeName,
-		Limit:  50,
-	})
+	score, err := avgFitnessValue(ctx, g.config.EvidenceStore, KnowledgeGenomeName, 0, 50)
 	if err != nil {
-		return 0.0, fmt.Errorf("knowledge: query evidence: %w", err)
-	}
-
-	if len(evs) == 0 {
 		return 0.5, nil
 	}
-
-	// Heuristic: higher MaxResults is penalised slightly (token cost).
-	baseFit := 0.7
-	tokenPenalty := float64(g.config.MaxResults) / 1000.0
-	if tokenPenalty > 0.3 {
-		tokenPenalty = 0.3
-	}
-	fitness := baseFit - tokenPenalty
-
-	// Emit fitness evidence.
-	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
-		KnowledgeGenomeName,
-		evidence.KindFitness,
-		fitness,
-		evidence.WithMetadata("type", "knowledge"),
-		evidence.WithMetadata("max_results", fmt.Sprintf("%d", g.config.MaxResults)),
-		evidence.WithMetadata("reducer", g.config.ReducerStrategy),
-	))
-
-	return fitness, nil
+	return score, nil
 }
 
 // Snapshot returns the current config as the serializable state.

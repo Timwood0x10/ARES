@@ -72,7 +72,7 @@ func (pe *ParameterExtractor) extractArithmetic(request string) map[string]inter
 
 // tryExtractMathExpr tries to convert natural language to an expression.
 func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
-	// Pattern 1: "从1累加到100" or "sum from 1 to 100"
+	// Pattern 1: "sum from 1 to 100" (also matches the Chinese math phrasing)
 	if m := reArithmeticRange.FindStringSubmatch(request); len(m) == 3 {
 		a, _ := strconv.ParseFloat(m[1], 64)
 		b, _ := strconv.ParseFloat(m[2], 64)
@@ -81,22 +81,22 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 		}
 	}
 
-	// Pattern 2: "2的10次方" or "x的y次方"
+	// Pattern 2: "2 to the 10th power" (also matches the Chinese math phrasing)
 	if m := rePower.FindStringSubmatch(request); len(m) == 3 {
 		return fmt.Sprintf("%s**%s", m[1], m[2])
 	}
 
-	// Pattern 3: "根号16" or "sqrt 16"
+	// Pattern 3: "sqrt 16" (also matches the Chinese math phrasing)
 	if m := reSqrt.FindStringSubmatch(request); len(m) == 2 {
 		return fmt.Sprintf("sqrt(%s)", m[1])
 	}
 
-	// Pattern 4: "3的平方" (square)
+	// Pattern 4: square (also matches the Chinese math phrasing)
 	if m := reSquare.FindStringSubmatch(request); len(m) == 2 {
 		return fmt.Sprintf("%s**2", m[1])
 	}
 
-	// Pattern 5: "3的立方" (cube)
+	// Pattern 5: cube (also matches the Chinese math phrasing)
 	if m := reCube.FindStringSubmatch(request); len(m) == 2 {
 		return fmt.Sprintf("%s**3", m[1])
 	}
@@ -117,18 +117,18 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 		}
 	}
 
-	// Pattern 7: "1+1等于多少" or "sqrt(16)等于多少"
+	// Pattern 7: "what is 1+1" or "what is sqrt(16)" (also matches the Chinese math phrasing)
 	if m := reEquals.FindStringSubmatch(request); len(m) == 2 {
 		expr := strings.TrimSpace(m[1])
 		return expr
 	}
 
-	// Pattern 8: "计算2的10次方" — extract number and power
+	// Pattern 8: "calculate 2 to the 10th power" — extract number and power (also matches the Chinese phrasing)
 	if m := rePower2.FindStringSubmatch(request); len(m) == 3 {
 		return fmt.Sprintf("%s**%s", m[1], m[2])
 	}
 
-	// Pattern 9: "计算1+1" or "算1+1" — strip operator prefix and try as expression
+	// Pattern 9: "calculate 1+1" — strip operator prefix and try as expression (also matches the Chinese phrasing)
 	cleaned := strings.TrimPrefix(request, "计算")
 	cleaned = strings.TrimPrefix(cleaned, "算")
 	cleaned = strings.TrimPrefix(cleaned, "运算")
@@ -144,17 +144,17 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 
 // extractDiscreteMath extracts combinatorics parameters.
 func (pe *ParameterExtractor) extractDiscreteMath(request string) map[string]interface{} {
-	// nPr pattern: "从5个中选3个排列" or "permutation of 5 take 3"
+	// nPr pattern: "permutation of 5 take 3" (also matches the Chinese math phrasing)
 	if m := reNPr.FindStringSubmatch(strings.ToLower(request)); len(m) == 3 {
 		return map[string]interface{}{"expression": fmt.Sprintf("nPr(%s,%s)", m[1], m[2])}
 	}
 
-	// nCr pattern: "从10个中选3个组合" or "combination of 10 take 3"
+	// nCr pattern: "combination of 10 take 3" (also matches the Chinese math phrasing)
 	if m := reNCr.FindStringSubmatch(strings.ToLower(request)); len(m) == 3 {
 		return map[string]interface{}{"expression": fmt.Sprintf("nCr(%s,%s)", m[1], m[2])}
 	}
 
-	// factorial: "10的阶乘" or "factorial of 10"
+	// factorial: "factorial of 10" (also matches the Chinese math phrasing)
 	if m := reFactorial.FindStringSubmatch(strings.ToLower(request)); len(m) == 2 {
 		return map[string]interface{}{"expression": fmt.Sprintf("factorial(%s)", m[1])}
 	}
@@ -164,7 +164,7 @@ func (pe *ParameterExtractor) extractDiscreteMath(request string) map[string]int
 
 // extractProbability extracts probability parameters.
 func (pe *ParameterExtractor) extractProbability(request string) map[string]interface{} {
-	// binomial: "10次试验成功3次概率0.5" or "binomial(10,3,0.5)"
+	// binomial: "binomial(10,3,0.5)" (also matches the Chinese math phrasing)
 	if m := reBinomial.FindStringSubmatch(request); len(m) == 4 {
 		return map[string]interface{}{"expression": fmt.Sprintf("binomial(%s,%s,%s)", m[1], m[2], m[3])}
 	}

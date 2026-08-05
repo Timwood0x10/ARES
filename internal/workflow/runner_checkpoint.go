@@ -122,6 +122,11 @@ func (r *Runner) ResumeExecution(ctx context.Context, spec *WorkflowSpec, execut
 			return r.finishResumedExecution(ctx, scope, err)
 		}
 	}
+	// Finalise any nodes that were never scheduled (e.g., resume found an
+	// empty ready queue). Without this, nodes still in NodeStatusPending
+	// would be recorded as part of a "completed" iteration and silently
+	// dropped instead of receiving a terminal status (M5).
+	r.finaliseUnprocessed(scope, scheduler, iterationSpec)
 	completedIteration := snapshot.LoopIteration
 	if completedIteration > 0 && !snapshot.LoopIterationComplete {
 		scope.RecordLoopIteration(completedIteration, nodeIDs(iterationSpec))

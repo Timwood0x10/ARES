@@ -522,6 +522,8 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 
 ARES is the **only framework** with a built-in Genetic Algorithm (GA) pipeline for autonomous agent evolution. The `ares_evolution` package enables agents to self-improve through selection, crossover, mutation, and scoring cycles.
 
+**v0.2.9 pipeline (six genomes, closed feedback loop)**: six genomes — **workflow** (DAG topology: insert/remove/replace/parallelize/serialize), **scheduler**, **knowledge** (retrieval params), **recovery**, **memory**, and **prompt** — evolve runtime strategies. The loop is real data flow: `Event → Evidence (fitness) → GA → StrategyStore (active strategy) → Agent next execution → outcome written back to experience` (Track A closed). Evidence persistence via `evidence.PostgresStore` lets GA feedback accumulate across restarts (in-memory store resets to baseline; opt-in via `database` block, fail-loud).
+
 #### Selection: TournamentSelection
 
 ```mermaid
@@ -861,16 +863,17 @@ flowchart TB
 - **Low startup overhead**: Go static compilation, millisecond startup
 - **Hot reload**: fsnotify file watcher, zero-restart config updates
 - **Chaos Engineering**: 13 fault injection types, Survival/Scenario modes — only framework with built-in Chaos Engineering
-- **Autonomous Evolution**: Full GA pipeline with TournamentSelection, UniformCrossover, 5 mutation types, TieredScorer, DreamCycle, Guardrails — only framework with GA-driven self-improvement
+- **Autonomous Evolution**: v0.2.9 six-genome closed-loop pipeline (workflow/scheduler/knowledge/recovery/memory/prompt) — TournamentSelection, UniformCrossover, 5 mutation types, TieredScorer, DreamCycle, Guardrails, plus a real feedback loop `Event → Evidence → GA → StrategyStore → Agent → outcome→experience` and Postgres evidence persistence — only framework with GA-driven self-improvement
+- **System Runtime lifecycle kernel**: Orchestrator-driven reverse-topological start/stop, component Registry/Snapshot observability, Degraded state for missing deps — shared by serve/start/SDK entries
 - **Mutable DAG**: Runtime DAG mutation (AddNode/RemoveNode/AddEdge/RemoveEdge/ReplaceNode) with BFS cycle detection and GraphEventHub — only framework with live graph mutation
 
 **Weaknesses**:
-- **Early stage project**: v0.3.0, 2 contributors, ecosystem far from established
+- **Early stage project**: v0.2.9, 2 contributors, ecosystem far from established
 - **State checkpointing**: Added in v0.2.6 (step-level + graph-level persistence), `ExecuteFromCheckpoint` supports resume-from-crash. `saveGraphCheckpoint` persists per-node state via pluggable `CheckpointStore`
 - **Controlled loops**: Added in v0.2.6 (`LoopConfig` with MaxIterations/UntilCondition) but only supports bounded iteration — no LangGraph-style arbitrary cycles
 - **Conditional edges**: Added in v0.2.6 (`Step.Condition` for pre-execution skip, `Step.Router` for post-execution dynamic routing) covering most branching needs. `graph.Condition` + `NodeRouter` provide conditional branching and additive dynamic routing
 - **Small community**: Few learning resources, third-party integrations, or plugin ecosystem
-- **GA/Evolution still early**: GA pipeline exists but needs more real-world validation and optimization
+- **GA/Evolution scale validation pending**: six-genome closed-loop pipeline is shipped (v0.2.9); quantified convergence on large production workloads is still in progress (24h soak is a release-acceptance item)
 - **Data race fixes**: v0.3.0 resolved `SetHTTPHandler` race, `NewCollector` nil-vs-error contract, `Configure` lock, and `Rank` silent-error path
 - **Storage hardening**: v0.3.0 unified table validation to whitelist + quote, replaced `redis.Keys` with `SCAN` cursor iteration, fixed 5 occurrences of bypassed SQL injection prevention
 - **FeedbackService wired**: v0.3.0 connects `FeedbackService` from bootstrap `EvolutionComponents` to `leader.New()` via `WithFeedbackService()`, closing the bandit feedback loop

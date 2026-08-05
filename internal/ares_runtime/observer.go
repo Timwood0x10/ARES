@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"golang.org/x/sync/errgroup"
 )
 
 // ObserverPlugin subscribes to workflow lifecycle ares_events and writes them
@@ -13,6 +14,7 @@ type ObserverPlugin struct {
 	name   string
 	store  ares_events.EventStore
 	cancel context.CancelFunc
+	eg     errgroup.Group
 }
 
 // NewObserverPlugin creates an ObserverPlugin that writes ares_events to the
@@ -62,7 +64,10 @@ func (p *ObserverPlugin) Start(ctx context.Context, bus EventBus) error {
 		return fmt.Errorf("observer: subscribe: %w", err)
 	}
 
-	go p.loop(loopCtx, ch)
+	p.eg.Go(func() error {
+		p.loop(loopCtx, ch)
+		return nil
+	})
 	return nil
 }
 
@@ -72,7 +77,7 @@ func (p *ObserverPlugin) Stop(_ context.Context) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	return nil
+	return p.eg.Wait()
 }
 
 func (p *ObserverPlugin) loop(ctx context.Context, ch <-chan *ares_events.Event) {

@@ -48,11 +48,14 @@ type Decision int
 const (
 	DecisionApply  Decision = iota // Apply the patch now
 	DecisionReject                 // Reject the patch
-	DecisionDelay                  // Revisit later
+	DecisionDelay                  // Revisit later (re-queued, bounded by retries)
+	DecisionDrop                   // Permanently discard (retry budget exhausted)
 )
 
 // maxProposalRetries bounds how many times a delayed proposal is re-queued for
 // review before it is permanently dropped, preventing an infinite delay loop.
+// A proposal delayed more than this many times becomes a DecisionDrop so the
+// discard is observable in DecisionHistory rather than a silent disappear.
 const maxProposalRetries = 3
 
 // String returns a human-readable name for the decision.
@@ -64,6 +67,8 @@ func (d Decision) String() string {
 		return "reject"
 	case DecisionDelay:
 		return "delay"
+	case DecisionDrop:
+		return "drop"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(d))
 	}
@@ -74,6 +79,11 @@ type PatchDecision struct {
 	Proposal PatchProposal
 	Decision Decision
 	Reason   string // why this decision was made
+	// ApplyError is non-nil when Decision == DecisionApply and the underlying
+	// executor returned an error. Exposed here (not just in PatchHistory) so
+	// callers monitoring DecisionHistory can observe apply failures without
+	// cross-referencing PatchHistory. Nil for all non-apply decisions.
+	ApplyError error
 }
 
 // PolicyGenome is the Coordinator's decision strategy — also evolvable.
@@ -107,12 +117,27 @@ type PolicyGenome struct {
 }
 
 // DefaultPolicy returns a sensible default Coordinator policy.
+//
+// Calibration (post evidence-backed fitness pipeline, commit a952206e):
+//   - MinFitnessThreshold = 30.0 — GA patches with fitness below this are
+//     rejected outright. With 5 genomes each returning the mean success rate
+//     in [0,1] scaled to [0,100], a value below 30 means at least one
+//     subsystem is failing more often than it succeeds.
+//   - ApplyFitnessThreshold = 70.0 — GA patches with fitness at or above
+//     this are auto-applied. 70 means averaged success rate >= 70% across
+//     memory/knowledge/recovery/workflow/scheduler, a strong signal that
+//     the current configuration is healthy and the GA's proposed mutation
+//     is worth trusting. Patches in [30, 70) land in the delay bucket for
+//     operator review. Setting this to 100.0 disables GA auto-apply.
+//
+// Callers that need a different gate (e.g. stricter for production, looser
+// for canary) construct a PolicyGenome explicitly instead of using DefaultPolicy.
 func DefaultPolicy() PolicyGenome {
 	return PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   4,
 		MinFitnessThreshold:   30.0,
-		ApplyFitnessThreshold: 60.0,
+		ApplyFitnessThreshold: 70.0,
 		SelfHealingEnabled:    false,
 		SelfHealingMaxRetries: 3,
 	}
@@ -189,6 +214,15 @@ func (ec *EvolutionCoordinator) SetDeployer(d PatchDeployer) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.deployer = d
+}
+
+// Policy returns a snapshot of the current Coordinator policy. Callers (e.g.
+// the GA adapter) use this to log the threshold values that produced a
+// decision so a drop or reject is observable with its gating context.
+func (ec *EvolutionCoordinator) Policy() PolicyGenome {
+	ec.mu.RLock()
+	defer ec.mu.RUnlock()
+	return ec.policy
 }
 
 // ApplyEmergency applies a patch immediately, bypassing the decision process.
@@ -328,22 +362,26 @@ func (ec *EvolutionCoordinator) SelfHealingHistory() []HealingAttempt {
 }
 
 // Evaluate processes all pending proposals and applies accepted patches.
+//
+// Per-proposal flow:
+//  1. decide() returns Apply/Reject/Delay/Drop.
+//  2. Side effects run (apply patch, re-queue delay, no-op for reject/drop).
+//  3. The decision is appended to DecisionHistory AFTER side effects, so
+//     ApplyError (when the executor fails) is captured on the decision
+//     rather than only in PatchHistory. This makes apply failures observable
+//     to callers that read DecisionHistory.
 func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 	ec.mu.Lock()
 	pending := ec.proposals
 	ec.proposals = nil
+	policy := ec.policy
 	ec.mu.Unlock()
 
 	for _, proposal := range pending {
 		decision := ec.decide(proposal)
-		ec.mu.Lock()
-		ec.decisions = append(ec.decisions, PatchDecision{
-			Proposal: proposal,
-			Decision: decision,
-			Reason:   decisionReason(decision, proposal),
-		})
-		ec.mu.Unlock()
+		reason := decisionReason(decision, proposal, policy)
 
+		var applyErr error
 		switch decision {
 		case DecisionApply:
 			// Apply the patch. When a deployer is installed and enabled,
@@ -352,7 +390,6 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 			ec.mu.Lock()
 			d := ec.deployer
 			ec.mu.Unlock()
-			var applyErr error
 			if d != nil && d.Enabled() {
 				applyErr = d.Deploy(ctx, proposal.Patch)
 			} else {
@@ -366,18 +403,31 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 			})
 			ec.mu.Unlock()
 		case DecisionDelay:
-			// Re-queue for later review instead of silently discarding the
-			// proposal. Bounded by maxProposalRetries to prevent an infinite
-			// delay loop.
-			if proposal.RetryCount < maxProposalRetries {
-				proposal.RetryCount++
-				ec.mu.Lock()
-				ec.proposals = append(ec.proposals, proposal)
-				ec.mu.Unlock()
-			}
+			// Re-queue for later review. Bounded by maxProposalRetries:
+			// decide() already returned DecisionDrop when the budget is
+			// exhausted, so reaching here means the proposal still has
+			// retries left.
+			proposal.RetryCount++
+			ec.mu.Lock()
+			ec.proposals = append(ec.proposals, proposal)
+			ec.mu.Unlock()
 		case DecisionReject:
 			// Permanently rejected; do not re-queue.
+		case DecisionDrop:
+			// Permanently discarded; do not re-queue. The decision is
+			// recorded in DecisionHistory so the drop is observable instead
+			// of the silent disappear that previously happened when retry
+			// budget was exhausted.
 		}
+
+		ec.mu.Lock()
+		ec.decisions = append(ec.decisions, PatchDecision{
+			Proposal:   proposal,
+			Decision:   decision,
+			Reason:     reason,
+			ApplyError: applyErr,
+		})
+		ec.mu.Unlock()
 	}
 }
 
@@ -387,6 +437,13 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 //   - SourceChaos: emergency bypass via ApplyEmergency, not here
 //   - SourceHuman/SourceLLM/other: fallback to priority + rate-limit rules
 //   - Fitness == 0 (unset): treated as "no information" → fallback to priority rules
+//
+// Retry exhaustion: when a proposal's RetryCount has already hit
+// maxProposalRetries and the underlying decision would be DecisionDelay, the
+// function returns DecisionDrop instead so the discard is observable in
+// DecisionHistory. Decisions that would NOT delay (Apply/Reject) ignore
+// retry count: a proposal that finally qualifies for apply after rate-limit
+// clears must still be applied, not dropped.
 func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 	ec.mu.RLock()
 	policy := ec.policy
@@ -395,6 +452,9 @@ func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 	// Rate limiting applies to all sources.
 	recentCount := ec.countRecentPatches(1 * time.Minute)
 	if recentCount >= policy.MaxPatchesPerMinute {
+		if proposal.RetryCount >= maxProposalRetries {
+			return DecisionDrop
+		}
 		return DecisionDelay
 	}
 
@@ -406,7 +466,10 @@ func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 		if proposal.Fitness < policy.MinFitnessThreshold {
 			return DecisionReject
 		}
-		// Fitness between threshold and floor: delay for review.
+		// Fitness between floor and threshold: delay for review.
+		if proposal.RetryCount >= maxProposalRetries {
+			return DecisionDrop
+		}
 		return DecisionDelay
 	}
 
@@ -418,6 +481,9 @@ func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 	// Below auto-apply threshold: delay for review rather than silently
 	// applying. The previous fallthrough to DecisionApply meant all patches
 	// got applied regardless of quality — rendering AutoApplyThreshold dead.
+	if proposal.RetryCount >= maxProposalRetries {
+		return DecisionDrop
+	}
 	return DecisionDelay
 }
 
@@ -437,23 +503,42 @@ func (ec *EvolutionCoordinator) countRecentPatches(d time.Duration) int {
 }
 
 // decisionReason returns a human-readable reason for the decision.
-func decisionReason(d Decision, proposal PatchProposal) string {
+// The policy is passed in (rather than read from ec) so the reason reflects
+// the same policy that produced the decision, and callers can unit-test the
+// reason string for non-default policies without racing the mutex.
+func decisionReason(d Decision, proposal PatchProposal, policy PolicyGenome) string {
 	switch d {
 	case DecisionApply:
 		if proposal.Source == SourceGA && proposal.Fitness > 0 {
-			return fmt.Sprintf("applying patch %s from %s: fitness %.1f >= threshold", proposal.Patch.Type, proposal.Source, proposal.Fitness)
+			return fmt.Sprintf("applying patch %s from %s: fitness %.1f >= threshold %.1f",
+				proposal.Patch.Type, proposal.Source, proposal.Fitness, policy.ApplyFitnessThreshold)
 		}
-		return fmt.Sprintf("applying patch %s from %s (priority %d)", proposal.Patch.Type, proposal.Source, proposal.Priority)
+		return fmt.Sprintf("applying patch %s from %s (priority %d)",
+			proposal.Patch.Type, proposal.Source, proposal.Priority)
 	case DecisionReject:
 		if proposal.Source == SourceGA && proposal.Fitness > 0 {
-			return fmt.Sprintf("rejected patch %s from %s: fitness %.1f < min threshold %.0f", proposal.Patch.Type, proposal.Source, proposal.Fitness, 30.0)
+			return fmt.Sprintf("rejected patch %s from %s: fitness %.1f < min threshold %.1f",
+				proposal.Patch.Type, proposal.Source, proposal.Fitness, policy.MinFitnessThreshold)
 		}
-		return fmt.Sprintf("rejected patch %s from %s: rate limited or blacklisted", proposal.Patch.Type, proposal.Source)
+		return fmt.Sprintf("rejected patch %s from %s: rate limited or blacklisted",
+			proposal.Patch.Type, proposal.Source)
 	case DecisionDelay:
 		if proposal.Source == SourceGA && proposal.Fitness > 0 {
-			return fmt.Sprintf("delayed patch %s from %s: fitness %.1f between threshold and floor", proposal.Patch.Type, proposal.Source, proposal.Fitness)
+			return fmt.Sprintf("delayed patch %s from %s: fitness %.1f between floor %.1f and threshold %.1f (retry %d/%d)",
+				proposal.Patch.Type, proposal.Source, proposal.Fitness,
+				policy.MinFitnessThreshold, policy.ApplyFitnessThreshold,
+				proposal.RetryCount, maxProposalRetries)
 		}
-		return fmt.Sprintf("delayed patch %s from %s: too many recent patches", proposal.Patch.Type, proposal.Source)
+		return fmt.Sprintf("delayed patch %s from %s: rate limited (retry %d/%d)",
+			proposal.Patch.Type, proposal.Source, proposal.RetryCount, maxProposalRetries)
+	case DecisionDrop:
+		if proposal.Source == SourceGA && proposal.Fitness > 0 {
+			return fmt.Sprintf("dropped patch %s from %s: fitness %.1f still between floor %.1f and threshold %.1f after %d retries",
+				proposal.Patch.Type, proposal.Source, proposal.Fitness,
+				policy.MinFitnessThreshold, policy.ApplyFitnessThreshold, proposal.RetryCount)
+		}
+		return fmt.Sprintf("dropped patch %s from %s: retry budget exhausted (%d retries)",
+			proposal.Patch.Type, proposal.Source, proposal.RetryCount)
 	default:
 		return "unknown decision"
 	}

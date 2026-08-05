@@ -52,6 +52,15 @@ func checkLLMHealth(ctx context.Context, svc core.LLMService) ServiceStatus {
 		}
 	}
 
+	// Honour a cancelled/expired context instead of probing the service:
+	// a slow health probe must be abortable (M-series health fix).
+	if err := ctx.Err(); err != nil {
+		return ServiceStatus{
+			Available: false,
+			Error:     err.Error(),
+		}
+	}
+
 	start := time.Now()
 	available := svc.IsEnabled()
 	latency := time.Since(start)

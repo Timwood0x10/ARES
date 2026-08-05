@@ -33,6 +33,7 @@ func NewDefaultHTTPClient(timeout time.Duration) *DefaultHTTPClient {
 		client: &http.Client{
 			Timeout:       timeout,
 			CheckRedirect: SSRFCheckRedirect,
+			Transport:     SSRFTransport(),
 		},
 	}
 }

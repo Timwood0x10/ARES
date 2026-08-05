@@ -148,11 +148,21 @@ func (s *RoundRobinScheduler) Select(ready []string) string {
 
 // WeightedFairScheduler distributes execution proportionally to each node's
 // configured weight. Nodes with higher weight are selected more frequently.
-// When all weights are equal, it behaves like RoundRobin.
+// When all weights are equal, it behaves like round-robin.
+//
+// Selection uses a bounded deficit-round-robin (DRR) scheme: each Select adds
+// the node's weight to its credit counter, the ready node with the highest
+// credit is served, and the winner is then charged the sum of ready weights so
+// its credit drops below the others. Because each call adds totalWeight and
+// subtracts totalWeight, the sum of all counters is invariant, so no counter
+// grows without limit regardless of how many Select calls are made. This fixes
+// the previous implementation, which incremented every ready node's counter on
+// each call and never decremented, producing unbounded growth and collapsing to
+// "always pick the first ready node" once counters saturated.
 type WeightedFairScheduler struct {
 	mu      sync.Mutex
 	weights map[string]int
-	counter map[string]int // deficit counter per node
+	counter map[string]int // bounded DRR credit counter per node
 }
 
 // NewWeightedFairScheduler creates a weighted fair scheduler.
@@ -167,8 +177,9 @@ func NewWeightedFairScheduler(weights map[string]int) *WeightedFairScheduler {
 	}
 }
 
-// Select picks the ready node with the highest deficit (accumulated
-// wait time relative to its weight), implementing weighted fair queuing.
+// Select picks the ready node with the highest accumulated credit, implementing
+// bounded weighted fair queuing. Ties go to the first ready node so selection
+// stays deterministic. See WeightedFairScheduler for the boundedness argument.
 func (s *WeightedFairScheduler) Select(ready []string) string {
 	if len(ready) == 0 {
 		return ""
@@ -176,20 +187,39 @@ func (s *WeightedFairScheduler) Select(ready []string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Find the node with maximum deficit.
-	var bestNode string
-	maxDeficit := -1.0
+	// Accumulate each ready node's weight as its service credit (the DRR
+	// quantum). Higher-weight nodes earn credit faster and are selected more
+	// often. Non-ready nodes keep their credit frozen until they reappear.
+	totalWeight := 0
 	for _, nodeID := range ready {
-		weight := s.weights[nodeID]
-		if weight <= 0 {
-			weight = 1
-		}
-		def := float64(s.counter[nodeID]) / float64(weight)
-		s.counter[nodeID]++ // accumulate deficit
-		if def > maxDeficit {
-			maxDeficit = def
+		weight := s.weight(nodeID)
+		s.counter[nodeID] += weight
+		totalWeight += weight
+	}
+
+	// Pick the node with the highest accumulated credit.
+	bestNode := ready[0]
+	bestCredit := s.counter[bestNode]
+	for _, nodeID := range ready[1:] {
+		if credit := s.counter[nodeID]; credit > bestCredit {
+			bestCredit = credit
 			bestNode = nodeID
 		}
 	}
+
+	// Charge the winner one full round of service (the sum of ready weights) so
+	// its credit drops below the others. This DRR subtract is what keeps
+	// counters bounded: the sum of counters is invariant across calls, so no
+	// counter can grow without limit.
+	s.counter[bestNode] -= totalWeight
 	return bestNode
+}
+
+// weight returns the configured weight for a node, defaulting to 1 for unknown
+// or non-positive weights so every ready node remains schedulable.
+func (s *WeightedFairScheduler) weight(nodeID string) int {
+	if w := s.weights[nodeID]; w > 0 {
+		return w
+	}
+	return 1
 }

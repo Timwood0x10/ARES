@@ -1,4 +1,3 @@
-// Package pipeline — LLM-based summarizer for AKF.
 package pipeline
 
 import (
@@ -13,22 +12,65 @@ import (
 // Implementations can wrap internal/llm.Client or any other LLM provider.
 type LLMGenerateFunc func(ctx context.Context, prompt string) (string, error)
 
+// Language constants for LLMSummarizer. Exported so callers can reference
+// the canonical values when configuring WithLanguage.
+const (
+	// LanguageChinese instructs the LLM to produce summaries in Chinese.
+	LanguageChinese = "Chinese"
+	// LanguageEnglish instructs the LLM to produce summaries in English.
+	LanguageEnglish = "English"
+)
+
+// DefaultLLMSummaryLanguage is the output language used when no option is
+// supplied. It preserves the historical behavior of the original prompt,
+// which hardcoded a Chinese-language instruction (and its English equivalent).
+const DefaultLLMSummaryLanguage = LanguageChinese
+
+// LLMSummarizerOption configures an LLMSummarizer.
+type LLMSummarizerOption func(*LLMSummarizer)
+
+// WithLanguage sets the output language for generated summaries. Pass any
+// non-empty string (e.g. LanguageEnglish, LanguageChinese, "Japanese") to
+// override the default (DefaultLLMSummaryLanguage). An empty string is
+// ignored so the default is retained.
+func WithLanguage(lang string) LLMSummarizerOption {
+	return func(s *LLMSummarizer) {
+		if lang != "" {
+			s.language = lang
+		}
+	}
+}
+
 // LLMSummarizer implements knowledge.Summarizer by calling an LLM to generate
 // concise, fact-preserving summaries from the Normalized/Raw content.
 // Compared to DefaultSummarizer (which just truncates at 200 chars), this
 // preserves key technical terms, names, and relationships.
 type LLMSummarizer struct {
 	generate      LLMGenerateFunc
-	maxSummaryLen int // Target summary length in characters
+	maxSummaryLen int    // Target summary length in characters
+	language      string // Output language for the LLM prompt
 }
 
 // NewLLMSummarizer creates a summarizer that uses an LLM to generate summaries.
 // generate is the LLM call function; maxLen controls the target summary length.
-func NewLLMSummarizer(generate LLMGenerateFunc, maxLen int) *LLMSummarizer {
+// opts configure the summarizer (e.g. WithLanguage). When no language option
+// is supplied, DefaultLLMSummaryLanguage is used to preserve historical
+// behavior.
+func NewLLMSummarizer(generate LLMGenerateFunc, maxLen int, opts ...LLMSummarizerOption) *LLMSummarizer {
 	if maxLen <= 0 {
 		maxLen = 300
 	}
-	return &LLMSummarizer{generate: generate, maxSummaryLen: maxLen}
+	s := &LLMSummarizer{
+		generate:      generate,
+		maxSummaryLen: maxLen,
+		language:      DefaultLLMSummaryLanguage,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
 }
 
 // Name returns the summarizer identifier.
@@ -75,11 +117,13 @@ func (s *LLMSummarizer) Summarize(ctx context.Context, obj *knowledge.KnowledgeO
 	return obj, nil
 }
 
-// buildPrompt constructs the LLM prompt for summarization.
+// buildPrompt constructs the LLM prompt for summarization. The output
+// language instruction is injected from s.language instead of being
+// hardcoded, so non-Chinese deployments can configure a different language.
 func (s *LLMSummarizer) buildPrompt(source string, objType knowledge.ObjectType, maxLen int) string {
 	var b strings.Builder
 	b.WriteString("You are a knowledge summarizer for an AI agent system. ")
-	b.WriteString("Summarize the following technical content in Chinese. ")
+	fmt.Fprintf(&b, "Summarize the following technical content in %s. ", s.language)
 	b.WriteString("CRITICAL: Preserve ALL of the following in your summary:\n")
 	b.WriteString("- All technical terms, proper names, and identifiers\n")
 	b.WriteString("- Numbers, versions, and specific values\n")
@@ -91,7 +135,7 @@ func (s *LLMSummarizer) buildPrompt(source string, objType knowledge.ObjectType,
 	b.WriteString("--------------------------------------------------\n")
 	b.WriteString(source)
 	b.WriteString("\n--------------------------------------------------\n\n")
-	fmt.Fprintf(&b, "Write a concise summary in Chinese within %d characters. ", maxLen)
+	fmt.Fprintf(&b, "Write a concise summary in %s within %d characters. ", s.language, maxLen)
 	b.WriteString("Focus on preserving technical accuracy over brevity.")
 	return b.String()
 }

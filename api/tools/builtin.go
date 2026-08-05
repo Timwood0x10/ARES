@@ -23,6 +23,24 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// BuiltinToolsOption configures the built-in tools at registration time.
+type BuiltinToolsOption func(*builtinToolsConfig)
+
+// builtinToolsConfig holds configuration for built-in tool registration.
+type builtinToolsConfig struct {
+	fileAllowedDir string
+}
+
+// WithFileSandboxDir restricts the file tool to operations under the given
+// directory. When set, file operations outside the directory are rejected.
+// When unset, the file tool denies all operations (deny-by-default) to
+// prevent path-traversal attacks on untrusted callers.
+func WithFileSandboxDir(dir string) BuiltinToolsOption {
+	return func(c *builtinToolsConfig) {
+		c.fileAllowedDir = dir
+	}
+}
+
 // RegisterBuiltinTools registers all built-in tools into the given registry.
 //
 // You normally do NOT need to call this function manually. NewRegistry()
@@ -37,7 +55,15 @@ import (
 // Registered built-in tools:
 //   - calculator, hash_tool, string_utils, pdf_tool, id_generator
 //   - regex, json_tools, web_search, file_tools
-func RegisterBuiltinTools(r *Registry) error {
+//
+// Pass WithFileSandboxDir(dir) to enable file operations within a sandbox
+// directory. Without this option, the file tool denies all operations.
+func RegisterBuiltinTools(r *Registry, opts ...BuiltinToolsOption) error {
+	cfg := &builtinToolsConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	// First register the internal-powered tools.
 	internalTools := []core.Tool{
 		builtin_math.NewCalculator(),
@@ -52,11 +78,15 @@ func RegisterBuiltinTools(r *Registry) error {
 		}
 	}
 	// Then register the self-contained legacy tools.
+	var fileOpts []fileToolOption
+	if cfg.fileAllowedDir != "" {
+		fileOpts = append(fileOpts, WithAllowedDir(cfg.fileAllowedDir))
+	}
 	legacyTools := []Tool{
 		&regexTool{},
 		&jsonTool{},
 		newWebSearchTool(),
-		newFileTool(),
+		newFileTool(fileOpts...),
 	}
 	for _, t := range legacyTools {
 		if err := r.Register(t); err != nil {
@@ -589,18 +619,40 @@ func (t *fileTool) validatePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}
+	// Deny-by-default: when no allowed directory is configured, all file
+	// operations are rejected to prevent path-traversal attacks.
 	if t.allowedDir == "" {
-		return absPath, nil
+		return "", fmt.Errorf("access denied: file tool sandbox not configured")
 	}
 	absDir, err := filepath.Abs(filepath.Clean(t.allowedDir))
 	if err != nil {
 		return "", fmt.Errorf("resolve allowed dir: %w", err)
 	}
-	// Resolve symlinks before containment check to prevent traversal via symlinks
-	// pointing outside the allowed directory.
+	// Resolve symlinks before containment check to prevent traversal via
+	// symlinks pointing outside the allowed directory. For non-existent
+	// paths (e.g., write/mkdir targets), walk up to the nearest existing
+	// parent, resolve its symlinks, and rejoin the non-existent components
+	// so the containment check uses consistent path prefixes.
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return "", fmt.Errorf("resolve symlinks for path %s: %w", absPath, err)
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve symlinks for path %s: %w", absPath, err)
+		}
+		realPath = absPath
+		parent := filepath.Dir(absPath)
+		rest := filepath.Base(absPath)
+		for parent != filepath.Dir(parent) { // stop at root
+			realParent, perr := filepath.EvalSymlinks(parent)
+			if perr == nil {
+				realPath = filepath.Join(realParent, rest)
+				break
+			}
+			if !os.IsNotExist(perr) {
+				break
+			}
+			rest = filepath.Join(filepath.Base(parent), rest)
+			parent = filepath.Dir(parent)
+		}
 	}
 	realDir, err := filepath.EvalSymlinks(absDir)
 	if err != nil {

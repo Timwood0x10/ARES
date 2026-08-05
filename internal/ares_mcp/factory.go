@@ -4,6 +4,7 @@ package ares_mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -117,13 +118,19 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 	client.mu.RUnlock()
 
 	if firstDef == nil {
-		_ = client.Close()
+		if cerr := client.Close(); cerr != nil {
+			slog.Default().Warn("mcp: close client after no-tools failure",
+				"server", name, "error", cerr)
+		}
 		return nil, fmt.Errorf("no tools found on server %s", name)
 	}
 
 	tool, err := NewMCPTool(client, firstDef)
 	if err != nil {
-		_ = client.Close()
+		if cerr := client.Close(); cerr != nil {
+			slog.Default().Warn("mcp: close client after create-tool failure",
+				"server", name, "error", cerr)
+		}
 		return nil, fmt.Errorf("create tool: %w", err)
 	}
 

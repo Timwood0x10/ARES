@@ -90,11 +90,18 @@ func main() {
 	if _, err := pool.ExecContext(ctx, `ALTER TABLE distilled_memories ENABLE ROW LEVEL SECURITY`); err != nil {
 		log.Warn("failed to enable RLS", "error", err)
 	}
-	rlsSQL := `CREATE POLICY IF NOT EXISTS tenant_isolation_distilled_memories ON distilled_memories USING (tenant_id = current_setting('app.tenant_id', true))`
+	// PostgreSQL has no CREATE POLICY IF NOT EXISTS; DROP+CREATE inside a DO
+	// block is idempotent and atomic (runs in one transaction).
+	rlsSQL := `DO $$
+BEGIN
+    DROP POLICY IF EXISTS tenant_isolation_distilled_memories ON distilled_memories;
+    CREATE POLICY tenant_isolation_distilled_memories ON distilled_memories USING (tenant_id = current_setting('app.tenant_id', true));
+END $$;`
 	if _, err := pool.ExecContext(ctx, rlsSQL); err != nil {
 		log.Warn("failed to create RLS policy", "error", err)
+	} else {
+		fmt.Println("Row Level Security enabled")
 	}
-	fmt.Println("Row Level Security enabled")
 }
 
 func connectAdmin(dsn string) *sql.DB {

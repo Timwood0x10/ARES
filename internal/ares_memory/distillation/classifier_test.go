@@ -36,7 +36,7 @@ func TestMemoryClassifier_ClassifyMemory(t *testing.T) {
 			name:         "rule type",
 			problem:      "What are the coding standards?",
 			solution:     "Follow the Google Go style guide",
-			expectedType: MemoryProfile,
+			expectedType: MemoryKnowledge,
 		},
 		{
 			name:         "default to fact",
@@ -109,6 +109,11 @@ func TestGetMemoryTypeFromString(t *testing.T) {
 		{
 			name:     "rule",
 			typeStr:  "rule",
+			expected: MemoryKnowledge,
+		},
+		{
+			name:     "profile",
+			typeStr:  "profile",
 			expected: MemoryProfile,
 		},
 		{
@@ -160,9 +165,9 @@ func TestMemoryType_String(t *testing.T) {
 			expected: "solution",
 		},
 		{
-			name:     "rule",
+			name:     "profile",
 			memType:  MemoryProfile,
-			expected: "rule",
+			expected: "profile",
 		},
 	}
 

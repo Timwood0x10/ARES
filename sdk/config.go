@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +28,9 @@ const (
 	providerAnthropic  = "anthropic"
 	providerOpenRouter = "openrouter"
 	defaultModel       = "llama3.2"
+	// defaultOpenAIModel is the default model used when the OpenAI provider
+	// is selected without an explicit model.
+	defaultOpenAIModel = "gpt-4o-mini"
 	// defaultMaxIterations is the default cap on the ReAct tool-calling loop.
 	defaultMaxIterations = 10
 )
@@ -101,6 +105,31 @@ type KnowledgeFileConfig struct {
 	ChunkOverlap int     `yaml:"chunk_overlap"`
 	TopK         int     `yaml:"top_k"`
 	MinScore     float64 `yaml:"min_score"`
+	// Quality configures the AKG fact quality gate. When all fields are zero
+	// the sdk falls back to knowledge.DefaultQualityGateConfig at apply time.
+	Quality   QualityGateFileConfig        `yaml:"quality"`
+	Embedding KnowledgeEmbeddingFileConfig `yaml:"embedding"`
+}
+
+// QualityGateFileConfig mirrors the quality section of the knowledge block in
+// ares.yaml. It maps directly to knowledge.QualityGateConfig. Fields left at
+// zero fall back to the knowledge package defaults.
+type QualityGateFileConfig struct {
+	MinExtraction     float64 `yaml:"min_extraction"`
+	MinConsistency    float64 `yaml:"min_consistency"`
+	MinFinalScore     float64 `yaml:"min_final_score"`
+	MaxFactsPerIngest int     `yaml:"max_facts_per_ingest"`
+	EnableDedup       bool    `yaml:"enable_dedup"`
+	DedupThreshold    float64 `yaml:"dedup_threshold"`
+}
+
+// KnowledgeEmbeddingFileConfig configures the embedding model and endpoint
+// used by the AKG distillation pipeline and StoreProvider. When model is empty
+// the sdk falls back to the embedding service configured via the top-level
+// embedding block.
+type KnowledgeEmbeddingFileConfig struct {
+	Model   string `yaml:"model"`
+	BaseURL string `yaml:"base_url"`
 }
 
 // LLMFileConfig mirrors the llm section of ares.yaml.
@@ -149,41 +178,11 @@ func (c *ConfigFile) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config: %w", ErrNilConfig)
 	}
-	// LLM section: provider is required when llm is configured at all.
-	if c.LLM.Provider != "" {
-		if c.LLM.Temperature < 0 || c.LLM.Temperature > 2 {
-			return fmt.Errorf("llm.temperature %v: %w", c.LLM.Temperature, ErrInvalidRange)
-		}
-		if c.LLM.MaxTokens < 0 {
-			return fmt.Errorf("llm.max_tokens %d: %w", c.LLM.MaxTokens, ErrInvalidRange)
-		}
+	if err := c.validateLLM(); err != nil {
+		return err
 	}
-	// Memory section.
-	if c.Memory.Enabled {
-		if c.Memory.MaxHistory < 0 {
-			return fmt.Errorf("memory.max_history %d: %w", c.Memory.MaxHistory, ErrInvalidRange)
-		}
-		if c.Memory.MaxSessions < 0 {
-			return fmt.Errorf("memory.max_sessions %d: %w", c.Memory.MaxSessions, ErrInvalidRange)
-		}
-		// DistillationThreshold 0 means "unset": the sdk falls back to the
-		// component default at apply time. Negative is invalid.
-		if c.Memory.DistillationThreshold < 0 {
-			return fmt.Errorf("memory.distillation_threshold %d: %w",
-				c.Memory.DistillationThreshold, ErrInvalidRange)
-		}
-		// RAG validation only fires when EnableRAG is true. RAGTopK must be
-		// at least 1 (zero is invalid here, unlike other memory knobs where
-		// zero means "use default"), and RAGMinScore must be a valid
-		// similarity score in [0, 1].
-		if c.Memory.EnableRAG {
-			if c.Memory.RAGTopK < 1 {
-				return fmt.Errorf("memory.rag_top_k %d: %w", c.Memory.RAGTopK, ErrInvalidRange)
-			}
-			if c.Memory.RAGMinScore < 0 || c.Memory.RAGMinScore > 1 {
-				return fmt.Errorf("memory.rag_min_score %v: %w", c.Memory.RAGMinScore, ErrInvalidRange)
-			}
-		}
+	if err := c.validateMemory(); err != nil {
+		return err
 	}
 	// Database section: validate only when host is set (section present).
 	if c.Database.Host != "" {
@@ -195,7 +194,61 @@ func (c *ConfigFile) Validate() error {
 	if c.Embedding.ServiceURL != "" && c.Embedding.Model == "" {
 		return fmt.Errorf("embedding.model: %w", ErrMissingValue)
 	}
-	// Knowledge section.
+	return c.validateKnowledge()
+}
+
+// validateLLM checks the LLM section: temperature and max_tokens ranges fire
+// only when a provider is configured.
+func (c *ConfigFile) validateLLM() error {
+	if c.LLM.Provider == "" {
+		return nil
+	}
+	if c.LLM.Temperature < 0 || c.LLM.Temperature > 2 {
+		return fmt.Errorf("llm.temperature %v: %w", c.LLM.Temperature, ErrInvalidRange)
+	}
+	if c.LLM.MaxTokens < 0 {
+		return fmt.Errorf("llm.max_tokens %d: %w", c.LLM.MaxTokens, ErrInvalidRange)
+	}
+	return nil
+}
+
+// validateMemory checks the Memory section, including RAG fields that only fire
+// when EnableRAG is true.
+func (c *ConfigFile) validateMemory() error {
+	if !c.Memory.Enabled {
+		return nil
+	}
+	if c.Memory.MaxHistory < 0 {
+		return fmt.Errorf("memory.max_history %d: %w", c.Memory.MaxHistory, ErrInvalidRange)
+	}
+	if c.Memory.MaxSessions < 0 {
+		return fmt.Errorf("memory.max_sessions %d: %w", c.Memory.MaxSessions, ErrInvalidRange)
+	}
+	// DistillationThreshold 0 means "unset": the sdk falls back to the
+	// component default at apply time. Negative is invalid.
+	if c.Memory.DistillationThreshold < 0 {
+		return fmt.Errorf("memory.distillation_threshold %d: %w",
+			c.Memory.DistillationThreshold, ErrInvalidRange)
+	}
+	// RAG validation only fires when EnableRAG is true. RAGTopK must be
+	// at least 1 (zero is invalid here, unlike other memory knobs where
+	// zero means "use default"), and RAGMinScore must be a valid
+	// similarity score in [0, 1].
+	if c.Memory.EnableRAG {
+		if c.Memory.RAGTopK < 1 {
+			return fmt.Errorf("memory.rag_top_k %d: %w", c.Memory.RAGTopK, ErrInvalidRange)
+		}
+		if c.Memory.RAGMinScore < 0 || c.Memory.RAGMinScore > 1 {
+			return fmt.Errorf("memory.rag_min_score %v: %w", c.Memory.RAGMinScore, ErrInvalidRange)
+		}
+	}
+	return nil
+}
+
+// validateKnowledge checks the Knowledge chunking fields and the 0.2.9 quality
+// gate score ranges. The quality gate block fires only when MinFinalScore > 0
+// (the trigger field, matching ToOptions apply logic).
+func (c *ConfigFile) validateKnowledge() error {
 	if c.Knowledge.ChunkSize > 0 {
 		if c.Knowledge.ChunkOverlap < 0 || c.Knowledge.ChunkOverlap >= c.Knowledge.ChunkSize {
 			return fmt.Errorf("knowledge.chunk_overlap %d vs chunk_size %d: %w",
@@ -207,6 +260,25 @@ func (c *ConfigFile) Validate() error {
 		if c.Knowledge.MinScore < 0 || c.Knowledge.MinScore > 1 {
 			return fmt.Errorf("knowledge.min_score %v: %w", c.Knowledge.MinScore, ErrInvalidRange)
 		}
+	}
+	if c.Knowledge.Quality.MinFinalScore <= 0 {
+		return nil
+	}
+	q := c.Knowledge.Quality
+	if q.MinExtraction < 0 || q.MinExtraction > 1 {
+		return fmt.Errorf("knowledge.quality.min_extraction %v: %w", q.MinExtraction, ErrInvalidRange)
+	}
+	if q.MinConsistency < 0 || q.MinConsistency > 1 {
+		return fmt.Errorf("knowledge.quality.min_consistency %v: %w", q.MinConsistency, ErrInvalidRange)
+	}
+	if q.MinFinalScore < 0 || q.MinFinalScore > 1 {
+		return fmt.Errorf("knowledge.quality.min_final_score %v: %w", q.MinFinalScore, ErrInvalidRange)
+	}
+	if q.MaxFactsPerIngest < 0 {
+		return fmt.Errorf("knowledge.quality.max_facts_per_ingest %d: %w", q.MaxFactsPerIngest, ErrInvalidRange)
+	}
+	if q.DedupThreshold < 0 || q.DedupThreshold > 1 {
+		return fmt.Errorf("knowledge.quality.dedup_threshold %v: %w", q.DedupThreshold, ErrInvalidRange)
 	}
 	return nil
 }
@@ -236,7 +308,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	case providerOpenAI:
 		model := c.LLM.Model
 		if model == "" {
-			model = "gpt-4o-mini"
+			model = defaultOpenAIModel
 		}
 		opts = append(opts, WithOpenAI(model))
 		if key := resolveAPIKey(c.LLM.APIKey, "OPENAI_API_KEY"); key != "" {
@@ -296,6 +368,29 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Knowledge (optional). Without chunk_size, sdk uses default retrieval.
 	if c.Knowledge.ChunkSize > 0 {
 		opts = append(opts, WithKnowledgeConfig(c.Knowledge))
+	}
+
+	// Knowledge quality gate (optional). Applied as a whole struct when the
+	// trigger field MinFinalScore is set, so users who configure the gate own
+	// all its values. A zero-value gate falls back to the package default at
+	// apply time (see buildAKGBridge).
+	if c.Knowledge.Quality.MinFinalScore > 0 {
+		opts = append(opts, WithAKGQualityGate(knowledge.QualityGateConfig{
+			MinExtraction:     c.Knowledge.Quality.MinExtraction,
+			MinConsistency:    c.Knowledge.Quality.MinConsistency,
+			MinFinalScore:     c.Knowledge.Quality.MinFinalScore,
+			MaxFactsPerIngest: c.Knowledge.Quality.MaxFactsPerIngest,
+			EnableDedup:       c.Knowledge.Quality.EnableDedup,
+			DedupThreshold:    c.Knowledge.Quality.DedupThreshold,
+		}))
+	}
+
+	// Knowledge embedding (optional). Applied when model is non-empty; the
+	// model is required by WithAKGEmbedding, while baseURL may be empty (the
+	// sdk falls back to the top-level embedding service endpoint).
+	if c.Knowledge.Embedding.Model != "" {
+		opts = append(opts, WithAKGEmbedding(
+			c.Knowledge.Embedding.Model, c.Knowledge.Embedding.BaseURL))
 	}
 
 	// Evolution.

@@ -43,6 +43,12 @@ func New(config map[string]any) (*Adapter, error) {
 	if table == "" {
 		table = "knowledge_chunks_1024"
 	}
+	// repositories.KnowledgeRepository hardcodes the knowledge_chunks_1024
+	// table in every query, so a custom table name cannot be honored. Fail
+	// fast instead of silently ignoring the configuration.
+	if table != "knowledge_chunks_1024" {
+		return nil, fmt.Errorf("compat/vector/pgvector: table %q is not supported: repositories.KnowledgeRepository hardcodes knowledge_chunks_1024", table)
+	}
 	db := pool.GetDB()
 	repo := repositories.NewKnowledgeRepository(db, db)
 	return &Adapter{pool: pool, repo: repo, table: table}, nil
@@ -82,15 +88,18 @@ func (a *Adapter) Search(ctx context.Context, query []float64, tenantID string, 
 
 // Upsert inserts or updates a batch of vectors identified by ID.
 // Each item is stored as a KnowledgeChunk with embedding_status='completed'.
+// The whole batch is committed atomically via the repository's transactional
+// CreateBatch so a mid-batch failure cannot leave partial writes behind.
 func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.Item) error {
 	if tenantID == "" {
 		return fmt.Errorf("compat/vector/pgvector: tenantID must not be empty")
 	}
+	chunks := make([]*storage_models.KnowledgeChunk, 0, len(items))
 	for _, it := range items {
 		if it.ID == "" {
 			return fmt.Errorf("compat/vector/pgvector: item ID must not be empty")
 		}
-		chunk := &storage_models.KnowledgeChunk{
+		chunks = append(chunks, &storage_models.KnowledgeChunk{
 			ID:               it.ID,
 			TenantID:         tenantID,
 			Content:          it.Content,
@@ -101,10 +110,10 @@ func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.It
 			SourceType:       "compat",
 			Source:           "compat",
 			Metadata:         inflateMetadata(it.Metadata),
-		}
-		if err := a.repo.Create(ctx, chunk); err != nil {
-			return fmt.Errorf("compat/vector/pgvector: upsert %q: %w", it.ID, err)
-		}
+		})
+	}
+	if err := a.repo.CreateBatch(ctx, chunks); err != nil {
+		return fmt.Errorf("compat/vector/pgvector: upsert batch: %w", err)
 	}
 	return nil
 }

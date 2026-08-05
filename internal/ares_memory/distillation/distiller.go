@@ -329,7 +329,7 @@ func (d *Distiller) classifyAndScorePhase(ctx context.Context, conversationID st
 				"experience_index", idx,
 				"memory_type", memoryType.String(),
 				"score", score,
-				"threshold", d.config.MinImportance,
+				"threshold", d.getConfig().MinImportance,
 				"reason", "below importance threshold")
 			d.metrics.FilteredNoise.Add(1)
 			continue
@@ -554,6 +554,7 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 		}
 
 		exp := &Experience{
+			Type:       memory.Type,
 			Problem:    problem,
 			Solution:   solution,
 			Confidence: memory.Importance,
@@ -574,6 +575,12 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 			switch strategy {
 			case ReplaceOld:
 				finalMemories = append(finalMemories, memory)
+			case KeepOld:
+				// Drop the incoming near-duplicate: the stored memory has
+				// higher confidence and remains in the repository untouched.
+				log.InfoContext(ctx, "[Memory Distillation] Discarding lower-confidence duplicate",
+					"conversation_id", conversationID, "memory_index", idx,
+					"new_confidence", memory.Importance, "existing_confidence", conflict.Confidence)
 			case KeepBoth:
 				oldMemory := Memory{
 					ID:         uuid.New().String(),
@@ -620,14 +627,15 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 //
 //	[]Memory - filtered memories.
 func (d *Distiller) finalTopNPhase(memories []Memory) []Memory {
-	if len(memories) <= d.config.MaxMemoriesPerDistillation {
+	maxMemories := d.getConfig().MaxMemoriesPerDistillation
+	if len(memories) <= maxMemories {
 		return memories
 	}
 
 	sort.Slice(memories, func(i, j int) bool {
 		return memories[i].Importance > memories[j].Importance
 	})
-	return memories[:d.config.MaxMemoriesPerDistillation]
+	return memories[:maxMemories]
 }
 
 // DistillConversation distills memories from a conversation.

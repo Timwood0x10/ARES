@@ -67,7 +67,7 @@ func (f *FallbackClient) Embed(ctx context.Context, text string) ([]float64, err
 
 // getFromCache tries to get embedding from cache only.
 func (f *FallbackClient) getFromCache(ctx context.Context, text string) ([]float64, error) {
-	cacheKey := f.client.getCacheKey(text, "query")
+	cacheKey := f.client.getCacheKey(text, "query:")
 
 	if f.client.redis == nil {
 		return nil, ErrEmbeddingFailed
@@ -124,7 +124,7 @@ func (f *FallbackClient) getBatchFromCache(ctx context.Context, texts []string) 
 	allFound := true
 
 	for i, text := range texts {
-		cacheKey := f.client.getCacheKey(text, "query")
+		cacheKey := f.client.getCacheKey(text, "query:")
 
 		cached, err := f.client.redis.Get(ctx, cacheKey)
 		if err != nil {

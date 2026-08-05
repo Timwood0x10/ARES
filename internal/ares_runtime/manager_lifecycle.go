@@ -124,7 +124,7 @@ func (m *Manager) Stop() error {
 		}
 		// Capture a final snapshot for stateful agents before shutdown.
 		if store != nil {
-			if sa, ok := ma.agent.(base.StatefulAgent); ok {
+			if sa, ok := chaosUnwrap(ma.agent).(base.StatefulAgent); ok {
 				snap, err := sa.Snapshot()
 				if err != nil {
 					log.Warn("runtime: final snapshot failed",
@@ -372,7 +372,7 @@ func (m *Manager) healthCheck() {
 			continue
 		}
 		// Prefer Heartbeater interface for liveness check if available.
-		if h, ok := c.agent.(base.Heartbeater); ok {
+		if h, ok := chaosUnwrap(c.agent).(base.Heartbeater); ok {
 			if !h.IsAlive() {
 				if c.factory != nil {
 					log.Warn("runtime: health check: agent heartbeat failed",

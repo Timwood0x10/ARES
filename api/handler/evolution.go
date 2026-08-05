@@ -211,20 +211,22 @@ func (h *RuntimeEvolutionHandler) HandleEvidenceQuery(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, evidence)
 }
 
-// HandleRegisterComponent registers a new runtime component for evolution.
-func (h *RuntimeEvolutionHandler) HandleRegisterComponent(w http.ResponseWriter, r *http.Request) {
+// HandleRegisterComponent rejects REST-based component registration.
+//
+// RuntimeComponent is a Go interface (Name/Snapshot/Apply/CanApply) that must
+// be wired up in-process: callers pass a concrete object implementing patch
+// behavior. An HTTP request cannot transport executable Go methods, so genuine
+// registration is only possible via the SDK (RuntimeEvolution.RegisterComponent).
+// To avoid pretending success, the endpoint responds 501 Not Implemented with a
+// pointer to the SDK entry point.
+func (h *RuntimeEvolutionHandler) HandleRegisterComponent(w http.ResponseWriter, _ *http.Request) {
 	if h.runtimeEvo == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "runtime evolution not initialized")
 		return
 	}
-
-	// Component registration requires a name query parameter.
-	// The component must be registered programmatically via the SDK;
-	// this endpoint is a placeholder for future REST-based registration.
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		writeJSONError(w, http.StatusBadRequest, "component name is required")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{keyStatus: "component registration requires SDK, use RegisterComponent()"})
+	writeJSONError(
+		w,
+		http.StatusNotImplemented,
+		"component registration is not supported over HTTP; use the SDK RuntimeEvolution.RegisterComponent",
+	)
 }

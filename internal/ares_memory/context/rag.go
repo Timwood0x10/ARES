@@ -180,20 +180,24 @@ func (r *RAG) SearchByText(ctx context.Context, query string, topK int) ([]*Know
 }
 
 // Delete removes a knowledge entry.
+// The lock is acquired BEFORE the persistent write to keep in-memory and
+// pgvector state consistent, matching the Add method's convention.
 func (r *RAG) Delete(ctx context.Context, id string) error {
-	// Delete from persistent storage first
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Delete from persistent storage while holding the lock to keep
+	// in-memory and persistent state consistent.
 	if r.usePersistent && r.vectorSearch != nil {
 		if err := r.vectorSearch.DeleteEmbedding(ctx, r.tableName, id); err != nil {
 			return err
 		}
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	delete(r.entries, id)
 
-	r.index.entries = make([]*KnowledgeEntry, 0)
+	// Rebuild index incrementally instead of full rescan.
+	r.index.entries = r.index.entries[:0]
 	for _, entry := range r.entries {
 		r.index.entries = append(r.index.entries, entry)
 	}
@@ -255,7 +259,13 @@ func cosineSimilarity(a, b []float64) float64 {
 
 	// Optimization: Use single sqrt instead of two for better performance
 	// math.Sqrt(normA) * math.Sqrt(normB) == math.Sqrt(normA * normB)
-	return dotProduct / math.Sqrt(normA*normB)
+	result := dotProduct / math.Sqrt(normA*normB)
+
+	// Guard against NaN/Inf from degenerate vectors.
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0
+	}
+	return result
 }
 
 // contains checks if text contains substring (simple implementation).

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
@@ -16,6 +17,9 @@ import (
 func bridgeEvents(ctx context.Context, store ares_events.EventStore, bus ares_runtime.EventBus, meta map[string]agentMeta) {
 	ch, err := store.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
+		// Surface the failure instead of silently returning: a broken
+		// bridge would otherwise drop every event with no trace.
+		log.Printf("[bridge] event subscribe failed: %v", err)
 		return
 	}
 

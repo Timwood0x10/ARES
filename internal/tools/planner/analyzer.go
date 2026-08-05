@@ -4,6 +4,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -224,9 +225,30 @@ func matchAnyKeyword(request string, keywords []string) bool {
 	return false
 }
 
-// extractConstraints extracts any constraint-like patterns from the request.
+// limitRe matches explicit numeric limits in a lowercased request, e.g.
+// "limit 5", "top 10", or "top_k 20".
+var limitRe = regexp.MustCompile(`(?:limit|top(?:_k)?)\s+(\d+)`)
+
+// extractConstraints extracts constraint-like patterns from the request,
+// which is expected to be lowercased. It recognizes explicit numeric limits
+// ("limit N", "top N", "top_k N") and qualitative speed/accuracy preferences.
+// Unknown patterns are ignored.
 func extractConstraints(request string) map[string]string {
 	constraints := make(map[string]string)
-	_ = request // reserved for future constraint extraction
+
+	if m := limitRe.FindStringSubmatch(request); len(m) > 1 {
+		if strings.HasPrefix(m[0], "top_k") {
+			constraints["top_k"] = m[1]
+		} else {
+			constraints["limit"] = m[1]
+		}
+	}
+	if strings.Contains(request, "fast") || strings.Contains(request, "quick") {
+		constraints["speed"] = "fast"
+	}
+	if strings.Contains(request, "accurate") || strings.Contains(request, "precise") {
+		constraints["accuracy"] = "high"
+	}
+
 	return constraints
 }

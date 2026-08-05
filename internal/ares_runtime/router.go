@@ -80,6 +80,10 @@ func (r *ExpressionRouter) Start(_ context.Context, _ EventBus) error { return n
 func (r *ExpressionRouter) Stop(_ context.Context) error { return nil }
 
 // Route evaluates rules in order and returns the first match.
+// If no rule matches, it returns (nil, nil) — per the RouterPlugin contract,
+// a nil decision means "no routing is needed" and execution continues along
+// the DAG's default order. Callers must not treat the nil-decision case as
+// an error.
 func (r *ExpressionRouter) Route(_ context.Context, state RouteState) (*RouteDecision, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -96,7 +100,11 @@ func (r *ExpressionRouter) Route(_ context.Context, state RouteState) (*RouteDec
 			Source:     "expression",
 		}, nil
 	}
-	return nil, fmt.Errorf("router: no matching rule for step")
+	log.Debug("expression router: no matching rule, continuing default DAG order",
+		"step", state.CurrentStepID,
+	)
+	//nolint:nilnil // documented RouterPlugin contract: nil decision + nil error = "no routing needed"
+	return nil, nil
 }
 
 // AddRule adds a rule to the router.

@@ -69,6 +69,43 @@ func (m *ProductionMemoryManager) CreateTask(ctx context.Context, sessionID, use
 	return taskID, nil
 }
 
+// CreateTaskWithID creates a task using a caller-assigned ID. It validates
+// the ID is non-empty and stores the task under that exact ID so the
+// caller's tracking ID matches the stored task (and any cached result).
+func (m *ProductionMemoryManager) CreateTaskWithID(ctx context.Context, taskID, sessionID, userID, input string) error {
+	if taskID == "" {
+		return errors.New("task ID cannot be empty")
+	}
+
+	// Set tenant context (MUST be called for every tenant-specific operation)
+	tenantID := m.getCurrentTenantID()
+	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
+		return errors.Wrap(err, "set tenant context")
+	}
+
+	taskResult := &storage_models.TaskResult{
+		ID:               taskID,
+		TenantID:         tenantID,
+		SessionID:        sessionID,
+		TaskType:         "user_request",
+		AgentID:          agentID,
+		Input:            map[string]interface{}{keyContent: input},
+		Output:           nil,
+		Embedding:        nil, // No embedding for task results
+		EmbeddingModel:   embeddingModel,
+		EmbeddingVersion: 1,
+		Status:           "pending",
+		Metadata:         make(map[string]interface{}),
+	}
+
+	if err := m.taskResultRepository.Create(ctx, taskResult); err != nil {
+		return errors.Wrap(err, "create task result with id")
+	}
+
+	log.Debug("Task created with id", "task_id", taskID, "session_id", sessionID)
+	return nil
+}
+
 // UpdateTaskOutput updates the task output.
 // Args:
 // ctx - database operation context.

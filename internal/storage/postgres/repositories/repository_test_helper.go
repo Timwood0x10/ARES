@@ -99,7 +99,7 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS experiences_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
-			type VARCHAR(50) NOT NULL CHECK (type IN ('query', 'solution', 'failure', 'pattern', 'distilled')),
+			type VARCHAR(50) NOT NULL CHECK (type IN ('success', 'failure', 'query', 'solution', 'pattern', 'distilled')),
 			input TEXT,
 			output TEXT,
 			embedding VECTOR(1024) NOT NULL,
@@ -110,7 +110,9 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 			agent_id VARCHAR(255),
 			metadata JSONB DEFAULT '{}'::jsonb,
 			decay_at TIMESTAMP DEFAULT NOW() + INTERVAL '30 days',
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW(),
+			usage_count INTEGER DEFAULT 0
 		)`
 
 	if _, err := db.Exec(experiencesTableSQL); err != nil {
@@ -152,6 +154,7 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 			agent_id VARCHAR(64),
 			role VARCHAR(32) NOT NULL,
 			content TEXT NOT NULL,
+			metadata JSONB DEFAULT '{}'::jsonb,
 			expires_at TIMESTAMP,
 			created_at TIMESTAMP DEFAULT NOW()
 		)`
