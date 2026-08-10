@@ -130,13 +130,18 @@ func NewEvidence(taskID, role, source string) *Evidence {
 }
 
 // AddDimension adds a scored dimension to the evidence.
-// A dimension with max <= 0 is treated as invalid and never passes.
+// A failing dimension without an explicit flag gets an auto-generated flag
+// so that FailureFlags always reports every failing dimension, and the
+// overall Flag records the first failing dimension.
 func (e *Evidence) AddDimension(name string, score, max int, evidence []EvidenceItem, flag string) {
 	pass := false
 	if max > 0 {
 		pass = score >= max*2/3 // 2/3 of max score passes
 	} else if flag == "" {
 		flag = fmt.Sprintf("%s has invalid max score (%d)", name, max)
+	}
+	if !pass && flag == "" {
+		flag = fmt.Sprintf("%s below threshold (%d/%d)", name, score, max)
 	}
 	e.Dimensions = append(e.Dimensions, DimensionScore{
 		Name:     name,
@@ -146,8 +151,8 @@ func (e *Evidence) AddDimension(name string, score, max int, evidence []Evidence
 		Evidence: evidence,
 		Flag:     flag,
 	})
-	if !pass && flag == "" {
-		e.Flag = fmt.Sprintf("%s below threshold (%d/%d)", name, score, max)
+	if !pass && e.Flag == "" {
+		e.Flag = flag
 	}
 }
 
