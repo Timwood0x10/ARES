@@ -390,7 +390,7 @@ func buildOpenAIChatTools(tools []core.Tool) []map[string]any {
 			"function": map[string]any{
 				"name":        t.Function.Name,
 				"description": t.Function.Description,
-				"parameters":  t.Function.Parameters,
+				"parameters":  toolParametersOrEmpty(t.Function.Parameters),
 			},
 		})
 	}
@@ -606,8 +606,23 @@ func buildAnthropicChatTools(tools []core.Tool) []map[string]any {
 		result = append(result, map[string]any{
 			"name":         t.Function.Name,
 			"description":  t.Function.Description,
-			"input_schema": t.Function.Parameters,
+			"input_schema": toolParametersOrEmpty(t.Function.Parameters),
 		})
 	}
 	return result
+}
+
+// toolParametersOrEmpty returns the tool's JSON Schema parameters, or an
+// empty object schema when the tool declares none. Some providers (e.g.
+// agnes/OpenAI-compatible) reject tools whose function lacks a "parameters"
+// field entirely, so a nil schema must be normalized to
+// {"type":"object","properties":{}} before serialization.
+func toolParametersOrEmpty(params map[string]any) map[string]any {
+	if params != nil {
+		return params
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
 }
