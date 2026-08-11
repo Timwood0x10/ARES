@@ -32,7 +32,8 @@ Produce your final output.`
 // variance and weakening the regression significance test. Measured on agnes
 // (2026-08-11): open-ended prompt -> old avg 0.45, p=0.0297 (significant);
 // anchored prompt -> old avg 0.26, p=0.393 (not significant).
-const DefaultArenaEvalPrompt = `On a scale from 0.0 to 1.0, rate how well the following agent output handles the task, considering correctness, completeness, and adherence to the instructions.
+const DefaultArenaEvalPrompt = `On a scale from 0.0 to 1.0, rate how well the following agent output ` +
+	`handles the task, considering correctness, completeness, and adherence to the instructions.
 
 Task:
 {case}
@@ -56,7 +57,8 @@ Handle EACH numbered task below, in order. For each task, output ONLY the result
 // DefaultArenaBatchEvalPrompt grades many (task, output) pairs in one LLM call.
 // {items} is replaced with numbered "Task <i>: ... Output <i>: ..." blocks. The
 // model replies with exactly one numeric score per line, in order.
-const DefaultArenaBatchEvalPrompt = `On a scale from 0.0 to 1.0, rate how well each agent output handles its task, considering correctness, completeness, and adherence to the instructions.
+const DefaultArenaBatchEvalPrompt = `On a scale from 0.0 to 1.0, rate how well each agent output handles its ` +
+	`task, considering correctness, completeness, and adherence to the instructions.
 
 {items}
 

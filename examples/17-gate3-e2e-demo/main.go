@@ -44,7 +44,10 @@ func main() {
 
 	// 1. Seed a profile store with the stable (good) instructions for "coder".
 	profileStore := evolution.NewProfileStore()
-	stable := &agents.AgentProfile{Role: "coder", Instructions: "Add the numbers precisely and return the numeric result only."}
+	stable := &agents.AgentProfile{
+		Role:         "coder",
+		Instructions: "Add the numbers precisely and return the numeric result only.",
+	}
 	if err := profileStore.Update(stable); err != nil {
 		log.Fatalf("update profile: %v", err)
 	}

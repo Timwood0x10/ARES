@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-11
+
+> Candidate release closed-loop release: a stateful candidate pipeline with three-gate verification, a release-time LLM-driven regression gate, batch request merging, and multi-provider LLM support.
+
+### Candidate Pipeline (`internal/evolution/`)
+
+Evolved strategies now ship through a layered, verifiable, releasable **candidate** lifecycle instead of a one-shot Arena pass:
+
+- **`Candidate` + `CandidateStore`** (`candidate.go`): a stateful candidate object with a lifecycle (`candidate → verified → promoted/rejected`); `CandidateStore` is concurrency-safe (`sync.RWMutex` on Submit/Get/List) and assigns unique sequential IDs.
+- **`CandidateVerifier`** (`candidate.go`): three-gate verification — Gate 1 `staticCheck` (structural integrity + dangerous-pattern rejection), Gate 2 `replayFailureCases` (verifies referenced failure evidence exists and is `KindDimensionEval` via an injected `evidence.Store`), Gate 3 `checkRegression` (preserved-case regression, injectable).
+- **`CandidatePipeline`** (`candidate_pipeline.go`): `Release` accepts only `StatusVerified` candidates, runs the coordinator decision (Apply/Reject/Delay) → canary → `SetStable` → `Promote`.
+- **Release-time gate-3** (`WithReleaseRegressionCheck` + `NewCandidatePipelineWithOptions`): the regression check runs **before any patch is built/applied**; on failure the candidate is `Reject("release regression gate: ...")` and neither runtime nor stable is touched. Backward compatible when not wired.
+- **Dead-code removal**: removed the legacy `CandidateStore.promoteToStable`/`applyDiff` (superseded by `CandidatePipeline.Release`), eliminating the dual promotion path.
+
+### Gate-3 LLM Regression
+
+- **`CandidateRegressionChecker`** (`candidate_regression.go`): runs the `ares_arena.RegressionTester` over preserved cases comparing `stable.Instructions` vs `candidate.Diff`; rejects on a statistically significant drop (`Confident && NewAvg < OldAvg`). Configurable runs / min win rate / timeout.
+- **`LLMArenaScorer`** (`internal/ares_evolution/service/llm_arena_scorer.go`): implements `ares_arena.Scorer`, driving a real LLM in two steps (execute instructions×case → grade output on [0,1]). Scoring prompt stays open-ended (anchored rubrics measurably weaken significance).
+- **`BuildRegressionGate3` / `LoadRegressionGate3`** (`gate3_orchestrator.go`): top-level assembly — `LLMClient → LLMArenaScorer → CandidateRegressionChecker`; `LoadRegressionGate3` reads `llm.Client` from a YAML config and supports ollama (keyless) / openai (keyed). The same check is injectable into both verify and release.
+
+### Batch Request Merging
+
+- **`ares_arena.BatchScorer`** (`regression.go`): optional interface (`ScoreBatch(ctx, strategy, count, testCases)`); `RegressionTester.runStrategy` collapses all runs of a strategy into one batch call, falling back to per-run concurrent `Score` for non-batch scorers (backward compatible).
+- **`LLMArenaScorer.ScoreBatch`**: collapses count executions + gradings into exactly 2 LLM calls (one batch execute + one batch grade). One regression drops from `2×runs` calls to 2 — critical for low-rpm providers.
+
+### Reliability & Hardening
+
+- **`CandidateStore` concurrency safety**: full `sync.RWMutex`; `TestCandidateStore_ConcurrentAccess` (32 goroutines × 50 submits, unique IDs) passes `go test -race`.
+- **Gate-2 evidence verification**: `replayFailureCases` queries the evidence store to distinguish missing vs wrong-kind evidence (no fabricated IDs).
+- **Verifier state machine**: `Verify()` advances the state — all gates pass → `StatusVerified`; any failure → `StatusRejected` + `RejectionReason`; nil-candidate guard.
+
+### Documentation & Examples
+
+- **Articles (ZH/EN)**: `docs/articles/zh/11-autonomous-evolution-deep-dive.md` + `docs/articles/en/11-autonomous-evolution-deep-dive.md` gained "0.3.0: From Strategy Evolution to Candidate Release Closed-Loop"; `docs/articles/zh/24.7-autonomous-evolution-overview.md` gained a 0.3.0 section.
+- **README / README_CN**: added "Candidate Release Closed-Loop (0.3.0)" section and a feature-table row.
+- **Examples with full logs**: `examples/16-llm-regression-demo` (real regression comparison), `examples/17-gate3-e2e-demo` (verify e2e), `examples/18-release-closed-loop` (full release closed loop); each writes a timestamped transcript to its own `logs/run-<ts>.log`.
+- **Live verification (agnes-2.5-flash, batch)**: bad candidate rejected at verify and at the release gate (`avg dropped 1.000 -> 0.000, p=0.0000`); good candidate `verified → promoted`.
+
 ## [0.2.9] - 2026-08-05
 
 > Runtime closure & persistence release: System Runtime lifecycle kernel, PostgreSQL evidence persistence, SDK/Bootstrap unification, closed-loop GA feedback, and config-driven assembly.

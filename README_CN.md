@@ -87,6 +87,7 @@ make examples          # 构建全部 24 个示例
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
 | **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
+| **候选发布闭环（0.3.0）** | `CandidatePipeline`：候选 → 三层验证（静态/证据/回归）→ Release 发布门禁 → SetStable；门3 用 `LLMArenaScorer` + `BatchScorer`（批量合并请求）做 LLM 驱动的保留案例回归，多 provider 支持（agnes/sensenova/ollama） |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
 | **多 Agent** | 领导/成员编排，支持自动故障切换 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
@@ -488,6 +489,21 @@ RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
 go run examples/10-ga-full-evolution/main.go   # 完整 GA 进化演示
 go run examples/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
 ```
+
+## 候选发布闭环（0.3.0）
+
+进化产出的策略通过 **`CandidatePipeline`** 形成从生成到发布的**分层门禁**：
+
+```
+NewCandidate → Verify（门1 静态 + 门2 证据 + 门3 回归）→ Verified
+             → Release（coordinator 决策 + canary）→ 发布前门3再确认 → SetStable → Promoted
+```
+
+- **门3 回归检查**：`CandidateVerifier` 与 `CandidatePipeline.Release` 共用同一个 `CandidateRegressionChecker`（注入 `WithRegressionCheck` / `WithReleaseRegressionCheck`），用 **`LLMArenaScorer`**（`internal/ares_evolution/service/llm_arena_scorer.go`）调真实 LLM 对比 stable 指令 vs 候选 diff 在保留案例上的表现，统计显著变差则拒绝。
+- **`BatchScorer` 批量合并**：`ares_arena.BatchScorer` + `LLMArenaScorer.ScoreBatch` 把一次回归的所有 runs 合并成 2 次 LLM 调用（应对低 rpm 限流）。
+- **顶层编排器**：`internal/evolution/gate3_orchestrator.go` 的 `BuildRegressionGate3` / `LoadRegressionGate3` 从 YAML 装配 `llm.Client`（支持 ollama / openai）。
+
+真实运行示例与完整日志：`examples/16-llm-regression-demo`、`examples/17-gate3-e2e-demo`、`examples/18-release-closed-loop`（各自 `logs/run-<ts>.log`）。
 
 ## 许可证
 

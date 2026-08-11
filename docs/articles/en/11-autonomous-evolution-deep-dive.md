@@ -2115,6 +2115,114 @@ Step by step, each step delivers independent value. Genome package is icing on t
 
 ---
 
+## 12. 0.3.0: From "Strategy Evolution" to "Candidate Release Closed-Loop"
+
+The two evolution paths above (DreamCycle / Genome GA) answer "**how to generate better strategies**". But a strategy must eventually ship — and **that ship gate** is the core increment of 0.3.0.
+
+### 12.1 Why "candidates"?
+
+An evolution system naturally produces many candidates — mutations spawn variants, crossover produces offspring. Before 0.3.0, strategy quality was judged by the Arena WinRate and `SetActive` was applied on a pass, with two pain points:
+
+- **Judging and releasing were not separated**: the same Arena served as both evaluator and release gate, with no layered protection;
+- **No first-class "candidate"**: strategies, eval results, and genealogy lived apart, unable to express "a candidate's full lifecycle from generation → verification → release";
+- **No final regression confirmation at release**: a candidate was evaluated when generated, but at release time the strategy may be stale or the environment may have changed.
+
+So 0.3.0 introduces **`CandidatePipeline`** — wrapping evolution output into a stateful, verifiable, releasable **candidate object** and adding a **gate-3 regression check** to release.
+
+### 12.2 The candidate lifecycle
+
+A candidate's full state machine from birth to release:
+
+```mermaid
+graph LR
+    NEW[NewCandidate<br/>candidate] -->|Verify gates 1/2/3| VER[Verified]
+    VER -->|Release + gate 3| PRO[Promoted<br/>SetStable]
+    VER -.->|Release gate-3 fail| REJ[Rejected]
+    VER -.->|coordinator Reject/Drop| REJ
+```
+
+Core components in `internal/evolution/`:
+
+- **`candidate.go`**: the `Candidate` type + `CandidateStore` (concurrency-safe, `sync.RWMutex`) + `CandidateVerifier`.
+- **`candidate_pipeline.go`**: `CandidatePipeline`, connecting Verify → Release.
+- **`CandidatePipeline.Release`**: accepts only `StatusVerified` candidates, runs coordinator decision (Apply/Reject/Delay) → canary → `SetStable` → `Promote`.
+
+### 12.3 Three gates + gate-3 regression
+
+`CandidateVerifier.Verify()` runs three gates (per Ch.8 "release gate"):
+
+| Gate | Check | Description |
+|------|-------|-------------|
+| **Gate 1 static** | `staticCheck` | structural integrity: role/diff/reason non-empty, dangerous patterns rejected |
+| **Gate 2 evidence** | `replayFailureCases` | injects `evidence.Store`; verifies the candidate's referenced failure evidence exists and is `KindDimensionEval` |
+| **Gate 3 regression** | `CandidateRegressionChecker` | **LLM-driven preserved-case regression**: stable instructions vs candidate diff, reject on a significant drop |
+
+Gate 3 is 0.3.0's **pre-release regression defense line** — it binds evolution to real LLM execution ability: a candidate must prove it does not regress on preserved cases before shipping.
+
+### 12.4 The LLM implementation: `LLMArenaScorer`
+
+Gate 3 needs a scorer that grades "instruction × case". 0.3.0 uses `LLMArenaScorer` (`internal/ares_evolution/service/llm_arena_scorer.go`) implementing `ares_arena.Scorer`, calling the LLM in two steps:
+
+1. **Execute**: with `{instructions}` (stable or candidate) as the agent's behavior and `{case}` as the task, let the LLM produce output;
+2. **Grade**: have the LLM score the output quality on 0–1, parse and clamp to [0,1].
+
+Key design lessons (measured):
+
+- **Keep the grading prompt open-ended** ("rate how well the output handles the task"). An anchored rubric (0.9-1.0 fully correct / 0.1-0.4 wrong) was tried and **increased variance, weakening significance** on agnes (anchored p=0.393 not significant vs open-ended p=0.0297 significant); keep the open-ended prompt.
+- **Preserved cases must carry concrete inputs**: abstract cases ("Given two integers a and b") make the LLM refuse or emit free text, breaking batch parsing; write "Given a=3 and b=5, return their sum.".
+- **Use a harmless-but-wrong bad strategy**: an obviously malicious one ("always answer zero") triggers the model's safety refusal; use "Return a+b+1" which executes but is wrong.
+
+### 12.5 `BatchScorer`: merging LLM requests into fewer, larger ones
+
+The biggest engineering blocker for real-LLM regression is **rate limiting (rpm)** — the sensenova key 429s after a few calls, and agnes free tier has a quota. 0.3.0 solves this with **batching**:
+
+- `ares_arena` adds the `BatchScorer` interface (`ScoreBatch(ctx, strategy, count, testCases)`);
+- `RegressionTester.runStrategy` detects the interface and **scores all runs in one batch call** (otherwise falls back to per-run concurrent `Score`, backward compatible);
+- `LLMArenaScorer.ScoreBatch` collapses count executions + gradings into **2 LLM calls** (one batch execute + one batch grade).
+
+Effect: one regression drops from `2×runs` calls to **2**. A real end-to-end run (agnes) went from ~60 calls to ~4, and the whole release closed-loop finished in ~8s.
+
+### 12.6 Top-level orchestrator + full closed loop
+
+`internal/evolution/gate3_orchestrator.go` provides the assembly entry points:
+
+- **`BuildRegressionGate3(profileStore, client, testCases, opts...)`**: pure assembly, LLMClient → `LLMArenaScorer` → `CandidateRegressionChecker`, returns `func(c *Candidate) error`, injectable into both `CandidateVerifier.WithRegressionCheck` and `CandidatePipeline.WithReleaseRegressionCheck`;
+- **`LoadRegressionGate3(profileStore, configPath, testCases, opts...)`**: loads `llm.Client` from a YAML (e.g. `configs/ares.local.yaml`) then assembles; supports ollama (no key) / openai (with key).
+
+**The same gate-3 check injected into both stages** forms a double defense line:
+
+```
+failure evidence → Diagnoser.Generate
+  → CandidateVerifier.Verify   (gate 1 static + gate 2 evidence + gate 3 regression)
+  → CandidatePipeline.Release   (coordinator decision + canary)
+      → release-time gate-3 confirm → SetStable → Promote
+```
+
+`CandidatePipeline.Release`'s gate-3 runs **before any patch is built/applied** (right after the `StatusVerified` check); on failure the candidate is `Reject("release regression gate: ...")` and neither runtime nor stable is touched.
+
+### 12.7 Real-LLM measurements (provider comparison)
+
+Full runnable examples with complete logs: `examples/16-llm-regression-demo`, `examples/17-gate3-e2e-demo`, `examples/18-release-closed-loop` (each writes `logs/run-<ts>.log`). Provider comparison on the same preserved suite:
+
+| Provider | Model | Good avg | Bad avg | Verdict |
+|----------|-------|----------|---------|---------|
+| sensenova | deepseek-v4-flash | 0.85 (single call) | 0.00 | rpm-limited, single call |
+| Ollama | gemma4:e2b | 0.20 | 0.00 | weak exec, no significant verdict |
+| Ollama | gemma4:e4b | 0.16 | 0.03 | p=0.0051 significant |
+| **agnes-ai** | **agnes-2.5-flash** | **0.45** | **0.14** | **p=0.0297 significant + no rpm** |
+
+The real release closed-loop (`examples/18-release-closed-loop`, agnes batch) passed all three scenarios:
+
+```
+Scenario 1: Verify rejects bad candidate   → regression: avg dropped 1.000 -> 0.000 (p=0.0000), rejected
+Scenario 2: Release gate rejects          → release regression gate: avg dropped 1.000 -> 0.000, rejected
+Scenario 3: good candidate released        → verified → promoted
+```
+
+**Conclusion**: 0.3.0 upgrades the evolution system's "selection" from "evaluate" to "layered release gating" — candidate generation → three-gate verification → pre-release regression re-check → ship. Combined with `BatchScorer` and multi-provider support, the real-LLM-driven candidate release closed-loop is end-to-end usable.
+
+---
+
 ## Conclusion
 
 ares's autonomous evolution system isn't black magic. It translates biology's most fundamental concept — **mutation, selection, inheritance, crossover** — into code:

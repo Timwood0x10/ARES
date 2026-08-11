@@ -86,7 +86,10 @@ func LoadRegressionGate3(
 	// llm.IsEnabled() validates credentials per provider: it requires an API
 	// key for openai/openrouter/anthropic but not for ollama (local, keyless).
 	if !client.IsEnabled() {
-		return nil, fmt.Errorf("gate3: llm is not enabled for provider %q (missing api key in %q?)", cfg.LLM.Provider, configPath)
+		return nil, fmt.Errorf(
+			"gate3: llm is not enabled for provider %q (missing api key in %q?)",
+			cfg.LLM.Provider, configPath,
+		)
 	}
 	return BuildRegressionGate3(profileStore, client, testCases, opts...)
 }

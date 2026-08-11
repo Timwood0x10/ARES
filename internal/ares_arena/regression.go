@@ -63,7 +63,8 @@ type RegressionConfig struct {
 	MinAdaptiveRuns int
 	// AdaptiveBatchSize is the number of scores to collect per batch in adaptive mode, default 5.
 	AdaptiveBatchSize int
-	// MaxAdaptiveRuns overrides BaselineRuns/CompareRuns as the upper bound for adaptive mode, default 0 (use BaselineRuns/CompareRuns).
+	// MaxAdaptiveRuns overrides BaselineRuns/CompareRuns as the upper bound for
+	// adaptive mode, default 0 (use BaselineRuns/CompareRuns).
 	MaxAdaptiveRuns int
 	// TestCases provides a fixed list of test cases for paired scoring.
 	// When set, iteration i of both baseline and compare receives TestCaseInput

@@ -2324,6 +2324,114 @@ genome 包的开发让我重新理解了一件事：**遗传算法不是"更聪�
 
 ***
 
+## 十二、0.3.0：从"策略进化"到"候选发布闭环"
+
+前面讲的两条进化路径（DreamCycle / Genome GA）解决的是"**怎么生成更好的策略**"。但进化产出的策略，最终要上线——而**上线这道门禁**，正是 0.3.0 的核心增量。
+
+### 12.1 为什么需要"候选"？
+
+进化系统天然会产出**多个候选**——变异出了 3 个变种，交叉出了后代。在 0.3.0 之前，策略的好坏由 Arena WinRate 一把梭评判，通过就 `SetActive` 上线。但这里有个工程痛点：
+
+- **评判和发布没有分离**：同一个 Arena 既当"评估器"又当"发布闸门"，缺少分层防护；
+- **没有"候选"这个一等公民**：策略、评估结果、谱系各自为政，无法表达"一个候选从生成到验证再到发布的完整生命周期"；
+- **缺少发布前的最终回归确认**：候选生成时评估过，但发布时刻策略可能已过期、环境可能已变化。
+
+所以 0.3.0 引入了 **`CandidatePipeline`**——把进化产出封装成有状态、可验证、可发布的**候选对象**，并给发布加上**门3回归门禁**。
+
+### 12.2 候选的完整生命周期
+
+一个候选从诞生到上线的完整状态机：
+
+```mermaid
+graph LR
+    NEW[NewCandidate<br/>candidate] -->|Verify 门1/2/3| VER[Verified]
+    VER -->|Release + 门3| PRO[Promoted<br/>SetStable]
+    VER -.->|Release 门3 失败| REJ[Rejected]
+    VER -.->|coordinator Reject/Drop| REJ
+```
+
+核心在 `internal/evolution/` 下的几个组件：
+
+- **`candidate.go`**：`Candidate` 类型 + `CandidateStore`（并发安全，`sync.RWMutex`）+ `CandidateVerifier`。
+- **`candidate_pipeline.go`**：`CandidatePipeline`，串联 Verify → Release。
+- **`candidate_pipeline` 的 Release**：只接受 `StatusVerified` 候选，走 coordinator 决策（Apply/Reject/Delay）→ canary 发布 → `SetStable` → `Promote`。
+
+### 12.3 三层验证 + 门3 回归
+
+`CandidateVerifier.Verify()` 跑三道关（对应第 8 章"发布门禁"）：
+
+| 关 | 校验 | 说明 |
+|----|------|------|
+| **门1 静态** | `staticCheck` | 结构完整：role/diff/reason 非空，危险模式拒绝 |
+| **门2 证据** | `replayFailureCases` | 注入 `evidence.Store`，真实验证候选引用的失败证据存在且为 `KindDimensionEval` |
+| **门3 回归** | `CandidateRegressionChecker` | **LLM 驱动的保留案例回归**：对比 stable 指令 vs 候选 diff，统计显著变差则拒绝 |
+
+门3 是 0.3.0 新增的**发布前回归防线**，它把进化与真实 LLM 执行能力绑定——候选必须证明自己在保留案例上不退化，才允许上线。
+
+### 12.4 门3 的 LLM 实现：`LLMArenaScorer`
+
+门3 需要一个"给指令 × 案例打分"的 scorer。0.3.0 用 `LLMArenaScorer`（`internal/ares_evolution/service/llm_arena_scorer.go`）实现 `ares_arena.Scorer`，分两步调 LLM：
+
+1. **执行**：以 `{instructions}`（stable 或 candidate 指令）为 agent 行为、`{case}` 为任务，让 LLM 产出输出；
+2. **评分**：让 LLM 按 0-1 给输出质量评分，解析并 clamp 到 [0,1]。
+
+关键设计（实测踩坑）：
+
+- **评分 prompt 保持开放式**（"rate how well the output handles the task"）。尝试过锚点 rubric（0.9-1.0 完全正确 / 0.1-0.4 严重错误），实测 agnes 上反而**增大方差、削弱显著性**（锚点版 p=0.393 不显著 vs 开放式 p=0.0297 显著），故保留开放式。
+- **保留案例必须带具体数值**：抽象案例（"Given two integers a and b"）会让 LLM 拒绝/输出自由文本，破坏批量解析；应写 "Given a=3 and b=5, return their sum."。
+- **坏策略用"无害但错误"指令**：明显恶意指令（"always answer zero"）会触发模型安全拒绝，改用 "Return a+b+1" 这种能执行但算错的。
+
+### 12.5 `BatchScorer`：把对 LLM 的请求合并为大的
+
+真实 LLM 回归最大的工程障碍是 **rate limit（rpm）**——商汤 key 几次调用就 429，agn-ai free tier 也有配额。0.3.0 通过**批量合并**解决：
+
+- `ares_arena` 新增 `BatchScorer` 接口（`ScoreBatch(ctx, strategy, count, testCases)`）；
+- `RegressionTester.runStrategy` 检测 scorer 实现该接口则**一次批量调用算完所有 runs**（否则回退逐个并发 `Score`，向后兼容）；
+- `LLMArenaScorer.ScoreBatch` 把 count 个执行 + 评分合并成 **2 次 LLM 调用**（一次批量执行 + 一次批量评分）。
+
+效果：一次回归从 `2×runs` 次调用降到 **2 次**。真实端到端（agnes）从 60 次调用降到 ~4 次，整个发布闭环 ~8 秒跑完。
+
+### 12.6 顶层编排器 + 完整发布闭环
+
+`internal/evolution/gate3_orchestrator.go` 提供了装配入口：
+
+- **`BuildRegressionGate3(profileStore, client, testCases, opts...)`**：纯装配，LLMClient → `LLMArenaScorer` → `CandidateRegressionChecker`，返回 `func(c *Candidate) error`，可同时注入 `CandidateVerifier.WithRegressionCheck` 和 `CandidatePipeline.WithReleaseRegressionCheck`；
+- **`LoadRegressionGate3(profileStore, configPath, testCases, opts...)`**：从 YAML（如 `configs/ares.local.yaml`）加载 `llm.Client` 再装配，支持 ollama（无 key）/ openai（有 key）双 provider。
+
+**同一个门3 check 注入两处**，形成双层防线：
+
+```
+failure evidence → Diagnoser.Generate
+  → CandidateVerifier.Verify   (门1 静态 + 门2 证据 + 门3 回归)
+  → CandidatePipeline.Release   (coordinator 决策 + canary)
+      → 发布前门3再确认 → SetStable → Promote
+```
+
+`CandidatePipeline.Release` 的门3在**任何 patch 构建/应用之前**运行（`StatusVerified` 校验后），失败则候选 `Reject("release regression gate: ...")` 且不触碰 runtime/stable。
+
+### 12.7 真实 LLM 实测（provider 对比）
+
+在 `examples/` 下有完整的真实运行示例（`examples/16-llm-regression-demo`、`examples/17-gate3-e2e-demo`、`examples/18-release-closed-loop`），完整日志写入各自 `logs/run-<ts>.log`。同套保留案例的 provider 对比：
+
+| Provider | 模型 | 好策略 avg | 坏策略 avg | 判定 |
+|----------|------|-----------|-----------|------|
+| sensenova | deepseek-v4-flash | 0.85（单次） | 0.00 | rpm 极低，仅单次 |
+| Ollama | gemma4:e2b | 0.20 | 0.00 | 执行弱，无法显著判定 |
+| Ollama | gemma4:e4b | 0.16 | 0.03 | p=0.0051 显著 |
+| **agnes-ai** | **agnes-2.5-flash** | **0.45** | **0.14** | **p=0.0297 显著 + 无 rpm** |
+
+真实发布闭环（`examples/18-release-closed-loop`，agnes 批量）实测三个场景全过：
+
+```
+场景1: Verify 拒绝坏候选   → regression: avg dropped 1.000 -> 0.000 (p=0.0000), rejected
+场景2: Release 门禁拒绝    → release regression gate: avg dropped 1.000 -> 0.000, rejected
+场景3: 好候选发布成功       → verified → promoted
+```
+
+**结论**：0.3.0 把进化系统的"选择"从"评估"升级为"分层发布门禁"——候选生成 → 三层验证 → 发布前回归再确认 → 上线。配合 `BatchScorer` 与多 provider 支持，真实 LLM 驱动的候选发布闭环已端到端可用。
+
+---
+
 ## 总结
 
 ares 的自主进化系统不是什么黑科技。它就是把生物进化论的最核心思想——**变异、选择、遗传、交叉、持久化**——翻译成了代码：

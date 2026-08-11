@@ -523,6 +523,21 @@ go run examples/10-ga-full-evolution/main.go   # Full GA evolution demo
 go run examples/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
 ```
 
+## Candidate Release Closed-Loop (0.3.0)
+
+Evolved strategies go through a **layered release gate** via `CandidatePipeline`:
+
+```
+NewCandidate → Verify (gate1 static + gate2 evidence + gate3 regression) → Verified
+             → Release (coordinator decision + canary) → gate-3 re-check → SetStable → Promoted
+```
+
+- **Gate-3 regression check**: `CandidateVerifier` and `CandidatePipeline.Release` share the same `CandidateRegressionChecker` (via `WithRegressionCheck` / `WithReleaseRegressionCheck`), using `LLMArenaScorer` (`internal/ares_evolution/service/llm_arena_scorer.go`) to run a real-LLM preserved-case regression — stable instructions vs the candidate diff — and reject on a statistically significant drop.
+- **`BatchScorer` batching**: `ares_arena.BatchScorer` + `LLMArenaScorer.ScoreBatch` collapse all runs of a regression into 2 LLM calls (mitigates low-rpm rate limits).
+- **Top-level orchestrator**: `internal/evolution/gate3_orchestrator.go` `BuildRegressionGate3` / `LoadRegressionGate3` assemble `llm.Client` from YAML (ollama / openai providers).
+
+Live runnable examples with full logs: `examples/16-llm-regression-demo`, `examples/17-gate3-e2e-demo`, `examples/18-release-closed-loop` (each `logs/run-<ts>.log`).
+
 ## License
 
 Apache 2.0
