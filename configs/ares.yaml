@@ -25,6 +25,18 @@ llm:
   # max_tokens: max output tokens, default 4096
   # max_tokens: 4096
 
+  # ── Local override ──────────────────────────────────────────
+  # The gate-3 preserved-case regression scorer (LLMArenaScorer) is driven by a
+  # real LLM. Put your credentials in configs/ares.local.yaml (git-ignored),
+  # NOT here, to avoid committing secrets. Example for the sensenova
+  # OpenAI-compatible endpoint used in development:
+  #
+  #   llm:
+  #     provider: openai
+  #     model: "deepseek-v4-flash"                  # exact API model ID (hyphenated)
+  #     api_key: "<your-api-key>"
+  #     base_url: "https://token.sensenova.cn/v1"   # root; client appends /chat/completions
+
 # ── Memory / Distillation / RAG ──────────────────────────────
 memory:
   # enabled: enable the memory subsystem (session history + distillation + RAG)

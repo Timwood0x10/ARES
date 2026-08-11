@@ -18,6 +18,9 @@ bin/
 config.yaml
 .mcp.json
 
+# Local LLM secrets (real api_key for the gate-3 regression scorer).
+configs/ares.local.yaml
+
 /**/.venv/
 
 **/.env

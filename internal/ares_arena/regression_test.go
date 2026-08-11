@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockScorer returns deterministic scores for testing.
@@ -154,6 +156,53 @@ func TestNewRegressionTester_NilScorer(t *testing.T) {
 	if !errors.Is(err, ErrNilScorer) {
 		t.Errorf("expected ErrNilScorer, got %v", err)
 	}
+}
+
+// TestNewRegressionTesterWithScorer verifies the scorer-only constructor used by
+// the evolution candidate gate 3 (no arena Service required).
+func TestNewRegressionTesterWithScorer(t *testing.T) {
+	t.Run("valid scorer", func(t *testing.T) {
+		scorer := newMockScorer(map[int]float64{0: 1.0})
+		tester, err := NewRegressionTesterWithScorer(scorer)
+		require.NoError(t, err)
+		require.NotNil(t, tester)
+		if tester.scorer != scorer {
+			t.Error("scorer not set correctly")
+		}
+	})
+
+	t.Run("nil scorer rejected", func(t *testing.T) {
+		tester, err := NewRegressionTesterWithScorer(nil)
+		require.Error(t, err)
+		require.Nil(t, tester)
+		require.ErrorIs(t, err, ErrNilScorer)
+	})
+
+	t.Run("runs regression without a service", func(t *testing.T) {
+		// The scorer-only tester must run a full regression comparison even
+		// though no arena.Service was provided.
+		oldScorer := newMockScorer(map[int]float64{0: 55, 1: 52, 2: 58, 3: 54, 4: 56})
+		newScorer := newMockScorer(map[int]float64{0: 85, 1: 88, 2: 82, 3: 90, 4: 86})
+		composite := &compositeScorer{scorers: map[any]Scorer{"old": oldScorer, "new": newScorer}}
+		tester, err := NewRegressionTesterWithScorer(composite)
+		require.NoError(t, err)
+
+		result, err := tester.Run(context.Background(), RegressionConfig{
+			OldStrategy:  "old",
+			NewStrategy:  "new",
+			BaselineRuns: 5,
+			CompareRuns:  5,
+			Confidence:   0.05,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		if !result.Confident {
+			t.Error("expected confident true for an obvious improvement")
+		}
+		if result.NewAvg <= result.OldAvg {
+			t.Errorf("expected new avg to exceed old avg: old=%f new=%f", result.OldAvg, result.NewAvg)
+		}
+	})
 }
 
 // TestRun_NewBetterStrategy verifies high win rate and confidence when new is better.

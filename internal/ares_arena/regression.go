@@ -91,6 +91,18 @@ type Scorer interface {
 	Score(ctx context.Context, input any) (float64, error)
 }
 
+// BatchScorer optionally collapses many scoring calls into one request. When a
+// RegressionTester's scorer implements this interface, runStrategy uses it to
+// score all runs of a strategy in a single call — collapsing many LLM
+// round-trips into one, which is critical for rate-limited providers (e.g.
+// low-rpm remote APIs). ScoreBatch must return exactly count scores.
+type BatchScorer interface {
+	Scorer
+	// ScoreBatch scores count runs of strategy over testCases (cycling when the
+	// suite is shorter than count) and returns exactly count scores.
+	ScoreBatch(ctx context.Context, strategy any, count int, testCases []any) ([]float64, error)
+}
+
 // RegressionTester performs A/B style comparison tests on strategies.
 type RegressionTester struct {
 	arena  *Service
@@ -114,6 +126,21 @@ func NewRegressionTester(arena *Service, scorer Scorer) (*RegressionTester, erro
 	}
 	return &RegressionTester{
 		arena:  arena,
+		scorer: scorer,
+	}, nil
+}
+
+// NewRegressionTesterWithScorer creates a regression tester that only requires a
+// scorer and no arena Service. The regression run path (runStrategy +
+// significance test) never touches the arena, so a scorer-only tester is safe
+// for contexts where no live runtime is available — e.g. the evolution
+// candidate gate 3 preserved-case check. When a scorer is nil, ErrNilScorer is
+// returned.
+func NewRegressionTesterWithScorer(scorer Scorer) (*RegressionTester, error) {
+	if scorer == nil {
+		return nil, ErrNilScorer
+	}
+	return &RegressionTester{
 		scorer: scorer,
 	}, nil
 }
@@ -334,6 +361,20 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 	}
 	if n <= 0 {
 		return nil, ErrInvalidRuns
+	}
+
+	// Batch path: when the scorer implements BatchScorer, collapse all n runs
+	// into a single call (one LLM round-trip instead of n), respecting the
+	// context for cancellation and timeout.
+	if bs, ok := rt.scorer.(BatchScorer); ok {
+		batchScores, err := bs.ScoreBatch(ctx, strategy, n, testCases)
+		if err != nil {
+			return nil, fmt.Errorf("arena: batch score strategy: %w", err)
+		}
+		if len(batchScores) != n {
+			return nil, fmt.Errorf("arena: batch scorer returned %d scores, want %d", len(batchScores), n)
+		}
+		return batchScores, nil
 	}
 
 	scores := make([]float64, n)

@@ -41,6 +41,25 @@ type CandidatePipeline struct {
 	deployer     *deployment.DeploymentPipeline
 	executor     *ProfileExecutor
 	priority     int
+
+	// regressionCheck is the release-time gate-3 preserved-case regression
+	// check. When set, a verified candidate that regresses the preserved suite
+	// is rejected instead of promoted (final release gate). When nil the gate
+	// is skipped (backward compatible).
+	regressionCheck func(c *Candidate) error
+}
+
+// CandidatePipelineOption configures a CandidatePipeline.
+type CandidatePipelineOption func(*CandidatePipeline)
+
+// WithReleaseRegressionCheck injects the release-time gate-3 preserved-case
+// regression check into CandidatePipeline.Release: a verified candidate that
+// regresses the preserved suite is rejected before promotion. This forms the
+// full release gate (verify → release → regression confirm → promote).
+func WithReleaseRegressionCheck(check func(c *Candidate) error) CandidatePipelineOption {
+	return func(p *CandidatePipeline) {
+		p.regressionCheck = check
+	}
 }
 
 // NewCandidatePipeline wires the release path.
@@ -76,6 +95,24 @@ func NewCandidatePipeline(
 		// The DeploymentPipeline returns a record; the coordinator's
 		// PatchDeployer only returns an error, so adapt the signatures.
 		coord.SetDeployer(newDeploymentAdapter(dep))
+	}
+	return p
+}
+
+// NewCandidatePipelineWithOptions wires the release path with functional
+// options, e.g. WithReleaseRegressionCheck for the release-time gate-3 gate.
+// Args are the same as NewCandidatePipeline.
+func NewCandidatePipelineWithOptions(
+	store *CandidateStore,
+	profileStore *ProfileStore,
+	registry *patch.Registry,
+	coord *coordinator.EvolutionCoordinator,
+	dep *deployment.DeploymentPipeline,
+	opts ...CandidatePipelineOption,
+) *CandidatePipeline {
+	p := NewCandidatePipeline(store, profileStore, registry, coord, dep)
+	for _, opt := range opts {
+		opt(p)
 	}
 	return p
 }
@@ -136,6 +173,17 @@ func (p *CandidatePipeline) Release(ctx context.Context, candidateID string) (bo
 	}
 	if c.Status != StatusVerified {
 		return false, fmt.Errorf("%w (status: %s)", ErrCandidateNotVerified, c.Status)
+	}
+
+	// Release-time gate-3: a verified candidate must not regress the preserved
+	// suite before ANY patch is built/applied. When the check is wired and
+	// fails, the candidate is rejected and no patch reaches the runtime or the
+	// stable region (full release gate).
+	if p.regressionCheck != nil {
+		if regressErr := p.regressionCheck(c); regressErr != nil {
+			c.Reject("release regression gate: " + regressErr.Error())
+			return false, nil
+		}
 	}
 
 	rp, err := p.buildRuntimePatch(c)

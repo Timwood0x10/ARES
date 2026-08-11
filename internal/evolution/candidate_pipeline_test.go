@@ -270,6 +270,87 @@ func TestDiagnoser_Validation(t *testing.T) {
 	})
 }
 
+// TestCandidatePipeline_ReleaseRegressionGate_Rejects verifies the release-time
+// gate-3 check: a verified candidate that regresses the preserved suite is
+// rejected at release instead of being promoted.
+func TestCandidatePipeline_ReleaseRegressionGate_Rejects(t *testing.T) {
+	ctx := context.Background()
+	profileStore := newTestProfileStore(t, "coder", "old instructions")
+	candidateStore := NewCandidateStore()
+	c := NewCandidate(CandidateInstruction, "coder", "new instructions", "fix", []string{"ev-1"})
+	c.Verify() // must be Verified to reach the release gate
+	candidateStore.Submit(c)
+
+	registry := patch.NewRegistry()
+	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	pipeline := NewCandidatePipelineWithOptions(
+		candidateStore, profileStore, registry, coord, nil,
+		WithReleaseRegressionCheck(func(cand *Candidate) error {
+			return errors.New("release: 2 preserved cases regressed")
+		}),
+	)
+
+	released, err := pipeline.Release(ctx, c.ID)
+	require.NoError(t, err)
+	assert.False(t, released, "regressing candidate must not be released")
+	assert.Equal(t, StatusRejected, c.Status)
+	assert.Contains(t, c.RejectionReason, "release regression gate")
+
+	stable := profileStore.GetStable("coder")
+	require.NotNil(t, stable)
+	assert.Equal(t, "old instructions", stable.Instructions, "stable must remain unchanged")
+}
+
+// TestCandidatePipeline_ReleaseRegressionGate_Passes verifies a candidate that
+// passes the release-time regression gate is promoted normally.
+func TestCandidatePipeline_ReleaseRegressionGate_Passes(t *testing.T) {
+	ctx := context.Background()
+	profileStore := newTestProfileStore(t, "coder", "old instructions")
+	candidateStore := NewCandidateStore()
+	c := NewCandidate(CandidateInstruction, "coder", "new instructions", "fix", []string{"ev-1"})
+	c.Verify()
+	candidateStore.Submit(c)
+
+	registry := patch.NewRegistry()
+	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	pipeline := NewCandidatePipelineWithOptions(
+		candidateStore, profileStore, registry, coord, nil,
+		WithReleaseRegressionCheck(func(_ *Candidate) error {
+			return nil // no regression
+		}),
+	)
+
+	released, err := pipeline.Release(ctx, c.ID)
+	require.NoError(t, err)
+	assert.True(t, released)
+	assert.Equal(t, StatusPromoted, c.Status)
+
+	stable := profileStore.GetStable("coder")
+	require.NotNil(t, stable)
+	assert.Equal(t, "new instructions", stable.Instructions, "non-regressing candidate must be promoted")
+}
+
+// TestCandidatePipeline_ReleaseRegressionGate_Skipped verifies backward
+// compatibility: without a wired regression check the release proceeds as
+// before.
+func TestCandidatePipeline_ReleaseRegressionGate_Skipped(t *testing.T) {
+	ctx := context.Background()
+	profileStore := newTestProfileStore(t, "coder", "old instructions")
+	candidateStore := NewCandidateStore()
+	c := NewCandidate(CandidateInstruction, "coder", "new instructions", "fix", []string{"ev-1"})
+	c.Verify()
+	candidateStore.Submit(c)
+
+	registry := patch.NewRegistry()
+	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	pipeline := NewCandidatePipeline(candidateStore, profileStore, registry, coord, nil) // no regression check
+
+	released, err := pipeline.Release(ctx, c.ID)
+	require.NoError(t, err)
+	assert.True(t, released, "release without a regression check must proceed")
+	assert.Equal(t, StatusPromoted, c.Status)
+}
+
 // TestDeploymentAdapter verifies the PatchDeployer adapter edge cases.
 func TestDeploymentAdapter(t *testing.T) {
 	t.Run("nil pipeline is disabled", func(t *testing.T) {
