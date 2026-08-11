@@ -173,15 +173,19 @@ check-all: lint test-race test-core test-tools
 check-quick: lint test
 
 # Build targets
+# LDFLAGS strips the symbol table and DWARF debug info; -trimpath makes builds
+# reproducible and removes local paths (measured: bin/ares 56M -> 37M).
+LDFLAGS := -s -w
+
 build:
-	go build -o bin/ares ./cmd/ares
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ares ./cmd/ares
 
 build-all:
-	go build -o bin/ ./cmd/...
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
 
 # Install CLI
 install-cli:  ## Install ares CLI to $GOPATH/bin
-	go install ./cmd/ares/...
+	go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/ares/...
 
 # Clean targets
 clean:

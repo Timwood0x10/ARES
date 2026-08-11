@@ -101,6 +101,8 @@ type Client struct {
 	ares_callbacks ares_callbacks.Emitter   // Optional: emits lifecycle events for LLM calls.
 	limiter        ares_ratelimit.Limiter   // Optional: rate limiter for API calls.
 	sanitizer      *ares_security.Sanitizer // Optional: masks secrets in recorded prompts/responses.
+	retryPolicy    RetryPolicy              // Retry policy for transient failures (default: 3 attempts).
+	circuit        *CircuitBreaker          // Guards against sustained provider failures (default: enabled).
 	closeOnce      sync.Once                // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
@@ -130,6 +132,22 @@ func WithCallbacks(emitter ares_callbacks.Emitter) Option {
 func WithRateLimiter(limiter ares_ratelimit.Limiter) Option {
 	return func(c *Client) {
 		c.limiter = limiter
+	}
+}
+
+// WithRetryPolicy overrides the default retry policy (3 attempts, exponential
+// backoff). Pass DefaultRetryPolicy() with MaxAttempts=1 to disable retries.
+func WithRetryPolicy(p RetryPolicy) Option {
+	return func(c *Client) {
+		c.retryPolicy = p
+	}
+}
+
+// WithCircuitBreaker replaces the default circuit breaker. Pass nil to disable
+// circuit breaking entirely.
+func WithCircuitBreaker(cb *CircuitBreaker) Option {
+	return func(c *Client) {
+		c.circuit = cb
 	}
 }
 
@@ -202,6 +220,11 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
+		retryPolicy: DefaultRetryPolicy(),
+		circuit: NewCircuitBreaker(
+			defaultCircuitFailureThreshold,
+			defaultCircuitOpenTimeout,
+		),
 	}
 
 	for _, opt := range opts {

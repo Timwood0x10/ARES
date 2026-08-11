@@ -67,6 +67,15 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 	for i, cfg := range configs {
 		var clientOpts []Option
 
+		// The failover layer owns provider-level failover (cooldown + switch).
+		// Disable per-call retry/circuit-breaking on the underlying clients so a
+		// failing provider is failed over promptly instead of being retried
+		// internally up to MaxAttempts.
+		clientOpts = append(clientOpts,
+			WithRetryPolicy(RetryPolicy{MaxAttempts: 1}),
+			WithCircuitBreaker(nil),
+		)
+
 		// Rate limiting only on the primary client.
 		if i == 0 && rate > 0 {
 			limiter := ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{

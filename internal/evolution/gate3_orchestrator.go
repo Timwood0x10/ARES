@@ -47,10 +47,17 @@ func BuildRegressionGate3(
 	return checker.Check, nil
 }
 
-// LoadRegressionGate3 loads an llm.Client from a YAML config file (e.g.
+// LoadRegressionGate3 loads LLM clients from a YAML config file (e.g.
 // configs/ares.local.yaml), then builds the gate-3 regression check exactly like
 // BuildRegressionGate3. This is the convenient path for real deployments; tests
 // should use BuildRegressionGate3 with a mock client instead of hitting the API.
+//
+// When the config's llm.fallbacks list is non-empty, the client is built as a
+// FailoverClient (primary + fallbacks, e.g. agnes primary with a sensenova
+// fallback): a failed or rate-limited provider automatically switches to the
+// next one, so a single provider's quota exhaustion does not fail the whole
+// preserved-case regression.
+//
 // Args:
 //
 //	profileStore - reads stable instructions; non-nil.
@@ -72,24 +79,59 @@ func LoadRegressionGate3(
 	if err != nil {
 		return nil, fmt.Errorf("gate3: load config %q: %w", configPath, err)
 	}
-	client, err := llm.NewClient(&llm.Config{
-		Provider:  cfg.LLM.Provider,
-		APIKey:    cfg.LLM.APIKey,
-		BaseURL:   cfg.LLM.BaseURL,
-		Model:     cfg.LLM.Model,
-		Timeout:   cfg.LLM.Timeout,
-		MaxTokens: cfg.LLM.MaxTokens,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gate3: build llm client: %w", err)
+
+	var client evosvc.LLMClient
+	var enabled bool
+	if len(cfg.LLM.Fallbacks) > 0 {
+		fc, err := llm.NewFailoverClient(toLLMConfigs(cfg.LLM), 0, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("gate3: build failover llm client: %w", err)
+		}
+		client = fc
+		// At least one provider in the chain must be usable; FailoverClient
+		// switches to the next provider on failure.
+		for _, c := range fc.Clients() {
+			enabled = enabled || c.IsEnabled()
+		}
+	} else {
+		c, err := llm.NewClient(toLLMConfig(&cfg.LLM))
+		if err != nil {
+			return nil, fmt.Errorf("gate3: build llm client: %w", err)
+		}
+		client = c
+		enabled = c.IsEnabled()
 	}
+
 	// llm.IsEnabled() validates credentials per provider: it requires an API
 	// key for openai/openrouter/anthropic but not for ollama (local, keyless).
-	if !client.IsEnabled() {
+	if !enabled {
 		return nil, fmt.Errorf(
 			"gate3: llm is not enabled for provider %q (missing api key in %q?)",
 			cfg.LLM.Provider, configPath,
 		)
 	}
 	return BuildRegressionGate3(profileStore, client, testCases, opts...)
+}
+
+// toLLMConfig converts an ares_config LLMConfig into an llm.Config.
+func toLLMConfig(cfg *ares_config.LLMConfig) *llm.Config {
+	return &llm.Config{
+		Provider:        cfg.Provider,
+		APIKey:          cfg.APIKey,
+		BaseURL:         cfg.BaseURL,
+		Model:           cfg.Model,
+		Timeout:         cfg.Timeout,
+		MaxTokens:       cfg.MaxTokens,
+		MaxPromptLength: cfg.MaxPromptLength,
+	}
+}
+
+// toLLMConfigs converts a primary LLMConfig plus its fallbacks into the ordered
+// config list expected by llm.NewFailoverClient (primary first).
+func toLLMConfigs(primary ares_config.LLMConfig) []*llm.Config {
+	configs := []*llm.Config{toLLMConfig(&primary)}
+	for i := range primary.Fallbacks {
+		configs = append(configs, toLLMConfig(&primary.Fallbacks[i]))
+	}
+	return configs
 }

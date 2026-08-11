@@ -69,16 +69,21 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 	var result *core.GenerateResponse
 	var err error
 
-	switch ProviderType(c.config.Provider) {
-	case ProviderOllama:
-		result, err = c.chatOllama(ctx, messages, tools, overrides)
-	case ProviderOpenAI, ProviderOpenRouter:
-		result, err = c.chatOpenAI(ctx, messages, tools, overrides)
-	case ProviderAnthropic:
-		result, err = c.chatAnthropic(ctx, messages, tools, overrides)
-	default:
-		err = fmt.Errorf("chat: unsupported provider: %s", c.config.Provider)
-	}
+	// Run the provider call under the retry policy and circuit breaker:
+	// 429/5xx/transport errors are retried with exponential backoff, and the
+	// breaker fails fast while a provider is degraded.
+	result, err = withRetry(c, ctx, func() (*core.GenerateResponse, error) {
+		switch ProviderType(c.config.Provider) {
+		case ProviderOllama:
+			return c.chatOllama(ctx, messages, tools, overrides)
+		case ProviderOpenAI, ProviderOpenRouter:
+			return c.chatOpenAI(ctx, messages, tools, overrides)
+		case ProviderAnthropic:
+			return c.chatAnthropic(ctx, messages, tools, overrides)
+		default:
+			return nil, fmt.Errorf("chat: unsupported provider: %s", c.config.Provider)
+		}
+	})
 
 	duration := time.Since(start)
 	promptSummary := summarizeMessages(messages)

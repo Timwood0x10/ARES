@@ -121,16 +121,21 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 		}
 	}
 
-	switch ProviderType(c.config.Provider) {
-	case ProviderOpenAI, ProviderOpenRouter:
-		result, err = c.generateOpenRouter(ctx, prompt, o)
-	case ProviderOllama:
-		result, err = c.generateOllama(ctx, prompt, o)
-	case ProviderAnthropic:
-		result, err = c.generateAnthropic(ctx, prompt, o)
-	default:
-		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
-	}
+	// Run the provider call under the retry policy and circuit breaker:
+	// 429/5xx/transport errors are retried with exponential backoff, and the
+	// breaker fails fast while a provider is degraded.
+	result, err = withRetry(c, ctx, func() (string, error) {
+		switch ProviderType(c.config.Provider) {
+		case ProviderOpenAI, ProviderOpenRouter:
+			return c.generateOpenRouter(ctx, prompt, o)
+		case ProviderOllama:
+			return c.generateOllama(ctx, prompt, o)
+		case ProviderAnthropic:
+			return c.generateAnthropic(ctx, prompt, o)
+		default:
+			return "", fmt.Errorf("unsupported provider: %s", c.config.Provider)
+		}
+	})
 
 	duration := time.Since(start)
 	c.recordLLMCall(ctx, prompt, result, 0, start, err)
