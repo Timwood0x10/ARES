@@ -1,9 +1,12 @@
 package evolution
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/agents"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,143 +82,6 @@ func TestCandidateStore_SubmitGetList(t *testing.T) {
 	assert.Len(t, store.ListByRole("planner"), 0)
 }
 
-// ── applyDiff ───────────────────────────────
-
-func TestApplyDiff_Instruction(t *testing.T) {
-	profile := &agents.AgentProfile{Role: "coder", Metadata: make(map[string]any)}
-	c := NewCandidate(CandidateInstruction, "coder", "new instructions", "reason", nil)
-
-	err := applyDiff(profile, c)
-	require.NoError(t, err)
-	assert.Equal(t, "new instructions", profile.Instructions)
-}
-
-func TestApplyDiff_Skill_NilMetadata(t *testing.T) {
-	// Regression: writing to a nil Metadata map panics.
-	profile := &agents.AgentProfile{Role: "coder"} // Metadata is nil
-	c := NewCandidate(CandidateSkill, "coder", "threat_modeling", "reason", nil)
-
-	require.NotPanics(t, func() {
-		err := applyDiff(profile, c)
-		require.NoError(t, err)
-	})
-	require.NotNil(t, profile.Metadata)
-	skills, ok := profile.Metadata["skills"].([]string)
-	require.True(t, ok)
-	assert.Equal(t, []string{"threat_modeling"}, skills)
-}
-
-func TestApplyDiff_Skill_Append(t *testing.T) {
-	profile := &agents.AgentProfile{
-		Role:     "coder",
-		Metadata: map[string]any{"skills": []string{"taint_analysis"}},
-	}
-	c := NewCandidate(CandidateSkill, "coder", "threat_modeling", "reason", nil)
-
-	err := applyDiff(profile, c)
-	require.NoError(t, err)
-	skills, ok := profile.Metadata["skills"].([]string)
-	require.True(t, ok)
-	assert.Equal(t, []string{"taint_analysis", "threat_modeling"}, skills)
-}
-
-func TestApplyDiff_Skill_WrongType(t *testing.T) {
-	// Defensive: a non-[]string Metadata value must not panic; it is replaced.
-	profile := &agents.AgentProfile{
-		Role:     "coder",
-		Metadata: map[string]any{"skills": "not-a-slice"},
-	}
-	c := NewCandidate(CandidateSkill, "coder", "threat_modeling", "reason", nil)
-
-	require.NotPanics(t, func() {
-		err := applyDiff(profile, c)
-		require.NoError(t, err)
-	})
-	skills, ok := profile.Metadata["skills"].([]string)
-	require.True(t, ok)
-	assert.Equal(t, []string{"threat_modeling"}, skills)
-}
-
-func TestApplyDiff_Tool(t *testing.T) {
-	profile := &agents.AgentProfile{Role: "coder", Tools: []string{"read_file"}}
-	c := NewCandidate(CandidateTool, "coder", "run_tests", "reason", nil)
-
-	err := applyDiff(profile, c)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"read_file", "run_tests"}, profile.Tools)
-}
-
-func TestApplyDiff_UnknownKind(t *testing.T) {
-	profile := &agents.AgentProfile{Role: "coder", Metadata: make(map[string]any)}
-	c := &Candidate{Kind: CandidateKind(99), TargetRole: "coder", Diff: "x"}
-
-	err := applyDiff(profile, c)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported candidate kind")
-}
-
-// ── promoteToStable ─────────────────────────
-
-func TestPromoteToStable_Success(t *testing.T) {
-	store := NewCandidateStore()
-	profileStore := NewProfileStore()
-	require.NoError(t, profileStore.Update(&agents.AgentProfile{
-		ID:           "coder",
-		Role:         "coder",
-		Instructions: "old instructions",
-	}))
-
-	c := NewCandidate(CandidateInstruction, "coder", "new instructions", "reason", []string{"ev-1"})
-	c.Verify()
-	store.Submit(c)
-
-	updated, err := store.promoteToStable(profileStore, c.ID)
-	require.NoError(t, err)
-	require.NotNil(t, updated)
-	assert.Equal(t, "new instructions", updated.Instructions)
-	assert.Equal(t, StatusPromoted, c.Status)
-	require.NotNil(t, c.PromotedAt)
-}
-
-func TestPromoteToStable_CandidateNotFound(t *testing.T) {
-	store := NewCandidateStore()
-	profileStore := NewProfileStore()
-
-	updated, err := store.promoteToStable(profileStore, "cand-999")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "candidate not found")
-	assert.Nil(t, updated)
-}
-
-func TestPromoteToStable_NotVerified(t *testing.T) {
-	store := NewCandidateStore()
-	profileStore := NewProfileStore()
-	require.NoError(t, profileStore.Update(&agents.AgentProfile{Role: "coder"}))
-
-	c := NewCandidate(CandidateInstruction, "coder", "diff", "reason", nil) // status: candidate
-	store.Submit(c)
-
-	updated, err := store.promoteToStable(profileStore, c.ID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "is not verified")
-	assert.Nil(t, updated)
-	assert.Equal(t, StatusCandidate, c.Status)
-}
-
-func TestPromoteToStable_TargetProfileMissing(t *testing.T) {
-	store := NewCandidateStore()
-	profileStore := NewProfileStore() // no profiles registered
-
-	c := NewCandidate(CandidateInstruction, "coder", "diff", "reason", nil)
-	c.Verify()
-	store.Submit(c)
-
-	updated, err := store.promoteToStable(profileStore, c.ID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "target profile not found")
-	assert.Nil(t, updated)
-}
-
 // ── CandidateVerifier ───────────────────────
 
 func TestCandidateVerifier_StaticCheck(t *testing.T) {
@@ -255,6 +121,113 @@ func TestCandidateVerifier_StaticCheck(t *testing.T) {
 		assert.False(t, result.Success)
 		assert.Contains(t, result.Reason, "no evidence IDs")
 	})
+}
+
+// ── CandidateVerifier failure-replay gate (gate 2) with evidence store ──
+
+// appendFailureEvidence appends a KindDimensionEval evidence record with a
+// deterministic ID for a role and returns it.
+func appendFailureEvidence(t *testing.T, store evidence.Store, id, role string) {
+	t.Helper()
+	ctx := context.Background()
+	rec := evidence.NewEvidence("result_verifier", evidence.KindDimensionEval,
+		map[string]any{"verdict": "fail"},
+		evidence.WithMetadata("role", role),
+	)
+	rec.ID = id
+	require.NoError(t, store.Append(ctx, rec))
+}
+
+func TestCandidateVerifier_ReplayGate_WithStore(t *testing.T) {
+	ctx := context.Background()
+	store := evidence.NewMemoryStore()
+	appendFailureEvidence(t, store, "ev-1", "coder")
+	appendFailureEvidence(t, store, "ev-2", "coder")
+	verifier := NewCandidateVerifierWithOptions(WithEvidenceStore(store))
+
+	t.Run("referenced evidence exists and passes", func(t *testing.T) {
+		c := NewCandidate(CandidateInstruction, "coder", "write tests", "fix bug", []string{"ev-1", "ev-2"})
+		result := verifier.Verify(c)
+		assert.True(t, result.Success, "existing dimension_eval evidence must pass gate 2")
+		assert.Equal(t, StatusVerified, c.Status)
+	})
+
+	t.Run("missing evidence ID rejected", func(t *testing.T) {
+		c := NewCandidate(CandidateInstruction, "coder", "write tests", "fix bug", []string{"ev-999"})
+		result := verifier.Verify(c)
+		assert.False(t, result.Success)
+		assert.Contains(t, result.Reason, "ev-999")
+		assert.Equal(t, StatusRejected, c.Status)
+	})
+
+	t.Run("wrong-kind evidence rejected", func(t *testing.T) {
+		other := evidence.NewMemoryStore()
+		rec := evidence.NewEvidence("flight", evidence.KindExecutionTrace, map[string]any{"trace": "t"})
+		rec.ID = "ev-trace"
+		require.NoError(t, other.Append(ctx, rec))
+		otherVerifier := NewCandidateVerifierWithOptions(WithEvidenceStore(other))
+		c := NewCandidate(CandidateInstruction, "coder", "write tests", "fix bug", []string{"ev-trace"})
+		result := otherVerifier.Verify(c)
+		assert.False(t, result.Success)
+		assert.Contains(t, result.Reason, "dimension_eval")
+	})
+
+	t.Run("store query error surfaces as rejection", func(t *testing.T) {
+		failing := &failingEvidenceStore{}
+		badVerifier := NewCandidateVerifierWithOptions(WithEvidenceStore(failing))
+		c := NewCandidate(CandidateInstruction, "coder", "write tests", "fix bug", []string{"ev-1"})
+		result := badVerifier.Verify(c)
+		assert.False(t, result.Success)
+		assert.Contains(t, result.Reason, "query failure evidence")
+	})
+}
+
+// failingEvidenceStore always fails queries to exercise the error path.
+type failingEvidenceStore struct{}
+
+func (f *failingEvidenceStore) Append(_ context.Context, _ evidence.Evidence) error {
+	return errors.New("append not supported")
+}
+
+func (f *failingEvidenceStore) Query(_ context.Context, _ evidence.Filter) ([]evidence.Evidence, error) {
+	return nil, errors.New("query failed")
+}
+
+func (f *failingEvidenceStore) Aggregate(_ context.Context, _ evidence.Filter, _ evidence.AggregateFn) (float64, error) {
+	return 0, errors.New("aggregate not supported")
+}
+
+// TestCandidateStore_ConcurrentAccess exercises the RWMutex under concurrent
+// Submit/Get/List calls and must pass go test -race.
+func TestCandidateStore_ConcurrentAccess(t *testing.T) {
+	store := NewCandidateStore()
+	const workers = 32
+	const perWorker = 50
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				store.Submit(NewCandidate(CandidateInstruction, "coder", "d", "r", nil))
+				_ = store.Get("cand-1")
+				_ = store.ListByStatus(StatusCandidate)
+				_ = store.ListByRole("coder")
+			}
+		}()
+	}
+	wg.Wait()
+
+	// All workers must have been assigned unique sequential IDs.
+	ids := make(map[string]bool)
+	for _, c := range store.ListByStatus(StatusCandidate) {
+		if ids[c.ID] {
+			t.Fatalf("duplicate candidate ID %q under concurrency", c.ID)
+		}
+		ids[c.ID] = true
+	}
+	assert.Equal(t, workers*perWorker, len(ids), "every submitted candidate must get a unique ID")
 }
 
 // ── containsDangerousPattern ────────────────

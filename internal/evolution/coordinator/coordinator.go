@@ -21,13 +21,14 @@ import (
 type PatchSource string
 
 const (
-	SourceGA    PatchSource = "genome" // Genetic Algorithm
-	SourceChaos PatchSource = "chaos"  // Chaos Engineering
-	SourceAKF   PatchSource = "akf"    // Knowledge Runtime
-	SourceHuman PatchSource = "human"  // Manual operator
-	SourceLLM   PatchSource = "llm"    // LLM suggestion
-	SourceK8s   PatchSource = "k8s"    // Kubernetes Operator
-	SourceRule  PatchSource = "rule"   // Rule Engine
+	SourceGA        PatchSource = "genome"    // Genetic Algorithm
+	SourceChaos     PatchSource = "chaos"     // Chaos Engineering
+	SourceAKF       PatchSource = "akf"       // Knowledge Runtime
+	SourceHuman     PatchSource = "human"     // Manual operator
+	SourceLLM       PatchSource = "llm"       // LLM suggestion
+	SourceK8s       PatchSource = "k8s"       // Kubernetes Operator
+	SourceRule      PatchSource = "rule"      // Rule Engine
+	SourceCandidate PatchSource = "candidate" // Verified evolution candidate
 )
 
 // PatchProposal is what the Coordinator receives.

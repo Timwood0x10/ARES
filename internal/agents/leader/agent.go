@@ -7,6 +7,7 @@ import (
 
 	stderrors "errors"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -71,6 +72,15 @@ func New(
 
 	for _, opt := range opts {
 		opt(a)
+	}
+
+	// P0-3: default role registry from built-in profiles when not injected.
+	if a.profileRegistry == nil {
+		registry := agents.NewProfileRegistry()
+		for _, p := range agents.DefaultProfiles() {
+			registry.Register(p)
+		}
+		a.profileRegistry = registry
 	}
 
 	return a, nil
@@ -432,7 +442,16 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	}
 	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "dispatch", "task_id": taskID})
 	log.Info("Leader dispatching tasks", "module", "leader")
-	results, err := a.dispatcher.Dispatch(ctx, tasks)
+
+	// P0-3: multi-stage role switching (Ch.10): build an explicit Handoff and
+	// switch the dispatch context to the target role before dispatching.
+	dispatchCtx, handoff := a.buildHandoff(ctx, tasks)
+	if handoff != nil {
+		log.Info("Leader handoff prepared", "module", "leader",
+			"from", handoff.From, "to", handoff.To,
+			"artifacts", len(handoff.Artifacts), "context_keys", len(handoff.Context))
+	}
+	results, err := a.dispatcher.Dispatch(dispatchCtx, tasks)
 	if err != nil {
 		return a.fail(err)
 	}

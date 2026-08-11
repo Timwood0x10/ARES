@@ -74,6 +74,17 @@ func WithStrategySource(src agents.StrategySource) LeaderOption {
 	}
 }
 
+// WithProfileRegistry injects the agent role registry used for multi-stage
+// role switching during task dispatch (P0-3). When unset, New() registers the
+// built-in DefaultProfiles().
+func WithProfileRegistry(registry *agents.ProfileRegistry) LeaderOption {
+	return func(a *leaderAgent) {
+		if registry != nil {
+			a.profileRegistry = registry
+		}
+	}
+}
+
 func WithCallbacks(emitter ares_callbacks.Emitter) LeaderOption {
 	return func(a *leaderAgent) { a.ares_callbacks = emitter }
 }
@@ -84,23 +95,24 @@ func WithFeedbackService(svc *experience.FeedbackService) LeaderOption {
 
 // leaderAgent implements the Leader Agent.
 type leaderAgent struct {
-	mu             sync.RWMutex
-	id             string
-	agentType      models.AgentType
-	status         models.AgentStatus
-	config         *LeaderAgentConfig
-	parser         ProfileParser
-	planner        TaskPlanner
-	dispatcher     TaskDispatcher
-	aggregator     ResultAggregator
-	messageQueue   *ahp.MessageQueue
-	heartbeatMon   *ahp.HeartbeatMonitor
-	memoryManager  memory.MemoryManager
-	feedbackSvc    *experience.FeedbackService
-	sessionID      string
-	checkpoint     *CheckpointRepository
-	eventStore     ares_events.EventStore
-	ares_callbacks ares_callbacks.Emitter
+	mu              sync.RWMutex
+	id              string
+	agentType       models.AgentType
+	status          models.AgentStatus
+	config          *LeaderAgentConfig
+	parser          ProfileParser
+	planner         TaskPlanner
+	dispatcher      TaskDispatcher
+	aggregator      ResultAggregator
+	messageQueue    *ahp.MessageQueue
+	heartbeatMon    *ahp.HeartbeatMonitor
+	memoryManager   memory.MemoryManager
+	feedbackSvc     *experience.FeedbackService
+	profileRegistry *agents.ProfileRegistry
+	sessionID       string
+	checkpoint      *CheckpointRepository
+	eventStore      ares_events.EventStore
+	ares_callbacks  ares_callbacks.Emitter
 
 	lastTaskID          string
 	lastCompletedTaskID string

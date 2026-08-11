@@ -336,6 +336,20 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task, pr
 	return nil, errors.Wrap(lastErr, "all retries failed")
 }
 
+// activeRoleInstructions returns the system instructions of the role that the
+// leader switched to via Handoff (see agents.GetFromContext), or an empty
+// string when no role is active in the context.
+func activeRoleInstructions(ctx context.Context) string {
+	profile := agents.GetFromContext(ctx)
+	if profile == nil {
+		return ""
+	}
+	return profile.Instructions
+}
+
+// executeWithLLMSingle renders the prompt for a single LLM call.
+// It prepends the active role's system instructions when the leader switched
+// this execution to a specialized role via Handoff (Ch.10 multi-stage roles).
 func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Task, profile *models.UserProfile) ([]*models.RecommendItem, error) {
 	// Render prompt - support generic profile fields.
 	// Use lowercase keys to match template's {{index . "key"}} syntax.
@@ -375,6 +389,13 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 	prompt, err := e.template.Render(tpl, promptData)
 	if err != nil {
 		return nil, errors.Wrap(err, "render prompt")
+	}
+
+	// P0-3: prepend the active role's system instructions when the leader
+	// switched this execution to a specialized role via Handoff (Ch.10
+	// multi-stage role transition: same runtime, different role instructions).
+	if instructions := activeRoleInstructions(ctx); instructions != "" {
+		prompt = instructions + "\n\n" + prompt
 	}
 	log.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
 

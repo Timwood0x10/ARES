@@ -108,6 +108,12 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 	avgScore := sum / 4.0
 	avgScore = math.Round(avgScore*1000) / 1000
 
+	// Production bridge: persist the structured dimension diagnosis into the
+	// universal evidence store when wired, so the evolution Diagnoser can
+	// consume real failure evidence (not just test-seeded records). Emit is
+	// best-effort: a persistence failure must not fail the evaluation.
+	e.emitDimensionEvidence(ctx, tc.ID, dimResp)
+
 	return []EvalScore{
 		{
 			Metric:  "llm_judge_dimension_avg",
@@ -115,6 +121,31 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 			Details: dimResp.Reason,
 		},
 	}, nil
+}
+
+// emitDimensionEvidence converts the parsed dimension response into structured
+// KindDimensionEval evidence and persists it through the bridge when a store is
+// wired. Persistence failures are logged, never returned, to keep the scalar
+// scoring path robust.
+func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse) {
+	if e.evidenceStore == nil {
+		return
+	}
+	judgeResp := &DimensionJudgeResponse{
+		Correctness:  dimResp.Scores[0],
+		Completeness: dimResp.Scores[1],
+		Efficiency:   dimResp.Scores[2],
+		Safety:       dimResp.Scores[3],
+		Reason:       dimResp.Reason,
+	}
+	bridge := NewDimensionJudgeBridge(e.evidenceStore)
+	if err := bridge.Emit(ctx, taskID, e.role, judgeResp); err != nil {
+		log.Error("dimension judge bridge emit failed",
+			"task_id", taskID,
+			"role", e.role,
+			"error", err,
+		)
+	}
 }
 
 // renderDimensionPrompt selects the dimension-aware prompt based on the current language.

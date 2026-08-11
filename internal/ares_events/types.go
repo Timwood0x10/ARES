@@ -44,6 +44,7 @@ const (
 	EventStepRecoveryStarted   EventType = "step.recovery.started"
 	EventStepRecoveryCompleted EventType = "step.recovery.completed"
 	EventStepRecoveryFailed    EventType = "step.recovery.failed"
+	EventHandoff               EventType = "handoff.transferred"
 )
 
 // Event payload keys for enriched task-lifecycle events.
@@ -60,6 +61,14 @@ const (
 	// EventKeyUsedExperienceID carries the experience ID the task consumed
 	// (bandit feedback linkage), if any.
 	EventKeyUsedExperienceID = "used_experience_id"
+	// EventKeyHandoffFrom carries the sending role ID of a handoff.
+	EventKeyHandoffFrom = "handoff_from"
+	// EventKeyHandoffTo carries the receiving role ID of a handoff.
+	EventKeyHandoffTo = "handoff_to"
+	// EventKeyHandoffArtifactCount carries the number of artifacts transferred.
+	EventKeyHandoffArtifactCount = "handoff_artifact_count"
+	// EventKeyHandoffContextKeys carries the number of context keys transferred.
+	EventKeyHandoffContextKeys = "handoff_context_keys"
 )
 
 // DefaultTenantID is the tenant scope under which single-tenant deployments

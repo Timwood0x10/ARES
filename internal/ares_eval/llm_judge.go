@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -79,6 +80,8 @@ type LLMJudgeEvaluator struct {
 	promptTmpl            *template.Template // compiled evaluation prompt template
 	scale                 ScaleType          // scoring scale configuration
 	useDimensionAveraging bool               // when true, score = average of per-dimension scores (lower variance)
+	evidenceStore         evidence.Store     // optional: persists dimension judgments as KindDimensionEval evidence
+	role                  string             // agent role being evaluated, carried into evidence metadata
 }
 
 // LLMJudgeOption is a functional option for configuring LLMJudgeEvaluator.
@@ -139,6 +142,26 @@ func WithEnglishPrompt() LLMJudgeOption {
 func WithDimensionAveraging() LLMJudgeOption {
 	return func(e *LLMJudgeEvaluator) {
 		e.useDimensionAveraging = true
+	}
+}
+
+// WithEvidenceStore wires the universal evidence store so that dimension-avg
+// judgments are persisted as KindDimensionEval Evidence through the bridge.
+// This makes dimension_judge diagnoses queryable by the evolution Diagnoser in
+// production, not just in tests. When unset, dimension judgments are not
+// persisted (scalar-only compatibility path).
+func WithEvidenceStore(store evidence.Store) LLMJudgeOption {
+	return func(e *LLMJudgeEvaluator) {
+		e.evidenceStore = store
+	}
+}
+
+// WithRole records the agent role whose execution is being evaluated; it is
+// carried into the evidence metadata (role=...) so failure clusters can be
+// scoped per role.
+func WithRole(role string) LLMJudgeOption {
+	return func(e *LLMJudgeEvaluator) {
+		e.role = role
 	}
 }
 

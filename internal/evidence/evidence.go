@@ -29,6 +29,7 @@ const (
 	KindKnowledge      EvidenceKind = "knowledge"       // Memory Distillation
 	KindInsight        EvidenceKind = "insight"         // AKF
 	KindFitness        EvidenceKind = "fitness"         // GA
+	KindDimensionEval  EvidenceKind = "dimension_eval"  // Three-layer verifier diagnosis
 )
 
 // Evidence is the universal data primitive in ARES.

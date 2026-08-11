@@ -35,6 +35,9 @@ const (
 	PatchChangeRecoveryStrategy // Change recovery strategy (retry/replace/fail)
 	PatchChangeMaxRetries       // Change max retry count
 	PatchChangeBackoff          // Change backoff duration
+
+	// ── Agent role mutations ──────────────────────────
+	PatchChangeInstruction // Change an AgentProfile.Instructions (candidate evolution)
 )
 
 // String returns a human-readable name for the patch type.
@@ -64,6 +67,8 @@ func (pt PatchType) String() string {
 		return "change_max_retries"
 	case PatchChangeBackoff:
 		return "change_backoff"
+	case PatchChangeInstruction:
+		return "change_instruction"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(pt))
 	}
