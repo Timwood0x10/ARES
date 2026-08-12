@@ -129,7 +129,8 @@ func toLLMConfig(cfg *ares_config.LLMConfig) *llm.Config {
 // toLLMConfigs converts a primary LLMConfig plus its fallbacks into the ordered
 // config list expected by llm.NewFailoverClient (primary first).
 func toLLMConfigs(primary ares_config.LLMConfig) []*llm.Config {
-	configs := []*llm.Config{toLLMConfig(&primary)}
+	configs := make([]*llm.Config, 0, 1+len(primary.Fallbacks))
+	configs = append(configs, toLLMConfig(&primary))
 	for i := range primary.Fallbacks {
 		configs = append(configs, toLLMConfig(&primary.Fallbacks[i]))
 	}
