@@ -161,11 +161,13 @@ func (fc *FailoverClient) isCooledDown(key string) bool {
 	return false
 }
 
-// markCooldown records a rate-limit cooldown for the given client key.
-func (fc *FailoverClient) markCooldown(key string) {
+// markCooldown records a cooldown of the given duration for the client key.
+// The duration comes from cooldownForError so rate-limited providers get the
+// full cooldown while transient failures get a shorter one.
+func (fc *FailoverClient) markCooldown(key string, d time.Duration) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
-	fc.cooldowns[key] = time.Now().Add(fc.cooldownDuration)
+	fc.cooldowns[key] = time.Now().Add(d)
 }
 
 // clearCooldown removes a cooldown on success.
@@ -177,15 +179,18 @@ func (fc *FailoverClient) clearCooldown(key string) {
 
 // cooldownForError returns the cooldown duration based on error type.
 // Rate-limited providers get the full configured cooldown; other errors get
-// a shorter cooldown (1/3 of configured, minimum 10s) so they are retried
-// sooner but not on every call.
+// a shorter cooldown (1/3 of configured, clamped to at least 100ms and at
+// most the full cooldown) so they are retried sooner but not on every call.
 func (fc *FailoverClient) cooldownForError(err error) time.Duration {
 	if isRateLimitError(err) {
 		return fc.cooldownDuration
 	}
 	short := fc.cooldownDuration / 3
-	if short < 10*time.Second {
-		short = 10 * time.Second
+	if short < 100*time.Millisecond {
+		short = 100 * time.Millisecond
+	}
+	if short > fc.cooldownDuration {
+		short = fc.cooldownDuration
 	}
 	return short
 }
@@ -218,7 +223,7 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 
 		lastErr = err
 		cd := fc.cooldownForError(err)
-		fc.markCooldown(key)
+		fc.markCooldown(key, cd)
 
 		if isRateLimitError(err) {
 			log.Warn("FailoverClient: rate limited, cooling down",
@@ -273,7 +278,7 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		if err != nil {
 			lastErr = err
 			cd := fc.cooldownForError(err)
-			fc.markCooldown(key)
+			fc.markCooldown(key, cd)
 
 			if isRateLimitError(err) {
 				log.Warn("FailoverClient: rate limited on stream, cooling down",
@@ -370,7 +375,7 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage,
 
 		lastErr = err
 		cd := fc.cooldownForError(err)
-		fc.markCooldown(key)
+		fc.markCooldown(key, cd)
 
 		log.Warn("FailoverClient: provider failed on chat, cooling down",
 			"provider", client.GetProvider(),

@@ -223,6 +223,15 @@ func (cb *CircuitBreaker) IsOpen() bool {
 	return cb.state == circuitOpen
 }
 
+// IsHalfOpen reports whether the circuit is currently probing a single
+// request after the open timeout elapsed. A caller uses this to decide
+// whether a failed probe must re-open the circuit unconditionally.
+func (cb *CircuitBreaker) IsHalfOpen() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.state == circuitHalfOpen
+}
+
 // withRetry runs fn under the client's retry policy and circuit breaker.
 // The breaker is consulted before every attempt; retryable failures sleep with
 // exponential backoff and retry up to MaxAttempts. Non-retryable failures and
@@ -252,10 +261,19 @@ func withRetry[T any](c *Client, ctx context.Context, fn func() (T, error)) (T, 
 			return result, nil
 		}
 		lastErr = err
-		if c.circuit != nil {
-			c.circuit.RecordFailure()
-		}
 		if attempt >= attempts || !isRetryableError(err) || ctx.Err() != nil {
+			// The whole logical call failed. Count it against the breaker
+			// ONCE here (not per attempt). In the CLOSED state only retryable
+			// failures count (4xx / cancellation are not provider
+			// degradation), but a HALF-OPEN probe failure must ALWAYS re-open
+			// the circuit and release the probe slot — otherwise a
+			// non-retryable probe failure leaves halfOpenInflight=1 and the
+			// breaker rejects every call until the leak guard fires.
+			if c.circuit != nil {
+				if c.circuit.IsHalfOpen() || (isRetryableError(err) && ctx.Err() == nil) {
+					c.circuit.RecordFailure()
+				}
+			}
 			return zero, lastErr
 		}
 		backoff := c.retryPolicy.backoff(attempt)

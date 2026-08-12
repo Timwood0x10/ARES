@@ -1,7 +1,7 @@
 # 09-full-app configuration
 llm:
   provider: ollama
-  model: llama3.2
+  model: gemma4
 
 memory:
   enabled: true

@@ -383,20 +383,155 @@ func TestClientGenerate_CircuitBreakerOpensOn5xx(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"boom"}`))
 	}))
 
-	// First call: 3 attempts (MaxAttempts) all fail with 500.
+	// The breaker counts LOGICAL calls, not attempts: each Generate with its
+	// 3 attempts is one failure, so the threshold (3) is reached only after
+	// three calls. Call 1 and 2 must still hit the provider; call 3 opens.
+	for call := 1; call <= 2; call++ {
+		if _, err := client.Generate(context.Background(), "hello"); err == nil {
+			t.Fatalf("call %d should fail", call)
+		}
+		got := requests.Load()
+		if want := call * 3; got != int32(want) {
+			t.Errorf("after call %d requests = %d, want %d", call, got, want)
+		}
+	}
+
+	// Third logical call reaches the threshold and opens the breaker.
 	if _, err := client.Generate(context.Background(), "hello"); err == nil {
-		t.Fatal("first Generate should fail")
+		t.Fatal("third Generate should fail")
 	}
-	if requests.Load() != 3 {
-		t.Errorf("first call requests = %d, want 3", requests.Load())
+	if got, want := requests.Load(), int32(9); got != want {
+		t.Errorf("after call 3 requests = %d, want %d", got, want)
 	}
-	// Second call: breaker open, fails fast with zero requests.
+
+	// Fourth call: breaker open, fails fast with zero extra requests.
 	before := requests.Load()
 	_, err := client.Generate(context.Background(), "hello")
 	if !errors.Is(err, aerrors.ErrCircuitBreakerOpen) {
-		t.Fatalf("second Generate error = %v, want ErrCircuitBreakerOpen", err)
+		t.Fatalf("fourth Generate error = %v, want ErrCircuitBreakerOpen", err)
 	}
 	if requests.Load() != before {
 		t.Errorf("requests grew from %d to %d while breaker open", before, requests.Load())
+	}
+}
+
+// TestWithRetry_CountsLogicalCallOnce locks the contract that a logical call
+// with multiple retry attempts counts as ONE breaker failure: a single call
+// exhausting its attempts must not open a breaker with threshold 3.
+func TestWithRetry_CountsLogicalCallOnce(t *testing.T) {
+	cb := NewCircuitBreaker(3, time.Minute)
+	c := &Client{
+		retryPolicy: RetryPolicy{
+			MaxAttempts:    3,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     time.Millisecond,
+			Factor:         2,
+		},
+		circuit: cb,
+	}
+
+	// One logical call: 3 attempts all fail retryably, but the breaker must
+	// still be closed (failure count = 1, threshold = 3).
+	attempts := 0
+	_, err := withRetry(c, context.Background(), func() (string, error) {
+		attempts++
+		return "", &HTTPError{StatusCode: http.StatusServiceUnavailable, Message: "down"}
+	})
+	if err == nil {
+		t.Fatal("withRetry should return the last error")
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+	if cb.IsOpen() {
+		t.Fatal("breaker opened after a single logical call (must count calls, not attempts)")
+	}
+}
+
+// TestWithRetry_NonRetryableDoesNotOpenBreaker locks the contract that a 4xx
+// client error is not provider degradation: it must never push the breaker
+// toward open, no matter how many logical calls fail.
+func TestWithRetry_NonRetryableDoesNotOpenBreaker(t *testing.T) {
+	cb := NewCircuitBreaker(2, time.Minute)
+	c := &Client{retryPolicy: DefaultRetryPolicy(), circuit: cb}
+
+	// Several logical calls failing with 400 must leave the breaker closed:
+	// 4xx is a caller bug, retrying/opening cannot fix it.
+	for i := 0; i < 4; i++ {
+		_, err := withRetry(c, context.Background(), func() (string, error) {
+			return "", &HTTPError{StatusCode: http.StatusBadRequest, Message: "bad request"}
+		})
+		if err == nil {
+			t.Fatal("withRetry should return the 400 error")
+		}
+	}
+	if cb.IsOpen() {
+		t.Fatal("breaker opened on non-retryable 4xx errors")
+	}
+}
+
+// TestWithRetry_HalfOpenProbeNonRetryableReopens locks the contract that a
+// HALF-OPEN probe failing with a NON-retryable error (e.g. 400) must re-open
+// the circuit and release the probe slot. Before the fix, withRetry only
+// called RecordFailure for retryable errors, so a 400 probe failure left
+// halfOpenInflight=1 and the breaker rejected every request until the leak
+// guard fired — the P2-1 regression.
+func TestWithRetry_HalfOpenProbeNonRetryableReopens(t *testing.T) {
+	cb := NewCircuitBreaker(1, 20*time.Millisecond)
+	c := &Client{
+		retryPolicy: RetryPolicy{MaxAttempts: 1},
+		circuit:     cb,
+	}
+
+	// Open the circuit with one retryable failure (threshold 1).
+	_, err := withRetry(c, context.Background(), func() (string, error) {
+		return "", &HTTPError{StatusCode: http.StatusServiceUnavailable, Message: "down"}
+	})
+	if err == nil {
+		t.Fatal("first call should fail")
+	}
+	if !cb.IsOpen() {
+		t.Fatal("breaker should be open after reaching the threshold")
+	}
+
+	// Wait for the open timeout to elapse so the next Allow() admits a probe.
+	// Poll with a deadline instead of a fixed sleep (code rules §7.3).
+	deadline := time.Now().Add(time.Second)
+	for time.Since(cb.lastFailureTime) <= cb.openTimeout {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the open timeout to elapse")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// The half-open probe fails with a NON-retryable 400. The breaker must
+	// re-open (releasing the probe slot); leaving it half-open would reject
+	// all subsequent calls until the leak guard.
+	attempts := 0
+	_, err = withRetry(c, context.Background(), func() (string, error) {
+		attempts++
+		return "", &HTTPError{StatusCode: http.StatusBadRequest, Message: "bad request"}
+	})
+	if err == nil {
+		t.Fatal("probe should fail")
+	}
+	if attempts != 1 {
+		t.Errorf("probe attempts = %d, want 1", attempts)
+	}
+	if !cb.IsOpen() {
+		t.Fatal("breaker must re-open after a non-retryable half-open probe failure")
+	}
+
+	// The re-opened breaker must fail fast: zero attempts, no provider call.
+	attempts = 0
+	_, err = withRetry(c, context.Background(), func() (string, error) {
+		attempts++
+		return "ok", nil
+	})
+	if !errors.Is(err, aerrors.ErrCircuitBreakerOpen) {
+		t.Fatalf("follow-up error = %v, want ErrCircuitBreakerOpen", err)
+	}
+	if attempts != 0 {
+		t.Errorf("follow-up attempts = %d, want 0", attempts)
 	}
 }

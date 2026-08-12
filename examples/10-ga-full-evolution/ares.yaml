@@ -1,7 +1,7 @@
 # 10-ga-full-evolution — 完整 GA 进化示例配置
 llm:
   provider: ollama
-  model: llama3.2
+  model: gemma4
 
 memory:
   enabled: false

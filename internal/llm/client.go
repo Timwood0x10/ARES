@@ -381,16 +381,24 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 		}
 	}
 
-	switch ProviderType(c.config.Provider) {
-	case ProviderOpenAI, ProviderOpenRouter:
-		rawCh, err = c.streamOpenRouter(streamCtx, prompt)
-	case ProviderOllama:
-		rawCh, err = c.streamOllama(streamCtx, prompt)
-	case ProviderAnthropic:
-		rawCh, err = c.streamAnthropic(streamCtx, prompt)
-	default:
-		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
-	}
+	// Run the connection phase under the retry policy and circuit breaker,
+	// exactly like Generate/Chat: 429/5xx/transport errors are retried with
+	// exponential backoff, and the breaker fails fast while a provider is
+	// degraded. Only the connection phase is retried — once the stream is
+	// open, mid-stream failures surface as chunk.Err on the channel and
+	// cannot be replayed.
+	rawCh, err = withRetry(c, streamCtx, func() (<-chan StreamChunk, error) {
+		switch ProviderType(c.config.Provider) {
+		case ProviderOpenAI, ProviderOpenRouter:
+			return c.streamOpenRouter(streamCtx, prompt)
+		case ProviderOllama:
+			return c.streamOllama(streamCtx, prompt)
+		case ProviderAnthropic:
+			return c.streamAnthropic(streamCtx, prompt)
+		default:
+			return nil, fmt.Errorf("unsupported provider: %s", c.config.Provider)
+		}
+	})
 
 	if err != nil {
 		cancelStream()

@@ -1,7 +1,7 @@
 # 07-human-in-loop configuration
 llm:
   provider: ollama
-  model: llama3.2
+  model: gemma4
 
 memory:
   enabled: false
