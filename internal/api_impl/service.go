@@ -27,7 +27,6 @@ import (
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_config "github.com/Timwood0x10/ares/internal/ares_config"
 	evalapi "github.com/Timwood0x10/ares/internal/ares_eval/service"
-	experience "github.com/Timwood0x10/ares/internal/ares_experience/service"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/dashboard"
@@ -60,10 +59,8 @@ type Service struct {
 
 	// Wired subsystems (constructed in StartService). They are retained so
 	// they can be cleaned up on Stop and inspected by callers.
-	pgPool              *postgres.Pool             // optional, only when Postgres.Enabled
-	experienceRanking   *experience.RankingService // always constructed, exposed for later wiring
-	experienceConflicts *experience.ConflictResolver
-	queryCache          *query.MemoryQueryCache // in-memory query cache (has a cleanup goroutine)
+	pgPool     *postgres.Pool          // optional, only when Postgres.Enabled
+	queryCache *query.MemoryQueryCache // in-memory query cache (has a cleanup goroutine)
 
 	// Bootstrap components — wired via ares_bootstrap.Bootstrap for autonomous
 	// runtime, memory, evolution, and service discovery.
@@ -373,12 +370,6 @@ func wireWiredServices(s *Service, dashAPI *dashboard.APIv2, cfg *ServiceConfig)
 			}
 		}
 	}
-
-	// Experience: ranking + conflict resolver (distillation deferred until an
-	// embedding client is wired). Constructed and retained for later use.
-	s.experienceRanking = experience.NewRankingService()
-	s.experienceConflicts = experience.NewConflictResolver()
-	log.Info("experience ranking/conflict-resolver constructed")
 
 	// Query cache (in-memory, runs a cleanup goroutine that must be closed on Stop).
 	s.queryCache = query.NewMemoryQueryCache()

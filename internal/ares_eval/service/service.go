@@ -256,44 +256,12 @@ func (s *Service) runSingleConfig(
 		return singleErrorResult(runID, cfgRef, suite,
 			"no agent executor configured: provide one via WithAgentExecutor")
 	}
-	runner, err := ares_eval.NewAgentTestRunner(s.agentExecutor)
-	if err != nil {
-		log.Warn("failed to create agent test runner, falling back to placeholder",
-			"config", cfgRef.Name, "error", err)
-		placeholder := &placeholderRunner{configName: cfgRef.Name}
-		pResults, pErr := placeholder.RunSuite(ctx, *suite)
-		if pErr != nil {
-			log.Error("placeholder run failed", "config", cfgRef.Name, "error", pErr)
-			return singleErrorResult(runID, cfgRef, suite, pErr.Error())
-		}
-		// Convert placeholder results to EvalResult.
-		now := time.Now()
-		evalResults := make([]*EvalResult, len(pResults))
-		for i, tr := range pResults {
-			status := "pass"
-			var errMsg *string
-			if tr.Error != "" {
-				status = "fail"
-				errMsg = &tr.Error
-			}
-			evalResults[i] = &EvalResult{
-				ID:           uuid.New().String(),
-				RunID:        runID,
-				ConfigName:   cfgRef.Name,
-				SuiteName:    suite.Name,
-				TestCaseID:   tr.TestCaseID,
-				TestCaseName: tr.TestCaseID,
-				Score:        0,
-				Dimensions:   map[string]float64{},
-				Status:       status,
-				ErrorMessage: errMsg,
-				DurationMs:   int(tr.Duration.Milliseconds()),
-				CreatedAt:    now,
-				UpdatedAt:    now,
-			}
-		}
-		return evalResults
-	}
+	// NewAgentTestRunner only errors on a nil executor, which the guard above
+	// has already excluded, so runner creation cannot fail here. Previously
+	// this branch fell back to a placeholderRunner that fabricated pass results
+	// with zero metrics — a fake implementation that must not exist (it would
+	// have silently reported untested cases as passing).
+	runner, _ := ares_eval.NewAgentTestRunner(s.agentExecutor)
 
 	results, err := runner.RunSuite(ctx, *suite)
 	if err != nil {
@@ -358,46 +326,6 @@ func (s *Service) runSingleConfig(
 
 	return evalResults
 }
-
-// placeholderRunner implements ares_eval.TestRunner for API-layer evaluation.
-// In production, this would be replaced by a real runner backed by an AgentExecutor.
-type placeholderRunner struct {
-	configName string
-}
-
-// RunSuite runs all test cases sequentially, producing placeholder results.
-// Each test case gets a default pass result with zero metrics.
-func (r *placeholderRunner) RunSuite(ctx context.Context, suite ares_eval.TestSuite) ([]ares_eval.TestResult, error) {
-	results := make([]ares_eval.TestResult, 0, len(suite.TestCases))
-	for _, tc := range suite.TestCases {
-		select {
-		case <-ctx.Done():
-			return results, ctx.Err()
-		default:
-		}
-
-		results = append(results, ares_eval.TestResult{
-			TestCaseID: tc.ID,
-			Timestamp:  time.Now(),
-			Metrics:    make(map[string]float64),
-			Duration:   0,
-		})
-	}
-	return results, nil
-}
-
-// RunSingle runs a single test case with a placeholder result.
-func (r *placeholderRunner) RunSingle(ctx context.Context, testCase ares_eval.TestCase) (ares_eval.TestResult, error) {
-	return ares_eval.TestResult{
-		TestCaseID: testCase.ID,
-		Timestamp:  time.Now(),
-		Metrics:    make(map[string]float64),
-		Duration:   0,
-	}, nil
-}
-
-// Ensure compile-time interface check.
-var _ ares_eval.TestRunner = (*placeholderRunner)(nil)
 
 // singleErrorResult builds a single error EvalResult for failure reporting.
 func singleErrorResult(runID string, cfgRef AgentConfigRef, suite *ares_eval.TestSuite, errMsg string) []*EvalResult {

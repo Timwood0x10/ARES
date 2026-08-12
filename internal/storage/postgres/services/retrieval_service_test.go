@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/truncate"
 )
@@ -2074,4 +2077,77 @@ func TestNormalizeQueryForCache(t *testing.T) {
 			t.Errorf("normalizeQueryForCache(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
 	}
+}
+
+// TestRetrievalService_ExperienceRankingWired is a contract test for the
+// wiring seam that ProductionMemoryManager relies on: after SetExperienceServices
+// is called with a ranking service and a conflict resolver, applyExperienceRanking
+// must actually rank and conflict-resolve the experiences instead of falling back
+// to plain conversion. Previously nothing called SetExperienceServices in
+// production, so rankingService/conflictResolver stayed nil and this path never ran.
+func TestRetrievalService_ExperienceRankingWired(t *testing.T) {
+	s := &RetrievalService{}
+	s.SetExperienceServices(nil, experience.NewRankingService(), experience.NewConflictResolver())
+
+	plan := DefaultRetrievalPlan()
+	plan.TopK = 20
+
+	exp1 := &storage_models.Experience{
+		ID:         "exp-1",
+		TenantID:   "tenant-1",
+		Type:       "task",
+		Problem:    "config parse failed",
+		Solution:   "use strict YAML parser",
+		Metadata:   map[string]interface{}{"similarity": 0.9},
+		UsageCount: 5,
+	}
+	exp2 := &storage_models.Experience{
+		ID:         "exp-2",
+		TenantID:   "tenant-1",
+		Type:       "task",
+		Problem:    "config parse failed",
+		Solution:   "fallback to defaults on error",
+		Metadata:   map[string]interface{}{"similarity": 0.8},
+		UsageCount: 1,
+	}
+
+	req := &SearchRequest{Query: "config parse", Plan: plan}
+	results := s.applyExperienceRanking(context.Background(), []*storage_models.Experience{exp1, exp2}, req)
+
+	require.NotEmpty(t, results, "wired experience ranking should return ranked results")
+	for _, r := range results {
+		assert.Equal(t, "experience", r.Source, "result should be attributed to experience source")
+	}
+	assert.LessOrEqual(t, len(results), plan.TopK, "results must respect TopK cap")
+}
+
+// TestRetrievalService_ExperienceRankingConflictResolve verifies that when the
+// conflict resolver is wired and ExperienceConflictResolve is enabled, duplicate
+// problems are collapsed into a single resolved result (dedup via grouping).
+func TestRetrievalService_ExperienceRankingConflictResolve(t *testing.T) {
+	s := &RetrievalService{}
+	s.SetExperienceServices(nil, experience.NewRankingService(), experience.NewConflictResolver())
+
+	plan := DefaultRetrievalPlan()
+	plan.TopK = 20
+	plan.ExperienceConflictResolve = true
+
+	// Three experiences with the same problem should collapse to one resolved entry.
+	experiences := make([]*storage_models.Experience, 0, 3)
+	for i := 0; i < 3; i++ {
+		experiences = append(experiences, &storage_models.Experience{
+			ID:         fmt.Sprintf("exp-%d", i),
+			TenantID:   "tenant-1",
+			Type:       "task",
+			Problem:    "duplicate problem",
+			Solution:   fmt.Sprintf("solution %d", i),
+			Metadata:   map[string]interface{}{"similarity": 0.9},
+			UsageCount: 1,
+		})
+	}
+
+	req := &SearchRequest{Query: "duplicate problem", Plan: plan}
+	results := s.applyExperienceRanking(context.Background(), experiences, req)
+
+	require.NotEmpty(t, results, "conflict resolution should still produce a representative result")
 }

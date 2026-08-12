@@ -23,8 +23,20 @@
 | internal/ares_protocol | dlq 新增 AddWithMaxRetries 使重试预算生效 + Process 加锁修复 Retries 数据竞争（新增测试） |
 | api/service | ExecuteStream 应用超时（goroutine 拥有派生 ctx）+ errgroup 错误经合成 Failed 事件上浮 + CreateAgent 回填 Config |
 | cmd/ares | start.go 用 atomic.Pointer 修复 svc 数据竞争 + actions.ListTools 补 nil guard |
-| internal/ares_eval | report 空值集不再除零/误报 min + 软失败原因持久化 + 移除不可达 ErrNoRows 分支 |
+| internal/ares_eval | report 空值集不再除零/误报 min + 软失败原因持久化 + 移除不可达 ErrNoRows 分支 + **移除假实现 placeholderRunner（铁律#2）及不可达 fallback** |
 | sdk | New() 错误路径关闭 llmSvc/MCP clients/排空 bootstrap + wireMCPClients 失败关闭已连客户端 + Team.Run 补 nil guard |
+
+## 第二轮修复（接线 + 死代码清理，已完成）
+
+> 严格遵循 `plan/rules/code_rules_v2.md`，已通过 `go build ./...`、`go test ./...`、`go vet`、`gofmt`。
+
+| 模块 | 修复内容 | 类型 |
+|------|---------|------|
+| internal/ares_memory | 在 `NewProductionMemoryManager` 构造 RetrievalService 后调用 `SetExperienceServices` 注入 ranking/conflictResolver，使 experience 检索的 ranking + 冲突消解在生产真正生效（此前 `rankingService`/`conflictResolver` 恒为 nil，`applyExperienceRanking` 静默回退） | 接线 + 新增 2 个 contract 测试 |
+| internal/api_impl | 删除从未读取的死字段 `experienceRanking`/`experienceConflicts` 及构造代码（真实接线已在 production_manager 完成），清理 `experience` 死 import | 死代码清理 |
+| internal/ares_eval | 移除违反铁律#2 的假实现 `placeholderRunner`（伪造 pass 结果）+ 移除不可达的 fallback 分支；runner 创建错误已由 nil 守卫排除，直接使用真实 runner | 死代码/假实现清理 |
+
+> **接线确认**：`NewRetrievalService` 生产仅由 `NewProductionMemoryManager` 调用，本次接线覆盖唯一生产路径。
 
 > **分析确认未改动项**：ares_arena `computeWinRate` 平局计入（文档化设计）、queue.Enqueue 忽略 ctx（文档化非阻塞设计）、workflow runner_checkpoint Acknowledge 失败（resume 经 Restore 重建队列，无重复应用）。
 

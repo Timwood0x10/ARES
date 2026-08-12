@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -181,6 +182,19 @@ func NewProductionMemoryManager(
 
 	// Inject pipeline into retrieval service for unified query embedding.
 	retrievalService.SetEmbeddingPipeline(pipeline)
+
+	// Wire experience ranking and conflict resolution. Without this the
+	// RetrievalService.rankingService/conflictResolver stay nil and
+	// applyExperienceRanking silently falls back to plain results, so the
+	// experience ranking + conflict-resolution feature never took effect in
+	// production. Distillation is intentionally nil here — experience
+	// distillation runs through internal/ares_memory/distillation, not the
+	// retrieval-layer distillation service.
+	retrievalService.SetExperienceServices(
+		nil, // distillationService (handled by ares_memory/distillation)
+		experience.NewRankingService(),
+		experience.NewConflictResolver(),
+	)
 
 	return &ProductionMemoryManager{
 		dbPool:                 dbPool,
