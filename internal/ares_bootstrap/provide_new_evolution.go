@@ -52,6 +52,12 @@ type NewEvolutionComponents struct {
 	// are created and their DAGs are registered with the runtime manager.
 	liveDAG *engine.MutableDAG
 
+	// graphExec is the GraphPatchExecutor created at bootstrap time.
+	// UpdateLiveDAG calls SetGraph on it to swap in the live workflow graph,
+	// since Register cannot overwrite an already-registered component key
+	// (a naive re-register is a guaranteed-failure no-op).
+	graphExec *wfgraph.GraphPatchExecutor
+
 	// recoveryExec is the RecoveryPatchExecutor created at bootstrap time.
 	// UpdateLiveDAG calls SetDAG on it to replace the fake DAG with the
 	// live one, since Register cannot overwrite an already-registered key.
@@ -154,8 +160,10 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	// 4. Patch Registry — register all executors.
 	patchReg := patch.NewRegistry()
 
-	// Track the recovery executor so UpdateLiveDAG can replace its DAG
-	// reference later (Register cannot overwrite already-registered keys).
+	// Track the graph and recovery executors so UpdateLiveDAG can replace
+	// their references in place later (Register cannot overwrite
+	// already-registered keys).
+	var graphExec *wfgraph.GraphPatchExecutor
 	var recoveryExec *engine.RecoveryPatchExecutor
 
 	if dag != nil {
@@ -186,7 +194,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 			}
 		}
 
-		graphExec := wfgraph.NewGraphPatchExecutor(g)
+		graphExec = wfgraph.NewGraphPatchExecutor(g)
 		_ = patchReg.RegisterComponent(graphExec)
 		_ = patchReg.Register("graph.scheduler", graphExec)
 
@@ -241,6 +249,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		PatchReg:      patchReg,
 		Coordinator:   coord,
 		LLMAdapter:    evoparent.NewLLMAdapter(),
+		graphExec:     graphExec,
 		recoveryExec:  recoveryExec,
 		knowledgeExec: knowledgeExecTyped,
 	}, nil
@@ -340,12 +349,19 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 		}
 	}
 
-	graphExec := wfgraph.NewGraphPatchExecutor(g)
-	if err := c.PatchReg.RegisterComponent(graphExec); err != nil {
-		return fmt.Errorf("register graph executor component: %w", err)
-	}
-	if err := c.PatchReg.Register("graph.scheduler", graphExec); err != nil {
-		return fmt.Errorf("register graph.scheduler: %w", err)
+	// Rebuild the graph executor with the live DAG in place. Register cannot
+	// overwrite an already-registered component key, so a naive
+	// RegisterComponent/Register would always fail — the previous code returned
+	// an error on every call. We instead SetGraph on the executor that
+	// bootstrap registered, mirroring recoveryExec.SetDAG and
+	// knowledgeExec.SetRuntime below.
+	if c.graphExec != nil {
+		c.graphExec.SetGraph(g)
+	} else {
+		// Fallback: create a new executor if no existing one was stored.
+		graphExec := wfgraph.NewGraphPatchExecutor(g)
+		_ = c.PatchReg.RegisterComponent(graphExec)
+		_ = c.PatchReg.Register("graph.scheduler", graphExec)
 	}
 
 	// Rebuild recovery executor with the live DAG.

@@ -2132,7 +2132,10 @@ func TestRetrievalService_ExperienceRankingConflictResolve(t *testing.T) {
 	plan.TopK = 20
 	plan.ExperienceConflictResolve = true
 
-	// Three experiences with the same problem should collapse to one resolved entry.
+	// Three experiences with the same problem and identical non-zero embeddings
+	// must collapse to one resolved entry: cosine similarity = 1.0 exceeds the
+	// default 0.9 threshold, so DetectConflictGroups forms a single group and
+	// Resolve keeps only its best-ranked representative.
 	experiences := make([]*storage_models.Experience, 0, 3)
 	for i := 0; i < 3; i++ {
 		experiences = append(experiences, &storage_models.Experience{
@@ -2141,6 +2144,7 @@ func TestRetrievalService_ExperienceRankingConflictResolve(t *testing.T) {
 			Type:       "task",
 			Problem:    "duplicate problem",
 			Solution:   fmt.Sprintf("solution %d", i),
+			Embedding:  []float64{0.1, 0.2, 0.3},
 			Metadata:   map[string]interface{}{"similarity": 0.9},
 			UsageCount: 1,
 		})
@@ -2149,5 +2153,8 @@ func TestRetrievalService_ExperienceRankingConflictResolve(t *testing.T) {
 	req := &SearchRequest{Query: "duplicate problem", Plan: plan}
 	results := s.applyExperienceRanking(context.Background(), experiences, req)
 
-	require.NotEmpty(t, results, "conflict resolution should still produce a representative result")
+	// All three share one conflict group, so exactly one representative must
+	// survive; with identical inputs the group's first member wins the tie.
+	require.Len(t, results, 1, "duplicate experiences must collapse to one resolved entry")
+	assert.Equal(t, "exp-0", results[0].ID, "best-ranked experience should win the conflict group")
 }

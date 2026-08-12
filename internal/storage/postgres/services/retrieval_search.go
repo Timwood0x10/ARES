@@ -256,7 +256,7 @@ func (s *RetrievalService) applyExperienceRanking(ctx context.Context, experienc
 			Score:            exp.Score,
 			Success:          exp.Success,
 			AgentID:          exp.AgentID,
-			UsageCount:       exp.UsageCount,
+			UsageCount:       exp.GetUsageCount(), // metadata["usage_count"] is authoritative for backward compatibility
 			DecayAt:          exp.DecayAt,
 			CreatedAt:        exp.CreatedAt,
 		}
@@ -267,6 +267,17 @@ func (s *RetrievalService) applyExperienceRanking(ctx context.Context, experienc
 	if rankErr != nil {
 		log.Error("rank experiences failed, returning empty results", "error", rankErr)
 		return []*SearchResult{}
+	}
+
+	// Propagate the computed FinalScore onto the experience objects so the
+	// final conversion (and any conflict-resolution winner, which reuses the
+	// same *Experience pointers) carries the ranked score instead of the
+	// persisted raw score — a bandit feedback signal that is typically 0 in
+	// production, not a relevance score. Without this, rerankResults re-sorts
+	// on near-zero scores and filterByScore drops experience results whenever
+	// MinScore > 0, so the ranking feature never surfaces its scores.
+	for _, r := range ranked {
+		r.Experience.Score = r.FinalScore
 	}
 
 	// Apply conflict resolution if enabled

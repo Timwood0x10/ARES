@@ -268,6 +268,16 @@ func runServe() error {
 	}
 
 	// --- PluginBus + MonitorPlugin ---
+	// TODO(tech-debt): ares_runtime exposes built-in WorkflowHook plugins
+	// (ArenaPlugin/CheckpointPlugin/LoopPlugin/ObserverPlugin/ToolPlugin) and
+	// routers (ExpressionRouter/MemoryRouter/EvolutionRouter/FallbackRouter)
+	// driven by PluginBus.BeforeStep/AfterStep. Production only registers
+	// MonitorPlugin here and does NOT register any of those built-ins, because
+	// the unified workflow Runner already provides native loop/checkpoint/routing
+	// via LoopSpec/WithCheckpointStore/NodeRouter. Force-wiring them would change
+	// runtime behavior and is a product/direction decision (code_rules_v2 铁律 #4),
+	// so it is intentionally deferred. The graph executor path
+	// (internal/workflow/graph) supports them via Graph.SetPluginBus when enabled.
 	bus := ares_runtime.NewPluginBus()
 	tracker := data.NewAgentTracker()
 	linker := data.NewTraceLinker()

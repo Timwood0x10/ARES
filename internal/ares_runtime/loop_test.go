@@ -8,6 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Note: mockMemoryPlugin is defined in router_memory_test.go (same package);
+// LoopPlugin tests reuse it because OnRoundEnd consumes MemoryPlugin instances
+// from the bus. It must not be redeclared here.
+
 // TestLoopPlugin_OnRoundEnd_AdvisesMemoryWithRound verifies OnRoundEnd wires
 // the real available state (ExecutionID + round number) into the RouteState
 // passed to MemoryPlugin.AdviseRoute. Previously the RouteState carried only

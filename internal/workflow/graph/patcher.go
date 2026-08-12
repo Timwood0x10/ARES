@@ -27,6 +27,19 @@ func NewGraphPatchExecutor(g *Graph) *GraphPatchExecutor {
 // Name returns "workflow.graph" as the component identifier for patch routing.
 func (e *GraphPatchExecutor) Name() string { return "workflow.graph" }
 
+// SetGraph replaces the executor's underlying graph reference with a live one.
+// Called after agents are created so workflow/scheduler patches mutate the
+// agent's real graph rather than the bootstrap placeholder. This mirrors
+// RecoveryPatchExecutor.SetDAG: the executor is already registered on the
+// patch registry, so it must be updated in place (Register cannot overwrite an
+// already-registered component key).
+func (e *GraphPatchExecutor) SetGraph(g *Graph) {
+	if g == nil {
+		return
+	}
+	e.graph = g
+}
+
 // Snapshot returns the current graph structure as a serializable snapshot.
 func (e *GraphPatchExecutor) Snapshot(_ context.Context) (any, error) {
 	if e.graph == nil {

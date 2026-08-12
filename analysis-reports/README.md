@@ -38,6 +38,24 @@
 
 > **接线确认**：`NewRetrievalService` 生产仅由 `NewProductionMemoryManager` 调用，本次接线覆盖唯一生产路径。
 
+## 第三轮修复（live-DAG 进化替换 + 插件子系统审查）
+
+> 已完成 `go build ./...`、`go test ./...`、`go vet`、`gofmt` 验证。
+
+| 模块 | 修复内容 | 类型 |
+|------|---------|------|
+| internal/workflow/graph | 新增 `GraphPatchExecutor.SetGraph(*Graph)` 方法，支持就地替换底层图（镜像 `RecoveryPatchExecutor.SetDAG` 模式） | 修复 + 新增方法 |
+| internal/ares_bootstrap | 新增 `graphExec` 字段并在 bootstrap 保存；`UpdateLiveDAG` 改为 `graphExec.SetGraph(g)` 就地更新，删除必失败的 `RegisterComponent`/`Register("graph.scheduler")`。**修复"每次调用必然失败、graph executor 的 DAG 从不上链到 live DAG"缺陷**（`serve.go:530` 辅助更新现在真正生效）。与 recovery/knowledge 的 `SetDAG`/`SetRuntime` 模式统一 | 修复 + 新增 2 个回归测试 |
+| cmd/ares | `serve.go` PluginBus 接线点补充 tech-debt 注释（铁律 #3 留痕） | 文档留痕 |
+
+### ares_runtime 内置插件子系统——Code Review 结论（方向决策，不改动）
+
+深度审查后确认：
+- `PluginBus` **活跃**（serve.go 注册 `MonitorPlugin`），workflow Runner 通过 `WithPluginBus` 驱动其 `BeforeStep`/`AfterStep`。
+- 但内置插件（Arena/Checkpoint/Loop/Observer/Tool）与 router（Expression/Memory/Evolution/Fallback）**生产从不注册**，`MonitorPlugin` 不实现 `WorkflowHook`，因此 hook 机制在生产无触发。
+- 关键判断：**workflow 引擎已有原生 loop/checkpoint/routing**（`LoopSpec.MaxIterations`、`WithCheckpointStore`、`NodeRouter`、`graph.SetPluginBus`）。内置插件是**并行/替代机制**，仅被 `graph/executor_test.go` 等测试路径使用。
+- **结论**：强制接线会改变运行时行为（loop 限制、持久化突然生效），属**产品方向决策**（铁律 #4），非 bug 修复。已按铁律 #3 在 `serve.go` 标注 tech-debt，**未改动行为**。
+
 > **分析确认未改动项**：ares_arena `computeWinRate` 平局计入（文档化设计）、queue.Enqueue 忽略 ctx（文档化非阻塞设计）、workflow runner_checkpoint Acknowledge 失败（resume 经 Restore 重建队列，无重复应用）。
 
 ---
