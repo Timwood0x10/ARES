@@ -1,8 +1,38 @@
 // AKF demo — demonstrates the complete ARES Knowledge Fabric pipeline.
 //
+// Purpose:
+//
+//	This example walks the full knowledge pipeline end to end: register data
+//	providers (in-memory KnowledgeObjects distilled from real docs), plan the
+//	query, load + link + reduce into a knowledge graph, and compile the graph
+//	into an LLM context prompt / JSON. It is the knowledge-fabric counterpart
+//	of the 11-knowledge-import example, but with explicit pipeline stages.
+//
+// Learning objectives:
+//   - How provider.NewProviderRegistry collects knowledge sources and how a
+//     provider implements knowledge.GraphProvider.
+//   - How planner.NewSourceDiscovery + NewKnowledgePlanner turn a goal into a
+//     plan, and how runtime.New executes Plan → Load → Link → Reduce → Graph.
+//   - How compiler.NewDefaultCompiler compiles the graph into prompt/JSON.
+//
+// Core APIs (with package paths):
+//   - provider.NewProviderRegistry (internal/knowledge/provider)
+//   - planner.NewSourceDiscovery / NewKnowledgePlanner (internal/knowledge/planner)
+//   - runtime.New / (*Runtime).Execute (internal/knowledge/runtime)
+//   - compiler.NewDefaultCompiler / (*Compiler).Compile
+//     (internal/knowledge/compiler)
+//   - knowledge.NewKnowledgePipeline / KnowledgeObject (internal/knowledge)
+//
 // Run:
 //
-//	go run examples/knowledge-fabric/main.go
+//	go run ./examples/knowledge-fabric
+//
+// Expected output:
+//
+//	═══ ARES Knowledge Fabric Demo ═══
+//	1. Registering providers...  →  2. Building knowledge pipeline...
+//	3. Executing knowledge pipeline... → ═══ Graph Structure ═══
+//	4. Compiling context... → ═══ Compiled Context (Prompt) ═══
 package main
 
 import (
@@ -23,7 +53,10 @@ func main() {
 	fmt.Println("═══ ARES Knowledge Fabric Demo ═══")
 	fmt.Println()
 
-	// ── 1. Register data providers ─────────────────────────
+	// ── Step 1: Register data providers ──
+	// Each provider exposes KnowledgeObjects; here they are injected from
+	// docs/articles/zh/ as typed objects (architecture/decision/memory) with
+	// confidence and tags. Two providers model two knowledge sources.
 	fmt.Println("1. Registering providers...")
 
 	reg := provider.NewProviderRegistry()
@@ -116,7 +149,9 @@ func main() {
 
 	fmt.Printf("   Registered %d providers, %d articles loaded\n", len(reg.List()), 12)
 
-	// ── 2. Set up planner + discovery + runtime ─────────────
+	// ── Step 2: Set up planner + discovery + runtime ──
+	// SourceDiscovery maps a goal to relevant providers; KnowledgePlanner
+	// builds the retrieval plan; runtime.New wires plan→load→link→reduce.
 	fmt.Println("2. Building knowledge pipeline...")
 
 	pipeline := knowledge.NewKnowledgePipeline(nil, nil, nil, nil)
@@ -130,7 +165,9 @@ func main() {
 		[]runtime.Reducer{&runtime.DefaultReducer{}},
 	)
 
-	// ── 3. Execute: Plan → Load → Link → Reduce → Graph ────
+	// ── Step 3: Execute: Plan → Load → Link → Reduce → Graph ──
+	// Execute takes the goal and a token budget, loads relevant objects,
+	// links them into a graph, and reduces within the ForGraph budget.
 	fmt.Println("3. Executing knowledge pipeline...")
 	fmt.Printf("   Goal: %q\n", "ARES 工作流引擎是如何设计的？有哪些增强？")
 
@@ -164,7 +201,9 @@ func main() {
 		fmt.Printf("  %s ──[%s]──▶ %s  (score: %.2f)\n", e.From, e.Name, e.To, e.Score)
 	}
 
-	// ── 4. Compile: Graph → Prompt / JSON ───────────────────
+	// ── Step 4: Compile: Graph → Prompt / JSON ──
+	// The compiler renders the knowledge graph into the formats the LLM can
+	// consume: a prompt with selected nodes/edges and a JSON structure.
 	fmt.Println("\n4. Compiling context...")
 
 	comp := compiler.NewDefaultCompiler()
@@ -186,7 +225,9 @@ func main() {
 	fmt.Printf("   Total time:    %v\n", elapsed)
 }
 
-// memoryProvider is a simple in-memory GraphProvider for demo purposes.
+// memoryProvider is a simple in-memory GraphProvider for demo purposes: it
+// streams a fixed object list, acting as a stand-in for a real knowledge
+// source.
 type memoryProvider struct {
 	name    string
 	objects []*knowledge.KnowledgeObject

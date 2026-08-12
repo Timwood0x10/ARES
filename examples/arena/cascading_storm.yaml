@@ -1,17 +1,45 @@
+# Chaos Arena Scenario — Cascading Failure Storm
+#
+# Purpose:
+#   This YAML defines an ordered chaos scenario for the ARES Arena: a sequence
+#   of fault injections (kill agent, slow agent, kill leader, network
+#   partition, tool timeout, memory corrupt) fired at staggered delays to
+#   simulate cascading failures across multiple agents.
+#
+# Learning objectives:
+#   - How a chaos scenario is declared as an ordered list of actions, each
+#     with a delay, an action type, a target, and a label.
+#   - How scenario config controls execution: stop_on_error, parallel_actions,
+#     max_concurrent, warmup, cooldown.
+#   - How to combine fault types (kill_agent / slow_agent / kill_leader /
+#     network_partition / tool_timeout / memory_corrupt) into one storm.
+#
+# Run (via the arena tooling that consumes scenario YAML):
+#   Scenario Mode replays this action list against the agents under test.
+#
+# Expected behavior:
+#   The Arena applies each action at its delay and measures how the agent
+#   system (leader + members) survives the cascade.
+
 name: cascading-failure-storm
 description: "Simulate cascading failures across multiple agents"
 config:
+  # stop_on_error: keep injecting faults even after one action fails.
   stop_on_error: false
+  # parallel_actions: allow actions to overlap; max_concurrent caps the overlap.
   parallel_actions: true
   max_concurrent: 3
+  # warmup/cooldown: pause before the first action and after the last one.
   warmup: 2s
   cooldown: 2s
 actions:
+  # ── Action 1: kill agent-1 after 3s ──
   - delay: 3s
     action:
       type: kill_agent
       target_id: agent-1
     label: kill-agent-1
+  # ── Action 2: slow agent-2 (add 10s latency) after 5s ──
   - delay: 5s
     action:
       type: slow_agent
@@ -19,15 +47,18 @@ actions:
       metadata:
         delay: 10s
     label: slow-agent-2
+  # ── Action 3: kill the leader after 7s ──
   - delay: 7s
     action:
       type: kill_leader
     label: kill-leader
+  # ── Action 4: partition agent-3 off the network after 2s ──
   - delay: 2s
     action:
       type: network_partition
       target_id: agent-3
     label: partition-agent-3
+  # ── Action 5: force a 30s tool timeout on agent-1 after 4s ──
   - delay: 4s
     action:
       type: tool_timeout
@@ -35,11 +66,13 @@ actions:
       metadata:
         duration: 30s
     label: timeout-agent-1
+  # ── Action 6: corrupt agent-2's memory after 6s ──
   - delay: 6s
     action:
       type: memory_corrupt
       target_id: agent-2
     label: corrupt-agent-2
+  # ── Action 7: kill agent-3 after 8s ──
   - delay: 8s
     action:
       type: kill_agent

@@ -1,18 +1,40 @@
-// Full app — demonstrates a complete ARES application with web UI.
+// Example 09 — Full App: a complete ARES application with a web UI.
 //
-// Features:
-//   - HTTP server with chat API
-//   - YAML-driven agent with custom tools
-//   - Real-time tool call tracking
-//   - Simple HTML dashboard
+// Purpose:
 //
-// Only the custom tools and HTTP routes need Go code; the LLM, memory,
-// distillation, and AKG are all configured via ares.yaml.
+//	Show how to assemble every ARES subsystem (LLM, memory, distillation,
+//	AKG knowledge) into one runnable HTTP server with a minimal HTML
+//	dashboard and custom tools.
+//
+// Learning objectives:
+//   - Load a YAML config and turn it into SDK options.
+//   - Register custom tools on the runtime tool registry.
+//   - Create an Agent and call Agent.Run from an HTTP handler.
+//   - Track token usage, tool-call count, and latency per query.
+//
+// Core APIs used:
+//   - github.com/Timwood0x10/ares/sdk.LoadConfigFile
+//   - github.com/Timwood0x10/ares/sdk.Config.ToOptions
+//   - github.com/Timwood0x10/ares/sdk.NewRuntime
+//   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
+//   - github.com/Timwood0x10/ares/sdk.Agent.Run
+//   - github.com/Timwood0x10/ares/api/tools.ToolFunc
 //
 // Run:
 //
 //	go run examples/09-full-app/main.go
-//	then open http://localhost:8080
+//
+// Then open http://localhost:8080 in a browser.
+//
+// Expected output:
+//
+//	🌐 Open http://localhost:8080
+//	(followed by HTTP request logs as you chat in the browser)
+//
+// Try modifying:
+//   - The addr variable to listen on a different port.
+//   - The appTools slice to add or replace custom tools.
+//   - The instruction passed to WithInstruction to change agent persona.
 package main
 
 import (
@@ -29,7 +51,10 @@ import (
 )
 
 func main() {
-	// ── 1. Load ares.yaml + wire everything ────────────────────
+	// ── Step 1: Load ares.yaml and build the runtime ──
+	// LoadConfigFile reads the YAML; ToOptions converts each populated
+	// field into a functional SDK option. NewRuntime wires the LLM,
+	// memory, distillation, and AKG subsystems from those options.
 	cfg, err := sdk.LoadConfigFile("ares.yaml")
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -38,10 +63,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	rt := sdk.NewRuntime(opts...)
+	rt := sdk.NewRuntime(opts...) // runtime owns all subsystem lifecycles
 	defer rt.Close()
 
-	// ── 2. Register custom tools ───────────────────────────────
+	// ── Step 2: Register custom tools ──
+	// Each ToolFunc is registered on the runtime's tool registry so the
+	// agent can discover and call them during a Run cycle.
 	for _, t := range appTools {
 		if err := rt.ToolRegistry().Register(t); err != nil {
 			log.Printf("register: %v", err)
@@ -49,19 +76,23 @@ func main() {
 		}
 	}
 
-	// ── 3. Create agent ─────────────────────────────────────────
+	// ── Step 3: Create the agent ──
+	// NewAgent returns a configured Agent. WithInstruction sets the
+	// system prompt that guides tool selection and response style.
 	agent := rt.NewAgent("assistant",
 		sdk.WithInstruction("You are a helpful assistant with tools. Use calculator for math, weather for forecasts."),
 	)
 
-	// ── 4. HTTP server ──────────────────────────────────────────
+	// ── Step 4: Wire HTTP routes and start the server ──
+	// appState holds the agent and a mutex-guarded chat history so
+	// concurrent HTTP requests can safely append entries.
 	app := &appState{
 		agent:   agent,
 		history: make([]chatEntry, 0),
 	}
 
-	http.HandleFunc("/", app.handleIndex)
-	http.HandleFunc("/api/chat", app.handleChat)
+	http.HandleFunc("/", app.handleIndex)        // serves the HTML dashboard
+	http.HandleFunc("/api/chat", app.handleChat) // POST a user message
 	http.HandleFunc("/api/stats", app.handleStats)
 
 	addr := ":8080"
@@ -73,6 +104,7 @@ func main() {
 
 // ---- app state ----
 
+// chatEntry records a single user/assistant exchange for the dashboard.
 type chatEntry struct {
 	Time    time.Time `json:"time"`
 	Input   string    `json:"input"`
@@ -82,19 +114,23 @@ type chatEntry struct {
 	Latency string    `json:"latency"`
 }
 
+// appState holds the agent and chat history shared across HTTP handlers.
 type appState struct {
-	mu      sync.Mutex
+	mu      sync.Mutex // guards history
 	agent   *sdk.Agent
 	history []chatEntry
 }
 
 // ---- HTTP handlers ----
 
+// handleIndex serves the embedded HTML dashboard.
 func (app *appState) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = fmt.Fprint(w, indexHTML)
 }
 
+// handleChat accepts a POSTed user message, runs the agent, and returns
+// the response plus usage metadata as JSON.
 func (app *appState) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -106,12 +142,15 @@ func (app *appState) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Agent.Run executes the full agent loop (LLM call, tool dispatch,
+	// memory write-back) and returns output plus usage stats.
 	result, err := app.agent.Run(r.Context(), input)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 
+	// Build a chat entry from the RunResult fields.
 	entry := chatEntry{
 		Time:    time.Now(),
 		Input:   input,
@@ -129,6 +168,7 @@ func (app *appState) handleChat(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(entry)
 }
 
+// handleStats returns aggregate usage counters as JSON.
 func (app *appState) handleStats(w http.ResponseWriter, r *http.Request) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
@@ -149,13 +189,14 @@ func (app *appState) handleStats(w http.ResponseWriter, r *http.Request) {
 
 // ---- tools ----
 
+// appTools is the set of custom tools registered with the runtime.
 var appTools = []tools.Tool{
 	tools.ToolFunc{
 		ToolName: "calculator",
 		ToolDesc: "Evaluate a mathematical expression",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
 			expr, _ := params["expression"].(string)
-			return fmt.Sprintf("result: %s = (demo) 42", expr), nil
+			return fmt.Sprintf("result: %s = (demo) 42", expr), nil // demo returns a fixed value
 		},
 	},
 	tools.ToolFunc{
@@ -163,13 +204,14 @@ var appTools = []tools.Tool{
 		ToolDesc: "Get current weather for a city",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
 			city, _ := params["city"].(string)
-			return fmt.Sprintf(`{"city":%q,"temp":22,"condition":"sunny"}`, city), nil
+			return fmt.Sprintf(`{"city":%q,"temp":22,"condition":"sunny"}`, city), nil // demo weather JSON
 		},
 	},
 }
 
 // ---- HTML dashboard ----
 
+// indexHTML is the single-page dashboard served at "/".
 const indexHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>

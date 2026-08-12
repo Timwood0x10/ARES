@@ -1,13 +1,38 @@
 // external-tools demonstrates how external projects use the ares public API.
 //
-// Shows:
-//  1. Built-in tools (calculator, web_search, regex, etc.)
-//  2. Custom tool registration
-//  3. MCP server connection and tool usage
-//  4. Building a tool registry for an agent system
-//  5. Tool discovery via the discover_tools meta-tool over a RegistrySource
+// Purpose:
 //
-// Run: go run ./examples/external-tools
+//	This example shows the tool ecosystem from an integrator's point of view:
+//	built-in tools, custom tool registration, MCP server connection with
+//	auto-registration of MCP tools, and tool discovery through the
+//	discover_tools meta-tool — the same path an LLM agent uses at runtime.
+//
+// Learning objectives:
+//   - How to register and execute tools via api/tools.Registry (built-in +
+//     custom ToolFunc).
+//   - How to connect to a discovered MCP server (api/mcp.ConnectStdio) and
+//     wrap its tools into registry entries.
+//   - How the discover_tools meta-tool queries a RegistrySource.
+//
+// Core APIs (with package paths):
+//   - tools.NewRegistry / RegisterBuiltinTools / Register / Execute / List /
+//     CoreRegistry (api/tools)
+//   - mcp.ConnectStdio / (*Client).ListTools / (*Client).CallTool (api/mcp)
+//   - discovery.NewEngine / DiscoverNow / List (api/discovery)
+//   - toolsource.NewRegistrySource / NewDiscoverToolsTool
+//     (internal/tools/toolsource)
+//
+// Run:
+//
+//	go run ./examples/external-tools
+//
+// Expected output:
+//
+//	=== Built-in Tools ===
+//	  calculator ... (list of built-ins)
+//	=== Tool Calls ===
+//	  calculator(2+3*4): ...  sentiment(good): ...  word_count: ...
+//	=== MCP Auto-Discovery ===  →  === All N Tools ===  →  discover_tools
 package main
 
 import (
@@ -24,7 +49,9 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── 1. Built-in tools ─────────────────────────────────
+	// ── Step 1: Register built-in tools ──
+	// NewRegistry starts empty; RegisterBuiltinTools loads the standard set
+	// (calculator, web_search, regex, ...).
 	registry := tools.NewRegistry()
 	if err := tools.RegisterBuiltinTools(registry); err != nil {
 		fmt.Printf("register builtin tools: %v\n", err)
@@ -36,7 +63,10 @@ func main() {
 		fmt.Printf("  %-20s %s\n", t.Name, t.Description)
 	}
 
-	// ── 2. Custom tools ───────────────────────────────────
+	// ── Step 2: Register custom tools ──
+	// A ToolFunc is the simplest custom tool: name + description + Fn that
+	// takes params and returns a result. Two custom tools are added to show
+	// extension beyond the built-ins.
 	if err := registry.Register(tools.ToolFunc{
 		ToolName: "sentiment",
 		ToolDesc: "Analyze text sentiment",
@@ -64,7 +94,9 @@ func main() {
 		return
 	}
 
-	// ── 3. Call tools ─────────────────────────────────────
+	// ── Step 3: Execute tools by name ──
+	// Registry.Execute resolves the name and calls the tool's Fn with params;
+	// the returned Result.Data carries the tool output.
 	fmt.Println("\n=== Tool Calls ===")
 
 	r1, _ := registry.Execute(ctx, "calculator", map[string]any{"expression": "2 + 3 * 4"})
@@ -76,7 +108,11 @@ func main() {
 	r3, _ := registry.Execute(ctx, "word_count", map[string]any{"text": "hello world foo bar"})
 	fmt.Printf("  word_count:        %v\n", r3.Data)
 
-	// ── 4. MCP auto-discovery via api/discovery ────────────
+	// ── Step 4: MCP auto-discovery and tool bridging ──
+	// The discovery engine scans for MCP servers; for each discovered
+	// service we connect via stdio and wrap every MCP tool into a registry
+	// entry prefixed "mcp.<server>.<tool>" so agents can call it like any
+	// other tool.
 	fmt.Println("\n=== MCP Auto-Discovery ===")
 	engine := discovery.NewEngine(discovery.EngineConfig{})
 	_ = engine.DiscoverNow(ctx)
@@ -123,13 +159,15 @@ func main() {
 		}
 	}
 
-	// ── 5. List all tools ─────────────────────────────────
+	// ── Step 5: List the full registry ──
+	// After built-ins + custom + MCP bridging, List shows every registered
+	// tool name.
 	fmt.Printf("\n=== All %d Tools ===\n", len(registry.List()))
 	for _, name := range registry.List() {
 		fmt.Printf("  %s\n", name)
 	}
 
-	// ── 6. Tool discovery ────────────────────────────────
+	// ── Step 6: Tool discovery via the discover_tools meta-tool ──
 	// Build a RegistrySource over the public Registry's core bridge, then
 	// drive the discover_tools meta-tool directly: the same path the LLM uses
 	// at runtime when an Agent is built with sdk.WithToolDiscovery().
@@ -151,6 +189,8 @@ func main() {
 	}
 }
 
+// bestConf returns the highest confidence percentage across a service's
+// discovery records, for display.
 func bestConf(svc *discovery.DiscoveredService) int {
 	best := 0
 	for _, r := range svc.Records {

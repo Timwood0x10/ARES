@@ -14,8 +14,8 @@
 llm:
   # provider: openai | ollama | anthropic | openrouter
   provider: ollama
-  # model: model name (e.g. gpt-4o, llama3.2, claude-3-5-sonnet)
-  model: llama3.2
+  # model: model name (e.g. gpt-4o, gemma4, claude-3-5-sonnet)
+  model: gemma4
   # api_key: API key (may also be set via OPENAI_API_KEY / ANTHROPIC_API_KEY env vars)
   # api_key: sk-...
   # base_url: custom API endpoint (OpenAI-compatible proxies / self-hosted)
@@ -104,7 +104,7 @@ embedding:
 #
 #   llm:
 #     provider: ollama
-#     model: llama3.2
+#     model: gemma4
 #
 # ═══════════════════════════════════════════════════════════════
 # Full-featured config (distillation + RAG + AKG + evolution):

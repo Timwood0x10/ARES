@@ -17,9 +17,33 @@
 // (LLM regression) is intentionally not attached — see examples/17 and 18 for
 // the real-LLM gate-3 path.
 //
+// Learning objectives:
+//   - How to drive a multi-generation GA loop: Population init → per-
+//     generation {ScoreAgents → Evolve} → BestStrategy.
+//   - How the GA's OWN output (fitness plateau) drives a diagnosis and a fix
+//     (the naive-vs-fixed fitness feedback loop at the end of the run).
+//   - How the evolved champion becomes a Candidate and flows through the
+//     standard CandidateVerifier gates 1/2.
+//
+// Core APIs (with package paths):
+//   - ares_genome.NewPopulation (internal/ares_evolution/genome)
+//   - (*Population).ScoreAgents / (*Population).Evolve / (*Population).Stats
+//   - (*Population).BestStrategy / (*Population).BestEverScore
+//   - mutation.NewMutator (internal/ares_evolution/mutation)
+//   - ares_genome.NewCrossover (internal/ares_evolution/genome)
+//   - evolution.NewCandidate / CandidateVerifier (internal/evolution)
+//
 // Run from the repo root:
 //
 //	go run ./examples/19-ga-candidate-e2e
+//
+// Expected output:
+//
+//	population initialized → 6 generations of best/avg/worst fitness
+//	champion: prompt=... bestScore=0.950
+//	FEEDBACK LOOP CLOSED: best 0.850 -> 0.950
+//	candidate: diff=... status=verified
+//	reproducibility OK: same-seed GA run converged to the same champion
 //
 // A full transcript is written to
 // ./examples/19-ga-candidate-e2e/logs/run-<ts>.log.

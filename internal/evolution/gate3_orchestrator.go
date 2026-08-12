@@ -2,10 +2,22 @@ package evolution
 
 import (
 	"fmt"
+	"time"
 
 	ares_config "github.com/Timwood0x10/ares/internal/ares_config"
 	evosvc "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 	"github.com/Timwood0x10/ares/internal/llm"
+)
+
+// Gate-3 circuit breaker tuning: the preserved-case regression makes many LLM
+// calls per run and the scorer already retries transient failures with
+// exponential backoff, so the breaker is intentionally more lenient than the
+// client default (3 failures / 30s). A larger threshold and a shorter open
+// timeout prevent a single rate-limited batch from cutting off the whole
+// regression while still failing fast on a genuinely degraded provider.
+const (
+	gate3BreakerFailureThreshold = 8
+	gate3BreakerOpenTimeout      = 15 * time.Second
 )
 
 // BuildRegressionGate3 wires the candidate gate-3 regression check:
@@ -94,7 +106,15 @@ func LoadRegressionGate3(
 			enabled = enabled || c.IsEnabled()
 		}
 	} else {
-		c, err := llm.NewClient(toLLMConfig(&cfg.LLM))
+		// Use the lenient gate-3 breaker (8 failures / 15s) instead of the
+		// client default: the scorer's own backoff-retry absorbs transient
+		// rate limits, so the breaker only trips on sustained degradation.
+		c, err := llm.NewClient(
+			toLLMConfig(&cfg.LLM),
+			llm.WithCircuitBreaker(llm.NewCircuitBreaker(
+				gate3BreakerFailureThreshold, gate3BreakerOpenTimeout,
+			)),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("gate3: build llm client: %w", err)
 		}

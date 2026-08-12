@@ -1,18 +1,54 @@
-// Command 10-ga-full-evolution demonstrates a comprehensive GA evolution
-// pipeline using ONLY the public api/evolution building blocks — no internal/
-// imports. This is the AI-assistant-safe version: external modules and AI
-// assistants must never import internal/.
+// Example 10 — GA Full Evolution: a complete genetic-algorithm pipeline
+// using only the public api/evolution building blocks (no internal/ imports).
 //
-// Demonstrates (api/evolution coverage):
-//  1. Tool selection strategy evolution — optimal tool combinations per task type
-//  2. Memory-guided mutation — historical experience biases mutation direction
-//  3. Multi-objective fitness — quality + cost + latency combined scoring
+// Purpose:
 //
-// Removed vs. the legacy version (requires internal/, not yet public):
-//   - Workflow DAG topology evolution (needs coordinator/patch/diff/graph blocks)
-//   - Population.Stats / ExportHistory / Strategy.DimensionScores (not in public API)
+//	Demonstrate how to build a GA that evolves agent strategies across
+//	multiple generations, scoring them with a multi-objective fitness
+//	function and promoting the best candidate.
 //
-// Run: go run examples/10-ga-full-evolution/main.go
+// Learning objectives:
+//   - Create a seed Strategy and a Mutator with param ranges and prompt pool.
+//   - Build a Population (the GA core engine) with custom config.
+//   - Score agents with a multi-objective function (quality + cost + latency).
+//   - Apply memory-guided confidence to bias mutation scoring.
+//   - Use a Promoter to evaluate and promote the champion strategy.
+//
+// Core APIs used:
+//   - github.com/Timwood0x10/ares/api/evolution.Strategy
+//   - github.com/Timwood0x10/ares/api/evolution.DefaultPopulationConfig
+//   - github.com/Timwood0x10/ares/api/evolution.NewPopulation
+//   - github.com/Timwood0x10/ares/api/evolution.Population (ScoreAgents, Evolve, BestStrategy, BestScore, Size, CurrentGeneration)
+//   - github.com/Timwood0x10/ares/api/evolution.NewPromoter
+//   - github.com/Timwood0x10/ares/api/evolution/mutation.NewMutator
+//   - github.com/Timwood0x10/ares/api/evolution/mutation.Mutator.Mutate
+//
+// Run:
+//
+//	go run examples/10-ga-full-evolution/main.go
+//
+// Expected output:
+//
+//	═══ GA Full Evolution Demo (public API only) ═══
+//	Seed strategy: id=root-strategy params=map[...]
+//	Mutator configured with 6 param ranges, 4 prompts, 6 tools
+//	Preview child: id=... version=2 mutation=param params=map[...]
+//	Population initialized with 20 individuals
+//	Memory-guided provider loaded (4 experiences)
+//
+//	═══ Starting GA Evolution ═══
+//	  Gen 1: best=..., pop=20, tool=...
+//	  ... (through Gen 5)
+//
+//	═══ Evolution Results: What GA Learned ═══
+//	✅ Tool selection: ...
+//	...
+//	✅ GA full evolution demo completed
+//
+// Try modifying:
+//   - popCfg fields (Size, EliteCount, MutationRate) to change GA dynamics.
+//   - The ParamRanges in MutatorConfig to evolve different parameters.
+//   - Generation loop count (currently 5) for longer evolution runs.
 package main
 
 import (
@@ -35,16 +71,19 @@ func exitf(cancel context.CancelFunc, format string, args ...any) {
 }
 
 func main() {
+	// 30-second timeout keeps the demo bounded; cancel on exit.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	fmt.Println("═══ GA Full Evolution Demo (public API only) ═══")
 	fmt.Println()
 
-	// ── 1. Create base strategy (tools, params, prompt) ──
-	//    Score=-1 marks the seed as unevaluated; ScoreAgents will fill it.
-	//    Uses the mutation sub-package Strategy because Mutator lives there;
-	//    converted to the top-level evolution.Strategy when fed to Population.
+	// ── Step 1: Create the base (seed) strategy ──
+	// The seed carries the initial prompt, version, and params that
+	// mutation and crossover will explore. Score=-1 marks it unevaluated;
+	// ScoreAgents will fill the score before Evolve runs.
+	// Uses the mutation sub-package Strategy because Mutator lives there;
+	// converted to the top-level evolution.Strategy when fed to Population.
 	base := &pubmutation.Strategy{
 		ID:             "root-strategy",
 		Version:        1,
@@ -60,11 +99,11 @@ func main() {
 	}
 	fmt.Printf("Seed strategy: id=%s params=%v\n", base.ID, base.Params)
 
-	// ── 2. Create mutator with param ranges + prompt pool + tool pool ──
-	//    Mutator lives in the evolution/mutation sub-package so it can carry
-	//    the full MutatorConfig (ranges/pools/probabilities). The top-level
-	//    evolution.NewMutator only takes probabilities, not ranges — sub-package
-	//    is the right entry point for external callers who need custom ranges.
+	// ── Step 2: Create a Mutator with param ranges + prompt pool + tool pool ──
+	// Mutator lives in the evolution/mutation sub-package so it can carry
+	// the full MutatorConfig (ranges/pools/probabilities). The top-level
+	// evolution.NewMutator only takes probabilities, not ranges — sub-package
+	// is the right entry point for external callers who need custom ranges.
 	mutator, err := pubmutation.NewMutator(pubmutation.MutatorConfig{
 		ParamRanges: map[string][]any{
 			"temperature":   {0.1, 0.3, 0.5, 0.7, 0.9},
@@ -90,7 +129,9 @@ func main() {
 	}
 	fmt.Println("Mutator configured with 6 param ranges, 4 prompts, 6 tools")
 
-	// ── 3. Mutate the base once to preview a child ──
+	// ── Step 3: Mutate the base once to preview a child ──
+	// Mutate applies param/prompt/tool mutations according to the
+	// configured probabilities, returning a new child Strategy.
 	previewChild, err := mutator.Mutate(ctx, base)
 	if err != nil {
 		exitf(cancel, "mutate preview: %v", err)
@@ -98,31 +139,33 @@ func main() {
 	fmt.Printf("Preview child: id=%s version=%d mutation=%s params=%v\n",
 		previewChild.ID, previewChild.Version, previewChild.MutationType, previewChild.Params)
 
-	// ── 4. Create population (GA core engine) ──
-	//    Population lives at the top-level evolution package and consumes the
-	//    top-level Strategy — convert the mutation.Strategy seed here.
+	// ── Step 4: Create the Population (GA core engine) ──
+	// Population lives at the top-level evolution package and consumes the
+	// top-level Strategy — convert the mutation.Strategy seed here.
 	pubBase := &pubevolution.Strategy{
 		ID:             base.ID,
 		Version:        base.Version,
 		PromptTemplate: base.PromptTemplate,
 		Params:         base.Params,
 	}
+	// DefaultPopulationConfig provides sane defaults; override the
+	// fields below to tune population dynamics.
 	popCfg := pubevolution.DefaultPopulationConfig()
-	popCfg.Size = 20
-	popCfg.EliteCount = 3
-	popCfg.MutationRate = 0.2
-	popCfg.SurvivalRate = 0.6
-	popCfg.SelectionStrategy = "tournament"
-	popCfg.TournamentSize = 3
+	popCfg.Size = 20                        // number of individuals per generation
+	popCfg.EliteCount = 3                   // top strategies carried over unchanged
+	popCfg.MutationRate = 0.2               // probability of mutation per individual
+	popCfg.SurvivalRate = 0.6               // fraction of population that survives selection
+	popCfg.SelectionStrategy = "tournament" // tournament selection
+	popCfg.TournamentSize = 3               // number of contestants per tournament
 	population, err := pubevolution.NewPopulation(pubBase, popCfg)
 	if err != nil {
 		exitf(cancel, "create population: %v", err)
 	}
 	fmt.Printf("Population initialized with %d individuals\n", population.Size())
 
-	// ── 5. Memory-guided provider (mock experience) ──
-	//    In production this would come from api/experience FeedbackService;
-	//    here we mock it to show how historical bias guides mutation scoring.
+	// ── Step 5: Set up memory-guided hint provider (mock experience) ──
+	// In production this would come from api/experience FeedbackService;
+	// here we mock it to show how historical bias guides mutation scoring.
 	hintProvider := &mockHintProvider{
 		hints: []evolutionHint{
 			{taskType: "code", tool: "search", confidence: 0.85},
@@ -133,7 +176,9 @@ func main() {
 	}
 	fmt.Println("Memory-guided provider loaded (4 experiences)")
 
-	// ── 6. Run GA evolution (5 generations) ──
+	// ── Step 6: Run GA evolution for 5 generations ──
+	// Each generation: score all agents, evolve (select + crossover +
+	// mutate), then report the best strategy and current population size.
 	fmt.Println("\n═══ Starting GA Evolution ═══")
 	for gen := 0; gen < 5; gen++ {
 		// Score every agent with the multi-objective scorer before evolving —
@@ -157,7 +202,9 @@ func main() {
 			gen+1, population.BestScore(), population.Size(), toolSel)
 	}
 
-	// ── 7. Show evolution results — what GA learned ──
+	// ── Step 7: Show evolution results — what GA learned ──
+	// BestStrategy returns the highest-scoring individual; we print its
+	// key evolved parameters and the final best score.
 	fmt.Println("\n═══ Evolution Results: What GA Learned ═══")
 	best := population.BestStrategy()
 	if best != nil {
@@ -168,7 +215,10 @@ func main() {
 		fmt.Printf("✅ Generation: %d\n", population.CurrentGeneration())
 	}
 
-	// ── 8. Build a Promoter and evaluate the champion's fate ──
+	// ── Step 8: Build a Promoter and evaluate the champion's fate ──
+	// NewPromoter creates a promoter with the given promotion criteria.
+	// Evaluate checks whether the champion should be promoted/demoted;
+	// Promote marks it as the active production strategy.
 	promoter := pubevolution.NewPromoter(&pubevolution.PromotionCriteria{
 		MinSampleCount:     1,
 		MinSuccessRate:     0.5,
@@ -267,12 +317,14 @@ func scoreLatency(s *pubevolution.Strategy) float64 {
 
 // ── Memory-guided provider (mock) ────────────────────────────────────
 
+// evolutionHint represents a single piece of historical experience.
 type evolutionHint struct {
 	taskType   string
 	tool       string
 	confidence float64
 }
 
+// mockHintProvider simulates a memory-guided experience provider for the demo.
 type mockHintProvider struct {
 	hints []evolutionHint
 }

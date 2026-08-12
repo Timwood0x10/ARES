@@ -2,14 +2,27 @@
 // Command knowledge-import — structure-aware markdown knowledge base
 // with RAG, multi-agent team import, and dialog-based chat.
 //
-// Features:
-//   - Smart markdown parsing: headings, code blocks, tables, lists, YAML frontmatter
-//   - Section-first chunking: never splits code blocks or tables
-//   - PostgreSQL + pgvector + embedding + RAG
-//   - CLI: --save / --dir / --ask / --list / --chat / --team
-//   - Chat mode: agent with tools (read_directory, read_note_file, import_knowledge, query_knowledge)
-//   - Team mode: multi-agent leader + sub-agents for parallel import
-//   - Default: --team --dir <path> when no mode specified
+// Purpose:
+//
+//	Provide a production-grade CLI that ingests markdown into a
+//	PostgreSQL+pgvector knowledge base, supports RAG queries, chat,
+//	multi-agent team import, and GA evolution of the import agent.
+//
+// Learning objectives:
+//   - Parse CLI flags and dispatch to the correct mode handler.
+//   - Build SDK Runtime options from a YAML config.
+//   - Register tools (read_directory, read_note_file, import_knowledge,
+//     query_knowledge) on the runtime.
+//   - Run an interactive chat loop and a multi-agent team import.
+//
+// Core APIs used:
+//   - github.com/Timwood0x10/ares/sdk.New
+//   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
+//   - github.com/Timwood0x10/ares/sdk.Runtime.NewTeam
+//   - github.com/Timwood0x10/ares/sdk.Runtime.Evolve
+//   - github.com/Timwood0x10/ares/sdk.Agent.Run
+//   - github.com/Timwood0x10/ares/sdk.Team.Run
+//   - github.com/Timwood0x10/ares/api/tools.ToolFunc
 //
 // Usage:
 //
@@ -74,10 +87,14 @@ func main() {
 	}
 }
 
+// run is the top-level entry point: parse flags, configure logging,
+// load config, create the knowledge base, then dispatch.
 func run() error {
 	opts := parseFlags()
 
-	// Log file output.
+	// ── Step 1: Configure logging ──
+	// If --log-file is set, tee stderr output to both the file and stderr;
+	// otherwise log to stderr only.
 	if opts.logFile != "" {
 		f, err := os.Create(opts.logFile)
 		if err != nil {
@@ -91,6 +108,9 @@ func run() error {
 			&slog.HandlerOptions{Level: slog.LevelInfo})))
 	}
 
+	// ── Step 2: Load config and create knowledge base ──
+	// LoadConfig reads the YAML config file; NewKnowledgeBase connects
+	// to PostgreSQL and sets up the embedding pipeline.
 	cfg, err := LoadConfig(opts.configPath)
 	if err != nil {
 		return err
@@ -109,9 +129,11 @@ func run() error {
 		}
 	}()
 
+	// ── Step 3: Dispatch to the selected mode ──
 	return dispatch(ctx, kb, opts)
 }
 
+// parseFlags defines and parses all CLI flags, returning populated cliOptions.
 func parseFlags() cliOptions {
 	var opts cliOptions
 	flag.StringVar(&opts.configPath, "config",
@@ -134,8 +156,9 @@ func parseFlags() cliOptions {
 	return opts
 }
 
+// dispatch routes to the correct mode handler based on parsed flags.
+// Build chaos config from CLI flags.
 func dispatch(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
-	// Build chaos config from CLI flags.
 	chaosCfg := DefaultChaosConfig()
 	if opts.chaosFailRate > 0 || opts.chaosLatency > 0 || opts.chaosKillAfter > 0 || opts.chaosHTTP != "" {
 		chaosCfg = ChaosConfig{
@@ -160,6 +183,8 @@ func dispatch(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	// Build tool wrapper for fault injection.
 	toolWrapper := NewToolWrapper(chaosCfg)
 
+	// ── Step 4: Switch on mode ──
+	// Priority: chat > team > file > dir > evolve > ask > list > demo > usage.
 	switch {
 	case opts.chat:
 		return runChat(ctx, kb, opts, toolWrapper)
@@ -183,6 +208,7 @@ func dispatch(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	}
 }
 
+// runIngestDir ingests all markdown files under a directory.
 func runIngestDir(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	stats, err := kb.IngestDir(ctx, opts.tenantID, opts.dir)
 	if err != nil {
@@ -193,6 +219,7 @@ func runIngestDir(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error
 	return nil
 }
 
+// runIngestFile ingests a single markdown file.
 func runIngestFile(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	stored, skipped, err := kb.IngestFile(ctx, opts.tenantID, opts.file)
 	if err != nil {
@@ -202,6 +229,7 @@ func runIngestFile(ctx context.Context, kb *KnowledgeBase, opts cliOptions) erro
 	return nil
 }
 
+// runAsk queries the knowledge base and prints the answer with sources.
 func runAsk(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	answer, err := kb.Ask(ctx, opts.tenantID, opts.question)
 	if err != nil {
@@ -211,6 +239,7 @@ func runAsk(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	return nil
 }
 
+// runList lists all stored documents for the given tenant.
 func runList(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	docs, err := kb.ListDocuments(ctx, opts.tenantID)
 	if err != nil {
@@ -227,6 +256,7 @@ func runList(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 	return nil
 }
 
+// printAnswer formats an Answer to stdout with sources.
 func printAnswer(answer *Answer) {
 	fmt.Printf("\nQ: %s\n\n%s\n", answer.Question, answer.Text)
 	if len(answer.Sources) == 0 {
@@ -238,6 +268,7 @@ func printAnswer(answer *Answer) {
 	}
 }
 
+// printUsage prints CLI usage instructions.
 func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  --dir <path>    ingest a directory of markdown files recursively (default)")
@@ -257,7 +288,8 @@ func printUsage() {
 func sdkOptions(cfg *Config) []sdk.Option {
 	opts := []sdk.Option{sdk.WithTrace(true)}
 
-	// Determine which LLM config to use (primary or backup).
+	// ── Step 5: Determine which LLM config to use ──
+	// If primary provider/model are empty but backup is configured, use backup.
 	llmCfg := &cfg.LLM
 	useBackup := (llmCfg.Provider == "" || llmCfg.Model == "") && cfg.LLM.Backup != nil &&
 		cfg.LLM.Backup.Provider != "" && cfg.LLM.Backup.Model != ""
@@ -273,7 +305,8 @@ func sdkOptions(cfg *Config) []sdk.Option {
 		}
 	}
 
-	// Register the backup as a fallback via SDK option.
+	// ── Step 6: Register the primary LLM provider ──
+	// Each With* function configures the runtime for that provider's API.
 	switch target.Provider {
 	case "ollama":
 		opts = append(opts, sdk.WithOllama(target.Model))
@@ -291,7 +324,9 @@ func sdkOptions(cfg *Config) []sdk.Option {
 		opts = append(opts, sdk.WithAPIKey(target.APIKey))
 	}
 
-	// If backup is configured and different from primary, register as fallback.
+	// ── Step 7: Register backup as fallback LLM ──
+	// If a different backup is configured, add it as a fallback so the
+	// agent retries on the secondary provider if the primary fails.
 	if !useBackup && cfg.LLM.Backup != nil && cfg.LLM.Backup.Provider != "" && cfg.LLM.Backup.Model != "" {
 		b := cfg.LLM.Backup
 		fallbackCfg := &core.LLMConfig{
@@ -305,7 +340,9 @@ func sdkOptions(cfg *Config) []sdk.Option {
 		opts = append(opts, sdk.WithFallbackLLM(fallbackCfg))
 	}
 
-	// GA evolution + AKG knowledge fabric.
+	// ── Step 8: Enable GA evolution and AKG knowledge fabric ──
+	// WithEvolution enables the GA strategy evolution subsystem;
+	// WithKnowledge enables the AKG knowledge graph.
 	opts = append(opts, sdk.WithEvolution(), sdk.WithKnowledge())
 
 	return opts
@@ -327,7 +364,12 @@ func providerName(s string) core.LLMProvider {
 	}
 }
 
+// runChat starts an interactive REPL: "import/store" triggers an agent
+// with tools; everything else goes through the RAG Ask pipeline.
 func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWrapper) error {
+	// ── Step 9: Create the SDK runtime for chat mode ──
+	// sdk.New creates a Runtime from the provided options; registerTools
+	// then wires the knowledge-base tools onto that runtime.
 	rt, err := sdk.New(sdkOptions(kb.cfg)...)
 	if err != nil {
 		return fmt.Errorf("SDK: %v", err)
@@ -336,6 +378,9 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 
 	registerTools(rt, kb, opts.tenantID, tw)
 
+	// ── Step 10: Set up memory manager (optional) ──
+	// If memory is enabled in config, create a MemoryManager and start
+	// a session so chat turns are persisted for future retrieval.
 	var memMgr ares_memory.MemoryManager
 	var sessionID string
 	if cfg := kb.cfg; cfg.Memory.Enabled {
@@ -350,6 +395,8 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		}
 	}
 
+	// ── Step 11: Interactive REPL loop ──
+	// Read lines from stdin; "exit"/"quit" breaks the loop.
 	slog.Info("Chat started. Ask questions or say: import <path> to import knowledge")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -387,6 +434,7 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		}
 		printAnswer(answer)
 
+		// Persist the exchange to memory for future context.
 		if memMgr != nil && sessionID != "" {
 			memMgr.AddMessage(ctx, sessionID, "user", input)
 			memMgr.AddMessage(ctx, sessionID, "assistant", answer.Text)
@@ -400,7 +448,11 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 
 // ── Team mode ─────────────────────────────────────────────────────────────
 
+// runTeam creates a leader agent and 8 sub-agent importers, then runs
+// the team to import markdown files in parallel.
 func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWrapper) error {
+	// ── Step 12: Resolve the directory to import ──
+	// Default to the bundled notes/ directory if --dir is not provided.
 	dir := opts.dir
 	if dir == "" {
 		dir = "examples/11-knowledge-import/notes"
@@ -410,6 +462,7 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		dir = "./" + dir
 	}
 
+	// ── Step 13: Create the SDK runtime and register tools ──
 	rt, err := sdk.New(sdkOptions(kb.cfg)...)
 	if err != nil {
 		return fmt.Errorf("SDK: %v", err)
@@ -418,6 +471,8 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 
 	registerTools(rt, kb, opts.tenantID, tw)
 
+	// ── Step 14: Create leader and 8 sub-agent importers ──
+	// The leader discovers files and coordinates; sub-agents import them.
 	leader := rt.NewAgent("leader",
 		sdk.WithInstruction("You are the team leader. Discover files and coordinate the import."),
 		sdk.WithTools(toolList()...),
@@ -431,12 +486,17 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		)
 	}
 
-	// Create supervisor for sub-agent resurrection.
+	// ── Step 15: Create a supervisor for sub-agent resurrection ──
+	// The supervisor tracks agent health and can resurrect killed agents
+	// during chaos-engineered runs.
 	supervisor := NewAgentSupervisor(ChaosConfig{Enabled: true})
 	for i, sub := range subs {
 		supervisor.RegisterAgent(fmt.Sprintf("importer-%d", i+1), sub)
 	}
 
+	// ── Step 16: Build and run the team ──
+	// NewTeam creates a team from leader and sub-agents. WithTeamConfig
+	// sets the execution mode (auto-split), verifier index, and concurrency.
 	team := rt.NewTeam("import-team", leader, subs)
 	team.WithTeamConfig(sdk.TeamConfig{
 		Mode: sdk.ModeAutoSplit, VerifierIndex: 7, MaxConcurrency: 3,
@@ -481,6 +541,9 @@ func runEvolve(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 		sdk.WithTools(toolList()...),
 	)
 
+	// ── Step 17: Run GA evolution on the agent ──
+	// rt.Evolve runs the GA loop: it creates strategy variants, runs each
+	// against the task, scores them, and evolves over generations.
 	task := opts.evolve
 	if task == "" {
 		task = "Read markdown files from notes and import them into the knowledge base"
@@ -556,6 +619,9 @@ func runDemo(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 
 // ── Tools ─────────────────────────────────────────────────────────────────
 
+// The four knowledge-base tools registered on the runtime.
+// They are package-level vars so registerTools can assign closures that
+// capture the knowledge base, tenant, and tool wrapper.
 var (
 	dirTool  tools.Tool
 	fileTool tools.Tool
@@ -563,10 +629,13 @@ var (
 	qryTool  tools.Tool
 )
 
+// toolList returns all four registered tools as a slice.
 func toolList() []tools.Tool {
 	return []tools.Tool{dirTool, fileTool, impTool, qryTool}
 }
 
+// registerTools builds and registers the four knowledge-base tools:
+// read_directory, read_note_file, import_knowledge, and query_knowledge.
 func registerTools(rt *sdk.Runtime, kb *KnowledgeBase, tenantID string, tw *ToolWrapper) {
 	dirTool = tools.ToolFunc{
 		ToolName: "read_directory",

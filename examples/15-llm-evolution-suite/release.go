@@ -1,3 +1,40 @@
+// Scenario: release — candidate release closed loop (real LLM).
+//
+// Purpose:
+//
+//	This is the deepest tier of the LLM evolution suite: it runs the FULL
+//	candidate release closed loop — failure evidence → verify (gates 1/2/3)
+//	→ Release → release-time gate-3 confirm → SetStable → Promote — against a
+//	real LLM. It demonstrates that even a candidate which slipped past verify
+//	is caught by the release-time regression check before reaching stable.
+//
+// Learning objectives:
+//   - How the SAME gate-3 check is wired into both the verify stage and the
+//     release stage (CandidatePipeline.WithReleaseRegressionCheck).
+//   - How a release builds a RuntimePatch, submits it to the coordinator,
+//     deploys via the deployment pipeline, and promotes to stable on success.
+//   - How rollback is carried (RuntimePatch.Rollback restores the old stable
+//     instructions).
+//
+// Core APIs (with package paths):
+//   - evolution.NewCandidatePipelineWithOptions + WithReleaseRegressionCheck
+//     (internal/evolution)
+//   - coordinator.NewEvolutionCoordinator (internal/evolution/coordinator)
+//   - patch.NewRegistry (internal/evolution/patch)
+//   - (*CandidatePipeline).Release
+//
+// Run:
+//
+//	go run ./examples/15-llm-evolution-suite release
+//
+// Expected output (three scenarios):
+//
+//  1. bad candidate REJECTED at verify
+//  2. manually-verified bad candidate REJECTED at RELEASE (release gate-3)
+//  3. good candidate verified and PROMOTED to stable
+//
+// Note: this scenario makes real API calls; WithRegressionRuns(2) keeps the
+// call count low for rate-limited providers.
 package main
 
 import (
@@ -27,7 +64,9 @@ import (
 //     release-time gate-3, the subject of this demo);
 //  3. a good candidate passes verify and is promoted to stable by Release.
 func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
-	// Seed a profile store with the stable (good) instructions for "coder".
+	// ── Step 1: Seed a profile store with the stable (good) instructions ──
+	// The stable region holds the verified behavior baseline; the candidate
+	// region is the writable workspace during evolution.
 	profileStore := evolution.NewProfileStore()
 	stable := &agents.AgentProfile{Role: "coder", Instructions: goodStrategy}
 	if err := profileStore.Update(stable); err != nil {
@@ -37,12 +76,18 @@ func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
 		log.Fatalf("set stable profile: %v", err)
 	}
 
-	// Seed failure evidence + candidate store.
+	// ── Step 2: Seed failure evidence + candidate store ──
+	// The evidence store feeds gate 2; the candidate store tracks submitted
+	// candidates and their lifecycle status.
 	evStore := evidence.NewMemoryStore()
 	seedEvidence(ctx, evStore, "coder", []string{"ev-bad"})
 	candStore := evolution.NewCandidateStore()
 
-	// Wire the ONE gate-3 check into both verify and release.
+	// ── Step 3: Wire the ONE gate-3 check into both verify and release ──
+	// LoadRegressionGate3 builds the check from configs/ares.local.yaml; the
+	// same function is injected into the verifier (verify stage) and into the
+	// pipeline (release-time confirm), so a candidate cannot reach stable
+	// without passing the regression check at BOTH stages.
 	gate3, err := evolution.LoadRegressionGate3(profileStore, configPath, preservedCases,
 		evolution.WithRegressionRuns(2),
 	)
@@ -61,7 +106,9 @@ func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
 	)
 	log.Printf("wired gate-3 regression check into verify + release")
 
-	// Scenario 1: regressing candidate rejected at VERIFY.
+	// ── Step 4 (Scenario 1): regressing candidate rejected at VERIFY ──
+	// The bad candidate fails gate 3 during verification: its reason carries
+	// the preserved-suite regression (avg drop, p-value).
 	log.Printf("── Scenario 1: bad candidate rejected at verify ──")
 	bad := evolution.NewCandidate(evolution.CandidateInstruction, "coder",
 		badStrategy, "off-by-one refactor", []string{"ev-bad"})
@@ -72,7 +119,10 @@ func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
 	}
 	log.Printf("scenario 1 OK: regressing candidate rejected at verify")
 
-	// Scenario 2: manually-verified regressing candidate rejected at RELEASE.
+	// ── Step 5 (Scenario 2): manually-verified bad candidate rejected at RELEASE ──
+	// We bypass verify on purpose (bad2.Verify()) to show the release-time
+	// gate-3 is an independent backstop: even a "verified" regressing
+	// candidate is rejected by Release before any promotion happens.
 	log.Printf("── Scenario 2: manually-verified bad candidate rejected at RELEASE ──")
 	bad2 := evolution.NewCandidate(evolution.CandidateInstruction, "coder",
 		badStrategy, "off-by-one refactor", []string{"ev-bad"})
@@ -89,7 +139,11 @@ func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
 	}
 	log.Printf("scenario 2 OK: release-time gate-3 rejected the regressing candidate")
 
-	// Scenario 3: good candidate passes verify and is promoted by release.
+	// ── Step 6 (Scenario 3): good candidate passes verify and is promoted ──
+	// The good candidate reuses the stable instruction text; if it passes
+	// verify, Release builds a RuntimePatch (with the old stable text as
+	// Rollback), evaluates it via the coordinator, and promotes to stable on
+	// success. Grading is stochastic, so a miss is logged, not fatal.
 	log.Printf("── Scenario 3: good candidate verified + released ──")
 	good := evolution.NewCandidate(evolution.CandidateInstruction, "coder",
 		goodStrategy, "clarify instructions", []string{"ev-bad"})
@@ -108,6 +162,9 @@ func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
 		}
 	}
 
+	// ── Step 7: Report the final stable instructions ──
+	// After all scenarios, the stable region should still hold the verified
+	// good instructions (or the original stable text if release was skipped).
 	finalStable := profileStore.GetStable("coder")
 	log.Printf("final stable instructions: %q", finalStable.Instructions)
 	log.Printf("=== release closed-loop done ===")

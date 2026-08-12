@@ -1,6 +1,46 @@
-// Full Cycle Demo — 全部 Genome + Diff Engine + Coordinator + 真实 Executor 的完整闭环
+// Runtime Evolution Demo (full) — the complete runtime evolution chain with
+// ALL four genomes (workflow, scheduler, knowledge, recovery), real executors,
+// and a full evolution cycle per subsystem.
 //
-// 运行：go run examples/runtime_evolution/full/main.go
+// Purpose:
+//
+//	This is the middle tier of the runtime evolution examples. Unlike basic/
+//	(two genomes, one loop), it registers every evolvable subsystem —
+//	workflow, scheduler, knowledge, and recovery — each with its own genome,
+//	differ, and patch executor, runs a mutation→fitness→snapshot→diff cycle
+//	per genome, and submits all patches to the coordinator. It is the closest
+//	thing to a production evolution loop.
+//
+// Learning objectives:
+//   - How to register multiple genomes / differs / executors and how targets
+//     map to executors (workflow.graph → GraphPatchExecutor, etc.).
+//   - How a per-genome evolution cycle (Mutate → Fitness → Snapshot → Diff)
+//     generalizes the basic example.
+//   - How the coordinator evaluates and applies all patches and exposes the
+//     apply + decision history as the audit trail.
+//
+// Core APIs (with package paths):
+//   - genome.NewWorkflowGenome / NewSchedulerGenome / NewKnowledgeGenome /
+//     NewRecoveryGenome (internal/evolution/genome)
+//   - diff.NewWorkflowDiffer / NewSchedulerDiffer / NewKnowledgeDiffer /
+//     NewRecoveryDiffer (internal/evolution/diff)
+//   - patch.Registry with GraphPatchExecutor / RecoveryPatchExecutor /
+//     KnowledgePatchExecutor (internal/evolution/patch + workflow/graph +
+//     knowledge/runtime)
+//   - coordinator.NewEvolutionCoordinator (internal/evolution/coordinator)
+//
+// Run:
+//
+//	go run ./examples/runtime_evolution/full
+//
+// Expected output:
+//
+//  1. DAG: 3 nodes, order=[A B C] → 2-4. registrations → 5-7.
+//  6. Evolution cycle produced N genome changes → 7-8. submitted/applied
+//     ═══ Summary ═══  Genomes/Differs/Patches proposed/applied/failed
+//
+// Place in the progression: basic/ (shallow) → full/ (this, complete) →
+// knowledge/ (deep, knowledge-specific parameter evolution).
 package main
 
 import (
@@ -27,7 +67,9 @@ func main() {
 	fmt.Println("═══ ARES Runtime Evolution — Full Chain Demo ═══")
 	fmt.Println()
 
-	// ── 1. Build initial DAG ──
+	// ── Step 1: Build the initial workflow DAG ──
+	// A 3-node pipeline (A → B → C) is the evolvable substrate: the workflow
+	// genome mutates this topology.
 	steps := []*engine.Step{
 		{ID: "A", Name: "Input", AgentType: "validator", Input: "validate"},
 		{ID: "B", Name: "Process", AgentType: "processor", Input: "process", DependsOn: []string{"A"}},
@@ -40,7 +82,9 @@ func main() {
 	order, _ := dag.GetExecutionOrder()
 	fmt.Printf("1. DAG: %d nodes, order=%v\n", dag.NodeCount(), order)
 
-	// ── 2. Build graph.Graph for the real GraphPatchExecutor ──
+	// ── Step 2: Build a graph.Graph for the real GraphPatchExecutor ──
+	// The graph executor mutates a live graph; mirroring the DAG into a
+	// graph.Graph gives it something real to apply patches to.
 	g, err := graph.NewGraph("full-demo")
 	if err != nil {
 		log.Fatalf("create graph: %v", err)
@@ -59,10 +103,15 @@ func main() {
 	}
 	_, _ = g.Start("A")
 
-	// ── 3. Register all Genomes ──
+	// ── Step 3: Register ALL genomes ──
+	// Workflow mutates the DAG topology, scheduler the node scheduling,
+	// knowledge the knowledge-retrieval parameters, recovery the failure
+	// handling policy.
 	genomeReg := genome.NewRegistry()
 	mustRegisterGenome(genomeReg, genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig()))
-	mustRegisterGenome(genomeReg, genome.NewSchedulerGenome(graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig()))
+	mustRegisterGenome(genomeReg, genome.NewSchedulerGenome(
+		graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig(),
+	))
 	mustRegisterGenome(genomeReg, genome.NewKnowledgeGenome(nil, genome.DefaultKnowledgeGenomeConfig()))
 	mustRegisterGenome(genomeReg, genome.NewRecoveryGenome(
 		&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},
@@ -70,7 +119,9 @@ func main() {
 	))
 	fmt.Printf("2. Registered genomes: %v\n", genomeReg.List())
 
-	// ── 4. Register all Differs ──
+	// ── Step 4: Register ALL differs ──
+	// Each differ knows how to turn an old/new snapshot pair of its subsystem
+	// into concrete runtime patches.
 	diffReg := diff.NewRegistry()
 	mustRegisterDiffer(diffReg, diff.NewWorkflowDiffer())
 	mustRegisterDiffer(diffReg, diff.NewSchedulerDiffer())
@@ -78,7 +129,10 @@ func main() {
 	mustRegisterDiffer(diffReg, diff.NewRecoveryDiffer())
 	fmt.Printf("3. Registered differs: %v\n", diffReg.List())
 
-	// ── 5. Register all Executors ──
+	// ── Step 5: Register ALL executors ──
+	// Executors are the apply-side of patches, keyed by target name:
+	// graph targets → GraphPatchExecutor, recovery targets →
+	// RecoveryPatchExecutor, knowledge targets → KnowledgePatchExecutor.
 	patchReg := patch.NewRegistry()
 
 	// Graph executor: handles insert/remove/replace/add_edge/remove_edge on any node ID.
@@ -126,10 +180,14 @@ func main() {
 
 	fmt.Println("4. Registered executors: Graph + Scheduler + Recovery + Knowledge")
 
-	// ── 6. Coordinator ──
+	// ── Step 6: Create the coordinator ──
+	// The coordinator evaluates submitted proposals against its policy and
+	// applies approved ones through the matching executor.
 	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
 
-	// ── 7. Take snapshots ──
+	// ── Step 7: Take snapshots of every genome ──
+	// Snapshots capture each subsystem's current state; the old snapshot is
+	// the diff baseline.
 	snapshots := make(map[string]diff.SnapshotPair)
 	for _, name := range genomeReg.List() {
 		gm, _ := genomeReg.Get(name)
@@ -138,7 +196,9 @@ func main() {
 	}
 	fmt.Println("5. Snapshots taken")
 
-	// ── 8. Run one evolution cycle for each genome ──
+	// ── Step 8: Run one evolution cycle for each genome ──
+	// For every subsystem: Mutate children → pick fittest (FitnessGenome) →
+	// snapshot the child → diff old vs new into patches.
 	type evolutionResult struct {
 		genomeName string
 		patches    []patch.RuntimePatch
@@ -202,7 +262,8 @@ func main() {
 		}
 	}
 
-	// ── 9. Submit all patches to coordinator ──
+	// ── Step 9: Submit all patches to the coordinator ──
+	// Every patch becomes a GA-source proposal the coordinator will evaluate.
 	var totalPatches int
 	for _, res := range allResults {
 		for _, p := range res.patches {
@@ -218,7 +279,9 @@ func main() {
 	}
 	fmt.Printf("7. Submitted %d patches to coordinator\n", totalPatches)
 
-	// ── 10. Evaluate and apply ──
+	// ── Step 10: Evaluate and apply ──
+	// Evaluate runs the decision policy over all proposals and applies the
+	// approved ones through their registered executors.
 	coord.Evaluate(ctx)
 	history := coord.PatchHistory()
 	fmt.Printf("8. Applied %d patches:\n", len(history))
@@ -233,7 +296,9 @@ func main() {
 		}
 	}
 
-	// ── 11. Summary ──
+	// ── Step 11: Summary ──
+	// The audit trail: how many subsystems, differs, and patches flowed
+	// through the loop, and how many applied/failed.
 	fmt.Println()
 	fmt.Println("═══ Summary ═══")
 	fmt.Printf("Genomes registered: %d\n", len(genomeReg.List()))
@@ -245,12 +310,15 @@ func main() {
 	fmt.Println("═══ Done ═══")
 }
 
+// mustRegisterGenome registers a genome and panics on failure (fatal during
+// setup, which code_rules_v2 allows for initialization errors).
 func mustRegisterGenome(r *genome.Registry, g genome.Genome) {
 	if err := r.Register(g); err != nil {
 		panic(fmt.Sprintf("register genome: %v", err))
 	}
 }
 
+// mustRegisterDiffer registers a differ and panics on failure.
 func mustRegisterDiffer(r *diff.Registry, d diff.Differ) {
 	if err := r.Register(d); err != nil {
 		panic(fmt.Sprintf("register differ: %v", err))

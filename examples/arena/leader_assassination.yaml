@@ -1,25 +1,54 @@
+# Chaos Arena Scenario — Leader Assassination and Recovery
+#
+# Purpose:
+#   This YAML defines a focused chaos scenario for the ARES Arena: kill the
+#   leader agent, then keep attacking the remaining members, to verify the
+#   system elects a new leader and recovers.
+#
+# Learning objectives:
+#   - How a recovery-focused scenario sequences faults: leader kill first,
+#     then member attacks, with small inter-action delays.
+#   - How parallel_actions: false forces the actions to run strictly in
+#     order, isolating each failure's effect.
+#   - How the same action vocabulary (kill_leader / kill_agent /
+#     network_partition / slow_agent) is reused in a smaller, ordered script.
+#
+# Run (via the arena tooling that consumes scenario YAML):
+#   Scenario Mode replays this action list against the agent system.
+#
+# Expected behavior:
+#   The Arena verifies the system recovers after the leader is killed —
+#   i.e. a replacement leader is elected and members keep working.
+
 name: leader-assassination-and-recovery
 description: "Kill the leader agent and verify the system recovers"
 config:
+  # stop_on_error: continue even if an action reports failure.
   stop_on_error: false
+  # parallel_actions: false → run actions strictly in sequence.
   parallel_actions: false
   warmup: 1s
   cooldown: 1s
 actions:
+  # ── Action 1: kill the leader after 2s ──
+  # This is the core attack; the rest of the script probes recovery.
   - delay: 2s
     action:
       type: kill_leader
     label: kill-leader
+  # ── Action 2: kill member agent-1 after 1s more ──
   - delay: 1s
     action:
       type: kill_agent
       target_id: agent-1
     label: kill-agent-1
+  # ── Action 3: partition agent-2 after 3s more ──
   - delay: 3s
     action:
       type: network_partition
       target_id: agent-2
     label: partition-agent-2
+  # ── Action 4: slow agent-3 (add 10s latency) after 1s more ──
   - delay: 1s
     action:
       type: slow_agent

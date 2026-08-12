@@ -1,4 +1,33 @@
 // Eval — runs concrete evaluation scenarios to measure ARES capabilities.
+//
+// Purpose:
+//
+//	This example quantifies ARES capabilities with a small evaluation suite:
+//	five scenarios (basic chat, tool calling, multi-agent, resilience, and
+//	instruction evolution) each run the SDK runtime against real tasks and
+//	score the outcomes. It is the measurement harness for "is the agent
+//	getting better?" questions.
+//
+// Learning objectives:
+//   - How to build a runtime with sdk options (WithOllama / WithEvolution /
+//     WithTrace).
+//   - How evaluation.Scenario + RunnerFunc define a measurable capability
+//     test (Runs, Timeout, per-run Metrics).
+//   - How to interpret Report fields: PassRate, AvgScore, AvgLatency,
+//     EvoImprovement.
+//
+// Core APIs (with package paths):
+//   - sdk.NewRuntime / NewAgent / NewTeam (github.com/Timwood0x10/ares/sdk)
+//   - evaluation.New / Scenario / RunnerFunc / RunAll (evaluation/)
+//
+// Run:
+//
+//	go run ./examples/eval
+//
+// Expected output:
+//
+//	═══ basic-chat ═══   Pass Rate: ...  Avg Score: ...
+//	... (one block per scenario) + eval-report.json saved
 package main
 
 import (
@@ -23,15 +52,24 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	// ── Step 1: Build the runtime with the capabilities under test ──
+	// WithOllama picks the local model; WithEvolution enables instruction
+	// evolution for the evolution scenario; WithTrace(false) keeps logs
+	// quiet.
 	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithEvolution(), sdk.WithTrace(false))
 	defer rt.Close()
 
 	// Register the calculator tool for tool-using scenarios.
 	_ = rt.ToolRegistry().Register(calcTool)
 
+	// ── Step 2: Create the evaluation harness ──
+	// evaluation.New names the suite; each Scenario below registers one
+	// measurable capability.
 	eval := evaluation.New("ARES Capability Evaluation")
 
-	// ── 1. Basic Chat: does the agent respond correctly? ──────────
+	// ── Step 3: Scenario 1 — Basic Chat ──
+	// Measures whether a plain agent responds correctly (contains "paris").
+	// Score 1.0 on hit, 0.0 on miss; latency and tokens are recorded.
 	_ = eval.Register(&evaluation.Scenario{
 		Name:        "basic-chat",
 		Description: "Basic agent response correctness",
@@ -56,7 +94,10 @@ func run(ctx context.Context) error {
 		}),
 	})
 
-	// ── 2. Tool Calling: does the agent use tools correctly? ──────
+	// ── Step 4: Scenario 2 — Tool Calling ──
+	// Measures whether the agent actually invokes the calculator tool and
+	// gets the expected result (445). Score 0.5 for tool use, 1.0 for the
+	// correct answer.
 	_ = eval.Register(&evaluation.Scenario{
 		Name:        "tool-calling",
 		Description: "Agent correctly invokes calculator tool",
@@ -86,7 +127,9 @@ func run(ctx context.Context) error {
 		}),
 	})
 
-	// ── 3. Multi-Agent: does the team orchestration work? ─────────
+	// ── Step 5: Scenario 3 — Multi-Agent ──
+	// Measures leader/member team orchestration: NewTeam runs a leader and a
+	// worker; SubResults present means collaboration happened.
 	_ = eval.Register(&evaluation.Scenario{
 		Name:        "multi-agent",
 		Description: "Leader/member team collaboration",
@@ -116,7 +159,9 @@ func run(ctx context.Context) error {
 		}),
 	})
 
-	// ── 4. Resilience: does the agent handle errors gracefully? ───
+	// ── Step 6: Scenario 4 — Resilience ──
+	// Measures graceful recovery from tool failures: the agent is given a
+	// tool that always fails and must still produce a meaningful response.
 	_ = eval.Register(&evaluation.Scenario{
 		Name:        "resilience",
 		Description: "Agent recovers from tool failures",
@@ -147,7 +192,10 @@ func run(ctx context.Context) error {
 		}),
 	})
 
-	// ── 5. Evolution: does evolution improve agent performance? ──
+	// ── Step 7: Scenario 5 — Evolution ──
+	// Measures whether instruction evolution improves response quality:
+	// scores the same question before and after rt.Evolve and reports the
+	// percentage improvement.
 	_ = eval.Register(&evaluation.Scenario{
 		Name:        "evolution",
 		Description: "Instruction evolution improves response quality",
@@ -202,13 +250,14 @@ func run(ctx context.Context) error {
 		}),
 	})
 
-	// ── Run all scenarios ─────────────────────────────────────────
+	// ── Step 8: Run all scenarios and print the summary ──
+	// RunAll executes every registered scenario and returns per-name reports;
+	// the summary shows pass rate, average score, latency, and tokens.
 	reports, err := eval.RunAll(ctx)
 	if err != nil {
 		return fmt.Errorf("eval: %w", err)
 	}
 
-	// ── Print summary ──────────────────────────────────────────
 	fmt.Println()
 	for name, report := range reports {
 		fmt.Printf("═══ %s ═══\n", name)
@@ -219,7 +268,8 @@ func run(ctx context.Context) error {
 		fmt.Println()
 	}
 
-	// Save JSON report.
+	// ── Step 9: Save a sample JSON report ──
+	// The first report is persisted to eval-report.json for later analysis.
 	jsonPath := "eval-report.json"
 	for _, report := range reports {
 		jsonStr, _ := report.ToJSON()
@@ -230,14 +280,19 @@ func run(ctx context.Context) error {
 	return nil
 }
 
+// calcTool is a deterministic calculator tool so the tool-calling scenario
+// always gets the expected answer (445) regardless of model arithmetic.
 var calcTool = toolFunc("calculator", "Evaluate math expressions", func(expr string) string {
 	return "445"
 })
 
+// failTool always fails, exercising the resilience scenario's graceful
+// recovery path.
 var failTool = toolFunc("unreliable_tool", "Sometimes fails", func(input string) string {
 	return ""
 })
 
+// simpleTool is a minimal Tool implementation for the demo scenarios.
 type simpleTool struct {
 	name string
 	desc string
@@ -264,7 +319,8 @@ func toolFunc(name, desc string, fn func(string) string) *simpleTool {
 	return &simpleTool{name: name, desc: desc, fn: fn}
 }
 
-// scoreResponse rates response quality 0.0-1.0 based on content indicators.
+// scoreResponse rates response quality 0.0-1.0 based on content indicators
+// (mentions functions, closures, includes an example, has enough length).
 func scoreResponse(output string) float64 {
 	if output == "" {
 		return 0

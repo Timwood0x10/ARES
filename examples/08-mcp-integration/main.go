@@ -1,12 +1,57 @@
 // MCP integration — demonstrates connecting to an MCP server and using its tools.
 //
-// Builds the embedded MCP null server, then uses WithConfigFromEnv() for the
-// runtime and WithMCP() for the MCP connection. This shows how to compose
-// YAML-driven defaults with programmatic overrides.
+// Purpose:
+//
+//	Build the embedded MCP null server, then use WithConfigFromEnv() for the
+//	runtime and WithMCP() for the MCP connection. This shows how to compose
+//	YAML-driven defaults with programmatic overrides so that external tool
+//	servers become first-class citizens of the agent's tool set.
+//
+// Learning objectives (what this example teaches you):
+//   - How to build an external MCP server binary with `go build` and connect to
+//     it via sdk.WithMCP(sdk.MCPConn{…}).
+//   - How to compose YAML config (sdk.LoadConfigFile + cfg.ToOptions) with
+//     programmatic MCP options appended at call time.
+//   - How an agent discovers and calls MCP-provided tools (e.g. echo) at run
+//     time, just like natively registered tools.
+//   - How to read a system-runtime Snapshot for observability — component
+//     names, lifecycle states, and a readiness summary.
+//
+// Core APIs used (package path → symbol):
+//   - github.com/Timwood0x10/ares/sdk.LoadConfigFile    // read & validate ares.yaml
+//   - github.com/Timwood0x10/ares/sdk.(*ConfigFile).ToOptions
+//   - github.com/Timwood0x10/ares/sdk.WithMCP           // connect to an MCP server
+//   - github.com/Timwood0x10/ares/sdk.MCPConn           // MCP connection config struct
+//   - github.com/Timwood0x10/ares/sdk.NewRuntime         // create Runtime from options
+//   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
+//   - github.com/Timwood0x10/ares/sdk.WithInstruction   // set the agent's system prompt
+//   - github.com/Timwood0x10/ares/sdk.(*Agent).Run      // run a single task
+//   - github.com/Timwood0x10/ares/sdk.(*Runtime).Snapshot // get system-runtime snapshot
 //
 // Run:
 //
 //	go run examples/08-mcp-integration/main.go
+//
+// Expected output:
+//
+//	"---" + "📋 Use the echo tool to echo 'Hello from MCP!'"
+//	"🤖 <agent output using MCP echo tool>"
+//	"   tools: N | tokens: N | took: …"
+//	"---" + "📋 What tools do you have available?"
+//	"🤖 <agent lists tools>"
+//	"   tools: N | tokens: N | took: …"
+//	"✅ MCP integration demo completed"
+//	"System Runtime snapshot: { … }"  → JSON snapshot of component states
+//
+// Things you can try to modify:
+//   - Replace ./cmd/mcp-null/ with a real MCP server (e.g. a filesystem or
+//     database tool server) to see how the agent interacts with live external
+//     tools.
+//   - Add a second sdk.WithMCP(…) call to connect to multiple MCP servers
+//     simultaneously.
+//   - Change the agent's system prompt to steer which MCP tool it prefers.
+//   - Inspect rt.Snapshot().JSON() output to verify all components reached the
+//     "Ready" lifecycle state before task execution.
 package main
 
 import (
@@ -23,7 +68,10 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── 1. Build MCP server binary ─────────────────────────────
+	// ── Step 1: Build the MCP null-server binary ──
+	// Use exec.Command("go", "build", …) to compile the embedded MCP null server
+	// into a temporary binary. This simulates connecting to an external MCP tool
+	// server. The built binary is cleaned up via defer os.Remove.
 	mcpBin := filepath.Join(os.TempDir(), "ares-mcp-null")
 	build := exec.Command("go", "build", "-o", mcpBin, "./cmd/mcp-null/")
 	build.Stderr = os.Stderr
@@ -31,9 +79,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "❌ build MCP server: %v\n", err)
 		return
 	}
-	defer func() { _ = os.Remove(mcpBin) }()
+	defer func() { _ = os.Remove(mcpBin) }() // best-effort cleanup of temp binary
 
-	// ── 2. Load ares.yaml + MCP connection (compose) ───────────
+	// ── Step 2: Load ares.yaml and compose with an MCP connection ──
+	// sdk.LoadConfigFile reads and validates the YAML configuration; cfg.ToOptions
+	// converts it into the Option list that NewRuntime accepts. We then append a
+	// sdk.WithMCP(…) option to connect the Runtime to the MCP null server built
+	// in Step 1. This demonstrates composing YAML-driven defaults with
+	// programmatic overrides at call time.
 	cfg, err := sdk.LoadConfigFile("ares.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
@@ -45,20 +98,28 @@ func main() {
 		return
 	}
 	opts = append(opts, sdk.WithMCP(sdk.MCPConn{
-		Name:    "null-server",
-		Command: mcpBin,
+		Name:    "null-server", // human-readable label for this MCP server
+		Command: mcpBin,        // path to the MCP server binary
 		Args:    []string{"serve"},
 	}))
-	rt := sdk.NewRuntime(opts...)
+	rt := sdk.NewRuntime(opts...) // create Runtime with YAML options + MCP connection
 	defer rt.Close()
 
-	// ── 3. Create Agent ─────────────────────────────────────────
+	// ── Step 3: Create an Agent with a system instruction ──
+	// rt.NewAgent creates a new Agent bound to this Runtime. WithInstruction sets
+	// the system prompt that tells the agent to use the MCP echo tool when asked
+	// to echo something. The MCP tools are auto-discovered by the agent through
+	// the Runtime's tool registry.
 	agent := rt.NewAgent("assistant",
 		sdk.WithInstruction(`You are a helpful assistant with access to MCP tools.
 Use the echo tool when asked to echo something.`),
 	)
 
-	// ── 4. Run ──────────────────────────────────────────────────
+	// ── Step 4: Run each task and print results ──
+	// For every task we call agent.Run, which streams the task through the LLM,
+	// invokes any necessary tools (including MCP-provided ones), and returns a
+	// *sdk.Result. API-key / refusal errors are fatal; other errors are printed
+	// and the loop continues to the next task.
 	for _, task := range []string{
 		"Use the echo tool to echo 'Hello from MCP!'",
 		"What tools do you have available?",
@@ -80,11 +141,12 @@ Use the echo tool when asked to echo something.`),
 
 	fmt.Println("\n✅ MCP integration demo completed")
 
-	// ── 5. Show system runtime snapshot (Stage 1 observability) ──
-	//      The Snapshot() method returns the component status from the
-	//      Bootstrap core: names, modes, lifecycle states (Constructed /
-	//      Bound / Started / Ready / Stopped) and a readiness summary.
-	//      Available on any SDK Runtime backed by the Bootstrap core.
+	// ── Step 5: Show system runtime snapshot (Stage 1 observability) ──
+	// The Snapshot() method returns the component status from the Bootstrap core:
+	// names, modes, lifecycle states (Constructed / Bound / Started / Ready /
+	// Stopped) and a readiness summary. Available on any SDK Runtime backed by
+	// the Bootstrap core. Calling .JSON() on the snapshot produces indented JSON
+	// suitable for diagnostic output.
 	if snapJSON, snapErr := rt.Snapshot().JSON(); snapErr == nil {
 		fmt.Printf("System Runtime snapshot: %s\n", string(snapJSON))
 	} else {

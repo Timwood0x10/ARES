@@ -1,8 +1,35 @@
-// discovery demonstrates the Service Discovery Engine.
+// discovery demonstrates the Service Discovery Engine (api/discovery).
 //
-// Shows: active discovery, passive registration, tag management, health check.
+// Purpose:
 //
-// Run: go run ./examples/discovery
+//	This example shows the full lifecycle of service discovery: active
+//	discovery of MCP servers, passive registration of known services, tag
+//	management, health checking, listing with confidence/source details, and
+//	unregistration — all through the public api/discovery engine.
+//
+// Learning objectives:
+//   - How discovery.NewEngine orchestrates providers, stores, and events.
+//   - The two registration paths: active (DiscoverNow) and passive (Register).
+//   - How tag updates, health checks, and unregistration mutate service state.
+//   - How per-service confidence and source records are aggregated for display.
+//
+// Core APIs (with package paths):
+//   - discovery.NewEngine / discovery.EngineConfig (api/discovery)
+//   - (*Engine).DiscoverNow / Register / UpdateTags / CheckHealth / List /
+//     Unregister / OnEvent
+//   - discovery.RegisterRequest / discovery.UpdateTagsRequest
+//
+// Run:
+//
+//	go run ./examples/discovery
+//
+// Expected output:
+//
+//	=== 1. Active Discovery ===
+//	  Found N services
+//	=== 2. Passive Registration ===
+//	  ✓ Registered my-custom-mcp
+//	... (tags, health, list with confidence, unregister)
 package main
 
 import (
@@ -15,27 +42,37 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── Create engine with pluggable store ────────────────
-	// Users can pass their own Store (SQLite, Postgres, etc.)
-	// Default: in-memory.
+	// ── Step 1: Create the engine with a pluggable store ──
+	// The engine owns discovery providers, the service store, and health
+	// checks. Store nil falls back to an in-memory store; pass your own
+	// ServiceStore (SQLite, Postgres, JSON file — see custom-store example)
+	// for durability.
 	engine := discovery.NewEngine(discovery.EngineConfig{
 		ProjectDir: "",
 		Store:      nil, // Uses MemoryStore by default.
 	})
 
-	// Events → can be persisted to any DB.
+	// ── Step 2: Subscribe to lifecycle events ──
+	// OnEvent registers a callback fired on service add/remove/update and
+	// health changes; production systems persist these to an audit store.
 	engine.OnEvent(func(evt discovery.Event) {
 		fmt.Printf("  [event] %-25s %s\n", evt.Type, evt.ServiceID)
 	})
 
-	// ── 1. Active Discovery ───────────────────────────────
+	// ── Step 3: Active discovery ──
+	// DiscoverNow runs the configured providers (e.g. scanning for MCP
+	// servers) and records what it finds; then List returns the accumulated
+	// services.
 	fmt.Println("=== 1. Active Discovery ===")
 	_ = engine.DiscoverNow(ctx)
 
 	services, _ := engine.List(ctx)
 	fmt.Printf("  Found %d services\n", len(services))
 
-	// ── 2. Passive Registration ───────────────────────────
+	// ── Step 4: Passive registration ──
+	// Register adds a service the engine did not discover itself — e.g. a
+	// manually configured MCP endpoint. Tags and metadata make the service
+	// findable by capability and team.
 	fmt.Println("\n=== 2. Passive Registration ===")
 	err := engine.Register(ctx, discovery.RegisterRequest{
 		Name:     "my-custom-mcp",
@@ -49,7 +86,9 @@ func main() {
 		fmt.Println("  ✓ Registered my-custom-mcp")
 	}
 
-	// ── 3. Tag Management ─────────────────────────────────
+	// ── Step 5: Tag management ──
+	// UpdateTags atomically adds and removes tags on a service — useful for
+	// reclassifying capabilities without re-registering.
 	fmt.Println("\n=== 3. Tag Management ===")
 	err = engine.UpdateTags(ctx, "my-custom-mcp", discovery.UpdateTagsRequest{
 		Add:    []string{"capability:export", "priority:high"},
@@ -61,11 +100,15 @@ func main() {
 		fmt.Println("  ✓ Updated tags on my-custom-mcp")
 	}
 
-	// ── 4. Health Check ───────────────────────────────────
+	// ── Step 6: Health check ──
+	// CheckHealth probes every registered service and records Healthy /
+	// HealthMsg / CheckedAt on each.
 	fmt.Println("\n=== 4. Health Check ===")
 	_ = engine.CheckHealth(ctx)
 
-	// ── 5. List All Services ──────────────────────────────
+	// ── Step 7: List all services with aggregated details ──
+	// Each service carries Records (per-source confidence) and health state;
+	// bestConfidence and sourceList aggregate them for display.
 	fmt.Println("\n=== 5. All Services ===")
 	services, _ = engine.List(ctx)
 	for _, svc := range services {
@@ -92,7 +135,8 @@ func main() {
 		}
 	}
 
-	// ── 6. Unregister ─────────────────────────────────────
+	// ── Step 8: Unregister ──
+	// Unregister removes the service and emits an EventServiceRemoved.
 	fmt.Println("\n=== 6. Unregister ===")
 	_ = engine.Unregister(ctx, "my-custom-mcp")
 	fmt.Println("  ✓ Unregistered my-custom-mcp")
@@ -101,6 +145,8 @@ func main() {
 	fmt.Printf("  Remaining: %d services\n", len(services))
 }
 
+// bestConfidence returns the highest confidence across all discovery records
+// of a service, used to show how certain the engine is about it.
 func bestConfidence(svc *discovery.DiscoveredService) discovery.Confidence {
 	var best discovery.Confidence
 	for _, r := range svc.Records {
@@ -111,6 +157,8 @@ func bestConfidence(svc *discovery.DiscoveredService) discovery.Confidence {
 	return best
 }
 
+// sourceList renders the distinct discovery sources with their confidence,
+// e.g. "mcp-scan(95%), config(80%)", deduplicating repeated sources.
 func sourceList(svc *discovery.DiscoveredService) string {
 	sources := make([]string, 0, len(svc.Records))
 	seen := make(map[string]bool)

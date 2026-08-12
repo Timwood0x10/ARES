@@ -1,9 +1,40 @@
 // Graph demo — demonstrates graph construction, scheduling, conditional edges,
 // and dynamic routing in the ARES Graph system.
 //
-// Run:  go run examples/graph_demo/main.go
+// Purpose:
 //
-//	or:  go run ./examples/graph_demo/
+//	This example teaches the api/graph workflow engine: building a graph of
+//	nodes, wiring edges (including conditional branches), and controlling
+//	execution order with different scheduling strategies. It runs six small
+//	demos: basic FIFO, conditional branching, priority, short-job, round-robin,
+//	and weighted-fair scheduling.
+//
+// Learning objectives:
+//   - How to build a graph (graph.NewGraph / (*Graph).Node) and connect nodes
+//     with edges (Edge / Start).
+//   - How conditional edges (graph.Condition) implement exclusive-or
+//     branching on runtime state.
+//   - How each scheduler (Priority / ShortJob / RoundRobin / WeightedFair)
+//     changes node execution order.
+//
+// Core APIs (with package paths):
+//   - graph.NewGraph / (*Graph).Node / Edge / Start / Execute / SetScheduler
+//     (github.com/Timwood0x10/ares/api/graph)
+//   - graph.NewState / (*State).Set
+//   - graph.NewPriorityScheduler / NewShortJobScheduler / NewRoundRobinScheduler /
+//     NewWeightedFairScheduler
+//
+// Run:
+//
+//	go run ./examples/graph_demo
+//
+// Expected output:
+//
+//	═══ ARES Graph Demo ═══
+//	1. Basic FIFO (3 nodes in sequence)
+//	     [fetch] Fetching data... ...
+//	... six demos with their scheduling results ...
+//	═══ Done ═══
 //
 // Scheduling strategies:
 //   - FIFO / Default:  first-in-first-out (default)
@@ -29,7 +60,9 @@ func main() {
 	fmt.Println()
 	ctx := context.Background()
 
-	// 1. Basic FIFO — 3 nodes in sequence.
+	// ── Step 1: Basic FIFO — 3 nodes in sequence ──
+	// Nodes execute in edge order: fetch → process → save. Start marks the
+	// entry node; Execute runs the whole graph.
 	fmt.Println("1. Basic FIFO (3 nodes in sequence)")
 	g := build("basic-seq",
 		node("fetch", "Fetching data..."),
@@ -43,7 +76,9 @@ func main() {
 	must1(err)
 	fmt.Printf("   Duration: %v\n\n", r.Duration)
 
-	// 2. Conditional branching — one of two successors based on state.
+	// ── Step 2: Conditional branching ──
+	// Two edges from "eval" each carry a Condition; only the edge whose
+	// condition is true fires, implementing if/else on runtime state (score).
 	fmt.Println("2. Conditional branching (score >= 60 → pass, else → fail)")
 	g2 := build("conditional",
 		node("eval", "Evaluating..."),
@@ -61,7 +96,9 @@ func main() {
 	mustExecErr(g2.Execute(ctx, s30))
 	fmt.Println()
 
-	// 3. Priority scheduling — highest priority first.
+	// ── Step 3: Priority scheduling ──
+	// All three nodes are ready; the priority scheduler picks the highest
+	// priority first (high=10 → medium=5 → low=1).
 	fmt.Println("3. Priority scheduling (high=10, medium=5, low=1)")
 	g3 := build("priority",
 		node("low", "Low"),
@@ -77,7 +114,9 @@ func main() {
 	mustExecErr(g3.Execute(ctx, graph.NewState()))
 	fmt.Println()
 
-	// 4. ShortJob scheduling — shortest estimated duration first.
+	// ── Step 4: ShortJob scheduling ──
+	// The scheduler orders ready nodes by estimated duration (fast=10ms
+	// before slow=2000ms), minimizing overall completion time.
 	fmt.Println("4. ShortJob scheduling (fast=10ms, slow=2000ms)")
 	g4 := build("shortjob",
 		node("slow", "Slow (2000ms)"),
@@ -91,7 +130,9 @@ func main() {
 	mustExecErr(g4.Execute(ctx, graph.NewState()))
 	fmt.Println()
 
-	// 5. RoundRobin scheduling — fair cycling.
+	// ── Step 5: RoundRobin scheduling ──
+	// Ready nodes alternate fairly; here "a" and "b" both start ready and
+	// cycle through execution.
 	fmt.Println("5. RoundRobin scheduling")
 	g5 := build("rr", node("a", "A"), node("b", "B"))
 	must2(g5.Edge("a", "b"))
@@ -101,7 +142,9 @@ func main() {
 	mustExecErr(g5.Execute(ctx, graph.NewState()))
 	fmt.Println()
 
-	// 6. WeightedFair scheduling — proportional to weight.
+	// ── Step 6: WeightedFair scheduling ──
+	// Execution is distributed proportionally to each node's weight
+	// (heavy=3× vs light=1×).
 	fmt.Println("6. WeightedFair scheduling (heavy=3×, light=1×)")
 	g6 := build("wf", node("heavy", "H"), node("light", "L"))
 	must2(g6.Start("heavy"))
@@ -117,6 +160,7 @@ func main() {
 
 // ── Nodes & helpers ────────────────────────────
 
+// echoNode is a minimal graph.Node that prints its message when executed.
 type echoNode struct{ id, msg string }
 
 func (n *echoNode) ID() string { return n.id }
@@ -126,8 +170,10 @@ func (n *echoNode) Execute(_ context.Context, _ *graph.State) error {
 	return nil
 }
 
+// node builds an echoNode with the given id and message.
 func node(id, msg string) *echoNode { return &echoNode{id: id, msg: msg} }
 
+// build creates a graph and registers all nodes into it.
 func build(id string, nodes ...*echoNode) *graph.Graph {
 	g, err := graph.NewGraph(id)
 	must1(err)
@@ -157,6 +203,7 @@ func mustExecErr(_ *graph.Result, err error) {
 	}
 }
 
+// condScore returns a condition that is true when state["score"] >= threshold.
 func condScore(threshold int) graph.Condition {
 	return func(s *graph.State) bool {
 		v, ok := s.Get("score")
@@ -164,6 +211,7 @@ func condScore(threshold int) graph.Condition {
 	}
 }
 
+// condScoreLT returns a condition that is true when state["score"] < threshold.
 func condScoreLT(threshold int) graph.Condition {
 	return func(s *graph.State) bool {
 		v, ok := s.Get("score")

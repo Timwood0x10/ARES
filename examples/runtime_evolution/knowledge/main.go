@@ -1,6 +1,43 @@
-// Knowledge Evolution Demo — KnowledgeGenome 参数进化 + KnowledgePatchExecutor
+// Runtime Evolution Demo (knowledge) — the deepest of the three runtime
+// evolution examples: it evolves the KNOWLEDGE subsystem's parameters
+// (MaxResults, ReducerStrategy, PlannerStrategy) through the KnowledgeGenome,
+// diffs the config drift into patches, and applies them via the real
+// KnowledgePatchExecutor through the coordinator.
 //
-// 运行：go run examples/runtime_evolution/knowledge/main.go
+// Purpose:
+//
+//	While basic/ and full/ focus on workflow/scheduler topologies, this
+//	example shows subsystem-specific parameter evolution: the KnowledgeGenome
+//	mutates the knowledge-retrieval configuration, the KnowledgeDiffer turns
+//	the old/new config into patches, and KnowledgePatchExecutor applies them.
+//	It is the template for evolving any parameterized subsystem.
+//
+// Learning objectives:
+//   - How KnowledgeGenome mutates knowledge config (MaxResults / Reducer /
+//     Planner strategy) and how FitnessGenome ranks candidates.
+//   - How KnowledgeDiffer produces patches for knowledge.planner.* targets.
+//   - How a SourceAKF proposal is evaluated and applied by the coordinator.
+//
+// Core APIs (with package paths):
+//   - genome.NewKnowledgeGenome / DefaultKnowledgeGenomeConfig
+//     (internal/evolution/genome)
+//   - diff.NewKnowledgeDiffer (internal/evolution/diff)
+//   - knowledgeruntime.NewKnowledgePatchExecutor (internal/knowledge/runtime)
+//   - coordinator.NewEvolutionCoordinator / Submit / Evaluate / PatchHistory
+//     (internal/evolution/coordinator)
+//
+// Run:
+//
+//	go run ./examples/runtime_evolution/knowledge
+//
+// Expected output:
+//
+//  1. Created KnowledgeRuntime → 2. Initial config → 3. N candidates
+//  4. Diff Engine produced N patches → 5. Submitted → 6. Applied
+//     ═══ Demo Complete ═══
+//
+// Place in the progression: basic/ (shallow) → full/ (complete) →
+// knowledge/ (this, deep, knowledge-specific evolution).
 package main
 
 import (
@@ -24,8 +61,9 @@ func main() {
 	fmt.Println("═══ Knowledge Evolution Demo ═══")
 	fmt.Println()
 
-	// 1. Create a minimal KnowledgeRuntime for the demo.
-	// In production, this would be fully configured with real providers.
+	// ── Step 1: Create a minimal KnowledgeRuntime ──
+	// The runtime backs the KnowledgePatchExecutor; in production it would be
+	// fully configured with real providers, here it is a minimal demo pipe.
 	pipe := knowledge.NewKnowledgePipeline(
 		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
 		[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.6}},
@@ -45,7 +83,9 @@ func main() {
 
 	fmt.Println("1. Created KnowledgeRuntime")
 
-	// 2. Create patch registry with real KnowledgePatchExecutor.
+	// ── Step 2: Create the patch registry with the real knowledge executor ──
+	// KnowledgePatchExecutor applies patches targeting the knowledge.planner.*
+	// config keys; registering it makes those targets applicable.
 	patchReg := patch.NewRegistry()
 	knowledgeExec := knowledgeruntime.NewKnowledgePatchExecutor(rt)
 	if err := patchReg.Register("knowledge.planner", knowledgeExec); err != nil {
@@ -61,7 +101,9 @@ func main() {
 		log.Fatalf("register strategy executor: %v", err)
 	}
 
-	// 3. Create KnowledgeGenome.
+	// ── Step 3: Create the KnowledgeGenome with a starting config ──
+	// The genome mutates these three parameters; starting values are the
+	// "stable" config before evolution.
 	kgCfg := genome.DefaultKnowledgeGenomeConfig()
 	kgCfg.MaxResults = 100
 	kgCfg.ReducerStrategy = "default"
@@ -69,7 +111,9 @@ func main() {
 
 	wfGenome := genome.NewKnowledgeGenome(nil, kgCfg)
 
-	// 4. Take snapshot.
+	// ── Step 4: Take the initial snapshot ──
+	// The snapshot captures the current config; it is the OLD side of the
+	// diff.
 	oldSnap, err := wfGenome.Snapshot(ctx)
 	if err != nil {
 		log.Fatalf("snapshot: %v", err)
@@ -77,14 +121,17 @@ func main() {
 	fmt.Printf("2. Initial config: MaxResults=%d, Reducer=%s, Planner=%s\n",
 		kgCfg.MaxResults, kgCfg.ReducerStrategy, kgCfg.PlannerStrategy)
 
-	// 5. Mutate the knowledge genome.
+	// ── Step 5: Mutate the knowledge genome ──
+	// Mutate produces candidate children with drifted configs.
 	children, err := wfGenome.Mutate(ctx, 4)
 	if err != nil {
 		log.Fatalf("mutate: %v", err)
 	}
 	fmt.Printf("3. Generated %d candidate knowledge genomes\n", len(children))
 
-	// 6. Evaluate and pick the best.
+	// ── Step 6: Evaluate fitness and pick the best child ──
+	// Each candidate's fitness is scored; the fittest becomes the NEW side of
+	// the diff.
 	var bestChild genome.Genome
 	var bestFit float64
 	for _, child := range children {
@@ -102,7 +149,9 @@ func main() {
 		}
 	}
 
-	// 7. Diff.
+	// ── Step 7: Diff old vs new config into patches ──
+	// The KnowledgeDiffer compares the snapshots and emits patches for the
+	// changed knowledge.planner.* keys.
 	newSnap, err := bestChild.Snapshot(ctx)
 	if err != nil {
 		log.Fatalf("new snapshot: %v", err)
@@ -124,7 +173,10 @@ func main() {
 		fmt.Printf("   • %s on %s (value: %v)\n", p.Type, p.Target, p.Value)
 	}
 
-	// 8. Apply patches through coordinator.
+	// ── Step 8: Apply patches through the coordinator ──
+	// Patches are submitted as SourceAKF proposals (knowledge-driven config
+	// drift) and evaluated by the coordinator's policy; approved ones are
+	// applied via KnowledgePatchExecutor.
 	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
 	for _, p := range patches {
 		coord.Submit(coordinator.PatchProposal{

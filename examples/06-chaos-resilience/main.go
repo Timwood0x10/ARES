@@ -1,10 +1,59 @@
 // Chaos resilience — demonstrates real failure handling and self-healing patterns.
-// Covers multiple chaos modes: file system, tool timeout, network failure,
-// graceful degradation, and fallback.
+//
+// Purpose:
+//
+//	Show how the ARES agent behaves when tools fail in realistic ways: file
+//	system errors, tool timeouts, network failures, graceful degradation, MCP
+//	disconnection, LLM service failures, and memory corruption. Each chaos
+//	scenario is exercised through a dedicated tool, and the agent is asked to
+//	handle the resulting error gracefully.
+//
+// Learning objectives (what this example teaches you):
+//   - How to build custom tools with tools.ToolFunc and register them on the
+//     Runtime's tool registry.
+//   - How different failure modes (timeout, not-found, connection reset,
+//     corrupted data) surface through tool errors.
+//   - How a resilient system prompt helps the agent explain what happened
+//     instead of silently failing.
+//   - How to read Result fields (Output, ToolCalls, TokenUsage, Duration) to
+//     assess agent behaviour under stress.
+//
+// Core APIs used (package path → symbol):
+//   - github.com/Timwood0x10/ares/sdk.NewRuntime              // create Runtime
+//   - github.com/Timwood0x10/ares/sdk.WithOllama              // pick Ollama provider + model
+//   - github.com/Timwood0x10/ares/sdk.WithTrace               // enable per-step trace logging
+//   - github.com/Timwood0x10/ares/sdk.(*Runtime).ToolRegistry // access tool registry
+//   - github.com/Timwood0x10/ares/api/tools.Tool              // tool interface
+//   - github.com/Timwood0x10/ares/api/tools.ToolFunc          // struct-based tool implementation
+//   - github.com/Timwood0x10/ares/api/tools.(*Registry).Register
+//   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
+//   - github.com/Timwood0x10/ares/sdk.WithInstruction         // set system prompt
+//   - github.com/Timwood0x10/ares/sdk.(*Agent).Run            // run a single task
+//   - github.com/Timwood0x10/ares/sdk.Result                  // Output, ToolCalls, TokenUsage…
 //
 // Run:
 //
 //	go run examples/06-chaos-resilience/main.go
+//
+// Expected output:
+//
+//	"═══ File system failures ═══"     → agent reads / misses JSON files
+//	"═══ Tool timeout ═══"             → agent handles slow_tool
+//	"═══ Graceful degradation ═══"     → agent falls back from unreliable to echo
+//	"═══ Network failure simulation ═══" → agent handles flaky_network_api timeout
+//	"═══ MCP disconnect ═══"           → agent explains disconnected MCP server
+//	"═══ LLM failure simulation ═══"   → agent handles LLM 503 error
+//	"═══ Memory corruption ═══"        → agent handles corrupted memory key
+//	"✅ Chaos resilience demo completed"
+//
+// Things you can try to modify:
+//   - Change the failure rates or timeout durations in the chaos tool definitions.
+//   - Add a retry wrapper around agent.Run to see how repeated attempts affect
+//     recovery.
+//   - Swap sdk.WithOllama("llama3.2") for a different model to compare
+//     resilience across providers.
+//   - Add new chaos tools (e.g. disk-full, permission-denied) and register them
+//     to explore additional failure modes.
 package main
 
 import (
@@ -23,10 +72,18 @@ import (
 func main() {
 	ctx := context.Background()
 
+	// ── Step 1: Create a Runtime with Ollama and trace enabled ──
+	// NewRuntime initialises the top-level container (LLM client, tool registry,
+	// memory engine, etc.). WithOllama selects the Ollama provider with model
+	// "llama3.2" — no API key required. WithTrace(true) turns on per-step trace
+	// logging so you can follow the agent's reasoning steps in the console.
 	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithTrace(true))
 	defer rt.Close()
 
-	// Inject all chaos tools.
+	// ── Step 2: Inject all chaos tools into the tool registry ──
+	// Each chaos tool simulates a different failure mode. We register them all
+	// on the Runtime's tool registry so the agent can discover and call them.
+	// readFileTool points at the example's data directory for file-system tests.
 	dataDir := filepath.Join("examples", "06-chaos-resilience", "data")
 	chaosTools := []tools.Tool{
 		readFileTool(dataDir),
@@ -39,10 +96,13 @@ func main() {
 		memoryCorruptTool,
 	}
 	for _, t := range chaosTools {
-		_ = rt.ToolRegistry().Register(t)
+		_ = rt.ToolRegistry().Register(t) // register tool; ignore duplicate-name errors
 	}
 
-	// Test each chaos scenario.
+	// ── Step 3: Define chaos scenarios as a table of tasks ──
+	// Each scenario groups one or more natural-language tasks that exercise a
+	// specific failure mode. The agent receives the task string and is expected
+	// to call the relevant chaos tool, observe the error, and respond gracefully.
 	scenarios := []struct {
 		name  string
 		tasks []string
@@ -92,6 +152,11 @@ func main() {
 		},
 	}
 
+	// ── Step 4: Run each scenario and print results ──
+	// For every scenario we create a fresh agent with a resilient system prompt,
+	// run each task, and print the output plus a summary line with tool-call
+	// count, token usage, and latency. An emoji heuristic flags outputs that
+	// mention error/fail/not-found/sorry.
 	for _, sc := range scenarios {
 		fmt.Printf("\n═══ %s ═══\n", sc.name)
 		for _, task := range sc.tasks {
@@ -120,6 +185,8 @@ func main() {
 
 // ── Chaos tools ────────────────────────────────────────────────
 
+// readFileTool returns a tool that reads and pretty-prints a JSON file from the
+// given data directory. It exercises file-not-found and invalid-JSON error paths.
 func readFileTool(dataDir string) tools.Tool {
 	return tools.ToolFunc{
 		ToolName: "read_file",
@@ -129,7 +196,7 @@ func readFileTool(dataDir string) tools.Tool {
 			if filename == "" {
 				return nil, fmt.Errorf("filename is required")
 			}
-			filename = filepath.Base(filename)
+			filename = filepath.Base(filename) // strip directory components for safety
 			fullPath := filepath.Join(dataDir, filename)
 
 			data, err := os.ReadFile(fullPath)
@@ -143,13 +210,15 @@ func readFileTool(dataDir string) tools.Tool {
 				return nil, fmt.Errorf("file %q contains invalid JSON", filename)
 			}
 			var parsed any
-			_ = json.Unmarshal(data, &parsed)
+			_ = json.Unmarshal(data, &parsed) // safe: already validated above
 			pretty, _ := json.MarshalIndent(parsed, "", "  ")
 			return string(pretty), nil
 		},
 	}
 }
 
+// slowTool is a deliberately slow tool that sleeps for 5 seconds before
+// returning, exercising the tool-timeout code path.
 var slowTool = tools.ToolFunc{
 	ToolName: "slow_tool",
 	ToolDesc: "A deliberately slow tool that takes 5 seconds",
@@ -164,6 +233,8 @@ var slowTool = tools.ToolFunc{
 	},
 }
 
+// unreliableTool simulates a service that fails 80% of the time. Used together
+// with echoTool to demonstrate graceful degradation and fallback.
 var unreliableTool = tools.ToolFunc{
 	ToolName: "unreliable_tool",
 	ToolDesc: "A tool that fails 80% of the time",
@@ -175,6 +246,7 @@ var unreliableTool = tools.ToolFunc{
 	},
 }
 
+// echoTool is a simple fallback tool that echoes its input string.
 var echoTool = tools.ToolFunc{
 	ToolName: "echo_tool",
 	ToolDesc: "Fallback tool that echoes input",
@@ -184,6 +256,8 @@ var echoTool = tools.ToolFunc{
 	},
 }
 
+// flakyNetworkTool simulates a flaky network API that times out after 3 seconds,
+// exercising the network-failure and cancellation code paths.
 var flakyNetworkTool = tools.ToolFunc{
 	ToolName: "flaky_network_api",
 	ToolDesc: "Simulates a flaky network API that sometimes times out",
@@ -201,6 +275,8 @@ var flakyNetworkTool = tools.ToolFunc{
 
 // ── Additional chaos modes ─────────────────────────────────────
 
+// mcpDisconnectTool simulates an MCP server disconnection, returning a transport-
+// closed error that the agent should explain to the user.
 var mcpDisconnectTool = tools.ToolFunc{
 	ToolName: "mcp_disconnect_tool",
 	ToolDesc: "Simulates an MCP server disconnection",
@@ -211,6 +287,8 @@ var mcpDisconnectTool = tools.ToolFunc{
 	},
 }
 
+// llmFailureTool simulates an LLM service failure (HTTP 503, rate-limit
+// exceeded), exercising the LLM-provider-error recovery path.
 var llmFailureTool = tools.ToolFunc{
 	ToolName: "llm_failure_tool",
 	ToolDesc: "Simulates an LLM service failure",
@@ -221,6 +299,8 @@ var llmFailureTool = tools.ToolFunc{
 	},
 }
 
+// memoryCorruptTool simulates corrupted memory/data retrieval, returning a
+// checksum-mismatch error for the given key.
 var memoryCorruptTool = tools.ToolFunc{
 	ToolName: "memory_corrupt_tool",
 	ToolDesc: "Simulates corrupted memory/data retrieval",

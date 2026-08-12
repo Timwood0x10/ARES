@@ -1,6 +1,44 @@
-// Runtime Evolution Demo — 展示 WorkflowGenome + Diff Engine + Coordinator 完整进化闭环
+// Runtime Evolution Demo (basic) — the shallowest of the three runtime
+// evolution examples: a single WorkflowGenome + SchedulerGenome evolve through
+// mutate → fitness → diff → coordinator, showing the minimal closed loop.
 //
-// 运行：go run examples/runtime_evolution/basic/main.go
+// Purpose:
+//
+//	This example teaches the CORE evolution loop with only two genomes:
+//	workflow (the DAG) and scheduler. It mutates candidates, picks the
+//	fittest, diffs old vs new snapshots into patches, and submits them to the
+//	evolution coordinator for evaluation — the same loop the full example
+//	generalizes to four subsystems.
+//
+// Learning objectives:
+//   - How a Genome (workflow/scheduler) exposes Mutate + Snapshot and how a
+//     FitnessGenome scores candidates.
+//   - How the Diff Engine turns snapshot pairs into patch.RuntimePatch.
+//   - How the coordinator evaluates and applies patches (SourceGA).
+//
+// Core APIs (with package paths):
+//   - genome.NewWorkflowGenome / NewSchedulerGenome / Registry
+//     (internal/evolution/genome)
+//   - diff.NewWorkflowDiffer / NewSchedulerDiffer / Registry / DiffAll
+//     (internal/evolution/diff)
+//   - patch.NewRegistry / RuntimePatch (internal/evolution/patch)
+//   - coordinator.NewEvolutionCoordinator / Submit / Evaluate / PatchHistory /
+//     DecisionHistory (internal/evolution/coordinator)
+//   - engine.NewMutableDAG (internal/workflow/engine)
+//   - graph.NewGraphPatchExecutor (internal/workflow/graph)
+//
+// Run:
+//
+//	go run ./examples/runtime_evolution/basic
+//
+// Expected output:
+//
+//  1. Initial DAG: 3 nodes, order=[A B C]
+//  2. Registered genomes: [workflow scheduler] → 3. differs → ...
+//  6. Generated N candidate workflow genomes ... → 7. patches → 8-10.
+//
+// Place in the progression: this is the SHALLOWEST step (basic); see full/
+// for all four subsystems and knowledge/ for knowledge-specific evolution.
 package main
 
 import (
@@ -22,16 +60,22 @@ func main() {
 	fmt.Println("═══ ARES Runtime Evolution Full Demo ═══")
 	fmt.Println()
 
+	// ── Step 1: Build the initial workflow DAG ──
+	// A 3-node pipeline (A → B → C) is the evolvable substrate: the workflow
+	// genome mutates this topology.
 	dag := buildDAG()
 	genomeReg, diffReg, patchReg := registerComponents(dag)
 	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
 	fmt.Println("5. Created coordinator")
 
+	// ── Step 2: Run one evolution cycle and apply the patches ──
 	patches := runEvolutionCycle(ctx, dag, genomeReg, diffReg)
 	applyPatches(coord, patches)
 	printSummary(coord)
 }
 
+// buildDAG constructs the initial 3-node workflow DAG (validator → processor
+// → formatter) that the workflow genome will mutate.
 func buildDAG() *engine.MutableDAG {
 	steps := []*engine.Step{
 		{ID: "A", Name: "Input Validator", AgentType: "validator", Input: "validate request"},
@@ -50,7 +94,14 @@ func buildDAG() *engine.MutableDAG {
 	return dag
 }
 
+// registerComponents registers the genomes (workflow + scheduler), the differs
+// that turn snapshot pairs into patches, and the patch executors that apply
+// them to a live graph.
 func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registry, *patch.Registry) {
+	// ── Register genomes ──
+	// A genome knows how to mutate its subsystem and snapshot its state;
+	// the workflow genome mutates the DAG topology, the scheduler genome the
+	// node scheduling.
 	genomeReg := genome.NewRegistry()
 	wfGenome := genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig())
 	if err := genomeReg.Register(wfGenome); err != nil {
@@ -62,6 +113,9 @@ func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registr
 	}
 	fmt.Printf("2. Registered genomes: %v\n", genomeReg.List())
 
+	// ── Register differs ──
+	// A differ compares an old/new snapshot pair and produces runtime patches
+	// describing the concrete changes.
 	diffReg := diff.NewRegistry()
 	if err := diffReg.Register(diff.NewWorkflowDiffer()); err != nil {
 		log.Fatalf("register workflow differ: %v", err)
@@ -71,6 +125,9 @@ func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registr
 	}
 	fmt.Printf("3. Registered differ: %v\n", diffReg.List())
 
+	// ── Register patch executors ──
+	// Executors are the apply-side of a patch: the graph executor mutates the
+	// live graph for both workflow.graph and graph.scheduler targets.
 	evolvedGraph := makeGraphFromDAG(dag)
 
 	patchReg := patch.NewRegistry()
@@ -84,6 +141,8 @@ func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registr
 	return genomeReg, diffReg, patchReg
 }
 
+// makeGraphFromDAG mirrors the MutableDAG into a graph.Graph so the graph
+// patch executor can apply mutations to a live, executable graph.
 func makeGraphFromDAG(dag *engine.MutableDAG) *graph.Graph {
 	evolvedGraph, err := graph.NewGraph("demo-evolution")
 	if err != nil {
@@ -109,7 +168,14 @@ func makeGraphFromDAG(dag *engine.MutableDAG) *graph.Graph {
 	return evolvedGraph
 }
 
-func runEvolutionCycle(ctx context.Context, dag *engine.MutableDAG, genomeReg *genome.Registry, diffReg *diff.Registry) []patch.RuntimePatch {
+// runEvolutionCycle executes the mutate → fitness → snapshot → diff loop and
+// returns the patches describing the evolved state.
+func runEvolutionCycle(
+	ctx context.Context,
+	dag *engine.MutableDAG,
+	genomeReg *genome.Registry,
+	diffReg *diff.Registry,
+) []patch.RuntimePatch {
 	wfGenome, err := genomeReg.Get("workflow")
 	if err != nil {
 		log.Fatalf("get workflow genome: %v", err)
@@ -119,6 +185,7 @@ func runEvolutionCycle(ctx context.Context, dag *engine.MutableDAG, genomeReg *g
 		log.Fatalf("get scheduler genome: %v", err)
 	}
 
+	// ── Snapshot the initial (old) state ──
 	oldSnapshot, err := wfGenome.Snapshot(ctx)
 	if err != nil {
 		log.Fatalf("snapshot: %v", err)
@@ -128,6 +195,9 @@ func runEvolutionCycle(ctx context.Context, dag *engine.MutableDAG, genomeReg *g
 		log.Fatalf("scheduler snapshot: %v", err)
 	}
 
+	// ── Mutate the workflow genome until a real change appears ──
+	// Mutation is probabilistic; we retry up to 10 times to get a child whose
+	// node count differs from the parent (a genuine topology change).
 	var children []genome.Genome
 	for attempt := 0; attempt < 10; attempt++ {
 		children, err = wfGenome.Mutate(ctx, 5)
@@ -146,6 +216,7 @@ func runEvolutionCycle(ctx context.Context, dag *engine.MutableDAG, genomeReg *g
 foundMutation:
 	fmt.Printf("6. Generated %d candidate workflow genomes (after mutation)\n", len(children))
 
+	// ── Pick the fittest candidate ──
 	var bestChild genome.Genome
 	var bestFit float64
 	for _, child := range children {
@@ -161,6 +232,7 @@ foundMutation:
 		}
 	}
 
+	// ── Diff old vs new snapshots into patches ──
 	newSnapshot, err := bestChild.Snapshot(ctx)
 	if err != nil {
 		log.Fatalf("new snapshot: %v", err)
@@ -185,6 +257,8 @@ foundMutation:
 	return patches
 }
 
+// applyPatches submits every patch to the coordinator as a GA-source proposal
+// with a fitness score.
 func applyPatches(coord *coordinator.EvolutionCoordinator, patches []patch.RuntimePatch) {
 	for _, p := range patches {
 		coord.Submit(coordinator.PatchProposal{
@@ -199,6 +273,8 @@ func applyPatches(coord *coordinator.EvolutionCoordinator, patches []patch.Runti
 	fmt.Printf("8. Submitted %d patch proposals to coordinator (with fitness scores)\n", len(patches))
 }
 
+// printSummary evaluates the coordinator and prints the apply + decision
+// history — the audit trail of the evolution loop.
 func printSummary(coord *coordinator.EvolutionCoordinator) {
 	coord.Evaluate(context.Background())
 	history := coord.PatchHistory()
