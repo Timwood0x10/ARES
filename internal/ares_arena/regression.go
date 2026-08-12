@@ -571,22 +571,92 @@ func computeSignificance(oldScores, newScores []float64, confidenceLevel float64
 	return confident, pValue
 }
 
-// approximatePValue computes an approximate two-tailed p-value from t-statistic.
-// Uses normal distribution approximation for simplicity.
+// approximatePValue computes a two-tailed p-value from a t-statistic.
+// For large degrees of freedom (>30) the normal approximation is used; for
+// smaller df it evaluates the exact Student's t distribution via the
+// regularized incomplete beta function (Lentz continued fraction), replacing
+// the previous ad-hoc scaling that was inaccurate near p≈0.05.
 func approximatePValue(tStat float64, df float64) float64 {
-	// For large degrees of freedom (>30), use normal approximation.
+	// For large degrees of freedom (>30), normal approximation is accurate.
 	if df > 30 {
 		return normalApproximationPValue(tStat)
 	}
-
-	// For smaller df, use a simple scaling factor to be more conservative.
-	// This avoids complex beta function calculations while remaining reasonable.
-	scale := 1.0 + (30-df)/60.0 // Scale up p-value for small df (more conservative).
-	pVal := normalApproximationPValue(tStat) * scale
-	if pVal > 1.0 {
-		pVal = 1.0
+	// Exact two-tailed p-value: p = I_{df/(df+t²)}(df/2, 1/2).
+	// (Abramowitz & Stegun 26.7.1 — Student's t CDF via incomplete beta.)
+	if df <= 0 {
+		return 1.0
 	}
-	return pVal
+	x := df / (df + tStat*tStat)
+	return regularizedBeta(df/2, 0.5, x)
+}
+
+// regularizedBeta computes the regularized incomplete beta function I_x(a, b)
+// for 0 <= x <= 1 using the Lentz continued-fraction algorithm (Numerical
+// Recipes betacf). It is exact enough for p-value work and does not need a
+// t-distribution table.
+func regularizedBeta(a, b, x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	if x >= 1 {
+		return 1
+	}
+	// Use the symmetry I_x(a,b) = 1 - I_{1-x}(b,a) when x is large to keep
+	// the continued fraction well-conditioned.
+	if x > (a+1)/(a+b+2) {
+		return 1 - regularizedBeta(b, a, 1-x)
+	}
+
+	lnBetaA, _ := math.Lgamma(a)
+	lnBetaB, _ := math.Lgamma(b)
+	lnBetaAB, _ := math.Lgamma(a + b)
+	lnBeta := lnBetaA + lnBetaB - lnBetaAB
+	front := math.Exp(a*math.Log(x)+b*math.Log(1-x)-lnBeta) / a
+
+	const maxIter = 200
+	const eps = 3e-12
+
+	qab := a + b
+	qap := a + 1
+	qam := a - 1
+	c := 1.0
+	d := 1 - qab*x/qap
+	if math.Abs(d) < 1e-30 {
+		d = 1e-30
+	}
+	d = 1 / d
+	h := d
+	for m := 1; m <= maxIter; m++ {
+		m2 := 2 * m
+		aa := float64(m) * (b - float64(m)) * x / ((qam + float64(m2)) * (a + float64(m2)))
+		d = 1 + aa*d
+		if math.Abs(d) < 1e-30 {
+			d = 1e-30
+		}
+		c = 1 + aa/c
+		if math.Abs(c) < 1e-30 {
+			c = 1e-30
+		}
+		d = 1 / d
+		h *= d * c
+
+		aa = -(a + float64(m)) * (qab + float64(m)) * x / ((a + float64(m2)) * (qap + float64(m2)))
+		d = 1 + aa*d
+		if math.Abs(d) < 1e-30 {
+			d = 1e-30
+		}
+		c = 1 + aa/c
+		if math.Abs(c) < 1e-30 {
+			c = 1e-30
+		}
+		d = 1 / d
+		del := d * c
+		h *= del
+		if math.Abs(del-1) < eps {
+			break
+		}
+	}
+	return front * h
 }
 
 // normalApproximationPValue approximates two-tailed p-value using error function.

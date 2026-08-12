@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -11,7 +12,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockScorer returns deterministic scores for testing.
+// TestApproximatePValue_TDistributionAnchors locks the exact Student's t
+// two-tailed p-value computation against known distribution anchors: the
+// t-critical values for p=0.05 at several degrees of freedom, plus a few
+// non-critical points. The previous ad-hoc scaling was inaccurate near
+// p≈0.05 for small df; the incomplete-beta implementation must match the
+// standard t-table values within tolerance.
+func TestApproximatePValue_TDistributionAnchors(t *testing.T) {
+	cases := []struct {
+		name string
+		t    float64
+		df   float64
+		want float64 // known two-tailed p-value from the t distribution
+	}{
+		// t-critical values at p=0.05 (two-tailed) from standard t-tables.
+		{"df1_critical", 12.706, 1, 0.05},
+		{"df5_critical", 2.571, 5, 0.05},
+		{"df10_critical", 2.228, 10, 0.05},
+		{"df30_critical", 2.042, 30, 0.05},
+		// Non-critical points for df=10.
+		{"df10_t1", 1.0, 10, 0.3409},
+		{"df10_t2", 2.0, 10, 0.0734},
+		{"df10_t3", 3.0, 10, 0.0133},
+		// Edge cases.
+		{"zero_t", 0.0, 10, 1.0},
+		{"df1_t1", 1.0, 1, 0.5000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := approximatePValue(tc.t, tc.df)
+			if math.Abs(got-tc.want) > 1e-3 {
+				t.Errorf("approximatePValue(t=%.3f, df=%.0f) = %.4f, want %.4f (±0.001)",
+					tc.t, tc.df, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApproximatePValue_MonotonicInT locks that the p-value decreases as |t|
+// grows for a fixed df — a sanity contract for the incomplete-beta path.
+func TestApproximatePValue_MonotonicInT(t *testing.T) {
+	df := 10.0
+	prev := 1.0
+	for i := 1; i <= 10; i++ {
+		p := approximatePValue(float64(i), df)
+		if p > prev {
+			t.Fatalf("p-value not monotonic: t=%d p=%.4f > previous %.4f", i, p, prev)
+		}
+		prev = p
+	}
+}
+
 type mockScorer struct {
 	scores    map[int]float64 // call index → score
 	callCount int
