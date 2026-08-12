@@ -58,6 +58,7 @@ func (s *Service) CreateAgent(ctx context.Context, config *core.AgentConfig) (*c
 		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    core.AgentStatus(agent.Status),
+		Config:    config.Config,
 		CreatedAt: agent.CreatedAt,
 	}, nil
 }

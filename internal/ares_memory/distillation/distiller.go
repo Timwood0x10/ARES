@@ -582,10 +582,21 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 					"conversation_id", conversationID, "memory_index", idx,
 					"new_confidence", memory.Importance, "existing_confidence", conflict.Confidence)
 			case KeepBoth:
+				// Preserve the full structured metadata the downstream
+				// StoreDistilledTask expects (problem/solution/confidence). The
+				// previous map only carried "solution", so the persisted experience
+				// for the kept-old memory lost its problem statement and confidence
+				// (both stored as empty/zero), and its re-embedding text was
+				// garbage.
 				oldMemory := Memory{
-					ID:         uuid.New().String(),
-					Content:    conflict.Problem,
-					Metadata:   map[string]interface{}{"solution": conflict.Solution},
+					ID:      uuid.New().String(),
+					Content: conflict.Problem,
+					Metadata: map[string]interface{}{
+						"problem":           conflict.Problem,
+						"solution":          conflict.Solution,
+						"confidence":        conflict.Confidence,
+						"extraction_method": string(conflict.ExtractionMethod),
+					},
 					Type:       memory.Type,
 					Importance: conflict.Confidence,
 					Vector:     conflict.Vector, // fallback if re-embed fails

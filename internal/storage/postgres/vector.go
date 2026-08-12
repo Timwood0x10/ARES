@@ -74,9 +74,9 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, 1 - (embedding <=> $1) as distance, metadata
+		SELECT id, 1 - (embedding <=> $1::vector) as distance, metadata
 		FROM %s
-		ORDER BY embedding <=> $1
+		ORDER BY embedding <=> $1::vector
 		LIMIT $2
 	`, safeTable)
 
@@ -152,7 +152,7 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 
 	query := fmt.Sprintf(`
 	   INSERT INTO %s (id, embedding, metadata)
-	  VALUES ($1, $2, $3)
+	  VALUES ($1, $2::vector, $3)
 	 `, safeTable)
 
 	_, err = v.db.ExecContext(ctx, query, id, embeddingJSON, metadataJSON)

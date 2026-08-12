@@ -389,14 +389,13 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	// Load representations for the requested model into a map keyed by object ID.
 	reps := make(map[string]*knowledge.Representation, len(ids))
 	if len(ids) > 0 && req.Model != "" {
-		repArgs := make([]interface{}, 0, len(ids)+1)
-		for _, id := range ids {
-			repArgs = append(repArgs, id)
-		}
-		repArgs = append(repArgs, req.Model)
+		// The query declares exactly two placeholders: $1 (the object ID array)
+		// and $2 (the model). The previous code built a slice of N ids + model
+		// and overwrote only index 0 with the array, so $2 bound to the second
+		// object ID instead of the model, making the model filter match nothing.
 		repQuery := `SELECT id, object_id, model, dimension, vector, metadata, created_at
 			FROM akf_representations WHERE object_id = ANY($1) AND model = $2`
-		repArgs[0] = pqStringArray(ids) //nolint:gosec // ids are local object IDs
+		repArgs := []interface{}{pqStringArray(ids), req.Model} //nolint:gosec // ids are local object IDs
 		repRows, err := s.db.QueryContext(ctx, repQuery, repArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("hybrid search reps: %w", err)

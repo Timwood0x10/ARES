@@ -649,17 +649,27 @@ func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime, mem
 //	error         - wrapped with context if a connection, list, or register fails.
 func wireMCPClients(cfg *config, toolReg *tools.Registry) ([]*mcp.Client, error) {
 	var mcpClients []*mcp.Client
+	// On any failure, close every client already connected so a partial
+	// connection is not leaked when New() returns the error.
+	closeAll := func() {
+		for _, c := range mcpClients {
+			_ = c.Close()
+		}
+	}
 	for _, conn := range cfg.mcpConns {
 		connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		client, err := mcp.ConnectStdio(connectCtx, conn.Name, conn.Command, conn.Args)
 		connectCancel()
 		if err != nil {
+			closeAll()
 			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
 		}
 		listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		mcpTools, listErr := client.ListTools(listCtx)
 		listCancel()
 		if listErr != nil {
+			_ = client.Close()
+			closeAll()
 			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
 		}
 		for _, t := range mcpTools {
@@ -668,6 +678,8 @@ func wireMCPClients(cfg *config, toolReg *tools.Registry) ([]*mcp.Client, error)
 				desc:   t.Description,
 				client: client,
 			}); err != nil {
+				_ = client.Close()
+				closeAll()
 				return nil, fmt.Errorf("mcp %q register %s: %w", conn.Name, t.Name, err)
 			}
 		}
@@ -714,12 +726,28 @@ func New(opts ...Option) (*Runtime, error) {
 	// deferred cancel prevents a context leak (vet lostcancel).
 	bootstrapCtx, bootstrapCancel := context.WithCancel(context.Background())
 	bootstrapCancelTaken := false
+	// mcpClients and bootstrapComp are declared here (before the cleanup defer)
+	// so the deferred cleanup can reference them; variables referenced by a
+	// defer must already be in scope at the defer statement.
+	var mcpClients []*mcp.Client
+	var bootstrapComp *ares_bootstrap.Components
 	defer func() {
 		if !bootstrapCancelTaken {
+			// Error path: release everything created so far. The success path
+			// sets bootstrapCancelTaken and hands ownership to Runtime.Close().
 			bootstrapCancel()
+			// Drain Bootstrap background goroutines (they exit on ctx.Done()) so
+			// none outlives the failed construction, mirroring Runtime.Close().
+			if bootstrapComp != nil {
+				bootstrapComp.WaitBackground()
+			}
+			llmSvc.Close()
+			for _, c := range mcpClients {
+				_ = c.Close()
+			}
 		}
 	}()
-	bootstrapComp := newBootstrapCore(bootstrapCtx, cfg)
+	bootstrapComp = newBootstrapCore(bootstrapCtx, cfg)
 
 	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
 	var memMgr memory.MemoryManager
@@ -742,7 +770,7 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- MCP ----
-	mcpClients, err := wireMCPClients(cfg, toolReg)
+	mcpClients, err = wireMCPClients(cfg, toolReg)
 	if err != nil {
 		return nil, err
 	}

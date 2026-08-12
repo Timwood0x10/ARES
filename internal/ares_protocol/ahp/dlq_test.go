@@ -93,6 +93,56 @@ func TestDLQProcessor_MaxRetries(t *testing.T) {
 	assert.Equal(t, 1, dlq.Size(), "entry should remain in DLQ")
 }
 
+// TestDLQProcessor_AddWithMaxRetries verifies the public AddWithMaxRetries
+// API actually enforces the retry budget. Previously Add() never set
+// MaxRetries, so the retry-exhaustion logic was only reachable by reaching into
+// the queue internals — any entry added through the public API was retried
+// indefinitely.
+func TestDLQProcessor_AddWithMaxRetries(t *testing.T) {
+	dlq := NewDLQ(100)
+	processor := NewDLQProcessor(dlq)
+
+	msg := newTestMessage("sess-3")
+	dlq.AddWithMaxRetries(msg, errors.New("boom"), "bounded-reason", 2)
+
+	var attempts atomic.Int32
+	processor.RegisterHandler("bounded-reason", func(_ context.Context, _ *DLQEntry) error {
+		attempts.Add(1)
+		return errors.New("always fails")
+	})
+
+	ctx := context.Background()
+	require.NoError(t, processor.Process(ctx))
+	require.NoError(t, processor.Process(ctx))
+	assert.Equal(t, int32(2), attempts.Load(), "entry processed up to its budget")
+	assert.Equal(t, 1, dlq.Size(), "entry should still be in DLQ")
+
+	require.NoError(t, processor.Process(ctx))
+	assert.Equal(t, int32(2), attempts.Load(), "entry must not be processed after budget exhausted")
+}
+
+// TestDLQProcessor_AddBoundedStillUnlimited verifies Add() (no budget) keeps
+// the documented unlimited-retry behaviour.
+func TestDLQProcessor_AddBoundedStillUnlimited(t *testing.T) {
+	dlq := NewDLQ(100)
+	processor := NewDLQProcessor(dlq)
+
+	dlq.Add(newTestMessage("sess-4"), errors.New("boom"), "unbounded-reason")
+
+	var attempts atomic.Int32
+	processor.RegisterHandler("unbounded-reason", func(_ context.Context, _ *DLQEntry) error {
+		attempts.Add(1)
+		return errors.New("always fails")
+	})
+
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		require.NoError(t, processor.Process(ctx))
+	}
+	assert.Equal(t, int32(3), attempts.Load(), "Add() entries should retry without a cap")
+	assert.Equal(t, 1, dlq.Size(), "entry should remain in DLQ")
+}
+
 func TestDLQEntry_MaxRetries_Unlimited(t *testing.T) {
 	dlq := NewDLQ(100)
 	processor := NewDLQProcessor(dlq)

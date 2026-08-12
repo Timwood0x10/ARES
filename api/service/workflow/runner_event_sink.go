@@ -10,12 +10,19 @@ import (
 
 type serviceRunnerEventSink struct {
 	events chan<- core.WorkflowEvent
+	// terminalEmitted is set once a terminal (Completed/Failed) event has been
+	// published. The stream wrapper uses it to decide whether a synthetic
+	// failure event is still needed when the runner returns an error.
+	terminalEmitted bool
 }
 
 func (s *serviceRunnerEventSink) Publish(ctx context.Context, event workflowcore.RunnerEvent) error {
 	mapped, visible := mapNativeRunnerEvent(event)
 	if !visible {
 		return nil
+	}
+	if mapped.Type == core.WorkflowEventCompleted || mapped.Type == core.WorkflowEventFailed {
+		s.terminalEmitted = true
 	}
 	select {
 	case s.events <- mapped:

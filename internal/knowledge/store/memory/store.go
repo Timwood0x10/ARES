@@ -100,19 +100,18 @@ func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.Knowle
 		return result[i].Confidence > result[j].Confidence
 	})
 
-	if q.Limit > 0 && len(result) > q.Limit {
-		result = result[:q.Limit]
-	}
-
-	// Apply offset. When the offset falls at or beyond the end of the
-	// result set, return an empty page rather than silently ignoring the
-	// offset and returning the full result.
+	// Apply offset first, then limit (LIMIT/OFFSET semantics). The previous
+	// order (limit-then-offset) produced wrong pagination: any offset beyond
+	// the limit returned an empty page, and pages after the first were never
+	// reachable.
 	if q.Offset > 0 {
 		if q.Offset >= len(result) {
-			result = nil
-		} else {
-			result = result[q.Offset:]
+			return nil, nil
 		}
+		result = result[q.Offset:]
+	}
+	if q.Limit > 0 && len(result) > q.Limit {
+		result = result[:q.Limit]
 	}
 
 	return result, nil

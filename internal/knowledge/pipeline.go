@@ -248,10 +248,22 @@ func (p *KnowledgePipeline) ProcessStream(ctx context.Context, in <-chan *Knowle
 }
 
 // mergeConfidence combines two confidence scores, preferring higher values
-// and boosting when both sources agree.
+// and boosting when both sources agree. The result is clamped to the [0,1]
+// range: the previous formula could exceed 1.0 (e.g. 1.0 merged with 1.0
+// yielded 1.1), violating the confidence contract and skewing downstream
+// ranking and filtering.
 func mergeConfidence(a, b float64) float64 {
+	var v float64
 	if a > b {
-		return a + (b * 0.1)
+		v = a + (b * 0.1)
+	} else {
+		v = b + (a * 0.1)
 	}
-	return b + (a * 0.1)
+	if v > 1 {
+		return 1
+	}
+	if v < 0 {
+		return 0
+	}
+	return v
 }

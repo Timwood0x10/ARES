@@ -221,6 +221,11 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request) {
 
 func (h *actionHandler) handleListTools(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
+	if h.tools == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "no tool registry"})
+		return
+	}
 	names := h.tools.List()
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"tools": names,

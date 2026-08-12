@@ -91,9 +91,23 @@ func (a *KnowledgeAgent) Process(ctx context.Context, input any) (any, error) {
 		ForGraph:  cfg.ForGraph,
 	}
 	if cfg.MaxTokens <= 0 {
-		budget = knowledge.TokenBudget{MaxTokens: 5000, ForGraph: 3000, Reserved: 2000}
+		// Only fill defaults for fields the caller did not explicitly set.
+		// The previous code overwrote the whole budget, dropping a caller
+		// supplied ForGraph whenever MaxTokens was left at its zero value.
+		if budget.MaxTokens <= 0 {
+			budget.MaxTokens = 5000
+		}
+		if budget.ForGraph <= 0 {
+			budget.ForGraph = 3000
+		}
 	}
-	budget.Reserved = budget.MaxTokens - budget.ForGraph
+	if r := budget.MaxTokens - budget.ForGraph; r > 0 {
+		budget.Reserved = r
+	} else {
+		// A negative Reserved would violate the budget invariant; clamp to
+		// zero so ForGraph never exceeds the total budget.
+		budget.Reserved = 0
+	}
 
 	switch cfg.Step {
 	case StepCompile:

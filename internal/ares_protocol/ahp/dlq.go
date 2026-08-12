@@ -39,17 +39,29 @@ func NewDLQ(maxSize int) *DLQ {
 	}
 }
 
-// Add adds a message to the dead letter queue.
+// Add adds a message to the dead letter queue with an unlimited retry budget.
+// Use AddWithMaxRetries to bound retries; entries with MaxRetries == 0 are
+// retried indefinitely.
 func (d *DLQ) Add(msg *AHPMessage, err error, reason string) {
+	d.AddWithMaxRetries(msg, err, reason, MaxRetriesUnlimited)
+}
+
+// AddWithMaxRetries adds a message to the dead letter queue with a bounded
+// retry budget. A budget of 0 (MaxRetriesUnlimited) retries indefinitely; a
+// positive value stops retrying after that many attempts, at which point
+// Process skips the entry. Previously the only entry point (Add) never set a
+// budget, so the MaxRetries field and its retry-exhaustion logic were dead.
+func (d *DLQ) AddWithMaxRetries(msg *AHPMessage, err error, reason string, maxRetries int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	entry := &DLQEntry{
-		Message:   msg,
-		Error:     err,
-		Reason:    reason,
-		Timestamp: time.Now(),
-		Retries:   0,
+		Message:    msg,
+		Error:      err,
+		Reason:     reason,
+		Timestamp:  time.Now(),
+		Retries:    0,
+		MaxRetries: maxRetries,
 	}
 
 	// Remove oldest if full
@@ -147,9 +159,14 @@ func (d *DLQ) RemoveBySession(sessionID string) {
 
 // DLQProcessor handles processing of dead letter queue messages.
 type DLQProcessor struct {
-	dlq           *DLQ
-	handlers      map[string]DLQHandler
-	mu            sync.RWMutex
+	dlq      *DLQ
+	handlers map[string]DLQHandler
+	// mu guards handlers and the processed/failed counters.
+	mu sync.RWMutex
+	// processMu serializes Process calls so concurrent Process invocations
+	// (e.g. a manual call racing the StartAutoRetry ticker) cannot mutate the
+	// same *DLQEntry.Retries field without synchronization.
+	processMu     sync.Mutex
 	processed     int
 	failed        int
 	retryInterval time.Duration
@@ -174,8 +191,13 @@ func (p *DLQProcessor) RegisterHandler(errorType string, handler DLQHandler) {
 	p.handlers[errorType] = handler
 }
 
-// Process processes all entries in the DLQ.
+// Process processes all entries in the DLQ. It is safe to call from multiple
+// goroutines: concurrent invocations are serialized so the per-entry retry
+// counter and the DLQ mutations never race.
 func (p *DLQProcessor) Process(ctx context.Context) error {
+	p.processMu.Lock()
+	defer p.processMu.Unlock()
+
 	entries := p.dlq.GetAll()
 
 	for _, entry := range entries {

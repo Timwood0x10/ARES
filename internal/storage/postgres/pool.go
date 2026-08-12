@@ -315,10 +315,12 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 		if cancel != nil {
 			cancel()
 		}
+		// Surface the connection-acquisition failure through Scan instead of
+		// returning a dummy "SELECT 1 WHERE 1=0" row. The old behaviour masked
+		// a real pool error as sql.ErrNoRows, so every caller misread a DB
+		// outage as "record not found".
 		log.Error("Failed to acquire database connection for QueryRow", "error", err)
-		cancelCtx, cancel := context.WithCancel(context.Background())
-		cancel()
-		return &ManagedRow{Row: p.db.QueryRowContext(cancelCtx, "SELECT 1 WHERE 1=0"), conn: nil, pool: p}
+		return &ManagedRow{err: err}
 	}
 
 	row := conn.QueryRowContext(ctx, query, args...)
@@ -345,10 +347,17 @@ type ManagedRow struct {
 	conn   *sql.Conn
 	pool   *Pool
 	cancel context.CancelFunc
+	err    error // set when the pool failed to acquire a connection; surfaced by Scan
 }
 
 // Scan scans the row and releases the connection.
+// If the connection could not be acquired (err is set), it returns that
+// acquisition error immediately so callers never mistake a pool outage for
+// sql.ErrNoRows.
 func (m *ManagedRow) Scan(dest ...any) error {
+	if m.err != nil {
+		return m.err
+	}
 	err := m.Row.Scan(dest...)
 	if m.cancel != nil {
 		m.cancel()
@@ -370,4 +379,3 @@ func (p *Pool) Begin(ctx context.Context) (*sql.Tx, error) {
 // NOTE: This module uses the standard library's database/sql package
 // which already implements a connection pool. The Pool wrapper provides
 // additional statistics and the "get usage release" pattern.
-var _ = errors.ErrDBConnectionFailed

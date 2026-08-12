@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 
 	apiimpl "github.com/Timwood0x10/ares/internal/api_impl"
@@ -46,23 +47,28 @@ func runStart() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var svc *apiimpl.Service
+	// svcPtr is exchanged via atomic.Store/Load so the signal goroutine never
+	// races with the assignment on the main goroutine (the previous shared
+	// variable produced an unsynchronized read/write race, and a signal that
+	// arrived before StartService returned silently skipped Stop).
+	var svcPtr atomic.Pointer[apiimpl.Service]
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		fmt.Println("\nShutting down...")
-		if svc != nil {
+		if svc := svcPtr.Load(); svc != nil {
 			_ = svc.Stop(context.Background())
 		}
 		cancel()
 	}()
 
-	svc, err = apiimpl.StartService(ctx, cfg)
+	svc, err := apiimpl.StartService(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("start service: %w", err)
 	}
+	svcPtr.Store(svc)
 	svc.Wait()
 	return nil
 }

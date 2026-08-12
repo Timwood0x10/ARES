@@ -147,9 +147,9 @@ func (r *pgEvalResultRepository) GetByRunID(ctx context.Context, runID string) (
 
 	rows, err := r.db.QueryContext(ctx, query, runID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return []*EvalResult{}, nil
-		}
+		// Note: QueryContext returns an empty result set (not sql.ErrNoRows)
+		// when no rows match, so an empty run is handled by the Next() loop
+		// below. The previous `err == sql.ErrNoRows` branch was unreachable.
 		return nil, errors.Wrap(err, "get results by run_id")
 	}
 	defer func() { _ = rows.Close() }()

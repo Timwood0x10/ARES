@@ -134,6 +134,10 @@ func NewProductionMemoryManager(
 	knowledgeRepo := repositories.NewKnowledgeRepository(dbPool.GetDB(), dbConn)
 	conversationRepo := repositories.NewConversationRepository(dbConn)
 	taskResultRepo := repositories.NewTaskResultRepository(dbConn)
+	// ExperienceRepository backs SearchSimilarTasks (experience search). It was
+	// previously left nil below, which made experience-based retrieval always
+	// return empty results in production.
+	experienceRepo := repositories.NewExperienceRepository(dbConn)
 
 	// Create retrieval service
 	retrievalGuard := postgres.NewRetrievalGuard(
@@ -150,7 +154,7 @@ func NewProductionMemoryManager(
 		tenantGuard,
 		retrievalGuard,
 		knowledgeRepo,
-		nil, // expRepo
+		experienceRepo,
 		nil, // toolRepo
 	)
 

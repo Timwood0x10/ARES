@@ -328,11 +328,15 @@ func (s *Service) runSingleConfig(
 		status := "pass"
 		errMsg := (*string)(nil)
 		if tr.Error != "" {
-			status = "fail"
 			if isHardError(tr.Error) {
 				status = "error"
-				errMsg = &tr.Error
+			} else {
+				status = "fail"
 			}
+			// Persist the failure reason for both hard and soft failures.
+			// Previously soft failures (status "fail") left errMsg nil, so the
+			// cause was dropped from the stored result.
+			errMsg = &tr.Error
 		}
 
 		evalResults[i] = &EvalResult{

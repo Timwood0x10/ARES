@@ -20,7 +20,6 @@ var (
 	ErrNilScorer       = errors.New("arena: scorer is nil")
 	ErrNilStrategy     = errors.New("arena: strategy is nil")
 	ErrInvalidRuns     = errors.New("arena: number of runs must be positive")
-	ErrEmptyScores     = errors.New("arena: no scores collected for strategy")
 	ErrConfidenceRange = errors.New("arena: confidence level must be between 0 and 1")
 )
 
@@ -34,7 +33,8 @@ type RegressionResult struct {
 	NewScores     []float64 // individual run scores for new strategy
 	WinRate       float64   // fraction where new >= old (0.0 to 1.0)
 	Confident     bool      // statistically significant (p < 0.05 via Welch's t-test)
-	Samples       int       // number of sample runs per strategy
+	NewBetter     bool      // win rate at or above the configured MinWinRate
+	Samples       int       // number of sample runs per strategy actually scored
 	PValue        float64   // computed p-value from statistical test
 	TestedAt      time.Time // when this regression was run
 }
@@ -384,6 +384,7 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 	sem := make(chan struct{}, maxParallelRuns)
 	errOnce := sync.Once{}
 	var runErr error
+	completed := 0 // number of slots actually scored (guarded by mu)
 
 	// Derive a cancellable child context so goroutines can check cancellation.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -427,6 +428,7 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 			}
 			mu.Lock()
 			scores[i] = score
+			completed++
 			mu.Unlock()
 		}()
 	}
@@ -439,8 +441,11 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 	if runErr != nil {
 		return nil, runErr
 	}
-	if len(scores) == 0 {
-		return nil, ErrEmptyScores
+	// A cancellation may have raced between the scorer returning and the slot
+	// write, leaving some slots unfilled. Never return a 0-filled partial
+	// result as if it were complete.
+	if completed != n {
+		return nil, fmt.Errorf("arena: incomplete score set: scored %d/%d runs", completed, n)
 	}
 	return scores, nil
 }
@@ -452,9 +457,13 @@ func (rt *RegressionTester) buildResult(cfg RegressionConfig, oldScores, newScor
 	winRate := computeWinRate(oldScores, newScores)
 	confident, pValue := computeSignificance(oldScores, newScores, cfg.Confidence)
 
-	samples := cfg.BaselineRuns
-	if cfg.CompareRuns < samples {
-		samples = cfg.CompareRuns
+	// Samples reflects the actual number of runs scored, not the configured
+	// run counts: adaptive mode may stop early and trim both slices, so the
+	// configured BaselineRuns/CompareRuns would over-report the real sample
+	// size and make the result self-contradictory.
+	samples := len(oldScores)
+	if len(newScores) < samples {
+		samples = len(newScores)
 	}
 
 	return &RegressionResult{
@@ -466,9 +475,13 @@ func (rt *RegressionTester) buildResult(cfg RegressionConfig, oldScores, newScor
 		NewScores:     newScores,
 		WinRate:       winRate,
 		Confident:     confident,
-		Samples:       samples,
-		PValue:        pValue,
-		TestedAt:      time.Now(),
+		// MinWinRate is the floor below which the new strategy is not
+		// considered an improvement. Surfacing it makes the previously dead
+		// config option meaningful to callers (e.g. the evolution gate).
+		NewBetter: winRate >= cfg.MinWinRate,
+		Samples:   samples,
+		PValue:    pValue,
+		TestedAt:  time.Now(),
 	}
 }
 

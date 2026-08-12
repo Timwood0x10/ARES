@@ -70,6 +70,56 @@ func TestGraphBuilder(t *testing.T) {
 	}
 }
 
+// TestGraphDistinctConditionalEdges verifies that two conditional edges from
+// the same source to the same target are BOTH retained. The previous Edge()
+// dropped any second conditional edge (function equality cannot be checked),
+// which silently removed legitimate multi-branch edges.
+func TestGraphDistinctConditionalEdges(t *testing.T) {
+	graph, err := NewGraph("test")
+	if err != nil {
+		t.Fatalf("NewGraph failed: %v", err)
+	}
+	for _, id := range []string{"a", "b"} {
+		if _, err := graph.Node(id, &mockNode{id: id, executeFn: func(context.Context, *State) error { return nil }}); err != nil {
+			t.Fatalf("Node %s failed: %v", id, err)
+		}
+	}
+	condTrue := func(*State) bool { return true }
+	condFalse := func(*State) bool { return false }
+
+	if _, err := graph.Edge("a", "b", condTrue); err != nil {
+		t.Fatalf("Edge condTrue failed: %v", err)
+	}
+	if _, err := graph.Edge("a", "b", condFalse); err != nil {
+		t.Fatalf("Edge condFalse failed: %v", err)
+	}
+
+	if got := len(graph.edges["a"]); got != 2 {
+		t.Errorf("expected 2 conditional edges from a, got %d", got)
+	}
+
+	// A separate clean graph: an exact duplicate unconditional edge is still
+	// suppressed (the only dedup the old logic guaranteed).
+	dup, err := NewGraph("dup")
+	if err != nil {
+		t.Fatalf("NewGraph failed: %v", err)
+	}
+	for _, id := range []string{"a", "b"} {
+		if _, err := dup.Node(id, &mockNode{id: id, executeFn: func(context.Context, *State) error { return nil }}); err != nil {
+			t.Fatalf("Node %s failed: %v", id, err)
+		}
+	}
+	if _, err := dup.Edge("a", "b"); err != nil {
+		t.Fatalf("Edge failed: %v", err)
+	}
+	if _, err := dup.Edge("a", "b"); err != nil {
+		t.Fatalf("second Edge failed: %v", err)
+	}
+	if got := len(dup.edges["a"]); got != 1 {
+		t.Errorf("expected unconditional duplicate to be suppressed, edges = %d", got)
+	}
+}
+
 func TestGraphExecution(t *testing.T) {
 	executionOrder := []string{}
 

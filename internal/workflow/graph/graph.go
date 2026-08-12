@@ -176,17 +176,16 @@ func (g *Graph) Edge(from, to string, cond ...Condition) (*Graph, error) {
 		edge.cond = cond[0]
 	}
 
-	// Check for duplicate edge: same from→to with the same condition (or both nil).
+	// Suppress only exact duplicate *unconditional* edges (same from→to, no
+	// condition). Previously any second conditional edge to the same target was
+	// also dropped on the assumption that function equality cannot be checked —
+	// but two distinct conditions on the same from→to are legitimate branches
+	// (compileGraphEdges emits BranchMany for each). Dropping them silently
+	// broke multi-branch graphs. Conditional edges are always appended; callers
+	// responsible for not re-adding the exact same closure in a loop.
 	for _, existing := range g.edges[from] {
-		if existing.to == to {
-			if edge.cond == nil && existing.cond == nil {
-				return g, nil // silently allow duplicate no-cond edges
-			}
-			if edge.cond != nil && existing.cond != nil {
-				// Both have conditions — function equality cannot be compared
-				// reflectively; treat as duplicate to avoid infinite growth.
-				return g, nil
-			}
+		if existing.to == to && edge.cond == nil && existing.cond == nil {
+			return g, nil // silently allow duplicate no-cond edges
 		}
 	}
 

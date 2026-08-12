@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/Timwood0x10/ares/api/core"
 	apiworkflow "github.com/Timwood0x10/ares/api/workflow"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
@@ -179,18 +177,46 @@ func (s *Service) buildBoundRunner(wf *engine.Workflow, req *core.WorkflowReques
 }
 
 // executeStreamWithRunner runs a workflow with the unified Runner and streams events.
-func (s *Service) executeStreamWithRunner(ctx context.Context, req *core.WorkflowRequest, wf *engine.Workflow) (<-chan core.WorkflowEvent, error) {
+func (s *Service) executeStreamWithRunner(ctx context.Context, req *core.WorkflowRequest, wf *engine.Workflow, timeout time.Duration) (<-chan core.WorkflowEvent, error) {
 	events := make(chan core.WorkflowEvent, 64)
-	runner, bound, err := s.buildBoundRunner(wf, req, workflow.WithEventSink(&serviceRunnerEventSink{events: events}))
+	sink := &serviceRunnerEventSink{events: events}
+	runner, bound, err := s.buildBoundRunner(wf, req, workflow.WithEventSink(sink))
 	if err != nil {
 		return nil, err
 	}
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		defer close(events)
-		_, execErr := runner.ExecuteBound(groupCtx, bound)
-		return execErr
-	})
+	go func() {
+		// Own the derived timeout context here so cancel() runs only after the
+		// runner finishes, not when ExecuteStream returns (the goroutine is
+		// asynchronous, so a caller-deferred cancel would kill the run before
+		// it started).
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		_, execErr := runner.ExecuteBound(ctx, bound)
+		if execErr != nil && !sink.terminalEmitted {
+			// ExecuteBound returned an error without emitting a terminal
+			// WorkflowEventFailed (e.g. a setup/compile error, or the parent
+			// context was cancelled before a failure event was published).
+			// Emit a synthetic failure event so the caller always sees a
+			// terminal event and the real cause. The previous code never read
+			// the goroutine's error, so such failures were silently dropped
+			// (the channel just closed with no terminal event).
+			slog.ErrorContext(ctx, "runner execution failed during stream", "workflow_id", wf.ID, "error", execErr)
+			select {
+			case events <- core.WorkflowEvent{
+				Type:       core.WorkflowEventFailed,
+				WorkflowID: wf.ID,
+				Status:     core.WorkflowStatusFailed,
+				Error:      execErr.Error(),
+				Timestamp:  time.Now(),
+			}:
+			default:
+			}
+		}
+		close(events)
+	}()
 	return events, nil
 }
 
@@ -295,11 +321,22 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		return nil, err
 	}
 
+	// Apply the same timeout policy as Execute. The streaming path previously
+	// ignored both req.Timeout and the service RequestTimeout, so a streamed
+	// workflow could run indefinitely even when a budget was configured.
+	// Unlike Execute, the derived timeout context is owned by the runner
+	// goroutine (see executeStreamWithRunner) so it is not cancelled when this
+	// function returns.
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = s.config.RequestTimeout
+	}
+
 	wf, err := s.buildEngineWorkflow(def, req.Variables)
 	if err != nil {
 		return nil, err
 	}
-	return s.executeStreamWithRunner(ctx, req, wf)
+	return s.executeStreamWithRunner(ctx, req, wf, timeout)
 }
 
 // ListWorkflows returns all registered workflow definitions.

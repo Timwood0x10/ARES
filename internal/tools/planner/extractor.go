@@ -76,8 +76,12 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 	if m := reArithmeticRange.FindStringSubmatch(request); len(m) == 3 {
 		a, _ := strconv.ParseFloat(m[1], 64)
 		b, _ := strconv.ParseFloat(m[2], 64)
-		if a > 0 && b > a {
-			return fmt.Sprintf("%v*(%v+1)/2", b, b)
+		if b > a {
+			// Sum of an arithmetic progression from a to b inclusive:
+			// (b-a+1)*(a+b)/2. The previous code returned b*(b+1)/2 (the sum
+			// 1..b), which ignored the lower bound and was wrong for any
+			// a > 1 (e.g. "sum from 5 to 10" yielded 55 instead of 45).
+			return fmt.Sprintf("(%v-%v+1)*(%v+%v)/2", b, a, b, a)
 		}
 	}
 

@@ -261,6 +261,11 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 	}
 
 	e.trace("[ares:trace] %s ⚠ %s (%d)", req.AgentName, maxIterationsReachedMsg, maxIter)
+	// The run still reached a terminal state (the cap), so emit TaskCompleted
+	// so the distill pipeline observes runs that ended via the iteration cap.
+	// Previously the cap path returned without emitting, silently dropping the
+	// result of any run that exhausted its budget.
+	e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, maxIterationsReachedMsg)
 	return &Result{
 		Output:       maxIterationsReachedMsg,
 		ToolCalls:    st.toolCount,

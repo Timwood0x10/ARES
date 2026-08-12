@@ -405,6 +405,59 @@ func TestRun_EqualStrategies(t *testing.T) {
 	}
 }
 
+// TestBuildResult_MinWinRateThreshold verifies that NewBetter reflects the
+// configured MinWinRate floor: the new strategy is only "better" when its win
+// rate meets or exceeds the threshold. This locks in the previously dead
+// MinWinRate config so it actually drives a result.
+func TestBuildResult_MinWinRateThreshold(t *testing.T) {
+	scorer := newMockScorer(map[int]float64{0: 55, 1: 52, 2: 58, 3: 54, 4: 56})
+	tester, err := NewRegressionTesterWithScorer(scorer)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		oldScore   float64
+		newScore   float64
+		minWinRate float64
+		wantBetter bool
+	}{
+		{"new_strictly_wins_above_floor", 50, 90, 0.8, true},
+		{"new_loses_below_floor", 60, 50, 0.4, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 5 baseline + 5 compare runs, all identical to force a stable
+			// pair-wise win rate.
+			base := []float64{tt.oldScore, tt.oldScore, tt.oldScore, tt.oldScore, tt.oldScore}
+			comp := []float64{tt.newScore, tt.newScore, tt.newScore, tt.newScore, tt.newScore}
+			res := tester.buildResult(RegressionConfig{MinWinRate: tt.minWinRate}, base, comp)
+			if res.NewBetter != tt.wantBetter {
+				t.Errorf("NewBetter = %v, want %v (win rate %.2f vs floor %.2f)",
+					res.NewBetter, tt.wantBetter, res.WinRate, tt.minWinRate)
+			}
+		})
+	}
+}
+
+// TestBuildResult_SamplesReflectsScored verifies that Samples reports the actual
+// number of scored runs rather than the configured run counts, which is
+// important when adaptive mode trims both score slices.
+func TestBuildResult_SamplesReflectsScored(t *testing.T) {
+	scorer := newMockScorer(map[int]float64{0: 50, 1: 50})
+	tester, err := NewRegressionTesterWithScorer(scorer)
+	require.NoError(t, err)
+
+	oldScores := []float64{50, 50, 50}
+	newScores := []float64{55, 55, 55}
+	res := tester.buildResult(RegressionConfig{BaselineRuns: 10, CompareRuns: 10}, oldScores, newScores)
+	if res.Samples != 3 {
+		t.Errorf("Samples = %d, want 3 (actual scored runs, not configured 10)", res.Samples)
+	}
+	if len(res.OldScores) != 3 || len(res.NewScores) != 3 {
+		t.Errorf("score slices trimmed unexpectedly: old=%d new=%d", len(res.OldScores), len(res.NewScores))
+	}
+}
+
 // TestComputeSignificance_ObviousDifference checks statistical significance detection.
 func TestComputeSignificance_ObviousDifference(t *testing.T) {
 	oldScores := []float64{10.0, 11.0, 10.0, 12.0, 11.0} // Mean ~10.8

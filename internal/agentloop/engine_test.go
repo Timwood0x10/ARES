@@ -360,6 +360,57 @@ func TestEngine_EventsEmitted(t *testing.T) {
 	}
 }
 
+// TestEngine_MaxIterationsEmitsTaskCompleted verifies that when the loop hits
+// the iteration cap without a final answer, a TaskCompleted event is still
+// emitted on the session stream carrying the cap message as the result. Without
+// this, the distill pipeline never observes a run that ended via the iteration
+// cap, so its result is silently lost.
+func TestEngine_MaxIterationsEmitsTaskCompleted(t *testing.T) {
+	sink := &fakeEventSink{}
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		// Always call a tool so the loop never reaches a final answer.
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc1", "calc", `{}`)}},
+	}}
+	toolEx := &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "42"}}}
+	eng := &Engine{
+		LLM:            llm,
+		Tools:          toolEx,
+		Events:         sink,
+		DistillEnabled: true,
+	}
+	req := &Request{
+		Messages:  []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:     []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "calc"}}},
+		MaxIter:   3,
+		AgentName: "cap-agent",
+		SessionID: "sess-cap",
+		Input:     "hi",
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != maxIterationsReachedMsg {
+		t.Fatalf("Output = %q, want %q", res.Output, maxIterationsReachedMsg)
+	}
+
+	evs := sink.snapshot()
+	// 3 tool calls × (Started + Completed) + 1 TaskCompleted = 7 events.
+	if len(evs) != 7 {
+		t.Fatalf("got %d events, want 7 (6 tool + 1 TaskCompleted)", len(evs))
+	}
+	tc := evs[6]
+	if tc.Type != ares_events.EventTaskCompleted {
+		t.Fatalf("event[6].Type = %s, want %s", tc.Type, ares_events.EventTaskCompleted)
+	}
+	if tc.StreamID != "sess-cap" {
+		t.Errorf("TaskCompleted.StreamID = %q, want %q", tc.StreamID, "sess-cap")
+	}
+	if got := tc.Payload[ares_events.EventKeyResult]; got != maxIterationsReachedMsg {
+		t.Errorf("TaskCompleted result = %v, want %q", got, maxIterationsReachedMsg)
+	}
+}
+
 // TestEngine_TaskCompletedGatedByDistill verifies that TaskCompleted is NOT
 // emitted when DistillEnabled is false (mirrors distillSvc == nil in the sdk),
 // while tool-call events are still emitted.

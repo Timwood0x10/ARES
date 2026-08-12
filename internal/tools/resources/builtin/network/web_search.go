@@ -93,7 +93,14 @@ func NewWebSearch() *WebSearch {
 		Required: []string{"query"},
 	}
 
-	return &WebSearch{
+	// The SSRF defense here is the operator-controlled allowlist (isBaseURLAllowed),
+	// not a blanket loopback/private-IP dialer. The default SearXNG instance is
+	// http://localhost:5605 (loopback), so the old SSRFTransport() self-blocked
+	// the tool's own default endpoint: every default request failed at dial time.
+	// We keep defense-in-depth by re-validating each redirect hop against the
+	// allowlist instead, so a compromised SearXNG cannot redirect the client to
+	// an arbitrary internal service.
+	w := &WebSearch{
 		BaseTool: base.NewBaseToolWithCapabilities(
 			"web_search",
 			"Search the web using SearXNG meta search engine. Returns structured results with titles, URLs, and content snippets.",
@@ -101,13 +108,28 @@ func NewWebSearch() *WebSearch {
 			[]core.Capability{core.CapabilityNetwork, core.CapabilityKnowledge},
 			params,
 		),
-		client: &http.Client{
-			Timeout:       30 * time.Second,
-			CheckRedirect: SSRFCheckRedirect,
-			Transport:     SSRFTransport(),
-		},
 		allowedBaseURLs: map[string]bool{defaultSearXNGBaseURL: true},
 	}
+	w.client = &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: w.checkRedirect,
+	}
+	return w
+}
+
+// checkRedirect caps the number of redirects and requires every hop to remain
+// within the operator-approved base URLs. It is used as the http.Client
+// CheckRedirect hook so a hijacked SearXNG response cannot redirect the tool
+// to an arbitrary internal address (SSRF via redirect).
+func (t *WebSearch) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= MaxHTTPRedirects {
+		return fmt.Errorf("stopped after %d redirects", MaxHTTPRedirects)
+	}
+	base := req.URL.Scheme + "://" + req.URL.Host
+	if !t.isBaseURLAllowed(base) {
+		return fmt.Errorf("redirect to %q is not in the SearXNG allowlist", req.URL.String())
+	}
+	return nil
 }
 
 // SetAllowedBaseURLs configures the set of SearXNG base URLs that users are

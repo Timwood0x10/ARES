@@ -96,9 +96,16 @@ func (g *ReportGenerator) GenerateMarkdown(suite TestSuite, results []TestResult
 
 	for _, metric := range metrics {
 		values := metricScores[metric]
+		if len(values) == 0 {
+			// No samples for this metric: report a zeroed row instead of an
+			// all-zero-run that keeps minVal at its 1.0 sentinel and divides by
+			// zero for the average.
+			fmt.Fprintf(&sb, "| %s | 0.00 | 0.00 | 0.00 |\n", metric)
+			continue
+		}
 		avg := 0.0
-		minVal := 1.0
-		maxVal := 0.0
+		minVal := values[0]
+		maxVal := values[0]
 		for _, v := range values {
 			avg += v
 			if v < minVal {

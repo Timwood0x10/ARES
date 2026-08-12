@@ -121,8 +121,11 @@ func TestQueryOffsetBeyondEnd(t *testing.T) {
 	}
 }
 
-// TestQueryLimitThenOffset verifies that limit and offset compose correctly:
-// a limit of 3 then an offset of 1 yields the 2nd and 3rd (by confidence).
+// TestQueryLimitThenOffset verifies LIMIT/OFFSET semantics: offset is applied
+// first (skip), then limit (take). With 10 objects, offset 1 skips the first
+// and limit 3 takes the next 3, yielding 3 results. The previous test asserted
+// the buggy limit-then-offset order (which returned only 2); the fix restores
+// the same composition the SQL and MySQL stores use.
 func TestQueryLimitThenOffset(t *testing.T) {
 	s := New()
 	for i := 0; i < 10; i++ {
@@ -134,8 +137,8 @@ func TestQueryLimitThenOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query error: %v", err)
 	}
-	if len(results) != 2 {
-		t.Errorf("expected 2 results (limit 3, offset 1), got %d", len(results))
+	if len(results) != 3 {
+		t.Errorf("expected 3 results (offset 1 then limit 3), got %d", len(results))
 	}
 }
 

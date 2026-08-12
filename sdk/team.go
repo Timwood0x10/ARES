@@ -117,6 +117,19 @@ type TeamResult struct {
 // Phase 3 — Verifier checks results (if configured).
 // Phase 4 — Leader synthesises final output.
 func (t *Team) Run(ctx context.Context, input string) (*TeamResult, error) {
+	// Guard against nil dependencies: NewTeam stores the given references
+	// without validating them, so a nil leader or runtime would otherwise
+	// panic when dereferenced below.
+	if t == nil {
+		return nil, fmt.Errorf("team is nil")
+	}
+	if t.runtime == nil {
+		return nil, fmt.Errorf("team %q has no runtime", t.name)
+	}
+	if t.leader == nil {
+		return nil, fmt.Errorf("team %q has no leader agent", t.name)
+	}
+
 	start := time.Now()
 
 	if t.runtime.trace {
