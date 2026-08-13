@@ -18,6 +18,14 @@ type Registry struct {
 	schemaCache []ToolSchema
 	schemaDirty bool
 	onChange    []func() // callbacks invoked after Register/Unregister
+
+	// activeTools restricts which tools GetSchemas/GetLLMTools expose to the
+	// LLM. nil means "all tools active" (zero-value backwards compatible);
+	// a non-nil set means only the listed names are advertised, mirroring
+	// prime-agent's active-tools subset (progressive disclosure). Guarded by
+	// mu. Execute/Get/List still see the full registry — this only controls
+	// what is offered to the model.
+	activeTools map[string]bool
 }
 
 // NewRegistry creates a new Registry.
@@ -34,6 +42,55 @@ func (r *Registry) OnChange(fn func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.onChange = append(r.onChange, fn)
+}
+
+// SetActiveTools restricts which tools GetSchemas/GetLLMTools expose to the
+// LLM. Passing an empty slice (or nil) restores the zero-value behavior where
+// all registered tools are advertised. Tools not in the active set remain
+// registered and executable via Execute/Get — only the LLM-facing tool list is
+// narrowed, mirroring prime-agent's active-tools subset.
+func (r *Registry) SetActiveTools(names []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(names) == 0 {
+		r.activeTools = nil
+	} else {
+		set := make(map[string]bool, len(names))
+		for _, name := range names {
+			set[name] = true
+		}
+		r.activeTools = set
+	}
+	// Invalidate the schema cache in BOTH branches: restoring the full set
+	// must also drop the previously narrowed cache, otherwise GetSchemas
+	// returns the stale subset even though activeTools is nil again.
+	r.schemaCache = nil
+	r.schemaDirty = true
+}
+
+// ActiveTools returns the currently active tool names. An empty slice means
+// all registered tools are active (zero-value behavior).
+func (r *Registry) ActiveTools() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.activeTools == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.activeTools))
+	for name := range r.activeTools {
+		names = append(names, name)
+	}
+	return names
+}
+
+// ClearActiveTools removes the active-tool restriction, restoring the
+// zero-value behavior where all registered tools are advertised to the LLM.
+func (r *Registry) ClearActiveTools() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.activeTools = nil
+	r.schemaCache = nil
+	r.schemaDirty = true
 }
 
 // Register registers a tool.
@@ -204,6 +261,12 @@ func (r *Registry) GetSchemas() []ToolSchema {
 	if r.schemaDirty || r.schemaCache == nil {
 		schemas := make([]ToolSchema, 0, len(r.tools))
 		for _, tool := range r.tools {
+			// Respect the active-tools subset: tools excluded from the active
+			// set are not advertised to the LLM (progressive disclosure).
+			// Execute/Get still resolve them; only the LLM-facing list is cut.
+			if r.activeTools != nil && !r.activeTools[tool.Name()] {
+				continue
+			}
 			schema := ToolSchema{
 				Name:        tool.Name(),
 				Description: tool.Description(),

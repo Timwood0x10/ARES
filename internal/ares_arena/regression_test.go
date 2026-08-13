@@ -761,3 +761,95 @@ func mathAbs(x float64) float64 {
 	}
 	return x
 }
+
+// TestRegressionTester_FingerprintCache_SameEnvReusesResult verifies the
+// environment-fingerprint cache (原语4: 环境未变则不重跑): running the same
+// config twice with a fingerprint function must return the memoized result on
+// the second call without invoking the scorer again.
+func TestRegressionTester_FingerprintCache_SameEnvReusesResult(t *testing.T) {
+	scorer := newMockScorer(map[int]float64{
+		0: 60.0, 1: 70.0, 2: 65.0, // old strategy: 3 runs
+		3: 80.0, 4: 85.0, 5: 90.0, // new strategy: 3 runs
+	})
+	fp := func(cfg RegressionConfig) string {
+		return cfg.TestSuite + "|" + fmt.Sprintf("%v", cfg.OldStrategy) + "|" + fmt.Sprintf("%v", cfg.NewStrategy)
+	}
+	rt, err := NewRegressionTesterWithScorer(scorer, WithFingerprint(fp))
+	require.NoError(t, err)
+
+	cfg := DefaultRegressionConfig()
+	cfg.OldStrategy = "old-v1"
+	cfg.NewStrategy = "new-v1"
+	cfg.TestSuite = "suite-a"
+	cfg.BaselineRuns = 3
+	cfg.CompareRuns = 3
+
+	first, err := rt.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	callsAfterFirst := scorer.callCount
+	require.Equal(t, 6, callsAfterFirst, "first run must score all runs")
+
+	second, err := rt.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.Equal(t, callsAfterFirst, scorer.callCount, "second run must be served from cache (no new scorer calls)")
+	require.Equal(t, first.WinRate, second.WinRate, "cached result must match the original")
+}
+
+// TestRegressionTester_FingerprintCache_ChangedEnvReruns verifies that a
+// different environment fingerprint bypasses the cache and re-scores.
+func TestRegressionTester_FingerprintCache_ChangedEnvReruns(t *testing.T) {
+	scorer := newMockScorer(map[int]float64{
+		0: 60.0, 1: 70.0, 2: 65.0, 3: 80.0, 4: 85.0, 5: 90.0,
+		6: 50.0, 7: 55.0, 8: 52.0, 9: 95.0, 10: 92.0, 11: 88.0,
+	})
+	fp := func(cfg RegressionConfig) string {
+		return cfg.TestSuite + "|" + fmt.Sprintf("%v", cfg.OldStrategy) + "|" + fmt.Sprintf("%v", cfg.NewStrategy)
+	}
+	rt, err := NewRegressionTesterWithScorer(scorer, WithFingerprint(fp))
+	require.NoError(t, err)
+
+	cfg := DefaultRegressionConfig()
+	cfg.OldStrategy = "old-v1"
+	cfg.NewStrategy = "new-v1"
+	cfg.TestSuite = "suite-a"
+	cfg.BaselineRuns = 3
+	cfg.CompareRuns = 3
+
+	_, err = rt.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	require.Equal(t, 6, scorer.callCount)
+
+	// Same suite but a new candidate strategy: environment changed, re-run.
+	cfg.NewStrategy = "new-v2"
+	_, err = rt.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	require.Equal(t, 12, scorer.callCount, "changed fingerprint must re-score")
+}
+
+// TestRegressionTester_FingerprintCache_NoFingerprintNoCache verifies that
+// without WithFingerprint the tester never caches (backwards compatible).
+func TestRegressionTester_FingerprintCache_NoFingerprintNoCache(t *testing.T) {
+	scorer := newMockScorer(map[int]float64{
+		0: 60.0, 1: 70.0, 2: 65.0, 3: 80.0, 4: 85.0, 5: 90.0,
+		6: 61.0, 7: 71.0, 8: 66.0, 9: 81.0, 10: 86.0, 11: 91.0,
+	})
+	rt, err := NewRegressionTesterWithScorer(scorer)
+	require.NoError(t, err)
+
+	cfg := DefaultRegressionConfig()
+	cfg.OldStrategy = "old"
+	cfg.NewStrategy = "new"
+	cfg.TestSuite = "suite"
+	cfg.BaselineRuns = 3
+	cfg.CompareRuns = 3
+
+	_, err = rt.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	require.Equal(t, 6, scorer.callCount)
+
+	_, err = rt.Run(context.Background(), cfg)
+	require.NoError(t, err)
+	require.Equal(t, 12, scorer.callCount, "no fingerprint function means every run re-scores")
+}

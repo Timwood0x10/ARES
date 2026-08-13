@@ -108,6 +108,41 @@ type BatchScorer interface {
 type RegressionTester struct {
 	arena  *Service
 	scorer Scorer
+
+	// fingerprint computes a stable environment key from a config; nil disables
+	// result caching. When set, Run returns the cached result for an unchanged
+	// environment instead of re-running the expensive scoring (原语4: 环境指纹
+	// 防无效重试 — "环境未变则不重跑").
+	fingerprint func(RegressionConfig) string
+	// resultCache memoizes RegressionResult by fingerprint.
+	resultCache map[string]*RegressionResult
+	// cacheOrder tracks fingerprint insertion order so the cache can be capped
+	// (oldest entries evicted first) instead of growing without bound.
+	cacheOrder []string
+	// cacheMu guards resultCache and cacheOrder (fingerprint itself is set once
+	// at construction).
+	cacheMu sync.Mutex
+}
+
+// maxCacheEntries caps the fingerprint result cache so a long-running service
+// with many distinct environments does not grow without bound.
+const maxCacheEntries = 128
+
+// RegressionTesterOption configures a RegressionTester.
+type RegressionTesterOption func(*RegressionTester)
+
+// WithFingerprint enables result caching keyed by the provided fingerprint
+// function. When Run is called with a config whose fingerprint matches a
+// previously completed run, the cached result is returned without re-running
+// the scorer. The caller is responsible for producing a stable key that
+// covers everything that affects the outcome (candidate ID, baseline ID, run
+// counts, test cases, configuration).
+func WithFingerprint(fn func(RegressionConfig) string) RegressionTesterOption {
+	return func(rt *RegressionTester) {
+		rt.fingerprint = fn
+		rt.resultCache = make(map[string]*RegressionResult)
+		rt.cacheOrder = make([]string, 0, maxCacheEntries)
+	}
 }
 
 // NewRegressionTester creates a new regression tester.
@@ -118,17 +153,21 @@ type RegressionTester struct {
 // Returns:
 //   - *RegressionTester: the configured tester.
 //   - error: ErrNilArena or ErrNilScorer if arguments are nil.
-func NewRegressionTester(arena *Service, scorer Scorer) (*RegressionTester, error) {
+func NewRegressionTester(arena *Service, scorer Scorer, opts ...RegressionTesterOption) (*RegressionTester, error) {
 	if arena == nil {
 		return nil, ErrNilArena
 	}
 	if scorer == nil {
 		return nil, ErrNilScorer
 	}
-	return &RegressionTester{
+	rt := &RegressionTester{
 		arena:  arena,
 		scorer: scorer,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(rt)
+	}
+	return rt, nil
 }
 
 // NewRegressionTesterWithScorer creates a regression tester that only requires a
@@ -137,13 +176,17 @@ func NewRegressionTester(arena *Service, scorer Scorer) (*RegressionTester, erro
 // for contexts where no live runtime is available — e.g. the evolution
 // candidate gate 3 preserved-case check. When a scorer is nil, ErrNilScorer is
 // returned.
-func NewRegressionTesterWithScorer(scorer Scorer) (*RegressionTester, error) {
+func NewRegressionTesterWithScorer(scorer Scorer, opts ...RegressionTesterOption) (*RegressionTester, error) {
 	if scorer == nil {
 		return nil, ErrNilScorer
 	}
-	return &RegressionTester{
+	rt := &RegressionTester{
 		scorer: scorer,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(rt)
+	}
+	return rt, nil
 }
 
 // Run executes the regression test and returns comparison results.
@@ -169,6 +212,42 @@ func (rt *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Reg
 		return nil, err
 	}
 
+	// Environment fingerprint cache (原语4): if a fingerprint function is
+	// configured and this environment (candidate/baseline/test-cases) was
+	// already evaluated, return the memoized result instead of re-running the
+	// expensive scoring — "环境未变则不重跑".
+	if rt.fingerprint != nil {
+		key := rt.fingerprint(cfg)
+		rt.cacheMu.Lock()
+		cached, ok := rt.resultCache[key]
+		rt.cacheMu.Unlock()
+		if ok && cached != nil {
+			return cached, nil
+		}
+		result, err := rt.runUncached(ctx, cfg)
+		if err == nil && result != nil {
+			rt.cacheMu.Lock()
+			rt.resultCache[key] = result
+			rt.cacheOrder = append(rt.cacheOrder, key)
+			// Evict oldest entries once the cache exceeds its cap so it cannot
+			// grow without bound in a long-running service.
+			if len(rt.cacheOrder) > maxCacheEntries {
+				evict := len(rt.cacheOrder) - maxCacheEntries
+				for _, k := range rt.cacheOrder[:evict] {
+					delete(rt.resultCache, k)
+				}
+				rt.cacheOrder = append([]string(nil), rt.cacheOrder[evict:]...)
+			}
+			rt.cacheMu.Unlock()
+		}
+		return result, err
+	}
+	return rt.runUncached(ctx, cfg)
+}
+
+// runUncached executes the regression test without consulting the fingerprint
+// cache. It is the body of Run; the cache-aware wrapper lives in Run.
+func (rt *RegressionTester) runUncached(ctx context.Context, cfg RegressionConfig) (*RegressionResult, error) {
 	// Apply defaults where needed.
 	if cfg.BaselineRuns <= 0 {
 		cfg.BaselineRuns = 5

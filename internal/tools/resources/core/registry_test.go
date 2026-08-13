@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -766,4 +767,69 @@ func TestRegistryFilterEdgeCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRegistry_SetActiveTools_NarrowGetSchemas verifies that after
+// SetActiveTools, GetSchemas/GetLLMTools only expose the active subset while
+// Execute/Get still resolve all registered tools.
+func TestRegistry_SetActiveTools_NarrowGetSchemas(t *testing.T) {
+	registry := NewRegistry()
+	require.NoError(t, registry.Register(&MockTool{name: "math_tool", description: "math", category: CategoryCore}))
+	require.NoError(t, registry.Register(&MockTool{name: "web_tool", description: "web", category: CategoryExternal}))
+
+	// Zero-value behavior: all tools advertised.
+	require.Len(t, registry.GetSchemas(), 2)
+
+	registry.SetActiveTools([]string{"math_tool"})
+	schemas := registry.GetSchemas()
+	require.Len(t, schemas, 1, "only active tool should be advertised")
+	assert.Equal(t, "math_tool", schemas[0].Name)
+
+	// LLM-facing list also narrowed.
+	llmTools := registry.GetLLMTools()
+	require.Len(t, llmTools, 1)
+	assert.Equal(t, "math_tool", llmTools[0].Function.Name)
+
+	// Execution still works for non-active tools (only the LLM list is cut).
+	_, ok := registry.Get("web_tool")
+	assert.True(t, ok, "non-active tool must remain registered and resolvable")
+
+	// ActiveTools reflects the subset.
+	active := registry.ActiveTools()
+	require.Len(t, active, 1)
+	assert.Equal(t, "math_tool", active[0])
+}
+
+// TestRegistry_SetActiveTools_EmptyRestoresAll verifies that an empty active
+// list restores the zero-value behavior (all tools advertised).
+func TestRegistry_SetActiveTools_EmptyRestoresAll(t *testing.T) {
+	registry := NewRegistry()
+	require.NoError(t, registry.Register(&MockTool{name: "a", description: "a", category: CategoryCore}))
+	require.NoError(t, registry.Register(&MockTool{name: "b", description: "b", category: CategoryCore}))
+
+	registry.SetActiveTools([]string{"a"})
+	require.Len(t, registry.GetSchemas(), 1)
+
+	registry.SetActiveTools(nil)
+	require.Len(t, registry.GetSchemas(), 2, "nil restores all tools")
+
+	registry.SetActiveTools([]string{"b"})
+	require.Len(t, registry.GetSchemas(), 1)
+	registry.ClearActiveTools()
+	require.Len(t, registry.GetSchemas(), 2, "ClearActiveTools restores all tools")
+	assert.Nil(t, registry.ActiveTools())
+}
+
+// TestRegistry_SetActiveTools_UnknownNameNotAdvertised verifies that an active
+// name that was never registered yields an empty advertised list (no phantom
+// schemas) without breaking execution of registered tools.
+func TestRegistry_SetActiveTools_UnknownNameNotAdvertised(t *testing.T) {
+	registry := NewRegistry()
+	require.NoError(t, registry.Register(&MockTool{name: "known", description: "k", category: CategoryCore}))
+
+	registry.SetActiveTools([]string{"does-not-exist"})
+	assert.Empty(t, registry.GetSchemas(), "unknown active name must not produce schemas")
+
+	_, ok := registry.Get("known")
+	assert.True(t, ok, "registered tool remains resolvable")
 }

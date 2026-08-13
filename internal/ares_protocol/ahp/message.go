@@ -37,6 +37,23 @@ type AHPMessage struct {
 	Timestamp   time.Time      `json:"timestamp"`
 }
 
+// Clone returns a deep copy of the message. The Payload map is copied so
+// mutating the clone (or the original) never affects the other. Used by the
+// peer registry to stamp TargetAgent without mutating the caller's message.
+func (m *AHPMessage) Clone() *AHPMessage {
+	if m == nil {
+		return nil
+	}
+	c := *m
+	if m.Payload != nil {
+		c.Payload = make(map[string]any, len(m.Payload))
+		for k, v := range m.Payload {
+			c.Payload[k] = v
+		}
+	}
+	return &c
+}
+
 // NewMessage creates a new AHPMessage.
 func NewMessage(method AHPMethod, agentID, targetAgent, taskID, sessionID string) *AHPMessage {
 	return &AHPMessage{

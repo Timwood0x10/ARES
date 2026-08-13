@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
@@ -568,6 +569,105 @@ func TestEngine_TokenCounting(t *testing.T) {
 	}
 	if res.OutputTokens != 7 {
 		t.Errorf("OutputTokens = %d, want 7", res.OutputTokens)
+	}
+}
+
+// TestEngine_TokenBudgetExceeded verifies that when Request.MaxTokens caps the
+// cumulative usage, the loop stops and returns "max tokens reached" instead of
+// burning more iterations.
+func TestEngine_TokenBudgetExceeded(t *testing.T) {
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc1", "calc", `{}`)},
+			Usage: core.TokenUsage{PromptTokens: 10, CompletionTokens: 2}},
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc2", "calc", `{}`)},
+			Usage: core.TokenUsage{PromptTokens: 10, CompletionTokens: 2}},
+		{Content: "done", Usage: core.TokenUsage{PromptTokens: 5, CompletionTokens: 3}},
+	}}
+	eng := &Engine{
+		LLM:            llm,
+		Tools:          &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "x"}}},
+		DistillEnabled: true,
+	}
+	req := &Request{
+		Messages:  []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		MaxIter:   5,
+		MaxTokens: 15, // 12 after first call, 24 after second -> stops at second
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != maxTokensReachedMsg {
+		t.Fatalf("Output = %q, want %q", res.Output, maxTokensReachedMsg)
+	}
+	if res.ToolCalls != 1 {
+		t.Errorf("ToolCalls = %d, want 1 (loop stopped after first call)", res.ToolCalls)
+	}
+}
+
+// TestEngine_TokenBudgetExactEqual verifies the boundary semantics: when the
+// cumulative usage is exactly equal to MaxTokens, the loop stops. Previously
+// the comparison used strict >, so an exact-equal budget could run one more
+// iteration and overshoot the cap.
+func TestEngine_TokenBudgetExactEqual(t *testing.T) {
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc1", "calc", `{}`)},
+			Usage: core.TokenUsage{PromptTokens: 10, CompletionTokens: 2}}, // 12 == MaxTokens
+		{Content: "final", Usage: core.TokenUsage{PromptTokens: 10, CompletionTokens: 2}},
+	}}
+	eng := &Engine{
+		LLM:            llm,
+		Tools:          &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "x"}}},
+		DistillEnabled: true,
+	}
+	req := &Request{
+		Messages:  []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		MaxIter:   5,
+		MaxTokens: 12, // first call uses exactly 12 -> must stop immediately
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	// Regression: with a strict > comparison the exact-equal budget would NOT
+	// stop, the second Generate (Content "final", no tool) would run and the
+	// engine would return "final" as a normal completion. With >= it must stop
+	// right after the first Generate.
+	if res.Output != maxTokensReachedMsg {
+		t.Fatalf("Output = %q, want %q (exact-equal budget must stop)", res.Output, maxTokensReachedMsg)
+	}
+	if res.ToolCalls != 0 {
+		t.Errorf("ToolCalls = %d, want 0 (budget reached before first tool call executes)", res.ToolCalls)
+	}
+}
+
+// TestEngine_TimeoutBudgetExceeded verifies that Request.Timeout stops the loop
+// once the wall-clock deadline passes.
+func TestEngine_TimeoutBudgetExceeded(t *testing.T) {
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc1", "calc", `{}`)}},
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc2", "calc", `{}`)}},
+		{Content: "done"},
+	}}
+	eng := &Engine{
+		LLM:            llm,
+		Tools:          &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "x"}}},
+		DistillEnabled: true,
+	}
+	req := &Request{
+		Messages: []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		MaxIter:  5,
+		Timeout:  time.Nanosecond, // already expired before the first loop check
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != timeoutReachedMsg {
+		t.Fatalf("Output = %q, want %q", res.Output, timeoutReachedMsg)
+	}
+	if res.ToolCalls != 0 {
+		t.Errorf("ToolCalls = %d, want 0 (loop stopped before any tool call)", res.ToolCalls)
 	}
 }
 

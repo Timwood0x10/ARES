@@ -35,6 +35,14 @@ const (
 // shared by production and test code so the contract is defined in one place.
 const maxIterationsReachedMsg = "max iterations reached"
 
+// maxTokensReachedMsg is the Result.Output value (and trace token) the engine
+// returns when Request.MaxTokens is exceeded before a final answer.
+const maxTokensReachedMsg = "max tokens reached"
+
+// timeoutReachedMsg is the Result.Output value (and trace token) the engine
+// returns when Request.Timeout is exceeded before a final answer.
+const timeoutReachedMsg = "timeout reached"
+
 // DiscoverToolsName is the well-known name of the runtime discovery meta-tool.
 // When the engine executes a tool call with this name, it parses the result as a
 // JSON array of tool names and asks ToolExpander to turn them into LLM tool
@@ -138,6 +146,15 @@ type Request struct {
 	Tools []core.Tool
 	// MaxIter caps the ReAct loop iterations; <=0 falls back to DefaultMaxIterations.
 	MaxIter int
+	// MaxTokens caps the cumulative prompt+completion tokens across all LLM
+	// calls in this run; <=0 means no token budget. The loop stops as soon as
+	// the accumulated usage exceeds the cap and returns "max tokens reached".
+	MaxTokens int
+	// Timeout caps the total wall-clock duration of the run; <=0 means no time
+	// budget. The loop stops when the deadline is exceeded and returns
+	// "timeout reached". The per-call context (ctx) is unchanged — Timeout is
+	// an additional budget the engine enforces between LLM calls.
+	Timeout time.Duration
 	// AgentName identifies the agent for trace logs and tool-call event streams.
 	AgentName string
 	// SessionID is the memory session used for AddMessage and the TaskCompleted stream.
@@ -227,6 +244,36 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 
 		st.inputTok += resp.Usage.PromptTokens
 		st.outputTok += resp.Usage.CompletionTokens
+
+		// Token budget: stop the loop as soon as cumulative usage reaches the
+		// cap so a runaway agent cannot burn unbounded tokens before hitting
+		// the iteration cap (ares-vs-prime-agent 原语 4: 有界自主执行).
+		if req.MaxTokens > 0 && st.inputTok+st.outputTok >= req.MaxTokens {
+			e.trace("[ares:trace] %s ⚠ %s (%d total)", req.AgentName, maxTokensReachedMsg, st.inputTok+st.outputTok)
+			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, maxTokensReachedMsg)
+			return &Result{
+				Output:       maxTokensReachedMsg,
+				ToolCalls:    st.toolCount,
+				MemoryUsed:   e.MemEnabled,
+				InputTokens:  st.inputTok,
+				OutputTokens: st.outputTok,
+				Duration:     time.Since(start),
+			}, nil
+		}
+
+		// Wall-clock budget: stop between LLM calls once the deadline passes.
+		if req.Timeout > 0 && time.Since(start) > req.Timeout {
+			e.trace("[ares:trace] %s ⚠ %s (%v)", req.AgentName, timeoutReachedMsg, time.Since(start).Round(time.Millisecond))
+			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, timeoutReachedMsg)
+			return &Result{
+				Output:       timeoutReachedMsg,
+				ToolCalls:    st.toolCount,
+				MemoryUsed:   e.MemEnabled,
+				InputTokens:  st.inputTok,
+				OutputTokens: st.outputTok,
+				Duration:     time.Since(start),
+			}, nil
+		}
 
 		// Append the assistant message.
 		st.messages = append(st.messages, &core.LLMMessage{
