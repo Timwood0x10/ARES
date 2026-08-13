@@ -631,43 +631,6 @@ func TestFromLLMMessage_Nil(t *testing.T) {
 	}
 }
 
-func TestToBuildContextFormat(t *testing.T) {
-	msgs := []Message{
-		{Role: RoleSystem, Content: "You are a bot."},
-		{Role: RoleUser, Content: "Hello"},
-		{Role: RoleAssistant, Content: "Hi there!"},
-		{Role: RoleToolCall, Content: "search('test')"},
-		{Role: RoleToolResult, Content: "result data"},
-	}
-
-	output := ToBuildContextFormat(msgs)
-	if output == "" {
-		t.Fatal("expected non-empty output")
-	}
-	if !contains(output, "System") {
-		t.Errorf("expected 'System' in output, got: %s", output)
-	}
-	if !contains(output, "User") {
-		t.Errorf("expected 'User' in output, got: %s", output)
-	}
-	if !contains(output, "Assistant") {
-		t.Errorf("expected 'Assistant' in output, got: %s", output)
-	}
-	if !contains(output, "Tool call") {
-		t.Errorf("expected 'Tool call' in output, got: %s", output)
-	}
-	if !contains(output, "Tool result") {
-		t.Errorf("expected 'Tool result' in output, got: %s", output)
-	}
-}
-
-func TestToBuildContextFormat_Empty(t *testing.T) {
-	output := ToBuildContextFormat(nil)
-	if output != "" {
-		t.Errorf("expected empty for nil input, got %q", output)
-	}
-}
-
 func TestDefaultMemoryConfig_HasCleanOptions(t *testing.T) {
 	config := DefaultMemoryConfig()
 	if config.CleanOptions == nil {

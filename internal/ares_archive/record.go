@@ -2,7 +2,6 @@ package ares_archive
 
 import (
 	"fmt"
-	"strings"
 )
 
 // allowedActions is the set of round actions recognised by the archive.
@@ -83,12 +82,4 @@ func (r *RoundRecord) Validate() error {
 		return fmt.Errorf("action %q: %w", r.Action, ErrInvalidAction)
 	}
 	return nil
-}
-
-// AllowedActions returns the sorted, pipe-joined list of valid actions.
-// Useful for error messages and CLI help text.
-func AllowedActions() string {
-	// Build a deterministic order rather than ranging a map.
-	actions := []string{actionPlan, actionImplement, actionFix, actionReview}
-	return strings.Join(actions, "|")
 }

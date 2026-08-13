@@ -4,11 +4,10 @@ package context
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 func TestSessionMemory(t *testing.T) {
@@ -126,32 +125,6 @@ func TestTaskMemoryTTL(t *testing.T) {
 	})
 }
 
-func TestUserMemory(t *testing.T) {
-	t.Run("create user memory", func(t *testing.T) {
-		memory := NewUserMemory(100)
-
-		if memory == nil {
-			t.Errorf("memory should not be nil")
-		}
-	})
-
-	t.Run("set and get user", func(t *testing.T) {
-		memory := NewUserMemory(100)
-		profile := &models.UserProfile{UserID: "user1"}
-
-		err := memory.Set(context.Background(), "user1", profile)
-		if err != nil {
-			t.Errorf("set error: %v", err)
-		}
-
-		data, exists := memory.Get(context.Background(), "user1")
-		if !exists {
-			t.Errorf("user should exist")
-		}
-		_ = data
-	})
-}
-
 func TestCache(t *testing.T) {
 	t.Run("create cache", func(t *testing.T) {
 		cache := NewCache(100, time.Minute)
@@ -185,180 +158,6 @@ func TestCache(t *testing.T) {
 		if exists {
 			t.Errorf("key should not exist after delete")
 		}
-	})
-}
-
-func TestLRUCache(t *testing.T) {
-	t.Run("create LRU cache", func(t *testing.T) {
-		cache := NewLRUCache(2)
-
-		if cache == nil {
-			t.Errorf("cache should not be nil")
-		}
-	})
-
-	t.Run("set and get", func(t *testing.T) {
-		cache := NewLRUCache(2)
-		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
-
-		val, exists := cache.Get(context.Background(), "key1")
-		if !exists {
-			t.Errorf("key should exist")
-		}
-		if val != "value1" {
-			t.Errorf("expected value1, got %v", val)
-		}
-	})
-
-	t.Run("size after eviction", func(t *testing.T) {
-		cache := NewLRUCache(2)
-		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
-		_ = cache.Set(context.Background(), "key2", "value2") // Test setup, error ignored
-		_ = cache.Set(context.Background(), "key3", "value3") // Test setup, error ignored
-
-		// Size should be 2 after eviction
-		if cache.Size() != 2 {
-			t.Errorf("expected size 2, got %d", cache.Size())
-		}
-	})
-}
-
-func TestRAG(t *testing.T) {
-	t.Run("create RAG", func(t *testing.T) {
-		rag := NewRAG(100)
-
-		if rag == nil {
-			t.Errorf("RAG should not be nil")
-		}
-		if rag.Size() != 0 {
-			t.Errorf("initial size should be 0")
-		}
-	})
-
-	t.Run("add and get entry", func(t *testing.T) {
-		rag := NewRAG(100)
-		entry := &KnowledgeEntry{
-			ID:        "entry1",
-			Content:   "test content",
-			Embedding: []float64{1.0, 2.0, 3.0},
-			Metadata:  map[string]any{"key": "value"},
-		}
-
-		err := rag.Add(context.Background(), entry)
-		if err != nil {
-			t.Errorf("add error: %v", err)
-		}
-
-		retrieved, exists := rag.Get(context.Background(), "entry1")
-		if !exists {
-			t.Errorf("entry should exist")
-		}
-		if retrieved.Content != "test content" {
-			t.Errorf("expected content, got %s", retrieved.Content)
-		}
-	})
-
-	t.Run("search by vector", func(t *testing.T) {
-		rag := NewRAG(100)
-
-		// Add entries with different embeddings
-		entries := []*KnowledgeEntry{
-			{ID: "e1", Content: "apple fruit", Embedding: []float64{1.0, 0.0, 0.0}},
-			{ID: "e2", Content: "orange fruit", Embedding: []float64{0.9, 0.1, 0.0}},
-			{ID: "e3", Content: "car vehicle", Embedding: []float64{0.0, 1.0, 0.0}},
-		}
-
-		for _, e := range entries {
-			rag.Add(context.Background(), e)
-		}
-
-		// Search for similar to apple
-		results, err := rag.Search(context.Background(), []float64{1.0, 0.0, 0.0}, 2)
-		if err != nil {
-			t.Errorf("search error: %v", err)
-		}
-
-		// Should return e1 (apple) and e2 (orange) - both fruits
-		if len(results) != 2 {
-			t.Errorf("expected 2 results, got %d", len(results))
-		}
-		if results[0].ID != "e1" {
-			t.Errorf("first result should be e1, got %s", results[0].ID)
-		}
-	})
-
-	t.Run("search by text", func(t *testing.T) {
-		rag := NewRAG(100)
-
-		entries := []*KnowledgeEntry{
-			{ID: "e1", Content: "hello world"},
-			{ID: "e2", Content: "goodbye world"},
-			{ID: "e3", Content: "foo bar"},
-		}
-
-		for _, e := range entries {
-			rag.Add(context.Background(), e)
-		}
-
-		results, err := rag.SearchByText(context.Background(), "world", 2)
-		if err != nil {
-			t.Errorf("search error: %v", err)
-		}
-
-		if len(results) != 2 {
-			t.Errorf("expected 2 results, got %d", len(results))
-		}
-	})
-
-	t.Run("delete entry", func(t *testing.T) {
-		rag := NewRAG(100)
-		rag.Add(context.Background(), &KnowledgeEntry{ID: "e1", Content: "test"})
-
-		err := rag.Delete(context.Background(), "e1")
-		if err != nil {
-			t.Errorf("delete error: %v", err)
-		}
-
-		_, exists := rag.Get(context.Background(), "e1")
-		if exists {
-			t.Errorf("entry should not exist after delete")
-		}
-	})
-
-	t.Run("eviction on capacity", func(t *testing.T) {
-		rag := NewRAG(2)
-
-		rag.Add(context.Background(), &KnowledgeEntry{ID: "e1", Content: "test1"})
-		rag.Add(context.Background(), &KnowledgeEntry{ID: "e2", Content: "test2"})
-		rag.Add(context.Background(), &KnowledgeEntry{ID: "e3", Content: "test3"})
-
-		// Should evict oldest entry
-		if rag.Size() != 2 {
-			t.Errorf("expected size 2 after eviction, got %d", rag.Size())
-		}
-	})
-}
-
-func TestVectorIndex(t *testing.T) {
-	t.Run("create vector index", func(t *testing.T) {
-		index := NewVectorIndex()
-
-		if index == nil {
-			t.Errorf("index should not be nil")
-		}
-	})
-
-	t.Run("cosine similarity", func(t *testing.T) {
-		// Similar vectors should have high similarity
-		similar1 := []float64{1.0, 0.0}
-		dissimilar := []float64{0.0, 1.0}
-
-		_ = similar1
-		_ = dissimilar
-
-		// Test with the RAG which has the cosineSimilarity function
-		rag := NewRAG(10)
-		_ = rag
 	})
 }
 
@@ -449,4 +248,8 @@ func TestSessionMemory_GetExpiredSession(t *testing.T) {
 	if ok {
 		t.Error("expired session should not be found")
 	}
+}
+
+func contains(text, substr string) bool {
+	return strings.Contains(text, substr)
 }

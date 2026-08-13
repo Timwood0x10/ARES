@@ -48,63 +48,6 @@ func BenchmarkToolExecution(b *testing.B) {
 	}
 }
 
-// BenchmarkCapabilityDetection benchmarks capability detection
-func BenchmarkCapabilityDetection(b *testing.B) {
-	registry := NewRegistry()
-	engine := NewCapabilityEngine(registry)
-
-	queries := []string{
-		"calculate the sum of two numbers",
-		"search for information about golang",
-		"remember my preferences",
-		"parse the json data",
-		"fetch data from the api",
-		"what is the current time",
-		"read the file content",
-		"execute the python script",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, query := range queries {
-			_ = engine.Detect(query)
-		}
-	}
-}
-
-// BenchmarkCapabilityMatching benchmarks full capability matching
-func BenchmarkCapabilityMatching(b *testing.B) {
-	registry := NewRegistry()
-
-	// Register mock tools with different capabilities
-	tools := []Tool{
-		&mockTool{name: "calculator", capabilities: []Capability{CapabilityMath}},
-		&mockTool{name: "knowledge_search", capabilities: []Capability{CapabilityKnowledge}},
-		&mockTool{name: "memory_store", capabilities: []Capability{CapabilityMemory}},
-		&mockTool{name: "json_parser", capabilities: []Capability{CapabilityText}},
-	}
-
-	for _, tool := range tools {
-		_ = registry.Register(tool)
-	}
-
-	engine := NewCapabilityEngine(registry)
-
-	queries := []string{
-		"calculate 10 + 20",
-		"what is golang",
-		"remember my name is John",
-		"parse this json string",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, query := range queries {
-			_ = engine.Match(query)
-		}
-	}
-}
-
 // BenchmarkToolFiltering benchmarks tool filtering
 func BenchmarkToolFiltering(b *testing.B) {
 	registry := NewRegistry()

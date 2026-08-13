@@ -115,12 +115,6 @@ func WithOrchestrator(ctrl dag.OrchestratorController) Option {
 	}
 }
 
-// WithCostAlertThreshold sets the cost alert threshold.
-// This is a placeholder for future cost alert integration.
-func WithCostAlertThreshold(_ float64) Option {
-	return func(_ *pluginOptions) {}
-}
-
 // WithMCP sets the MCP manager for tool listing and invocation.
 func WithMCP(mcp MCPManager) Option {
 	return func(o *pluginOptions) {
@@ -182,19 +176,27 @@ func NewConsole(opts ...Option) ConsoleAPI {
 		isStarted: false,
 	}
 
+	// Create the InteractionEngine BEFORE the publisher so it can be wired
+	// into the publisher via WithInteractionEngine. Previously the publisher
+	// was constructed first and interEngine afterwards, leaving
+	// publisher.interEngine nil; every kill/resume/retry action returned 501
+	// "interaction engine not wired" even though WithRuntimeManager had been
+	// supplied.
+	if o.hasRuntime || o.hasOrch {
+		p.interEngine = dag.NewInteractionEngine(engine, o.runtimeCtrl, o.orchCtrl)
+	}
+
 	// Create publisher with accumulated options.
 	pubOpts := []PublisherOption{WithInterval(o.interval)}
 	if o.hub != nil {
 		pubOpts = append(pubOpts, WithHub(o.hub))
 	}
+	if p.interEngine != nil {
+		pubOpts = append(pubOpts, WithInteractionEngine(p.interEngine))
+	}
 	p.publisher = NewPublisher(p.mainPage, pubOpts...)
 	if p.publisher != nil {
 		p.mainPage.publisher = p.publisher
-	}
-
-	// Create InteractionEngine if any controller was provided.
-	if o.hasRuntime || o.hasOrch {
-		p.interEngine = dag.NewInteractionEngine(engine, o.runtimeCtrl, o.orchCtrl)
 	}
 
 	// Create pruner if config was provided.

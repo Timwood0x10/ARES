@@ -109,13 +109,6 @@ func (fr *FlightRecorder) Genealogy() *Genealogy {
 	return fr.genealogy
 }
 
-// SetGenealogy attaches a genealogy tree to the flight recorder.
-func (fr *FlightRecorder) SetGenealogy(g *Genealogy) {
-	fr.mu.Lock()
-	defer fr.mu.Unlock()
-	fr.genealogy = g
-}
-
 // Pipeline returns the memory pipeline for a session.
 func (fr *FlightRecorder) Pipeline(sessionID string) *MemoryPipeline {
 	return fr.collector.Pipeline(sessionID)
@@ -124,22 +117,4 @@ func (fr *FlightRecorder) Pipeline(sessionID string) *MemoryPipeline {
 // Replay creates a replay session for a task.
 func (fr *FlightRecorder) Replay(ctx context.Context, taskID string) (*ReplaySession, error) {
 	return NewReplaySession(ctx, fr.eventStore, taskID)
-}
-
-// Snapshot returns a point-in-time snapshot of all flight data for an agent.
-func (fr *FlightRecorder) Snapshot(agentID string) AgentSnapshot {
-	return AgentSnapshot{
-		AgentID:     agentID,
-		Timeline:    fr.Timeline().FilterByAgent(agentID),
-		Decisions:   fr.Decisions().FilterByAgent(agentID),
-		Diagnostics: fr.Diagnostics().FilterByAgent(agentID),
-	}
-}
-
-// AgentSnapshot is a point-in-time view of all flight data for one agent.
-type AgentSnapshot struct {
-	AgentID     string             `json:"agent_id"`
-	Timeline    []TimelineEvent    `json:"timeline"`
-	Decisions   []Decision         `json:"decisions"`
-	Diagnostics []DiagnosticRecord `json:"diagnostics"`
 }

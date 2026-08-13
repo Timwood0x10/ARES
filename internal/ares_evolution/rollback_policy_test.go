@@ -158,39 +158,6 @@ func TestRollbackPolicy_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestScoreTrendAnalysis_InsufficientData(t *testing.T) {
-	p := NewRollbackPolicy()
-	p.RecordScore(1, 100.0)
-	p.RecordScore(2, 95.0)
-
-	slope, intercept, ok := ScoreTrendAnalysis(p)
-	assert.False(t, ok)
-	assert.Equal(t, 0.0, slope)
-	assert.Equal(t, 0.0, intercept)
-}
-
-func TestScoreTrendAnalysis_Declining(t *testing.T) {
-	p := NewRollbackPolicy()
-	p.RecordScore(1, 100.0)
-	p.RecordScore(2, 90.0)
-	p.RecordScore(3, 80.0)
-
-	slope, _, ok := ScoreTrendAnalysis(p)
-	assert.True(t, ok)
-	assert.True(t, slope < 0, "slope should be negative for declining trend")
-}
-
-func TestScoreTrendAnalysis_Improving(t *testing.T) {
-	p := NewRollbackPolicy()
-	p.RecordScore(1, 80.0)
-	p.RecordScore(2, 90.0)
-	p.RecordScore(3, 100.0)
-
-	slope, _, ok := ScoreTrendAnalysis(p)
-	assert.True(t, ok)
-	assert.True(t, slope > 0, "slope should be positive for improving trend")
-}
-
 // --- ActiveStrategyManager tests ---
 
 // mockStrategyStore implements StrategyStore for testing.

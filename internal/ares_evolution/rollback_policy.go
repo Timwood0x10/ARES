@@ -6,7 +6,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -225,9 +224,6 @@ func (p *RollbackPolicy) isGradualDeclineLocked() bool {
 
 	// Check the most recent half of the window for monotonic decline.
 	checkStart := len(p.scoreHistory) / 2
-	if checkStart < 0 {
-		checkStart = 0
-	}
 
 	declines := 0
 	for i := checkStart; i < len(p.scoreHistory)-1; i++ {
@@ -533,44 +529,4 @@ type RollbackPolicyConfig struct {
 	WindowSize int `json:"window_size"`
 	// MinSamples is the minimum samples before rollback triggers (default 3).
 	MinSamples int `json:"min_samples"`
-}
-
-// ScoreTrendAnalysis computes a simple linear regression slope over the
-// recent score history to detect declining trends. A negative slope with
-// magnitude exceeding the degradation threshold indicates a rollback-worthy
-// trend.
-//
-// Args:
-//   - policy: the rollback policy with recorded scores.
-//
-// Returns:
-//   - slope: the linear regression slope (positive = improving, negative = declining).
-//   - intercept: the y-intercept of the trend line.
-//   - ok: true if enough data points exist for a meaningful regression.
-func ScoreTrendAnalysis(policy *RollbackPolicy) (slope, intercept float64, ok bool) {
-	snapshots := policy.ScoreHistory()
-	n := len(snapshots)
-	if n < 3 {
-		return 0, 0, false
-	}
-
-	var sumX, sumY, sumXY, sumX2 float64
-	for i, s := range snapshots {
-		x := float64(i)
-		y := s.Score
-		sumX += x
-		sumY += y
-		sumXY += x * y
-		sumX2 += x * x
-	}
-
-	nFloat := float64(n)
-	denom := nFloat*sumX2 - sumX*sumX
-	if math.Abs(denom) < 1e-10 {
-		return 0, 0, false
-	}
-
-	slope = (nFloat*sumXY - sumX*sumY) / denom
-	intercept = (sumY - slope*sumX) / nFloat
-	return slope, intercept, true
 }

@@ -7,14 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // MemoryManager provides unified memory management.
@@ -297,35 +295,6 @@ func convertRawToToolCalls(raw []interface{}) []ToolCall {
 		calls = append(calls, tc)
 	}
 	return calls
-}
-
-// ToBuildContextFormat converts a slice of cleaned Messages into a flat string
-// suitable for legacy BuildContext output. This allows BuildContext to delegate
-// to BuildPromptMessages and then render the result as text.
-func ToBuildContextFormat(messages []Message) string {
-	if len(messages) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.Grow(len(messages) * 256)
-	sb.WriteString("Previous conversation history:\n\n")
-	for _, msg := range messages {
-		label := msg.Role
-		switch label {
-		case memctx.RoleToolCall:
-			label = "Tool call"
-		case memctx.RoleToolResult:
-			label = "Tool result"
-		case memctx.RoleUser:
-			label = "User"
-		case memctx.RoleAssistant:
-			label = "Assistant"
-		case memctx.RoleSystem:
-			label = "System"
-		}
-		fmt.Fprintf(&sb, "%s: %s\n", label, truncpkg.WithEllipsis(msg.Content, 100))
-	}
-	return sb.String()
 }
 
 // validate checks that config fields have sensible values.

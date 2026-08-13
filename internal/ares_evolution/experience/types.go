@@ -211,7 +211,6 @@ func AggregateEvidence(experiences []NormalizedExperience) Evidence {
 	}
 
 	var (
-		totalScore     float64
 		totalLatency   int64
 		successCount   int
 		totalErrorRate float64
@@ -246,7 +245,6 @@ func AggregateEvidence(experiences []NormalizedExperience) Evidence {
 			lastTimestamp = exp.CreatedAt
 		}
 
-		totalScore += exp.Score
 		totalLatency += exp.LatencyMs
 		totalErrorRate += exp.ErrorRate
 		if exp.Success || exp.Outcome == "success" {
@@ -312,7 +310,6 @@ func AggregateEvidenceCrossTask(experiences []NormalizedExperience) Evidence {
 	}
 
 	var (
-		totalScore     float64
 		totalLatency   int64
 		successCount   int
 		totalErrorRate float64
@@ -332,7 +329,6 @@ func AggregateEvidenceCrossTask(experiences []NormalizedExperience) Evidence {
 		if exp.CreatedAt.After(lastTimestamp) {
 			lastTimestamp = exp.CreatedAt
 		}
-		totalScore += exp.Score
 		totalLatency += exp.LatencyMs
 		totalErrorRate += exp.ErrorRate
 		if exp.Success || exp.Outcome == "success" {

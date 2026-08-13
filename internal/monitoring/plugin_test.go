@@ -35,7 +35,29 @@ func TestNewConsole(t *testing.T) {
 		p := NewConsole(WithSnapshotInterval(500 * time.Millisecond))
 		require.NotNil(t, p)
 	})
+
+	t.Run("runtime manager wires publisher interaction engine", func(t *testing.T) {
+		// Regression: NewConsole previously built the publisher BEFORE the
+		// InteractionEngine, so publisher.interEngine stayed nil even when
+		// WithRuntimeManager was supplied and every kill/resume/retry action
+		// returned 501. The InteractionEngine must be created first and
+		// propagated to the publisher via WithInteractionEngine.
+		rt := &pluginTestRuntime{}
+		p := NewConsole(WithRuntimeManager(rt)).(*MonitorPlugin)
+		require.NotNil(t, p.interEngine, "InteractionEngine must be created when a runtime controller is supplied")
+		require.NotNil(t, p.publisher, "publisher must be constructed")
+		require.NotNil(t, p.publisher.interEngine, "publisher must receive the InteractionEngine (not nil)")
+	})
 }
+
+// pluginTestRuntime is a minimal dag.RuntimeController for wiring tests.
+type pluginTestRuntime struct{}
+
+func (m *pluginTestRuntime) NotifyAgentDead(_, _ string) {}
+func (m *pluginTestRuntime) GetAgentInfo(string) (*dag.AgentInfo, bool) {
+	return nil, false
+}
+func (m *pluginTestRuntime) RestartAgent(context.Context, string) error { return nil }
 
 func TestMonitorPlugin_Name(t *testing.T) {
 	p := NewConsole()
@@ -321,11 +343,6 @@ func TestMonitorPlugin_WithRuntimeManager(t *testing.T) {
 
 func TestMonitorPlugin_WithOrchestrator(t *testing.T) {
 	p := NewConsole(WithOrchestrator(nil))
-	assert.NotNil(t, p)
-}
-
-func TestMonitorPlugin_WithCostAlertThreshold(t *testing.T) {
-	p := NewConsole(WithCostAlertThreshold(100.0))
 	assert.NotNil(t, p)
 }
 

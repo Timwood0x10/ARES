@@ -49,9 +49,6 @@ type DefaultPromoter struct {
 
 	// currentGeneration is the current evolution generation.
 	currentGeneration int
-
-	// previousScores maps strategyID to previous evidence scores for demotion checks.
-	previousScores map[string]float64
 }
 
 // NewDefaultPromoter creates a new DefaultPromoter with the given criteria.
@@ -66,7 +63,6 @@ func NewDefaultPromoter(criteria *PromotionCriteria) *DefaultPromoter {
 		strategies:        make(map[string]*StrategyInfo),
 		history:           make(map[string][]StrategyPromotionRecord),
 		champions:         make(map[string][]string),
-		previousScores:    make(map[string]float64),
 		currentGeneration: 0,
 	}
 }
@@ -86,7 +82,6 @@ func (p *DefaultPromoter) Evaluate(
 
 	// Calculate score and record in ScoreHistory
 	score := CalculateEvidenceScore(evidence)
-	p.previousScores[strategyID] = score
 
 	if !exists {
 		info = &StrategyInfo{

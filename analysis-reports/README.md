@@ -48,13 +48,18 @@
 | internal/ares_bootstrap | 新增 `graphExec` 字段并在 bootstrap 保存；`UpdateLiveDAG` 改为 `graphExec.SetGraph(g)` 就地更新，删除必失败的 `RegisterComponent`/`Register("graph.scheduler")`。**修复"每次调用必然失败、graph executor 的 DAG 从不上链到 live DAG"缺陷**（`serve.go:530` 辅助更新现在真正生效）。与 recovery/knowledge 的 `SetDAG`/`SetRuntime` 模式统一 | 修复 + 新增 2 个回归测试 |
 | cmd/ares | `serve.go` PluginBus 接线点补充 tech-debt 注释（铁律 #3 留痕） | 文档留痕 |
 
-### ares_runtime 内置插件子系统——Code Review 结论（方向决策，不改动）
+### ares_runtime 内置插件/router 子系统——结论：能力储备（保留）
 
-深度审查后确认：
-- `PluginBus` **活跃**（serve.go 注册 `MonitorPlugin`），workflow Runner 通过 `WithPluginBus` 驱动其 `BeforeStep`/`AfterStep`。
-- 但内置插件（Arena/Checkpoint/Loop/Observer/Tool）与 router（Expression/Memory/Evolution/Fallback）**生产从不注册**，`MonitorPlugin` 不实现 `WorkflowHook`，因此 hook 机制在生产无触发。
-- 关键判断：**workflow 引擎已有原生 loop/checkpoint/routing**（`LoopSpec.MaxIterations`、`WithCheckpointStore`、`NodeRouter`、`graph.SetPluginBus`）。内置插件是**并行/替代机制**，仅被 `graph/executor_test.go` 等测试路径使用。
-- **结论**：强制接线会改变运行时行为（loop 限制、持久化突然生效），属**产品方向决策**（铁律 #4），非 bug 修复。已按铁律 #3 在 `serve.go` 标注 tech-debt，**未改动行为**。
+**深度核查修正了初版报告的两处误判**：
+1. `manager_chaos.go`（`chaosWrappedAgent`）**不是死代码**，是 Manager 生产路径的组成部分（`manager.go:211` 使用它做故障注入边界）。
+2. `LoopPlugin`/`CheckpointPlugin`/`CapCheckpoint`/`CapEvolution`/`Flusher`/`EvolutionPlugin` 接口被 workflow **生产消费**（`runner_plugins.go:70,83` 类型断言），不是"生产不用的死插件"。
+
+**最终分类**（详见 [`ares-runtime-capability-reserve.md`](ares-runtime-capability-reserve.md)）：
+- **生产活跃**：PluginBus、Manager(+chaos/lifecycle)、Loop/Checkpoint 插件、`ExpressionRouter`、`RouterPlugin`/`MemoryPlugin`/`EvolutionPlugin` 接口、`ExecutionOutcome`、全部 `Cap*` 常量。
+- **能力储备**（完整实现+测试，生产暂未注册，**保留**）：`ArenaPlugin`/`ObserverPlugin`/`ToolPlugin`/`MemoryRouter`/`EvolutionRouter`/`FallbackRouter`/`NewEvolutionPlugin`/`NewBasicRecoveryPlugin`/`NewInterruptPlugin`。
+- **无"滥竽充数"假实现**（经核查，与已删的 `ares_eval/placeholderRunner` 性质不同）。
+
+**处置**：这些能力储备有明确未来能力点（混沌/可观测/记忆路由/进化路由/降级），属"锦上添花"，按用户判断标准**保留**。已在 `serve.go` 修正注释为"能力储备"定位，并建立启用路径文档。**未删除任何文件，已还原全部破坏性改动。**
 
 > **分析确认未改动项**：ares_arena `computeWinRate` 平局计入（文档化设计）、queue.Enqueue 忽略 ctx（文档化非阻塞设计）、workflow runner_checkpoint Acknowledge 失败（resume 经 Restore 重建队列，无重复应用）。
 
