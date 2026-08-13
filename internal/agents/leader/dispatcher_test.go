@@ -3,7 +3,9 @@ package leader
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/stretchr/testify/assert"
@@ -101,4 +103,79 @@ func TestDispatcher_DispatchStampsConfiguredAgentID(t *testing.T) {
 		"outgoing message AgentID must be the configured real ID")
 	assert.NotEqual(t, "leader", sender.sent[0].AgentID,
 		"outgoing message AgentID must not be the hardcoded 'leader'")
+}
+
+// TestDispatcher_EventDriven_DuplicateResultNotDoubleCounted is a regression
+// test for the dispatchViaEvents result-collection dedup fix.
+//
+// A sub-agent may publish a duplicate EventSubTaskResult for the same task
+// (e.g. a retry or an event-store replay). Before the fix, every received
+// result bumped the `collected` counter, so a duplicate could make the
+// collection loop think it was done while some tasks' results were still nil,
+// or overwrite a result with a stale duplicate. The fix tracks collected
+// taskIDs so each published task is collected exactly once.
+func TestDispatcher_EventDriven_DuplicateResultNotDoubleCounted(t *testing.T) {
+	const subAddr = "sub-addr-dup"
+
+	store := ares_events.NewMemoryEventStore()
+	t.Cleanup(func() { _ = store.Close() })
+
+	registry := map[models.AgentType]string{
+		models.AgentTypeTop: subAddr,
+	}
+	d, err := NewTaskDispatcher(registry, 1, 30, nil,
+		WithDispatcherEventStore(store))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Two tasks to the same sub-agent. The sub publishes a DUPLICATE result
+	// for the first task and a single result for the second. Pre-fix, the
+	// duplicate bumped `collected` past `published`, terminating the loop
+	// before the second task's result arrived — leaving its result nil.
+	taskA := models.NewTask("dup-task-a", models.AgentTypeTop, &models.UserProfile{})
+	taskB := models.NewTask("dup-task-b", models.AgentTypeTop, &models.UserProfile{})
+
+	// Simulate the sub-agent: subscribe to scheduled events, then publish
+	// results — task A twice (duplicate), task B once.
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	subCh, err := store.Subscribe(subCtx, ares_events.EventFilter{
+		Types: []ares_events.EventType{ares_events.EventSubTaskScheduled},
+	})
+	require.NoError(t, err)
+
+	go func() {
+		for {
+			select {
+			case ev, ok := <-subCh:
+				if !ok {
+					return
+				}
+				taskID, _ := ev.Payload["task_id"].(string)
+				payload := map[string]any{
+					"task_id":    taskID,
+					"agent_type": string(taskA.AgentType),
+					"success":    true,
+				}
+				ares_events.Emit(ctx, store, subAddr, ares_events.EventSubTaskResult, "sub", payload)
+				if taskID == taskA.TaskID {
+					// Duplicate result for task A only.
+					ares_events.Emit(ctx, store, subAddr, ares_events.EventSubTaskResult, "sub", payload)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	results, err := d.Dispatch(ctx, []*models.Task{taskA, taskB})
+	require.NoError(t, err)
+	require.Len(t, results, 2, "expected exactly two results")
+
+	// Both tasks must have a non-nil, successful result — the duplicate for A
+	// must not terminate collection before B's result arrives.
+	assert.True(t, results[0].Success, "task A must be successful")
+	assert.True(t, results[1].Success, "task B must be collected despite A's duplicate result")
 }

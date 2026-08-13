@@ -5,18 +5,20 @@
 
 ---
 
-## 〇、根因（已确认，基于源码）
+## 〇、根因（历史分析，已被 A/B/C 解耦消除）
 
-| # | 问题 | 证据 |
-|---|------|------|
-| 1 | **dispatcher 进程内同步执行所有 sub 任务** | `cmd/ares/agents.go:94` `RegisterExecutor(agentType, executor.Execute)`；`leader/dispatcher.go:200` 本地路径 `fn(ctx, task)` 同步调用，绕过消息队列 |
-| 2 | **双重执行路径** | 同一 executor 对象既注册进 leader dispatcher，又传给 `sub.New` |
-| 3 | **横切职责堆积（God Object）** | `leaderAgent` 聚合 supervisor(废弃)/checkpoint/recovery/event_recovery/agent_memory/profile/evaluator(死代码)/aggregator |
-| 4 | **sub 已具备独立执行能力但 leader 不用** | `sub/agent.go`：`ProcessStream`(goroutine+WaitGroup)、`messageQueue`(AHP)、`eventStore`(ares_events)、`heartbeatMon`、`SendMessage`/`ReceiveMessage` |
-| 5 | **无 panic 隔离** | `sub/agent.go:358` `ProcessStream` 的 goroutine **无 recover**，sub 内部 panic 会崩整个进程 |
-| 6 | **事件基础设施已就绪但未接入** | `internal/ares_events`：`EventStore.Append`(带 OCC)/`Subscribe`(filter)/`MemoryStore`/`PostgresStore`，leader-sub 执行路径未使用 |
+> **注意**：本表记录的是解耦**之前**代码状态下的根因（含当时的行号）。A/B/C 阶段完成后，表中的问题均已消除——当前代码已是事件驱动 + 独立包 + panic 隔离。行号已失效，仅作历史留痕。
 
-**核心矛盾**：sub 从结构上已具备"独立执行 + 消息驱动 + 事件流 + 心跳"，但 leader 的 dispatcher 在本地模式绕过这一切，自己同步执行。
+| # | 问题（历史） | 当时的证据（已过时） | 当前状态 |
+|---|------|------|------|
+| 1 | **dispatcher 进程内同步执行所有 sub 任务** | `cmd/ares/agents.go:94` `RegisterExecutor`（已移除） | ✅ `dispatcher.dispatchViaEvents` 事件驱动，`cmd/ares/agents.go:82` 用 `WithDispatcherEventStore` |
+| 2 | **双重执行路径** | 同一 executor 注册进 dispatcher 又传给 sub.New | ✅ 单一事件驱动路径，`cmd/ares/serve.go` 启动 sub 事件监听器 |
+| 3 | **横切职责堆积（God Object）** | leaderAgent 聚合 supervisor/evaluator/checkpoint 等 | ✅ supervisor/evaluator 已移除；checkpoint/recovery/event_recovery 收敛 `leader/state/`，aggregator 收敛 `leader/aggregate/` |
+| 4 | **sub 已具备独立执行能力但 leader 不用** | sub 有 ProcessStream/messageQueue/eventStore 但 leader 绕过 | ✅ sub 通过 `StartEventListener`（serve.go:336）事件驱动消费 |
+| 5 | **无 panic 隔离** | `sub/agent.go:358` 无 recover | ✅ `sub/agent.go:494` `ProcessStream` goroutine 有 `recover()`（§4.2） |
+| 6 | **事件基础设施已就绪但未接入** | leader-sub 执行路径未用 ares_events | ✅ `EventSubTaskScheduled/Started/Result/Failed` 全接入，C 阶段新增 `EventMemoryFinalize` |
+
+**核心矛盾（历史）**：sub 已具备独立执行能力，但 leader dispatcher 在本地模式绕过它同步执行。**该矛盾已被 B 阶段（事件驱动执行模型）消除。**
 
 ---
 
@@ -155,3 +157,59 @@ go func() {
 3. **event 驱动**：任务派发/执行/结果/记忆写入全部经 `ares_events.EventStore`。
 4. **agent 通讯加强**：sub 之间可通过事件/消息直接协作，不强制经 leader。
 5. 全部改动通过 `go build ./...`、`go test ./...`、`go vet`、`gofmt`、`go test -race`。
+
+---
+
+## 七、Code Review 与修复记录
+
+> 对已完成解耦代码做 review，确认 A/B/C 均已在生产接通（含暂存区工作），并修复发现的问题。
+
+### 7.1 Review 确认（均已完成，生产接通）
+
+| 项 | 证据 | 状态 |
+|----|------|------|
+| A 死代码移除 | `internal/agents` 无 `Supervisor`/`Evaluator` | ✅ |
+| A 独立包 | `leader/state/`（checkpoint/recovery/event_recovery）+ `leader/aggregate/`（aggregator） | ✅ |
+| B 事件驱动 | `dispatcher.dispatchViaEvents` 发布/订阅；`cmd/ares/serve.go:336`、`cmd/monitor-live/main.go:230` 启动 `sub.StartEventListener` | ✅ |
+| B 安全隔离 | `sub/agent.go:494` `ProcessStream` goroutine `recover()`（§4.2） | ✅ |
+| C 记忆旁路 | 新增 `EventMemoryFinalize` + 独立 `memoryConsumer`（订阅事件异步写入），leader 主循环改为发事件 | ✅（本轮补全） |
+
+### 7.2 修复：`dispatchViaEvents` 结果收集去重缺陷（BUG）
+
+**问题**：`dispatcher.go` 的 `for collected < published` 结果收集循环，`collected++` 对**每个**收到的 `EventSubTaskResult` 计数。若同一 taskID 收到重复结果（sub 重试/事件重放），多 task 场景下重复结果会把 `collected` 推到 `published`，**提前终止循环**，导致其他 task 的结果仍是 nil（返回 nil 结果 → 调用方 panic）。
+
+**修复**：新增 `collectedIDs` 集合，每个已发布 taskID **恰好收集一次**；重复 taskID 跳过且不 `collected++`。
+
+**回归测试**：`TestDispatcher_EventDriven_DuplicateResultNotDoubleCounted`——2 个 task，对 task A 发布重复结果、task B 一次。已验证**修复前该测试 panic**（task B 结果被跳过 → nil deref），修复后通过。
+
+### 7.3 Review 确认非缺陷（不改）
+
+| 项 | 结论 |
+|----|------|
+| `dispatchViaSender` 遗留路径 | 配置驱动的回退路径（`eventStore==nil` 时才走，用于无 EventStore 的分布式部署）。`SetSuccess("dispatched")` 符合消息队列异步语义（结果经消息回传，非本函数等待）。非 bug，保留。 |
+| `Subscribe` 返回 channel 生命周期 | `MemoryEventStore.Subscribe`（memory_store.go:214）注册 ctx.Done→unsubscribe 自动关闭；Postgres 同。**无泄漏**，由 ctx 管理。 |
+| sub 双路径（`ProcessStream`/`processScheduledEvent`） | 生产走事件驱动（`StartEventListener`），`ProcessStream` 为主动/兼容路径。均执行同一 executor，非 §5.1 违例（生产单路径）。 |
+
+### 7.4 C 阶段补全：事件驱动的记忆独立消费者（本轮完成）
+
+**此前状态**：C 的"异步化 + 发事件"完成，但 `finalizeMemory` 仍由 leader 主循环**直接调用**（异步 goroutine），未实现文档 C1/C2 的"独立消费者订阅事件"。
+
+**本轮改动**：
+1. **新增事件** `EventMemoryFinalize`（`internal/ares_events/types.go`），payload: `session_id`/`task_id`/`result_summary`。
+2. **新增独立组件** `memoryConsumer`（`leader/memory_consumer.go`）：
+   - `Start` 同步建立 `EventMemoryFinalize` 订阅（订阅就绪后才返回，避免 Emit 事件丢失），返回 error。
+   - 消费 goroutine：`UpdateTaskOutput` → `AddMessage`(assistant) → 发 `EventMessageAdded`/`EventTaskCompleted` → `DistillTask`，全部 detached ctx + 2min 超时 + panic recovery（§4.2/§4.3）。
+   - `Stop`：取消订阅 + drain 缓冲（不丢 in-flight 写入）+ `wg.Wait`。
+3. **leader 主循环解耦**：`agent_memory.go:finalizeMemory` 改为仅发 `EventMemoryFinalize` 事件；`Start` 创建并启动 `memoryConsumer`，`Stop` 停止。
+4. **死代码清理**：`distillEg`/`distillWg`（原 leader 内异步蒸馏管理）已无调用方（蒸馏迁至 consumer），移除字段/初始化/Wait。
+
+**新测试**（`leader/memory_consumer_test.go`）：
+- `TestMemoryConsumer_EventDrivenClosedLoop`：发事件 → consumer 完成三类写入（UpdateTaskOutput/AddMessage/DistillTask）。
+- `TestMemoryConsumer_StopDrainsInFlight`：Emit 后立即 Stop，in-flight 写入不丢。
+- `TestMemoryConsumer_StartIdempotent`：Start 幂等。
+
+**修复中发现的根因 bug**：`Start` 原在 goroutine 内异步 `Subscribe`，`Start` 返回后立即 `Emit` 可能订阅未建立 → 事件被静默丢弃（`StopDrainsInFlight` 100% 失败）。已改为 `Start` 同步建立订阅。
+
+### 7.5 验证
+
+`go build ./...`、`go test ./internal/agents/...`、`go test -race ./internal/agents/leader ./internal/agents/sub`、`go vet`、`gofmt` 全部通过（C 阶段测试 `-count=3` 稳定）。

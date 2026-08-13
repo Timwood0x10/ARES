@@ -51,6 +51,12 @@ const (
 	EventSubTaskStarted   EventType = "sub_task.started"   // sub begins execution
 	EventSubTaskResult    EventType = "sub_task.result"    // sub returns result (success or failure)
 	EventSubAgentFailed   EventType = "sub_agent.failed"   // sub crashed (panic captured)
+
+	// EventMemoryFinalize requests async memory finalization (update task output,
+	// record assistant message, distill). Emitted by the leader after aggregating
+	// results; consumed by a dedicated memory worker so the leader loop does not
+	// perform memory writes itself (leader/sub decoupling, C phase).
+	EventMemoryFinalize EventType = "memory.finalize"
 )
 
 // Event payload keys for enriched task-lifecycle events.

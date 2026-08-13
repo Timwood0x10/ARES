@@ -125,10 +125,13 @@ type leaderAgent struct {
 	// sync.Once, so that a restarted agent (which gets a fresh stopCh) can be
 	// stopped again. See Stop in agent.go.
 	stopCh       chan struct{}
-	distillWg    sync.WaitGroup
-	distillEg    *errgroup.Group
 	streamEg     *errgroup.Group
 	processingMu sync.Mutex
+
+	// memoryConsumer is the dedicated, event-driven worker for post-result
+	// memory finalization. Started in Start and stopped in Stop. Nil when the
+	// agent has no event store or memory manager (leader/sub decoupling, C phase).
+	memoryConsumer *memoryConsumer
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.

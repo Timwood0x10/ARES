@@ -122,7 +122,6 @@ func (a *leaderAgent) ensureInitialized() {
 		return
 	}
 	a.stopCh = make(chan struct{})
-	a.distillEg = &errgroup.Group{}
 	a.streamEg = &errgroup.Group{}
 }
 
@@ -152,7 +151,6 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 	}
 	if createFields {
 		a.stopCh = make(chan struct{})
-		a.distillEg = &errgroup.Group{}
 		a.streamEg = &errgroup.Group{}
 	}
 	a.mu.Unlock()
@@ -200,6 +198,21 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 		log.Info("Message queue initialized", "agent_id", a.id)
 	}
 
+	// Start the event-driven memory consumer (leader/sub decoupling, C phase).
+	// It subscribes to EventMemoryFinalize and performs async memory writes off
+	// the response path. Stopped in Stop().
+	if a.eventStore != nil && a.memoryManager != nil && a.memoryConsumer == nil {
+		a.memoryConsumer = newMemoryConsumer(a.eventStore, a.memoryManager, a.id)
+	}
+	if a.memoryConsumer != nil {
+		if err := a.memoryConsumer.Start(ctx); err != nil {
+			log.Warn("Memory consumer failed to start, memory finalization disabled", "agent_id", a.id, "error", err)
+			a.memoryConsumer = nil
+		} else {
+			log.Info("Memory consumer started", "agent_id", a.id)
+		}
+	}
+
 	// Emit agent started event.
 	a.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
 		"agent_id": a.id,
@@ -238,7 +251,7 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 	// stopCh (Start / ensureInitialized). A sync.Once cannot be used here:
 	// Start allocates a fresh stopCh on restart, and a Once has no reset, so
 	// the second Stop would silently skip the close and leave background
-	// goroutines blocked on <-a.stopCh forever (distillWg.Wait would hang).
+	// goroutines blocked on <-a.stopCh forever.
 	if a.stopCh != nil {
 		select {
 		case <-a.stopCh:
@@ -255,16 +268,7 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 	defer a.processingMu.Unlock()
 
 	// Wait for background goroutines to complete and collect their errors.
-	a.distillWg.Wait()
-
 	var errs []error
-	if a.distillEg != nil {
-		if err := a.distillEg.Wait(); err != nil {
-			log.Warn("Errors from distillation goroutines during shutdown",
-				"error", err)
-			errs = append(errs, fmt.Errorf("distillation: %w", err))
-		}
-	}
 	if a.streamEg != nil {
 		if err := a.streamEg.Wait(); err != nil {
 			log.Warn("Errors from streaming goroutines during shutdown",
@@ -272,6 +276,14 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 			errs = append(errs, fmt.Errorf("streaming: %w", err))
 		}
 	}
+
+	// Stop the event-driven memory consumer and wait for in-flight memory
+	// writes to finish so no finalization is lost during shutdown.
+	if a.memoryConsumer != nil {
+		a.memoryConsumer.Stop()
+		a.memoryConsumer = nil
+	}
+
 	if len(errs) > 0 {
 		retErr = stderrors.Join(errs...)
 	}

@@ -4,7 +4,6 @@ package leader
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -81,56 +80,21 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	return enrichedInput, sessionID, taskID
 }
 
+// finalizeMemory requests asynchronous memory finalization through the
+// event-driven memoryConsumer: the leader no longer performs memory writes
+// directly — it emits EventMemoryFinalize and the consumer (started in Start,
+// stopped in Stop) performs UpdateTaskOutput/AddMessage/DistillTask off the
+// response path (leader/sub decoupling, C phase).
 func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
-	if a.memoryManager == nil || result == nil || sessionID == "" {
+	if a.memoryConsumer == nil || !a.memoryConsumer.started || result == nil || sessionID == "" {
 		return
 	}
 
 	resultStr := fmt.Sprintf("Generated %d items", len(result.Items))
-
-	// All memory writes are asynchronous to avoid blocking the response path.
-	// Uses a detached context with timeout so writes complete even after the
-	// request context is cancelled (code_rules_v2 §4.3: non-blocking I/O).
-	// distillEg is initialized by ensureInitialized/Start before finalizeMemory
-	// is called, and Stop waits on distillEg.Wait() for graceful shutdown.
-	a.distillEg.Go(func() (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("finalizeMemory panic recovered", "agent_id", a.id, "panic", r)
-				err = fmt.Errorf("finalizeMemory panic: %v", r)
-			}
-		}()
-
-		memCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		if taskID != "" {
-			if err := a.memoryManager.UpdateTaskOutput(memCtx, taskID, resultStr); err != nil {
-				log.Warn("memory operation failed, proceeding without", "operation", "UpdateTaskOutput", "error", err)
-			}
-		}
-		if err := a.memoryManager.AddMessage(memCtx, sessionID, "assistant", resultStr); err != nil {
-			log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
-		}
-
-		a.emitEvent(memCtx, ares_events.EventMessageAdded, map[string]any{
-			"session_id": sessionID,
-			"role":       "assistant",
-		})
-		if taskID != "" {
-			a.emitEvent(memCtx, ares_events.EventTaskCompleted, map[string]any{
-				"task_id": taskID,
-				"status":  "completed",
-			})
-		}
-
-		if taskID != "" {
-			if _, err := a.memoryManager.DistillTask(memCtx, taskID); err != nil {
-				log.Warn("memory operation failed, proceeding without", "operation", "DistillTask", "error", err)
-			}
-		}
-
-		return nil
+	a.emitEvent(ctx, ares_events.EventMemoryFinalize, map[string]any{
+		"session_id":     sessionID,
+		"task_id":        taskID,
+		"result_summary": resultStr,
 	})
 }
 
