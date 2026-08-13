@@ -1,4 +1,4 @@
-package leader
+package state
 
 import (
 	"context"
@@ -155,7 +155,6 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 	leaderID := "leader-1"
 	baseTime := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
 
-	// Simulate a full lifecycle: session, tasks, messages, distillation, failover.
 	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
 			Type:      ares_events.EventSessionCreated,
@@ -247,7 +246,6 @@ func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
 
 	leaderID := "leader-1"
 
-	// First session.
 	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
 			Type: ares_events.EventSessionCreated,
@@ -258,7 +256,6 @@ func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Second session (should be the recovered one).
 	err = store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
 			Type: ares_events.EventSessionCreated,
@@ -281,7 +278,6 @@ func TestEventRecovery_RecoverFromEvents_NilEventsSkipped(t *testing.T) {
 
 	leaderID := "leader-1"
 
-	// Append a valid event first.
 	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
 			Type: ares_events.EventSessionCreated,
@@ -307,7 +303,5 @@ func TestEventRecovery_RecoverFromEvents_CancelledContext(t *testing.T) {
 	cancel()
 
 	r := NewEventRecovery(store)
-	// With a cancelled context, the Read call may or may not fail
-	// depending on implementation, but it should not panic.
 	_, _ = r.RecoverFromEvents(ctx, "leader-1")
 }

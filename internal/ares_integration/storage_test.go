@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/leader/state"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
@@ -289,14 +289,14 @@ func TestCheckpointRepositorySaveAndRetrieve(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	repo := leader.NewCheckpointRepository(pool)
+	repo := state.NewCheckpointRepository(pool)
 	require.NotNil(t, repo, "expected non-nil checkpoint repository")
 
 	leaderID := fmt.Sprintf("test-leader-%d", time.Now().UnixNano())
 
 	// Save initial checkpoint.
 	metadata := json.RawMessage(`{"step": 1, "status": "running"}`)
-	cp := &leader.LeaderCheckpoint{
+	cp := &state.LeaderCheckpoint{
 		LeaderID:  leaderID,
 		SessionID: "session-001",
 		Status:    "active",
@@ -315,7 +315,7 @@ func TestCheckpointRepositorySaveAndRetrieve(t *testing.T) {
 
 	// UPSERT: save with updated session and metadata.
 	updatedMetadata := json.RawMessage(`{"step": 2, "status": "completed"}`)
-	cp2 := &leader.LeaderCheckpoint{
+	cp2 := &state.LeaderCheckpoint{
 		LeaderID:  leaderID,
 		SessionID: "session-002",
 		Status:    "completed",
@@ -351,7 +351,7 @@ func TestCheckpointRepositoryValidation(t *testing.T) {
 	runMigrations(t, pool)
 
 	ctx := context.Background()
-	repo := leader.NewCheckpointRepository(pool)
+	repo := state.NewCheckpointRepository(pool)
 	require.NotNil(t, repo)
 
 	// Save with nil checkpoint should fail.
@@ -359,7 +359,7 @@ func TestCheckpointRepositoryValidation(t *testing.T) {
 	require.Error(t, err)
 
 	// Save with empty leader ID should fail.
-	err = repo.Save(ctx, &leader.LeaderCheckpoint{
+	err = repo.Save(ctx, &state.LeaderCheckpoint{
 		LeaderID:  "",
 		SessionID: "session-001",
 		Status:    "active",

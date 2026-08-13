@@ -225,6 +225,13 @@ func main() {
 		log.Fatalf("start runtime: %v", err)
 	}
 
+	// Start sub-agent event listeners for event-driven dispatch.
+	for _, sa := range subAgents {
+		if err := sa.StartEventListener(ctx); err != nil {
+			log.Printf("WARNING: failed to start event listener for sub-agent %q: %v", sa.ID(), err)
+		}
+	}
+
 	// --- Submit real tasks ---
 	go submitTasks(ctx, leaderAgent)
 

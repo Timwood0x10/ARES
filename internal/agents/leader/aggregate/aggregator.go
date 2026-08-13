@@ -1,11 +1,17 @@
-package leader
+package aggregate
 
 import (
 	"context"
 	"sort"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
+
+var log = logger.Module("aggregate")
+
+// DefaultMaxItems is the default maximum number of items in an aggregated result.
+const DefaultMaxItems = 20
 
 // SortByNone disables sorting; items remain in their original order.
 const SortByNone = "none"
@@ -23,22 +29,23 @@ type indexedItem struct {
 	priority int
 }
 
-// resultAggregator aggregates results from sub-agents.
-type resultAggregator struct {
+// Aggregator aggregates results from sub-agents.
+// It implements the leader.ResultAggregator interface via structural typing.
+type Aggregator struct {
 	enableDedupe bool
 	maxItems     int
 	sortBy       string
 }
 
-// NewResultAggregator creates a new ResultAggregator.
+// NewResultAggregator creates a new Aggregator.
 // sortBy controls the ordering of aggregated items and must be one of:
 // SortByNone ("none"), SortByPriority ("priority"), or SortByCreatedAt ("created_at").
 // An unrecognised value is treated as SortByNone.
-func NewResultAggregator(enableDedupe bool, maxItems int, sortBy string) ResultAggregator {
+func NewResultAggregator(enableDedupe bool, maxItems int, sortBy string) *Aggregator {
 	if maxItems <= 0 {
 		maxItems = DefaultMaxItems
 	}
-	return &resultAggregator{
+	return &Aggregator{
 		enableDedupe: enableDedupe,
 		maxItems:     maxItems,
 		sortBy:       sortBy,
@@ -47,8 +54,7 @@ func NewResultAggregator(enableDedupe bool, maxItems int, sortBy string) ResultA
 
 // Aggregate combines results from all sub-agents.
 // tasks is used for priority-based sorting and may be nil when sortBy is not "priority".
-func (a *resultAggregator) Aggregate(ctx context.Context, results []*models.TaskResult, tasks []*models.Task) (*models.RecommendResult, error) {
-	// Check for context cancellation before processing.
+func (a *Aggregator) Aggregate(ctx context.Context, results []*models.TaskResult, tasks []*models.Task) (*models.RecommendResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -56,7 +62,6 @@ func (a *resultAggregator) Aggregate(ctx context.Context, results []*models.Task
 	allItems := make([]indexedItem, 0)
 	successCount := 0
 
-	// Build a priority lookup when sorting by priority
 	priorityMap := make(map[string]int)
 	if a.sortBy == SortByPriority && tasks != nil {
 		for _, t := range tasks {
@@ -88,12 +93,10 @@ func (a *resultAggregator) Aggregate(ctx context.Context, results []*models.Task
 		}
 	}
 
-	// Deduplicate if enabled
 	if a.enableDedupe {
 		allItems = deduplicateIndexedItems(allItems)
 	}
 
-	// Sort based on configuration
 	switch a.sortBy {
 	case SortByPriority:
 		sort.SliceStable(allItems, func(i, j int) bool {
@@ -102,11 +105,9 @@ func (a *resultAggregator) Aggregate(ctx context.Context, results []*models.Task
 	case SortByCreatedAt:
 		sort.SliceStable(allItems, func(i, j int) bool {
 			ti, tj := allItems[i].result.CreatedAt, allItems[j].result.CreatedAt
-			// If both are zero, preserve original order (stable sort).
 			if ti.IsZero() && tj.IsZero() {
 				return false
 			}
-			// Zero times sort after non-zero times.
 			if ti.IsZero() {
 				return false
 			}
@@ -115,10 +116,8 @@ func (a *resultAggregator) Aggregate(ctx context.Context, results []*models.Task
 			}
 			return ti.After(tj)
 		})
-		// SortByNone or unrecognised: keep original order
 	}
 
-	// Limit items
 	if len(allItems) > a.maxItems {
 		allItems = allItems[:a.maxItems]
 	}

@@ -376,7 +376,7 @@ func (e *Engine) handleTaskCreated(evt *ares_events.Event) {
 		ID:        taskID,
 		Name:      name,
 		Type:      "task",
-		Status:    StatusRunning,
+		Status:    StatusPending,
 		ParentID:  extractPayloadString(evt, "agent_id"),
 		Label:     name,
 		Source:    extractPayloadString(evt, "source"),
@@ -386,6 +386,16 @@ func (e *Engine) handleTaskCreated(evt *ares_events.Event) {
 	node.CreatedAt = evt.Timestamp
 	node.UpdatedAt = evt.Timestamp
 	e.nodes[taskID] = node
+
+	// A task enters the graph as pending and immediately transitions to
+	// running via the same validated path as handleAgentStarted. Previously
+	// the node was created directly as running, bypassing validateAndTransition
+	// and the StatusPending state entirely.
+	if err := validateAndTransition(node, StatusRunning); err == nil {
+		node.Status = StatusRunning
+		node.UpdatedAt = evt.Timestamp
+		node.Timeline = append(node.Timeline, makeTimeline(taskID, "task.started", "Task started", "info", evt))
+	}
 }
 
 // handleTaskCompleted transitions the task node to completed.

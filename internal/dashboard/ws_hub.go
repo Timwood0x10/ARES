@@ -200,7 +200,13 @@ func (h *WSHub) removeClient(client *WSClient) {
 		}
 	}
 
+	// Close send under client.mu. The ReadPump ping handler writes c.send
+	// while holding only client.mu, so closing without client.mu lets a ping
+	// race the unregister and send on a closed channel (panic). Holding
+	// client.mu here serializes the close against any in-flight ping send.
+	client.mu.Lock()
 	close(client.send)
+	client.mu.Unlock()
 }
 
 // sendRawToClient queues pre-marshaled data for a client. Caller must hold h.mu.

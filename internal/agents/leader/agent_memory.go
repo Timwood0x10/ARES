@@ -85,38 +85,51 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	if a.memoryManager == nil || result == nil || sessionID == "" {
 		return
 	}
+
 	resultStr := fmt.Sprintf("Generated %d items", len(result.Items))
-	if taskID != "" {
-		if err := a.memoryManager.UpdateTaskOutput(ctx, taskID, resultStr); err != nil {
-			log.Warn("memory operation failed, proceeding without", "operation", "UpdateTaskOutput", "error", err)
+
+	// All memory writes are asynchronous to avoid blocking the response path.
+	// Uses a detached context with timeout so writes complete even after the
+	// request context is cancelled (code_rules_v2 §4.3: non-blocking I/O).
+	// distillEg is initialized by ensureInitialized/Start before finalizeMemory
+	// is called, and Stop waits on distillEg.Wait() for graceful shutdown.
+	a.distillEg.Go(func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("finalizeMemory panic recovered", "agent_id", a.id, "panic", r)
+				err = fmt.Errorf("finalizeMemory panic: %v", r)
+			}
+		}()
+
+		memCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		if taskID != "" {
+			if err := a.memoryManager.UpdateTaskOutput(memCtx, taskID, resultStr); err != nil {
+				log.Warn("memory operation failed, proceeding without", "operation", "UpdateTaskOutput", "error", err)
+			}
 		}
-	}
-	if err := a.memoryManager.AddMessage(ctx, sessionID, "assistant", resultStr); err != nil {
-		log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
-	}
-	if sessionID != "" {
-		a.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
+		if err := a.memoryManager.AddMessage(memCtx, sessionID, "assistant", resultStr); err != nil {
+			log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
+		}
+
+		a.emitEvent(memCtx, ares_events.EventMessageAdded, map[string]any{
 			"session_id": sessionID,
 			"role":       "assistant",
 		})
-	}
-	if taskID != "" {
-		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
-			"task_id": taskID,
-			"status":  "completed",
-		})
-	}
-	if taskID == "" {
-		return
-	}
-	// Submit distillation to errgroup for lifecycle-managed execution.
-	// errgroup provides context propagation and error collection.
-	a.distillEg.Go(func() error {
-		distillCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		if _, err := a.memoryManager.DistillTask(distillCtx, taskID); err != nil {
-			log.Warn("memory operation failed, proceeding without", "operation", "DistillTask", "error", err)
+		if taskID != "" {
+			a.emitEvent(memCtx, ares_events.EventTaskCompleted, map[string]any{
+				"task_id": taskID,
+				"status":  "completed",
+			})
 		}
+
+		if taskID != "" {
+			if _, err := a.memoryManager.DistillTask(memCtx, taskID); err != nil {
+				log.Warn("memory operation failed, proceeding without", "operation", "DistillTask", "error", err)
+			}
+		}
+
 		return nil
 	})
 }

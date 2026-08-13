@@ -737,10 +737,29 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 	ch := make(chan base.AgentEvent, DefaultEventChanSize)
 
-	a.streamEg.Go(func() error {
+	a.streamEg.Go(func() (retErr error) {
 		// Release the processing lock when the stream goroutine exits so that
 		// mutual exclusion covers the full streaming lifetime.
 		defer a.processingMu.Unlock()
+
+		// Capture panic to prevent process crash (code_rules_v2 §4.2).
+		// Emit failure event and send error on channel so consumers don't hang.
+		defer func() {
+			if r := recover(); r != nil {
+				panicErr := fmt.Errorf("leader agent %s panic: %v", a.id, r)
+				a.emitEvent(ctx, ares_events.EventSubAgentFailed, map[string]any{
+					"agent_id": a.id,
+					"error":    panicErr.Error(),
+				})
+				log.Error("leader agent panic recovered", "agent_id", a.id, "panic", r)
+				select {
+				case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: panicErr}:
+				case <-ctx.Done():
+				case <-a.stopCh:
+				}
+				retErr = panicErr
+			}
+		}()
 
 		// Emit start event inside the goroutine so it's always paired with end.
 		a.emitCallback(&ares_callbacks.Context{

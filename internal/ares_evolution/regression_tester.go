@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	mathrand "math/rand"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -15,7 +16,12 @@ import (
 // strategies using a provided scorer function.
 type RegressionTester struct {
 	scorer func(*mutation.Strategy) float64
-	rng    *mathrand.Rand
+
+	// rngMu serializes access to rng: math/rand.Rand is not goroutine-safe,
+	// and Run may be called concurrently by findWinner's parallel evaluation
+	// (errgroup). Without the lock the shared rng would race.
+	rngMu sync.Mutex
+	rng   *mathrand.Rand
 }
 
 // NewRegressionTester creates a regression tester for arena strategy comparison.
@@ -85,8 +91,10 @@ func (t *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Regr
 
 		// Add slight noise for stochastic comparison when sampleSize > 1.
 		if sampleSize > 1 {
+			t.rngMu.Lock()
 			candScore += (t.rng.Float64() - 0.5) * 0.02
 			baseScore += (t.rng.Float64() - 0.5) * 0.02
+			t.rngMu.Unlock()
 		}
 
 		candidateTotal += candScore

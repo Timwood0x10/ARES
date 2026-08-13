@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/leader/state"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -24,13 +24,13 @@ func createTestLeaderCheckpoint(
 	leaderID, sessionID, status string,
 ) error {
 	metadata := json.RawMessage(fmt.Sprintf(`{"created_at": "%s"}`, time.Now().Format(time.RFC3339)))
-	cp := &leader.LeaderCheckpoint{
+	cp := &state.LeaderCheckpoint{
 		LeaderID:  leaderID,
 		SessionID: sessionID,
 		Status:    status,
 		Metadata:  metadata,
 	}
-	repo := leader.NewCheckpointRepository(pool)
+	repo := state.NewCheckpointRepository(pool)
 	return repo.Save(ctx, cp)
 }
 
@@ -78,7 +78,7 @@ func TestCheckpointRecovery(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	repo := leader.NewCheckpointRepository(pool)
+	repo := state.NewCheckpointRepository(pool)
 	require.NotNil(t, repo)
 
 	leaderID := fmt.Sprintf("leader-recovery-%d", time.Now().UnixNano())
@@ -133,7 +133,7 @@ func TestStaleTaskRecovery(t *testing.T) {
 	require.NoError(t, insertStaleTask(ctx, pool, "task-completed-1", sessionID, "completed"))
 
 	// Create TaskRecovery and recover stale tasks.
-	recovery := leader.NewTaskRecovery(pool)
+	recovery := state.NewTaskRecovery(pool)
 	staleTasks, err := recovery.RecoverStaleTasks(ctx, sessionID)
 	require.NoError(t, err)
 	require.Len(t, staleTasks, 2, "expected 2 stale tasks (pending and running)")
@@ -167,7 +167,7 @@ func TestStaleTaskRecoveryEmptySession(t *testing.T) {
 		}
 	}()
 
-	recovery := leader.NewTaskRecovery(pool)
+	recovery := state.NewTaskRecovery(pool)
 	_, err := recovery.RecoverStaleTasks(context.Background(), "")
 	require.Error(t, err, "expected error for empty session ID")
 }
@@ -187,7 +187,7 @@ func TestStaleTaskRecoveryNoStaleTasks(t *testing.T) {
 
 	runMigrations(t, pool)
 
-	recovery := leader.NewTaskRecovery(pool)
+	recovery := state.NewTaskRecovery(pool)
 	staleTasks, err := recovery.RecoverStaleTasks(context.Background(), "non-existent-session")
 	require.NoError(t, err)
 	assert.Empty(t, staleTasks, "expected no stale tasks for non-existent session")
@@ -208,7 +208,7 @@ func TestLeaderCheckpointMultipleLeaders(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	repo := leader.NewCheckpointRepository(pool)
+	repo := state.NewCheckpointRepository(pool)
 	require.NotNil(t, repo)
 
 	leader1 := fmt.Sprintf("leader-1-%d", time.Now().UnixNano())
@@ -263,7 +263,7 @@ func TestFullFailoverScenario(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	repo := leader.NewCheckpointRepository(pool)
+	repo := state.NewCheckpointRepository(pool)
 	require.NotNil(t, repo)
 
 	leaderID := fmt.Sprintf("leader-failover-%d", time.Now().UnixNano())
@@ -287,7 +287,7 @@ func TestFullFailoverScenario(t *testing.T) {
 	assert.Equal(t, "active", cp.Status)
 
 	// Step 4: Leader B marks stale tasks as failed.
-	recovery := leader.NewTaskRecovery(pool)
+	recovery := state.NewTaskRecovery(pool)
 	staleTasks, err := recovery.RecoverStaleTasks(ctx, sessionA)
 	require.NoError(t, err)
 	assert.Len(t, staleTasks, 2, "expected 2 stale tasks (pending and running)")

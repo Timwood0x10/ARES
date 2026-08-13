@@ -374,6 +374,23 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 		)
 
 		if err == nil && result.Success {
+			// Persist execution evidence for the successful attempt. The
+			// multi-step path (executeMultiStep) goes through this method and
+			// previously never reached executeStep — the only caller of
+			// evidence.Save — so multi-step plans recorded no evidence at all.
+			saveErr := b.evidence.Save(ctx, &ToolEvidence{
+				ToolName:       toolName,
+				CapabilityName: step.CapabilityName,
+				Success:        true,
+				Latency:        latency,
+				Timestamp:      time.Now(),
+			})
+			if saveErr != nil {
+				log.Warn("tool_bridge: failed to save evidence",
+					"tool", toolName,
+					"error", saveErr,
+				)
+			}
 			return result, nil
 		}
 		if err != nil {

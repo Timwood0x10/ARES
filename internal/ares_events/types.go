@@ -45,6 +45,12 @@ const (
 	EventStepRecoveryCompleted EventType = "step.recovery.completed"
 	EventStepRecoveryFailed    EventType = "step.recovery.failed"
 	EventHandoff               EventType = "handoff.transferred"
+
+	// Leader-sub task collaboration events for event-driven dispatch.
+	EventSubTaskScheduled EventType = "sub_task.scheduled" // leader dispatches task to sub
+	EventSubTaskStarted   EventType = "sub_task.started"   // sub begins execution
+	EventSubTaskResult    EventType = "sub_task.result"    // sub returns result (success or failure)
+	EventSubAgentFailed   EventType = "sub_agent.failed"   // sub crashed (panic captured)
 )
 
 // Event payload keys for enriched task-lifecycle events.

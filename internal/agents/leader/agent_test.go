@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/leader/aggregate"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
@@ -141,7 +142,7 @@ func TestTaskPlanner_PlanNilProfile(t *testing.T) {
 }
 
 func TestResultAggregator_Aggregate(t *testing.T) {
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	results := []*models.TaskResult{
 		{
@@ -183,7 +184,7 @@ func TestResultAggregator_Aggregate(t *testing.T) {
 }
 
 func TestResultAggregator_AggregateEmpty(t *testing.T) {
-	aggregator := NewResultAggregator(false, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(false, 10, aggregate.SortByNone)
 
 	result, err := aggregator.Aggregate(context.Background(), nil, nil)
 	if err != nil {
@@ -196,7 +197,7 @@ func TestResultAggregator_AggregateEmpty(t *testing.T) {
 }
 
 func TestResultAggregator_Deduplication(t *testing.T) {
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	results := []*models.TaskResult{
 		{
@@ -242,21 +243,8 @@ func TestTaskDispatcher_Dispatch(t *testing.T) {
 		models.AgentTypeTop:    "agent_top",
 		models.AgentTypeBottom: "agent_bottom",
 	}
-	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
-	if err != nil {
-		t.Fatalf("NewTaskDispatcher() error = %v", err)
-	}
-
-	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
-		result := models.NewTaskResult(task.TaskID, task.AgentType)
-		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
-		return result, nil
-	})
-	dispatcher.RegisterExecutor(models.AgentTypeBottom, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
-		result := models.NewTaskResult(task.TaskID, task.AgentType)
-		result.SetSuccess([]*models.RecommendItem{{ItemID: "item2", Name: "test item"}}, "ok")
-		return result, nil
-	})
+	dispatcher, cleanup := newEventDrivenDispatcher(t, registry, defaultTestExecutor)
+	defer cleanup()
 
 	profile := &models.UserProfile{
 		Style:     []models.StyleTag{models.StyleTag("casual")},
@@ -307,7 +295,7 @@ func TestLeaderAgent_New(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -347,7 +335,7 @@ func TestLeaderAgent_StartStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -399,16 +387,9 @@ func TestLeaderAgent_Process(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
-	if err != nil {
-		t.Fatalf("NewTaskDispatcher() error = %v", err)
-	}
-	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
-		result := models.NewTaskResult(task.TaskID, task.AgentType)
-		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
-		return result, nil
-	})
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	dispatcher, cleanup := newEventDrivenDispatcher(t, registry, defaultTestExecutor)
+	defer cleanup()
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -435,16 +416,9 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
-	if err != nil {
-		t.Fatalf("NewTaskDispatcher() error = %v", err)
-	}
-	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
-		result := models.NewTaskResult(task.TaskID, task.AgentType)
-		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
-		return result, nil
-	})
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	dispatcher, cleanup := newEventDrivenDispatcher(t, registry, defaultTestExecutor)
+	defer cleanup()
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -482,7 +456,7 @@ func TestLeaderAgent_SendReceiveMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 	queue := ahp.NewMessageQueue("leader1", &ahp.QueueOptions{MaxSize: 10})
 
 	// Create using the concrete type
@@ -532,7 +506,7 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
 	leader := &leaderAgent{
@@ -566,7 +540,7 @@ func TestRestoreState_NilState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -590,7 +564,7 @@ func TestRestoreState_EmptyState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -614,7 +588,7 @@ func TestRestoreState_WithSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -649,7 +623,7 @@ func TestRestoreState_InvalidSessionIDType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -689,7 +663,7 @@ func newTestLeaderAgent(t *testing.T) (*leaderAgent, base.StatefulAgent) {
 	if err != nil {
 		t.Fatalf("NewTaskDispatcher() error = %v", err)
 	}
-	aggregator := NewResultAggregator(true, 10, SortByNone)
+	aggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 
 	agent, err := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
@@ -993,7 +967,7 @@ func TestLeaderAgent_RestartThenStop(t *testing.T) {
 		parser:     parser,
 		planner:    planner,
 		dispatcher: dispatcher,
-		aggregator: NewResultAggregator(true, 10, SortByNone),
+		aggregator: aggregate.NewResultAggregator(true, 10, aggregate.SortByNone),
 	}
 
 	ctx := context.Background()

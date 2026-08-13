@@ -2,6 +2,7 @@ package sub
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -25,6 +26,9 @@ type Agent interface {
 	base.Agent
 	// Execute executes a task and returns result.
 	Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error)
+	// StartEventListener subscribes to task-scheduled events and processes them asynchronously.
+	// The listener runs until the agent is stopped or the context is cancelled.
+	StartEventListener(ctx context.Context) error
 }
 
 // TaskExecutor executes tasks.
@@ -317,6 +321,135 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	return result, nil
 }
 
+// StartEventListener subscribes to EventSubTaskScheduled on the agent's event
+// stream and processes tasks asynchronously. Each received task is executed
+// via the executor and the result is published as EventSubTaskResult.
+//
+// The listener goroutine is tracked by streamWg and exits on context
+// cancellation, stopCh close, or event store close. Panics are recovered
+// (code_rules_v2 §4.1, §4.2).
+func (a *subAgent) StartEventListener(ctx context.Context) error {
+	if a.eventStore == nil {
+		return errors.New("sub agent: event store not configured")
+	}
+	if a.executor == nil {
+		return errors.ErrInvalidState
+	}
+
+	// Ensure the agent is started.
+	if a.Status() == models.AgentStatusOffline {
+		if err := a.Start(ctx); err != nil && err != errors.ErrAgentAlreadyStarted {
+			return err
+		}
+	}
+
+	subCh, err := a.eventStore.Subscribe(ctx, ares_events.EventFilter{
+		StreamIDs: []string{a.id},
+		Types:     []ares_events.EventType{ares_events.EventSubTaskScheduled},
+	})
+	if err != nil {
+		return fmt.Errorf("subscribe task scheduled: %w", err)
+	}
+
+	a.mu.RLock()
+	stopCh := a.stopCh
+	a.mu.RUnlock()
+
+	a.streamWg.Add(1)
+	go func() {
+		defer a.streamWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("sub agent event listener panic recovered",
+					KeyAgentID, a.id, "panic", r)
+			}
+		}()
+
+		log.Info("sub agent event listener started", KeyAgentID, a.id)
+
+		for {
+			select {
+			case ev, ok := <-subCh:
+				if !ok {
+					log.Info("sub agent event listener stopped: channel closed",
+						KeyAgentID, a.id)
+					return
+				}
+				a.processScheduledEvent(ctx, ev)
+
+			case <-ctx.Done():
+				log.Info("sub agent event listener stopped: context cancelled",
+					KeyAgentID, a.id)
+				return
+
+			case <-stopCh:
+				log.Info("sub agent event listener stopped: agent stopping",
+					KeyAgentID, a.id)
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+// processScheduledEvent executes a task from an EventSubTaskScheduled event
+// and publishes the result as EventSubTaskResult.
+func (a *subAgent) processScheduledEvent(ctx context.Context, ev *ares_events.Event) {
+	task, ok := ev.Payload["task"].(*models.Task)
+	if !ok || task == nil {
+		log.Error("sub agent: invalid task in scheduled event",
+			KeyAgentID, a.id, "event_id", ev.ID)
+		a.emitEvent(ctx, ares_events.EventSubTaskResult, map[string]any{
+			KeyTaskID:  ev.Payload[KeyTaskID],
+			KeyAgentID: a.id,
+			"error":    "invalid task in scheduled event",
+		})
+		return
+	}
+
+	log.Info("sub agent executing scheduled task",
+		KeyAgentID, a.id, KeyTaskID, task.TaskID)
+
+	a.emitEvent(ctx, ares_events.EventSubTaskStarted, map[string]any{
+		KeyTaskID:  task.TaskID,
+		KeyAgentID: a.id,
+	})
+
+	result, err := a.executor.Execute(ctx, task)
+
+	// Build result payload.
+	payload := map[string]any{
+		KeyTaskID:     task.TaskID,
+		KeyAgentID:    a.id,
+		"agent_type":  string(task.AgentType),
+		"task":        task,
+		"used_exp_id": task.UsedExperienceID,
+	}
+
+	if err != nil {
+		payload["error"] = err.Error()
+		payload["success"] = false
+		a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
+		log.Error("sub agent task execution failed",
+			KeyAgentID, a.id, KeyTaskID, task.TaskID, KeyError, err.Error())
+		return
+	}
+
+	payload["success"] = result.Success
+	payload["result"] = result
+	if result.Items != nil {
+		payload["items"] = result.Items
+	}
+	if !result.Success && result.Error != "" {
+		payload["error"] = result.Error
+	}
+
+	a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
+	log.Info("sub agent task completed",
+		KeyAgentID, a.id, KeyTaskID, task.TaskID, "success", result.Success)
+}
+
 // ProcessStream handles input and returns a stream of ares_events.
 func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	// Atomically check status under lock to avoid TOCTOU with auto-Start.
@@ -358,6 +491,24 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 	go func() {
 		defer close(ch)
 		defer a.streamWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				// Capture panic to prevent process crash (code_rules_v2 §4.2).
+				// Emit failure event and send error on channel so consumers don't hang.
+				panicErr := fmt.Errorf("sub agent %s panic: %v", a.id, r)
+				a.emitEvent(ctx, ares_events.EventSubAgentFailed, map[string]any{
+					KeyAgentID: a.id,
+					KeyTaskID:  task.TaskID,
+					KeyError:   panicErr.Error(),
+				})
+				log.Error("sub agent panic recovered", KeyAgentID, a.id, "panic", r)
+				select {
+				case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: panicErr}:
+				case <-ctx.Done():
+				case <-stopCh:
+				}
+			}
+		}()
 
 		a.setStatus(models.AgentStatusBusy)
 		defer a.setStatus(models.AgentStatusReady)

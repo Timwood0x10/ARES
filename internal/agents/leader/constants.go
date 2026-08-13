@@ -42,12 +42,6 @@ const (
 	DefaultDispatcherTimeoutSeconds = 300
 )
 
-// Aggregator defaults.
-const (
-	// DefaultMaxItems is the default maximum number of items in an aggregated result.
-	DefaultMaxItems = 20
-)
-
 // Loop defaults for LeaderAgentConfig.
 const (
 	// DefaultMaxIterations is the default maximum number of loop iterations.

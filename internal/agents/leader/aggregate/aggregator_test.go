@@ -1,4 +1,4 @@
-package leader
+package aggregate
 
 import (
 	"context"
@@ -34,8 +34,7 @@ func newFailedResult(taskID string) *models.TaskResult {
 	}
 }
 
-// TestAggregate_SortByNone verifies that items retain their original order
-// when sortBy is set to "none".
+// TestAggregate_SortByNone verifies that items retain their original order.
 func TestAggregate_SortByNone(t *testing.T) {
 	agg := NewResultAggregator(false, 10, SortByNone)
 
@@ -49,15 +48,13 @@ func TestAggregate_SortByNone(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Items, 4)
 
-	// Items should appear in insertion order: a, b, c, d
 	expected := []string{"a", "b", "c", "d"}
 	for i, id := range expected {
 		assert.Equal(t, id, res.Items[i].ItemID, "item at index %d should have ItemID %q", i, id)
 	}
 }
 
-// TestAggregate_SortByPriority verifies that items are sorted by the
-// associated Task.Priority in descending order.
+// TestAggregate_SortByPriority verifies descending priority order.
 func TestAggregate_SortByPriority(t *testing.T) {
 	agg := NewResultAggregator(false, 10, SortByPriority)
 
@@ -78,14 +75,12 @@ func TestAggregate_SortByPriority(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Items, 3)
 
-	// Descending priority: high(10), mid(5), low(1)
 	assert.Equal(t, "high-item", res.Items[0].ItemID)
 	assert.Equal(t, "mid-item", res.Items[1].ItemID)
 	assert.Equal(t, "low-item", res.Items[2].ItemID)
 }
 
-// TestAggregate_SortByCreatedAt verifies that items are sorted by
-// TaskResult.CreatedAt in descending order (newest first).
+// TestAggregate_SortByCreatedAt verifies newest-first ordering.
 func TestAggregate_SortByCreatedAt(t *testing.T) {
 	agg := NewResultAggregator(false, 10, SortByCreatedAt)
 
@@ -103,14 +98,12 @@ func TestAggregate_SortByCreatedAt(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Items, 3)
 
-	// Newest first: new, mid, old
 	assert.Equal(t, "new", res.Items[0].ItemID)
 	assert.Equal(t, "mid", res.Items[1].ItemID)
 	assert.Equal(t, "old", res.Items[2].ItemID)
 }
 
-// TestAggregate_UnknownSortBy verifies that an unrecognised sortBy value
-// falls back to "none" behaviour (original order preserved).
+// TestAggregate_UnknownSortBy verifies fallback to original order.
 func TestAggregate_UnknownSortBy(t *testing.T) {
 	agg := NewResultAggregator(false, 10, "unknown")
 
@@ -123,13 +116,11 @@ func TestAggregate_UnknownSortBy(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Items, 2)
 
-	// Original order should be preserved
 	assert.Equal(t, "x", res.Items[0].ItemID)
 	assert.Equal(t, "y", res.Items[1].ItemID)
 }
 
-// TestAggregate_Deduplication verifies that when enableDedupe is true,
-// duplicate items (same ItemID) are removed, keeping only the first occurrence.
+// TestAggregate_Deduplication verifies duplicate removal by ItemID.
 func TestAggregate_Deduplication(t *testing.T) {
 	agg := NewResultAggregator(true, 10, SortByNone)
 
@@ -143,7 +134,6 @@ func TestAggregate_Deduplication(t *testing.T) {
 	res, err := agg.Aggregate(context.Background(), results, nil)
 	require.NoError(t, err)
 
-	// "dup" appears in both results; only one should remain
 	assert.Len(t, res.Items, 3, "expected 3 items after deduplication")
 
 	ids := make([]string, len(res.Items))
@@ -155,8 +145,7 @@ func TestAggregate_Deduplication(t *testing.T) {
 	assert.Contains(t, ids, "other")
 }
 
-// TestAggregate_MaxItemsLimit verifies that the aggregator truncates the
-// result to maxItems when there are more items than the limit.
+// TestAggregate_MaxItemsLimit verifies truncation to maxItems.
 func TestAggregate_MaxItemsLimit(t *testing.T) {
 	agg := NewResultAggregator(false, 2, SortByNone)
 
@@ -175,8 +164,7 @@ func TestAggregate_MaxItemsLimit(t *testing.T) {
 	assert.Len(t, res.Items, 2, "expected at most 2 items due to maxItems limit")
 }
 
-// TestAggregate_NilResults verifies that nil elements inside the results
-// slice do not cause a panic and are silently skipped.
+// TestAggregate_NilResults verifies nil elements are silently skipped.
 func TestAggregate_NilResults(t *testing.T) {
 	agg := NewResultAggregator(false, 10, SortByNone)
 
@@ -193,8 +181,7 @@ func TestAggregate_NilResults(t *testing.T) {
 	assert.Equal(t, "ok", res.Items[0].ItemID)
 }
 
-// TestAggregate_EmptyResults verifies that an empty results slice produces
-// a RecommendResult with no items and a zero MatchScore.
+// TestAggregate_EmptyResults verifies empty input produces empty result.
 func TestAggregate_EmptyResults(t *testing.T) {
 	agg := NewResultAggregator(false, 10, SortByNone)
 
@@ -204,8 +191,7 @@ func TestAggregate_EmptyResults(t *testing.T) {
 	assert.Zero(t, res.MatchScore)
 }
 
-// TestAggregate_MatchScore verifies that MatchScore is computed as
-// successCount / totalResults.
+// TestAggregate_MatchScore verifies MatchScore = successCount / totalResults.
 func TestAggregate_MatchScore(t *testing.T) {
 	agg := NewResultAggregator(false, 10, SortByNone)
 

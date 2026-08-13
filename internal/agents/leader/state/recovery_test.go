@@ -1,5 +1,5 @@
 // nolint: errcheck // Test code may ignore return values
-package leader
+package state
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 // TestNewTaskRecovery_NilPool verifies that NewTaskRecovery accepts a nil pool
-// without panicking. The pool-nil guard lives in RecoverStaleTasks.
+// without panicking.
 func TestNewTaskRecovery_NilPool(t *testing.T) {
 	tr := NewTaskRecovery(nil)
 	require.NotNil(t, tr, "NewTaskRecovery should always return a non-nil struct")
@@ -30,8 +30,7 @@ func TestTaskRecovery_RecoverStaleTasks_NilPool(t *testing.T) {
 }
 
 // TestTaskRecovery_RecoverStaleTasks_EmptySessionID verifies that an empty
-// session ID returns an error. When the pool is nil the "pool not initialized"
-// error fires first.
+// session ID returns an error.
 func TestTaskRecovery_RecoverStaleTasks_EmptySessionID(t *testing.T) {
 	tr := &TaskRecovery{pool: nil}
 
@@ -44,7 +43,6 @@ func TestTaskRecovery_RecoverStaleTasks_EmptySessionID(t *testing.T) {
 
 // TestTaskRecovery_RecoverStaleTasks_Integration verifies the full recovery
 // flow against a real PostgreSQL database.
-// Skipped when no database is available.
 func TestTaskRecovery_RecoverStaleTasks_Integration(t *testing.T) {
 	pool := getTestPool(t)
 	if pool == nil {
@@ -54,7 +52,6 @@ func TestTaskRecovery_RecoverStaleTasks_Integration(t *testing.T) {
 	tr := NewTaskRecovery(pool)
 	ctx := context.Background()
 
-	// No matching tasks for a random session.
 	tasks, err := tr.RecoverStaleTasks(ctx, "non-existent-session-xyz")
 	require.NoError(t, err, "should not error when no matching tasks exist")
 	assert.Empty(t, tasks, "should return empty slice when no stale tasks found")
@@ -85,11 +82,9 @@ func TestTaskRecovery_RecoverStaleTasks_CancelledContext(t *testing.T) {
 
 	tr := NewTaskRecovery(pool)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
+	cancel()
 
 	tasks, err := tr.RecoverStaleTasks(ctx, "session-1")
-	// With a cancelled context the pool.Query call may or may not fail
-	// depending on timing, but we should not get a panic.
 	if err != nil {
 		assert.Nil(t, tasks, "tasks should be nil when error occurs")
 	}

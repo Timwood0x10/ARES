@@ -1,5 +1,5 @@
 // nolint: errcheck // Test code may ignore return values
-package leader
+package state
 
 import (
 	"context"
@@ -19,8 +19,6 @@ func TestNewCheckpointRepository_NilPool(t *testing.T) {
 // TestCheckpointRepository_Save_NilCheckpoint verifies that saving a nil
 // checkpoint returns an error.
 func TestCheckpointRepository_Save_NilCheckpoint(t *testing.T) {
-	// A nil pool yields a nil repo, which triggers the nil-receiver guard.
-	// We construct the repo manually to isolate the nil-checkpoint path.
 	repo := &CheckpointRepository{pool: nil}
 
 	err := repo.Save(context.Background(), nil)
@@ -32,7 +30,7 @@ func TestCheckpointRepository_Save_NilCheckpoint(t *testing.T) {
 // TestCheckpointRepository_Save_NilRepo verifies that calling Save on a nil
 // receiver returns an error without panicking.
 func TestCheckpointRepository_Save_NilRepo(t *testing.T) {
-	var repo *CheckpointRepository // nil receiver.
+	var repo *CheckpointRepository
 
 	err := repo.Save(context.Background(), &LeaderCheckpoint{
 		LeaderID: "leader-1",
@@ -42,9 +40,7 @@ func TestCheckpointRepository_Save_NilRepo(t *testing.T) {
 }
 
 // TestCheckpointRepository_Save_EmptyLeaderID verifies that saving a checkpoint
-// with an empty LeaderID returns an error. When the pool is nil the repository
-// returns "not initialized" before checking the leader ID, so this test
-// validates the nil-pool guard for the empty-leader-ID case.
+// with an empty LeaderID returns an error.
 func TestCheckpointRepository_Save_EmptyLeaderID(t *testing.T) {
 	repo := &CheckpointRepository{pool: nil}
 
@@ -56,13 +52,11 @@ func TestCheckpointRepository_Save_EmptyLeaderID(t *testing.T) {
 
 	err := repo.Save(context.Background(), cp)
 	require.Error(t, err, "Save with empty LeaderID should return an error")
-	// The nil-pool guard fires first.
 	assert.Contains(t, err.Error(), "checkpoint repository not initialized")
 }
 
 // TestCheckpointRepository_GetLatest_EmptyLeaderID verifies that GetLatest
-// returns an error for an empty leader ID. When the pool is nil the "not
-// initialized" error fires first.
+// returns an error for an empty leader ID.
 func TestCheckpointRepository_GetLatest_EmptyLeaderID(t *testing.T) {
 	repo := &CheckpointRepository{pool: nil}
 
@@ -84,8 +78,7 @@ func TestCheckpointRepository_GetLatest_NilRepo(t *testing.T) {
 }
 
 // TestCheckpointRepository_Delete_EmptyLeaderID verifies that Delete returns
-// an error for an empty leader ID. When the pool is nil the "not initialized"
-// error fires first.
+// an error for an empty leader ID.
 func TestCheckpointRepository_Delete_EmptyLeaderID(t *testing.T) {
 	repo := &CheckpointRepository{pool: nil}
 
@@ -105,17 +98,15 @@ func TestCheckpointRepository_Delete_NilRepo(t *testing.T) {
 }
 
 // TestLeaderCheckpoint_MetadataDefault verifies that empty metadata is
-// normalised to "{}" during Save. This tests the metadata-normalisation logic
-// without needing a database.
+// normalised to "{}" during Save.
 func TestLeaderCheckpoint_MetadataDefault(t *testing.T) {
 	cp := &LeaderCheckpoint{
 		LeaderID:  "leader-1",
 		SessionID: "session-1",
 		Status:    "active",
-		Metadata:  nil, // empty metadata.
+		Metadata:  nil,
 	}
 
-	// Simulate the normalisation that Save performs.
 	metadata := cp.Metadata
 	if len(metadata) == 0 {
 		metadata = json.RawMessage("{}")
@@ -170,11 +161,9 @@ func TestCheckpointRepository_Integration(t *testing.T) {
 		Metadata:  json.RawMessage(`{"test":true}`),
 	}
 
-	// Save.
 	err := repo.Save(ctx, cp)
 	require.NoError(t, err, "Save should succeed")
 
-	// GetLatest after Save.
 	got, err := repo.GetLatest(ctx, leaderID)
 	require.NoError(t, err, "GetLatest should succeed")
 	require.NotNil(t, got, "checkpoint should exist after save")
@@ -182,7 +171,6 @@ func TestCheckpointRepository_Integration(t *testing.T) {
 	assert.Equal(t, "session-int-1", got.SessionID)
 	assert.Equal(t, "active", got.Status)
 
-	// Save again (UPSERT semantics).
 	cp.SessionID = "session-int-2"
 	cp.Status = "recovered"
 	err = repo.Save(ctx, cp)
@@ -195,12 +183,10 @@ func TestCheckpointRepository_Integration(t *testing.T) {
 		"GetLatest should return the second (upserted) checkpoint")
 	assert.Equal(t, "recovered", got.Status)
 
-	// GetLatest for non-existent leader.
 	got, err = repo.GetLatest(ctx, "non-existent-leader")
 	require.NoError(t, err, "GetLatest for non-existent should not error")
 	assert.Nil(t, got, "non-existent checkpoint should return nil")
 
-	// Delete.
 	err = repo.Delete(ctx, leaderID)
 	require.NoError(t, err, "Delete should succeed")
 
@@ -208,6 +194,5 @@ func TestCheckpointRepository_Integration(t *testing.T) {
 	require.NoError(t, err, "GetLatest after Delete should not error")
 	assert.Nil(t, got, "checkpoint should be nil after delete")
 
-	// Clean up.
 	_ = repo.Delete(ctx, leaderID)
 }

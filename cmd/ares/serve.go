@@ -17,6 +17,7 @@ import (
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -155,7 +156,6 @@ func runServe() error {
 	// pointer so the shutdown snapshot/WaitBackground reads never race.
 	compPtr.Store(comp)
 	store := comp.EventStore
-	memMgr := comp.Memory
 	mgr := comp.Runtime
 
 	// Stage 3 fix (B01): EventStore is wired into Memory during Bootstrap,
@@ -226,45 +226,10 @@ func runServe() error {
 	}
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
-	// --- Create agents ---
-	var feedbackSvc *experience.FeedbackService
-	if comp.Evolution != nil {
-		feedbackSvc = comp.Evolution.FeedbackService
-	}
-	// Wire the GA's deployed strategy into live agents so the running
-	// agents read the active prompt/params at runtime. When evolution is
-	// disabled (comp.NewEvolution == nil) no strategy source is injected,
-	// so serve continues without GA strategy guidance.
-	var strategySrc agents.StrategySource
-	if comp.NewEvolution != nil {
-		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
-	}
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+	// --- Create + register agents with the runtime manager ---
+	leaderAgent, subAgents, err := createAndRegisterServeAgents(cfg, llmAdapter, chatClient, toolBinder, comp, mgr)
 	if err != nil {
-		return fmt.Errorf("create agents: %w", err)
-	}
-
-	// Register agents with runtime manager (from Bootstrap)
-	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
-		return a
-	}
-	mgr.RegisterAgent(leaderAgent, leaderFactory)
-
-	for _, sa := range subAgents {
-		subAgent := sa
-		subFactory := func() base.Agent {
-			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
-			for _, s := range subs {
-				if s.ID() == subAgent.ID() {
-					return s
-				}
-			}
-			log.Printf("ERROR: sub-agent factory: agent %q not found in live pool, resurrection impossible",
-				subAgent.ID())
-			return nil // returning nil prevents resurrection with a dead agent
-		}
-		mgr.RegisterAgent(subAgent, subFactory)
+		return err
 	}
 
 	// --- PluginBus + MonitorPlugin ---
@@ -363,6 +328,16 @@ func runServe() error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
+	// Start sub-agent event listeners for event-driven dispatch.
+	// Each sub agent subscribes to EventSubTaskScheduled on its own stream
+	// and publishes EventSubTaskResult after execution (code_rules_v2 §5.1:
+	// single execution path, no dual-path bypass).
+	for _, sa := range subAgents {
+		if err := sa.StartEventListener(ctx); err != nil {
+			log.Printf("WARNING: failed to start event listener for sub-agent %q: %v", sa.ID(), err)
+		}
+	}
+
 	// --- Submit real tasks ---
 	g.Go(func() error {
 		submitTasks(ctx, leaderAgent)
@@ -377,6 +352,65 @@ func runServe() error {
 
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	return g.Wait()
+}
+
+// createAndRegisterServeAgents builds the leader and sub agents, wires the
+// GA strategy source into them, and registers them (with resurrection
+// factories) on the runtime manager. Extracted from runServe to keep its
+// cyclomatic complexity within lint limits.
+func createAndRegisterServeAgents(
+	cfg *ares_config.Config,
+	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
+	toolBinder sub.ToolBinder,
+	comp *ares_bootstrap.Components,
+	mgr *ares_runtime.Manager,
+) (leader.Agent, []sub.Agent, error) {
+	memMgr := comp.Memory
+	store := comp.EventStore
+
+	// Wire the GA's deployed strategy into live agents so the running agents
+	// read the active prompt/params at runtime. When evolution is disabled
+	// (comp.NewEvolution == nil) no strategy source is injected, so serve
+	// continues without GA strategy guidance.
+	var feedbackSvc *experience.FeedbackService
+	if comp.Evolution != nil {
+		feedbackSvc = comp.Evolution.FeedbackService
+	}
+	var strategySrc agents.StrategySource
+	if comp.NewEvolution != nil {
+		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	}
+
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create agents: %w", err)
+	}
+
+	// Register agents with runtime manager (from Bootstrap)
+	leaderFactory := func() base.Agent {
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+		return a
+	}
+	mgr.RegisterAgent(leaderAgent, leaderFactory)
+
+	for _, sa := range subAgents {
+		subAgent := sa
+		subFactory := func() base.Agent {
+			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+			for _, s := range subs {
+				if s.ID() == subAgent.ID() {
+					return s
+				}
+			}
+			log.Printf("ERROR: sub-agent factory: agent %q not found in live pool, resurrection impossible",
+				subAgent.ID())
+			return nil // returning nil prevents resurrection with a dead agent
+		}
+		mgr.RegisterAgent(subAgent, subFactory)
+	}
+
+	return leaderAgent, subAgents, nil
 }
 
 // startServeHTTPAndHooks builds the console HTTP server, starts it in the

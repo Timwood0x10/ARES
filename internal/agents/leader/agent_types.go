@@ -8,6 +8,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/leader/state"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
@@ -37,10 +38,9 @@ type TaskPlanner interface {
 	Replan(ctx context.Context, profile *models.UserProfile, inputText string, previousResult *models.RecommendResult, feedback string) ([]*models.Task, error)
 }
 
-// TaskDispatcher dispatches tasks to sub-agents.
+// TaskDispatcher dispatches tasks to sub-agents via event-driven dispatch.
 type TaskDispatcher interface {
 	Dispatch(ctx context.Context, tasks []*models.Task) ([]*models.TaskResult, error)
-	RegisterExecutor(agentType models.AgentType, fn func(ctx context.Context, task *models.Task) (*models.TaskResult, error))
 }
 
 // ResultAggregator aggregates results from sub-agents.
@@ -51,7 +51,8 @@ type ResultAggregator interface {
 // LeaderOption configures a leaderAgent instance.
 type LeaderOption func(*leaderAgent)
 
-func WithCheckpoint(cp *CheckpointRepository) LeaderOption {
+// WithCheckpoint injects a checkpoint repository for session recovery.
+func WithCheckpoint(cp *state.CheckpointRepository) LeaderOption {
 	return func(a *leaderAgent) { a.checkpoint = cp }
 }
 
@@ -110,7 +111,7 @@ type leaderAgent struct {
 	feedbackSvc     *experience.FeedbackService
 	profileRegistry *agents.ProfileRegistry
 	sessionID       string
-	checkpoint      *CheckpointRepository
+	checkpoint      *state.CheckpointRepository
 	eventStore      ares_events.EventStore
 	ares_callbacks  ares_callbacks.Emitter
 

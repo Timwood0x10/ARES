@@ -9,6 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/leader/aggregate"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -78,23 +79,13 @@ func createLeaderAgent(
 		120,
 		nil,
 		leader.WithDispatcherAgentID(cfg.Agents.Leader.ID),
+		leader.WithDispatcherEventStore(store),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create dispatcher: %w", err)
 	}
 
-	for _, subCfg := range cfg.Agents.Sub {
-		agentType := models.AgentType(subCfg.Type)
-		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
-		if setter, ok := executor.(interface {
-			SetEventStore(ares_events.EventStore, string)
-		}); ok {
-			setter.SetEventStore(store, subCfg.ID)
-		}
-		taskDispatcher.RegisterExecutor(agentType, executor.Execute)
-	}
-
-	resultAggregator := leader.NewResultAggregator(true, 10, leader.SortByNone)
+	resultAggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	msgQueue := ahp.NewMessageQueue(cfg.Agents.Leader.ID, &ahp.QueueOptions{
 		MaxSize: 1000, MaxWorkers: 4,
