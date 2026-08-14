@@ -8,6 +8,7 @@ package skills
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -80,6 +81,41 @@ func (r *Registry) Has(name string) bool {
 	defer r.mu.RUnlock()
 	_, ok := r.skills[name]
 	return ok
+}
+
+// Search returns skills matching query by case-insensitive substring on name
+// or description, mirroring cc-switch's skill search (filter by name and
+// description). Results are ranked: name matches first, then description
+// matches; each group is sorted by name. Limit <= 0 returns all matches.
+func (r *Registry) Search(query string, limit int) []Skill {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil
+	}
+
+	var nameHits, descHits []Skill
+	for _, s := range r.skills {
+		if strings.Contains(strings.ToLower(s.Name), q) {
+			nameHits = append(nameHits, s)
+			continue
+		}
+		if strings.Contains(strings.ToLower(s.Description), q) {
+			descHits = append(descHits, s)
+		}
+	}
+	sort.Slice(nameHits, func(i, j int) bool { return nameHits[i].Name < nameHits[j].Name })
+	sort.Slice(descHits, func(i, j int) bool { return descHits[i].Name < descHits[j].Name })
+
+	merged := make([]Skill, 0, len(nameHits)+len(descHits))
+	merged = append(merged, nameHits...)
+	merged = append(merged, descHits...)
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
 }
 
 // Count returns the number of registered skills.

@@ -9,6 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader/state"
+	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
@@ -46,6 +47,33 @@ type TaskDispatcher interface {
 // ResultAggregator aggregates results from sub-agents.
 type ResultAggregator interface {
 	Aggregate(ctx context.Context, results []*models.TaskResult, tasks []*models.Task) (*models.RecommendResult, error)
+}
+
+// SetPeerRegistry attaches the peer registry for direct agent-to-agent
+// notifications (primitive 2). The leader keeps dispatching tasks via events
+// (primary path); the peer channel is used only for supplementary
+// notifications so the two mechanisms never race on task execution.
+func (a *leaderAgent) SetPeerRegistry(reg *peer.Registry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.peerRegistry = reg
+}
+
+// NotifyPeer sends a peer-to-peer notification to the target agent via the
+// registry. It is best-effort: a nil registry or unknown target is silently
+// skipped (notifications are supplementary, never fatal to the leader loop).
+func (a *leaderAgent) NotifyPeer(ctx context.Context, targetID, message string) {
+	a.mu.RLock()
+	reg := a.peerRegistry
+	a.mu.RUnlock()
+	if reg == nil || targetID == "" {
+		return
+	}
+	msg := ahp.NewMessage(ahp.AHPMethodProgress, a.id, targetID, "", "")
+	msg.Payload = map[string]any{"note": message}
+	if err := reg.Send(ctx, targetID, msg); err != nil {
+		log.Debug("leader peer notify skipped", "target", targetID, "error", err)
+	}
 }
 
 // LeaderOption configures a leaderAgent instance.
@@ -114,6 +142,12 @@ type leaderAgent struct {
 	checkpoint      *state.CheckpointRepository
 	eventStore      ares_events.EventStore
 	ares_callbacks  ares_callbacks.Emitter
+	// peerRegistry, when non-nil, enables direct peer-to-peer messaging to sub
+	// agents (primitive 2). The leader dispatches tasks via events (primary
+	// path) and uses the peer channel only for supplementary notifications,
+	// so the two mechanisms never race on task execution. Set via
+	// SetPeerRegistry.
+	peerRegistry *peer.Registry
 
 	lastTaskID          string
 	lastCompletedTaskID string

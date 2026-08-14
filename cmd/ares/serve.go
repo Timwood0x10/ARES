@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -245,9 +246,15 @@ func runServe() error {
 	// Registers the leader and every sub agent's message sender (primitive 2:
 	// peer-to-peer agent communication). The registry is the discovery surface
 	// for direct sends; the leader-dispatched task path remains the primary
-	// execution route, this only adds a peer channel.
+	// execution route, this only adds a peer channel for supplementary
+	// notifications.
 	peerRegistry := buildPeerRegistry(leaderAgent, subAgents)
 	log.Printf("peer registry wired: %d agents registered", len(peerRegistry.IDs()))
+	if leaderWithPeer, ok := leaderAgent.(interface {
+		SetPeerRegistry(*peer.Registry)
+	}); ok {
+		leaderWithPeer.SetPeerRegistry(peerRegistry)
+	}
 
 	// --- PluginBus + MonitorPlugin ---
 	// NOTE: The ares_runtime plugin framework (PluginBus + capability discovery)

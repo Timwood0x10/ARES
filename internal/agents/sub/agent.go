@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/agents/actionlog"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/outputguard"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -72,6 +73,16 @@ func WithEventStore(store ares_events.EventStore) SubAgentOption {
 	}
 }
 
+// WithActionLog attaches an append-only action store. When set, every task
+// executed via the event listener records an actionlog.Entry (task result,
+// success/failure) for audit and replay (ares-vs-prime-agent 5.3: action
+// store).
+func WithActionLog(store *actionlog.Store) SubAgentOption {
+	return func(a *subAgent) {
+		a.actionLog = store
+	}
+}
+
 // subAgent implements a Sub Agent.
 type subAgent struct {
 	mu           sync.RWMutex
@@ -85,6 +96,9 @@ type subAgent struct {
 	messageQueue *ahp.MessageQueue
 	heartbeatMon *ahp.HeartbeatMonitor
 	eventStore   ares_events.EventStore
+	// actionLog, when non-nil, records every executed task as an
+	// actionlog.Entry for audit/replay. Set via WithActionLog.
+	actionLog *actionlog.Store
 
 	// Lifecycle management
 	stopCh   chan struct{}  // Signals goroutines to stop.
@@ -432,6 +446,7 @@ func (a *subAgent) processScheduledEvent(ctx context.Context, ev *ares_events.Ev
 		payload["error"] = err.Error()
 		payload["success"] = false
 		a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
+		a.recordAction(ctx, task.TaskID, false, err.Error())
 		log.Error("sub agent task execution failed",
 			KeyAgentID, a.id, KeyTaskID, task.TaskID, KeyError, err.Error())
 		return
@@ -453,14 +468,38 @@ func (a *subAgent) processScheduledEvent(ctx context.Context, ev *ares_events.Ev
 		payload["success"] = false
 		payload["error"] = guardErr.Error()
 		a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
+		a.recordAction(ctx, task.TaskID, false, guardErr.Error())
 		log.Error("sub agent output guard rejected result",
 			KeyAgentID, a.id, KeyTaskID, task.TaskID, KeyError, guardErr.Error())
 		return
 	}
 
 	a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
+	a.recordAction(ctx, task.TaskID, result.Success, "")
 	log.Info("sub agent task completed",
 		KeyAgentID, a.id, KeyTaskID, task.TaskID, "success", result.Success)
+}
+
+// recordAction appends an actionlog entry for a finished task, when an action
+// store is configured (ares-vs-prime-agent 5.3: action store). Append errors
+// are logged and non-fatal: audit must never break the execution path.
+func (a *subAgent) recordAction(ctx context.Context, taskID string, success bool, errMsg string) {
+	if a.actionLog == nil {
+		return
+	}
+	entry := actionlog.Entry{
+		ID:      "task:" + taskID,
+		AgentID: a.id,
+		Action:  "task.result",
+		Payload: map[string]any{
+			"success": success,
+			"error":   errMsg,
+		},
+	}
+	if appendErr := a.actionLog.Append(ctx, entry); appendErr != nil {
+		log.Error("sub agent action log append failed",
+			KeyAgentID, a.id, KeyTaskID, taskID, "error", appendErr)
+	}
 }
 
 // ProcessStream handles input and returns a stream of ares_events.

@@ -16,12 +16,14 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
+	"github.com/Timwood0x10/ares/internal/agents/lease"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -55,10 +57,67 @@ type memoryManager struct {
 	// is true. Populated post-construction via SetRetrievers.
 	retrievers []memctx.ContextRetriever
 
+	// skillsRegistry, when non-nil, injects the skill descriptions (name +
+	// one-line description only — progressive disclosure) into BuildContext so
+	// capabilities are always resident while full details load on demand via
+	// the registry. Populated via SetSkillsRegistry.
+	skillsRegistry *skills.Registry
+
+	// leaseMgr, when non-nil, provides session-level leases for concurrent
+	// access control (ares-vs-prime-agent 5.3: session lease). Upper layers
+	// acquire a lease before mutating a session so concurrent workers cannot
+	// clobber each other. Populated via SetLeaseManager.
+	leaseMgr *lease.Manager
+
 	// defaultTenantID is the tenant ID used for search operations when none is
 	// explicitly provided. Must match the tenant used during write (StoreDistilledTask).
 	// Default: "default". Override via SetDefaultTenantID.
 	defaultTenantID string
+}
+
+// SetSkillsRegistry attaches a skills registry for progressive disclosure.
+// When set, BuildContext prepends a resident "Available skills" block listing
+// each skill's name and description only; full skill details are fetched on
+// demand by ID via the registry. nil detaches the block.
+func (m *memoryManager) SetSkillsRegistry(reg *skills.Registry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skillsRegistry = reg
+}
+
+// SetLeaseManager attaches a lease.Manager for session-level concurrency
+// control. nil disables leasing (existing behavior unchanged). The manager is
+// shared by all sessions; upper layers call AcquireSessionLease before
+// mutating a session and ReleaseSessionLease when done.
+func (m *memoryManager) SetLeaseManager(mgr *lease.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leaseMgr = mgr
+}
+
+// AcquireSessionLease takes an exclusive, expiring lease on a session for the
+// given owner. It fails when leasing is not configured or the session is
+// already held by another owner.
+func (m *memoryManager) AcquireSessionLease(ctx context.Context, sessionID, owner string, ttl time.Duration) (lease.Lease, error) {
+	m.mu.RLock()
+	mgr := m.leaseMgr
+	m.mu.RUnlock()
+	if mgr == nil {
+		return lease.Lease{}, fmt.Errorf("memory: session leasing not configured")
+	}
+	return mgr.Acquire(ctx, sessionID, owner, ttl)
+}
+
+// ReleaseSessionLease surrenders the lease on a session. Only the owner may
+// release it.
+func (m *memoryManager) ReleaseSessionLease(ctx context.Context, sessionID, owner string) error {
+	m.mu.RLock()
+	mgr := m.leaseMgr
+	m.mu.RUnlock()
+	if mgr == nil {
+		return fmt.Errorf("memory: session leasing not configured")
+	}
+	return mgr.Release(ctx, sessionID, owner)
 }
 
 // NewMemoryManager creates a new MemoryManager with the given configuration.
@@ -86,6 +145,8 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 		taskMemory:      taskMemory,
 		config:          config,
 		ctxCleaner:      memctx.NewContextCleaner(),
+		skillsRegistry:  nil,
+		leaseMgr:        lease.NewManager(), // session-level concurrency control (primitive: session lease)
 		defaultTenantID: "default",
 	}, nil
 }
@@ -405,6 +466,25 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	// Build context string.
 	var contextBuilder strings.Builder
 	contextBuilder.Grow(len(cleaned) * 256)
+
+	// Skills (progressive disclosure): prepend a resident block listing only
+	// each skill's name + one-line description when a registry is attached.
+	// Full skill details are loaded on demand by ID via the registry, not
+	// injected here — keeping the resident context small.
+	if m.skillsRegistry != nil {
+		skills := m.skillsRegistry.List()
+		if len(skills) > 0 {
+			contextBuilder.WriteString("Available skills:\n")
+			for _, sk := range skills {
+				contextBuilder.WriteString("- " + sk.Name)
+				if sk.Description != "" {
+					contextBuilder.WriteString(": " + sk.Description)
+				}
+				contextBuilder.WriteString("\n")
+			}
+			contextBuilder.WriteString("Request a skill's full detail by name when needed.\n\n")
+		}
+	}
 
 	// RAG injection: prepend retrieved context (past experiences + AKG knowledge)
 	// before the conversation history when EnableRAG is true and retrievers are
