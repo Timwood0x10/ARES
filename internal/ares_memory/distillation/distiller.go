@@ -3,6 +3,7 @@ package distillation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -14,7 +15,7 @@ import (
 
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
-	"github.com/Timwood0x10/ares/internal/errors"
+	areserrors "github.com/Timwood0x10/ares/internal/errors"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -561,7 +562,7 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 		}
 
 		conflict, err := d.resolver.DetectConflict(ctx, memory.Vector, tenantID)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrNoConflict) {
 			log.WarnContext(ctx, "[Memory Distillation] Failed to detect conflicts",
 				"conversation_id", conversationID, "memory_index", idx, "error", err)
 		}
@@ -779,7 +780,7 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 	// Count first to avoid loading all solutions when under cap.
 	count, err := d.repo.CountByMemoryType(ctx, tenantID, MemoryKnowledge)
 	if err != nil {
-		return errors.Wrap(err, "failed to get solution count")
+		return areserrors.Wrap(err, "failed to get solution count")
 	}
 
 	if count <= config.MaxSolutionsPerTenant {
@@ -789,7 +790,7 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 	// Over cap: load only the excess lowest-confidence solutions.
 	solutions, err := d.repo.GetByMemoryType(ctx, tenantID, MemoryKnowledge)
 	if err != nil {
-		return errors.Wrap(err, "failed to get solutions for pruning")
+		return areserrors.Wrap(err, "failed to get solutions for pruning")
 	}
 
 	// Sort by confidence ascending and delete the lowest ones.

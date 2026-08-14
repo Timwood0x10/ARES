@@ -14,7 +14,6 @@ import (
 type FlightRecorder struct {
 	collector  *Collector
 	eventStore ares_events.EventStore
-	memManager memory.MemoryManager
 	genealogy  *Genealogy
 	mu         sync.RWMutex
 	started    bool
@@ -38,7 +37,6 @@ func NewFlightRecorder(cfg FlightRecorderConfig) *FlightRecorder {
 	return &FlightRecorder{
 		collector:  collector,
 		eventStore: cfg.EventStore,
-		memManager: cfg.MemManager,
 		genealogy:  cfg.Genealogy,
 	}
 }

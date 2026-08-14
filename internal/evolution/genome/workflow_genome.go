@@ -367,8 +367,13 @@ func (g *WorkflowGenome) mutateMergeNodes() {
 				continue
 			}
 			if contains(steps[j].DependsOn, steps[i].ID) {
-				// Merge j into i: remove j, update i's deps.
-				steps[i].DependsOn = mergeDeps(steps[i].DependsOn, steps[j].DependsOn)
+				// Merge j into i: remove j, update i's deps. j's deps may
+				// include i's own ID (j depends on i), so strip both i's ID and
+				// j's ID (the node being removed) to avoid a self-loop.
+				merged := mergeDeps(steps[i].DependsOn, steps[j].DependsOn)
+				merged = removeID(merged, steps[i].ID)
+				merged = removeID(merged, steps[j].ID)
+				steps[i].DependsOn = merged
 				steps[i].Input = steps[i].Input + " | " + steps[j].Input
 				// Remove j from the DAG.
 				_ = g.dag.RemoveNode(context.Background(), steps[j].ID)
@@ -376,6 +381,18 @@ func (g *WorkflowGenome) mutateMergeNodes() {
 			}
 		}
 	}
+}
+
+// removeID returns a copy of deps with id removed (used to avoid self-loops
+// when merging a node's dependencies that may reference the node itself).
+func removeID(deps []string, id string) []string {
+	out := make([]string, 0, len(deps))
+	for _, d := range deps {
+		if d != id {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // contains checks if a string is in a slice.

@@ -22,6 +22,10 @@ var (
 	// matches. This is an accepted limitation: identifier protection
 	// prioritises recall (never lose a real IP) over precision.
 	reIPPort = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b`)
+	// reIPv4 matches a bare IPv4 address like "10.0.0.1" (no port). Used for
+	// the "ip" role so a plain IP is accepted, while "ip_port"/"addr" keep
+	// requiring the port form.
+	reIPv4 = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 	// reOwnerRepo matches GitHub owner/repo slugs like "TimWood0x10/ares".
 	// Only one slash is allowed, so "a/b/c" yields just "a/b".
 	reOwnerRepo = regexp.MustCompile(`\b[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\b`)
@@ -83,7 +87,9 @@ func patternForRole(key string) *regexp.Regexp {
 		return reCommitHash
 	case rolePR, roleIssue:
 		return rePRNumber
-	case roleIP, roleIPPort, roleAddr:
+	case roleIP:
+		return reIPv4
+	case roleIPPort, roleAddr:
 		return reIPPort
 	case roleRepo, roleOwnerRepo:
 		return reOwnerRepo

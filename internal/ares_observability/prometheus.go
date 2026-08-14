@@ -1,11 +1,17 @@
 package ares_observability
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// cachedMetrics holds the first successfully registered instance so repeated
+// initializations return the already-registered collectors instead of silently
+// creating unregistered ones (whose recordings would never reach /metrics).
+var cachedMetrics *PrometheusMetrics
 
 // PrometheusMetrics holds all Prometheus metric definitions for ARES.
 type PrometheusMetrics struct {
@@ -143,12 +149,21 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
-			// AreAlreadyRegisteredError is acceptable in tests or multi-init scenarios.
-			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-				return nil, err
+			if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
+				// Collectors are already registered (previous init or tests).
+				// Return the cached instance so the caller records into the
+				// registered vectors; without a cache there is no safe way to
+				// recover the existing instance, so fail loudly rather than
+				// returning an unregistered metric set.
+				if cachedMetrics != nil {
+					return cachedMetrics, nil
+				}
+				return nil, fmt.Errorf("prometheus: collectors already registered and no cached instance available: %w", err)
 			}
+			return nil, err
 		}
 	}
+	cachedMetrics = m
 
 	return m, nil
 }

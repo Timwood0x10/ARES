@@ -114,6 +114,10 @@ func extractVerdict(events []*ares_events.Event) Verdict {
 		output := extractToolOutput(ev)
 		lowerName := strings.ToLower(name)
 
+		// code_runner may carry any tool invocation (including `go vet`); its
+		// exit code is attributed to GoVet per the documented contract and is
+		// guarded by tests (TestExtractVerdict/go vet via code_runner). The
+		// "vet" name check covers dedicated vet tools.
 		if name == toolCodeRunner || strings.Contains(lowerName, "vet") {
 			if code, ok := parseExitCode(output); ok {
 				if code == 0 {

@@ -16,6 +16,7 @@
   - **`mutateMergeNodes`（357-379）BUG（自依赖）**：371 行 `steps[i].DependsOn = mergeDeps(steps[i].DependsOn, steps[j].DependsOn)`，而合并条件（369 行）选 `j` 依赖 `i` 的对，即 `steps[j].DependsOn` 含 `steps[i].ID`。把 `j` 的 deps 并进 `i` 会把 `i` 自身的 ID 加进 `i.DependsOn`，产生自环/环。
 
   这些算子产生的候选快照与预期变异不同（或无效），破坏 GA 探索拓扑的能力。
+- **状态**：⚠️ 部分修复（2026-08-14）——**自环 BUG 已修复**（`mutateMergeNodes` 合并时用 `removeID` 剔除自身 ID 与已删节点 ID，build/test 通过）；"变异绕过 `m.dag.Edges`"属跨 5 个算子的大改动（需各算子经 `AddEdge`/`RemoveNode` 同步边 map），本轮留待专项（风险高、改动面大）。
 
 ### 2. `candidate_pipeline.go` `Release` 时 patch 被应用/部署两次
 - **位置**：`candidate_pipeline.go` 202-216 行
@@ -37,10 +38,12 @@
 ### 3. `deployment/deployment.go` `Deploy` 伪造不相关的 PatchID
 - **位置**：`deployment/deployment.go` 165 行
 - **说明**：`patchID := fmt.Sprintf("patch-%d", time.Now().UnixNano())` 忽略实际 patch（`p.ID`，进化管线为 `"patch-"+candidateID`），在 `DeploymentRecord` 上盖上无关 ID。`candidate_pipeline.applyAndPromote` 检查 `record.Status` 但从不把 `record.PatchID` 与候选的 patch 关联，审计记录无法回溯到源候选。
+- **状态**：✅ 已修复（2026-08-14）——改用实际 `p.ID`（为空时才回退时间戳 ID），审计记录可回溯到源候选。
 
 ### 4. `diff/diff.go` `DiffAll` 吞掉未知 differ 错误
 - **位置**：`diff/diff.go` 106-109 行
 - **说明**：快照 key 无注册 differ 时 `r.Get` 的错误被 `continue` 丢弃。配置错误的 genome/differ 名被静默跳过，隐藏 GA 管线的配置漂移。
+- **状态**：✅ 已修复（2026-08-14）——`DiffAll` 对未注册 differ 返回错误（`no differ registered`），不再静默跳过，配置漂移显式暴露。
 
 ### 5. `patch/patch.go` `ApplySet` fallback 回滚可能遗漏
 - **位置**：`patch/patch.go` 329-348 行

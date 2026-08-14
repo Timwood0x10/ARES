@@ -7,14 +7,17 @@
 ### 1. `otel_tracer.go` 用裸数字 `1` 代替 `codes.Error`
 - **位置**：`otel_tracer.go` 214 行
 - **说明**：`span.SetStatus(1, step.Error.Error())` 用裸数值字面量 `1`，其它调用点（157、185、241 行）都用命名常量 `codes.Error`。现在碰巧因 `codes.Error == 1` 工作，若常量值改变会静默失效。应改 `codes.Error`。
+- **状态**：✅ 已修复（2026-08-14）——改为 `codes.Error`。
 
 ### 2. `prometheus.go` 重复初始化时返回未注册的采集器
 - **位置**：`prometheus.go` 144-151 行
 - **说明**：`AlreadyRegisteredError` 时静默返回新创建的 `PrometheusMetrics`（其采集器未注册，registry 仍持早期实例）。调用方记录到返回的 `m` 实为未注册向量，指标不出现在 `/metrics`。
+- **状态**：✅ 已修复（2026-08-14）——包级 `cachedMetrics` 缓存首个成功注册实例；重复初始化返回缓存实例（幂等，`TestNewPrometheusMetrics_Idempotent` 通过），无缓存时显式报错。
 
 ### 3. `cost.go` 整个 CostDashboard 生产未用
 - **位置**：`cost.go`
 - **说明**：`CostDashboard` 全部表面（`NewCostDashboard`、`GetSessionCost`、`GetAllSessions`、`GenerateDashboardHTML`、`RegisterCostRoutes` 等）及 `CostTracker` 方法仅测试引用。
+- **状态**：⚠️ 保留为能力储备（2026-08-14）——与 monitoring 4 桩同类别（本会话处置决策：保留，不接线），非本次修复范围。
 
 ---
 
@@ -23,10 +26,12 @@
 ### 4. `ahp/dlq.go` `Add` 从不设置 `MaxRetries`，重试上限失效（BUG）
 - **位置**：`ahp/dlq.go` 43-62 行
 - **说明**：`Add` 从不设 `DLQEntry.MaxRetries`，恒为 `0`（代码视为"无限"`MaxRetriesUnlimited`）。因此 `Process`（183 行 `entry.MaxRetries > 0 && ...`）的重试预算检查在生产路径实际是死的——每个条目被无限重试。`MaxRetries` 字段、常量、`json:"max_retries"` tag 仅测试（dlq_test.go）使用。
+- **状态**：✅ 已核实修复（2026-08-14）——`Add` 现委托 `AddWithMaxRetries(..., MaxRetriesUnlimited)`，`AddWithMaxRetries` 设置 `MaxRetries` 并支持有界预算（注释明确说明此前 MaxRetries 逻辑是死的）；报告条目过时。
 
 ### 5. `ahp/dlq.go` `Process` 中 `entry.Retries++` 数据竞争（BUG）
 - **位置**：`ahp/dlq.go` 178-204 行
 - **说明**：`entry.Retries++`（187 行）无锁/无原子地修改共享 `DLQEntry`。若 `Process` 并发调用（手动 `Process` 与 `StartAutoRetry` ticker 竞争），`entry.Retries` 数据竞争，且两 goroutine 可能并发处理并 `Remove` 同一条目。
+- **状态**：✅ 已核实修复（2026-08-14）——`Process` 用 `processMu`（`sync.Mutex`）串行化全部处理（"processMu serializes Process calls so concurrent Process invocations never race"），`Retries++` 与 `Remove` 均在锁内；报告条目过时。
 
 ### 6. `ahp/queue.go` `Enqueue` 忽略 ctx（LOGIC）
 - **位置**：`ahp/queue.go` 55-75 行

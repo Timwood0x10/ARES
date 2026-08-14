@@ -197,32 +197,32 @@ func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...R
 		}
 
 		// Diversity / lineage concentration from population snapshot.
-		diversityReport := pop.DiversityStats()
-		if diversityReport.Overall > 0 {
-			lineageMap := makeLineageCounts(pop)
-			topID, topShare := "", 0.0
-			if len(lineageMap) > 0 {
-				maxCount := 0
-				for id, count := range lineageMap {
-					if count > maxCount {
-						maxCount = count
-						topID = id
-					}
-				}
-				total := 0
-				for _, count := range lineageMap {
-					total += count
-				}
-				if total > 0 {
-					topShare = float64(maxCount) / float64(total)
+		// Computed regardless of the Overall diversity score: a 0.0 diversity
+		// metric still carries valid lineage data that must not be silently
+		// omitted from the report.
+		lineageMap := makeLineageCounts(pop)
+		topID, topShare := "", 0.0
+		if len(lineageMap) > 0 {
+			maxCount := 0
+			for id, count := range lineageMap {
+				if count > maxCount {
+					maxCount = count
+					topID = id
 				}
 			}
-			report.LineageConcentration = &LineageConcentration{
-				TopLineageShare: topShare,
-				TopLineageID:    topID,
-				LineageCounts:   lineageMap,
-				UniqueLineages:  len(lineageMap),
+			total := 0
+			for _, count := range lineageMap {
+				total += count
 			}
+			if total > 0 {
+				topShare = float64(maxCount) / float64(total)
+			}
+		}
+		report.LineageConcentration = &LineageConcentration{
+			TopLineageShare: topShare,
+			TopLineageID:    topID,
+			LineageCounts:   lineageMap,
+			UniqueLineages:  len(lineageMap),
 		}
 	}
 

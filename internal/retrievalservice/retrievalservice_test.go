@@ -145,6 +145,22 @@ func (m *mockRetrievalRepository) ListKnowledge(_ context.Context, tenantID stri
 	return result, nil
 }
 
+// CountKnowledge mirrors ListKnowledge's tenant filter without pagination.
+func (m *mockRetrievalRepository) CountKnowledge(_ context.Context, tenantID string, _ *core.KnowledgeFilter) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return 0, m.listErr
+	}
+	count := 0
+	for _, item := range m.items {
+		if item.TenantID == tenantID {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func TestNewService(t *testing.T) {
 	t.Run("nil config returns error", func(t *testing.T) {
 		svc, err := retrievalservice.NewService(nil)

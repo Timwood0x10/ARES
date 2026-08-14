@@ -191,9 +191,16 @@ func (at *AgentTracker) handleLLMCall(evt *ares_events.Event) {
 
 	cost, ok := at.costs[agentID]
 	if !ok {
+		// Read currency from the event payload (matching cost_bar.go); fall
+		// back to USD only when the payload does not declare one. Previously
+		// hardcoded "USD" mislabeled non-USD costs, diverging from CostBar.
+		currency := eventutil.ExtractString(evt, "currency")
+		if currency == "" {
+			currency = "USD"
+		}
 		cost = &monitoring.AgentCost{
 			AgentID:  agentID,
-			Currency: "USD",
+			Currency: currency,
 		}
 		at.costs[agentID] = cost
 	}

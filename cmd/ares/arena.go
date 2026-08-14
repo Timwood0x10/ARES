@@ -78,8 +78,7 @@ var arenaRunCmd = &cobra.Command{
 
 		var report arena.ScenarioReport
 		if err := json.Unmarshal(respBody, &report); err != nil {
-			fmt.Println(string(respBody))
-			return nil
+			return fmt.Errorf("parse scenario report: %w (body: %s)", err, string(respBody))
 		}
 		printReport(&report)
 		return nil

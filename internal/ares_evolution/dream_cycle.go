@@ -504,7 +504,7 @@ func (dc *DreamCycle) deployWinner(
 				lineageShares = computeLineageShares(agents)
 			}
 		}
-		postResult := dc.guardrails.PostEvolveCheck(ctx, winner.winRate, gen, lineageShares)
+		postResult := dc.guardrails.PostEvolveCheckForSource(ctx, "dream_cycle", winner.winRate, gen, lineageShares)
 		if postResult.ShouldStop {
 			slog.WarnContext(ctx, "[DreamCycle] Post-evolution guardrails block deploy",
 				"winner_id", winner.strategy.ID,

@@ -9,18 +9,17 @@
 ### 1. `memory_store.go` nil 事件导致流版本产生空洞
 - **位置**：`memory_store.go` 71-93 行
 - **说明**：`Append` 循环中 `events` 含 `nil` 项时 `continue`，但版本按 `startVersion + int64(i+1)` 用**原始切片下标**赋值。对 `events = [e1, nil, e3]`，`e3` 得到 `Version = start+3`，版本 `start+2` 永久空置，产生流版本空洞。这不同于 `pg_store.go`（101-103 行）**拒绝** nil 事件。空洞会使 `VerifyStreamIntegrity` 和假设版本连续的消费者失败。
-
----
-
-## LOGIC（逻辑问题）
+- **状态**：✅ 已修复（2026-08-14）——引入 `versionCounter`，仅对非 nil 事件递增，nil 项不再消耗版本号，流版本连续无空洞。
 
 ### 2. `pg_store.go` 订阅游标用 `Timestamp` 而非 `created_at`
 - **位置**：`pg_store.go` 380-430、435 行
 - **说明**：订阅查询过滤 `created_at > cursor`（DB 列），但游标用 `evt.Timestamp` 推进（421 行）。若事件的 `Timestamp` 与存储的 `created_at` 不同（调用方自定义时间戳），游标与 DB 列漂移，事件可能重复投递或跳漏。
+- **状态**：✅ 已核实一致（2026-08-14）——`scanEvent` 把查询列 `created_at` 扫描进 `evt.Timestamp`（pg_store.go 281 行），游标推进用的正是 DB 的 `created_at`，与过滤列同源，无漂移。报告假设（自定义 Timestamp）不成立。
 
 ### 3. `compactable_store.go` `Append` 的 teardown 竞争
 - **位置**：`compactable_store.go` 174-208 行
 - **说明**：`g.Go(...)` goroutine（176 行）在 `s.closed` 检查（190 行）**之前**启动。当 `s.closed` 已为 true 时，`Append` 调 `cancel()` 并返回，但该 worker 未注册到 `wg` 也未 `g.Wait()` 加入。worker 会对可能刚被 `Close()` 关闭的 store 执行 `drainPendingRounds`/`maybeCompact`。错误被记录不崩溃，但 worker 未被 join，可能短暂触碰关闭中的 store。
+- **状态**：✅ 已核实修复（2026-08-14）——当前实现先 `s.mu.Lock()` 检查 `s.closed`（已关闭则 `cancel()` 返回，不启动），再 `s.wg.Add(1)` 注册 waiter 并由 `Close` 的 `wg.Wait()` join（waiter `defer wg.Done()`），无 Add-after-Wait，worker 生命周期受控。报告条目过时。
 
 ---
 

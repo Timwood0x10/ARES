@@ -105,7 +105,10 @@ func (r *Registry) DiffAll(ctx context.Context, snapshots map[string]SnapshotPai
 	for name, pair := range snapshots {
 		differ, err := r.Get(name)
 		if err != nil {
-			continue
+			// A snapshot key without a registered Differ is configuration
+			// drift, not a transient error: surface it instead of silently
+			// skipping so GA pipelines cannot hide misconfigured differ names.
+			return nil, fmt.Errorf("diff %s: no differ registered: %w", name, err)
 		}
 		patches, err := differ.Diff(ctx, pair.Old, pair.New)
 		if err != nil {

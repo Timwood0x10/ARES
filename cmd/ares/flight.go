@@ -309,7 +309,12 @@ func buildGraph(evts []*ares_events.Event) *flight.Graph {
 		if parentID == "" && !hasRoot {
 			hasRoot = true
 		} else if parentID == "" {
+			// Root node's ID may be synthesized ("evt-<version>"); use the same
+			// synthesis for the parent reference so it never dangles.
 			parentID = evts[0].ID
+			if parentID == "" {
+				parentID = fmt.Sprintf("evt-%d", evts[0].Version)
+			}
 		}
 
 		node := &flight.GraphNode{

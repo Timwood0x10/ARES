@@ -9,14 +9,12 @@
 ### 1. `timeline.go` `Summary()` 在真实数据下几乎总是全零
 - **位置**：`timeline.go` 110-150 行
 - **说明**：`Collector` 产生的所有 `TimelineEvent`（collector.go 中 `timeline.Add(...)` 只设 `StartAt`，从不设 `EndAt`/`Duration`），因此 `e.Duration` 恒为 0，`maxEnd` 恒为 0。`Summary()` 计算的 `ToolDuration`、`LLMDuration`、`WaitDuration`、`ErrorDuration`、`TotalDuration` 全为 0，所有百分比恒为 0。**`Summary()` 在被真实 collector 喂数据时实际上不可用。**
-
----
-
-## DEAD_CODE
+- **状态**：⚠️ 设计缺口（2026-08-14）——已核实 `collector.go` 全部 `timeline.Add` 调用仅设 `StartAt`，`typeDuration` 依赖 `e.Duration`（恒 0）。修复需 collector 在成对事件（tool.call/result、agent start/end）补 `EndAt`/`Duration`，属中等改动；本轮未做行为变更（避免破坏现有事件流契约），留待设计决策。
 
 ### 2. `recorder.go` 未读的 `memManager` 字段
 - **位置**：`recorder.go` 17、41 行
 - **说明**：`FlightRecorder.memManager` 由 `FlightRecorderConfig.MemManager` 赋值但从未被读取，`FlightRecorder` 从不使用记忆管理器。
+- **状态**：✅ 已修复（2026-08-14）——`FlightRecorder.memManager` 字段与构造赋值已删除（`FlightRecorderConfig.MemManager` 保留为可选配置项），build/vet/test 通过。
 
 ---
 

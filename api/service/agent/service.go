@@ -157,9 +157,13 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 		if limit <= 0 {
 			limit = 20 // default page size
 		}
-		if p.Page > 0 && p.PageSize > 0 {
-			offset = (p.Page - 1) * p.PageSize
-			limit = p.PageSize
+		if p.Page > 0 {
+			pageSize := p.PageSize
+			if pageSize <= 0 {
+				pageSize = limit // honor the default page size when only Page is set
+			}
+			offset = (p.Page - 1) * pageSize
+			limit = pageSize
 		}
 
 		// Apply offset and limit.
@@ -253,5 +257,14 @@ func (s *Service) GetTaskResult(ctx context.Context, taskID string) (*core.TaskR
 		return nil, fmt.Errorf("agent: get task result: task %q not found", taskID)
 	}
 
-	return result, nil
+	// Return a deep copy so callers cannot mutate the shared cached result and
+	// race concurrent readers (low-priority but real shared-state exposure).
+	cp := *result
+	if result.Data != nil {
+		cp.Data = make(map[string]interface{}, len(result.Data))
+		for k, v := range result.Data {
+			cp.Data[k] = v
+		}
+	}
+	return &cp, nil
 }

@@ -299,3 +299,33 @@ func (r *MemoryRepository) ListKnowledge(ctx context.Context, tenantID string, f
 
 	return items, nil
 }
+
+// CountKnowledge returns the number of knowledge items matching the filter,
+// before pagination is applied. This is the source of truth for pagination
+// totals; ListKnowledge returns only the current page, so len(ListKnowledge)
+// would under-report.
+func (r *MemoryRepository) CountKnowledge(ctx context.Context, tenantID string, filter *core.KnowledgeFilter) (int, error) {
+	if tenantID == "" {
+		return 0, fmt.Errorf("tenant ID is empty")
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, item := range r.knowledge {
+		if item.TenantID != tenantID {
+			continue
+		}
+		if filter != nil {
+			if filter.Source != "" && item.Source != filter.Source {
+				continue
+			}
+			if filter.Category != "" && item.Category != filter.Category {
+				continue
+			}
+		}
+		count++
+	}
+	return count, nil
+}

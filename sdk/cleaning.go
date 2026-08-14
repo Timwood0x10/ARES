@@ -8,8 +8,6 @@
 package sdk
 
 import (
-	"time"
-
 	"github.com/Timwood0x10/ares/api/core"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 )
@@ -97,6 +95,3 @@ func toCoreMessages(messages []memctx.Message) []core.Message {
 	}
 	return out
 }
-
-// ensure time is referenced (used by the conversion helpers above).
-var _ = time.Time{}

@@ -132,6 +132,11 @@ func (a *ArenaPlugin) checkFault(ctx context.Context) error {
 			return ctx.Err()
 		case FaultPluginError:
 			return fmt.Errorf("%w: %s", ErrFaultInjected, f.name)
+		case FaultBusStop:
+			// Surface the bus-stop injection instead of silently swallowing it
+			// (previously scheduled but never acted on). The EventBus interface
+			// has no Stop method, so the injection is reported as an error.
+			return fmt.Errorf("%w: bus stop injected for %q", ErrFaultInjected, f.name)
 		}
 	}
 	return nil

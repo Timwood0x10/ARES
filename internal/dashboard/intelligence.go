@@ -215,16 +215,16 @@ func trimTimes(times []time.Time, cutoff time.Time) []time.Time {
 
 // Health returns the current health score for an agent.
 func (e *Engine) Health(agentID string) HealthScore {
+	// Single read-lock acquisition: the agentState pointer is stable (never
+	// replaced after creation), so the previous double-lock (RLock, release,
+	// RLock) was unnecessary and fragile.
 	e.mu.RLock()
-	state, ok := e.agents[agentID]
-	e.mu.RUnlock()
+	defer e.mu.RUnlock()
 
+	state, ok := e.agents[agentID]
 	if !ok {
 		return HealthScore{AgentID: agentID, Level: HealthUnknown, Score: 0}
 	}
-
-	e.mu.RLock()
-	defer e.mu.RUnlock()
 
 	score, level := e.computeHealth(state)
 	return HealthScore{

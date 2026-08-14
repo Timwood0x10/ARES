@@ -34,7 +34,11 @@ func validateSuitePath(path string) error {
 	}
 	cleaned := filepath.ToSlash(filepath.Clean(path))
 	hasTraversal := strings.Contains(cleaned, "..")
-	isAbsolute := strings.HasPrefix(cleaned, "/")
+	// Recognize both POSIX ("/abs") and Windows ("C:/abs") absolute paths;
+	// previously only "/" was checked, so Windows drive paths slipped through
+	// the sensitive-directory check.
+	isAbsolute := strings.HasPrefix(cleaned, "/") ||
+		(len(cleaned) >= 3 && cleaned[1] == ':' && (cleaned[2] == '/' || cleaned[2] == '\\'))
 	// Relative paths without traversal cannot reach system directories.
 	if !hasTraversal && !isAbsolute {
 		return nil

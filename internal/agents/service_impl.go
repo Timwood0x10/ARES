@@ -264,6 +264,9 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 	// Calculate pagination info
 
 	total := int64(len(agents))
+	if count, countErr := s.repo.Count(ctx, filter); countErr == nil {
+		total = int64(count)
+	}
 
 	page := 1
 

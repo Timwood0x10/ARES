@@ -104,16 +104,28 @@ func (r *OutcomeExperienceRecorder) outcomeToRaw(outcome ExecutionOutcome) exper
 	return raw
 }
 
-// computeOutcomeScore derives a [0,1] score from the execution outcome.
+// computeOutcomeScore derives a [0,1] score from the execution outcome. The
+// result is clamped to [0,1] so failed steps / errors can never push the score
+// negative (violating the documented contract).
 func computeOutcomeScore(outcome ExecutionOutcome) float64 {
 	if outcome.Status == "" {
 		return 0.0
 	}
+	var score float64
 	if outcome.Status == "success" || outcome.Status == "completed" {
 		if outcome.TotalSteps == 0 {
-			return 1.0
+			score = 1.0
+		} else {
+			score = 1.0 - float64(outcome.FailedSteps+outcome.ErrorCount)/float64(outcome.TotalSteps)
 		}
-		return 1.0 - float64(outcome.FailedSteps+outcome.ErrorCount)/float64(outcome.TotalSteps)
+	} else {
+		score = 1.0 - float64(outcome.FailedSteps+outcome.ErrorCount+outcome.InterruptCount)/float64(outcome.TotalSteps+1)
 	}
-	return 1.0 - float64(outcome.FailedSteps+outcome.ErrorCount+outcome.InterruptCount)/float64(outcome.TotalSteps+1)
+	if score < 0 {
+		return 0.0
+	}
+	if score > 1 {
+		return 1.0
+	}
+	return score
 }

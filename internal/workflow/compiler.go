@@ -60,9 +60,6 @@ func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 		annotateRouterRef(spec, step)
 	}
 
-	// ── UntilCondition reference ──
-	compileUntilCondition(spec, w.LoopConfig)
-
 	// ── Entries: zero-in-degree nodes ──
 	spec.Entries = computeEntries(spec)
 
@@ -77,6 +74,10 @@ func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 			LoopNodes:     loopNodes,
 		}
 	}
+
+	// ── UntilCondition reference (after Loop, so its MaxIterations fallback
+	// is not overwritten by the loop-config block above) ──
+	compileUntilCondition(spec, w.LoopConfig)
 
 	spec.Schedule = ScheduleSpec{MaxParallel: 1}
 	return spec, nil

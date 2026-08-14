@@ -246,15 +246,16 @@ func (p *CheckpointPlugin) BeforeStep(ctx context.Context, executionID string, s
 	p.snapshots[executionID] = ckpt
 	p.stepCount[executionID]++
 	shouldFlush := p.flushInterval <= 1 || p.stepCount[executionID]%p.flushInterval == 0
-	p.mu.Unlock()
-
-	if shouldFlush {
-		p.mu.Lock()
-		err := p.saveLocked(ctx, executionID, ckpt)
+	if !shouldFlush {
 		p.mu.Unlock()
-		return err
+		return nil
 	}
-	return nil
+	// saveLocked runs while still holding p.mu (it does not lock internally),
+	// closing the unlock→relock window that previously let another goroutine
+	// mutate the checkpoint mid-save (TOCTOU).
+	err := p.saveLocked(ctx, executionID, ckpt)
+	p.mu.Unlock()
+	return err
 }
 
 // AfterStep updates the checkpoint with the completed step result.
@@ -306,15 +307,14 @@ func (p *CheckpointPlugin) AfterStep(ctx context.Context, executionID string, re
 
 	p.stepCount[executionID]++
 	shouldFlush := p.flushInterval <= 1 || p.stepCount[executionID]%p.flushInterval == 0
-	p.mu.Unlock()
-
-	if shouldFlush {
-		p.mu.Lock()
-		err := p.saveLocked(ctx, executionID, ckpt)
+	if !shouldFlush {
 		p.mu.Unlock()
-		return err
+		return nil
 	}
-	return nil
+	// Same as BeforeStep: save while holding p.mu to avoid the TOCTOU window.
+	err := p.saveLocked(ctx, executionID, ckpt)
+	p.mu.Unlock()
+	return err
 }
 
 // Snapshot returns a deep copy of the current checkpoint for an execution, or nil.

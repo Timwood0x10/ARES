@@ -34,7 +34,11 @@ func (e *RecoveryPatchExecutor) SetDAG(dag *MutableDAG) {
 // Name returns "recovery" as the component identifier for patch routing.
 func (e *RecoveryPatchExecutor) Name() string { return "recovery" }
 
-// Snapshot returns the current recovery configuration as a snapshot.
+// Snapshot returns the live DAG reference. This is a deliberate contract:
+// after SetDAG, recovery patches must mutate the agent's REAL DAG (not a
+// copy), which is guarded by TestUpdateLiveDAG_DoesNotFailOnRegisteredExecutors
+// (assert.Same(liveDAG, snapshot)). The live reference is only handed to the
+// recovery patch executor, never to arbitrary observers.
 func (e *RecoveryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 	if e.dag == nil {
 		return nil, patch.ErrNoSnapshot

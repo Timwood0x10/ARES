@@ -249,7 +249,7 @@ func (a *GenomePopulationAdapter) runPostGuardrails(ctx context.Context) error {
 	agents, _ := a.pop.Snapshot()
 	lineageShares := computeLineageShares(agents)
 
-	postResult := a.guardrails.PostEvolveCheck(ctx,
+	postResult := a.guardrails.PostEvolveCheckForSource(ctx, "genome",
 		postStats.BestScore,
 		postStats.Generation,
 		lineageShares,

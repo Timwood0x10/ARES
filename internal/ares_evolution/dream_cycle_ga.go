@@ -108,10 +108,13 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 		}
 	}
 
-	// parent for deployWinner is the best strategy from the previous generation.
+	// parent for deployWinner is the baseline the candidate is compared
+	// against. Use the historical best score (not the current best itself):
+	// comparing a candidate to its own score would always look like an
+	// "improvement" and break the shadow-evaluation baseline semantics.
 	parent := mutation.Strategy{
 		ID:    best.ID,
-		Score: best.Score,
+		Score: dc.population.BestEverScore(),
 	}
 	return dc.deployWinner(ctx, cycleCtx, data, winner, parent)
 }

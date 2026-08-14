@@ -117,7 +117,7 @@ func WithTournamentSelection(size int) PopulationOption {
 var validSelectionStrategies = map[string]bool{
 	"": true, "random": true, "tournament": true,
 	"rank": true, "sus": true, "roulette": true,
-	"truncation": true, "lineage_rank": true, "sss": true,
+	"truncation": true, "lineage_rank": true, "nsga2": true, "nondominated": true,
 }
 
 func WithSelectionStrategy(strategy string) PopulationOption {

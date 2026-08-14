@@ -9,10 +9,12 @@
 ### 1. `sub/agent.go` `ProcessStream` 状态竞争导致并发处理
 - **位置**：`sub/agent.go`，约 337-363 行
 - **说明**：`ProcessStream` 在 `status` 翻转为 `Ready` 之后才启动 goroutine 再次将其设为 `Busy`。若两个 `ProcessStream` 并发调用，第二个可能在状态仍为 `Ready` 时进入，造成**同一 Agent 被并发处理**。中间状态窗口期缺少原子性保护。
+- **状态**：✅ 已核实修复（2026-08-14）——当前实现已在 `a.mu.Lock()` 内检查 `Ready` 并同步置 `Busy`（TOCTOU 注释），`defer setStatus(Ready)` 恢复，报告条目过时。
 
 ### 2. `service_impl.go` `ListAgents` 分页 total 错误
 - **位置**：`service_impl.go`，约 266 行
 - **说明**：`total = len(agents)`，而 `agents` 已经是分页后的切片，因此 `total` 返回的是**当前页的元素数**而非数据库中总记录数，分页元数据（total/totalPages/hasMore）全部错误。
+- **状态**：✅ 已修复（2026-08-14）——`AgentRepository` 新增 `Count(ctx, filter)`（过滤后、分页前计数）；`MemoryRepository`/mock 实现；`ListAgents` 改用 `repo.Count` 计算 total。
 
 ### 3. `executor.go` `executeWithLLM` 非幂等工具重试的保守中止
 - **位置**：`executor.go`，约 336 行
@@ -29,6 +31,7 @@
 ### 5. `recovery.go` `RecoverStaleTasks` 的 `RETURNING id` 可能不是真正的任务 ID
 - **位置**：`recovery.go`
 - **说明**：SQL 为 `RETURNING id, session_id, status, error`，扫描到 `TaskID` 字段。若表的 `id` 是自增主键而非任务逻辑 ID，则 `TaskID` 被填充为数字主键，而非任务 ID。**（需结合表结构确认，标注为潜在问题。）**
+- **状态**：⚠️ 待确认（2026-08-14）——查询基于 `TaskResultsTable` 的 `id` 列；当前仓库未检索到该表 DDL，无法确认 `id` 是自增主键还是任务逻辑 ID。属低置信度潜在问题，需结合实际 schema 判定。
 
 ### 6. `sub/agent.go` 的 `handleTaskMessage` / `handleAckMessage` 是空实现
 - **位置**：`sub/agent.go`

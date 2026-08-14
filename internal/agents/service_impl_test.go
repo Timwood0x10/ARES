@@ -133,6 +133,28 @@ func (m *mockAgentRepository) List(_ context.Context, filter *core.AgentFilter) 
 	return result, nil
 }
 
+// Count mirrors List's filtering but returns the total before pagination.
+func (m *mockAgentRepository) Count(_ context.Context, filter *core.AgentFilter) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return 0, m.listErr
+	}
+	count := 0
+	for _, agent := range m.agents {
+		if filter != nil {
+			if filter.Type != "" && agent.Type != filter.Type {
+				continue
+			}
+			if filter.Status != "" && agent.Status != filter.Status {
+				continue
+			}
+		}
+		count++
+	}
+	return count, nil
+}
+
 // newTestService creates a Service with the given repo and nil memory manager.
 func newTestService(repo core.AgentRepository) *agents.Service {
 	svc, err := agents.NewService(&agents.Config{

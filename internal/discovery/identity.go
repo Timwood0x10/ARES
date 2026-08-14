@@ -1,6 +1,9 @@
 package discovery
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // mergeRecords groups discovery records by endpoint and merges them into services.
 func mergeRecords(records []DiscoveryRecord) map[string]*DiscoveredService {
@@ -20,6 +23,15 @@ func mergeRecords(records []DiscoveryRecord) map[string]*DiscoveredService {
 			},
 			Records: group,
 		}
+		// Sort records deterministically (confidence desc, source asc) so the
+		// "best" record and metadata merge are stable: the previous code left
+		// tie-breaking to map iteration order, which is non-deterministic.
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].Confidence != group[j].Confidence {
+				return group[i].Confidence > group[j].Confidence
+			}
+			return group[i].Source < group[j].Source
+		})
 		best := group[0]
 		for _, r := range group[1:] {
 			if r.Confidence > best.Confidence {
@@ -43,7 +55,8 @@ func mergeRecords(records []DiscoveryRecord) map[string]*DiscoveredService {
 			svc.Identity.Tags = tags
 		}
 
-		// Merge metadata from all records (highest confidence wins on conflict).
+		// Merge metadata from all records (highest confidence wins on conflict;
+		// deterministic thanks to the sorted group above).
 		mergedMeta := make(map[string]string)
 		for _, r := range group {
 			for k, v := range r.Metadata {

@@ -211,7 +211,7 @@ func (t *OTelTracer) RecordAgentStep(ctx context.Context, step *AgentStep) {
 
 	if step.Error != nil {
 		span.RecordError(step.Error)
-		span.SetStatus(1, step.Error.Error())
+		span.SetStatus(codes.Error, step.Error.Error())
 	}
 }
 

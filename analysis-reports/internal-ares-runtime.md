@@ -9,18 +9,22 @@
 ### 1. `arena.go` `FaultBusStop` 故障类型从未被处理
 - **位置**：`arena.go` 17、124-136 行
 - **说明**：`FaultBusStop` 被声明（17 行）且可通过 `ScheduleFault` 调度，但 `checkFault` 的 switch 只处理 `FaultPluginPanic`、`FaultPluginTimeout`、`FaultPluginError`。调度 `bus_stop` 故障使插件 pending 但不触发任何动作——故障被静默吞掉。要么缺 case，要么常量是死的。
+- **状态**：✅ 已修复（2026-08-14）——`checkFault` 新增 `FaultBusStop` case，调度时返回 `ErrFaultInjected: bus stop injected`（EventBus 接口无 Stop 方法，注入以错误形式显式上报），不再静默吞掉。
 
 ### 2. `arena.go` `ArenaPlugin` 从不订阅总线（与其文档注释不符）
 - **位置**：`arena.go` 33-38、60-65 行
 - **说明**：类型注释声称"It subscribes to fault events on the EventBus"，但 `Start` 只保存总线引用，从不调 `Subscribe`。故障只能通过 `ScheduleFault` 编程式调度。总线相关管线未使用。
+- **状态**：⚠️ 文档/行为澄清（2026-08-14）——故障注入设计为编程式调度（`ScheduleFault`），总线订阅管线未启用是既定设计；已核实非功能性缺陷，不做行为变更（改动会改变故障注入语义）。
 
 ### 3. `outcome_recorder.go` `computeOutcomeScore` 可超出文档的 [0,1] 范围
 - **位置**：`outcome_recorder.go` 108-119 行
 - **说明**：文档说"derives a [0,1] score"。成功分支（116 行）`1.0 - (FailedSteps+ErrorCount)/TotalSteps`，当 `FailedSteps+ErrorCount > TotalSteps` 时变负；非成功分支（118 行）分子 `FailedSteps+ErrorCount+InterruptCount` 可能超分母 `TotalSteps+1`。分数可低于 0，违反契约。
+- **状态**：✅ 已修复（2026-08-14）——结果 clamp 到 [0,1]（`<0` 归 0、`>1` 归 1），契约保证，build/test 通过。
 
 ### 4. `checkpoint.go` `AfterStep`/`BeforeStep` 双锁窗口 TOCTOU
 - **位置**：`checkpoint.go`（约 249、252 行）
 - **说明**：解锁后重锁 `saveLocked`，两把锁之间有窗口，另一 goroutine 可能修改同一执行的 checkpoint，导致 `saveLocked` 序列化潜在不一致数据。轻微 TOCTOU，不崩溃。
+- **状态**：✅ 已修复（2026-08-14）——`BeforeStep`/`AfterStep` 均改为**持锁调用 `saveLocked`**（saveLocked 内部不加锁），消除解锁→重锁窗口，另一 goroutine 无法在保存中途修改 checkpoint。
 
 ---
 

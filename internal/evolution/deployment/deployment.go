@@ -162,7 +162,12 @@ func (dp *DeploymentPipeline) Deploy(ctx context.Context, p patch.RuntimePatch) 
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
 
-	patchID := fmt.Sprintf("patch-%d", time.Now().UnixNano())
+	// Use the actual patch ID so audit records can trace back to the source
+	// candidate; a synthesized timestamp ID would be unrelated and untraceable.
+	patchID := p.ID
+	if patchID == "" {
+		patchID = fmt.Sprintf("patch-%d", time.Now().UnixNano())
+	}
 	record := &DeploymentRecord{
 		PatchID:   patchID,
 		Timestamp: time.Now(),

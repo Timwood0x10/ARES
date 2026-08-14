@@ -125,6 +125,10 @@ type AgentRepository interface {
 	// filter - optional filter criteria.
 	// Returns list of agents or error.
 	List(ctx context.Context, filter *AgentFilter) ([]*Agent, error)
+
+	// Count returns the number of agents matching the filter, before
+	// pagination is applied. Used to report accurate pagination totals.
+	Count(ctx context.Context, filter *AgentFilter) (int, error)
 }
 
 // AgentFilter represents filter criteria for listing agents.

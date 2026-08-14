@@ -372,6 +372,11 @@ func (m *mockAgentRepository) List(ctx context.Context, filter *AgentFilter) ([]
 	return nil, errors.New("not found")
 }
 
+// Count satisfies AgentRepository.Count (interface requires it).
+func (m *mockAgentRepository) Count(ctx context.Context, filter *AgentFilter) (int, error) {
+	return 0, errors.New("not found")
+}
+
 // TestAgentService tests that AgentService interface is properly defined.
 func TestAgentService(t *testing.T) {
 	// This test verifies that AgentService interface is defined correctly.

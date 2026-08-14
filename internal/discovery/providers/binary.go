@@ -39,10 +39,17 @@ var knownMCPBinariesSet = func() map[string]bool {
 	return set
 }()
 
-// isAllowedBinary reports whether the base name of the given path is in the
-// knownMCPBinaries allowlist.
+// isAllowedBinary reports whether the given path resolves (following
+// symlinks) to a known MCP binary. The base name alone is not trusted: a
+// malicious symlink named like an allowed binary but pointing elsewhere must
+// not pass the allowlist. EvalSymlinks resolves the real target before the
+// allowlist check, matching health.go's handling.
 func isAllowedBinary(path string) bool {
-	return knownMCPBinariesSet[filepath.Base(path)]
+	resolved := path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		resolved = r
+	}
+	return knownMCPBinariesSet[filepath.Base(resolved)]
 }
 
 // BinaryProbeProvider discovers MCP servers by probing binaries in PATH.

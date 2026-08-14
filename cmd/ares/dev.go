@@ -337,6 +337,11 @@ func parseRunArgs() []string {
 			skipNext = true
 			continue
 		}
+		// Also strip `-c=path` / `--config=path` forms so they never leak into
+		// the prompt arguments.
+		if strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "-c=") {
+			continue
+		}
 		out = append(out, a)
 	}
 	return out

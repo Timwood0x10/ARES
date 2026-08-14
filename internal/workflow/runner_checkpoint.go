@@ -318,6 +318,11 @@ func (r *Runner) commitMutationCheckpoint(
 			return fmt.Errorf("persist mutation commit: %w", err)
 		}
 		if err := r.patchQueue.Acknowledge(scope.ExecutionID, ids); err != nil {
+			// The checkpoint already reflects the new spec + mutation IDs, so
+			// roll the in-memory scope back to match the un-acknowledged queue
+			// state — otherwise resume would re-apply the same mutations.
+			scope.Spec = previousSpec
+			scope.RemoveMutationIDs(len(ids))
 			return fmt.Errorf("acknowledge durable mutations: %w", err)
 		}
 		return nil

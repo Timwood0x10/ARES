@@ -9,10 +9,12 @@
 ### 1. 蒸馏 `KeepBoth` 冲突分支丢失 `problem`/`confidence` 元数据（数据丢失）
 - **位置**：`distillation/distiller.go` 584-604 行
 - **说明**：重建的 `oldMemory` 只带 `Metadata: {"solution": conflict.Solution}`，省略 `"problem"`、`"confidence"`（及 `"extraction_method"`）。后续 `memoryManager.StoreDistilledTask`（manager_impl.go 567-597）**只从 Metadata 读取** `problem`/`solution`/`confidence`（不从 `Importance`/`Content`），因此持久化的经验得到空 `Problem` 和 `Confidence==0`。重嵌入（597 行 `embedOneMemory`）也读 Metadata，嵌入的是部分/空文本。**KeepBoth 策略的真实数据丢失 bug。**
+- **状态**：✅ 已核实修复（2026-08-14）——`oldMemory` 现带完整 Metadata（`problem`/`solution`/`confidence`/`extraction_method`）+ `Importance: conflict.Confidence` + 重新嵌入向量，持久化数据完整。
 
 ### 2. 无冲突正常路径也会误报 "Failed to detect conflicts"
 - **位置**：`distillation/distiller.go` 563-567 行
 - **说明**：`d.resolver.DetectConflict` 在**无冲突**时（repo nil、空向量、无相似结果、低于阈值）返回哨兵错误 `ErrNoConflict`（非 nil）。代码只要 `err != nil` 就打 `"Failed to detect conflicts"` 警告，导致**每个无冲突的正常记忆**都触发此警告。应排除哨兵错误再记录。
+- **状态**：✅ 已修复（2026-08-14）——`err != nil && !errors.Is(err, ErrNoConflict)` 才告警；同步补 `errors` import（`internal/errors` 加 `areserrors` 别名，两处 `errors.Wrap` 改 `areserrors.Wrap`），build/vet/test 通过。
 
 ---
 
@@ -21,10 +23,12 @@
 ### 3. `SearchSimilarTasks` 永远返回空结果（experience 仓库未接线）
 - **位置**：`production_manager.go` 139-155 + `production_manager_tasks.go` 271-324
 - **说明**：`NewProductionMemoryManager` 用 `nil` 构造 `retrievalService` 的 `expRepo`。`SearchSimilarTasks` 设置 `Plan.SearchExperience=true`，但 `searchExperienceVector`/`bm25SearchExperience`（retrieval_search.go）都 guard `s.expRepo == nil` 并返回空。**"搜索相似任务"路径在生产中总是返回零结果**，功能静默失效。
+- **状态**：✅ 已核实修复（2026-08-14）——`experienceRepo := repositories.NewExperienceRepository(dbConn)` 已注入（代码注释明确说明"previously left nil below, which made experience-based retrieval always return empty results in production"），报告条目过时。
 
 ### 4. `enforceSolutionCap` 可能让租户仍超上限
 - **位置**：`distillation/distiller.go` 779-815 行
 - **说明**：`GetByMemoryType`（Postgres 适配器封顶 `DefaultListLimit=1000`）。若 `count` 超过上限多于返回列表大小，`deleteCount` 被 clamp 到 `len(solutions)`，只删除一部分超额项，租户仍超 `MaxSolutionsPerTenant`。
+- **状态**：⚠️ 已核实（2026-08-14）——distill 层 `ExperienceRepository.GetByMemoryType` 为 3 参（无 limit），`enforceSolutionCap` 以 `count`（`CountByMemoryType`）计算 `deleteCount`，仅当 `len(solutions) < deleteCount` 时 clamp；若 distill 实现全量加载则 clamp 不触发（正确）。Postgres 适配器的 `DefaultListLimit=1000` 是另一条路径，仅当 distill 实现经该适配器且租户超 1000+ 上限时才生效——低风险边界，暂不修改（需确认 distill repo 的具体实现绑定）。
 
 ### 5. 生命周期标志不对称
 - **位置**：`manager_impl.go` 202 行 vs `production_manager.go`

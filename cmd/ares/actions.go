@@ -202,11 +202,20 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	if h.tools != nil {
 		result, err := h.tools.Execute(r.Context(), req.Name, req.Params)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": "tool not found: " + req.Name,
-				"tools": h.tools.List(),
-			})
+			// Distinguish "tool not found" from a real execution failure so
+			// callers get an accurate error instead of a blanket 404.
+			if _, ok := h.tools.Get(req.Name); ok {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": "tool execution failed: " + err.Error(),
+				})
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": "tool not found: " + req.Name,
+					"tools": h.tools.List(),
+				})
+			}
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{

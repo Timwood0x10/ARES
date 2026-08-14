@@ -68,11 +68,16 @@ func (s *MemoryEventStore) Append(_ context.Context, streamID string, events []*
 	}
 	startVersion := currentVersion
 
-	for i, event := range events {
+	// versionCounter advances only for non-nil events so skipped nil entries
+	// never leave holes in the stream's version sequence (a nil event must not
+	// consume a version number, unlike the old raw-index arithmetic).
+	versionCounter := int64(0)
+	for _, event := range events {
 		if event == nil {
 			continue
 		}
-		event.Version = startVersion + int64(i+1)
+		versionCounter++
+		event.Version = startVersion + versionCounter
 		if event.Version <= 0 {
 			return fmt.Errorf("version overflow: computed %d", event.Version)
 		}

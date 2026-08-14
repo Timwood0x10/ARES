@@ -157,6 +157,9 @@ func ExtractMapFloat64(m map[string]any, key string) float64 {
 
 // ExtractAgentID reads agent_id from the event payload, falling back to StreamID.
 func ExtractAgentID(evt *ares_events.Event) string {
+	if evt == nil {
+		return ""
+	}
 	if id := ExtractString(evt, "agent_id"); id != "" {
 		return id
 	}

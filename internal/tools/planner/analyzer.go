@@ -74,7 +74,10 @@ func defaultRules() []intentRule {
 			capabilities: []string{"Summation", "Arithmetic"},
 		},
 		{
-			keywords:     []string{"到的和", "的和", "到.*和"},
+			// NOTE: matchAnyKeyword uses strings.Contains, which treats
+			// keywords literally — a regex like "到.*和" never matches. Keep
+			// only literal keywords ("到的和" covers "1到100的和" and friends).
+			keywords:     []string{"到的和", "的和"},
 			goal:         "mathematical computation",
 			operation:    "summation",
 			complexity:   "simple",

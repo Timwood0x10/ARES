@@ -9,26 +9,32 @@
 ### 1. `start.go` `svc` 变量数据竞争（BUG）
 - **位置**：`start.go` 53-62 行
 - **说明**：信号处理 goroutine（53 行）读 `svc`（56 行 `if svc != nil`），而 `svc` 在主 goroutine 62 行赋值（`svc, err = apiimpl.StartService(...)`）。若 SIGINT/SIGTERM 在 goroutine 启动与赋值之间到达，或并发调度，则是未同步的读写数据竞争。若信号早到，`svc` 被读为 nil，`Stop` 被静默跳过（只跑 `cancel()`）。`serve.go` 用 `atomic.Pointer` 解决了同样问题，此文件没有。
+- **状态**：✅ 已核实修复（2026-08-14）——代码已用 `atomic.Pointer[apiimpl.Service]`（`svcPtr.Store/Load`）交换，报告条目过时。
 
 ### 2. `actions.go` nil-guard 不一致
 - **位置**：`actions.go` 202-216 vs 222-229 行
 - **说明**：`handleCallTool` guard `if h.tools != nil`，但 `handleListTools`（224 行 `names := h.tools.List()`）不 guard，且经 `GET /api/tools`（100 行）可达。若调用方构造 `actionHandler` 无 registry 会 panic。当前只在 serve.go 以非 nil registry 构造，是潜在防御不一致。
+- **状态**：✅ 已核实修复（2026-08-14）——`handleListTools` 已有 `if h.tools == nil` guard，报告条目过时。
 
 ### 3. `actions.go` 所有 Execute 错误都报 "tool not found"
 - **位置**：`actions.go` 203-210 行
 - **说明**：`h.tools.Execute` 失败时一律响应 `"tool not found: "+req.Name`，不论真实原因（执行/运行失败）。只有真正 "not found" 才该这样标。
+- **状态**：✅ 已修复（2026-08-14）——`Get` 判断工具存在性：存在则 500 "tool execution failed"，不存在才 404 "tool not found"。
 
 ### 4. `arena.go` 吞 JSON 反序列化错误返回成功
 - **位置**：`arena.go` 79-83 行
 - **说明**：`/arena/scenario/run` 响应体无法反序列化为 `arena.ScenarioReport` 时，打印原始 body 后 `return nil`（无错误）。命令以退出码 0 成功退出，即便报告无法解析。
+- **状态**：✅ 已修复（2026-08-14）——反序列化失败返回 `fmt.Errorf`（带 body），命令以非零退出码失败。
 
 ### 5. `flight.go` `buildGraph` 父链接用 `evts[0].ID` 而非计算节点 ID
 - **位置**：`flight.go` 307-313、315-324 行
 - **说明**：非根事件 `parent_id` 为空时，`parentID = evts[0].ID`。但若 `evts[0].ID == ""`，根节点实际节点 ID 是合成的 `"evt-<version>"`（290-292 行），赋值的 parent `""` 不匹配任何节点——产生悬空/空父引用。
+- **状态**：✅ 已修复（2026-08-14）——`evts[0].ID` 为空时回退到同样的合成 `evt-<version>` ID，父引用不再悬空。
 
 ### 6. `dev.go` `parseRunArgs` 不处理 `--config=<值>` / `-c=<值>`
 - **位置**：`dev.go` 322-343 行
 - **说明**：只剥离空格分隔形式（`-c`、`--config` + 独立值）。用户传 `--config=my.yaml` 或 `-c=my.yaml` 时该 token 泄漏进 prompt 参数。
+- **状态**：✅ 已修复（2026-08-14）——增加 `--config=` / `-c=` 前缀剥离，不再泄漏进 prompt。
 
 ---
 

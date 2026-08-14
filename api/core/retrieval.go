@@ -124,6 +124,11 @@ type RetrievalRepository interface {
 	// filter - optional filter criteria.
 	// Returns list of knowledge items or error.
 	ListKnowledge(ctx context.Context, tenantID string, filter *KnowledgeFilter) ([]*KnowledgeItem, error)
+
+	// CountKnowledge returns the number of knowledge items matching the
+	// filter, before pagination is applied. Used to report accurate pagination
+	// totals (ListKnowledge returns only the current page).
+	CountKnowledge(ctx context.Context, tenantID string, filter *KnowledgeFilter) (int, error)
 }
 
 // KnowledgeFilter represents filter criteria for listing knowledge items.

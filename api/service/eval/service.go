@@ -26,6 +26,7 @@ func (e *ExactMatch) Evaluate(ctx context.Context, testCase TestCase, result Tes
 		Input:          testCase.Input,
 		ExpectedOutput: testCase.ExpectedOutput,
 		ExpectedTools:  testCase.ExpectedTools,
+		Timeout:        internal.Duration(testCase.Timeout),
 		Metadata:       testCase.Metadata,
 		Tags:           testCase.Tags,
 	}

@@ -245,9 +245,8 @@ func (m *MCPManager) ListServers() []MCPServerStatus {
 		if mc.lastErr != nil {
 			status.Error = mc.lastErr.Error()
 		}
-		if caps := mc.client.ServerCapabilities(); caps != nil {
-			status.Version = "connected"
-		}
+		// The client does not expose a server version string; leaving Version
+		// empty avoids filling the status field with a misleading state value.
 		seen[mc.config.Name] = true
 		statuses = append(statuses, status)
 	}
@@ -441,7 +440,9 @@ func hasConfigChanged(a, b *MCPServerConfig) bool {
 	case TransportTypeStdio:
 		if a.Transport.Stdio != nil && b.Transport.Stdio != nil {
 			return a.Transport.Stdio.Command != b.Transport.Stdio.Command ||
-				!stringSliceEqual(a.Transport.Stdio.Args, b.Transport.Stdio.Args)
+				!stringSliceEqual(a.Transport.Stdio.Args, b.Transport.Stdio.Args) ||
+				!stringMapEqual(a.Transport.Stdio.Env, b.Transport.Stdio.Env) ||
+				a.Transport.Stdio.WorkDir != b.Transport.Stdio.WorkDir
 		}
 		return (a.Transport.Stdio == nil) != (b.Transport.Stdio == nil)
 	case TransportTypeSSE:
@@ -460,6 +461,19 @@ func stringSliceEqual(a, b []string) bool {
 	}
 	for i := range a {
 		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// stringMapEqual compares two string maps for equality (nil == empty).
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if bv, ok := b[k]; !ok || av != bv {
 			return false
 		}
 	}

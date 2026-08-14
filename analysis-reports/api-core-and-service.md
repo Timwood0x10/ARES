@@ -9,14 +9,17 @@
 ### 1. `service.go` `CreateAgent` 丢弃 `config.Config`（数据丢失）
 - **位置**：`agent/service.go` 47-63 行
 - **说明**：`*core.AgentConfig` 上的 `config.Config`（`map[string]interface{}`）被**完全忽略**——从不转发给 `s.inner.CreateAgent(ctx, config.ID, config.Name, config.Type)`，也从不填充到返回的 `core.Agent`。调用方提供的配置被静默丢弃。`GetAgent`/`UpdateAgent`/`ListAgents` 同样不填充返回的 `core.Agent.Config` 字段。
+- **状态**：✅ 已核实修复（2026-08-14）——`CreateAgent` 已填充 `Config: config.Config`，报告条目过时。
 
 ### 2. `service.go` `ListAgents` 仅设 `Page` 时返回错误页
 - **位置**：`agent/service.go` 159-162 行
 - **说明**：当 `filter.Pagination` 只设 `Page`（`Page>0` 但 `PageSize==0`），需要 `Page>0 && PageSize>0` 的分支被跳过，回退到 `offset=0`、`limit=20`。请求第 2 页（未显式给 page size）会静默返回第 1 页内容。
+- **状态**：✅ 已修复（2026-08-14）——`Page>0` 时若 `PageSize<=0` 用默认页大小计算 offset。
 
 ### 3. `service.go` `GetTaskResult` 返回共享可变指针
 - **位置**：`agent/service.go` 247-255 行
 - **说明**：直接返回缓存的 `*core.TaskResult` 指针（无拷贝）。调用方修改返回值会修改共享缓存值，与并发读取/`GetTaskResult` 竞争。低优先级但真实共享状态暴露。
+- **状态**：✅ 已修复（2026-08-14）——返回 `Data` map 深拷贝，调用方无法修改共享缓存。
 
 ---
 
@@ -25,6 +28,7 @@
 ### 4. `service.go` `ExactMatch.Evaluate` 丢弃 `TestCase.Timeout`
 - **位置**：`eval/service.go` 23-31 行
 - **说明**：公开的 `TestCase.Timeout`（`time.Duration`）从不拷贝到内部 `internal.TestCase`（其有 `Timeout` 字段）。委托给内部评估器时配置的逐测试超时被静默丢弃，超时永不生效。
+- **状态**：✅ 已修复（2026-08-14）——`Timeout: internal.Duration(testCase.Timeout)` 显式转换拷贝。
 
 ---
 
@@ -33,6 +37,7 @@
 ### 5. `service.go` `toInternal` fallback 转换丢字段
 - **位置**：`llm/service.go` 36-41 行
 - **说明**：转换 `Config.Fallbacks` 时只拷贝 `Provider/Model/BaseURL/APIKey/Timeout/MaxTokens`，`Temperature`、`TopP`、`FrequencyPenalty`、`PresencePenalty`、`MaxPromptLength` 被静默丢弃。fallback LLM 用默认（未设置）的采样/限制运行，与主配置不一致。
+- **状态**：✅ 已修复（2026-08-14）——补 `MaxPromptLength`；采样参数（Temperature/TopP/Penalty）经请求层 `requestOverrides` 传递（`internal/llm.Config` 无采样字段），非 Config 拷贝遗漏，主/回退均按请求参数生效。
 
 ---
 
@@ -41,6 +46,7 @@
 ### 6. `service.go` `ExecuteStream` 忽略配置的超时（BUG）
 - **位置**：`workflow/service.go` 285-303 行
 - **说明**：与 `Execute`（119-128 行）不同，流式路径从不应用 `req.Timeout` 或 `s.config.RequestTimeout`。通过 `ExecuteStream` 执行的工作流忽略所有配置的超时，可无限运行。
+- **状态**：✅ 已核实修复（2026-08-14）——代码已有 `timeout := req.Timeout; if timeout == 0 { timeout = s.config.RequestTimeout }` + `context.WithTimeout`，报告条目过时。
 
 ### 7. `service.go` `executeStreamWithRunner` 未 await errgroup，执行错误丢失
 - **位置**：`workflow/service.go` 188-194 行

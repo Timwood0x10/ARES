@@ -167,3 +167,28 @@ func (r *MemoryRepository) List(ctx context.Context, filter *core.AgentFilter) (
 
 	return agents, nil
 }
+
+// Count returns the number of agents matching the filter, before pagination is
+// applied. This is the source of truth for pagination totals; List returns
+// only the current page, so len(List(...)) would under-report.
+func (r *MemoryRepository) Count(ctx context.Context, filter *core.AgentFilter) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, agent := range r.agents {
+		if filter != nil {
+			if filter.Type != "" && agent.Type != filter.Type {
+				continue
+			}
+			if filter.Status != "" && agent.Status != filter.Status {
+				continue
+			}
+			if filter.SessionID != "" && agent.SessionID != filter.SessionID {
+				continue
+			}
+		}
+		count++
+	}
+	return count, nil
+}

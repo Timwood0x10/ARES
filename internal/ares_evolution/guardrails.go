@@ -103,8 +103,11 @@ type EvolutionGuardrails struct {
 	// StagnantCount counts consecutive generations without improvement.
 	stagnantCount int
 
-	// BestKnownScore tracks the best score ever seen.
-	bestKnownScore float64
+	// bestBySource tracks the best score ever seen per evolution path
+	// (e.g. "dream_cycle" feeds winRate in [0,1], "genome" feeds raw
+	// BestScore in another scale). Keeping them separate prevents one path's
+	// scale from polluting the other's baseline-regression threshold.
+	bestBySource map[string]float64
 
 	// LastImprovementGeneration records which generation last saw improvement.
 	lastImprovementGen int
@@ -168,6 +171,7 @@ func NewEvolutionGuardrails(opts ...GuardrailOption) (*EvolutionGuardrails, erro
 		MaxStagnantGenerations: 10,
 		MaxLineageShare:        0.8,
 		MaxEvents:              1000,
+		bestBySource:           make(map[string]float64),
 	}
 	for _, opt := range opts {
 		opt(g)
@@ -269,6 +273,18 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 // Returns:
 //   - *GuardrailResult: result containing any triggered guardrails and stop recommendation
 func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float64, generation int, lineageShares map[string]int) *GuardrailResult {
+	return g.postEvolveCheckForSource(ctx, "", newBest, generation, lineageShares)
+}
+
+// PostEvolveCheckForSource runs guardrails after an evolution cycle for a
+// specific evolution path. The source distinguishes score scales (dream_cycle
+// winRate [0,1] vs genome BestScore), so baseline regression compares against
+// the path's own best instead of a cross-scale value.
+func (g *EvolutionGuardrails) PostEvolveCheckForSource(ctx context.Context, source string, newBest float64, generation int, lineageShares map[string]int) *GuardrailResult {
+	return g.postEvolveCheckForSource(ctx, source, newBest, generation, lineageShares)
+}
+
+func (g *EvolutionGuardrails) postEvolveCheckForSource(ctx context.Context, source string, newBest float64, generation int, lineageShares map[string]int) *GuardrailResult {
 	result := &GuardrailResult{
 		ShouldStop: false,
 		Events:     []GuardrailEvent{},
@@ -277,12 +293,13 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	bestKnown := g.bestBySource[source]
+
 	// Check 1: Baseline regression guardrail
-	// Uses BaselineScore (if explicitly set) or bestKnownScore as the threshold.
-	// This ensures the guard is active by default after the first improvement (EV-02).
+	// Uses BaselineScore (if explicitly set) or the path's best as the threshold.
 	baseline := g.BaselineScore
 	if baseline <= 0 {
-		baseline = g.bestKnownScore
+		baseline = bestKnown
 	}
 	if newBest < baseline && baseline > 0 {
 		event := GuardrailEvent{
@@ -309,22 +326,21 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 	}
 
 	// Check 2: Improvement tracking and stagnation counter update
-	if newBest > g.bestKnownScore {
-		previousBest := g.bestKnownScore
+	if newBest > bestKnown {
 		g.stagnantCount = 0
-		g.bestKnownScore = newBest
+		g.bestBySource[source] = newBest
 		g.lastImprovementGen = generation
 		log.Info("guardrail: improvement detected",
 			"generation", generation,
 			"new_best", newBest,
-			"previous_best", previousBest,
+			"previous_best", bestKnown,
 		)
 	} else {
 		g.stagnantCount++
 		log.Info("guardrail: no improvement",
 			"generation", generation,
 			"new_best", newBest,
-			"best_known", g.bestKnownScore,
+			"best_known", bestKnown,
 			"stagnant_count", g.stagnantCount,
 		)
 	}
@@ -450,7 +466,7 @@ func (g *EvolutionGuardrails) Reset() {
 	defer g.mu.Unlock()
 
 	g.stagnantCount = 0
-	g.bestKnownScore = 0
+	g.bestBySource = make(map[string]float64)
 	g.lastImprovementGen = 0
 	g.events = []GuardrailEvent{}
 }

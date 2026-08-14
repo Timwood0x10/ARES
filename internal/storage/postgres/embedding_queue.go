@@ -141,7 +141,9 @@ func (q *EmbeddingQueue) generateDedupeKey(task *EmbeddingTask) string {
 	if task.SpecHash != "" {
 		return task.SpecHash
 	}
-	key := fmt.Sprintf("%s|%s|%d", task.Content, task.Model, task.Version)
+	// Include the table name so identical content in different tables never
+	// collides on the same dedupe key (the queue is shared across tables).
+	key := fmt.Sprintf("%s|%s|%s|%d", task.Table, task.Content, task.Model, task.Version)
 	hash := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(hash[:16])
 }

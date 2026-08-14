@@ -9,10 +9,12 @@
 ### 1. `identifiers.go` `patternForRole` 的 `ip` 角色强制要求带端口
 - **位置**：`identifiers.go` 86 行
 - **说明**：`roleIP` 映射到 `reIPPort`（要求 `ip:port` 形式，正则 `\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b`）。以纯 IP（如 `10.0.0.1`）作为 `"ip"` 角色值时，`ProtectIdentifiers` 校验返回 `ErrInvalidIdentifier`，尽管该值是完全合法的 IP。角色名 `"ip"` 强烈暗示应接受裸 IP，但模式强制带端口。**角色到模式的映射错误或常量命名错误。**
+- **状态**：✅ 已修复（2026-08-14）——新增 `reIPv4`（裸 IPv4）；`roleIP` 用 `reIPv4`，`ip_port`/`addr` 保持 `reIPPort`。
 
 ### 2. `extract.go` `extractVerdict` 把任意 code_runner 退出码记入 GoVet
 - **位置**：`extract.go` 117-124 行
 - **说明**：任何 `code_runner` 工具事件的退出码都设置 `GoVet` 字段，即便工具并未运行 `go vet`。非零退出码（如构建/测试失败）会被记录为 `vet=fail`，可能错误归因判定。**（标注：按文档是有意的，但存在误归因风险。）**
+- **状态**：⚠️ 保持原行为（2026-08-14）——经核实该归因是**有测试守护的契约**（`TestExtractVerdict/go vet via code_runner exit code 0/1`），code_runner 可能承载任意工具调用（含 `go vet`）。已加注释说明契约，不做行为变更（改动会破坏测试守护的设计）。
 
 ---
 

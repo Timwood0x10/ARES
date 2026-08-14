@@ -20,6 +20,7 @@
   repArgs[0] = pqStringArray(ids)                           // 只替换索引 0
   ```
   后果：(a) `$2`（model）绑到 `repArgs[1]`——即第二个对象 ID 字符串，模型过滤把 `model` 列与对象 ID 比较，永远不匹配；(b) 多余 `N-1` 个参数被 lib/pq/pgx 拒绝。**只要 `len(ids)>0 && req.Model!=""`，每次 `HybridSearch` 都失败**。MySQL/SQLite/内存 store 都正确，仅 Postgres 错。
+- **状态**：✅ 已核实修复（2026-08-14）——现构造 `repArgs := []interface{}{pqStringArray(ids), req.Model}`（恰两参数），注释明确说明此前错误（N 个 id + model、只覆盖索引 0）；报告条目过时。
 
 ---
 
@@ -33,6 +34,7 @@
   if q.Offset > 0 { ... result[q.Offset:] }
   ```
   先 Limit 再 Offset，任何带 Offset+Limit 的请求最多只返回第 1 页（Offset ≥ Limit 时返回空）。SQL 版本正确使用 `LIMIT ? OFFSET ?`。
+- **状态**：✅ 已核实修复（2026-08-14）——改为 offset-first + limit（`q.Offset` 先切片、`q.Limit` 后截断），注释明确说明"previous order (limit-then-offset) produced wrong pagination"；报告条目过时。
 
 ### 3. `pipeline.go` `mergeConfidence` 可返回 >1.0 的置信度
 - **位置**：`pipeline.go` 252-257 行
@@ -42,6 +44,7 @@
   return b + (a * 0.1)
   ```
   a=1.0,b=1.0 时返回 1.1，超出文档声明的 `[0,1]` 范围。结果直接赋给 `obj.Confidence`，下游排序可能收到越界值。
+- **状态**：✅ 已核实修复（2026-08-14）——`mergeConfidence` 结果 clamp 到 [0,1]（`>1` 归 1、`<0` 归 0），注释说明此前公式可超 1.0；报告条目过时。
 
 ### 4. `workflow/workflow.go` 配置的 `ForGraph` 在 `MaxTokens` 未设置时被丢弃
 - **位置**：`workflow/workflow.go` 89-96 行

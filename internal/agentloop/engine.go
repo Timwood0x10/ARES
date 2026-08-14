@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -98,6 +99,31 @@ type EventSink interface {
 // the sdk owns.
 type MemorySink interface {
 	AddMessage(ctx context.Context, sessionID, role, content string) error
+}
+
+// structuredMemorySink is the optional extension of MemorySink that persists
+// full message metadata (including ToolCalls) so multi-turn context rebuilds
+// retain the "assistant called these tools" trail. memory.MemoryManager
+// implements it; minimal mocks may not, in which case the engine falls back
+// to AddMessage (content-only).
+type structuredMemorySink interface {
+	AddStructuredMessage(ctx context.Context, sessionID string, msg memctx.Message) error
+}
+
+// toMemToolCalls converts core tool calls into the memory-layer representation.
+func toMemToolCalls(calls []core.ToolCall) []memctx.ToolCall {
+	out := make([]memctx.ToolCall, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, memctx.ToolCall{
+			ID:   c.ID,
+			Type: c.Type,
+			Function: memctx.ToolCallFunction{
+				Name:      c.Function.Name,
+				Arguments: c.Function.Arguments,
+			},
+		})
+	}
+	return out
 }
 
 // Compile-time checks that the concrete sdk wiring types satisfy the engine's
@@ -283,7 +309,20 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 		})
 
 		if e.MemEnabled && e.Memory != nil {
-			_ = e.Memory.AddMessage(ctx, req.SessionID, roleAssistant, resp.Content)
+			// Persist the assistant message with its ToolCalls when the memory
+			// layer supports structured messages, so multi-turn context rebuild
+			// keeps the tool-call trail (not just Content). Fall back to the
+			// content-only AddMessage for minimal sinks/mocks.
+			if sm, ok := e.Memory.(structuredMemorySink); ok && len(resp.ToolCalls) > 0 {
+				_ = sm.AddStructuredMessage(ctx, req.SessionID, memctx.Message{
+					Role:      roleAssistant,
+					Content:   resp.Content,
+					Time:      time.Now(),
+					ToolCalls: toMemToolCalls(resp.ToolCalls),
+				})
+			} else {
+				_ = e.Memory.AddMessage(ctx, req.SessionID, roleAssistant, resp.Content)
+			}
 		}
 
 		// Final answer: no tool calls.

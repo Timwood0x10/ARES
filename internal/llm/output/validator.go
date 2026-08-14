@@ -475,8 +475,10 @@ func toInt64(v interface{}) (int64, bool) {
 	case int32:
 		return int64(val), true
 	case float64:
-		// Check if value is within int64 range
-		if val <= float64(^uint64(0)>>1) && val >= float64(^int64(0)) {
+		// Check if value is within int64 range. NOTE: the previous lower bound
+		// `^int64(0)` evaluates to -1 (not MinInt64, which is -1<<63), so huge
+		// negative floats slipped through. Use the true MinInt64 constant.
+		if val <= float64(^uint64(0)>>1) && val >= float64(-1<<63) {
 			return int64(val), true
 		}
 		// Value exceeds int64 range, reject it

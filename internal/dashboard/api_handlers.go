@@ -18,6 +18,19 @@ import (
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 )
 
+// isFailoverAction reports whether an arena action type triggers a leader
+// failover (kill_leader / kill_orchestrator). Other actions (pause, slow,
+// network_partition, ...) are fault injections, not failovers, and must not be
+// counted as such in failover metrics.
+func isFailoverAction(t ArenaActionType) bool {
+	switch t {
+	case ArenaActionKillLeader, ArenaActionKillOrchestrator:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	PathAgents    = "/agents"
 	PathMCP       = "/mcp"
@@ -176,6 +189,13 @@ func (a *APIv2) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := a.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		return
+	}
+	// The hub is an optional provider (other handlers nil-check it); without it
+	// there is nowhere to register the client, so reject the upgrade instead of
+	// panicking on a nil hub.
+	if a.hub == nil {
+		_ = conn.Close()
 		return
 	}
 
@@ -494,7 +514,10 @@ func (a *APIv2) handleArenaMetrics(w http.ResponseWriter, r *http.Request) {
 	failoverCount := 0
 	var recoveryTimes []time.Duration
 	for _, h := range history {
-		if h.Success {
+		// Only count failover-triggering actions (leader/orchestrator kill),
+		// not every successful arena action (pause/slow/etc. are not
+		// failovers). Previously any successful entry inflated the metric.
+		if isFailoverAction(h.Action.Type) && h.Success {
 			failoverCount++
 		}
 		recoveryTimes = append(recoveryTimes, h.Duration)

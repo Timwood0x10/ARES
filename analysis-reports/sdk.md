@@ -9,22 +9,22 @@
 ### 1. `sdk.go` `New()` 错误路径资源泄漏
 - **位置**：`sdk.go` 699-748、752-755、768-771、785-788 行
 - **说明**：一旦 `llmSvc := llm.NewService(...)` 成功（699 行）且 `wireMCPClients` 返回 clients（745 行），后续任何错误返回（`wireMCPClients` err 746、`wireKnowledge` err 753、`registerAKFTools` err 769、`buildSDKEvidenceStore` err 786、`wireMemory` err 733）都 `return nil` **不调用 `llmSvc.Close()`** 也不关闭已连接的 MCP clients。另外 defer `bootstrapCancel()` 在错误路径会触发（好），但 `bootstrapComp.WaitBackground()` 从不调用，Bootstrap 后台 goroutine 被取消但未排空。构造失败时这些资源泄漏。
+- **状态**：✅ 已核实修复（2026-08-14）——`New()` 现用 `defer` 清理错误路径：`bootstrapCancel()` + `bootstrapComp.WaitBackground()`（排空后台 goroutine）+ `llmSvc.Close()` + 关闭全部 `mcpClients`（由 `bootstrapCancelTaken` 标志区分成功/失败路径）；报告条目过时。
 
 ### 2. `sdk.go` `wireMCPClients` MCP 客户端泄漏
 - **位置**：`sdk.go` 650-677 行
 - **说明**：若 `client.ListTools` 失败（662 行），已连接的 `client` 未关闭就返回错误；若循环中后续 MCP 连接失败，先前追加到 `mcpClients` 的客户端也不关闭。部分失败时连接/池泄漏。
+- **状态**：✅ 已核实修复（2026-08-14）——`wireMCPClients` 现用 `closeAll` 闭包：连接失败或 `ListTools` 失败时关闭全部已连接客户端（含当前失败的 client）；报告条目过时。
 
 ### 3. `team.go` `Team.leader`/`runtime` 未校验 nil
 - **位置**：`team.go` 75-83、127、388-410 行
 - **说明**：`NewTeam` 存储 leader/members 无 nil 检查。`Team.Run` 调 `t.leader.Run(...)`（经 `leaderDiscover`，172 行），`t.synthesize` 解引用 `t.leader.instruction`（405 行），`t.runtime` 也无检查即解引用。nil leader 会 panic。公开 API 应 guard nil leader 或文档化前置条件。
-
----
-
-## LOGIC（逻辑问题）
+- **状态**：✅ 已核实修复（2026-08-14）——`Team.Run` 开头已 guard：`if t.runtime == nil`（"has no runtime"）与 `if t.leader == nil`（"has no leader agent"）均返回错误而非 panic；报告条目过时。
 
 ### 4. `cleaning.go` 哑 `time` import
 - **位置**：`cleaning.go` 102 行
 - **说明**：`var _ = time.Time{}` 仅为保留未使用的 `time` import。死代码/代码异味，可直接删 import。
+- **状态**：✅ 已修复（2026-08-14）——删除 `"time"` import 与 `var _ = time.Time{}` 哑引用，build/vet/test 通过。
 
 ### 5. `team.go` 字节级截断会切断 UTF-8 字符
 - **位置**：`team.go` 459-464 行

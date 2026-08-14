@@ -268,6 +268,9 @@ func (s *Service) ListKnowledge(ctx context.Context, tenantID string, filter *co
 
 	// Calculate pagination info
 	total := int64(len(items))
+	if count, countErr := s.repo.CountKnowledge(ctx, tenantID, filter); countErr == nil {
+		total = int64(count)
+	}
 	page := 1
 	pageSize := len(items)
 	totalPages := 1

@@ -2,6 +2,7 @@ package ares_eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -40,15 +41,23 @@ func (r *AgentTestRunner) SetRegistry(registry *EvaluatorRegistry) {
 // RunSuite runs all test cases in a suite.
 func (r *AgentTestRunner) RunSuite(ctx context.Context, suite TestSuite) ([]TestResult, error) {
 	results := make([]TestResult, 0, len(suite.TestCases))
+	var errs []error
 
 	for _, tc := range suite.TestCases {
 		result, err := r.RunSingle(ctx, tc)
 		if err != nil {
-			return nil, err
+			// Record the failure and continue with the remaining cases so a
+			// single broken case does not discard already-run and pending
+			// results (consistent with ConcurrentRunner.RunSuite).
+			errs = append(errs, fmt.Errorf("case %q: %w", tc.ID, err))
+			continue
 		}
 		results = append(results, result)
 	}
 
+	if len(errs) > 0 {
+		return results, errors.Join(errs...)
+	}
 	return results, nil
 }
 

@@ -397,6 +397,12 @@ func (m *mockRetrievalRepository) ListKnowledge(ctx context.Context, tenantID st
 	return nil, errors.New("not found")
 }
 
+// CountKnowledge satisfies RetrievalRepository.CountKnowledge (interface
+// requires it).
+func (m *mockRetrievalRepository) CountKnowledge(ctx context.Context, tenantID string, filter *KnowledgeFilter) (int, error) {
+	return 0, errors.New("not found")
+}
+
 // TestRetrievalService tests that RetrievalService interface is properly defined.
 func TestRetrievalService(t *testing.T) {
 	var _ RetrievalService = (*mockRetrievalService)(nil)

@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -344,7 +345,7 @@ func (m *Mutator) mutateScramble(parent *Strategy) (*Strategy, error) {
 // fillChildMetadata populates the metadata fields (ID, ParentID, Version,
 // Score, CreatedAt) on a newly mutated child strategy.
 func (m *Mutator) fillChildMetadata(child *Strategy, parent *Strategy, index int) {
-	now := parent.CreatedAt
+	now := time.Now() // mutation creates a new strategy now, not at parent birth
 	if m.deterministicIDs {
 		counter := m.idCounter.Add(1)
 		parentShort := parent.ID
