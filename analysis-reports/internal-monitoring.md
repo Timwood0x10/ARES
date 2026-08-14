@@ -14,10 +14,6 @@
 
 ## LOGIC（逻辑问题）
 
-### 2. `dag/engine.go` `handleTaskCreated` 直接创建 Running 状态，绕过校验
-- **位置**：`dag/engine.go` 379 行
-- **说明**：task "created" 事件直接用 `Status: StatusRunning` 创建节点，绕过 `validateAndTransition`，从不使用 `StatusPending`。与 `handleAgentStarted`（正确从 `StatusPending` 开始）不一致。"created" 任务不应以 running 开始。
-
 ### 3. `tabs/workflow_tab.go` `handleTaskCreated` 同样直接 Running
 - **位置**：`tabs/workflow_tab.go` 94 行
 - **说明**：与 #2 相同的不一致，task "created" 事件直接设 `WorkflowExecution.Status = dag.StatusRunning`，应为 pending。
@@ -69,7 +65,7 @@
 | 优先级 | 位置 | 问题 |
 |--------|------|------|
 | 中 | `eventutil.go` 163 | ExtractAgentID 潜在 nil 解引用 |
-| 中 | `dag/engine.go` 379 / `tabs/workflow_tab.go` 94 | task created 直接 Running |
+| 中 | `tabs/workflow_tab.go` 94 | task created 直接 Running |
 | 中 | `data/agent_tracker.go` 196 | 硬编码 USD，成本归因错误 |
 | 低 | `dag/engine.go` 321 | failed→running 转换被吞 |
 | 低 | 多处 | 大量死代码（detail_panel、plugin 桩、cost_aggregator、event_tab、publisher） |

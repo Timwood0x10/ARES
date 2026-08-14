@@ -14,10 +14,6 @@
 - **位置**：`extractor.go` 76-82 行
 - **说明**：对"从 a 到 b"求和，当 `a>1 && b>a` 时返回 `b*(b+1)/2`，这是 1..b 的和。正确公式是 `(b-a+1)*(a+b)/2`。例："sum from 5 to 10" 返回 `10*11/2=55` 而非 `5+6+7+8+9+10=45`。**`a` 被解析但从未用于公式。**
 
-### 3. `planner/bridge.go` 多步计划从不保存执行证据
-- **位置**：`bridge.go` 226-305、348-388 行
-- **说明**：`executeMultiStep` 通过 `executeStepWithFallback` 执行各步，该方法直接调 `tool.Execute`，从未调用 `executeStep`（唯一调用 `b.evidence.Save` 的方法）。因此多步（`IsMultiStep`）计划**不记录任何证据**。文档（doc.go 130-133）声称"fallback 不保存证据，仅最终尝试保存（由 executeStepWithFallback 调用的 executeStep 控制）"，但 `executeStepWithFallback` 根本不调 `executeStep`。文档或代码必有其一错误，按现有代码多步路径证据收集静默缺失。
-
 ---
 
 ## LOGIC（逻辑问题）
@@ -74,7 +70,6 @@
 |--------|------|------|
 | **高** | `web_search.go` 104 | SSRF 自阻默认 SearXNG 端点 |
 | **高** | `extractor.go` 76-82 | 求和忽略下界 a |
-| **高** | `bridge.go` 226-305 | 多步计划从不保存证据 |
 | 中 | `analyzer.go` 77 | 正则关键字当字面量匹配 |
 | 中 | `file_tools.go` 467 | 冗余相同分支 |
 | 低 | 多处 | 大量死代码（constants、capability、factory、registry 等） |

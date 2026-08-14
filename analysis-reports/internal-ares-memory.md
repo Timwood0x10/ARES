@@ -58,10 +58,6 @@
 - **位置**：`distillation/detector.go` 136-146 行
 - **说明**：`sensitivity` 在 `NewQuestionDetector` 赋值，但 `Detect` 委托给 `IsProblem`，从不读该字段。
 
-### 12. `context/rag.go`、`cache.go`、`user.go` 未用类型
-- **位置**：多处
-- **说明**：`RAG`、`Cache`、`LRUCache`、`UserMemory` 仅在本包及测试实例化，无生产调用方。
-
 ---
 
 ## 结论

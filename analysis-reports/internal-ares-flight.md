@@ -18,14 +18,6 @@
 - **位置**：`recorder.go` 17、41 行
 - **说明**：`FlightRecorder.memManager` 由 `FlightRecorderConfig.MemManager` 赋值但从未被读取，`FlightRecorder` 从不使用记忆管理器。
 
-### 3. `recorder.go` `SetGenealogy` 无生产调用方
-- **位置**：`recorder.go` 113 行
-- **说明**：`SetGenealogy` 仅定义存在，生产无调用（仅测试间接使用）。
-
-### 4. `recorder.go` `Snapshot` / `AgentSnapshot`
-- **位置**：`recorder.go` 130 行
-- **说明**：仅 `flight_test.go` 引用，无生产调用方。
-
 ---
 
 ## LOGIC（低置信度）
@@ -42,5 +34,4 @@
 |--------|------|------|
 | 中 | `timeline.go` 110-150 | Summary 全零（collector 不设 EndAt/Duration） |
 | 低 | `recorder.go` 17/41 | memManager 字段未读 |
-| 低 | `recorder.go` 113/130 | SetGenealogy / Snapshot 仅测试用 |
 | 低 | `genealogy.go` 108 | 父 children 未清理复活节点 |

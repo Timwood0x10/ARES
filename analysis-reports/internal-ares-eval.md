@@ -42,10 +42,6 @@
 - **位置**：`report.go` 22-208 行
 - **说明**：`GenerateMarkdown`/`GenerateJSON`/`SaveReport` 和独立 `RunEvaluation` 仅测试/文档示例使用。生产 `evalapi` service 不使用它们。
 
-### 8. `comparison.go` / `concurrent_runner.go` 生产不可达
-- **位置**：多处
-- **说明**：`ComparisonRunner`、`ConcurrentRunner` 及其构造器仅测试使用，导出库 API 但生产不可达。
-
 ### 9. `loader.go` 路径校验只认 POSIX 绝对路径
 - **位置**：`loader.go` 31-51 行
 - **说明**：`validateSuitePath` 的绝对路径/`..` 穿越检测只检查 `strings.HasPrefix(cleaned, "/")`。在 darwin（文档目标）没问题，但 Windows 绝对路径（`C:\...`）不被识别为绝对/穿越保护。
@@ -60,5 +56,4 @@
 | 中 | `service/service.go` 329 | 软失败原因不持久化 |
 | 中 | `api_impl/service.go:358` | 生产评估 API 无 executor，永远失败 |
 | 中 | `agent_runner.go` 41 | RunSuite 单错中止整套 |
-| 低 | `report.go`/`comparison.go` 等 | 大量导出库死代码 |
 | 低 | `service/repository.go` 150 | ErrNoRows 分支不可达 |

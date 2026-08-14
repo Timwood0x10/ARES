@@ -8,10 +8,6 @@
 
 ## BUG（高置信度）
 
-### 1. `ws_hub.go` 数据竞争 / "send on closed channel" panic
-- **位置**：`ws_hub.go` 203、318-330 行
-- **说明**：`removeClient`（在 `h.mu.Lock` 下）于 203 行关闭 `client.send` **未持有 `client.mu`**；而 `ReadPump` 的 `WSTypePing` handler（324-329 行）在持有**仅 `c.mu`**（非 `h.mu`）时写 `c.send`。两者互斥不成立——ping 写与 unregister/removeClient 并发时可能在已关闭 channel 上发送，panic。`sendRawToClient` 注释声称 `client.send` 只在 `h.mu` 下关闭（广播路径成立），但 ping 路径违反该不变式。
-
 ### 2. `api_handlers.go` `handleWS` 未 nil-check `a.hub`
 - **位置**：`api_handlers.go` 182-186 行
 - **说明**：`NewWSClient(a.hub, conn)` 和 `a.hub.Register(client)` 在 `APIv2` 未配 hub（构造参数可传 nil）时会 panic。其它 handler 都对可选 provider 做 nil check，唯独这个没有。
@@ -68,7 +64,6 @@
 
 | 优先级 | 位置 | 问题 |
 |--------|------|------|
-| **高** | dashboard `ws_hub.go` 203/318 | WebSocket ping/unregister 竞争，可 "send on closed channel" panic |
 | **高** | dashboard `api_handlers.go` 182 | handleWS 未 nil-check hub |
 | 中 | discovery `binary.go` 44 | symlink 绕过 allowlist（安全） |
 | 中 | dashboard `api_handlers.go` 494 | failover 计数把任意成功当 failover |

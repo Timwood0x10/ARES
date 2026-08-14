@@ -6,14 +6,6 @@
 
 ## BUG（高置信度 / 并发）
 
-### 1. 并行评估时共享 `RegressionTester.rng` 造成数据竞争
-- **位置**：`dream_cycle.go` 806-820、871-890 行 + `regression_tester.go` 18、88-89 行
-- **说明**：`findWinner` 通过 `errgroup.Go` 并行评估候选，各 goroutine 调用 `dc.tester.Run(...)`。`RegressionTester` 是共享单例，内部 `t.rng.Float64()`（`math/rand.Rand` **非 goroutine 安全**）被并发访问且无互斥锁。竞态检测器会报告此问题。
-
-### 2. 影子评估（ShadowEvaluation）接线后必然阻止部署
-- **位置**：`dream_cycle.go` 518-546 行 + `shadow_evaluator.go` 162-203 行
-- **说明**：`deployWinner` 接线 `ShadowEvaluator` 时：`StartShadow(mtnWinner)` 重置结果 → 仅记录一次比较（`Evaluate` 或 `RecordResult`）→ 立即调用 `ShouldDeploy()`，而它要求 `total >= minSamples`（默认 `MinSamples=10`）。由于 `total==1 < 10`，`ShouldDeploy()` 返回 false，**只要启用影子评估（默认配置）就永远拒绝部署**。接线逻辑存在硬缺陷。
-
 ### 3. 进化后护栏把 winRate 与基于分数的基线比较，尺度不一致
 - **位置**：`dream_cycle.go` 507 行 + `guardrails.go` 283-309 行
 - **说明**：`PostEvolveCheck(ctx, winner.winRate, ...)` 中 `winRate ∈ [0,1]`，而 `baseline_regression` 护栏用 `bestKnownScore`（前一次 `newBest`，也是 [0,1]）比较。但 `GenomePopulationAdapter.runPostGuardrails`（genome_wiring_run.go 252 行）喂入的是 `postStats.BestScore`（可能是 0-100 的原始分）。**同一 `bestKnownScore` 被两个尺度完全不同的路径共享/变更**，导致不一致和误报的回归阻塞。
@@ -68,8 +60,6 @@
 
 | 优先级 | 位置 | 问题 |
 |--------|------|------|
-| **高** | `regression_tester.go` 88-89 | 共享 `rng` 并发竞争（findWinner 并行评估） |
-| **高** | `shadow_evaluator.go` 162-203 | 影子评估总是阻止部署（samples 不足） |
 | **高** | `guardrails.go` 283-309 | winRate 与 score 基线尺度混淆，误报回归 |
 | 中 | `mutator.go` 346-361 | 子代继承父代 CreatedAt |
 | 中 | `population_options.go` 117 | 选择策略校验/实现不一致 |

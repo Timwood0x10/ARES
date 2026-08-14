@@ -18,10 +18,6 @@
 
 ## DEAD_CODE
 
-### 3. `record.go` `AllowedActions()` 无调用方
-- **位置**：`record.go` 90-94 行
-- **说明**：导出函数 `AllowedActions()` 在整个代码库无调用（仅定义存在）。可能原计划用于 CLI/错误帮助文本但未引用。它使用的 `actionPlan`/`actionImplement` 等常量是活跃的，只有该函数是死的。
-
 ---
 
 ## 结论
@@ -30,4 +26,3 @@
 |--------|------|------|
 | 中 | `identifiers.go` 86 | ip 角色强制要求端口，纯 IP 被拒绝 |
 | 中 | `extract.go` 117 | 任意退出码记入 GoVet，可能误归因 |
-| 低 | `record.go` 90 | AllowedActions() 无调用方 |

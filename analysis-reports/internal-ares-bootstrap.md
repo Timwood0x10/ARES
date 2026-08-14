@@ -6,10 +6,6 @@
 
 ## BUG（高置信度）
 
-### 1. `provide_new_evolution.go` `UpdateLiveDAG` 注册必失败，live-DAG 执行器从不替换
-- **位置**：`provide_new_evolution.go` 343-349 行
-- **说明**：函数重建 graph executor 后调用 `c.PatchReg.RegisterComponent(graphExec)` 再 `c.PatchReg.Register("graph.scheduler", graphExec)`。但 `patch.Registry.Register`（`internal/evolution/patch/patch.go:210`）在 key 已存在时返回错误。bootstrap（`ProvideNewEvolution` 189-191）已注册同一 graph executor 和 `"graph.scheduler"` key，因此 `UpdateLiveDAG` 的两次 `Register` **总是失败**，返回错误，live-DAG graph executor **从不被换入**。同函数的 recovery executor 正确用 `SetDAG`（355 行）而非重新注册——graph 路径应同样处理。`cmd/ares/serve.go:530` 记录该失败。注释（352 行）承认"Register 不能覆盖已注册 key"，但 graph 路径忽略了这点。
-
 ---
 
 ## LOGIC（逻辑问题）
@@ -43,6 +39,5 @@
 
 | 优先级 | 位置 | 问题 |
 |--------|------|------|
-| **高** | `provide_new_evolution.go` 343-349 | UpdateLiveDAG 的 Register 总失败，live-DAG executor 从不替换 |
 | 中 | `provide_mcp.go` 56 | 无服务器路径不启动 |
 | 低 | `provide_llm.go` 50 | 多个兼容包装器生产未用 |
