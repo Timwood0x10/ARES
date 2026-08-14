@@ -195,6 +195,31 @@ teamResult, _ := team.Run(ctx, "Research and write")
 
 See [examples/README.md](examples/README.md) for 9 hands-on examples.
 
+## Agent-OS Primitives (2026-08)
+
+Platform-level primitives added since 0.3.0, all additive and tested. They are
+the "agent OS" building blocks distilled from the prime-agent comparison
+(see [analysis-reports/ares-vs-prime-agent.md](analysis-reports/ares-vs-prime-agent.md) for rationale).
+
+| Primitive | Package / API | Purpose |
+|-----------|---------------|---------|
+| Active tools subset | `internal/tools/resources/core`: `Registry.SetActiveTools` / `ActiveTools` / `ClearActiveTools` | Advertise only the active tool subset to the LLM (progressive disclosure) |
+| Native command discovery | `internal/tools/discovery` | Probe `command -v` + `--help` for allowlisted host commands and expose them as tools (`ARES_NATIVE_TOOLS`) |
+| Peer messaging | `internal/agents/peer` | Direct agent-to-agent message registry + delivery |
+| Small-step evolution | `internal/ares_evolution/refine` | Baseline-checked, rollback-capable supplement-state updates (plan → apply → rollback) |
+| Runtime state snapshot | `internal/ares_runtime`: `SaveStateSnapshot` / `LoadStateSnapshot` | Versioned runtime state snapshots via CheckpointStore (schema-version guarded) |
+| Output guard | `internal/agents/outputguard` | Reject structurally inconsistent agent results at the boundary |
+| Run budgets | `sdk.WithMaxTokens` / `sdk.WithTimeout` (agentloop) | Bounded autonomous execution (token + wall-clock caps) |
+| Fingerprint cache | `internal/ares_arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
+| Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
+| Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
+| Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
+
+Wiring: output guard validates sub-agent results; native tools and the peer
+registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
+checkpoints; strategy feedback flows through the refine trail; run budgets are
+exposed via the SDK options above.
+
 ## Articles
 
 Deep dives into ARES internals:

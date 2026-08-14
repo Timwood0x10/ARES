@@ -321,3 +321,32 @@ ares 作为**通用 agent OS / runtime**，真正值得借鉴的是以下 **7 �
 **不借鉴**：Python skill 包分发、IPython 外置、git worktree、coding 工具（绑定应用的实现不应进入 agent OS 平台层）。
 
 **核心原则**：agent OS 平台层只应包含**与应用无关的通用原语**；具体应用（coding/REPL/特定工具）的实现属于上层应用，不进 ares 核心。这也符合 ares 0.3.0 的设计哲学——**运行时稳定，能力以原语方式提供，应用通过组合这些原语构建**。
+
+---
+
+## 七、实施状态（2026-08-14 更新）
+
+> 上文第 6.2 节的 7 个通用原语已全部落地（新增实现 + 测试 + 生产接线），
+> 补充清单 5.3 的 Session Lease / 动作存储、5.7 的 Skills 渐进式披露也已实现。
+> 均为纯新增、未破坏现有路径；`make fmt && make check` 全绿。
+
+| # | 通用原语 | 实施落点 | 状态 |
+|---|---------|---------|------|
+| 1 | **Harness 式小步进化** | `internal/ares_evolution/refine`（Proposal + baseline 冲突检测 + apply/rollback + 幂等）；已接入 `FeedbackRecorder`（`WithRefiner`，策略分数小步更新） | ✅ 已实现 + 已接线 |
+| 2 | **对等多 Agent 通信** | `internal/agents/peer`（注册表 + 直连 Send，stamp TargetAgent）；serve.go `buildPeerRegistry` 注册 leader + 全部 sub | ✅ 已实现 + 已注册（直发场景待业务侧调用，§5.1 不与事件驱动并存） |
+| 3 | **智能上下文压缩** | 复用现有 `internal/ares_memory/context` `ContextCleaner`（角色感知差分压缩 + turn 分组 + 工具语义摘要，**非 LLM**）——经评估比新建 `internal/compaction` 更优，未新增 | ✅ 已覆盖（不新增） |
+| 4 | **有界自主执行 + 环境指纹** | `agentloop.Request.MaxTokens/Timeout` + `sdk.WithMaxTokens/WithTimeout`；`ares_arena` `RegressionTester.WithFingerprint` 缓存 | ✅ 已实现 + 已接线（sdk 透传） |
+| 5 | **运行时状态快照 + 恢复** | `internal/ares_runtime` `SaveStateSnapshot/LoadStateSnapshot`（SchemaVersion 校验）；已接入 workflow `runner_checkpoint`（persist/load 双路径）；Session Lease / Action Log 见下 | ✅ 已实现 + 已接线 |
+| 6 | **框架级输出校验** | `internal/agents/outputguard`；已接入 `sub/agent.go` `processScheduledEvent` 结果产出处；渐进式披露由原语 7 的 SetActiveTools 承载 | ✅ 已实现 + 已接线 |
+| 7 | **工具按需发现/加载** | `Registry.SetActiveTools/ActiveTools/ClearActiveTools`（活跃子集，零值=全量）；`internal/tools/discovery`（`command -v`+`--help`，allowlist 安全边界）；已接入 serve.go（`ARES_NATIVE_TOOLS`） | ✅ 已实现 + 已接线 |
+
+### 补充清单落地
+
+| 借鉴点 | 实施落点 | 状态 |
+|--------|---------|------|
+| **Skills 渐进式披露**（5.7 高） | `internal/knowledge/skills`（`List` 仅描述常驻 + `LoadDetail` 按需加载） | ✅ 已实现 |
+| **Session Lease**（5.3 中高） | `internal/agents/lease`（`Acquire/Release/Renew`，TTL + 时钟注入，哨兵错误） | ✅ 已实现 |
+| **动作存储 action log**（5.3 中高） | `internal/agents/actionlog`（`Append` 稳定 ID 去重 + `Replay` 从 startID 之后恢复） | ✅ 已实现 |
+
+> 备注：Session Lease / Action Log / Skills 当前为独立可测原语，尚未接入具体生产调用方
+> （与 ares_runtime 能力储备同模式），接线属方向决策（铁律 #4），留待后续。
