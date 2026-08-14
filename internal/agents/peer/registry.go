@@ -1,12 +1,13 @@
 // Package peer provides peer-to-peer agent messaging primitives: a registry
 // that maps agent IDs to send functions and a direct-delivery Send path, so
-// agents can exchange messages without routing through the leader
-// (ares-vs-prime-agent 原语2: 对等多 Agent 通信).
+// agents can exchange messages without routing through the leader (primitive
+// 2: peer-to-peer agent communication).
 //
-// The registry is the discovery surface ("子代理注册表 + 能力发现"): an agent
-// registers its delivery function under its ID, and any other agent can look
-// the ID up and send directly. This complements — and does not replace — the
-// existing leader-dispatched task path (dispatcher.dispatchViaEvents).
+// The registry is the discovery surface (sub-agent registry + capability
+// discovery): an agent registers its delivery function under its ID, and any
+// other agent can look the ID up and send directly. This complements — and
+// does not replace — the existing leader-dispatched task path
+// (dispatcher.dispatchViaEvents).
 package peer
 
 import (

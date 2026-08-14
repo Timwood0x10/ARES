@@ -111,8 +111,8 @@ type RegressionTester struct {
 
 	// fingerprint computes a stable environment key from a config; nil disables
 	// result caching. When set, Run returns the cached result for an unchanged
-	// environment instead of re-running the expensive scoring (原语4: 环境指纹
-	// 防无效重试 — "环境未变则不重跑").
+	// environment instead of re-running the expensive scoring (primitive 4:
+	// environment fingerprint — skip re-runs when the environment is unchanged).
 	fingerprint func(RegressionConfig) string
 	// resultCache memoizes RegressionResult by fingerprint.
 	resultCache map[string]*RegressionResult
@@ -212,10 +212,10 @@ func (rt *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Reg
 		return nil, err
 	}
 
-	// Environment fingerprint cache (原语4): if a fingerprint function is
+	// Environment fingerprint cache (primitive 4): if a fingerprint function is
 	// configured and this environment (candidate/baseline/test-cases) was
 	// already evaluated, return the memoized result instead of re-running the
-	// expensive scoring — "环境未变则不重跑".
+	// expensive scoring — skip re-runs when the environment is unchanged.
 	if rt.fingerprint != nil {
 		key := rt.fingerprint(cfg)
 		rt.cacheMu.Lock()

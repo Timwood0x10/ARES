@@ -263,6 +263,12 @@ type Agent struct {
 	runtime     *Runtime
 	humanInput  HumanInputFunc
 	maxIter     int
+	// maxTokens caps the cumulative prompt+completion tokens per run (<=0 =
+	// unbounded); passed to agentloop.Request.
+	maxTokens int
+	// timeout caps the total wall-clock duration per run (<=0 = no limit);
+	// passed to agentloop.Request.
+	timeout time.Duration
 	// discovery gates runtime tool discovery (see WithToolDiscovery). When
 	// false, Agent.Run is byte-for-byte identical to the legacy path.
 	discovery bool
@@ -970,6 +976,8 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 		runtime:     r,
 		humanInput:  ac.humanInput,
 		maxIter:     ac.maxIter,
+		maxTokens:   ac.maxTokens,
+		timeout:     ac.timeout,
 		discovery:   ac.discovery,
 		toolSource:  ac.toolSource,
 		selector:    ac.selector,
@@ -1019,6 +1027,8 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 		Messages:     messages,
 		Tools:        llmTools,
 		MaxIter:      a.maxIter,
+		MaxTokens:    a.maxTokens,
+		Timeout:      a.timeout,
 		AgentName:    a.name,
 		SessionID:    sessionID,
 		Input:        input,

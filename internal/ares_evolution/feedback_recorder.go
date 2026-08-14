@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/refine"
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
 )
 
@@ -35,6 +36,11 @@ type recordedOutcome struct {
 // Circuit breaker: when the feedback service returns N consecutive errors,
 // the recorder enters a cool-down period and skips further service calls
 // until the cooldown expires.
+//
+// When a refine.Refiner is attached (WithRefiner), each Register also applies
+// a small-step Harness proposal updating the strategy's latest score, giving
+// the evolution loop a rollback-capable, baseline-checked feedback trail
+// (primitive 1: small-step evolution).
 type FeedbackRecorder struct {
 	feedbackService *aresExperience.FeedbackService
 	outcomes        []recordedOutcome
@@ -45,6 +51,25 @@ type FeedbackRecorder struct {
 	circuitBreakerMaxErrors         int
 	circuitBreakerCooldown          time.Duration
 	circuitBreakerOpenedAt          time.Time
+
+	// refiner, when non-nil, receives every registered outcome as a small-step
+	// proposal (see WithRefiner). nil disables the refine trail.
+	refiner *refine.Refiner
+	// strategyScores is the refine.Store backing for strategy score updates,
+	// keyed by "strategy:<id>". Guarded by mu.
+	strategyScores map[string]float64
+}
+
+// FeedbackRecorderOption configures a FeedbackRecorder.
+type FeedbackRecorderOption func(*FeedbackRecorder)
+
+// WithRefiner attaches a refine.Refiner so every registered outcome is applied
+// as a baseline-checked, rollback-capable score update. The refiner's store
+// must be this recorder (it implements refine.Store).
+func WithRefiner(ref *refine.Refiner) FeedbackRecorderOption {
+	return func(r *FeedbackRecorder) {
+		r.refiner = ref
+	}
 }
 
 // NewFeedbackRecorder creates a FeedbackRecorder that records strategy outcomes
@@ -57,14 +82,39 @@ type FeedbackRecorder struct {
 // Returns:
 //
 //	*FeedbackRecorder - the configured recorder instance.
-func NewFeedbackRecorder(feedbackService *aresExperience.FeedbackService) *FeedbackRecorder {
-	return &FeedbackRecorder{
+func NewFeedbackRecorder(feedbackService *aresExperience.FeedbackService, opts ...FeedbackRecorderOption) *FeedbackRecorder {
+	r := &FeedbackRecorder{
 		feedbackService:         feedbackService,
 		outcomes:                make([]recordedOutcome, 0),
 		maxOutcomes:             1000,
 		circuitBreakerMaxErrors: 3,
 		circuitBreakerCooldown:  30 * time.Second,
+		strategyScores:          make(map[string]float64),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// Get implements refine.Store for strategy score entries ("strategy:<id>").
+func (r *FeedbackRecorder) Get(_ context.Context, target string) (any, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	score, ok := r.strategyScores[target]
+	return score, ok
+}
+
+// Set implements refine.Store for strategy score entries.
+func (r *FeedbackRecorder) Set(_ context.Context, target string, value any) error {
+	score, ok := value.(float64)
+	if !ok {
+		return fmt.Errorf("feedback recorder: refine store value for %q is not a float64", target)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.strategyScores[target] = score
+	return nil
 }
 
 // Register records a strategy outcome both locally and in the feedback service.
@@ -100,6 +150,31 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 		r.outcomes = r.outcomes[trimCount:]
 	}
 	r.mu.Unlock()
+
+	// Small-step Harness trail (primitive 1): when a refiner is attached, apply
+	// the outcome as a baseline-checked, rollback-capable score update so the
+	// evolution loop keeps a reversible feedback trail. A stale-write conflict
+	// (concurrent mutation) is non-fatal: the outcome is still recorded locally
+	// and to the feedback service below; only the refine trail skips that edit.
+	if r.refiner != nil && outcome.StrategyID != "" {
+		target := "strategy:" + outcome.StrategyID
+		var before any
+		if v, ok := r.Get(ctx, target); ok {
+			before = v
+		}
+		proposal := refine.Proposal{
+			ID:     fmt.Sprintf("feedback-%s-%d", outcome.StrategyID, time.Now().UnixNano()),
+			Kind:   refine.KindMemory,
+			Target: target,
+			Before: before,
+			After:  outcome.Score,
+			Reason: fmt.Sprintf("strategy outcome success=%t", outcome.Success),
+		}
+		if applyErr := r.refiner.Apply(ctx, proposal); applyErr != nil {
+			log.Warn("[FeedbackRecorder] refine apply failed; outcome still recorded",
+				"strategy_id", outcome.StrategyID, "error", applyErr)
+		}
+	}
 
 	// Skip feedback service if nil (offline mode).
 	if r.feedbackService == nil {

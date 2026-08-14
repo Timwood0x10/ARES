@@ -1,6 +1,6 @@
 // Package refine implements Harness-style small-step evolution of supplement
 // state (memory / skill / context entries): plan → apply → rollback with
-// baseline conflict detection (ares-vs-prime-agent 原语1).
+// baseline conflict detection (primitive 1).
 //
 // The Refiner owns the apply/rollback protocol; the underlying store is
 // injected (e.g. an ares_memory backing store), so this package stays a

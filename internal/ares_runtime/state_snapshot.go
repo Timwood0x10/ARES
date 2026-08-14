@@ -18,7 +18,8 @@ var ErrStateSnapshotNotFound = errors.New("state snapshot: not found")
 const currentStateSnapshotVersion = 1
 
 // StateSnapshot is a versioned, serializable snapshot of runtime state,
-// persisted via CheckpointStore for crash recovery (原语5: 运行时状态快照).
+// persisted via CheckpointStore for crash recovery (primitive 5: runtime
+// state snapshot).
 // State is intentionally an opaque map so callers can snapshot arbitrary
 // runtime variables without coupling this package to their types.
 type StateSnapshot struct {

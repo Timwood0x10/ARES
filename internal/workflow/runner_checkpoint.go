@@ -7,12 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 const runnerCheckpointSchemaVersion = 3
+
+// stateSnapshotKey returns the storage key for a runtime state snapshot of an
+// execution. It is namespaced apart from the authoritative checkpoint key so a
+// versioned state snapshot can be recovered independently.
+func stateSnapshotKey(executionID string) string {
+	return "state-snapshot/" + executionID
+}
 
 // CheckpointSnapshot is the atomic recovery protocol for unified workflow execution.
 type CheckpointSnapshot struct {
@@ -384,6 +392,14 @@ func (r *Runner) persistCheckpoint(ctx context.Context, snapshot CheckpointSnaps
 	if err := r.checkpointStore.Save(ctx, key, payload); err != nil {
 		return fmt.Errorf("save checkpoint %q: %w", key, err)
 	}
+	// Runtime state snapshot (primitive 5): persist the execution state under a
+	// versioned snapshot key in the SAME store. A failure here is non-fatal —
+	// the authoritative checkpoint above already carries State — but a valid
+	// state snapshot gives recovery an independently version-checked source.
+	if err := ares_runtime.SaveStateSnapshot(ctx, r.checkpointStore, stateSnapshotKey(snapshot.ExecutionID), snapshot.State); err != nil {
+		slog.WarnContext(ctx, "workflow state snapshot save failed; checkpoint still persisted",
+			"execution_id", snapshot.ExecutionID, "error", err)
+	}
 	return nil
 }
 
@@ -405,6 +421,20 @@ func (r *Runner) loadCheckpoint(ctx context.Context, executionID string) (*Check
 	}
 	if snapshot.ExecutionID != executionID {
 		return nil, fmt.Errorf("checkpoint execution ID %q does not match requested ID %q", snapshot.ExecutionID, executionID)
+	}
+	// Runtime state snapshot (primitive 5): cross-check the versioned state
+	// snapshot when one exists. A missing snapshot (ErrStateSnapshotNotFound)
+	// is tolerated — older checkpoints predate the snapshot sidecar — but an
+	// unsupported schema version is surfaced so recovery never restores state
+	// written by an incompatible schema.
+	if stateSnap, stateErr := ares_runtime.LoadStateSnapshot(ctx, r.checkpointStore, stateSnapshotKey(executionID)); stateErr != nil {
+		if !errors.Is(stateErr, ares_runtime.ErrStateSnapshotNotFound) {
+			return nil, fmt.Errorf("load state snapshot %q: %w", executionID, stateErr)
+		}
+	} else if stateSnap != nil && stateSnap.State != nil {
+		// The state snapshot is the version-checked authority for State; prefer
+		// it over the checkpoint's embedded State when both exist.
+		snapshot.State = stateSnap.State
 	}
 	return &snapshot, nil
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/leader/aggregate"
+	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -39,6 +40,27 @@ func createAgents(
 	}
 	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store, strategySrc)
 	return leaderAgent, subAgents, nil
+}
+
+// buildPeerRegistry registers the leader and sub agents' message senders into
+// a peer.Registry so agents can exchange messages directly without routing
+// through the leader (primitive 2: peer-to-peer agent messaging). Agents that
+// do not expose SendMessage (interface assertion) are skipped, not an error.
+func buildPeerRegistry(leaderAgent leader.Agent, subAgents []sub.Agent) *peer.Registry {
+	reg := peer.NewRegistry()
+	if sender, ok := leaderAgent.(interface {
+		SendMessage(context.Context, *ahp.AHPMessage) error
+	}); ok {
+		_ = reg.Register(leaderAgent.ID(), sender.SendMessage)
+	}
+	for _, sa := range subAgents {
+		if sender, ok := sa.(interface {
+			SendMessage(context.Context, *ahp.AHPMessage) error
+		}); ok {
+			_ = reg.Register(sa.ID(), sender.SendMessage)
+		}
+	}
+	return reg
 }
 
 func createLeaderAgent(

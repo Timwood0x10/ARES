@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/outputguard"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -443,6 +444,18 @@ func (a *subAgent) processScheduledEvent(ctx context.Context, ev *ares_events.Ev
 	}
 	if !result.Success && result.Error != "" {
 		payload["error"] = result.Error
+	}
+
+	// Output guard (primitive 6): reject structurally inconsistent results at
+	// the boundary — a success carrying an error, or a failure with no detail —
+	// so contradictory state never propagates into aggregation/distillation.
+	if guardErr := outputguard.NewGuard().ValidateResult(result); guardErr != nil {
+		payload["success"] = false
+		payload["error"] = guardErr.Error()
+		a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
+		log.Error("sub agent output guard rejected result",
+			KeyAgentID, a.id, KeyTaskID, task.TaskID, KeyError, guardErr.Error())
+		return
 	}
 
 	a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)

@@ -3,6 +3,7 @@ package sdk
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
@@ -647,6 +648,12 @@ type agentConfig struct {
 	tools       []tools.Tool
 	humanInput  HumanInputFunc
 	maxIter     int
+	// maxTokens caps the cumulative prompt+completion tokens across all LLM
+	// calls in one run (<=0 = unbounded). Passed through to agentloop.Request.
+	maxTokens int
+	// timeout caps the total wall-clock duration of one run (<=0 = no limit).
+	// Passed through to agentloop.Request.
+	timeout time.Duration
 	// discovery enables runtime tool discovery: when true the agent exposes a
 	// discover_tools meta-tool so the LLM can search the tool pool at runtime
 	// and expand its active tool set on demand. Default is off (backward
@@ -701,6 +708,29 @@ func WithMaxIterations(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {
 			c.maxIter = n
+		}
+	}
+}
+
+// WithMaxTokens caps the cumulative prompt+completion tokens across all LLM
+// calls in one agent run. When the budget is exceeded the run stops early and
+// returns "max tokens reached" instead of burning more iterations (primitive
+// 4: bounded autonomous execution). Values <= 0 mean unbounded (default).
+func WithMaxTokens(n int) AgentOption {
+	return func(c *agentConfig) {
+		if n > 0 {
+			c.maxTokens = n
+		}
+	}
+}
+
+// WithTimeout caps the total wall-clock duration of one agent run. When the
+// deadline passes between LLM calls the run stops and returns "timeout
+// reached" (primitive 4). Values <= 0 mean no time budget (default).
+func WithTimeout(d time.Duration) AgentOption {
+	return func(c *agentConfig) {
+		if d > 0 {
+			c.timeout = d
 		}
 	}
 }

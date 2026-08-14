@@ -1,14 +1,58 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/tools/discovery"
 	"github.com/Timwood0x10/ares/internal/tools/planner"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
+
+// nativeToolsEnvVar names the comma-separated allowlist of host commands to
+// discover and register as tools (primitive 7: native command discovery).
+// Empty disables discovery so hosts without the commands degrade gracefully.
+const nativeToolsEnvVar = "ARES_NATIVE_TOOLS"
+
+// registerNativeTools probes the allowlisted host commands via `command -v` +
+// `--help` and registers the ones present into the internal registry. Only
+// commands explicitly listed in ARES_NATIVE_TOOLS are ever probed or executed
+// (allowlist security boundary); non-existent commands are skipped.
+func registerNativeTools(ctx context.Context, internalReg *core.Registry) error {
+	raw := strings.TrimSpace(os.Getenv(nativeToolsEnvVar))
+	if raw == "" {
+		return nil
+	}
+	allowlist := make([]string, 0)
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			allowlist = append(allowlist, name)
+		}
+	}
+	if len(allowlist) == 0 {
+		return nil
+	}
+
+	d := discovery.NewDiscoverer(allowlist)
+	tools, err := d.Discover(ctx)
+	if err != nil {
+		return fmt.Errorf("native tools: discover: %w", err)
+	}
+	registered := 0
+	for _, t := range tools {
+		if err := internalReg.Register(t); err != nil {
+			fmt.Printf("native tool: failed to register %q: %v\n", t.Name(), err)
+			continue
+		}
+		registered++
+	}
+	fmt.Printf("native tools registered: %d (allowlist: %v)\n", registered, allowlist)
+	return nil
+}
 
 // newToolRegistry creates the public tool registry with built-in + custom tools.
 // The file tool is sandboxed to ARES_WORKSPACE_DIR (or the current working

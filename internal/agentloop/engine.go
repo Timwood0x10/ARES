@@ -247,7 +247,7 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 
 		// Token budget: stop the loop as soon as cumulative usage reaches the
 		// cap so a runaway agent cannot burn unbounded tokens before hitting
-		// the iteration cap (ares-vs-prime-agent 原语 4: 有界自主执行).
+		// the iteration cap (primitive 4: bounded autonomous execution).
 		if req.MaxTokens > 0 && st.inputTok+st.outputTok >= req.MaxTokens {
 			e.trace("[ares:trace] %s ⚠ %s (%d total)", req.AgentName, maxTokensReachedMsg, st.inputTok+st.outputTok)
 			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, maxTokensReachedMsg)

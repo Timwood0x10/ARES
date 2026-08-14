@@ -210,6 +210,15 @@ func runServe() error {
 	}
 
 	// --- ToolBinder for agents ---
+	// Primitive 7 wiring: probe host commands from the ARES_NATIVE_TOOLS
+	// allowlist and register them into the internal registry (command -v +
+	// --help; security boundary = allowlist only). Registered tools flow into
+	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
+	// subset per task (progressive disclosure), and serve keeps the full set
+	// active by default (zero-value behavior, no change to LLM tool injection).
+	if err := registerNativeTools(ctx, internalReg); err != nil {
+		return fmt.Errorf("register native tools: %w", err)
+	}
 	toolBinder := newToolBinder(internalReg)
 	log.Printf("tools registered: %d", len(toolBinder.ListTools()))
 
@@ -231,6 +240,14 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+
+	// --- Peer registry: enable direct agent-to-agent messaging ---
+	// Registers the leader and every sub agent's message sender (primitive 2:
+	// peer-to-peer agent communication). The registry is the discovery surface
+	// for direct sends; the leader-dispatched task path remains the primary
+	// execution route, this only adds a peer channel.
+	peerRegistry := buildPeerRegistry(leaderAgent, subAgents)
+	log.Printf("peer registry wired: %d agents registered", len(peerRegistry.IDs()))
 
 	// --- PluginBus + MonitorPlugin ---
 	// NOTE: The ares_runtime plugin framework (PluginBus + capability discovery)
