@@ -2,6 +2,7 @@ package ares_skills
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,5 +274,29 @@ func TestSkillTaskPatternPreciseFirstFallbackChain(t *testing.T) {
 	// Nothing → default.
 	if got := skillTaskPattern(&models.Task{}); got != "default" {
 		t.Fatalf("want default, got %q", got)
+	}
+}
+
+// TestSkillTaskPatternTruncatesTaskDesc verifies the persisted pattern never
+// carries more than maxTaskPatternLen bytes of the original user input — full
+// task descriptions must not be written verbatim to the Experience JSON file.
+func TestSkillTaskPatternTruncatesTaskDesc(t *testing.T) {
+	long := strings.Repeat("x", maxTaskPatternLen+100) + "SENSITIVE-END"
+	got := skillTaskPattern(&models.Task{
+		AgentType: models.AgentTypeTop,
+		Payload:   map[string]any{"task_desc": long},
+	})
+	if len(got) != maxTaskPatternLen {
+		t.Fatalf("want pattern truncated to %d bytes, got %d", maxTaskPatternLen, len(got))
+	}
+	if strings.Contains(got, "SENSITIVE-END") {
+		t.Fatal("truncation must not leak the tail of the original input")
+	}
+	// Short descriptions pass through intact.
+	short := skillTaskPattern(&models.Task{
+		Payload: map[string]any{"task_desc": "audit login"},
+	})
+	if short != "audit login" {
+		t.Fatalf("short description must pass through, got %q", short)
 	}
 }

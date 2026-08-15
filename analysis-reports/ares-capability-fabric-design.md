@@ -332,7 +332,7 @@ type ExperienceRecord struct {
 `{skill, task_pattern, success_rate}`。以后同任务模式优先匹配该 skill。
 （可复用现有 `internal/ares_evolution/refine` / feedback_recorder 的持久化模式。）
 
-**task_pattern 精确化（2026-08-15）**：planner 创建 task 时把原始任务输入存入 `task.Payload["task_desc"]`；`SkillOutcomeRecorder.skillTaskPattern` 以精确描述优先（trim 后），无则回退 `AgentType` → `subAgentID` → `"default"`。`BestMatch` 双向子串匹配命中率显著提升（精确描述 vs 粗粒度 agent 类型）。
+**task_pattern 精确化（2026-08-15）**：planner 创建 task 时把原始任务输入存入 `task.Payload["task_desc"]`；`SkillOutcomeRecorder.skillTaskPattern` 以精确描述优先（trim 后截断至 256 字符，防止完整用户输入明文落盘 `experience.json`），无则回退 `AgentType` → `subAgentID` → `"default"`。`BestMatch` 匹配语义升级为关键词重叠评分：短 pattern（<4 token，如回退的 `agent_top`）保持双向子串语义；长 pattern（完整任务描述）按 token 重叠率评分且需 ≥0.5 阈值才算命中，避免两个长描述仅共享偶发词汇时的虚假匹配（如 `skill_experience` 工具与 locator 用完整用户输入查询的场景）。
 
 ---
 

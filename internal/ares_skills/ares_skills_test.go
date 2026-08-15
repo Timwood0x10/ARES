@@ -300,6 +300,45 @@ func TestExperienceRecordAndBestMatch(t *testing.T) {
 	}
 }
 
+// TestBestMatchKeywordScoring verifies long (full-description) patterns match
+// by keyword overlap rather than raw substring containment, so two verbose
+// descriptions sharing only an incidental word do not spuriously match — while
+// genuinely overlapping descriptions still match and rank by success rate.
+func TestBestMatchKeywordScoring(t *testing.T) {
+	e := NewExperience()
+	// A stored prior describing a PDF-conversion task.
+	if err := e.Record("pdf-gen", "convert markdown documents into a pdf report", 0.9); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Genuinely overlapping long query: must match the pdf-gen prior.
+	best, ok := e.BestMatch("please convert this markdown document into a pdf report for the team")
+	if !ok {
+		t.Fatal("overlapping long query must match")
+	}
+	if best.Skill != "pdf-gen" {
+		t.Fatalf("want pdf-gen, got %+v", best)
+	}
+
+	// Incidental single-word overlap: "report" appears in both but the rest of
+	// the query is about something else. With substring semantics the stored
+	// pattern ("...into a pdf report") is NOT contained in the query and the
+	// query is not contained in it, so this would 0-match regardless; with the
+	// keyword scorer the shared-token ratio stays below the no-match threshold.
+	if _, ok := e.BestMatch("give me the weekly expense report please"); ok {
+		t.Fatal("incidental single-word overlap must not match")
+	}
+
+	// Short coarse pattern keeps legacy substring semantics.
+	if err := e.Record("audit", "agent_top", 1.0); err != nil {
+		t.Fatalf("Record coarse: %v", err)
+	}
+	best, ok = e.BestMatch("agent_top")
+	if !ok || best.Skill != "audit" {
+		t.Fatalf("short pattern must match via substring, got %+v ok=%v", best, ok)
+	}
+}
+
 func TestCatalogEndToEnd(t *testing.T) {
 	root := t.TempDir()
 	makeSkillDir(t, root, "audit", "Security Audit", "audit code for OWASP", `

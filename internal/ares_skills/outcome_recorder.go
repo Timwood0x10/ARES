@@ -146,14 +146,28 @@ func (r *SkillOutcomeRecorder) consumeOne(ev *ares_events.Event) {
 	r.appendOutcome(outcomeRecord{skillID: skillID, pattern: pattern, success: success})
 }
 
+// maxTaskPatternLen bounds the persisted task pattern. The planner stores the
+// original user input under "task_desc"; persisting it verbatim would write
+// arbitrary user content (potentially sensitive) to the Experience JSON file.
+// Truncation keeps the pattern long enough for keyword scoring to discriminate
+// while bounding what is stored.
+const maxTaskPatternLen = 256
+
 // skillTaskPattern derives the task pattern for the experience prior. A
 // precise description (the planner stores the original task input under
 // "task_desc") is preferred — it gives BestMatch a far higher hit rate than
-// the coarse agent type. Falls back to the agent type (e.g. "top"), then the
-// sub-agent ID, then "default". It never returns "".
+// the coarse agent type. It is truncated to maxTaskPatternLen so full user
+// input never lands in the Experience store. Falls back to the agent type
+// (e.g. "top"), then the sub-agent ID, then "default". It never returns "".
 func skillTaskPattern(task *models.Task) string {
-	if desc, ok := task.Payload["task_desc"].(string); ok && strings.TrimSpace(desc) != "" {
-		return strings.TrimSpace(desc)
+	if desc, ok := task.Payload["task_desc"].(string); ok {
+		desc = strings.TrimSpace(desc)
+		if desc != "" {
+			if len(desc) > maxTaskPatternLen {
+				desc = desc[:maxTaskPatternLen]
+			}
+			return desc
+		}
 	}
 	if task.AgentType != "" {
 		return string(task.AgentType)
