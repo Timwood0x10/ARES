@@ -1,6 +1,6 @@
 # ARES Capability Fabric — Skill 系统设计文档
 
-> 状态：**设计稿（v0.1，待确认后实施）**
+> 状态：**已实施（2026-08-15）**——第一批：SkillCatalog 核心（SourceManager/Indexer/Discovery/Loader/ToolResolver/Experience）+ Catalog 门面 + 生产接线（serve.go wireSkillCatalog → memoryManager 常驻技能块）。第二批：`~/.ares/config.toml` `[[skill_sources]]` 解析、MCP 懒连接（`Catalog.Activate` → `ConnectServer`）、Experience JSON 持久化、envcap 聚合桥接、hash 变更检测（`DetectIndexChanges` + `Refresh`）。第三批：Git 源（`SyncGitSource`）、HTTP/OCI 源（`FetchHTTPManifest`）、SQLite FTS5 全文检索（`FTS5Index` + Discovery 回退）、MCP listChanged 增量重索引（`MCPManager.SetToolChangeHandler` → `Catalog.Refresh`）。第四批（code_review 修复，本日）：`Refresh` 与 `Build` 语义对齐（重拉 http 源 + 重建 FTS5 关旧索引 + 重 seed registry）、Catalog 全量 RWMutex 并发保护（写锁 swap / 读锁 Search·Load·All·ResolveTools）、git sync 2 分钟超时防阻塞启动、并发 Refresh 与 Build→Refresh 一致性测试（-race）。30 组测试守护，`make fmt && make check` 全绿（166 包）。
 > 目标：ARES 0.3.0 的 Skill 不是"又一个 Skill 系统"，而是 **Capability Package**——
 > 一个把专业化 Agent、Handoff、Evidence、MCP、本机工具、Token 优化统一串起来的小抽象。
 > 命名克制：实现层只有 `SkillCatalog` / `SkillLoader` / `ToolResolver`，不引入

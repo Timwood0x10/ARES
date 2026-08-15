@@ -40,6 +40,32 @@ type MCPManager struct {
 	registry *core.Registry
 	mu       sync.RWMutex
 	config   *MCPManagerConfig
+	// toolChangeHandler, when set, is invoked after every tools/listChanged
+	// refresh so consumers (e.g. the skill catalog) can re-index on demand.
+	toolChangeHandler func()
+}
+
+// SetToolChangeHandler registers a callback invoked after every
+// tools/listChanged refresh. nil detaches it. Consumers (e.g. the skill
+// catalog) use it to trigger incremental re-indexing on demand.
+//
+// Args:
+//   - handler: the callback, or nil.
+func (m *MCPManager) SetToolChangeHandler(handler func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolChangeHandler = handler
+}
+
+// notifyToolChange invokes the registered listChanged handler, if any.
+// Caller must NOT hold the lock (the handler may call back into the manager).
+func (m *MCPManager) notifyToolChange() {
+	m.mu.RLock()
+	handler := m.toolChangeHandler
+	m.mu.RUnlock()
+	if handler != nil {
+		handler()
+	}
 }
 
 // managedClient holds an MCPClient and its metadata.
@@ -141,6 +167,7 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 		if err := m.RefreshTools(refreshCtx, name); err != nil {
 			log.Warn("mcp: failed to refresh tools", "server", name, "error", err)
 		}
+		m.notifyToolChange()
 	}
 
 	client := NewMCPClient(MCPClientConfig{

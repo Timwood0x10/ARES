@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -24,12 +25,16 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
+	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
+	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
@@ -392,6 +397,12 @@ func createAndRegisterServeAgents(
 ) (leader.Agent, []sub.Agent, error) {
 	memMgr := comp.Memory
 	store := comp.EventStore
+
+	// Wire the Capability Fabric (SkillCatalog) into the memory manager's
+	// resident skill block. The catalog indexes only declared sources
+	// (project .ares/skills + user ~/.ares/skills); a failure is logged and
+	// serve continues without skills rather than failing startup.
+	wireSkillCatalog(cfg, memMgr, toolBinder, comp.MCP)
 
 	// Wire the GA's deployed strategy into live agents so the running agents
 	// read the active prompt/params at runtime. When evolution is disabled
@@ -931,3 +942,72 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 
 // Ensure liveDAGPatchExecutor implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*liveDAGPatchExecutor)(nil)
+
+// wireSkillCatalog builds the Capability Fabric catalog over the declared
+// skill sources (project ".ares/skills" + user "~/.ares/skills") and seeds
+// the memory manager's resident skill block (Level-0 metadata only). The
+// catalog is wired via duck typing: SetSkillsRegistry is a concrete method on
+// the memory manager, not part of the MemoryManager interface. Any failure is
+// logged and serve continues without skills.
+func wireSkillCatalog(cfg *ares_config.Config, memMgr memory.MemoryManager, toolBinder sub.ToolBinder, mcpMgr *ares_mcp.MCPManager) {
+	projectSkills := filepath.Join(".", ".ares", "skills")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	// Registered extra sources come from ~/.ares/config.toml [[skill_sources]];
+	// a missing file or parse error degrades to project+user sources only.
+	extraDirs, err := ares_skills.LoadRegisteredSkillDirs("")
+	if err != nil {
+		log.Printf("skill catalog: load registered sources failed: %v", err)
+	}
+	_, gitSources, httpSources, err := ares_skills.LoadSkillSources("")
+	if err != nil {
+		log.Printf("skill catalog: load git sources failed: %v", err)
+	}
+	catalog := ares_skills.NewCatalog(ares_skills.CatalogConfig{
+		ProjectSkillsDir:      projectSkills,
+		UserSkillsDir:         filepath.Join(home, ".ares", "skills"),
+		RegisteredDirs:        extraDirs,
+		AllowLocalExecutables: true,
+		Builtins:              toolBinder.ListTools(),
+		ExperiencePath:        filepath.Join(home, ".ares", "experience.json"),
+	})
+	catalog.SetGitSources(gitSources)
+	catalog.SetHTTPSources(httpSources)
+	if len(gitSources) > 0 {
+		// Bound the git sync so an unreachable host degrades to
+		// local-checkout-only indexing instead of blocking serve startup
+		// for the OS connect timeout.
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer syncCancel()
+		if syncErr := catalog.SyncGitSources(syncCtx); syncErr != nil {
+			log.Printf("skill catalog: git sync failed (indexing local checkouts only): %v", syncErr)
+		}
+	}
+	if mcpMgr != nil {
+		// MCP servers are lazy: connected only when a skill declaring them is
+		// activated (design principle 3 / acceptance #3).
+		catalog.SetMCPConnector(mcpMgr)
+		// tools/listChanged notifications trigger an incremental re-index so
+		// the catalog reflects newly surfaced MCP tools on demand.
+		mcpMgr.SetToolChangeHandler(func() {
+			if _, refreshErr := catalog.Refresh(); refreshErr != nil {
+				log.Printf("skill catalog: listChanged refresh failed: %v", refreshErr)
+			}
+		})
+	}
+	if err := catalog.Build(); err != nil {
+		log.Printf("skill catalog: build failed: %v", err)
+		return
+	}
+	reg := skills.NewRegistry()
+	if err := catalog.SeedRegistry(reg); err != nil {
+		log.Printf("skill catalog: seed registry failed: %v", err)
+		return
+	}
+	if mm, ok := memMgr.(interface{ SetSkillsRegistry(*skills.Registry) }); ok {
+		mm.SetSkillsRegistry(reg)
+		log.Printf("skill catalog: indexed %d skills", len(catalog.All()))
+	}
+}
