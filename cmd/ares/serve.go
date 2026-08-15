@@ -242,7 +242,7 @@ func runServe() error {
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
 	// --- Create + register agents with the runtime manager ---
-	leaderAgent, subAgents, err := createAndRegisterServeAgents(cfg, llmAdapter, chatClient, toolBinder, comp, mgr)
+	leaderAgent, subAgents, err := createAndRegisterServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
 	if err != nil {
 		return err
 	}
@@ -388,7 +388,9 @@ func runServe() error {
 // factories) on the runtime manager. Extracted from runServe to keep its
 // cyclomatic complexity within lint limits.
 func createAndRegisterServeAgents(
+	ctx context.Context,
 	cfg *ares_config.Config,
+	internalReg *core_tools.Registry,
 	llmAdapter output.LLMAdapter,
 	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
@@ -399,10 +401,37 @@ func createAndRegisterServeAgents(
 	store := comp.EventStore
 
 	// Wire the Capability Fabric (SkillCatalog) into the memory manager's
-	// resident skill block. The catalog indexes only declared sources
-	// (project .ares/skills + user ~/.ares/skills); a failure is logged and
-	// serve continues without skills rather than failing startup.
-	wireSkillCatalog(cfg, memMgr, toolBinder, comp.MCP)
+	// resident skill block and register its agent-facing tools. The catalog
+	// indexes only declared sources (project .ares/skills + user ~/.ares/skills);
+	// a failure is logged and serve continues without skills rather than
+	// failing startup.
+	skillCatalog := wireSkillCatalog(cfg, internalReg, toolBinder, memMgr, comp.MCP)
+	// The skill locator closes the design §11 feedback loop on the record side:
+	// it pre-fills task.UsedExperienceID with the best-matching skill for the
+	// task input, so a task outcome can be attributed to a skill later. nil
+	// when the catalog is unavailable (offline mode: tasks just carry no
+	// skill association).
+	var skillLocator leader.ExperienceLocator
+	if skillCatalog != nil {
+		skillLocator = func(inputText string) string {
+			if rec, ok := skillCatalog.Experience().BestMatch(inputText); ok {
+				return rec.Skill
+			}
+			return ""
+		}
+	}
+	// The outcome recorder closes the record side of the design §11 loop: it
+	// subscribes to EventSubTaskResult and persists {skill, task_pattern,
+	// success} outcomes into the catalog's Experience store. It is best-effort
+	// (failures are logged, never fatal) and decoupled from agent code — it
+	// only observes the existing event stream, so it cannot affect task
+	// execution or agent behavior.
+	if skillCatalog != nil {
+		recorder := ares_skills.NewSkillOutcomeRecorder(skillCatalog)
+		if startErr := recorder.Start(ctx, comp.EventStore); startErr != nil {
+			log.Printf("skill catalog: outcome recorder start failed: %v", startErr)
+		}
+	}
 
 	// Wire the GA's deployed strategy into live agents so the running agents
 	// read the active prompt/params at runtime. When evolution is disabled
@@ -417,14 +446,14 @@ func createAndRegisterServeAgents(
 		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
 	}
 
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create agents: %w", err)
 	}
 
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)
@@ -432,7 +461,7 @@ func createAndRegisterServeAgents(
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s
@@ -945,11 +974,19 @@ var _ patch.RuntimeComponent = (*liveDAGPatchExecutor)(nil)
 
 // wireSkillCatalog builds the Capability Fabric catalog over the declared
 // skill sources (project ".ares/skills" + user "~/.ares/skills") and seeds
-// the memory manager's resident skill block (Level-0 metadata only). The
-// catalog is wired via duck typing: SetSkillsRegistry is a concrete method on
-// the memory manager, not part of the MemoryManager interface. Any failure is
-// logged and serve continues without skills.
-func wireSkillCatalog(cfg *ares_config.Config, memMgr memory.MemoryManager, toolBinder sub.ToolBinder, mcpMgr *ares_mcp.MCPManager) {
+// the memory manager's resident skill block (Level-0 metadata only). It then
+// registers the catalog's agent-facing tools (skill_search / skill_load /
+// skill_activate / skill_list) into the shared internal registry and re-bridges
+// the tool binder, so the LLM can actually discover, load and activate skills
+// at runtime (design §10 main loop). The catalog is wired via duck typing:
+// SetSkillsRegistry is a concrete method on the memory manager, not part of
+// the MemoryManager interface. Any failure is logged and serve continues
+// without skills.
+//
+// Returns:
+//   - *ares_skills.Catalog: the built catalog, or nil when building/seeding
+//     failed (callers treat nil as "skills unavailable").
+func wireSkillCatalog(cfg *ares_config.Config, internalReg *core_tools.Registry, toolBinder sub.ToolBinder, memMgr memory.MemoryManager, mcpMgr *ares_mcp.MCPManager) *ares_skills.Catalog {
 	projectSkills := filepath.Join(".", ".ares", "skills")
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -999,15 +1036,31 @@ func wireSkillCatalog(cfg *ares_config.Config, memMgr memory.MemoryManager, tool
 	}
 	if err := catalog.Build(); err != nil {
 		log.Printf("skill catalog: build failed: %v", err)
-		return
+		return nil
 	}
 	reg := skills.NewRegistry()
 	if err := catalog.SeedRegistry(reg); err != nil {
 		log.Printf("skill catalog: seed registry failed: %v", err)
-		return
+		return nil
 	}
 	if mm, ok := memMgr.(interface{ SetSkillsRegistry(*skills.Registry) }); ok {
 		mm.SetSkillsRegistry(reg)
-		log.Printf("skill catalog: indexed %d skills", len(catalog.All()))
 	}
+	// Agent-facing tools close the design §10 loop (Discover -> Load ->
+	// Execute). Registering into the shared registry surfaces their schemas to
+	// the LLM; re-bridging makes CallTool reach them (BridgeFromRegistry never
+	// overwrites existing bindings, so repeating it is safe).
+	registered := 0
+	for _, tool := range ares_skills.CatalogTools(catalog) {
+		if regErr := internalReg.Register(tool); regErr != nil {
+			log.Printf("skill catalog: register tool %q failed: %v", tool.Name(), regErr)
+			continue
+		}
+		registered++
+	}
+	if registered > 0 {
+		toolBinder.BridgeFromRegistry(internalReg)
+	}
+	log.Printf("skill catalog: indexed %d skills, %d agent tools registered", len(catalog.All()), registered)
+	return catalog
 }

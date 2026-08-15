@@ -30,6 +30,12 @@ type Skill struct {
 type Registry struct {
 	mu     sync.RWMutex
 	skills map[string]Skill
+	// detailLoader, when set, fetches a skill body on demand whenever a
+	// registered skill has no in-memory Detail (e.g. the skill catalog backs
+	// the registry without loading every SKILL.md at seed time). The loader
+	// keeps the knowledge/skills package free of a dependency on the catalog.
+	// Guarded by mu.
+	detailLoader func(name string) (string, bool)
 }
 
 // NewRegistry creates an empty skill registry.
@@ -63,16 +69,42 @@ func (r *Registry) List() []Skill {
 	return out
 }
 
+// SetDetailLoader attaches an on-demand detail loader. When set, LoadDetail
+// falls back to it for registered skills whose in-memory Detail is empty (and
+// for names the loader knows but the registry does not). nil detaches it.
+//
+// Args:
+//   - fn: the loader (name -> body, found), or nil.
+func (r *Registry) SetDetailLoader(fn func(name string) (string, bool)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.detailLoader = fn
+}
+
 // LoadDetail returns the full skill body for name. ok is false when the skill
-// is unknown — the caller renders "unknown skill" instead of a broken body.
+// is unknown (and no detail loader can supply it) — the caller renders
+// "unknown skill" instead of a broken body. A registered skill with an empty
+// in-memory Detail is resolved lazily through the detail loader when one is
+// attached, so the body is fetched on demand without holding the registry lock.
 func (r *Registry) LoadDetail(name string) (string, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	s, ok := r.skills[name]
+	loader := r.detailLoader
+	r.mu.RUnlock()
+
 	if !ok {
+		if loader != nil {
+			return loader(name)
+		}
 		return "", false
 	}
-	return s.Detail, true
+	if s.Detail != "" {
+		return s.Detail, true
+	}
+	if loader != nil {
+		return loader(name)
+	}
+	return "", true
 }
 
 // Has reports whether a skill is registered.

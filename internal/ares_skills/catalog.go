@@ -305,7 +305,9 @@ func (c *Catalog) Refresh() (IndexChange, error) {
 // indexed skill descriptions (name + one-liner). This wires the catalog into
 // the memory manager's resident skill block without changing its interface.
 // The registry is remembered and re-seeded automatically after every
-// Build/Refresh so catalog and memory never diverge.
+// Build/Refresh so catalog and memory never diverge. A detail loader is also
+// attached so Registry.LoadDetail reads a skill's SKILL.md body on demand
+// (Level-1 progressive disclosure) instead of returning an empty body.
 //
 // Args:
 //   - reg: the target registry (may be nil, then this is a no-op).
@@ -319,6 +321,17 @@ func (c *Catalog) SeedRegistry(reg *skills.Registry) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.registry = reg
+	// Level-1 on-demand body loading: LoadDetail falls back to the catalog's
+	// Loader when the registry's in-memory Detail is empty. The closure calls
+	// c.Load (read-locked) only when invoked, never while this write lock is
+	// held.
+	reg.SetDetailLoader(func(name string) (string, bool) {
+		body, err := c.Load(name)
+		if err != nil {
+			return "", false
+		}
+		return body, true
+	})
 	if c.discovery == nil {
 		return nil
 	}

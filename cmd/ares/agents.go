@@ -33,8 +33,9 @@ func createAgents(
 	store ares_events.EventStore,
 	feedbackSvc *experience.FeedbackService,
 	strategySrc agents.StrategySource,
+	skillLocator leader.ExperienceLocator,
 ) (leader.Agent, []sub.Agent, error) {
-	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create leader: %w", err)
 	}
@@ -72,6 +73,7 @@ func createLeaderAgent(
 	store ares_events.EventStore,
 	feedbackSvc *experience.FeedbackService,
 	strategySrc agents.StrategySource,
+	skillLocator leader.ExperienceLocator,
 ) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		llmAdapter,
@@ -89,7 +91,15 @@ func createLeaderAgent(
 			Triggers: s.Triggers,
 		}
 	}
-	taskPlanner := leader.NewTaskPlannerWithConfig(len(cfg.Agents.Sub), subAgentConfigs)
+	// The skill locator pre-fills task.UsedExperienceID with the best-matching
+	// skill for the task input, so the design §11 feedback loop can attribute a
+	// task outcome to a skill. It is optional: nil leaves UsedExperienceID
+	// empty (existing behavior).
+	plannerOpts := make([]leader.PlannerOption, 0, 1)
+	if skillLocator != nil {
+		plannerOpts = append(plannerOpts, leader.WithExperienceLocator(skillLocator))
+	}
+	taskPlanner := leader.NewTaskPlannerWithConfig(len(cfg.Agents.Sub), subAgentConfigs, plannerOpts...)
 
 	agentRegistry := make(map[models.AgentType]string)
 	for _, s := range cfg.Agents.Sub {
