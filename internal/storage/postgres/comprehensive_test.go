@@ -2,6 +2,7 @@
 package postgres
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -61,3 +62,26 @@ func createMockPool() *Pool {
 }
 
 // nolint: errcheck // Test code may ignore return values
+
+// TestQueryWithTenantRejectsEmptyTenant verifies the mandatory-tenant guard:
+// an empty tenant ID is rejected before any DB access (no real database
+// required). Full RLS isolation semantics (set_config is_local=false at
+// connection level, cleared on ManagedRows.Close) require a real Postgres
+// environment and are documented in pool.go.
+func TestQueryWithTenantRejectsEmptyTenant(t *testing.T) {
+	pool := createMockPool()
+	if _, err := pool.QueryWithTenant(context.Background(), "", "SELECT 1"); err != ErrMissingTenantID {
+		t.Fatalf("empty tenant must be rejected with ErrMissingTenantID, got %v", err)
+	}
+	if _, err := pool.ExecWithTenant(context.Background(), "", "SELECT 1"); err != ErrMissingTenantID {
+		t.Fatalf("empty tenant must be rejected with ErrMissingTenantID, got %v", err)
+	}
+}
+
+// TestClearTenantContextNilSafe verifies the tenant-context cleanup helper
+// tolerates a nil connection without panicking. The cleanup runs on error
+// paths (QueryWithTenant set/query failure) and on ManagedRows.Close, where a
+// nil guard keeps those paths safe even under partial initialization.
+func TestClearTenantContextNilSafe(t *testing.T) {
+	clearTenantContext(nil) // must not panic
+}

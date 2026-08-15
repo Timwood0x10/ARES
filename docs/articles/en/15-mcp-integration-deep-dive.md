@@ -394,6 +394,14 @@ graph LR
     I --> J[Tool available to agents]
 ```
 
+### 5.1 Capability Fabric Lazy Connection (new in 0.3.0)
+
+Since 0.3.0, MCP connections gained a skill-driven lazy path (design principle 3: **a Skill is the lazy-loading boundary of an MCP server**): the `Catalog` in `internal/ares_skills` is wired at serve startup via `SetMCPConnector(mcpMgr)`, and the `skill_activate` tool calls `Catalog.Activate(ctx, skillID)`, which runs `ConnectServer(ctx, serverName)` for each `mcp` tool the skill declares.
+
+- Connection timing extends from "connect at startup (AutoStart)" to "**connect only when a skill is activated**" — 1000 MCP tools never enter context
+- `MCPManager.SetToolChangeHandler` bridges `tools/listChanged` notifications → `Catalog.Refresh` (hash-based incremental re-index), so tool changes surface in the catalog on demand
+- Coexists with AutoStart: servers explicitly declaring `auto_start=true` still connect through the legacy startup path
+
 The manager keeps a list of registered tool names per server. When disconnecting, it unregisters exactly those tools — no more, no less. This prevents stale tool references from lingering in the registry after a server goes down.
 
 ---

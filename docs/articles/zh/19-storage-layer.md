@@ -41,6 +41,8 @@ Pool 包装 `sql.DB`，加使用追踪。`Get() → usage → Release()` 模式�
 
 **关键洞察**：`ErrMissingTenantID` 在 pool 层强制执行。任何没有 tenant ID 的租户感知查询会快速失败——防止静默的跨租户数据泄漏（P1-11 安全修复）。
 
+**RLS 连接级修复（0.3.0）**：`QueryWithTenant` 在连接级执行 `set_config('app.tenant_id', $1, false)`（is_local=false，autocommit 下对后续查询生效），`ManagedRows.Close` 归还连接前清除租户上下文（`set_config('app.tenant_id', '', false)`）防池化泄漏；`ExecWithTenant` 则事务包裹（BeginTx→set_config→Commit）。
+
 ### 2. CircuitBreaker — 故障隔离
 
 ```go

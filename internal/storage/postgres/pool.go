@@ -203,9 +203,28 @@ func (p *Pool) ExecWithTenant(ctx context.Context, tenantID string, query string
 	return result, nil
 }
 
+// clearTenantContext resets the connection-level tenant context (is_local=false)
+// so a pooled connection reused by another tenant cannot carry a stale RLS
+// setting. Best-effort: failures are logged, never propagated. A bounded
+// context prevents the cleanup from hanging on a broken connection.
+func clearTenantContext(conn *sql.Conn) {
+	if conn == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := conn.ExecContext(ctx, "SELECT set_config('app.tenant_id', '', false)"); err != nil {
+		log.Warn("pool: clear tenant context failed", "error", err)
+	}
+}
+
 // QueryWithTenant executes a query with a mandatory tenant context on the same
-// connection. Sets tenant_id on the connection before querying so RLS policies
-// are enforced. The connection is held open until ManagedRows.Close().
+// connection. Sets tenant_id at connection level (is_local=false) so RLS
+// policies are enforced for the query that follows — the previous is_local=true
+// variant was transaction-scoped and evaporated under autocommit, silently
+// disabling RLS. The connection is held open until ManagedRows.Close(), which
+// clears the tenant context before returning the connection to the pool so it
+// cannot leak into other tenants' requests.
 func (p *Pool) QueryWithTenant(ctx context.Context, tenantID string, query string, args ...any) (*ManagedRows, error) {
 	if tenantID == "" {
 		return nil, ErrMissingTenantID
@@ -214,17 +233,26 @@ func (p *Pool) QueryWithTenant(ctx context.Context, tenantID string, query strin
 	if err != nil {
 		return nil, errors.Wrap(err, "get connection")
 	}
-	// Set tenant context directly on this connection (not via the pool).
-	if _, setErr := conn.ExecContext(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID); setErr != nil {
+	// Set tenant context at connection level (is_local=false) so it survives
+	// the autocommit boundary and applies to the subsequent query.
+	if _, setErr := conn.ExecContext(ctx, "SELECT set_config('app.tenant_id', $1, false)", tenantID); setErr != nil {
+		// Even if set_config itself failed, clear defensively so a partially
+		// set tenant cannot leak into the pool.
+		clearTenantContext(conn)
 		_ = conn.Close()
 		return nil, errors.Wrap(setErr, "set tenant context")
 	}
 	rows, queryErr := conn.QueryContext(ctx, query, args...)
 	if queryErr != nil {
+		// The tenant context was set successfully; without the clear below the
+		// connection would return to the pool still bound to this tenant and
+		// leak RLS state into other tenants' requests (the very bug this method
+		// exists to prevent).
+		clearTenantContext(conn)
 		_ = conn.Close()
 		return nil, queryErr
 	}
-	return &ManagedRows{Rows: rows, conn: conn, pool: p}, nil
+	return &ManagedRows{Rows: rows, conn: conn, pool: p, tenant: true}, nil
 }
 
 // Query executes a query and returns rows.
@@ -283,6 +311,10 @@ type ManagedRows struct {
 	conn   *sql.Conn
 	pool   *Pool
 	cancel context.CancelFunc
+	// tenant marks connections whose tenant context was set at connection
+	// level (QueryWithTenant); Close clears it before pooling so the setting
+	// cannot leak into other tenants' requests.
+	tenant bool
 }
 
 // Close closes the rows and releases the connection.
@@ -293,6 +325,13 @@ func (m *ManagedRows) Close() error {
 		m.cancel = nil
 	}
 	if m.conn != nil {
+		if m.tenant {
+			// Clear the connection-level tenant context before releasing the
+			// connection; otherwise a pooled connection reused by another
+			// tenant would still carry this tenant's RLS setting.
+			clearTenantContext(m.conn)
+			m.tenant = false
+		}
 		m.pool.Release(m.conn)
 		m.conn = nil
 		runtime.SetFinalizer(m, nil)

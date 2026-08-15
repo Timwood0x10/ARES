@@ -385,6 +385,14 @@ graph TB
     end
 ```
 
+### 5.1 Capability Fabric 懒连接（0.3.0 新增）
+
+0.3.0 起 MCP 连接增加了一条由 Skill 驱动的懒连接路径（设计原则③：**Skill 是 MCP Server 的 lazy-loading boundary**）：`internal/ares_skills` 的 `Catalog` 在 serve 启动时经 `SetMCPConnector(mcpMgr)` 接入，`skill_activate` 工具调用 `Catalog.Activate(ctx, skillID)` 时才对其声明的 `mcp` 工具逐个执行 `ConnectServer(ctx, serverName)`。
+
+- 连接时机从"启动即连（AutoStart）"扩展为"**激活 Skill 才连**"——1000 个 MCP 工具永不进 context
+- `MCPManager.SetToolChangeHandler` 桥接 `tools/listChanged` 通知 → `Catalog.Refresh`（hash 增量重索引），新工具变更按需反映到 catalog
+- 与 AutoStart 并存：显式声明 `auto_start=true` 的服务器仍按老路径启动连接
+
 `ConnectServer` 是单个服务器的连接入口。它做了一件很关键的事：连接成功后，自动把服务器上的所有工具注册到 `core.Registry`：
 
 ```go

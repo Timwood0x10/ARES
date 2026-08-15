@@ -22,7 +22,7 @@ ares is built around these three questions. Everything else — the DAG engine, 
 
 ---
 
-## The Architecture: Five Layers
+## The Architecture: Six Layers
 
 ```mermaid
 graph TB
@@ -102,7 +102,7 @@ graph TB
     Exec --> Events
 ```
 
-**Layer 1: API Contract** — What the outside world sees. Interfaces only, no implementations. The Bootstrap factory wires everything together. You call `bootstrap.New()` and get a fully connected system.
+**Layer 1: API Contract** — What the outside world sees. Interfaces only, no implementations. The Bootstrap factory wires everything together. You call `ares_bootstrap.Bootstrap()` and get a fully connected system — LLM, Memory, Knowledge/AKG, Evolution, Storage, Embedding, MCP, Flight Recorder, EventStore, and the Agent Runtime — all assembled from a single config struct. The SDK reuses this same Bootstrap kernel through `sdk.newBootstrapCore()`, so `serve`, `start`, and the SDK all share the same component graph.
 
 **Layer 2: Runtime** — Who does the work. The Runtime Manager owns agent lifecycles: birth, death, resurrection. The Leader plans and delegates. Sub Agents execute. The PluginBus connects everything. The **Active Strategy** carries evolved parameters (tool selection, search depth, scheduler strategy) that the GA engine produces.
 
@@ -113,6 +113,14 @@ graph TB
 **Layer 5: Evolution Engine** — How agents improve themselves. The GA Population holds N individuals with different strategy parameters. A background ticker (5-minute interval) and an agent-completion scheduler both trigger evolution cycles. The adapter runs selection → crossover → mutation → scoring, then submits the best strategies to **6 Genomes** (Workflow, Scheduler, Knowledge, Recovery, Planner, Memory). The Diff Engine compares old vs new snapshots, producing patches. The Coordinator decides Apply/Reject/Delay. **5 Executors** apply the approved patches to the live system, and the **Strategy Store** makes the evolved strategy available to running agents.
 
 **Layer 6: Infrastructure** — What holds it all up. EventStore records everything. VectorStore indexes memories. LLM Adapters talk to providers. Tool Registry manages capabilities. Evidence Store feeds evolution decisions.
+
+### Cross-Cutting Layer: Skills / Capability Fabric
+
+Between the layers above sits the **Skills / Capability Fabric** — the framework-native skill discovery, indexing, and loading system. It's cross-cutting because it's used by the Runtime (agents need skills), the Workflow layer (tasks invoke skills), and the Evolution Engine (strategies can optimize skill selection).
+
+The core is the **SkillCatalog**, which aggregates skill sources through a **SourceManager** — treating MCP servers, git repos, local executables, and HTTP manifests as first-class citizens. An **Indexer** builds searchable skill indexes, a **Discovery** engine finds relevant skills at runtime, a **Loader** resolves and instantiates them, and a **Resolver** handles dependency resolution. The **Experience** module learns relevance priors from past usage, so frequently invoked skills rank higher in discovery results.
+
+This is what makes the "Plugins, not hardcoding" principle from Layer 2 concrete — instead of hardcoding tool registrations, agents discover capabilities dynamically through the fabric. The **ToolExpander** interface in the AgentLoop engine (see Layer 2) lets runtime-discovered tool names be resolved into LLM tool definitions on the fly, so agents can pick up new skills without a restart.
 
 ---
 
@@ -148,8 +156,11 @@ Most Agent frameworks are "LLM orchestration engines" — they focus on prompt c
 | State management | In-memory struct | Event Sourcing + Checkpoint |
 | Failure handling | Try/catch | Automatic resurrection with state recovery |
 | Observability | Logs | Logs + Events + Metrics + Traces |
-| Extensibility | Subclass | Plugin system with capability discovery |
+| Extensibility | Subclass | Plugin system + Capability Fabric with dynamic skill discovery |
 | Self-improvement | None | GA engine with 7 selectors, 3 crossover, 6 mutation operators, 6 evolvable genomes (Workflow/Scheduler/Knowledge/Recovery/Planner/Memory), multi-objective scoring, and background ticker-driven evolution cycles |
+| Agent communication | HTTP/gRPC/Message Queue | In-process AHP (channels) + peer-to-peer registry for direct messaging |
+| Skill discovery | Hardcoded tool registrations | SkillCatalog with SourceManager, Indexer, Discovery, Loader, and learned relevance priors |
+| Concurrency control | None or external locks | Session leases with TTL-based exclusive access |
 
 ---
 
@@ -187,13 +198,14 @@ This series walks through each layer in detail:
 | XIV | Plugin System | How to extend without touching |
 | XV | MCP Integration | How to teach agents to use tools |
 | XVI | Flight Recorder | How to record and replay execution |
-| 00 | SDK Layer | One line of code to start an agent |
-| 00 | Knowledge Graph Build | From markdown to 27K edges (AKG) |
-| 00 | Storage Layer | postgres/embedding/models/query/repositories/services |
-| 00 | LLM Client Layer | Failover, DeepSeek Reasoning, multi-provider abstraction |
-| 00 | Evaluation Framework | EvaluatorRegistry, LLMJudge, Bench |
-| 00 | Config System | ares.yaml schema, YAML-driven flags |
-| 00 | Quant Trading Module | The experiment we keep honest about |
+| 00 | **SkillCatalog & Capability Fabric** | Framework-native skill discovery, indexing, and loading — MCP servers, git repos, local executables, HTTP manifests |
+| 00 | **SDK Layer** | One line of code to start an agent; bootstrap_runtime, team orchestration, event-driven distillation |
+| 00 | **Knowledge Graph Build** | From markdown to 27K edges (AKG) |
+| 00 | **Storage Layer** | postgres/embedding/models/query/repositories/services |
+| 00 | **LLM Client Layer** | Failover, DeepSeek Reasoning, multi-provider abstraction |
+| 00 | **Evaluation Framework** | EvaluatorRegistry, LLMJudge, Bench |
+| 00 | **Config System** | ares.yaml schema, YAML-driven flags |
+| 00 | **Quant Trading Module** | The experiment we keep honest about |
 
 Each article follows the same pattern: **the problem → the design journey → the trade-offs → the honest reflection.**
 

@@ -248,6 +248,29 @@ graph TD
 
 ---
 
+## Run Budgets: Bounded Autonomy
+
+`internal/agentloop` (primitive 4: bounded autonomous execution) limits a single run's resource consumption via two SDK options, preventing an agent from looping forever and burning tokens:
+
+```go
+// sdk/options.go
+// WithMaxTokens caps the cumulative prompt+completion tokens across all LLM
+// calls in one agent run. When the budget is exceeded the run stops early and
+// returns "max tokens reached" instead of burning more iterations.
+// Values <= 0 mean unbounded (default).
+func WithMaxTokens(n int) AgentOption
+
+// WithTimeout caps the total wall-clock duration of one agent run. When the
+// deadline passes between LLM calls the run stops and returns "timeout
+// reached". Values <= 0 mean no time budget (default).
+func WithTimeout(d time.Duration) AgentOption
+```
+
+- **Token budget**: cumulative (prompt + completion); on overshoot the run stops immediately — not "maybe next round", but returning `max tokens reached` right away
+- **Wall-clock budget**: the deadline is checked between LLM calls; on timeout the run returns `timeout reached`
+- **Unbounded by default**: `<= 0` means no cap (identical to legacy behavior); only explicit settings take effect — continuing the zero-value philosophy
+- **Passthrough**: both budgets flow through `agentloop.Request` into the execution engine, spanning multiple iterations
+
 ## Lessons
 
 The SDK layer isn't glamorous. You can't demo `MustNew` to investors and say "look, one line!"

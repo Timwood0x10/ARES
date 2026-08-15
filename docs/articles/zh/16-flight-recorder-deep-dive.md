@@ -332,7 +332,7 @@ func typeDuration(e TimelineEvent, types ...EventType) time.Duration {
 }
 ```
 
-注意这个函数只对设置了 `EndAt` 的事件有意义——`Duration` 字段是由 Collector 在构造 TimelineEvent 时传入的。**start-only 事件（比如 agent.start、task.start）的 Duration 是 0，不会影响统计**。这是一个很含蓄的设计细节——如果你不看源码，你可能会疑惑为什么 agent.start 不计入总耗时。
+注意这个函数只对设置了 `Duration` 的事件有意义。**0.3.0 起 `Duration` 不再由 Collector 手工传入**——`Timeline.Add` 对 result 类事件（tool.result/llm.result/agent.end）自动配对同 AgentID 最近未配对的 start 事件（tool.call/llm.call/agent.start），补上其 `EndAt` 与 `Duration`。**start-only 事件（比如 agent.start、task.start）没有配对 result 时 Duration 仍是 0，不会影响统计**。这是一个很含蓄的设计细节——如果你不看源码，你可能会疑惑为什么 agent.start 不计入总耗时。
 
 计算总耗时的方式也很有意思——不是简单累加所有 Duration，而是取时间轴上的 `max(EndAt) - min(StartAt)`：
 

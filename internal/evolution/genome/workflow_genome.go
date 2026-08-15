@@ -291,7 +291,16 @@ func (g *WorkflowGenome) mutateParallelize() {
 		return
 	}
 	if g.dag.StepIndex()[c.ID] != nil {
-		c.DependsOn = append(c.DependsOn, b2.ID)
+		// Register the b2→c edge through the DAG so the parallel node is not
+		// a dead end in m.dag.Edges (edge map is the authoritative topology).
+		if err := g.dag.AddEdge(context.Background(), b2.ID, c.ID); err != nil {
+			wfLog.Warn("parallelize add edge failed", "from", b2.ID, "to", c.ID, "error", err)
+			// Roll back the freshly added node so a failed edge cannot leave
+			// b2 as an unreachable island in the topology.
+			if rmErr := g.dag.RemoveNode(context.Background(), b2.ID); rmErr != nil {
+				wfLog.Warn("parallelize rollback add node failed", "node", b2.ID, "error", rmErr)
+			}
+		}
 	}
 }
 
@@ -301,8 +310,14 @@ func (g *WorkflowGenome) mutateSerialize() {
 	for _, step := range steps {
 		deps := g.dag.ReadDeps(step.ID)
 		if len(deps) >= 2 {
-			// Remove all but the first dependency, creating a chain.
-			step.DependsOn = deps[:1]
+			// Remove all but the first dependency through the DAG so the
+			// serialized chain is reflected in m.dag.Edges.
+			for _, dep := range deps[1:] {
+				if err := g.dag.RemoveEdge(context.Background(), dep, step.ID); err != nil {
+					wfLog.Warn("serialize remove edge failed", "from", dep, "to", step.ID, "error", err)
+					return
+				}
+			}
 			return
 		}
 	}
@@ -318,11 +333,42 @@ func (g *WorkflowGenome) mutateSwapNodes() {
 	if i == j {
 		j = (j + 1) % len(steps)
 	}
-	// Swap the dependency lists of the two nodes via the DAG.
+	// Swap the dependency lists through the DAG (remove old in-edges, then add
+	// the swapped ones) so m.dag.Edges stays authoritative. A cycle-detection
+	// failure rolls back every operation and leaves the DAG untouched.
 	depsI := g.dag.ReadDeps(steps[i].ID)
 	depsJ := g.dag.ReadDeps(steps[j].ID)
-	steps[i].DependsOn = depsJ
-	steps[j].DependsOn = depsI
+	var ops []edgeOp
+	for _, dep := range depsI {
+		// A RemoveEdge failure means the edge was already absent (stale dep);
+		// skipping avoids recording a rollback op that would re-create it.
+		if err := g.dag.RemoveEdge(context.Background(), dep, steps[i].ID); err != nil {
+			wfLog.Warn("swap remove edge failed", "from", dep, "to", steps[i].ID, "error", err)
+			continue
+		}
+		ops = append(ops, edgeOp{from: dep, to: steps[i].ID, add: false})
+	}
+	for _, dep := range depsJ {
+		if err := g.dag.RemoveEdge(context.Background(), dep, steps[j].ID); err != nil {
+			wfLog.Warn("swap remove edge failed", "from", dep, "to", steps[j].ID, "error", err)
+			continue
+		}
+		ops = append(ops, edgeOp{from: dep, to: steps[j].ID, add: false})
+	}
+	for _, dep := range depsJ {
+		if err := g.dag.AddEdge(context.Background(), dep, steps[i].ID); err != nil {
+			rollbackEdges(g.dag, ops)
+			return
+		}
+		ops = append(ops, edgeOp{from: dep, to: steps[i].ID, add: true})
+	}
+	for _, dep := range depsI {
+		if err := g.dag.AddEdge(context.Background(), dep, steps[j].ID); err != nil {
+			rollbackEdges(g.dag, ops)
+			return
+		}
+		ops = append(ops, edgeOp{from: dep, to: steps[j].ID, add: true})
+	}
 }
 
 func (g *WorkflowGenome) mutateSplitNode() {
@@ -344,12 +390,20 @@ func (g *WorkflowGenome) mutateSplitNode() {
 		wfLog.Warn("split add node failed", "node", splitID, "error", err)
 		return
 	}
-	// Update downstream nodes to depend on the split node.
+	// Re-route downstream nodes through the DAG so the split node becomes
+	// referenced in m.dag.Edges instead of a dead end.
 	for _, s := range steps {
-		for idx, dep := range s.DependsOn {
-			if dep == target.ID {
-				s.DependsOn[idx] = splitID
-			}
+		if s.ID == splitID {
+			continue // skip the freshly added split node itself
+		}
+		if !contains(g.dag.ReadDeps(s.ID), target.ID) {
+			continue
+		}
+		if err := g.dag.RemoveEdge(context.Background(), target.ID, s.ID); err != nil {
+			continue
+		}
+		if err := g.dag.AddEdge(context.Background(), splitID, s.ID); err != nil {
+			_ = g.dag.AddEdge(context.Background(), target.ID, s.ID) // restore original edge
 		}
 	}
 }
@@ -373,10 +427,26 @@ func (g *WorkflowGenome) mutateMergeNodes() {
 				merged := mergeDeps(steps[i].DependsOn, steps[j].DependsOn)
 				merged = removeID(merged, steps[i].ID)
 				merged = removeID(merged, steps[j].ID)
-				steps[i].DependsOn = merged
+				// Remove j from the DAG (synced through the edge map), then add
+				// the merged deps that i did not previously have so the merge
+				// is visible in m.dag.Edges. If j cannot be removed (e.g. it
+				// still has dependents), abort the merge before mutating i:
+				// continuing would leave a ghost node whose DependsOn no longer
+				// matches the edge map. Steps() returns internal pointers, so
+				// i's Input must only be updated after j is actually removed.
+				if err := g.dag.RemoveNode(context.Background(), steps[j].ID); err != nil {
+					wfLog.Warn("merge remove node failed", "node", steps[j].ID, "error", err)
+					return
+				}
 				steps[i].Input = steps[i].Input + " | " + steps[j].Input
-				// Remove j from the DAG.
-				_ = g.dag.RemoveNode(context.Background(), steps[j].ID)
+				current := g.dag.ReadDeps(steps[i].ID)
+				for _, dep := range merged {
+					if !contains(current, dep) {
+						if err := g.dag.AddEdge(context.Background(), dep, steps[i].ID); err != nil {
+							wfLog.Warn("merge add edge failed", "from", dep, "to", steps[i].ID, "error", err)
+						}
+					}
+				}
 				return
 			}
 		}
@@ -393,6 +463,30 @@ func removeID(deps []string, id string) []string {
 		}
 	}
 	return out
+}
+
+// edgeOp records one DAG edge mutation for rollback (used by mutateSwapNodes
+// so a cycle-detection failure restores the DAG to its original topology).
+type edgeOp struct {
+	from string
+	to   string
+	add  bool // true: edge was added; false: edge was removed
+}
+
+// rollbackEdges reverts a sequence of edge ops in reverse order.
+//
+// Args:
+//   - dag: the MutableDAG to restore.
+//   - ops: the recorded operations (applied in order).
+func rollbackEdges(dag *engine.MutableDAG, ops []edgeOp) {
+	for i := len(ops) - 1; i >= 0; i-- {
+		op := ops[i]
+		if op.add {
+			_ = dag.RemoveEdge(context.Background(), op.from, op.to)
+		} else {
+			_ = dag.AddEdge(context.Background(), op.from, op.to)
+		}
+	}
 }
 
 // contains checks if a string is in a slice.

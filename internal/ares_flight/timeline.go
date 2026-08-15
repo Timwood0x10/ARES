@@ -64,10 +64,52 @@ func NewTimeline() *Timeline {
 	}
 }
 
-// Add appends an event to the timeline.
+// pairStartOf maps a result-type event to its start-type counterpart. When a
+// result event is added, the most recent unpaired start event for the same
+// agent is given an EndAt/Duration, so Summary's typeDuration stops returning
+// zero (the previous behavior left every duration at 0).
+var pairStartOf = map[EventType]EventType{
+	EventToolResult: EventToolCall,
+	EventLLMResult:  EventLLMCall,
+	EventAgentEnd:   EventAgentStart,
+}
+
+// Add appends an event to the timeline. Result-type events (tool.result,
+// llm.result, agent.end) pair with their matching start event, filling its
+// EndAt and Duration. Pairing prefers an explicit ParentID link — the unpaired
+// start event whose ID equals the result's ParentID — which is robust to
+// out-of-order arrival and to overlapping calls within one agent. When no
+// ParentID is present (or it matches nothing), pairing falls back to the most
+// recent unpaired start event of the same agent.
 func (t *Timeline) Add(event TimelineEvent) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if startType, ok := pairStartOf[event.Type]; ok {
+		paired := false
+		// Prefer the explicit parent link when the caller provides one.
+		if event.ParentID != "" {
+			for i := len(t.events) - 1; i >= 0; i-- {
+				prev := &t.events[i]
+				if prev.ID == event.ParentID && prev.Type == startType &&
+					prev.AgentID == event.AgentID && prev.EndAt.IsZero() {
+					prev.EndAt = event.StartAt
+					prev.Duration = event.StartAt.Sub(prev.StartAt)
+					paired = true
+					break
+				}
+			}
+		}
+		if !paired {
+			for i := len(t.events) - 1; i >= 0; i-- {
+				prev := &t.events[i]
+				if prev.Type == startType && prev.AgentID == event.AgentID && prev.EndAt.IsZero() {
+					prev.EndAt = event.StartAt
+					prev.Duration = event.StartAt.Sub(prev.StartAt)
+					break
+				}
+			}
+		}
+	}
 	t.events = append(t.events, event)
 }
 

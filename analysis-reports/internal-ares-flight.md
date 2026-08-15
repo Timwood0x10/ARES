@@ -9,7 +9,7 @@
 ### 1. `timeline.go` `Summary()` 在真实数据下几乎总是全零
 - **位置**：`timeline.go` 110-150 行
 - **说明**：`Collector` 产生的所有 `TimelineEvent`（collector.go 中 `timeline.Add(...)` 只设 `StartAt`，从不设 `EndAt`/`Duration`），因此 `e.Duration` 恒为 0，`maxEnd` 恒为 0。`Summary()` 计算的 `ToolDuration`、`LLMDuration`、`WaitDuration`、`ErrorDuration`、`TotalDuration` 全为 0，所有百分比恒为 0。**`Summary()` 在被真实 collector 喂数据时实际上不可用。**
-- **状态**：⚠️ 设计缺口（2026-08-14）——已核实 `collector.go` 全部 `timeline.Add` 调用仅设 `StartAt`，`typeDuration` 依赖 `e.Duration`（恒 0）。修复需 collector 在成对事件（tool.call/result、agent start/end）补 `EndAt`/`Duration`，属中等改动；本轮未做行为变更（避免破坏现有事件流契约），留待设计决策。
+- **状态**：✅ 已修复（2026-08-15）——`Timeline.Add` 增加成对配对：result 类事件（tool.result/llm.result/agent.end）到达时，向前配对同 AgentID 最近未配对 start 事件（tool.call/llm.call/agent.start）补 `EndAt`/`Duration`，`Summary()` 的 `typeDuration` 不再恒 0。不改 collector 事件流契约（事件照常 Add，仅补计算）。新增守护测试 `TestTimelineSummaryComputesPairDurations`（tool 2s/llm 1s/total 4s）与 `TestTimelinePairingIsPerAgent`（跨 Agent 不配对），Timeline 全量 8 测试全绿。
 
 ### 2. `recorder.go` 未读的 `memManager` 字段
 - **位置**：`recorder.go` 17、41 行

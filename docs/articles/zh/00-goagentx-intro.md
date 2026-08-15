@@ -80,6 +80,10 @@ Go 的简洁、极致性能和天生的并发支持让我眼前一亮。于是�
 | **可插拔向量存储** | 支持 PostgreSQL pgvector、Qdrant 等，核心操作 <1µs，零分配热路径 |
 | **MCP 协议集成** | 原生支持 Model Context Protocol，动态发现和调用外部工具 |
 | **事件系统与飞行记录器** | 每一个 Agent 动作都变成不可变记录，支持状态恢复和审计追踪 |
+| **SkillCatalog & Capability Fabric** | 框架原生技能发现、索引和加载能力 — MCP 服务器、Git 仓库、本地可执行文件和 HTTP 清单作为一等公民来源；支持经验学习相关性先验 |
+| **点对点 Agent 消息** | Agent 之间可以直接发送消息，无需经过 Leader 路由 — 补充了 Leader 分发任务路径 |
+| **会话租赁 (Session Leases)** | 基于 TTL 的独占会话访问控制 — 防止并发写入者在长生命周期会话上互相覆盖 |
+| **操作日志 (Action Logs)** | 每个 Agent 操作记录为不可变审计轨迹 — 与事件存储配合支持回放和恢复 |
 | **混沌工程 (Chaos Engineering)** | 14 种混沌动作随意注入（kill_leader、network_partition、tool_timeout 等），随机暗杀生产级 Agent，验证系统反脆弱性；支持生存模式（30 分钟高压随机故障）和场景编排（YAML 定义多步混沌实验）；三维加权评分（可用性 40%、恢复 30%、一致性 30%）配合 Welch's t-test 回归检测 |
 | **遗传算法 (Autonomous Evolution)** | Agent 策略可自主进化，双路径设计：DreamCycle 路径通过 Arena 回归测试（两阶段：Quick Reject 5 轮 → Full Eval 50 轮）评估变异候选，选出最优策略；Genome GA 路径零 token 成本，直接在预计算分数上执行选择（截断/锦标赛/轮盘赌）、交叉（均匀/多点/半句）和变异（70% 参数 / 15% Prompt / 15% 工具），支持分数退化自动触发（15% 阈值） |
 

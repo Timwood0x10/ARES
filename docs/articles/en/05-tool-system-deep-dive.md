@@ -490,9 +490,9 @@ Debugging requires checking three places.
 
 ## 9. Known Issues & Design Flaws
 
-### 9.1 Missing Parameter Validation (Most Critical)
+### 9.1 Missing Parameter Validation (Fixed)
 
-As discussed, `ParameterSchema` defines constraints, but nothing validates against the schema before `Execute`.
+As discussed, `ParameterSchema` defines constraints, but nothing validates against the schema before `Execute`. **Now fixed** — `output.NewValidator(output.WithSchemaType(...))` is wired into both leader and sub agent construction (`cmd/ares/agents.go`); task results must match the configured schema before release, and the sub event path additionally guards with `outputguard.NewGuard().ValidateResult`, rejecting structurally inconsistent results at the boundary.
 
 ### 9.2 Planner and Workflow Not Connected
 
@@ -505,6 +505,20 @@ The Planner's `ToolExecutionBridge` only covers agent-level tool calls. ToolNode
 ### 9.4 Built-in Tool Auto-Registration Gap (Fixed)
 
 Earlier, `NewRegistry()` returned an empty registry requiring manual `RegisterBuiltinTools()`. Fixed — `NewRegistry()` now auto-registers all built-in tools at construction time.
+
+### 9.5 Capability Fabric Tools (skill_* Quintet, new in 0.3.0)
+
+`internal/ares_skills.CatalogTools(catalog)` (registered at serve startup via `wireSkillCatalog`) exposes five catalog tools to the LLM — the Level-0/1/2 progressive-disclosure entry points of the Capability Fabric:
+
+| Tool | Disclosure Level | Behavior |
+|------|------------------|----------|
+| `skill_search` | Level-0 | Keyword search over metadata (id/name/description/source/version); returns resident summaries only |
+| `skill_load` | Level-1 | Loads the full SKILL.md body by id (on demand, never resident) |
+| `skill_activate` | Level-2 | Resolves declared tools and **lazily connects** MCP servers (`idem=false`; connecting has side effects and must not be blindly retried) |
+| `skill_list` | Level-0 | Unranked overview of all metadata |
+| `skill_experience` | Learned source | Queries task_pattern → historically best skill (relevance prior; never executes) |
+
+Key points: `skill_search`/`skill_load` use a `skillView` that deliberately omits the local `Path`/`Hash` (no filesystem disclosure to the LLM); `skill_activate` is the only moment MCP servers connect — **1000 tools never enter context**.
 
 ---
 

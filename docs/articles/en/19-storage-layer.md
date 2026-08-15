@@ -41,6 +41,8 @@ The pool wraps `sql.DB` with usage tracking. `Get() → usage → Release()` pat
 
 **Key insight**: `ErrMissingTenantID` is enforced at the pool level. Any tenant-aware query without a tenant ID fails fast — preventing silent cross-tenant data leaks (P1-11 security fix).
 
+**Connection-level RLS fix (0.3.0)**: `QueryWithTenant` sets the tenant context at connection level via `set_config('app.tenant_id', $1, false)` (is_local=false, surviving the autocommit boundary), and `ManagedRows.Close` clears it (`set_config('app.tenant_id', '', false)`) before returning the connection to the pool to prevent leakage; `ExecWithTenant` wraps its work in a transaction (BeginTx → set_config → Commit).
+
 ### 2. CircuitBreaker — Failure Isolation
 
 ```go

@@ -14,7 +14,7 @@
 ### 2. `postgres/tenant_guard.go` `set_config(..., true)`（SET LOCAL）在无事务时无效
 - **位置**：`postgres/tenant_guard.go` 34-48、88-95 行
 - **说明**：`set_config('app.tenant_id', $1, true)` 实现 `SET LOCAL` 语义，PostgreSQL 只在**事务块内**生效。`Pool.Exec` 单连接执行语句后释放，从未在事务内运行。因此租户上下文从未真正设置到池连接上，RLS 未通过此路径生效。代码注释（24-28 行）已承认此 RLS 方案无效，但代码仍具误导性。
-- **状态**：⚠️ 已知设计限制（2026-08-14）——`set_config` 的 `is_local=true` 仅事务内生效；修复需事务内执行（`BEGIN; set_config; ...; COMMIT`）或改连接级 `set_config(name, value, false)`，属存储层事务语义改动（高风险），留待专项，暂不改行为。
+- **状态**：✅ 已修复（2026-08-15）——`Pool.QueryWithTenant` 改为连接级 `set_config('app.tenant_id', $1, false)`（is_local=false，autocommit 下对后续查询生效），`ManagedRows.Close` 归还连接前清除租户上下文（`set_config('app.tenant_id', '', false)`）防池化泄漏；`ExecWithTenant` 本就事务包裹（BeginTx→set_config→Commit）无需改动。新增 `TestQueryWithTenantRejectsEmptyTenant` 守护；完整 RLS 隔离语义（真实 Postgres 环境）验证需真实 DB（mock pool db=nil），已如实标注。
 
 ---
 

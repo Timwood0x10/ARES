@@ -179,6 +179,17 @@ This broke every caller. All 30+ of them. But it was the right call — making t
 
 ---
 
+## Capability Fabric Wiring (new in 0.3.0)
+
+The 0.3.0 Capability Fabric is the newest piece of "invisible wiring" in the bootstrap layer: `wireSkillCatalog` in `cmd/ares/serve.go` constructs `ares_skills.NewCatalog` during `createAndRegisterServeAgents` assembly (declared sources: project `.ares/skills` + user `~/.ares/skills` + config.toml `[[skill_sources]]` of type directory/git/http/oci), and after `Build()` creates the metadata index it:
+
+- `SetSkillsRegistry` → memoryManager resident "Available skills" block (Level-0 progressive disclosure)
+- `SetMCPConnector(comp.MCP)` → `skill_activate` lazily connects MCP servers
+- Registers the five catalog tools `skill_search`/`skill_load`/`skill_activate`/`skill_list`/`skill_experience` via `CatalogTools(catalog)`
+- `SetToolChangeHandler` → MCP `tools/listChanged` triggers `Catalog.Refresh` (hash-based incremental re-index)
+
+In line with this article's theme: all of this wiring is **completely invisible to callers** — you call `bootstrap.New()` and the agent is born with a skill catalog, no extra configuration needed.
+
 ## The Lesson
 
 The API layer and bootstrap aren't glamorous features. They don't demo well. You can't show a investor a factory function and say "look, it wires dependencies!"

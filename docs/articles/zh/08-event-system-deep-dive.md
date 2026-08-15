@@ -396,7 +396,13 @@ graph TB
 
 ---
 
-## 九、结语
+## 九、SkillOutcomeRecorder：事件流的 skill 反馈闭环（0.3.0 新增）
+
+`internal/ares_skills/outcome_recorder.go` 的 `SkillOutcomeRecorder` 是 `EventSubTaskResult` 事件流的一个**只读观察者**（零侵入，不改变任务执行）：它订阅现有事件流（与 dispatcher 同款 `Subscribe(EventFilter{Types: [EventSubTaskResult]})`），从 payload 提取 `task.UsedExperienceID`（planner 经 `WithExperienceLocator` 预填的 skill ID）+ `success`，调用 `catalog.Experience().Record(skillID, pattern, rate)` 写入先验（成功=1.0，失败=0.0），闭环回到 `skill_experience` 工具查询（design §11）。
+
+安全契约（照搬 FeedbackRecorder 降级范式）：nil catalog/store 离线 no-op；记录失败仅日志（`LastErr()` 暴露调试）；单事件 panic 被 `recover`，绝不拖垮消费 goroutine。`task_pattern` 用 `task.AgentType` 粗粒度派生（如 `agent_top`），因为事件 payload 不含原始用户输入——粗粒度匹配对 `BestMatch` 的双向子串匹配是稳的。
+
+## 十、结语
 
 Event Sourcing + CQRS + 可插拔存储 + 自动压缩——这套方案在企业级系统里并不新鲜，但放在 Agent 框架里，我觉得是个挺有意思的尝试。
 

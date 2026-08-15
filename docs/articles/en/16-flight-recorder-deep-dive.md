@@ -332,7 +332,7 @@ func typeDuration(e TimelineEvent, types ...EventType) time.Duration {
 }
 ```
 
-This function only makes sense for events with a set `EndAt` — the `Duration` field is populated by the Collector when constructing the `TimelineEvent`. **Start-only events (like agent.start, task.start) have Duration = 0 and don't affect the statistics.** It's a subtle design detail you'd only notice by reading the source.
+This function only makes sense for events with a set `Duration`. **Since 0.3.0, `Duration` is no longer populated manually by the Collector** — `Timeline.Add` pairs result-type events (tool.result/llm.result/agent.end) with the most recent unpaired start event of the same agent (tool.call/llm.call/agent.start), filling in its `EndAt` and `Duration`. **Start-only events (like agent.start, task.start) with no pairing result still have Duration = 0 and don't affect the statistics.** It's a subtle design detail you'd only notice by reading the source.
 
 The way total duration is calculated is also interesting — not a simple sum of all Durations, but the time axis range: `max(EndAt) - min(StartAt)`:
 

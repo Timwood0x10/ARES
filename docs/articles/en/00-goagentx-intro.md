@@ -80,6 +80,10 @@ As the project matured, I added the features I always wanted:
 | **Pluggable Vector Stores** | PostgreSQL pgvector, Qdrant, etc. Core ops <1µs with zero-alloc hot paths |
 | **MCP Protocol** | Native Model Context Protocol support for dynamic tool discovery |
 | **Event System & Flight Recorder** | Every agent action becomes an immutable record — state recovery, audit trails |
+| **SkillCatalog & Capability Fabric** | Framework-native skill discovery, indexing, and loading — MCP servers, git repos, local executables, and HTTP manifests as first-class sources; learned relevance priors from experience |
+| **Peer-to-Peer Agent Messaging** | Agents can send messages directly to each other without routing through the leader — complements the leader-dispatched task path |
+| **Session Leases** | Exclusive session access control with TTL-based expiration — prevents concurrent writers from clobbering each other on long-lived sessions |
+| **Action Logs** | Every agent action recorded as an immutable audit trail — pairs with the event store for replay and recovery |
 | **Chaos Engineering** | 14 chaos actions (kill_leader, network_partition, tool_timeout, etc.) randomly injected into production agents to validate anti-fragility; support for survival mode (30 min sustained random failures) and scenario orchestration (YAML-defined multi-step chaos experiments); 3D weighted scoring (Availability 40%, Recovery 30%, Consistency 30%) with Welch's t-test regression |
 | **Autonomous Evolution** | Agent strategies self-evolve via a dual-path design: the DreamCycle path evaluates mutated candidates through Arena regression testing (two-stage: Quick Reject 5 rounds → Full Eval 50 rounds) to select optimal strategies; the Genome GA path operates at zero token cost on pre-computed scores — selection (truncation/tournament/roulette), crossover (uniform/multi-point/half-split), and mutation (70% parameter / 15% prompt / 15% tool), with automatic score degradation triggering (15% threshold) |
 

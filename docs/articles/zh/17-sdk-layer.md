@@ -248,6 +248,29 @@ graph TD
 
 ---
 
+## 运行预算：让 Agent 有限度地自主
+
+`internal/agentloop`（原语 4：有界自主执行）通过两个 SDK 选项限制单次运行的资源消耗，防止 Agent 无限循环烧 token：
+
+```go
+// sdk/options.go
+// WithMaxTokens caps the cumulative prompt+completion tokens across all LLM
+// calls in one agent run. When the budget is exceeded the run stops early and
+// returns "max tokens reached" instead of burning more iterations.
+// Values <= 0 mean unbounded (default).
+func WithMaxTokens(n int) AgentOption
+
+// WithTimeout caps the total wall-clock duration of one agent run. When the
+// deadline passes between LLM calls the run stops and returns "timeout
+// reached". Values <= 0 mean no time budget (default).
+func WithTimeout(d time.Duration) AgentOption
+```
+
+- **token 预算**：累计（prompt + completion），超额即提前停止——不是"下轮再超"，而是本轮立刻返回 `max tokens reached`
+- **墙钟预算**：两次 LLM 调用之间检查 deadline，超时返回 `timeout reached`
+- **默认无界**：`<= 0` 表示不设限（与旧行为一致），显式设置才生效——延续零值哲学
+- **透传**：两个预算经 `agentloop.Request` 透传到执行引擎，贯穿多轮迭代
+
 ## 教训
 
 SDK 层不光鲜。你不能给投资人演示 `MustNew` 然后说"看，一行！"

@@ -490,9 +490,9 @@ result, err := toolBinder.CallTool(ctx, name, args)
 
 ## 九、已知问题与设计缺陷
 
-### 9.1 参数校验缺失（最严重）
+### 9.1 参数校验缺失（已修复）
 
-如前所述，`ParameterSchema` 定义了一大堆类型约束，但没有任何代码在 `Execute` 之前做校验。
+早期 `ParameterSchema` 定义了一大堆类型约束，但没有任何代码在 `Execute` 之前做校验。**现已修复**——`output.NewValidator(output.WithSchemaType(...))` 在 leader 与 sub agent 构造时（`cmd/ares/agents.go`）接入，任务结果须符合配置 schema 才放行；sub 事件路径另有 `outputguard.NewGuard().ValidateResult` 兜底，结构性不一致在边界拒绝。
 
 ### 9.2 Planner 与 Workflow 未打通
 
@@ -505,6 +505,20 @@ result, err := toolBinder.CallTool(ctx, name, args)
 ### 9.4 内置工具自动注册的缺口（已修复）
 
 早期 `NewRegistry()` 返回空注册表，需要手动调用 `RegisterBuiltinTools()`。现已修复——`NewRegistry()` 构造时自动注册全部内置工具。
+
+### 9.5 Capability Fabric 工具（skill_* 五件套，0.3.0 新增）
+
+`internal/ares_skills.CatalogTools(catalog)`（serve 启动经 `wireSkillCatalog` 注册）向 LLM 暴露五个 catalog 工具，是 Capability Fabric 的 Level-0/1/2 渐进披露入口：
+
+| 工具 | 披露级别 | 行为 |
+|------|----------|------|
+| `skill_search` | Level-0 | 关键词检索 metadata（id/name/description/source/version），只返回常驻摘要 |
+| `skill_load` | Level-1 | 按 id 加载完整 SKILL.md 指令体（按需，不进常驻 context） |
+| `skill_activate` | Level-2 | 解析声明工具并**懒连接** MCP server（`idem=false`，连接有副作用不可盲目重试） |
+| `skill_list` | Level-0 | 全量 metadata 概览（无排序） |
+| `skill_experience` | 学习源 | 查询 task_pattern → 历史最佳 skill（relevance prior，永不执行） |
+
+关键点：`skill_search`/`skill_load` 的 `skillView` 刻意省略本地 `Path`/`Hash`（不向 LLM 泄露文件系统路径）；`skill_activate` 是 MCP server 的唯一连接时机——**1000 个工具也不进 context**。
 
 ---
 

@@ -419,7 +419,13 @@ This closes the "who did what" gap — previously you had to infer the source fr
 
 ---
 
-## 9. Conclusion
+## 9. SkillOutcomeRecorder: The Skill Feedback Loop on the Event Stream (new in 0.3.0)
+
+`SkillOutcomeRecorder` in `internal/ares_skills/outcome_recorder.go` is a **read-only observer** of the `EventSubTaskResult` stream (zero intrusion — it never alters task execution): it subscribes to the existing stream (same pattern as the dispatcher: `Subscribe(EventFilter{Types: [EventSubTaskResult]})`), extracts `task.UsedExperienceID` (the skill ID pre-filled by the planner via `WithExperienceLocator`) plus `success`, and calls `catalog.Experience().Record(skillID, pattern, rate)` to write the prior (1.0 on success, 0.0 on failure), closing the loop back into the `skill_experience` tool (design §11).
+
+Safety contract (mirrors FeedbackRecorder's degradation style): nil catalog/store is an offline no-op; record failures are logged only (`LastErr()` exposes them for debugging); a single panicking event is recovered and can never tear down the consumer goroutine. `task_pattern` is derived coarsely from `task.AgentType` (e.g. `agent_top`) because the event payload carries no raw user input — coarse matching stays stable for `BestMatch`'s bidirectional substring matching.
+
+## 10. Conclusion
 
 Event Sourcing + CQRS + pluggable stores + auto-compaction — this combination isn't anything new in enterprise systems. But placed within an Agent framework, I think it's a pretty interesting experiment.
 

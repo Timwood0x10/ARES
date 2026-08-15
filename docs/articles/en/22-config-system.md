@@ -232,6 +232,27 @@ This means:
 
 ---
 
+## Skill Source Configuration (skill_sources, new in 0.3.0)
+
+The Capability Fabric's registered sources are declared in **`~/.ares/config.toml`** (note: not `ares.yaml`), parsed by `internal/ares_skills.LoadSkillSources` (`~` expansion + dedup + unknown types skipped as extension points):
+
+```toml
+[[skill_sources]]
+type = "directory"          # extra directory source
+path = "~/my-company/ares-skills"
+
+[[skill_sources]]
+type = "git"                # git source: shallow-cloned into a local cache, then indexed
+url = "https://example.com/skills.git"
+local_dir = "~/.ares/cache/skills"
+
+[[skill_sources]]
+type = "http"               # http/oci source: fetches a JSON manifest listing
+manifest_url = "https://example.com/manifest.json"
+```
+
+Key points: project (`.ares/skills`) and user (`~/.ares/skills`) sources are conventional directories that **need no configuration**; this file only declares extra sources — honoring the "only declared sources are scanned, zero full-disk scanning" principle. Consistent with the zero-value philosophy: no configuration means no extra sources, fully default behavior.
+
 ## Lessons
 
 Configuration is a layer nobody celebrates. You can't demo `Config.Validate()` to investors. But it's the difference between "works on my machine" and "works in production."

@@ -179,6 +179,17 @@ Emit(ctx, store, streamID, eventType, "runtime", payload)
 
 ---
 
+## Capability Fabric 接线（0.3.0 新增）
+
+0.3.0 的 Capability Fabric 是 bootstrap 层最新加入的一段"隐形接线"：`cmd/ares/serve.go` 的 `wireSkillCatalog` 在 `createAndRegisterServeAgents` 组装时构造 `ares_skills.NewCatalog`（声明源：project `.ares/skills` + user `~/.ares/skills` + config.toml `[[skill_sources]]` 的 directory/git/http/oci），`Build()` 建 metadata 索引后：
+
+- `SetSkillsRegistry` → memoryManager 常驻"Available skills"块（Level-0 渐进披露）
+- `SetMCPConnector(comp.MCP)` → `skill_activate` 懒连接 MCP server
+- `CatalogTools(catalog)` 注册 `skill_search`/`skill_load`/`skill_activate`/`skill_list`/`skill_experience` 五个工具
+- `SetToolChangeHandler` → MCP `tools/listChanged` 触发 `Catalog.Refresh`（hash 增量重索引）
+
+与本文主旨一致：这些接线**对调用方完全隐形**——你调 `bootstrap.New()`，Agent 出生就带技能目录，不需要任何额外配置。
+
 ## 教训
 
 API 层和 bootstrap 不是光鲜的功能。它们不好演示。你不能给投资人看一个工厂函数说"看，它接线依赖！"

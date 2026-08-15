@@ -102,7 +102,7 @@ graph TB
     Exec --> Events
 ```
 
-**第一层：API 契约** — 外界看到的。只有接口，没有实现。Bootstrap 工厂把所有东西接在一起。调 `bootstrap.New()` 就得到一个完整连接的系统。
+**第一层：API 契约** — 外界看到的。只有接口，没有实现。Bootstrap 工厂把所有东西接在一起。调 `ares_bootstrap.Bootstrap()` 就得到一个完整连接的系统——LLM、Memory、Knowledge/AKG、Evolution、Storage、Embedding、MCP、Flight Recorder、EventStore、Agent Runtime——全部从单个配置结构体组装。SDK 通过 `sdk.newBootstrapCore()` 复用同一个 Bootstrap 内核，所以 `serve`、`start` 和 SDK 共享同一套组件图。
 
 **第二层：运行时** — 谁干活。Runtime Manager 管理 Agent 生命周期：出生、死亡、复活。Leader 规划和分发。Sub Agent 执行。PluginBus 把一切连起来。**活跃策略**携带 GA 引擎进化出的参数（工具选择、搜索深度、调度策略等）。
 
@@ -113,6 +113,14 @@ graph TB
 **第五层：进化引擎** — Agent 怎么自我改进。GA 种群持有 N 个不同策略参数的个体。后台定时器（5 分钟间隔）和 Agent 完成调度器都会触发进化周期。适配器运行选择→交叉→变异→评分，然后将最优策略提交给 **6 个基因组**（Workflow、Scheduler、Knowledge、Recovery、Planner、Memory）。差异引擎比较新旧快照，生成补丁。协调器决定 Apply/Reject/Delay。**5 个执行器**将批准的补丁应用到运行系统，**策略存储**让运行中的 Agent 可以消费进化后的策略。
 
 **第六层：基础设施** — 什么支撑一切。EventStore 记录一切。VectorStore 索引记忆。LLM 适配器对接提供商。工具注册管理能力。证据存储为进化决策提供输入。
+
+### 跨层能力：SkillCatalog / Capability Fabric
+
+在上述各层之间，还有一个**技能 / 能力织物（Capability Fabric）**层——框架原生的技能发现、索引和加载系统。它是跨层的，因为运行时（Agent 需要技能）、工作流层（任务调用技能）和进化引擎（策略可优化技能选择）都会用到它。
+
+核心是 **SkillCatalog**，通过 **SourceManager** 聚合多种技能来源——MCP 服务器、Git 仓库、本地可执行文件、HTTP 清单都是一等公民。**Indexer** 构建可搜索的技能索引，**Discovery** 引擎在运行时发现相关技能，**Loader** 解析和实例化技能，**Resolver** 处理依赖关系。**Experience** 模块从历史使用中学习相关性先验，常用的技能在发现结果中排名更高。
+
+这就是让第二层"插件，不硬编码"原则落地的地方——不再是硬编码工具注册，而是通过能力织物动态发现能力。AgentLoop 引擎中的 **ToolExpander** 接口（见第二层）让运行时发现的技能名称可以即时解析为 LLM 工具定义，Agent 无需重启即可获取新技能。
 
 ---
 
@@ -148,8 +156,11 @@ PluginBus 让你不改核心代码就能扩展行为。检查点快照、路由�
 | 状态管理 | 内存结构体 | 事件溯源 + 检查点 |
 | 失败处理 | try/catch | 自动复活 + 状态恢复 |
 | 可观测 | 日志 | 日志 + 事件 + 指标 + 链路追踪 |
-| 扩展性 | 继承 | 插件系统 + 能力发现 |
+| 扩展性 | 继承 | 插件系统 + 能力织物（Capability Fabric），支持动态技能发现 |
 | 自我改进 | 无 | GA 引擎：7 种选择算子、3 种交叉、6 种变异、6 个可进化基因组（Workflow/Scheduler/Knowledge/Recovery/Planner/Memory），多目标评分，后台定时器驱动的进化周期 |
+| Agent 通信 | HTTP/gRPC/消息队列 | 进程内 AHP（channel）+ 点对点注册表直接消息 |
+| 技能发现 | 硬编码工具注册 | SkillCatalog 配合 SourceManager、Indexer、Discovery、Loader 和经验相关性学习 |
+| 并发控制 | 无或外部锁 | 基于 TTL 的会话租赁（Session Leases）独占访问控制 |
 
 ---
 
@@ -185,13 +196,14 @@ PluginBus 让你不改核心代码就能扩展行为。检查点快照、路由�
 | XIV | 插件系统 | 怎么不改代码就扩展 |
 | XV | MCP 集成 | 怎么教 Agent 用工具 |
 | XVI | Flight Recorder | 怎么记录和重放执行 |
-| 00 | SDK 层 | 一行代码启动一个 Agent |
-| 00 | 知识图谱构建 | 从 markdown 到 27K 条边（AKG） |
-| 00 | 存储层 | postgres/embedding/models/query/repositories/services |
-| 00 | LLM 客户端层 | Failover、DeepSeek Reasoning、多 provider 抽象 |
-| 00 | 评估框架 | EvaluatorRegistry、LLMJudge、Bench |
-| 00 | 配置系统 | ares.yaml schema、YAML-driven flags |
-| 00 | 量化交易模块 | 我们坦诚面对的实验 |
+| 00 | **SkillCatalog & Capability Fabric** | 框架原生技能发现、索引和加载——MCP 服务器、Git 仓库、本地可执行文件、HTTP 清单 |
+| 00 | **SDK 层** | 一行代码启动 Agent；bootstrap_runtime、团队编排、事件驱动蒸馏 |
+| 00 | **知识图谱构建** | 从 markdown 到 27K 条边（AKG） |
+| 00 | **存储层** | postgres/embedding/models/query/repositories/services |
+| 00 | **LLM 客户端层** | Failover、DeepSeek Reasoning、多 provider 抽象 |
+| 00 | **评估框架** | EvaluatorRegistry、LLMJudge、Bench |
+| 00 | **配置系统** | ares.yaml schema、YAML-driven flags |
+| 00 | **量化交易模块** | 我们坦诚面对的实验 |
 
 每篇文章遵循同一个模式：**问题 → 设计旅程 → 权衡取舍 → 坦诚反思。**
 

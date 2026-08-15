@@ -232,6 +232,27 @@ memory:
 
 ---
 
+## 技能源配置（skill_sources，0.3.0 新增）
+
+Capability Fabric 的注册源在 **`~/.ares/config.toml`**（注意不是 `ares.yaml`）声明，由 `internal/ares_skills.LoadSkillSources` 解析（`~` 展开 + 去重 + 未知类型跳过留扩展）：
+
+```toml
+[[skill_sources]]
+type = "directory"          # 额外目录源
+path = "~/my-company/ares-skills"
+
+[[skill_sources]]
+type = "git"                # git 源：浅克隆到本地缓存后索引
+url = "https://example.com/skills.git"
+local_dir = "~/.ares/cache/skills"
+
+[[skill_sources]]
+type = "http"               # http/oci 源：拉取 JSON manifest 清单
+manifest_url = "https://example.com/manifest.json"
+```
+
+关键点：project（`.ares/skills`）与 user（`~/.ares/skills`）源是约定目录**无需配置**；此文件只声明额外源——遵循"只扫声明源，零全盘扫描"原则。与零值哲学一致：不配置就没有额外源，行为完全默认。
+
 ## 教训
 
 配置是没人庆祝的层。你不能给投资人演示 `Config.Validate()`。但它是"在我机器上能跑"和"生产能用"的区别。

@@ -16,7 +16,7 @@
   - **`mutateMergeNodes`（357-379）BUG（自依赖）**：371 行 `steps[i].DependsOn = mergeDeps(steps[i].DependsOn, steps[j].DependsOn)`，而合并条件（369 行）选 `j` 依赖 `i` 的对，即 `steps[j].DependsOn` 含 `steps[i].ID`。把 `j` 的 deps 并进 `i` 会把 `i` 自身的 ID 加进 `i.DependsOn`，产生自环/环。
 
   这些算子产生的候选快照与预期变异不同（或无效），破坏 GA 探索拓扑的能力。
-- **状态**：⚠️ 部分修复（2026-08-14）——**自环 BUG 已修复**（`mutateMergeNodes` 合并时用 `removeID` 剔除自身 ID 与已删节点 ID，build/test 通过）；"变异绕过 `m.dag.Edges`"属跨 5 个算子的大改动（需各算子经 `AddEdge`/`RemoveNode` 同步边 map），本轮留待专项（风险高、改动面大）。
+- **状态**：✅ 已修复（2026-08-15）——自环 BUG 已修复（`mutateMergeNodes` 用 `removeID` 剔除自身与已删节点 ID）；"变异绕过 `m.dag.Edges`"五个算子全部改经 DAG 方法同步边 map：`mutateParallelize` 用 `AddEdge(b2→c)`、`mutateSerialize` 用 `RemoveEdge` 删多余依赖、`mutateSwapNodes` 用 RemoveEdge+AddEdge 交换并带 `edgeOp` 操作日志回滚（环检测失败恢复原拓扑）、`mutateSplitNode` 用 RemoveEdge+AddEdge 重路由下游（跳过 split 自身）、`mutateMergeNodes` 经 `RemoveNode` 同步后对新增依赖 `AddEdge`。新增守护测试 `TestMutationKeepsEdgeMapConsistent`/`TestMutationKeepsDAGExecutable`（5 算子×40 轮边一致性 + 无环），evolution 全包回归全绿。
 
 ### 2. `candidate_pipeline.go` `Release` 时 patch 被应用/部署两次
 - **位置**：`candidate_pipeline.go` 202-216 行
