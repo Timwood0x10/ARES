@@ -6,46 +6,6 @@
 
 ## BUG（高置信度）
 
-### 1. PostgreSQL `HybridSearch` 表示查询参数与占位符不匹配，向量召回必然失败
-- **位置**：`store/postgres/store.go` 391-400 行
-- **说明**：查询只声明两个占位符：
-  ```sql
-  SELECT ... FROM akf_representations WHERE object_id = ANY($1) AND model = $2
-  ```
-  但参数切片构造为 `len(ids) + 1` 个元素（先 append N 个 id，再 append model），且只把 `repArgs[0]` 覆盖为 ID 数组：
-  ```go
-  repArgs := make([]interface{}, 0, len(ids)+1)
-  for _, id := range ids { repArgs = append(repArgs, id) }  // N 个
-  repArgs = append(repArgs, req.Model)                      // N+1 个
-  repArgs[0] = pqStringArray(ids)                           // 只替换索引 0
-  ```
-  后果：(a) `$2`（model）绑到 `repArgs[1]`——即第二个对象 ID 字符串，模型过滤把 `model` 列与对象 ID 比较，永远不匹配；(b) 多余 `N-1` 个参数被 lib/pq/pgx 拒绝。**只要 `len(ids)>0 && req.Model!=""`，每次 `HybridSearch` 都失败**。MySQL/SQLite/内存 store 都正确，仅 Postgres 错。
-- **状态**：✅ 已核实修复（2026-08-14）——现构造 `repArgs := []interface{}{pqStringArray(ids), req.Model}`（恰两参数），注释明确说明此前错误（N 个 id + model、只覆盖索引 0）；报告条目过时。
-
----
-
-## LOGIC（逻辑问题）
-
-### 2. `store/memory/store.go` `Query` 先 Limit 后 Offset，破坏分页
-- **位置**：`store/memory/store.go` 103-116 行
-- **说明**：
-  ```go
-  if q.Limit > 0 && len(result) > q.Limit { result = result[:q.Limit] }  // 先 Limit
-  if q.Offset > 0 { ... result[q.Offset:] }
-  ```
-  先 Limit 再 Offset，任何带 Offset+Limit 的请求最多只返回第 1 页（Offset ≥ Limit 时返回空）。SQL 版本正确使用 `LIMIT ? OFFSET ?`。
-- **状态**：✅ 已核实修复（2026-08-14）——改为 offset-first + limit（`q.Offset` 先切片、`q.Limit` 后截断），注释明确说明"previous order (limit-then-offset) produced wrong pagination"；报告条目过时。
-
-### 3. `pipeline.go` `mergeConfidence` 可返回 >1.0 的置信度
-- **位置**：`pipeline.go` 252-257 行
-- **说明**：
-  ```go
-  if a > b { return a + (b * 0.1) }
-  return b + (a * 0.1)
-  ```
-  a=1.0,b=1.0 时返回 1.1，超出文档声明的 `[0,1]` 范围。结果直接赋给 `obj.Confidence`，下游排序可能收到越界值。
-- **状态**：✅ 已核实修复（2026-08-14）——`mergeConfidence` 结果 clamp 到 [0,1]（`>1` 归 1、`<0` 归 0），注释说明此前公式可超 1.0；报告条目过时。
-
 ### 4. `workflow/workflow.go` 配置的 `ForGraph` 在 `MaxTokens` 未设置时被丢弃
 - **位置**：`workflow/workflow.go` 89-96 行
 - **说明**：

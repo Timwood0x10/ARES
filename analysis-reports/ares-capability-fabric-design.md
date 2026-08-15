@@ -332,6 +332,8 @@ type ExperienceRecord struct {
 `{skill, task_pattern, success_rate}`。以后同任务模式优先匹配该 skill。
 （可复用现有 `internal/ares_evolution/refine` / feedback_recorder 的持久化模式。）
 
+**task_pattern 精确化（2026-08-15）**：planner 创建 task 时把原始任务输入存入 `task.Payload["task_desc"]`；`SkillOutcomeRecorder.skillTaskPattern` 以精确描述优先（trim 后），无则回退 `AgentType` → `subAgentID` → `"default"`。`BestMatch` 双向子串匹配命中率显著提升（精确描述 vs 粗粒度 agent 类型）。
+
 ---
 
 ## 十二、与现有代码的衔接（不推倒重来）
@@ -370,6 +372,19 @@ type ExperienceRecord struct {
 4. Executable 仅来自 Skill manifest 声明 + 信任门控，拒绝未声明可执行文件。
 5. `Discovery ≠ Permission`：learned/external skill 可被索引到但不可自动执行。
 6. `make fmt && make check` 全绿。
+
+### 核对状态（2026-08-15 逐条核实）
+
+| # | 验收条款 | 实现位置 | 测试守护 | 状态 |
+|---|----------|----------|----------|------|
+| 1 | 零扫盘：只读声明源 | `source.go` SourceManager（Sources 只枚举 project/user/registered + git 缓存/http 清单；SkillDirs 一层+标记校验） | `TestCatalogBuildWithHTTPAndGitSources`（多源合并）、`config_test` 源解析 | ✅ |
+| 2 | 100 skills 只含 metadata | `indexer.go`（Level-0 只建索引不载 body）+ `loader.go`（按需 Load）+ memoryManager 常驻块 | `TestCatalogSeedRegistryBacksLoadDetail`（Level-0 仅 name+description，LoadDetail 按需 body）、`TestSkillLoadTool` | ✅ |
+| 3 | MCP 仅 Skill 激活后连接 | `catalog.go` Activate → `SetMCPConnector` → ConnectServer；serve `SetToolChangeHandler` | `TestSkillActivateToolConnectsMCP`（激活前未连/激活后连）、`TestCatalogActivateConnectsMCP` | ✅ |
+| 4 | Executable 信任门控 | `resolver.go` trustForSource（TrustUntrusted/TrustAsk/TrustProject）+ `AllowLocalExecutables` | `TestResolverTrustGate`（Untrusted 拒绝 executable） | ✅ |
+| 5 | Discovery ≠ Permission | `resolver.go` trustForSource：learned/external → TrustUntrusted（可索引不可执行） | `TestResolverTrustGate` + `TestCatalogSeedsEnvcapAggregation`（可索引） | ✅ |
+| 6 | make fmt && make check 全绿 | — | `make fmt`/`make check`（166 包、0 issues） | ✅ |
+
+**结论：6/6 验收标准全部达标**，每条均有实现位置 + 测试守护；`TestLoaderPathTraversal` 由 `TestLoaderReferencesAndTraversalGuard`（loader.go:113 路径穿越防护）等价覆盖。
 
 ---
 

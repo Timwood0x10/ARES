@@ -7,14 +7,6 @@
 
 ## BUG（高置信度）
 
-### 1. `runStrategy` 并发评分时 `len(scores) == 0` 检查永远不触发，且取消时返回不完整数据
-- **文件**：`regression.go`，381-445 行
-- **位置**：`runStrategy` 并行评分路径（381-445 行）
-- **说明**：
-  - `scores := make([]float64, n)`（381 行），而 `n > 0` 已在上方 363-365 行保证，因此 442-444 行的 `if len(scores) == 0 { return nil, ErrEmptyScores }` **永远不可能为 true**，是死代码。
-  - 更关键：当 `runCtx` 被取消时（407-409 行），goroutine 直接 `return` 而不写入对应槽位，`scores` 中该位置保持默认值 `0.0`。函数最终（433-445 行）返回的 `scores` 是**被 0 填充的不完整结果**，而不是报错。调用方会误把未运行的 run 当作"得分为 0"。正确做法应统计成功写入的槽位数量，若 `< n` 则返回错误。
-- **状态**：✅ 已核实修复（2026-08-14）——当前实现统计 `completed` 槽位数，`if completed != n { return nil, fmt.Errorf("arena: incomplete score set: scored %d/%d runs", ...) }`（526-528 行），取消/出错时返回错误而非 0 填充；`len(scores)==0` 死检查已移除。
-
 ### 2. `executeToolCalls` 中拒绝的工具调用被计入消息但仍可能重复执行
 - **文件**：`regression.go`（此为 ares_arena 内非本文件的逻辑，见下）
 - **说明**：此条属于 `agentloop` 模块，已在 agentloop 报告中分析。**（此处略去。）**
@@ -26,16 +18,6 @@
 ---
 
 ## LOGIC（逻辑问题）
-
-### 4. `buildResult` 中 `Samples` 字段使用配置值而非实际得分长度
-- **文件**：`regression.go`，455-458 行
-- **说明****：`samples := cfg.BaselineRuns; if cfg.CompareRuns < samples { samples = cfg.CompareRuns }`。在**自适应模式**（`runAdaptive`）下，最终 `oldScores[:n]` / `newScores[:n]` 可能因提前停止被裁剪得比配置的 `BaselineRuns`/`CompareRuns` 更短，但 `Samples` 仍报告配置值，与实际的 `len(oldScores)`/`len(newScores)` 不符，导致返回结果自相矛盾。
-- **状态**：✅ 已核实修复（2026-08-14）——`buildResult` 现用 `samples := len(oldScores); if len(newScores) < samples { samples = len(newScores) }`（543-546 行），反映实际评分样本数，注释说明自适应模式裁剪。
-
-### 5. `MinWinRate` 配置项被校验、设置默认值，但从未在逻辑中使用
-- **文件**：`regression.go`，60 行（字段）、181-184 行（默认值）、702-704 行（校验）
-- **说明**：`MinWinRate` 在整个文件中只被赋值和校验，`buildResult`（449-473 行）从未根据它判断"新策略是否优于旧策略"。这是一个**死配置**——用户设置 `MinWinRate` 不会对结果产生任何影响。要么应将其纳入 `buildResult` 的判定逻辑，要么应删除该字段。
-- **状态**：✅ 已核实修复（2026-08-14）——`buildResult` 现设 `NewBetter: winRate >= cfg.MinWinRate`（560 行），`MinWinRate` 已纳入判定（进化门可用），死配置复活。
 
 ### 6. `runAdaptive` 中提前停止阈值 `p > 0.5` 的"无望"判定过于激进
 - **文件**：`regression.go`，337 行

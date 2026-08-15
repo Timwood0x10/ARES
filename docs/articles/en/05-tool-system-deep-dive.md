@@ -520,6 +520,8 @@ Earlier, `NewRegistry()` returned an empty registry requiring manual `RegisterBu
 
 Key points: `skill_search`/`skill_load` use a `skillView` that deliberately omits the local `Path`/`Hash` (no filesystem disclosure to the LLM); `skill_activate` is the only moment MCP servers connect — **1000 tools never enter context**.
 
+> **E2E guard (0.3.0)**: `TestE2ESkillActivateConnectsRealMCPServer` (`internal/ares_skills/e2e_mcp_test.go`) runs a real ares_mcp MCPServer as a **re-exec'd subprocess over stdio**; a skill declaring an `mcp` tool → `Catalog.Activate` → `MCPManager.ConnectServer` (real cross-process JSON-RPC) → the remote tool is registered → calling it returns a remote result — the full chain without any `fakeMCPConnector`.
+
 ---
 
 ## 10. Summary

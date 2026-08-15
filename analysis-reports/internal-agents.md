@@ -6,16 +6,6 @@
 
 ## BUG（高置信度）
 
-### 1. `sub/agent.go` `ProcessStream` 状态竞争导致并发处理
-- **位置**：`sub/agent.go`，约 337-363 行
-- **说明**：`ProcessStream` 在 `status` 翻转为 `Ready` 之后才启动 goroutine 再次将其设为 `Busy`。若两个 `ProcessStream` 并发调用，第二个可能在状态仍为 `Ready` 时进入，造成**同一 Agent 被并发处理**。中间状态窗口期缺少原子性保护。
-- **状态**：✅ 已核实修复（2026-08-14）——当前实现已在 `a.mu.Lock()` 内检查 `Ready` 并同步置 `Busy`（TOCTOU 注释），`defer setStatus(Ready)` 恢复，报告条目过时。
-
-### 2. `service_impl.go` `ListAgents` 分页 total 错误
-- **位置**：`service_impl.go`，约 266 行
-- **说明**：`total = len(agents)`，而 `agents` 已经是分页后的切片，因此 `total` 返回的是**当前页的元素数**而非数据库中总记录数，分页元数据（total/totalPages/hasMore）全部错误。
-- **状态**：✅ 已修复（2026-08-14）——`AgentRepository` 新增 `Count(ctx, filter)`（过滤后、分页前计数）；`MemoryRepository`/mock 实现；`ListAgents` 改用 `repo.Count` 计算 total。
-
 ### 3. `executor.go` `executeWithLLM` 非幂等工具重试的保守中止
 - **位置**：`executor.go`，约 336 行
 - **说明**：重试时若检测到非幂等工具，会提前中止（`"retry aborted"`）。即便第 1 次重试本可成功也会被中断，属过度保守。且 `errors.Wrap(lastErr, "all retries failed")` 在极端边界（`lastErr` 为 nil）可能包装 nil，但实际 `maxRetries` 恒 ≥3 使循环至少执行一次，风险低。
@@ -51,8 +41,6 @@
 
 | 优先级 | 位置 | 问题 |
 |--------|------|------|
-| 高 | `sub/agent.go` 337-363 | `ProcessStream` 状态竞争，可能并发处理同一 Agent |
-| 高 | `service_impl.go` 266 | `ListAgents` total 用分页后的 len，分页元数据错误 |
 | 中 | `executor.go` 336 | 非幂等重试过度保守 + 边界 nil wrap |
 | 中 | `recovery.go` | `RETURNING id` 可能非任务 ID（需确认表结构） |
 | 低 | checkpoint/GetLatest | 文档与行为不符 |

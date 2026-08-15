@@ -146,10 +146,15 @@ func (r *SkillOutcomeRecorder) consumeOne(ev *ares_events.Event) {
 	r.appendOutcome(outcomeRecord{skillID: skillID, pattern: pattern, success: success})
 }
 
-// skillTaskPattern derives a coarse task pattern for the experience prior from
-// the task type (e.g. "reader", "code"). It falls back to the sub-agent ID in
-// the payload when the task type is empty. It never returns "".
+// skillTaskPattern derives the task pattern for the experience prior. A
+// precise description (the planner stores the original task input under
+// "task_desc") is preferred — it gives BestMatch a far higher hit rate than
+// the coarse agent type. Falls back to the agent type (e.g. "top"), then the
+// sub-agent ID, then "default". It never returns "".
 func skillTaskPattern(task *models.Task) string {
+	if desc, ok := task.Payload["task_desc"].(string); ok && strings.TrimSpace(desc) != "" {
+		return strings.TrimSpace(desc)
+	}
 	if task.AgentType != "" {
 		return string(task.AgentType)
 	}

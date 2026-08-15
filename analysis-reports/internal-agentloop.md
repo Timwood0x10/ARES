@@ -7,12 +7,6 @@
 
 ## BUG（潜在正确性问题）
 
-### 1. 达到 `maxIter` 上限时未发射 `TaskCompleted` 事件
-- **文件**：`engine.go`
-- **位置**：`Run()` 方法，`for iter := 0; iter < maxIter; iter++` 循环结束后（约 263-271 行）
-- **说明**：当循环达到迭代上限（`maxIter`）而没有得到最终答案时，只返回 `Result{Output: "max iterations reached"}`，**没有**调用 `emitTaskCompleted`。而正常完成路径（243-247 行）会发射 `TaskCompleted` 事件。这意味着在超时/超迭代情况下，`TaskCompleted` 事件永远不会发出，下游的蒸馏（distill）流程拿不到"任务完成"信号，可能造成任务结果丢失。
-- **状态**：✅ 已核实修复（2026-08-14）——`maxIterationsReachedMsg`/`maxTokensReachedMsg` 两条超限路径均调用 `emitTaskCompleted`（engine.go 354、279 行），报告条目过时。
-
 ### 2. `FriendlyErr` 中 hint 表每次调用都重建
 - **文件**：`engine.go`，`FriendlyErr()`（490-502 行）
 - **说明**：每次错误产生都重建 `hints map`。功能上无错误，但属于轻微性能/风格问题，非真正的 bug。**（标注：低优先级）**
@@ -24,11 +18,6 @@
 ### 3. `req.MaxIter` 为 0 时使用默认值，但语义上"0 表示无限"无法表达
 - **文件**：`engine.go`，211-214 行
 - **说明**：`maxIter <= 0` 回退到 `DefaultMaxIterations = 10`。若调用方希望"完全禁用迭代上限"（无限循环），无法通过 `MaxIter=0` 表达，会被强制限制为 10 次。这是设计取舍，但注释（"`<=0` falls back to DefaultMaxIterations"）与"0 表示默认"的常见约定一致，此处仅为提示。
-
-### 4. 记忆持久化仅保存 `resp.Content`，丢失工具调用信息
-- **文件**：`engine.go`，238-240 行
-- **说明**：`e.Memory.AddMessage(ctx, req.SessionID, roleAssistant, resp.Content)` 只保存 `Content`，而助手消息中的 `ToolCalls` 没有被持久化。后续从记忆中重建上下文时，会丢失"助手曾经调用过哪些工具"的轨迹，可能影响多轮对话的上下文完整性。**（取决于记忆消费方是否依赖 ToolCalls 字段，属潜在不一致。）**
-- **状态**：✅ 已修复（2026-08-14）——新增 `structuredMemorySink` 可选接口 + `toMemToolCalls` 转换；assistant 消息带 ToolCalls 时经 `AddStructuredMessage` 持久化（含 Time/ToolCalls），不支持结构化消息的 mock 回退 `AddMessage`（content-only）。
 
 ---
 

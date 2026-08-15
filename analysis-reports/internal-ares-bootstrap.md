@@ -10,24 +10,9 @@
 
 ## LOGIC（逻辑问题）
 
-### 2. `provide_mcp.go` 无服务器路径不启动
-- **位置**：`provide_mcp.go` 56-61 行
-- **说明**：当 `len(cfg.Servers) == 0` 时构造 manager 但从不调 `Start`，而配置了服务器路径会 `mcpMgr.Start(ctx)`。空 case 的 manager 永不启动，但 Bootstrap 注册了调用 `m` 的 cleanup，启动路径不一致。
-- **状态**：⚠️ 已核实为合理设计（2026-08-14）——空服务器路径构造空 `MCPManager`（无服务器可连，无需 `Start`），cleanup 对未启动 manager 为无害 no-op；有服务器路径才 `Start`。行为一致且合理，不做变更。
-
 ---
 
 ## DEAD_CODE
-
-### 3. `provide_llm.go` 多个后向兼容包装器生产未用
-- **位置**：`provide_llm.go` 50-73 行
-- **说明**：`NewCallbackRegistry`、`NewLLMClientWithCallbacks`、`WireTaskExecutorCallbacks`、`WireLeaderAgentCallbacks` 仅自身文件及测试引用，无生产调用方。（`SetupMCP` 由 `cmd/monitor-live/main.go` 使用，是活跃的。）
-- **状态**：⚠️ 已核实为有意保留（2026-08-14）——注释明确"kept for backward compatibility"，是有意的后向兼容 API（供外部调用方过渡），非死代码，保留不删。
-
-### 4. `provide_dashboard.go` `_ = hubGrp.Wait()` 丢弃错误
-- **位置**：`provide_dashboard.go` 62 行
-- **说明**：`hubGrp.Wait()` 在 `hub.Stop()` 后返回 `hubCtx.Err()`（context.Canceled），被 `_ =` 丢弃。经分析是有意的（shutdown 路径），标注确认。
-- **状态**：✅ 已核实为有意（2026-08-14）——shutdown 路径的 `context.Canceled` 属预期，丢弃是刻意行为，报告自身已标注确认，无需变更。
 
 ---
 

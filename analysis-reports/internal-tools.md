@@ -6,21 +6,6 @@
 
 ## BUG（高置信度）
 
-### 1. `resources/builtin/network/web_search.go` 默认 SearXNG 端点被 SSRF 自阻
-- **位置**：`web_search.go` 104-109 行
-- **说明**：`NewWebSearch()` 配置 `Transport: SSRFTransport()`（阻断 loopback/私有 IP），同时默认 SearXNG base URL 是 `http://localhost:5605`。`localhost` 解析到 `127.0.0.1`（loopback），SSRF dialer 拒绝所有到默认实例的连接。**web_search 工具无法访问自己的默认 SearXNG 服务器**。除非操作者显式 `SetAllowedBaseURLs` 一个非 loopback 主机（且该主机不解析到 loopback）。
-- **状态**：✅ 已核实修复（2026-08-14）——`allowedBaseURLs: map[string]bool{defaultSearXNGBaseURL: true}` 显式允许默认端点，且按跳转逐跳校验 allowlist（`checkRedirect`）；注释明确说明"the old SSRFTransport() self-blocked"；报告条目过时。
-
-### 2. `planner/extractor.go` 数学求和忽略下界
-- **位置**：`extractor.go` 76-82 行
-- **说明**：对"从 a 到 b"求和，当 `a>1 && b>a` 时返回 `b*(b+1)/2`，这是 1..b 的和。正确公式是 `(b-a+1)*(a+b)/2`。例："sum from 5 to 10" 返回 `10*11/2=55` 而非 `5+6+7+8+9+10=45`。**`a` 被解析但从未用于公式。**
-- **状态**：✅ 已核实修复（2026-08-14）——现返回 `(b-a+1)*(a+b)/2`，注释明确说明"previous code returned b*(b+1)/2 (the sum 1..b), which ignored the lower bound"；报告条目过时。
-
-### 4. `planner/analyzer.go` 把正则当作字面量子串
-- **位置**：`analyzer.go` 77、219-226 行
-- **说明**：规则含关键字 `"到.*和"`，但 `matchAnyKeyword` 用 `strings.Contains`（不解释 `.*`），只匹配字面文本 `到.*和`，永远匹配不到作者想要的（如"1到100的和"）。正则风格关键字实际无效。
-- **状态**：✅ 已修复（2026-08-14）——移除无效的 `"到.*和"` 关键字（`strings.Contains` 按字面匹配），保留字面关键字 `"到的和"`/`"的和"`（覆盖"1到100的和"），并加注释说明原因，build/test 通过。
-
 ### 5. `planner/provider.go` 文档/实现不符
 - **位置**：`provider.go` 74-87 行
 - **说明**：`GetToolCapabilities` 文档说"工具未找到时返回 nil（resolver 视为'无动态能力'）"，但代码返回 `fmt.Errorf("tool %q not found", toolName)`。调用方当前丢弃错误（resolver.go 127 行 `continue`），碰巧能工作，但文档契约未被遵守。

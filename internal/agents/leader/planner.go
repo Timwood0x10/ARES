@@ -195,9 +195,11 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 			TaskType:    models.AgentTypeTop,
 			AgentType:   models.AgentTypeTop,
 			UserProfile: profile,
-			Payload:     map[string]any{"action": "analyze_profile"},
-			Priority:    1,
-			CreatedAt:   time.Now(),
+			// task_desc carries the original task input so the outcome recorder
+			// can derive a precise experience pattern (not just the agent type).
+			Payload:   map[string]any{"action": "analyze_profile", "task_desc": inputText},
+			Priority:  1,
+			CreatedAt: time.Now(),
 		}
 		// Populate UsedExperienceID if an experience locator is configured.
 		if p.expLocator != nil {
@@ -227,9 +229,11 @@ func (p *taskPlanner) createTask(sa SubAgentConfig, profile *models.UserProfile,
 		TaskType:    models.AgentType(sa.Type),
 		AgentType:   models.AgentType(sa.Type),
 		UserProfile: profile,
-		Payload:     map[string]any{"subAgentID": sa.ID},
-		Priority:    priority,
-		CreatedAt:   time.Now(),
+		// task_desc carries the original task input so the outcome recorder
+		// can derive a precise experience pattern (not just the agent type).
+		Payload:   map[string]any{"subAgentID": sa.ID, "task_desc": inputText},
+		Priority:  priority,
+		CreatedAt: time.Now(),
 	}
 
 	// Populate UsedExperienceID if an experience locator is configured.

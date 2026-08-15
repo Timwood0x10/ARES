@@ -6,11 +6,6 @@
 
 ## BUG（高置信度）
 
-### 1. `eventutil.go` `ExtractAgentID` 潜在 nil 解引用
-- **位置**：`eventutil/eventutil.go` 163 行
-- **说明**：`ExtractAgentID` 在 `ExtractString(evt, "agent_id")` 返回 `""` 后 `return evt.StreamID`。`ExtractString` 对 **nil** `evt` 返回 `""`（有 guard），于是回退 `return evt.StreamID` 会解引用 nil 指针而 panic。当前调用方都恰好在 nil 上做了 guard，但这是公共 helper 的潜在 nil-deref bug。
-- **状态**：✅ 已修复（2026-08-14）——`ExtractAgentID` 开头加 `if evt == nil { return "" }`，公共 helper 不再有 nil 解引用风险。
-
 ---
 
 ## LOGIC（逻辑问题）
@@ -18,11 +13,6 @@
 ### 3. `tabs/workflow_tab.go` `handleTaskCreated` 同样直接 Running
 - **位置**：`tabs/workflow_tab.go` 94 行
 - **说明**：与 #2 相同的不一致，task "created" 事件直接设 `WorkflowExecution.Status = dag.StatusRunning`，应为 pending。
-
-### 4. `data/agent_tracker.go` `handleLLMCall` 硬编码 USD
-- **位置**：`data/agent_tracker.go` 196 行
-- **说明**：`Currency: "USD"` 硬编码，从不读事件 payload 的 `currency` 字段。与 `cost_bar.go`（正确追踪货币且只对同币种求和）不一致。非 USD 事件的成本在此被错误记为 USD，产生与 `CostBar` 不同的成本数字。
-- **状态**：✅ 已修复（2026-08-14）——创建 `AgentCost` 时从事件 payload 读 `currency`（`eventutil.ExtractString(evt, "currency")`），仅缺省时回退 `"USD"`，与 `cost_bar.go` 对齐。
 
 ### 5. `dag/engine.go` `handleAgentStarted` failed→running 转换被吞
 - **位置**：`dag/engine.go` 321 行

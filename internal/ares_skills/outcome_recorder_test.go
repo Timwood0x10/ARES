@@ -212,3 +212,66 @@ func itoaForTest(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// TestSkillOutcomeRecorderUsesPrecisePattern verifies the precise task
+// description (task.Payload["task_desc"], stored by the planner) is used as
+// the experience pattern instead of the coarse agent type — BestMatch on the
+// precise description must hit.
+func TestSkillOutcomeRecorderUsesPrecisePattern(t *testing.T) {
+	cat := buildTestCatalog(t)
+	store := ares_events.NewMemoryEventStore()
+	defer func() { _ = store.Close() }()
+
+	rec := NewSkillOutcomeRecorder(cat)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rec.Start(ctx, store); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	task := &models.Task{
+		TaskID:           "task-precise",
+		AgentType:        models.AgentTypeTop,
+		UsedExperienceID: "audit",
+		Payload:          map[string]any{"task_desc": "audit the OWASP login flow"},
+	}
+	emitSubTaskResult(t, store, task, true)
+	pollRecorded(t, rec, 1)
+
+	best, ok := cat.Experience().BestMatch("audit the OWASP login flow")
+	if !ok {
+		t.Fatal("precise task_desc pattern must be matchable via BestMatch")
+	}
+	if best.Skill != "audit" || best.SuccessRate != 1.0 {
+		t.Fatalf("unexpected prior: %+v", best)
+	}
+}
+
+// TestSkillTaskPatternPreciseFirstFallbackChain verifies the derivation
+// order: task_desc → agent type → subAgentID → "default".
+func TestSkillTaskPatternPreciseFirstFallbackChain(t *testing.T) {
+	// Precise task_desc wins (trimmed).
+	if got := skillTaskPattern(&models.Task{
+		AgentType: models.AgentTypeTop,
+		Payload:   map[string]any{"task_desc": "  precise desc  "},
+	}); got != "precise desc" {
+		t.Fatalf("want precise desc, got %q", got)
+	}
+	// Blank task_desc falls back to the agent type.
+	if got := skillTaskPattern(&models.Task{
+		AgentType: models.AgentTypeTop,
+		Payload:   map[string]any{"task_desc": "  ", "subAgentID": "code_01"},
+	}); got != string(models.AgentTypeTop) {
+		t.Fatalf("want agent-type fallback, got %q", got)
+	}
+	// No agent type → subAgentID.
+	if got := skillTaskPattern(&models.Task{
+		Payload: map[string]any{"subAgentID": "code_01"},
+	}); got != "code_01" {
+		t.Fatalf("want subAgentID fallback, got %q", got)
+	}
+	// Nothing → default.
+	if got := skillTaskPattern(&models.Task{}); got != "default" {
+		t.Fatalf("want default, got %q", got)
+	}
+}
