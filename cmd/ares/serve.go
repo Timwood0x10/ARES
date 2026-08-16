@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -972,6 +973,66 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 // Ensure liveDAGPatchExecutor implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*liveDAGPatchExecutor)(nil)
 
+// toolChangeDebounceWindow collapses bursts of MCP tools/listChanged
+// notifications into a single refresh.
+const toolChangeDebounceWindow = 2 * time.Second
+
+// debounceToolChange returns a notification handler that runs catalog.Refresh
+// at most once per debounce window. Notifications arriving inside the window
+// (a) reset the timer (leading-edge coalescing), so a burst of listChanged
+// events results in exactly one refresh. The trailing edge is preferred: the
+// refresh runs debounceWindow after the last notification, giving the MCP
+// servers time to finish their tool registration before the catalog indexes.
+func debounceToolChange(catalog *ares_skills.Catalog) func() {
+	var (
+		mu         sync.Mutex
+		timer      *time.Timer
+		refreshing bool
+		pending    bool
+	)
+	// runRefresh executes one catalog refresh under the single-flight guard.
+	// A notification that arrives while a refresh is in flight is marked
+	// pending (never dropped) and re-runs once the in-flight refresh returns;
+	// a panic inside Refresh is recovered so refreshing can never strand true.
+	// Declared with var so the closure can reference itself.
+	var runRefresh func()
+	runRefresh = func() {
+		mu.Lock()
+		if refreshing {
+			pending = true // a change arrived mid-refresh: re-run afterwards
+			mu.Unlock()
+			return
+		}
+		refreshing = true
+		mu.Unlock()
+
+		func() {
+			defer func() { _ = recover() }() // never strand refreshing=true on panic
+			if _, refreshErr := catalog.Refresh(); refreshErr != nil {
+				log.Printf("skill catalog: listChanged refresh failed: %v", refreshErr)
+			}
+		}()
+
+		mu.Lock()
+		refreshing = false
+		reArm := pending
+		pending = false
+		mu.Unlock()
+
+		if reArm {
+			time.AfterFunc(toolChangeDebounceWindow, runRefresh)
+		}
+	}
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.AfterFunc(toolChangeDebounceWindow, runRefresh)
+	}
+}
+
 // wireSkillCatalog builds the Capability Fabric catalog over the declared
 // skill sources (project ".ares/skills" + user "~/.ares/skills") and seeds
 // the memory manager's resident skill block (Level-0 metadata only). It then
@@ -994,13 +1055,12 @@ func wireSkillCatalog(cfg *ares_config.Config, internalReg *core_tools.Registry,
 	}
 	// Registered extra sources come from ~/.ares/config.toml [[skill_sources]];
 	// a missing file or parse error degrades to project+user sources only.
-	extraDirs, err := ares_skills.LoadRegisteredSkillDirs("")
+	// LoadSkillSources parses the file once and returns directory, git and
+	// http sources together (LoadRegisteredSkillDirs is just its directory
+	// subset — calling both would re-read the same config file).
+	extraDirs, gitSources, httpSources, err := ares_skills.LoadSkillSources("")
 	if err != nil {
 		log.Printf("skill catalog: load registered sources failed: %v", err)
-	}
-	_, gitSources, httpSources, err := ares_skills.LoadSkillSources("")
-	if err != nil {
-		log.Printf("skill catalog: load git sources failed: %v", err)
 	}
 	catalog := ares_skills.NewCatalog(ares_skills.CatalogConfig{
 		ProjectSkillsDir:      projectSkills,
@@ -1027,12 +1087,11 @@ func wireSkillCatalog(cfg *ares_config.Config, internalReg *core_tools.Registry,
 		// activated (design principle 3 / acceptance #3).
 		catalog.SetMCPConnector(mcpMgr)
 		// tools/listChanged notifications trigger an incremental re-index so
-		// the catalog reflects newly surfaced MCP tools on demand.
-		mcpMgr.SetToolChangeHandler(func() {
-			if _, refreshErr := catalog.Refresh(); refreshErr != nil {
-				log.Printf("skill catalog: listChanged refresh failed: %v", refreshErr)
-			}
-		})
+		// the catalog reflects newly surfaced MCP tools on demand. The
+		// notifications can arrive in bursts (e.g. several servers starting at
+		// once); debounce them so each burst collapses into a single Refresh
+		// instead of hammering git/http sources and rebuilding FTS5 repeatedly.
+		mcpMgr.SetToolChangeHandler(debounceToolChange(catalog))
 	}
 	if err := catalog.Build(); err != nil {
 		log.Printf("skill catalog: build failed: %v", err)

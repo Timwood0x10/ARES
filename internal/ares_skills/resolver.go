@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -152,9 +151,11 @@ func executableExists(command string) bool {
 	if command == "" {
 		return false
 	}
-	// Relative or absolute filesystem path: check existence directly.
-	if strings.ContainsRune(command, filepath.Separator) ||
-		(command != filepath.Base(command) && strings.ContainsRune(command, '/')) {
+	// Relative or absolute filesystem path (contains a separator — both \ and
+	// / so forward-slash commands keep the direct-existence branch on
+	// Windows): check existence directly. A bare name with no separator is a
+	// PATH lookup only.
+	if strings.ContainsAny(command, "\\/") {
 		if _, err := exec.LookPath(command); err == nil {
 			return true
 		}

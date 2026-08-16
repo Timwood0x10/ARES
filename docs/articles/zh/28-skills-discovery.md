@@ -150,3 +150,17 @@ type Searcher struct {
 | Catalog | 门面 + Refresh + Activate | ② Skill ≠ Tool |
 
 **发现链路的主线：把"能力管理"从运行时扫盘变成启动期索引。** 五段管线各守一个原则，配合 ContextCleaner（token 预算）与 peer/actionlog/lease（协作原语），构成 0.3.0 Agent 出生自带的能力底座。
+
+### 9.1 100 skills 性能基准（0.3.0 实测）
+
+`internal/ares_skills/benchmark_test.go`（`BenchmarkCatalogBuild100Skills` / `Search100Skills` / `ExperienceBestMatch100` + `TestResidentMetadataTokenBudget`）：
+
+| 场景 | 实测（darwin/arm64, 200 次） |
+|------|------------------------------|
+| 100 skills 索引（Build） | **6.7 ms/op**（metadata-only，零扫盘） |
+| 100 skills 检索（Search，FTS5 命中） | **16.4 µs/op**（26 allocs） |
+| 检索回退（keyword fallback） | **16.4 µs/op**（23 allocs） |
+| 100 条 Experience BestMatch | **4.3 µs/op**（2 allocs） |
+| 常驻 metadata token | **~747 tokens / 100 skills ≈ 7 tokens/skill**（承诺 ~100/skill，实测一个数量级更优） |
+
+渐进披露承诺"100 skills ≠ 100 × 全文"得到实测验证：常驻块只含 name+description（绝无 SKILL.md body），100 skills 仅 ~747 tokens。

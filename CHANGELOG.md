@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> Capability Fabric (SkillCatalog) release: declarative skill sources, zero-scan progressive disclosure, lazy MCP activation, and a closed agent loop from skill discovery to execution feedback.
+
+### Capability Fabric (`internal/ares_skills/`)
+
+- **SkillCatalog** (`catalog.go`): facade over declarative skill sources — project `.ares/skills`, user `~/.ares/skills`, and `[[skill_sources]]` from `~/.ares/config.toml` (directory / git / http-oci). Indexes metadata only (zero disk scanning beyond declared roots) with content-hash change detection.
+- **Progressive disclosure** (`indexer.go`, `loader.go`, `discovery.go`): Level-0 resident metadata (name + description in the memory manager), Level-1 SKILL.md body on demand, Level-2 resolved tools. FTS5 full-text search with a keyword fallback.
+- **Lazy MCP activation** (`resolver.go`): MCP servers are connected only when a skill declaring them is activated (via `skill_activate`); `ares_mcp.MCPManager` satisfies the `MCPConnector` interface. Executable / builtin carriers resolve through a unified trust-gated resolver.
+- **Experience prior** (`experience.go`, `experience_store.go`): learned-source relevance ranking with JSON persistence; task outcomes feed back through `SkillOutcomeRecorder` (subscribing to `EventSubTaskResult`), with keyword-overlap scoring and truncated task patterns.
+- **Agent-facing tools** (`tools.go`): `skill_search` / `skill_load` / `skill_activate` / `skill_list` / `skill_experience` registered into the serve tool registry — closing the Discover → Load → Execute loop in the LLM main loop.
+- **Memory bridge** (`catalog.go` → `skills.Registry`): resident skill block in the memory manager with on-demand `LoadDetail` via `SetDetailLoader` (Level-1 no longer returns empty bodies).
+- **Runtime robustness**: `Refresh` re-syncs git sources and re-fetches http manifests outside the index write lock; MCP `listChanged` notifications are debounced; git sync is bounded by a 2-minute timeout so an unreachable host degrades to local-checkout indexing.
+
+### Wired into `cmd/ares/serve.go`
+
+- `wireSkillCatalog` seeds the memory registry, registers the five skill tools, and starts the `SkillOutcomeRecorder` against the serve event store.
+- `createAgents`/`createLeaderAgent` accept an optional `leader.ExperienceLocator` that pre-fills `task.UsedExperienceID` from the catalog's best matching skill — the record-side attribution for the feedback loop.
+
 ## [0.3.0] - 2026-08-11
 
 > Candidate release closed-loop release: a stateful candidate pipeline with three-gate verification, a release-time LLM-driven regression gate, batch request merging, and multi-provider LLM support.

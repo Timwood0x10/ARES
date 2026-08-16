@@ -69,6 +69,34 @@ func NewExperienceWithStore(ctx context.Context, store ExperienceStore) *Experie
 //
 // Returns:
 //   - error: wrapped error when arguments are empty.
+//
+// maxPatternLength caps stored experience task patterns (in runes) so an
+// overlong precise task description cannot bloat experience.json or slow down
+// BestMatch matching. It is the single length standard shared with the
+// outcome recorder's skillTaskPattern (256 chars ≈ 256 runes for typical
+// text; rune-safe truncation never breaks UTF-8).
+const maxPatternLength = 256
+
+// capPatternLength truncates a task pattern to maxPatternLength runes,
+// preserving the prefix — the part short follow-up queries most often match.
+// Returns the input unchanged when already within the bound.
+//
+// Args:
+//   - pattern: the raw task pattern.
+//
+// Returns:
+//   - string: the bounded pattern (never longer than maxPatternLength runes).
+func capPatternLength(pattern string) string {
+	if len(pattern) <= maxPatternLength {
+		return pattern
+	}
+	runes := []rune(pattern)
+	if len(runes) <= maxPatternLength {
+		return pattern
+	}
+	return string(runes[:maxPatternLength])
+}
+
 func (e *Experience) Record(skill, taskPattern string, successRate float64) error {
 	if skill == "" || taskPattern == "" {
 		return fmt.Errorf("ares_skills: experience record needs skill and task pattern")
@@ -79,6 +107,11 @@ func (e *Experience) Record(skill, taskPattern string, successRate float64) erro
 	if successRate > 1 {
 		successRate = 1
 	}
+	// Cap the pattern length: precise task descriptions (task_desc) may be
+	// arbitrarily long; a bounded pattern keeps experience.json compact and
+	// BestMatch matching fast. Truncation keeps the prefix, which is the part
+	// short follow-up queries most often match.
+	taskPattern = capPatternLength(taskPattern)
 	rec := ExperienceRecord{
 		Skill:       skill,
 		TaskPattern: taskPattern,

@@ -3,8 +3,10 @@ package ares_skills
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 )
@@ -220,7 +222,9 @@ func (c *Catalog) Count() int {
 }
 
 // Load returns the SKILL.md body for a skill ID (Level-1, on demand). Safe for
-// concurrent use with Build/Refresh.
+// concurrent use with Build/Refresh. For git sources the body is read from the
+// live LocalDir checkout, which Refresh may rewrite mid-read — callers should
+// treat a transient read/parse error as retryable.
 //
 // Args:
 //   - id: the skill ID.
@@ -237,9 +241,31 @@ func (c *Catalog) Load(id string) (string, error) {
 	return c.loader.Load(id)
 }
 
+// ListReferences lists the reference resource files (references/ dir) of a
+// skill — Level-2 progressive disclosure: the LLM sees which resource files
+// exist and can request their content via the loader. The catalog must be
+// built first. Safe for concurrent use with Build/Refresh.
+//
+// Args:
+//   - id: the skill ID.
+//
+// Returns:
+//   - []string: reference file names (nil when the skill has none).
+//   - error: ErrSkillNotFound or wrapped read error.
+func (c *Catalog) ListReferences(id string) ([]string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.loader == nil {
+		return nil, ErrSkillNotFound
+	}
+	return c.loader.ListReferences(id)
+}
+
 // ResolveTools binds a skill's manifest tool declarations to runnable
 // providers under the trust gate (Level-2, on demand). The catalog must be
-// built first. Safe for concurrent use with Build/Refresh.
+// built first. Safe for concurrent use with Build/Refresh. For git sources the
+// manifest is read from the live LocalDir checkout, which Refresh may rewrite
+// mid-read — a transient read/parse error is retryable.
 //
 // Args:
 //   - id: the skill ID.
@@ -267,16 +293,33 @@ func (c *Catalog) ResolveTools(id string) ([]ResolvedTool, error) {
 	return c.resolver.Resolve(manifest.Tools, entry.Source)
 }
 
-// Refresh re-indexes all declared sources — including http/oci manifests and
-// a fresh FTS5 index, exactly like Build — and returns the diff against the
-// previous index generation (content-hash based change detection, design §5).
-// On success the in-memory index, loader, FTS5 and memory registry views are
-// replaced atomically; on error the previous index is kept intact.
+// Refresh re-indexes all declared sources — re-syncing git sources, re-fetching
+// http/oci manifests and rebuilding the FTS5 index, exactly like Build — and
+// returns the diff against the previous index generation (content-hash based
+// change detection, design §5). On success the in-memory index, loader, FTS5
+// and memory registry views are replaced atomically; on error the previous
+// index is kept intact.
+//
+// Git sources are synced first WITHOUT holding the index write lock: a git
+// pull can block for a long time on an unreachable host, and holding the lock
+// would stall every concurrent Search/Load/All. Each git failure degrades to
+// local-checkout-only indexing (same policy as Build).
 //
 // Returns:
 //   - IndexChange: added / modified / removed skills since the last index.
 //   - error: wrapped index error, or nil.
 func (c *Catalog) Refresh() (IndexChange, error) {
+	// Bound the git sync like the startup path in cmd/ares/serve.go: an
+	// unreachable/stalled host must degrade to local-checkout indexing within
+	// a bounded time instead of blocking a listChanged-triggered refresh.
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer syncCancel()
+	if err := c.SyncGitSources(syncCtx); err != nil {
+		// Degrade: index the local checkouts as they are; a git failure is
+		// never fatal to a refresh triggered by an MCP listChanged.
+		log.Printf("skill catalog: refresh git sync failed (indexing local checkouts): %v", err)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

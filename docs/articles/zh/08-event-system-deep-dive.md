@@ -400,7 +400,7 @@ graph TB
 
 `internal/ares_skills/outcome_recorder.go` 的 `SkillOutcomeRecorder` 是 `EventSubTaskResult` 事件流的一个**只读观察者**（零侵入，不改变任务执行）：它订阅现有事件流（与 dispatcher 同款 `Subscribe(EventFilter{Types: [EventSubTaskResult]})`），从 payload 提取 `task.UsedExperienceID`（planner 经 `WithExperienceLocator` 预填的 skill ID）+ `success`，调用 `catalog.Experience().Record(skillID, pattern, rate)` 写入先验（成功=1.0，失败=0.0），闭环回到 `skill_experience` 工具查询（design §11）。
 
-安全契约（照搬 FeedbackRecorder 降级范式）：nil catalog/store 离线 no-op；记录失败仅日志（`LastErr()` 暴露调试）；单事件 panic 被 `recover`，绝不拖垮消费 goroutine。`task_pattern` 用**精确任务描述**派生——planner 创建 task 时把原始输入存入 `task.Payload["task_desc"]`，`skillTaskPattern` 以精确描述优先（trim 后），无精确描述时回退 `task.AgentType` 粗粒度（如 `agent_top`）。精确描述让 `BestMatch` 的双向子串匹配命中率显著提升。
+安全契约（照搬 FeedbackRecorder 降级范式）：nil catalog/store 离线 no-op；记录失败仅日志（`LastErr()` 暴露调试）；单事件 panic 被 `recover`，绝不拖垮消费 goroutine。`task_pattern` 用**精确任务描述**派生——planner 创建 task 时把原始输入存入 `task.Payload["task_desc"]`，`skillTaskPattern` 以精确描述优先（trim 后），无精确描述时回退 `task.AgentType` 粗粒度（如 `agent_top`）。精确描述让 `BestMatch` 的双向子串匹配命中率显著提升；pattern 统一截断到 **256 runes**（`capPatternLength`，rune 安全不切断 UTF-8），既防止超长输入膨胀 experience.json，也避免完整用户输入明文落盘。
 
 ## 十、结语
 

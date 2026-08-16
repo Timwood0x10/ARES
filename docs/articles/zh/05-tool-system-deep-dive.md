@@ -518,7 +518,7 @@ result, err := toolBinder.CallTool(ctx, name, args)
 | `skill_list` | Level-0 | 全量 metadata 概览（无排序） |
 | `skill_experience` | 学习源 | 查询 task_pattern → 历史最佳 skill（relevance prior，永不执行） |
 
-关键点：`skill_search`/`skill_load` 的 `skillView` 刻意省略本地 `Path`/`Hash`（不向 LLM 泄露文件系统路径）；`skill_activate` 是 MCP server 的唯一连接时机——**1000 个工具也不进 context**。
+关键点：`skill_search`/`skill_load` 的 `skillView` 刻意省略本地 `Path`/`Hash`（不向 LLM 泄露文件系统路径）；`skill_activate` 是 MCP server 的唯一连接时机——**1000 个工具也不进 context**。`skill_activate` 结果同时披露该 skill 的 **references 资源文件列表**（`catalog.ListReferences`，Level-2 披露）：LLM 可见技能引用了哪些资源文件（规则/模板/提示片段），内容按需经 loader 加载，路径穿越防护（拒绝 `/` `\` `..`）不变。
 
 > **E2E 守护（0.3.0）**：`TestE2ESkillActivateConnectsRealMCPServer`（`internal/ares_skills/e2e_mcp_test.go`）把真实 ares_mcp MCPServer 以 **re-exec 子进程 + stdio** 方式跑起来，skill 声明 `mcp` 工具 → `Catalog.Activate` → `MCPManager.ConnectServer`（真实 JSON-RPC 跨进程）→ 远端工具注册 → 远程调用返回结果——完整链路不依赖 `fakeMCPConnector`。
 

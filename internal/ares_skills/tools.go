@@ -134,9 +134,22 @@ func CatalogTools(catalog *Catalog) []core.Tool {
 				if err != nil {
 					return core.NewErrorResult(err.Error()), nil
 				}
+				// Level-2 resource disclosure: expose the skill's reference
+				// files alongside the resolved tools. A references listing
+				// failure never blocks activation — it is disclosure-only.
+				refs, refsErr := catalog.ListReferences(id)
+				if refsErr != nil {
+					refs = nil
+				}
 				views := make([]resolvedToolView, 0, len(tools))
 				for _, t := range tools {
-					views = append(views, resolvedToolView(t))
+					views = append(views, resolvedToolView{
+						ID:         t.ID,
+						Kind:       t.Kind,
+						Target:     t.Target,
+						Args:       t.Args,
+						References: refs,
+					})
 				}
 				return resultJSON(views)
 			},
@@ -240,11 +253,14 @@ type skillView struct {
 }
 
 // resolvedToolView is the compact resolved-tool view returned by skill_activate.
+// References holds the skill-level reference resource files (Level-2
+// progressive disclosure), shared by every resolved tool of the skill.
 type resolvedToolView struct {
-	ID     string   `json:"id"`
-	Kind   ToolKind `json:"kind"`
-	Target string   `json:"target"`
-	Args   []string `json:"args,omitempty"`
+	ID         string   `json:"id"`
+	Kind       ToolKind `json:"kind"`
+	Target     string   `json:"target"`
+	Args       []string `json:"args,omitempty"`
+	References []string `json:"references,omitempty"`
 }
 
 // toSkillViews maps index entries onto the compact LLM-visible view.

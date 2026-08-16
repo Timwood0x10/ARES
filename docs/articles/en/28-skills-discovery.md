@@ -150,3 +150,17 @@ type Searcher struct {
 | Catalog | Facade + Refresh + Activate | 2. Skill ≠ Tool |
 
 **The discovery chain's main line: turn capability management from runtime scanning into startup-time indexing.** Each of the five stages guards one principle; combined with ContextCleaner (token budget) and the peer/actionlog/lease collaboration primitives, they form the capability foundation the 0.3.0 agent is born with.
+
+### 9.1 100-Skill Performance Benchmarks (measured in 0.3.0)
+
+`internal/ares_skills/benchmark_test.go` (`BenchmarkCatalogBuild100Skills` / `Search100Skills` / `ExperienceBestMatch100` + `TestResidentMetadataTokenBudget`):
+
+| Scenario | Measured (darwin/arm64, 200 runs) |
+|----------|-----------------------------------|
+| 100-skill index (Build) | **6.7 ms/op** (metadata-only, zero scanning) |
+| 100-skill retrieval (Search, FTS5 hit) | **16.4 µs/op** (26 allocs) |
+| Retrieval fallback (keyword) | **16.4 µs/op** (23 allocs) |
+| 100-record Experience BestMatch | **4.3 µs/op** (2 allocs) |
+| Resident metadata tokens | **~747 tokens / 100 skills ≈ 7 tokens/skill** (promised ~100/skill; measured an order of magnitude better) |
+
+The progressive-disclosure promise "100 skills ≠ 100 full bodies" is measured: the resident block holds only name+description (never SKILL.md bodies), ~747 tokens for 100 skills.
