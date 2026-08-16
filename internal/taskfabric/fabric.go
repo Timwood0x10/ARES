@@ -36,17 +36,47 @@ var (
 // Every ownership-carrying operation is fenced by the lease epoch (fencing
 // token) so a stale holder can never act on a task it no longer owns.
 type Fabric struct {
-	mu     sync.Mutex
-	tasks  map[string]*Task
-	events []TaskEvent
-	store  ares_events.EventStore // optional persistent event sink (P2-C); guarded by mu
-	now    func() time.Time       // injectable clock for lease tests
-	epoch  uint64
+	mu         sync.Mutex
+	tasks      map[string]*Task
+	events     []TaskEvent
+	store      ares_events.EventStore // optional persistent event sink (P2-C); guarded by mu
+	confidence ConfidenceSource       // experience-derived confidence (§8 Skill-first); guarded by mu
+	now        func() time.Time       // injectable clock for lease tests
+	epoch      uint64
 }
 
 // NewFabric creates an empty Task Fabric.
 func NewFabric() *Fabric {
 	return &Fabric{tasks: make(map[string]*Task), now: time.Now}
+}
+
+// WithClock injects a controllable clock for deterministic lease-expiry tests.
+// Cross-package callers (e.g. aresrecovery) use this to advance time without
+// real sleeping. Nil falls back to time.Now.
+func (f *Fabric) WithClock(now func() time.Time) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if now != nil {
+		f.now = now
+	}
+	return f
+}
+
+// WithConfidenceSource wires the experience-derived confidence (design §8:
+// Skill-first — Score's Confidence comes from ares_skills.Experience
+// BestMatch SuccessRate). Schedule fills candidates that do not declare a
+// confidence with the provider's prior. Nil detaches. Guarded by mu.
+//
+// Args:
+//   - src: the confidence provider (may be nil to detach).
+//
+// Returns:
+//   - *Fabric: the fabric for chaining.
+func (f *Fabric) WithConfidenceSource(src ConfidenceSource) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.confidence = src
+	return f
 }
 
 // WithEventStore attaches a persistent event sink (ares-runtime P2-C): every
@@ -241,7 +271,11 @@ func (f *Fabric) CheckExpiredLeases() int {
 		if t.Lease == nil || !t.Lease.IsExpired(now) {
 			continue
 		}
-		if t.State != StateLeased && t.State != StateRunning {
+		// LEASED/RUNNING/SUSPENDED tasks with an expired lease are requeued
+		// to READY. SUSPENDED is included: a dead agent's suspended task
+		// (checkpoint preserved) must return to READY so another agent can
+		// acquire and resume it (Agent 死亡 ≠ Task 死亡).
+		if t.State != StateLeased && t.State != StateRunning && t.State != StateSuspended {
 			continue
 		}
 		if err := t.transition(StateReady); err != nil {
@@ -276,6 +310,21 @@ func (f *Fabric) Schedule(taskID string, candidates []Candidate, ttl time.Durati
 	t, err := f.Task(taskID)
 	if err != nil {
 		return "", 0, err
+	}
+	// Design §8 (Skill-first): the experience prior supplies confidence for
+	// candidates that do not declare one — Score's Confidence comes from the
+	// wired ConfidenceSource (ares_skills.Experience BestMatch SuccessRate).
+	f.mu.Lock()
+	src := f.confidence
+	f.mu.Unlock()
+	if src != nil {
+		if conf := src.Confidence(t.Capability); conf > 0 {
+			for i := range candidates {
+				if candidates[i].Confidence <= 0 {
+					candidates[i].Confidence = conf
+				}
+			}
+		}
 	}
 	best := Pick(t.Capability, candidates)
 	if best == nil {

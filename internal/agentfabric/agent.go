@@ -1,0 +1,98 @@
+package agentfabric
+
+import (
+	"errors"
+	"sync"
+	"time"
+)
+
+// AgentState is the lifecycle state of a managed Agent (design §3 of
+// ares-runtime.md: disposable execution).
+type AgentState string
+
+const (
+	// StateIdle: the agent is alive and available for assignment.
+	StateIdle AgentState = "IDLE"
+	// StateRunning: the agent is executing a task.
+	StateRunning AgentState = "RUNNING"
+	// StateSuspended: the agent is paused (Lifecycle, not Task); its state
+	// is preserved and it can be resumed.
+	StateSuspended AgentState = "SUSPENDED"
+	// StateRetired: the agent is permanently decommissioned (retire); it
+	// cannot be resumed. Its in-flight tasks are reclaimed by the Runtime.
+	StateRetired AgentState = "RETIRED"
+)
+
+// Agent is a disposable, peer-equivalent cognitive process (design §3 +
+// §13). Agents are NOT orchestrated — they are scheduled (by taskfabric) and
+// managed (by this Fabric). An Agent independently holds its own Cognitive
+// State; the Runtime never depends on hidden CoT, only on checkpointable
+// state.
+type Agent struct {
+	// Identity is the stable agent identifier.
+	Identity string
+	// Capabilities are declared capabilities (used by the capability-aware
+	// scheduler in taskfabric).
+	Capabilities []string
+	// State is the current lifecycle state.
+	State AgentState
+	// Load is the current utilization (0 = idle; scheduler hint).
+	Load float64
+	// Confidence is the experience-derived prior (ares_skills source).
+	Confidence float64
+	// Parent is the spawning agent's identity ("" for a root agent). This
+	// is PROVENANCE ONLY — parent/child does NOT form a permission
+	// hierarchy (§13 invariant #1: A ≡ B ≡ C).
+	Parent string
+	// SpawnedAt is when the agent was created via spawn.
+	SpawnedAt time.Time
+
+	mu             sync.RWMutex // guards CognitiveState, PrivateContext, State, Load
+	cognitive      CognitiveState
+	privateContext map[string]any
+	taskContext    map[string]any // shared task state (read-only view for the agent)
+}
+
+// CognitiveState is the agent's independent cognitive content (design §13:
+// Context / Observation / Working Memory / Decision / Tool State / Checkpoint).
+// It is independently checkpointable — the Runtime does NOT depend on hidden
+// chain-of-thought, only on this durable state.
+type CognitiveState struct {
+	// Context is the active reasoning context (task goal + constraints).
+	Context any
+	// Observation is the latest observation from the environment/tools.
+	Observation any
+	// WorkingMemory is the agent's scratchpad for intermediate reasoning.
+	WorkingMemory any
+	// Decision is the current decision/hypothesis.
+	Decision any
+	// ToolState is the state of active tools (open files, connections…).
+	ToolState any
+	// Checkpoint is the durable progress pointer (links to taskfabric
+	// Checkpoint when the agent is executing a Task).
+	Checkpoint any
+}
+
+// ErrAgentNotFound is returned when an agent id is unknown to the Fabric.
+var ErrAgentNotFound = errors.New("agentfabric: agent not found")
+
+// ErrAgentExists is returned when an agent with the given id already exists.
+var ErrAgentExists = errors.New("agentfabric: agent already exists")
+
+// ErrAgentNotIdle is returned when an operation requires an IDLE agent but
+// the agent is in a different state.
+var ErrAgentNotIdle = errors.New("agentfabric: agent not idle")
+
+// ErrAgentRetired is returned when an operation targets a retired agent.
+var ErrAgentRetired = errors.New("agentfabric: agent retired")
+
+// ErrAgentNotSuspended is returned when an operation (e.g. resume) targets an
+// agent that is not in the SUSPENDED state.
+var ErrAgentNotSuspended = errors.New("agentfabric: agent not suspended")
+
+// ErrAgentRunning is returned when an operation cannot proceed because the
+// agent is RUNNING (e.g. retire a running agent without suspend first).
+var ErrAgentRunning = errors.New("agentfabric: agent running")
+
+// ErrInvalidSpawnSpec is returned when a SpawnSpec is invalid.
+var ErrInvalidSpawnSpec = errors.New("agentfabric: invalid spawn spec")

@@ -117,6 +117,17 @@ func createLeaderAgent(
 		return nil, fmt.Errorf("create dispatcher: %w", err)
 	}
 
+	// Kernel assembly (P4 D4): wrap the legacy dispatcher in the dual-track
+	// kernel. The legacy leader path stays live (PolicyLegacyLeader default);
+	// the taskfabric new path runs in shadow, scoring every dispatched task
+	// without double-executing it. No behavior change until the flag flips.
+	subCaps := make([]subAgentCapability, 0, len(cfg.Agents.Sub))
+	for _, s := range cfg.Agents.Sub {
+		subCaps = append(subCaps, subAgentCapability{ID: s.ID, Type: s.Type})
+	}
+	kernelDispatcher, _ := wireKernelDispatcher(taskDispatcher, subCaps)
+	taskDispatcher = &kernelTaskDispatcher{kernel: kernelDispatcher}
+
 	resultAggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	msgQueue := ahp.NewMessageQueue(cfg.Agents.Leader.ID, &ahp.QueueOptions{

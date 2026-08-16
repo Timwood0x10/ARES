@@ -1,0 +1,293 @@
+package agentfabric
+
+import (
+	"context"
+)
+
+// SpawnSpec is the syscall-style spawn request (design §13: spawn is a
+// syscall, not an orchestration API). The Kernel validates quota / capability
+// / resource / policy, then creates the Agent + (optionally) a Task + the
+// parent-child provenance link.
+type SpawnSpec struct {
+	// Identity is the requested agent id; "" means the Fabric assigns one.
+	Identity string
+	// Capabilities are the declared capabilities of the new agent.
+	Capabilities []string
+	// ParentID is the spawning agent's id ("" for a root agent).
+	ParentID string
+	// TaskContext is the shared task state passed from the parent (a
+	// snapshot or selected projection — never the parent's private state).
+	TaskContext map[string]any
+	// Resources are resource hints (quota/capability/policy validation
+	// surface; P3 stores them opaquely, full enforcement is P5).
+	Resources map[string]any
+}
+
+// Spawn is the Kernel syscall that creates a new Agent (design §13: spawn
+// establishes provenance, NOT hierarchy). The new agent is a same-level
+// cognitive process (A ≡ B ≡ C): it can compete with its parent for tasks,
+// communicate as a peer, and survive its parent's death. The parent-child
+// link is recorded in the Process Tree for provenance/Lifecycle only — it
+// does NOT form a permission hierarchy.
+//
+// The Kernel validates the spec (non-empty capabilities when a parent is
+// present; non-duplicate id) before creating the agent. Spawn does NOT
+// schedule the new agent — that is the Scheduler's job.
+//
+// Args:
+//   - ctx: for the event sink.
+//   - spec: the spawn request.
+//
+// Returns:
+//   - *Agent: the newly created agent in StateIdle.
+//   - error: ErrAgentExists / ErrInvalidSpawnSpec.
+func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
+	if err := validateSpawnSpec(spec); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	id := spec.Identity
+	if id == "" {
+		id = f.nextIDLocked()
+	}
+	if _, exists := f.agents[id]; exists {
+		f.mu.Unlock()
+		return nil, ErrAgentExists
+	}
+	a := &Agent{
+		Identity:       id,
+		Capabilities:   append([]string(nil), spec.Capabilities...),
+		State:          StateIdle,
+		Parent:         spec.ParentID,
+		SpawnedAt:      f.now(),
+		taskContext:    cloneMap(spec.TaskContext),
+		privateContext: make(map[string]any),
+	}
+	f.agents[id] = a
+	if spec.ParentID != "" {
+		f.children[spec.ParentID] = append(f.children[spec.ParentID], id)
+	}
+	f.mu.Unlock()
+	f.record(ctx, a, EventAgentSpawned, map[string]any{
+		"parent_id":    spec.ParentID,
+		"capabilities": spec.Capabilities,
+	})
+	return a, nil
+}
+
+// validateSpawnSpec checks the spec is well-formed.
+func validateSpawnSpec(spec SpawnSpec) error {
+	// ParentID "" is fine (root agent). Identity "" is fine (auto-assigned).
+	// A spec with an explicit id must not conflict — checked under mu in Spawn.
+	if spec.Identity != "" {
+		// reserved/id format check: no spaces.
+		for _, r := range spec.Identity {
+			if r == ' ' {
+				return ErrInvalidSpawnSpec
+			}
+		}
+	}
+	return nil
+}
+
+// Suspend pauses an IDLE or RUNNING agent (Lifecycle, not Task). The agent's
+// in-memory state is preserved; Resume relaunches the SAME instance. A
+// retired agent cannot be suspended.
+//
+// Args:
+//   - ctx: for the event sink.
+//   - agentID: the agent to suspend.
+//
+// Returns:
+//   - error: ErrAgentNotFound / ErrAgentRetired / ErrAgentNotSuspended.
+func (f *Fabric) Suspend(ctx context.Context, agentID string) error {
+	f.mu.Lock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		f.mu.Unlock()
+		return ErrAgentNotFound
+	}
+	if a.State == StateRetired {
+		f.mu.Unlock()
+		return ErrAgentRetired
+	}
+	if a.State == StateSuspended {
+		f.mu.Unlock()
+		return nil // idempotent
+	}
+	a.mu.Lock()
+	a.State = StateSuspended
+	a.mu.Unlock()
+	f.mu.Unlock()
+	f.record(ctx, a, EventAgentSuspended, nil)
+	return nil
+}
+
+// Resume relaunches a previously suspended agent. It is a no-op for agents
+// that are not suspended. A retired agent cannot be resumed.
+//
+// Args:
+//   - ctx: for the event sink.
+//   - agentID: the agent to resume.
+//
+// Returns:
+//   - error: ErrAgentNotFound / ErrAgentRetired / ErrAgentNotSuspended.
+func (f *Fabric) Resume(ctx context.Context, agentID string) error {
+	f.mu.Lock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		f.mu.Unlock()
+		return ErrAgentNotFound
+	}
+	if a.State == StateRetired {
+		f.mu.Unlock()
+		return ErrAgentRetired
+	}
+	if a.State != StateSuspended {
+		f.mu.Unlock()
+		return ErrAgentNotSuspended
+	}
+	a.mu.Lock()
+	a.State = StateIdle
+	a.mu.Unlock()
+	f.mu.Unlock()
+	f.record(ctx, a, EventAgentResumed, nil)
+	return nil
+}
+
+// Retire permanently decommissions an agent (graceful). The agent must NOT be
+// RUNNING — suspend it first. A retired agent cannot be resumed; its in-flight
+// tasks (if any) are reclaimed by the Runtime (P5 Recovery). Retiring a parent
+// does NOT kill its children (§13 invariant #1: parent death ≠ child death).
+//
+// Args:
+//   - ctx: for the event sink.
+//   - agentID: the agent to retire.
+//
+// Returns:
+//   - error: ErrAgentNotFound / ErrAgentRunning / ErrAgentRetired.
+func (f *Fabric) Retire(ctx context.Context, agentID string) error {
+	f.mu.Lock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		f.mu.Unlock()
+		return ErrAgentNotFound
+	}
+	if a.State == StateRetired {
+		f.mu.Unlock()
+		return nil // idempotent
+	}
+	if a.State == StateRunning {
+		f.mu.Unlock()
+		return ErrAgentRunning
+	}
+	a.mu.Lock()
+	a.State = StateRetired
+	a.mu.Unlock()
+	f.mu.Unlock()
+	f.record(ctx, a, EventAgentRetired, nil)
+	return nil
+}
+
+// Kill forcefully terminates an agent (non-graceful; e.g. crash). Unlike
+// Retire, Kill works on any state and is the crash path. The agent entry is
+// removed from the registry, but its children survive (§13: Parent 死 ≠
+// Child 死). Children's Parent field is NOT cleared — it stays as
+// provenance. Task reclaim is P5 Recovery.
+//
+// Args:
+//   - ctx: for the event sink.
+//   - agentID: the agent to kill.
+//
+// Returns:
+//   - error: ErrAgentNotFound.
+func (f *Fabric) Kill(ctx context.Context, agentID string) error {
+	f.mu.Lock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		f.mu.Unlock()
+		return ErrAgentNotFound
+	}
+	delete(f.agents, agentID)
+	// NOTE: children of a killed agent survive. We do NOT clear their Parent
+	// field — it remains as provenance. The Process Tree edge is preserved
+	// in f.children so the parent's causal descendants are still discoverable
+	// even after the parent is gone (§13 invariant #1 + #7).
+	f.mu.Unlock()
+	f.record(ctx, a, EventAgentKilled, nil)
+	return nil
+}
+
+// Recover restores an agent's state from a checkpoint (design §13: cognitive
+// state can independently survive). The agent must exist and be IDLE or
+// SUSPENDED. Recover replaces the agent's cognitive state with the provided
+// checkpoint — this is how a new Agent resumes a dead one's cognition (§13
+// invariant #2: Agent disposable, Task durable; a new agent picks up the
+// cognitive checkpoint).
+//
+// Args:
+//   - ctx: for the event sink.
+//   - agentID: the agent to recover into.
+//   - cognitive: the recovered cognitive state.
+//
+// Returns:
+//   - error: ErrAgentNotFound / ErrAgentRetired.
+func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive CognitiveState) error {
+	f.mu.Lock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		f.mu.Unlock()
+		return ErrAgentNotFound
+	}
+	if a.State == StateRetired {
+		f.mu.Unlock()
+		return ErrAgentRetired
+	}
+	a.mu.Lock()
+	a.cognitive = cognitive
+	if a.State == StateSuspended {
+		a.State = StateIdle
+	}
+	a.mu.Unlock()
+	f.mu.Unlock()
+	f.record(ctx, a, EventAgentRecovered, map[string]any{
+		"has_checkpoint": cognitive.Checkpoint != nil,
+	})
+	return nil
+}
+
+// SetRunning marks an agent as RUNNING (called by the Scheduler when it
+// binds a Task to the agent). Internal: not a public lifecycle primitive.
+func (f *Fabric) SetRunning(agentID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		return ErrAgentNotFound
+	}
+	if a.State == StateRetired {
+		return ErrAgentRetired
+	}
+	a.mu.Lock()
+	a.State = StateRunning
+	a.mu.Unlock()
+	return nil
+}
+
+// SetIdle marks an agent as IDLE (called by the Scheduler when a Task yields
+// or completes). Internal: not a public lifecycle primitive.
+func (f *Fabric) SetIdle(agentID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		return ErrAgentNotFound
+	}
+	if a.State == StateRetired {
+		return ErrAgentRetired
+	}
+	a.mu.Lock()
+	a.State = StateIdle
+	a.mu.Unlock()
+	return nil
+}
