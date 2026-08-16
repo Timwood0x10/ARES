@@ -1,0 +1,422 @@
+package taskfabric
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
+)
+
+var (
+	// ErrTaskNotFound: the task id is unknown.
+	ErrTaskNotFound = errors.New("taskfabric: task not found")
+	// ErrNotOwner: the agent does not hold this task's lease.
+	ErrNotOwner = errors.New("taskfabric: agent does not own this task")
+	// ErrEpochMismatch: the operation carried a stale fencing token (lease
+	// epoch) — the task is now owned by a newer lease holder. This is the
+	// guard against "A lease expired → B acquire → A late release" killing
+	// B's ownership.
+	ErrEpochMismatch = errors.New("taskfabric: lease epoch mismatch")
+	// ErrIllegalState: the requested state transition is not allowed.
+	ErrIllegalState = errors.New("taskfabric: illegal state transition")
+	// ErrTaskNotReady: the task cannot be acquired in its current state.
+	ErrTaskNotReady = errors.New("taskfabric: task not ready for acquire")
+	// ErrTaskExists: a task with this id already exists.
+	ErrTaskExists = errors.New("taskfabric: task already exists")
+	// ErrNoCapableCandidate: no candidate scored > 0 for the task's required
+	// capability, so Schedule could not pick an executor.
+	ErrNoCapableCandidate = errors.New("taskfabric: no capable candidate")
+)
+
+// Fabric owns Tasks and their leases (design §6 of ares-runtime.md:
+// Acquire / Release / Yield / Checkpoint). It is the scheduler's substrate:
+// agents compete for tasks via CAS ownership, never via a leader's dispatch.
+// Every ownership-carrying operation is fenced by the lease epoch (fencing
+// token) so a stale holder can never act on a task it no longer owns.
+type Fabric struct {
+	mu     sync.Mutex
+	tasks  map[string]*Task
+	events []TaskEvent
+	store  ares_events.EventStore // optional persistent event sink (P2-C); guarded by mu
+	now    func() time.Time       // injectable clock for lease tests
+	epoch  uint64
+}
+
+// NewFabric creates an empty Task Fabric.
+func NewFabric() *Fabric {
+	return &Fabric{tasks: make(map[string]*Task), now: time.Now}
+}
+
+// WithEventStore attaches a persistent event sink (ares-runtime P2-C): every
+// task lifecycle transition is appended to the store on the task's stream, in
+// addition to the in-memory log, so scheduler/task/lease state can be rebuilt
+// across restarts. Nil detaches. Guarded by mu.
+//
+// Args:
+//   - store: the event store to publish task.* events to.
+//
+// Returns:
+//   - *Fabric: the fabric for chaining.
+func (f *Fabric) WithEventStore(store ares_events.EventStore) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.store = store
+	return f
+}
+
+// Create registers a new READY task. The task is unowned and available for
+// acquire. Idempotency: an existing id returns ErrTaskExists.
+//
+// Args:
+//   - t: the task to register (ID must be non-empty).
+//
+// Returns:
+//   - error: ErrTaskExists, or an error for an empty id.
+func (f *Fabric) Create(t *Task) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t.ID == "" {
+		return errors.New("taskfabric: task id required")
+	}
+	if _, exists := f.tasks[t.ID]; exists {
+		return ErrTaskExists
+	}
+	t.State = StateReady
+	t.Owner = ""
+	t.Lease = nil
+	f.tasks[t.ID] = t
+	f.record(t, EventTaskCreated)
+	return nil
+}
+
+// Acquire is the CAS ownership claim. Only an unowned READY (or SUSPENDED —
+// checkpoint preserved, cooperative re-acquisition) task can be leased; a
+// concurrent or repeated acquire is rejected, so two agents competing for the
+// same task see exactly one winner.
+//
+// Args:
+//   - id: the task id.
+//   - agentID: the acquiring agent.
+//   - ttl: the lease TTL.
+//
+// Returns:
+//   - uint64: the fencing token (lease epoch) the agent must present on every
+//     subsequent ownership-carrying operation.
+//   - error: ErrTaskNotFound / ErrTaskNotReady.
+func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return 0, ErrTaskNotFound
+	}
+	if agentID == "" {
+		return 0, errors.New("taskfabric: agent id required")
+	}
+	if t.State != StateReady && t.State != StateSuspended {
+		return 0, ErrTaskNotReady
+	}
+	f.epoch++
+	lease := NewLease(agentID, ttl, f.epoch)
+	if err := t.transition(StateLeased); err != nil {
+		return 0, err
+	}
+	t.Owner = agentID
+	t.Lease = &lease
+	f.record(t, EventTaskAcquired)
+	return lease.Epoch, nil
+}
+
+// Start moves a LEASED task owned by agentID (at the fenced epoch) to RUNNING.
+func (f *Fabric) Start(id, agentID string, epoch uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	if err := t.transition(StateRunning); err != nil {
+		return err
+	}
+	f.record(t, EventTaskStarted)
+	return nil
+}
+
+// Yield is the quantum-boundary primitive (design §4 correction 2): it
+// hands execution back to the Runtime at a checkpoint. The state after yield
+// is decided by the Scheduler (continue/suspend/preempt/handoff/complete);
+// P0's default transition is SUSPENDED with the checkpoint preserved.
+func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	if err := t.transition(StateSuspended); err != nil {
+		return err
+	}
+	t.Checkpoint = checkpoint
+	f.record(t, EventTaskYielded)
+	if checkpoint != nil {
+		f.record(t, EventTaskCheckpointed)
+	}
+	return nil
+}
+
+// Complete finalizes a RUNNING task owned by agentID (at the fenced epoch) as
+// COMPLETED.
+func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	if err := t.transition(StateCompleted); err != nil {
+		return err
+	}
+	f.record(t, EventTaskCompleted)
+	return nil
+}
+
+// Fail marks a RUNNING task FAILED, or requeues it to READY when the retry
+// policy allows another attempt (Agent 死亡 ≠ Task 死亡).
+func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	t.RetryPolicy.Attempts++
+	if t.CanRetry() {
+		if err := t.transition(StateReady); err != nil {
+			return err
+		}
+		t.Owner = ""
+		t.Lease = nil
+		f.record(t, EventTaskFailed)
+		f.record(t, EventTaskReady)
+		return nil
+	}
+	if err := t.transition(StateFailed); err != nil {
+		return err
+	}
+	f.record(t, EventTaskFailed)
+	return nil
+}
+
+// Release returns a LEASED/RUNNING/SUSPENDED task to READY, clearing owner
+// and lease so another agent can acquire it. The epoch fencing guarantees a
+// stale holder (whose lease expired and was re-acquired by another agent)
+// cannot release the task out from under the new owner.
+func (f *Fabric) Release(id, agentID string, epoch uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	if err := t.transition(StateReady); err != nil {
+		return err
+	}
+	t.Owner = ""
+	t.Lease = nil
+	f.record(t, EventTaskReleased)
+	return nil
+}
+
+// CheckExpiredLeases requeues every task whose lease expired without renewal.
+// This is the crash-recovery primitive: a dead agent's tasks return to READY
+// and become acquirable again. Returns the number of requeued tasks.
+func (f *Fabric) CheckExpiredLeases() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := f.now()
+	requeued := 0
+	for _, t := range f.tasks {
+		if t.Lease == nil || !t.Lease.IsExpired(now) {
+			continue
+		}
+		if t.State != StateLeased && t.State != StateRunning {
+			continue
+		}
+		if err := t.transition(StateReady); err != nil {
+			continue
+		}
+		t.Owner = ""
+		t.Lease = nil
+		f.record(t, EventTaskExpired)
+		requeued++
+	}
+	return requeued
+}
+
+// Schedule picks the best capable candidate for a task and acquires it on its
+// behalf (design §8: capability-aware scheduling — "who is the best executor",
+// not merely "who is idle"). D2 (2026-08-16): the Scheduler orchestrates
+// uniformly — ReadyTasks → Schedule → execute; idle agents Steal → Acquire.
+// The scoring (capability overlap × (1-load) × confidence) comes from
+// scheduler.go; Experience supplies confidence.
+//
+// Args:
+//   - taskID: the task id.
+//   - candidates: the agents competing to execute the task.
+//   - ttl: the lease TTL granted to the winner.
+//
+// Returns:
+//   - string: the winning agent id.
+//   - uint64: the fencing token (lease epoch) the winner must present on
+//     subsequent ownership-carrying operations.
+//   - error: ErrNoCapableCandidate / ErrTaskNotFound / ErrTaskNotReady.
+func (f *Fabric) Schedule(taskID string, candidates []Candidate, ttl time.Duration) (string, uint64, error) {
+	t, err := f.Task(taskID)
+	if err != nil {
+		return "", 0, err
+	}
+	best := Pick(t.Capability, candidates)
+	if best == nil {
+		return "", 0, ErrNoCapableCandidate
+	}
+	epoch, err := f.Acquire(taskID, best.AgentID, ttl)
+	if err != nil {
+		return "", 0, err
+	}
+	return best.AgentID, epoch, nil
+}
+
+// Preempt cooperatively preempts a RUNNING task at a quantum boundary
+// (architecture invariant #9: cooperative — never OS-style hard preemption).
+// The task returns to READY with its checkpoint preserved, so another agent
+// can acquire and resume it. The priority comparison itself is the caller's
+// (Scheduler's) decision — Preempt is the primitive that hands the task back
+// at the boundary; the fencing token ensures only the current holder can
+// preempt its own task.
+//
+// Args:
+//   - taskID: the task id.
+//   - agentID: the preempting agent (must hold the lease).
+//   - epoch: the fencing token returned by Acquire.
+//   - reason: debug reason for the preemption (recorded in the event).
+//
+// Returns:
+//   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState.
+func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(taskID, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	if err := t.transition(StateReady); err != nil {
+		return err
+	}
+	t.Owner = ""
+	t.Lease = nil
+	f.record(t, EventTaskPreempted)
+	return nil
+}
+
+// Task returns a snapshot of a task (ErrTaskNotFound when unknown).
+func (f *Fabric) Task(id string) (*Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return nil, ErrTaskNotFound
+	}
+	return t, nil
+}
+
+// Events returns a copy of the lifecycle event log — the state-rebuild source.
+func (f *Fabric) Events() []TaskEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]TaskEvent, len(f.events))
+	copy(out, f.events)
+	return out
+}
+
+// ownerLocked returns the task and verifies agentID holds its lease at the
+// fenced epoch. A mismatch between the presented epoch and the current lease
+// epoch returns ErrEpochMismatch — the fencing token guard.
+func (f *Fabric) ownerLocked(id, agentID string, epoch uint64) (*Task, error) {
+	t, ok := f.tasks[id]
+	if !ok {
+		return nil, ErrTaskNotFound
+	}
+	if t.Owner == "" || t.Owner != agentID {
+		return nil, ErrNotOwner
+	}
+	if t.Lease == nil || t.Lease.Epoch != epoch {
+		return nil, ErrEpochMismatch
+	}
+	return t, nil
+}
+
+// record appends one lifecycle event.
+func (f *Fabric) record(t *Task, typ EventType) {
+	ev := TaskEvent{
+		Type:       typ,
+		TaskID:     t.ID,
+		AgentID:    t.Owner,
+		State:      t.State,
+		Checkpoint: t.Checkpoint,
+		At:         f.now(),
+	}
+	f.events = append(f.events, ev)
+	if f.store == nil {
+		return
+	}
+	// Best-effort persistence: a failed append must never break the state
+	// machine — the in-memory log stays authoritative within a process.
+	if err := f.store.Append(context.Background(), t.ID, []*ares_events.Event{{
+		Type:       taskEventType(typ),
+		StreamID:   t.ID,
+		ModuleName: "taskfabric",
+		Payload: map[string]any{
+			"task_id":  t.ID,
+			"agent_id": t.Owner,
+			"state":    string(t.State),
+		},
+		Timestamp: ev.At,
+	}}, 0); err != nil {
+		_ = err // best-effort, see above
+	}
+}
+
+// taskEventType maps the fabric's internal event type to the ares_events
+// task.* event type. Unknown types map to "" and are never published.
+func taskEventType(typ EventType) ares_events.EventType {
+	switch typ {
+	case EventTaskCreated:
+		return ares_events.EventTaskCreated
+	case EventTaskReady:
+		return ares_events.EventTaskReady
+	case EventTaskAcquired:
+		return ares_events.EventTaskAcquired
+	case EventTaskStarted:
+		return ares_events.EventTaskStarted
+	case EventTaskYielded:
+		return ares_events.EventTaskYielded
+	case EventTaskCheckpointed:
+		return ares_events.EventTaskCheckpointed
+	case EventTaskPreempted:
+		return ares_events.EventTaskPreempted
+	case EventTaskReleased:
+		return ares_events.EventTaskReleased
+	case EventTaskCompleted:
+		return ares_events.EventTaskCompleted
+	case EventTaskFailed:
+		return ares_events.EventTaskFailed
+	case EventTaskExpired:
+		return ares_events.EventTaskExpired
+	case EventTaskStolen:
+		return ares_events.EventTaskStolen
+	default:
+		return ""
+	}
+}

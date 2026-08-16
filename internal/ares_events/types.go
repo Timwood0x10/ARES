@@ -52,6 +52,21 @@ const (
 	EventSubTaskResult    EventType = "sub_task.result"    // sub returns result (success or failure)
 	EventSubAgentFailed   EventType = "sub_agent.failed"   // sub crashed (panic captured)
 
+	// Task Fabric lifecycle events (ares-runtime P2-C, 2026-08-16): published
+	// by internal/taskfabric on every task state transition so scheduler /
+	// task / lease state can be rebuilt from the stream. Pure addition —
+	// EventTaskCreated / EventTaskCompleted / EventTaskFailed already exist
+	// above; the remaining lifecycle states are added here.
+	EventTaskReady        EventType = "task.ready"
+	EventTaskAcquired     EventType = "task.acquired"
+	EventTaskStarted      EventType = "task.started"
+	EventTaskYielded      EventType = "task.yielded"
+	EventTaskCheckpointed EventType = "task.checkpointed"
+	EventTaskPreempted    EventType = "task.preempted"
+	EventTaskReleased     EventType = "task.released"
+	EventTaskExpired      EventType = "task.expired"
+	EventTaskStolen       EventType = "task.stolen"
+
 	// EventMemoryFinalize requests async memory finalization (update task output,
 	// record assistant message, distill). Emitted by the leader after aggregating
 	// results; consumed by a dedicated memory worker so the leader loop does not
