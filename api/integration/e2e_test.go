@@ -20,6 +20,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
 )
 
+// boolPtr returns a pointer to a bool literal for *bool config fields.
+func boolPtr(b bool) *bool { return &b }
+
 // TestBootstrapDashboardHealth verifies the full pipeline:
 // Bootstrap → EventStore → Engine → IntelAdapter → MonitorPlugin → HTTP health endpoint.
 func TestBootstrapDashboardHealth(t *testing.T) {
@@ -30,7 +33,7 @@ func TestBootstrapDashboardHealth(t *testing.T) {
 	cfg := &ares_config.Config{
 		MCP:    ares_config.MCPConfig{Servers: make([]ares_config.MCPServerEntry, 0)},
 		LLM:    ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
-		Memory: ares_config.MemoryConfig{Enabled: true},
+		Memory: ares_config.MemoryConfig{Enabled: boolPtr(true)},
 	}
 	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 	if err != nil {

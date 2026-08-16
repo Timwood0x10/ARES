@@ -64,12 +64,18 @@ Flags:
 var (
 	serveConfigPath string
 	servePort       int
+	serveLLMURL     string
+	serveLLMKey     string
+	serveLLMModel   string
 )
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
-	serveCmd.Flags().StringVarP(&serveConfigPath, "config", "c", "", "Path to config YAML")
+	serveCmd.Flags().StringVarP(&serveConfigPath, "config", "c", "", "Path to config YAML (optional; use --llm-url instead for minimal setup)")
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 0, "HTTP port for dashboard (overrides config)")
+	serveCmd.Flags().StringVar(&serveLLMURL, "llm-url", "", "LLM endpoint URL — minimal setup, no config file needed")
+	serveCmd.Flags().StringVar(&serveLLMKey, "llm-api-key", "", "LLM API key (minimal setup)")
+	serveCmd.Flags().StringVar(&serveLLMModel, "llm-model", "", "LLM model name (optional, provider default when empty)")
 }
 
 func runServe() error {
@@ -447,14 +453,22 @@ func createAndRegisterServeAgents(
 		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
 	}
 
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
+	leaderAgent, subAgents, kernel, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create agents: %w", err)
 	}
 
+	// Configure the dual-track kernel per config: flip the policy to Task
+	// Fabric and start the scheduler when kernel.policy == "taskfabric"
+	// (ares-runtime.md P4 D4 gradual cutover). Default ("legacy") keeps the
+	// leader path live with the Task Fabric path observing in shadow.
+	if kernel != nil && kernel.dual != nil {
+		wireKernelPolicy(ctx, cfg, kernel, subAgents)
+	}
+
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator, nil)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)
@@ -462,7 +476,7 @@ func createAndRegisterServeAgents(
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
+			_, subs, _, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s
@@ -677,6 +691,19 @@ func wireEvolutionLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Ma
 // the --port flag. Extracted from runServe to keep its cyclomatic complexity
 // within lint limits.
 func loadServeConfig() (*ares_config.Config, error) {
+	// Minimal setup: the user provides only the LLM endpoint (--llm-url) and
+	// optionally the API key / model. Everything else — agents, memory, tools,
+	// storage, kernel policy — is assembled by the runtime from defaults, so no
+	// config file is required.
+	if serveLLMURL != "" {
+		cfg := ares_config.NewMinimalConfig(serveLLMURL, serveLLMKey, serveLLMModel)
+		if servePort > 0 {
+			cfg.Server.Port = servePort
+		}
+		log.Printf("serve: minimal config (llm-url only); runtime defaults for all subsystems")
+		return cfg, nil
+	}
+
 	configPath := serveConfigPath
 	if configPath == "" {
 		for _, p := range []string{
@@ -715,7 +742,7 @@ func validateServeConfig(cfg *ares_config.Config) error {
 	if cfg == nil {
 		return errors.New("serve: config is required")
 	}
-	if !cfg.Memory.Enabled {
+	if !cfg.Memory.IsEnabled() {
 		return errors.New("serve: memory.enabled must be true because the leader agent requires the Memory component")
 	}
 	return nil

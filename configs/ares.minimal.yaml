@@ -1,0 +1,29 @@
+# ============================================================
+# ARES minimal config — the ONLY section you need is `llm`.
+#
+# Everything else (memory, agents, tools, storage, knowledge,
+# evolution, kernel policy) is assembled automatically by the
+# runtime from sane defaults. Start with:
+#
+#   ares serve -c configs/ares.minimal.yaml
+#
+# OpenAI-compatible endpoint (any provider):
+#   llm:
+#     provider: openai
+#     base_url: https://api.openai.com/v1
+#     api_key: sk-...            # required for hosted providers
+#     model: gpt-4o-mini         # optional; provider default when empty
+#
+# Local ollama (no api key):
+#   llm:
+#     provider: ollama
+#     base_url: http://localhost:11434
+# ============================================================
+
+llm:
+  provider: openai
+  base_url: https://api.openai.com/v1
+  api_key: sk-your-key-here
+
+# Optional: pick your model explicitly.
+# model: gpt-4o-mini

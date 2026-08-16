@@ -20,8 +20,9 @@
 | **§8** | Capability-aware scheduling 与 Skill-first 打通 | `internal/ares_skills/experience_confidence.go` | ✅ 100% | Experience BestMatch → ConfidenceSource，编译期断言 |
 
 **接线状态（0.3.0 生产路径）**：
-- 🔴 **cmd/ares Kernel 组装入口**：本日建立最小 `PolicyFlag + DualTrackDispatcher` shadow 接线（shadow 转起来、Mismatches 可观测）。
+- 🟢 **cmd/ares Kernel 组装入口**：`wireKernelDispatcher` 组装 `PolicyFlag + DualTrackDispatcher`（shadow=on）并包进 leader 实际 dispatcher——**shadow 在生产路径转起来**（Mismatches 可观测）；**flag 翻转已接线**：`cfg.Kernel.Policy="taskfabric"` 时 `wireKernelPolicy` 翻转 flag、把 shadow 评分器替换为真实 `executeFabricTask`（Create→Schedule→Acquire→RunQuantum）、关闭 shadow（防双跑）、启动 `kernelScheduler` 接管 `ReadyTasks` 消费。`agentipc` 新增 `SetShadow`/`SetNewPath`/`NewPath` 支持运行时切换。config `kernel.policy` 默认 `legacy`（安全）。**已实现、测试覆盖（-race）**。`make fmt && make check` 全绿。
 - 🟡 **planner → DAG 接线**：D3 决策 P1/P2 用 `Task.Dependencies` 手工构造；planner/live DAG 接入仍待做（leader 仍负责 plan）。
+- 🟡 **live mid-run flip**：flag 翻转目前仅启动时生效（config 驱动）；运行中翻转（不 orphan 在途任务）未接线。
 - 🟡 **P5 资源强制**：lease/恢复链路齐，但 cgroup/资源配额强制（spawn 校验 quota/resource）未实现。
 - 🟢 全部积木包测试全绿：`go test ./internal/taskfabric/ ./internal/agentfabric/ ./internal/agentipc/ ./internal/aresrecovery/ ./internal/ares_skills/`。
 

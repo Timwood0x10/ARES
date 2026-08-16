@@ -34,13 +34,14 @@ func createAgents(
 	feedbackSvc *experience.FeedbackService,
 	strategySrc agents.StrategySource,
 	skillLocator leader.ExperienceLocator,
-) (leader.Agent, []sub.Agent, error) {
-	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
+) (leader.Agent, []sub.Agent, *kernelHandle, error) {
+	kernel := &kernelHandle{}
+	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator, kernel)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create leader: %w", err)
+		return nil, nil, nil, fmt.Errorf("create leader: %w", err)
 	}
 	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store, strategySrc)
-	return leaderAgent, subAgents, nil
+	return leaderAgent, subAgents, kernel, nil
 }
 
 // buildPeerRegistry registers the leader and sub agents' message senders into
@@ -74,6 +75,7 @@ func createLeaderAgent(
 	feedbackSvc *experience.FeedbackService,
 	strategySrc agents.StrategySource,
 	skillLocator leader.ExperienceLocator,
+	kernel *kernelHandle,
 ) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		llmAdapter,
@@ -125,8 +127,19 @@ func createLeaderAgent(
 	for _, s := range cfg.Agents.Sub {
 		subCaps = append(subCaps, subAgentCapability{ID: s.ID, Type: s.Type})
 	}
-	kernelDispatcher, _ := wireKernelDispatcher(taskDispatcher, subCaps)
+	kernelDispatcher, kernelFlag := wireKernelDispatcher(taskDispatcher, subCaps)
 	taskDispatcher = &kernelTaskDispatcher{kernel: kernelDispatcher}
+	// Expose the assembled kernel to serve so it can flip the policy and start
+	// the Task Fabric scheduler per config.
+	if kernel != nil {
+		kernel.dual = kernelDispatcher
+		kernel.flag = kernelFlag
+	}
+	// Kernel shadow mode is live: the Task Fabric path scores every dispatched
+	// task (no double execution) and Mismatches() counts divergence vs. the
+	// legacy leader path. Flip kernelFlag to PolicyTaskFabric to cut over.
+	log.Printf("kernel: dual-track dispatch assembled (policy=%d, shadow=on, candidates=%d)",
+		kernelFlag.Active(), len(subCaps))
 
 	resultAggregator := aggregate.NewResultAggregator(true, 10, aggregate.SortByNone)
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())

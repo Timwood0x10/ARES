@@ -19,12 +19,88 @@ const (
 	providerOpenAI      = "openai"
 	providerOpenRouter  = "openrouter"
 	providerAnthropic   = "anthropic"
+	// defaultLeaderID is the leader agent ID assigned by the minimal config
+	// path (and shared across configs that reference the leader by ID).
+	defaultLeaderID = "leader-1"
 )
 
 // DefaultArchiveDir is the default round-archive directory. Exported so the
 // minimal service path (api_impl) can reuse the exact same default without
 // duplicating the literal, keeping the two wiring paths in sync.
 const DefaultArchiveDir = ".context/rounds"
+
+// NewMinimalConfig builds a fully-runnable Config from only the LLM endpoint
+// details, so a user does not need a YAML file to start the runtime: everything
+// else (agents, memory, tools, storage, kernel policy) falls back to the
+// package defaults via setDefaults.
+//
+// Provider is inferred: a non-empty apiKey selects the OpenAI-compatible
+// provider (works for any OpenAI-compatible endpoint); otherwise ollama.
+// Memory is force-enabled because the leader agent contract requires a
+// MemoryManager (see validateServeConfig) — enabling it here is the only
+// non-default choice the minimal path must make.
+//
+// Args:
+//   - baseURL: the LLM endpoint root, e.g. "https://api.openai.com/v1" or
+//     "http://localhost:11434/v1". Empty falls back to the provider default.
+//   - apiKey: the API key (empty for local ollama).
+//   - model: the model name. Empty selects the provider default.
+//
+// Returns:
+//   - *Config: a fully-defaulted, validated config ready for Bootstrap.
+func NewMinimalConfig(baseURL, apiKey, model string) *Config {
+	cfg := &Config{}
+	cfg.LLM.BaseURL = baseURL
+	cfg.LLM.APIKey = apiKey
+	cfg.LLM.Provider = providerOpenAI
+	if apiKey == "" {
+		cfg.LLM.Provider = defaultLLMProvider // ollama
+	}
+	cfg.LLM.Model = model
+	// Memory defaults to enabled (nil Enabled field → IsEnabled() == true), so
+	// a minimal startup always satisfies the leader agent's Memory requirement.
+	cfg.setDefaults()
+	if cfg.LLM.Model == "" {
+		if cfg.LLM.Provider == providerOpenAI {
+			cfg.LLM.Model = "gpt-4o-mini"
+		} else {
+			cfg.LLM.Model = defaultLLMModel
+		}
+	}
+	// Assemble a default agent team so the runtime is immediately capable of
+	// task division (coder / reviewer / researcher), even with no config file.
+	// A user who wants different agents supplies a config file instead.
+	cfg.Agents.Leader.ID = defaultLeaderID
+	cfg.Agents.Sub = defaultSubAgents()
+	return cfg
+}
+
+// defaultSubAgents returns the standard capability team wired by the minimal
+// config path. Types mirror the demo/monitor-live fleet: an analysis/coder, a
+// recommendation/reviewer and a research agent, each with the triggers that
+// route profile fields to them.
+func defaultSubAgents() []SubAgentConfig {
+	return []SubAgentConfig{
+		{
+			ID:       "coder-a",
+			Type:     "coder",
+			Category: "analysis",
+			Triggers: []string{"analysis", "code"},
+		},
+		{
+			ID:       "reviewer-1",
+			Type:     "reviewer",
+			Category: "recommendation",
+			Triggers: []string{"recommendation", "optimization"},
+		},
+		{
+			ID:       "researcher-1",
+			Type:     "researcher",
+			Category: "research",
+			Triggers: []string{"research", "knowledge"},
+		},
+	}
+}
 
 //nolint:gocyclo // Complex default value initialization for multiple config sections
 func (c *Config) setDefaults() {

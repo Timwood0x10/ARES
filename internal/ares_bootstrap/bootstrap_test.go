@@ -38,7 +38,7 @@ func TestBootstrap_WithMinimalConfig(t *testing.T) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
-		Memory: ares_config.MemoryConfig{Enabled: true},
+		Memory: ares_config.MemoryConfig{Enabled: boolPtr(true)},
 	}
 	comp, err := Bootstrap(ctx, cfg, nil)
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestBootstrap_WithMinimalConfig(t *testing.T) {
 func TestBootstrap_WithDeps(t *testing.T) {
 	ctx := context.Background()
 	cfg := &ares_config.Config{
-		Memory: ares_config.MemoryConfig{Enabled: true},
+		Memory: ares_config.MemoryConfig{Enabled: boolPtr(true)},
 	}
 	comp, err := Bootstrap(ctx, cfg, &BootstrapDeps{
 		LLMClient: &mockLLMClient{},
@@ -62,6 +62,9 @@ func TestBootstrap_WithDeps(t *testing.T) {
 	require.NotNil(t, comp)
 	assert.NotNil(t, comp.LLM)
 }
+
+// boolPtr returns a pointer to a bool literal for *bool config fields.
+func boolPtr(b bool) *bool { return &b }
 
 // mockLLMClient is a minimal mock for ares_eval.LLMClient.
 type mockLLMClient struct{}

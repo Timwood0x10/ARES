@@ -45,6 +45,24 @@ type Config struct {
 	Evolution  EvolutionConfig    `yaml:"evolution"`
 	Embedding  EmbeddingConfig    `yaml:"embedding"`
 	Discovery  DiscoveryConfig    `yaml:"discovery"`
+	Kernel     KernelConfig       `yaml:"kernel"`
+}
+
+// KernelConfig controls the dual-track dispatch kernel (ares-runtime.md P4 D4:
+// parallel + feature flag gradual cutover). When Policy is "legacy" (default),
+// the leader path stays live and the Task Fabric path runs in shadow mode
+// (scores every task, Mismatches observable). When Policy is "taskfabric", the
+// kernel flips to the Task Fabric path: the shadow scorer is replaced by the
+// real Create→Schedule→Acquire→RunQuantum executor, shadow mode is disabled
+// (to avoid double execution) and the kernelScheduler starts driving ready
+// tasks. The flip is safe to run at startup; a live mid-run flip is not wired
+// yet.
+type KernelConfig struct {
+	// Policy selects the active dispatch policy: "legacy" (default) or
+	// "taskfabric".
+	Policy string `yaml:"policy"`
+	// PollInterval is the kernelScheduler drain interval (default 500ms).
+	PollInterval string `yaml:"poll_interval"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that
@@ -240,7 +258,11 @@ type PGVectorConfig struct {
 
 // MemoryConfig holds memory and distillation configuration.
 type MemoryConfig struct {
-	Enabled          bool          `yaml:"enabled"`           // Enable memory system
+	// Enabled enables the memory system. It is *bool so an unset field means
+	// "default on": a minimal config that only specifies the LLM endpoint still
+	// gets memory (the leader contract requires it), while an explicit
+	// `memory.enabled: false` opts out. IsEnabled reports the effective value.
+	Enabled          *bool         `yaml:"enabled"`           // nil/true = enabled (default); false = disabled.
 	SessionMemory    SessionConfig `yaml:"session"`           // Short-term session memory
 	UserProfile      ProfileConfig `yaml:"user_profile"`      // Long-term user profile
 	TaskDistillation DistillConfig `yaml:"task_distillation"` // Task distillation
@@ -288,6 +310,11 @@ type ArchiveConfig struct {
 	Dir       string `yaml:"dir"`        // Default ".context/rounds".
 	MaxRounds int    `yaml:"max_rounds"` // Default 200.
 }
+
+// IsEnabled reports whether memory is active. nil is treated as enabled
+// (default-on) so a minimal config that omits the memory section still gets
+// the memory component, while an explicit `memory.enabled: false` opts out.
+func (m MemoryConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
 
 // IsEnabled reports whether archiving is active. nil is treated as enabled
 // (default-on) so callers need not dereference the pointer.

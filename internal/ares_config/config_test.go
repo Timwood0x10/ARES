@@ -116,8 +116,8 @@ memory:
 	if cfg.Storage.Enabled != true {
 		t.Errorf("Storage.Enabled = %v, want true", cfg.Storage.Enabled)
 	}
-	if cfg.Memory.Enabled != true {
-		t.Errorf("Memory.Enabled = %v, want true", cfg.Memory.Enabled)
+	if !cfg.Memory.IsEnabled() {
+		t.Errorf("Memory.IsEnabled() = %v, want true", cfg.Memory.IsEnabled())
 	}
 }
 
@@ -869,7 +869,7 @@ func TestConfigStructs(t *testing.T) {
 
 	// Test MemoryConfig
 	memoryCfg := MemoryConfig{
-		Enabled: true,
+		Enabled: boolPtr(true),
 		SessionMemory: SessionConfig{
 			Enabled:    true,
 			MaxHistory: 100,
@@ -886,10 +886,13 @@ func TestConfigStructs(t *testing.T) {
 			Prompt:      "Test prompt",
 		},
 	}
-	if !memoryCfg.Enabled || memoryCfg.SessionMemory.MaxHistory != 100 {
+	if !memoryCfg.IsEnabled() || memoryCfg.SessionMemory.MaxHistory != 100 {
 		t.Error("MemoryConfig initialization failed")
 	}
 }
+
+// boolPtr returns a pointer to a bool literal for *bool config fields.
+func boolPtr(b bool) *bool { return &b }
 
 // TestValidLLMProviders tests all valid LLM providers.
 func TestValidLLMProviders(t *testing.T) {

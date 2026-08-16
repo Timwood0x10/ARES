@@ -5,8 +5,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
 // stubLeaderDispatcher records legacy dispatch calls and optionally fails.
@@ -140,5 +144,87 @@ func TestTaskFromPayload(t *testing.T) {
 	}
 	if _, err := taskFromPayload("t2", nil); err != nil {
 		t.Fatalf("nil payload must not error: %v", err)
+	}
+}
+
+// TestEnableKernelExecutionRunsFabricPath verifies that after flipping to the
+// Task Fabric policy, the kernel's new path executes the task through the
+// fabric (Create→Schedule→Acquire→RunQuantum) instead of scoring only, and
+// that shadow mode is turned off (so the legacy path is not re-run).
+func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+
+	f := taskfabric.NewFabric()
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	executors := map[string]sub.Agent{"code_01": executor}
+
+	// Flip: replace the shadow scorer with the real executor, disable shadow.
+	enableKernelExecution(kernel, f, executors)
+	flag.Set(agentipc.PolicyTaskFabric)
+
+	// Dispatch through the kernel (active path = fabric).
+	payload := map[string]any{"agent_type": "code"}
+	if err := kernel.Dispatch(context.Background(), "", "t1", payload); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// The task must have been created and executed in the fabric.
+	tk, err := f.Task("t1")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.State != taskfabric.StateCompleted {
+		t.Fatalf("want COMPLETED, got %s", tk.State)
+	}
+	if executor.executedCount() != 1 {
+		t.Fatalf("executor must run once, got %d", executor.executedCount())
+	}
+	// Shadow is off: the legacy path must NOT have run.
+	if inner.calls != 0 {
+		t.Fatalf("legacy dispatcher must not run after flip (shadow off), got %d calls", inner.calls)
+	}
+}
+
+// TestWireKernelPolicyTaskFabric flips the policy via config and verifies the
+// scheduler starts draining ready tasks to completion.
+func TestWireKernelPolicyTaskFabric(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	kernelHandle := &kernelHandle{dual: kernel, flag: flag}
+
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	cfg := &ares_config.Config{}
+	cfg.Kernel.Policy = "taskfabric"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// wireKernelPolicy starts its own scheduler goroutine; the created fabric
+	// is internal, so we drive a task by creating it through the kernel's new
+	// path. But wireKernelPolicy's fabric is not reachable here — instead we
+	// verify the policy flip + scheduler start via a dispatcher dispatch.
+	wireKernelPolicy(ctx, cfg, kernelHandle, []sub.Agent{executor})
+	if !flag.IsTaskFabric() {
+		t.Fatal("flag must be TaskFabric after wireKernelPolicy(taskfabric)")
+	}
+
+	// The kernel's new path is now the real executor: dispatch through the
+	// batch adapter to run the full fabric path.
+	adapter := &kernelTaskDispatcher{kernel: kernel}
+	task := models.NewTask("t-policy", models.AgentType("code"), nil)
+	results, err := adapter.Dispatch(ctx, []*models.Task{task})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if executor.executedCount() == 0 {
+		t.Fatal("executor must have run via the fabric path")
 	}
 }

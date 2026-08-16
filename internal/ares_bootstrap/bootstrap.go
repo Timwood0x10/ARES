@@ -193,7 +193,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 	comp.Runtime = rt
 
-	// 3. Memory — only construct when cfg.Memory.Enabled is true.
+	// 3. Memory — only construct when cfg.Memory.IsEnabled() is true.
 	// Stage 2 fix (F01): respect the config gate so disabled = no goroutine,
 	// no event subscription, no store writes.
 	mem, memErr := wireMemory(cfg, comp.EventStore)
@@ -451,7 +451,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	return &comp, nil
 }
 
-// wireMemory constructs the memory manager when cfg.Memory.Enabled is true.
+// wireMemory constructs the memory manager when cfg.Memory.IsEnabled() is true.
 // Stage 2 fix (F01): disabled = no goroutine, no event subscription, no store
 // writes, so the gate is honored here instead of constructing unconditionally.
 // Stage 3 fix (B01): the event store is wired during construction, eliminating
@@ -459,8 +459,8 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 //
 //nolint:nilnil // nil manager + nil error is the documented "disabled" contract.
 func wireMemory(cfg *ares_config.Config, eventStore ares_events.EventStore) (ares_memory.MemoryManager, error) {
-	if !cfg.Memory.Enabled {
-		log.Info("bootstrap: memory disabled (cfg.Memory.Enabled=false), skipping construction")
+	if !cfg.Memory.IsEnabled() {
+		log.Info("bootstrap: memory disabled (cfg.Memory.IsEnabled()=false), skipping construction")
 		return nil, nil
 	}
 	memCfg := ares_memory.DefaultMemoryConfig()

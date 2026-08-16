@@ -144,7 +144,11 @@ The LLM never participates in extraction or build — it only consumes the retri
 ## CLI
 
 ```bash
-ares serve              # Start full agent monitoring (LLM + MCP + dashboard)
+# Minimal setup — only the LLM endpoint is required; all subsystems
+# (agents, memory, tools, storage) are assembled by the runtime from defaults.
+ares serve --llm-url https://api.openai.com/v1 --llm-api-key sk-...
+ares serve --llm-url http://localhost:11434               # local ollama (no key)
+ares serve              # Full agent monitoring from config file (LLM + MCP + dashboard)
 ares agent list         # List all registered agents
 ares arena run/validate/list/serve/survival/inspect  # Chaos engineering scenarios
 ares evolution run/status         # Runtime evolution

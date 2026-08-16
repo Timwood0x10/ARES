@@ -65,7 +65,7 @@ func main() {
 	if err := ares_config.LoadFromEnv(cfg); err != nil {
 		log.Fatalf("load env: %v", err)
 	}
-	if !cfg.Memory.Enabled {
+	if !cfg.Memory.IsEnabled() {
 		log.Fatal("config: memory.enabled must be true because monitor-live's leader agent requires the Memory component")
 	}
 

@@ -20,7 +20,7 @@ func newBootstrapForSnapshot(t *testing.T) *Components {
 	t.Helper()
 	cfg := &ares_config.Config{
 		LLM:    ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
-		Memory: ares_config.MemoryConfig{Enabled: false},
+		Memory: ares_config.MemoryConfig{Enabled: boolPtr(false)},
 		MCP:    ares_config.MCPConfig{Servers: []ares_config.MCPServerEntry{}},
 	}
 	ctx, cancel := context.WithCancel(context.Background())

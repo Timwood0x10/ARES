@@ -116,6 +116,34 @@ func (d *DualTrackDispatcher) Dispatch(ctx context.Context, agentID, taskID stri
 	return err
 }
 
+// SetShadow turns shadow mode on or off at runtime. Shadow must be disabled
+// when the flag flips to TaskFabric: with the new path active, the legacy path
+// is the inactive one and running it in shadow would re-dispatch every task
+// (double execution). Callers flip shadow off in the same critical section as
+// the flag flip.
+func (d *DualTrackDispatcher) SetShadow(shadow bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.shadow = shadow
+}
+
+// SetNewPath swaps the new-path dispatcher at runtime (used by the Kernel when
+// the Task Fabric path is enabled: the shadow scorer is replaced by the real
+// executor). The callers must flip shadow off via SetShadow in the same
+// critical section to avoid double execution.
+func (d *DualTrackDispatcher) SetNewPath(newPath Dispatcher) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.newPath = newPath
+}
+
+// NewPath returns the current new-path dispatcher (may be nil when not wired).
+func (d *DualTrackDispatcher) NewPath() Dispatcher {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.newPath
+}
+
 // compareShadow runs the inactive path and compares the outcome.
 func (d *DualTrackDispatcher) compareShadow(ctx context.Context, agentID, taskID string, payload any, activeErr error) {
 	var shadowErr error

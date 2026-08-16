@@ -36,7 +36,7 @@ func buildBootstrapConfig(cfg *config) *ares_config.Config {
 			Timeout:  cfg.llmCfg.Timeout,
 		},
 		Memory: ares_config.MemoryConfig{
-			Enabled:     cfg.memCfg.Enabled,
+			Enabled:     &cfg.memCfg.Enabled,
 			EnableRAG:   cfg.memCfg.EnableRAG,
 			RAGTopK:     cfg.memCfg.RAGTopK,
 			RAGMinScore: cfg.memCfg.RAGMinScore,

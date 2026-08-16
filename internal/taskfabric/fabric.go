@@ -369,7 +369,11 @@ func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) er
 	return nil
 }
 
-// Task returns a snapshot of a task (ErrTaskNotFound when unknown).
+// Task returns a copy of a task (ErrTaskNotFound when unknown). It returns a
+// snapshot, never the internal pointer: callers may read the returned task
+// freely while the fabric mutates the live task (state transitions under the
+// fabric lock), so a caller that holds the result across its own reads cannot
+// race with the fabric's writes.
 func (f *Fabric) Task(id string) (*Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -377,7 +381,8 @@ func (f *Fabric) Task(id string) (*Task, error) {
 	if !ok {
 		return nil, ErrTaskNotFound
 	}
-	return t, nil
+	snap := *t
+	return &snap, nil
 }
 
 // Events returns a copy of the lifecycle event log — the state-rebuild source.
