@@ -421,7 +421,7 @@ Kernel 三支柱（`Agents decide the work. Kernel schedules the work.`）：
 - **Recovery**：`internal/aresrecovery` —— lease 过期 requeue / checkpoint 恢复 / agent
   restart，验证 **Agent 死亡 ≠ Task 死亡**；Chaos 注入故障验证 Runtime 能恢复。
 
-详细设计见 [ares-runtime.md](ares-runtime.md)（权威模型）。
+详细设计见 [ARES Runtime 设计文档](docs/zh/architecture/ares-runtime.md) / [ARES Runtime Design](docs/en/architecture/ares-runtime.md)（权威模型，中英双份）。
 
 ## Data Flow
 

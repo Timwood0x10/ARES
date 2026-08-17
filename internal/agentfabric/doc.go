@@ -1,5 +1,5 @@
 // Package agentfabric implements the ARES Kernel Lifecycle pillar (P3 of
-// docs/ares-runtime.md): Agent as a disposable, peer-equivalent cognitive
+// docs/zh/architecture/ares-runtime.md): Agent as a disposable, peer-equivalent cognitive
 // process managed by the Runtime.
 //
 // Design invariants (ares-runtime.md §13 架构不变量):

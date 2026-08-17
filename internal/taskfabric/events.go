@@ -2,7 +2,7 @@ package taskfabric
 
 import "time"
 
-// EventType enumerates the task lifecycle events (docs/ares-runtime.md §7).
+// EventType enumerates the task lifecycle events (docs/zh/architecture/ares-runtime.md §7).
 // The event log is the single source of truth: Scheduler / Task / Lease state
 // can be fully rebuilt from it.
 type EventType string

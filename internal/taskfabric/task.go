@@ -2,7 +2,7 @@ package taskfabric
 
 import "time"
 
-// Task is the durable-intent object (design §3 of docs/ares-runtime.md).
+// Task is the durable-intent object (design §3 of docs/zh/architecture/ares-runtime.md).
 // Agents are disposable; a Task survives its owner via lease expiry and
 // preserved checkpoints.
 type Task struct {

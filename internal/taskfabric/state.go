@@ -1,6 +1,6 @@
 package taskfabric
 
-// TaskState is the lifecycle state of a Task (design §4 of docs/ares-runtime.md).
+// TaskState is the lifecycle state of a Task (design §4 of docs/zh/architecture/ares-runtime.md).
 type TaskState string
 
 const (
@@ -20,7 +20,7 @@ const (
 )
 
 // canTransition reports whether the state machine allows from → to.
-// Legal transitions (docs/ares-runtime.md §4):
+// Legal transitions (docs/zh/architecture/ares-runtime.md §4):
 //
 //	READY → LEASED (acquire)
 //	LEASED → RUNNING (start), READY (release)
