@@ -461,9 +461,11 @@ func createAndRegisterServeAgents(
 	// Configure the dual-track kernel per config: flip the policy to Task
 	// Fabric and start the scheduler when kernel.policy == "taskfabric"
 	// (ares-runtime.md P4 D4 gradual cutover). Default ("legacy") keeps the
-	// leader path live with the Task Fabric path observing in shadow.
+	// leader path live with the Task Fabric path observing in shadow. The
+	// shared EventStore is passed so the event-driven recovery loop (Kernel
+	// Lifecycle pillar) can subscribe to task lifecycle events.
 	if kernel != nil && kernel.dual != nil {
-		wireKernelPolicy(ctx, cfg, kernel, subAgents)
+		wireKernelPolicy(ctx, cfg, kernel, subAgents, store)
 	}
 
 	// Register agents with runtime manager (from Bootstrap)

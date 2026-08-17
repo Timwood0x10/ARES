@@ -55,14 +55,22 @@ type Config struct {
 // kernel flips to the Task Fabric path: the shadow scorer is replaced by the
 // real Create→Schedule→Acquire→RunQuantum executor, shadow mode is disabled
 // (to avoid double execution) and the kernelScheduler starts driving ready
-// tasks. The flip is safe to run at startup; a live mid-run flip is not wired
-// yet.
+// tasks. The flip is safe to run at startup; flipKernelToTaskFabric is the
+// idempotent live mid-run variant.
 type KernelConfig struct {
 	// Policy selects the active dispatch policy: "legacy" (default) or
 	// "taskfabric".
 	Policy string `yaml:"policy"`
 	// PollInterval is the kernelScheduler drain interval (default 500ms).
 	PollInterval string `yaml:"poll_interval"`
+	// Resources is the P5 resource budget applied to the Agent Fabric
+	// (name → max total across live agents, e.g. {"cpu": 8, "memory": 8192}).
+	// Spawn rejects claims that exceed the remaining budget
+	// (agentfabric.ErrResourceQuotaExceeded). Empty disables enforcement.
+	Resources map[string]float64 `yaml:"resources"`
+	// MaxRestarts bounds agent restart attempts after a crash in the
+	// event-driven recovery loop (0 = aresrecovery default of 5).
+	MaxRestarts int `yaml:"max_restarts"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that

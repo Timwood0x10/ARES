@@ -9,10 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
@@ -177,12 +180,21 @@ type subAgentCapability struct {
 // scheduler started per configuration. mu guards the live-flip state: a mid-run
 // flip must start the scheduler exactly once and must not race a concurrent
 // flip or the wiring read.
+//
+// The three Kernel pillars (ares-runtime.md §13) are assembled here:
+//   - fabric:   Scheduler pillar (taskfabric: Create/Schedule/Acquire/RunQuantum)
+//   - agents:   Lifecycle pillar (agentfabric: spawn/suspend/resume/retire/kill)
+//   - recovery: Lifecycle recovery surface (aresrecovery: lease-expiry requeue /
+//     checkpoint resume / agent restart)
+//   - dual/flag: IPC pillar (agentipc: dual-track dispatch + live flip)
 type kernelHandle struct {
 	dual *agentipc.DualTrackDispatcher
 	flag *agentipc.PolicyFlag
 
 	mu        sync.Mutex
 	fabric    *taskfabric.Fabric
+	agents    *agentfabric.Fabric
+	recovery  *aresrecovery.Recovery
 	executors map[string]sub.Agent
 	flipped   bool
 }
@@ -234,7 +246,10 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 //     RunQuantum via the sub-agent executors), turns shadow mode off (avoiding
 //     double execution) and starts the kernelScheduler to drain ReadyTasks.
 //     The flip is done through flipKernelToTaskFabric, the same idempotent
-//     path a live mid-run flip uses.
+//     path a live mid-run flip uses. The Lifecycle pillar (agentfabric +
+//     aresrecovery) is assembled at the same time, so the Kernel exposes a
+//     single unified entry coordinating Scheduler + Lifecycle + IPC
+//     (ares-runtime.md §13 Kernel pillars).
 //   - anything else (default "legacy"): keeps the leader path live; the Task
 //     Fabric path stays in shadow (scores only, Mismatches observable).
 //
@@ -246,6 +261,7 @@ func wireKernelPolicy(
 	cfg *ares_config.Config,
 	kernel *kernelHandle,
 	subAgents []sub.Agent,
+	store ares_events.EventStore,
 ) {
 	if kernel == nil || kernel.dual == nil || kernel.flag == nil {
 		return
@@ -255,6 +271,111 @@ func wireKernelPolicy(
 		return
 	}
 	flipKernelToTaskFabric(ctx, kernel, subAgents)
+
+	// Assemble the Lifecycle pillar (agentfabric + aresrecovery) under the
+	// same unified Kernel entry. The resource budget (P5: spawn quota
+	// enforcement) is wired from config — without this, spawn claims are
+	// carried but never enforced (code-review-2025-01-16 #4).
+	wireKernelLifecycle(ctx, cfg, kernel, store)
+}
+
+// wireKernelLifecycle assembles the Kernel's Lifecycle pillar (ares-runtime.md
+// §13): the Agent Fabric (spawn/suspend/resume/retire/kill) with the P5
+// resource budget from config, and the Recovery subsystem (lease expiry →
+// requeue → checkpoint resume → agent restart) wired to the same Task Fabric
+// that the scheduler drains. This closes the "resource claim has no limit"
+// gap (code-review-2025-01-16 #4) and gives Recovery a production owner.
+//
+// Args:
+//   - ctx: lifetime of the event-driven recovery loop.
+//   - cfg: kernel configuration (Resources budget, MaxRestarts).
+//   - kernel: the assembled kernel handle (must be flipped to taskfabric).
+//   - store: the shared EventStore the Task Fabric publishes task.* events to
+//     and the recovery loop subscribes from (may be nil; then the loop relies
+//     on its periodic sweep).
+func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *kernelHandle, store ares_events.EventStore) {
+	kernel.mu.Lock()
+	defer kernel.mu.Unlock()
+	if kernel.fabric == nil || kernel.agents != nil {
+		return // not flipped, or lifecycle already wired
+	}
+	if store != nil {
+		// Publish task lifecycle transitions to the shared stream so the
+		// event-driven recovery loop (and any observer) sees them.
+		kernel.fabric = kernel.fabric.WithEventStore(store)
+	}
+	agents := agentfabric.NewFabric()
+	if len(cfg.Kernel.Resources) > 0 {
+		agents = agents.WithResourceBudget(cfg.Kernel.Resources)
+	}
+	policy := aresrecovery.DefaultRestartPolicy()
+	if cfg.Kernel.MaxRestarts > 0 {
+		policy.MaxRestarts = cfg.Kernel.MaxRestarts
+	}
+	kernel.agents = agents
+	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
+	log.Printf("kernel: lifecycle wired (agentfabric budget=%d resources, recovery max_restarts=%d)",
+		len(cfg.Kernel.Resources), policy.MaxRestarts)
+	// Event-driven recovery loop: consumes task lifecycle events and runs the
+	// recovery chain. This is the event-driven Agent loop (code-review-
+	// 2025-01-16 #2) at the Kernel level — the runtime reacts to TaskAcquired/
+	// Yielded/Expired events instead of a command loop.
+	go runKernelRecoveryLoop(ctx, store, kernel.recovery)
+}
+
+// recoverySweepInterval is how often the event-driven recovery loop also
+// sweeps TTL-based lease expiry (lease expiry is detected by a sweep, not by
+// an event, so a periodic safety net is required alongside the event channel).
+const recoverySweepInterval = time.Second
+
+// runKernelRecoveryLoop is the Kernel-level event-driven recovery loop
+// (ares-runtime.md §13 + P5, code-review-2025-01-16 #2). It reacts to task
+// lifecycle events (TaskExpired / TaskFailed / TaskAcquired / TaskYielded) on
+// the shared EventStore and, on each, runs the full recovery chain
+// (RequeueExpiredLeases → checkpoint resume → agent restart). A slow periodic
+// sweep complements the event channel because TTL-based lease expiry is only
+// observable by sweeping.
+//
+// Args:
+//   - ctx: stops the loop.
+//   - store: the EventStore to subscribe from (nil disables the event channel;
+//     the periodic sweep still runs).
+//   - recovery: the Recovery subsystem (nil disables the loop).
+func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, recovery *aresrecovery.Recovery) {
+	if recovery == nil {
+		return
+	}
+	var events <-chan *ares_events.Event
+	if store != nil {
+		ch, err := store.Subscribe(ctx, ares_events.EventFilter{
+			Types: []ares_events.EventType{
+				ares_events.EventTaskExpired,
+				ares_events.EventTaskFailed,
+				ares_events.EventTaskAcquired,
+				ares_events.EventTaskYielded,
+			},
+		})
+		if err == nil {
+			events = ch
+		} else {
+			log.Printf("kernel recovery loop: subscribe failed, periodic sweep only: %v", err)
+		}
+	}
+	ticker := time.NewTicker(recoverySweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			recovery.RecoverFromAgentDeath(ctx)
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+			recovery.RecoverFromAgentDeath(ctx)
+		}
+	}
 }
 
 type kernelLegacyDispatcher struct {

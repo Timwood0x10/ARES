@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
@@ -299,8 +303,10 @@ func TestWireKernelPolicyTaskFabric(t *testing.T) {
 	// wireKernelPolicy starts its own scheduler goroutine; the created fabric
 	// is internal, so we drive a task by creating it through the kernel's new
 	// path. But wireKernelPolicy's fabric is not reachable here — instead we
-	// verify the policy flip + scheduler start via a dispatcher dispatch.
-	wireKernelPolicy(ctx, cfg, kernelHandle, []sub.Agent{executor})
+	// verify the policy flip + scheduler start via a dispatcher dispatch. The
+	// EventStore is nil in this test: the recovery loop degrades to periodic
+	// sweeps, which is fine for a unit test.
+	wireKernelPolicy(ctx, cfg, kernelHandle, []sub.Agent{executor}, nil)
 	if !flag.IsTaskFabric() {
 		t.Fatal("flag must be TaskFabric after wireKernelPolicy(taskfabric)")
 	}
@@ -448,4 +454,109 @@ func TestDispatchRacingLiveFlipNoLoss(t *testing.T) {
 		t.Fatalf("execution loss or duplication: legacy=%d fabric=%d total=%d want %d",
 			legacyCalls, fabricRuns, legacyCalls+fabricRuns, total)
 	}
+}
+
+// TestWireKernelPolicyWiresLifecycle verifies the Kernel integration fix
+// (code-review-2025-01-16 #1 + #4): flipping to policy=taskfabric also
+// assembles the Lifecycle pillar (agentfabric + aresrecovery) under the same
+// unified kernel entry, and the P5 resource budget from config is enforced at
+// spawn (claims over budget are rejected).
+func TestWireKernelPolicyWiresLifecycle(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	cfg := &ares_config.Config{}
+	cfg.Kernel.Policy = "taskfabric"
+	cfg.Kernel.Resources = map[string]float64{"cpu": 4}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	wireKernelPolicy(ctx, cfg, handle, []sub.Agent{executor}, nil)
+
+	// Lifecycle pillar wired: agents fabric + recovery present.
+	handle.mu.Lock()
+	agents := handle.agents
+	recovery := handle.recovery
+	handle.mu.Unlock()
+	if agents == nil {
+		t.Fatal("kernel.agents must be wired after wireKernelPolicy(taskfabric)")
+	}
+	if recovery == nil {
+		t.Fatal("kernel.recovery must be wired after wireKernelPolicy(taskfabric)")
+	}
+	if !flag.IsTaskFabric() {
+		t.Fatal("flag must be TaskFabric")
+	}
+
+	// Resource enforcement (code-review #4): the budget came from config, so a
+	// spawn claiming more than the remaining budget is rejected.
+	_, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
+		Identity:     "a1",
+		Capabilities: []string{"code"},
+		Resources:    map[string]any{"cpu": 2},
+	})
+	if err != nil {
+		t.Fatalf("spawn within budget: %v", err)
+	}
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
+		Identity:     "a2",
+		Capabilities: []string{"code"},
+		Resources:    map[string]any{"cpu": 3}, // 2 + 3 > 4
+	}); !errors.Is(err, agentfabric.ErrResourceQuotaExceeded) {
+		t.Fatalf("over-budget spawn must be rejected, got %v", err)
+	}
+}
+
+// TestRunKernelRecoveryLoopEventDriven verifies the event-driven recovery loop
+// (code-review-2025-01-16 #2): task lifecycle events on the shared EventStore
+// drive the recovery chain instead of a command loop. Publishing an
+// EventTaskExpired event triggers RequeueExpiredLeases (the first recovery
+// path), so an expired task returns to READY.
+func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	defer func() { _ = store.Close() }()
+
+	// A task fabric with one READY task whose lease is expired.
+	tf := taskfabric.NewFabric().WithEventStore(store)
+	if err := tf.Create(&taskfabric.Task{ID: "t1", Capability: "code"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Acquire to put it on a lease.
+	if _, err := tf.Acquire("t1", "agent-a", 5*time.Minute); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	// Expire the lease by advancing the clock past the TTL.
+	tf.WithClock(func() time.Time { return time.Now().Add(10 * time.Minute) })
+
+	agents := agentfabric.NewFabric()
+	recovery := aresrecovery.New(tf, agents, aresrecovery.DefaultRestartPolicy())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runKernelRecoveryLoop(ctx, store, recovery)
+
+	// Publish the TaskExpired event (as CheckExpiredLeases would) and wait for
+	// the recovery sweep to requeue the task to READY.
+	if err := store.Append(ctx, "t1", []*ares_events.Event{
+		{Type: ares_events.EventTaskExpired, StreamID: "t1", Payload: map[string]any{}},
+	}, 0); err != nil {
+		t.Fatalf("append expired event: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := tf.Task("t1")
+		if err == nil && tk.State == taskfabric.StateReady {
+			return // recovered: lease expired → task requeued to READY
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	tk, err := tf.Task("t1")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	t.Fatalf("task must be requeued to READY after TaskExpired event, state=%s", tk.State)
 }
