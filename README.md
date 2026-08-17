@@ -161,6 +161,7 @@ ares init               # Scaffold a new project (main.go + ares.yaml)
 ares run                # Run agent from config file
 ares bench              # Quick performance benchmark
 ares doctor             # Diagnose environment (LLM key, Ollama, Git)
+ares status             # Show runtime status at a glance (config / agents / kernel policy)
 ares version            # Show version
 ```
 
@@ -219,6 +220,11 @@ the "agent OS" building blocks distilled from the prime-agent comparison
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
 | Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
+| Task Fabric | `internal/taskfabric` | Durable Task 状态机 + Lease/fencing（epoch）+ capability-aware Scheduler（Score/Pick/Schedule）+ Work Stealing + DAG ReadyTasks + cooperative preempt（0.3.0 Kernel Scheduler 支柱） |
+| Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree（provenance 非 hierarchy）+ Cognitive State + Context 三层 + P5 资源配额（`WithResourceBudget`）（0.3.0 Kernel Lifecycle 支柱） |
+| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + `PolicyFlag`/`DualTrackDispatcher` 双轨渐进切换（shadow 等价验证）（0.3.0 Kernel IPC 支柱） |
+| Runtime Recovery | `internal/aresrecovery` | lease 过期 requeue / checkpoint 恢复 / agent restart / Chaos 故障注入验证（**Agent 死亡 ≠ Task 死亡**） |
+| Kernel 组装 | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`flipKernelToTaskFabric`/`kernelScheduler`——config `kernel.policy`（`legacy`/`taskfabric`）+ `subagents[].dependencies` DAG 接线 + live mid-run flip |
 
 Wiring: output guard validates sub-agent results; native tools and the peer
 registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
@@ -344,6 +350,23 @@ graph TB
     AGENT --> Tools
     AGENT --> Memory
 
+    SDK --> Kernel
+    RuntimeEvo --> Kernel
+    Kernel --> AGENT
+
+    subgraph Kernel ["Runtime Kernel (0.3.0)"]
+        direction TB
+        POLICY["PolicyFlag + DualTrack<br/>legacy leader ⇄ taskfabric"]
+        FABRIC["Task Fabric<br/>Create / Schedule / Acquire<br/>RunQuantum · DAG ReadyTasks"]
+        AFAB["Agent Fabric<br/>spawn / suspend / resume / retire<br/>kill / recover · Process Tree"]
+        AIPC["Agent IPC<br/>Send / Request / Reply / Delegate<br/>Handoff / Subscribe"]
+        REC["Recovery<br/>RequeueExpiredLeases<br/>RecoverTaskCheckpoint / RestartAgent"]
+        POLICY --> FABRIC
+        FABRIC --> AFAB
+        FABRIC --> AIPC
+        FABRIC --> REC
+    end
+
     subgraph CLI ["CLI (cmd/ares/)"]
         INIT["ares init"]
         RUN["ares run"]
@@ -351,6 +374,7 @@ graph TB
         DOCTOR["ares doctor"]
         EVO["ares evolution"]
         ARENA["ares arena"]
+        STATUS["ares status"]
     end
 
     subgraph EX ["Examples"]
@@ -372,7 +396,32 @@ graph TB
     style RuntimeEvo fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style CLI fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style EX fill:#1a3a2a,stroke:#22c55e
+    style Kernel fill:#3b2f2f,stroke:#f59e0b,color:#fff
 ```
+
+### Runtime Kernel（0.3.0 生产接线）
+
+ARES 从 "Agent Orchestration Framework"（leader+sub）演进为**面向 Agent 的动态计算运行时**：
+**Agents are not orchestrated. They are scheduled.** Leader 不再是架构角色，只是
+Execution Strategy / Policy 之一（`kernel.policy`: `legacy` 默认 / `taskfabric` 渐进割接）。
+
+Kernel 三支柱（`Agents decide the work. Kernel schedules the work.`）：
+
+| 支柱 | 包 | 职责 |
+|------|----|------|
+| **Scheduler** | `internal/taskfabric` | durable Task 状态机 + Lease/fencing（epoch）、capability-aware 评分（`cap×load×conf`）、Work Stealing、DAG ReadyTasks 调度源、cooperative preempt |
+| **IPC** | `internal/agentipc` | 同级 peer 通信（Send/Request/Reply/Delegate/Handoff/Subscribe）+ `PolicyFlag`/`DualTrackDispatcher` 双轨渐进切换（shadow 等价验证，`Mismatches()` 可观测） |
+| **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree（provenance 非 hierarchy）+ Cognitive State + P5 资源配额（`WithResourceBudget`） |
+
+- **DAG 即调度源**：planner 产出的 `subagents[].dependencies` 经 leader planner 解析为
+  `models.Task.Context.Dependencies`，kernel 派发透传，`executeFabricTask` 带依赖 Create +
+  `IsReady` 门控——依赖未完成只注册不执行，`kernelScheduler` 的 `ReadyTasks` 完成后接管。
+- **live mid-run flip**：`flipKernelToTaskFabric`（幂等）可在运行中从 legacy 切到 taskfabric，
+  关 shadow → 换真实执行器 → 翻转 flag → 启动 scheduler；不 orphan 在途任务、无双跑。
+- **Recovery**：`internal/aresrecovery` —— lease 过期 requeue / checkpoint 恢复 / agent
+  restart，验证 **Agent 死亡 ≠ Task 死亡**；Chaos 注入故障验证 Runtime 能恢复。
+
+详细设计见 [ares-runtime.md](ares-runtime.md)（权威模型）。
 
 ## Data Flow
 
@@ -443,51 +492,69 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **Key design**: LLM is a **participant**, not the leader. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
-### Benchmarks (Apple M3 Max, 2026-07-31)
+### Benchmarks (Apple M3 Max, 2026-08-17)
 
 ```
 === Runtime Evolution (internal/evolution) ===
-BenchmarkWorkflowGenome_Mutate     245k   7.28µs  11.7KB  157 allocs
-BenchmarkSchedulerGenome_Mutate    3.07M  386ns    720B    16 allocs
-BenchmarkKnowledgeGenome_Mutate    2.78M  434ns    960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.13M  561ns    1.1KB   21 allocs
-BenchmarkDiffEngine_Workflow       2.83M  425ns    304B     3 allocs
-BenchmarkCoordinator_Evaluate      221M   5.4ns      0B      0 allocs
-BenchmarkFullEvolutionCycle        355k   3.27µs  6.3KB    82 allocs
+BenchmarkWorkflowGenome_Mutate     31.4k  7.73µs  11.9KB  157 allocs
+BenchmarkSchedulerGenome_Mutate    650k   370ns    879B    15 allocs
+BenchmarkKnowledgeGenome_Mutate    579k   422ns    960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     466k   532ns    1.3KB   21 allocs
+BenchmarkDiffEngine_Workflow       604k   410ns    304B     3 allocs
+BenchmarkCoordinator_Evaluate      38.2M  6.27ns     0B      0 allocs
+BenchmarkFullEvolutionCycle        49.6k  4.79µs   7.7KB    99 allocs
 
 === Event System (internal/ares_events) ===
-BenchmarkMemoryStore_Append           2.36M  500ns    624B     7 allocs
-BenchmarkMemoryStore_AppendBatch      303k   4.33µs   8.8KB    1 alloc
-BenchmarkMemoryStore_Read             184k   6.26µs   17.5KB  11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 1.0M   1.26µs   626B     6 allocs
+BenchmarkMemoryStore_Append           480k   482ns    615B     7 allocs
+BenchmarkMemoryStore_AppendBatch      59.4k  4.50µs   9.4KB    1 alloc
+BenchmarkMemoryStore_Read             59.9k  4.04µs  17.5KB    11 allocs
+BenchmarkMemoryStore_ConcurrentAppend 326k   750ns    621B     6 allocs
 
 === Evaluation Framework (internal/ares_eval) ===
-BenchmarkExactMatchEvaluator_Evaluate    372M    3.07ns     0B      0 allocs
-BenchmarkToolUsageEvaluator_Evaluate     42.1M   28.4ns     0B      0 allocs
-BenchmarkAgentTestRunner_RunSingle       3.66M   327ns     320B      5 allocs
-BenchmarkReportGenerator_GenerateMarkdown 332k   3.73µs    4.3KB    76 allocs
-BenchmarkLoader_Load                      23.2k  51.6µs    34.1KB   601 allocs
+BenchmarkExactMatchEvaluator_Evaluate    68.1M   3.02ns     0B      0 allocs
+BenchmarkToolUsageEvaluator_Evaluate      8.5M  27.8ns     0B      0 allocs
+BenchmarkAgentTestRunner_RunSingle        801k   296ns    320B      5 allocs
+BenchmarkReportGenerator_GenerateMarkdown 72.4k  3.36µs   4.3KB    76 allocs
+BenchmarkLoader_Load                       5.1k  44.9µs   34.1KB   601 allocs
 
 === AKG Knowledge Fabric (internal/knowledge) ===
 --- Linkers ---
-DecisionLinker (100 objs)           78.7k  15.3µs  10.9KB  295 allocs
-ArchitectureLinker (100 objs)       33.4k  36.0µs 167.0KB    85 allocs
-TimelineLinker (100 objs)           613k   1.84µs   3.1KB   11 allocs
-SimilarityLinker (100 objs)          664   1.84ms   4.7MB 20217 allocs
+DecisionLinker (100 objs)           15.7k  15.2µs  10.9KB  295 allocs
+ArchitectureLinker (100 objs)       6.88k  35.3µs 167.0KB    85 allocs
+TimelineLinker (100 objs)           64.6k   1.84µs   3.1KB   11 allocs
+SimilarityLinker (100 objs)           63   1.86ms   4.7MB 20217 allocs
 --- Compiler ---
-DefaultCompiler Prompt (100 nodes)  27.1k  44.5µs  73.3KB  819 allocs
-DefaultCompiler All Formats (100)    5.1k 237.7µs 365.2KB 3476 allocs
+DefaultCompiler Prompt (100 nodes)  5.14k  47.4µs  73.3KB  819 allocs
+DefaultCompiler All Formats (100)   1.02k   229µs 365.2KB 3476 allocs
 --- Memory Store ---
-Store_Save                           1.97M  615ns    719B    11 allocs
-Store_Get                           18.4M   61.4ns    13B     1 alloc
-Store_QueryByType                   198k    6.06µs   4.5KB   11 allocs
-Store_Search                        14.7k   80.9µs  69.4KB  1514 allocs
+Store_Save                           577k   542ns    702B    11 allocs
+Store_Get                           4.12M  56.6ns     13B     1 alloc
+Store_QueryByType                   45.2k  5.21µs   4.5KB    11 allocs
+Store_Search                        3.16k  71.7µs  69.4KB  1514 allocs
 --- Pipeline ---
-DefaultNormalizer_Normalize         2.28M   508ns    688B    10 allocs
+DefaultNormalizer_Normalize         473k   486ns    688B     9 allocs
 --- Planner ---
-KnowledgePlanner_Plan               1.50M   767ns    1.0KB   14 allocs
+KnowledgePlanner_Plan               339k   757ns    1.0KB   14 allocs
 --- Retriever (end-to-end) ---
-Retrieve (100 objs)                  133   9.00ms  16.2MB 129675 allocs
+Retrieve (100 objs)                   51   8.72ms  16.2MB 129729 allocs
+
+=== Kernel (internal/taskfabric · agentfabric · agentipc, 0.3.0 新增) ===
+--- Task Fabric (internal/taskfabric) ---
+Fabric_Create             483k   477ns    838B     3 allocs
+Fabric_Schedule           383k   550ns    1.4KB    6 allocs
+Fabric_RunQuantum         181k  1.17µs    3.2KB   11 allocs
+Fabric_ReadyTasks         650k   378ns    960B     4 allocs
+Fabric_IsReady           15.3M  15.6ns      0B     0 allocs
+--- Agent Fabric (internal/agentfabric) ---
+Fabric_Spawn              736k   303ns    776B     8 allocs
+Fabric_SpawnWithResources 349k   684ns    1.3KB   12 allocs
+Fabric_SuspendResume     9.64M  24.9ns      0B     0 allocs
+Fabric_Children          8.23M  29.8ns     80B     1 alloc
+--- IPC (internal/agentipc) ---
+Bus_Send                 1.72M   139ns    280B     4 allocs
+Bus_RequestReply          211k  1.14µs    912B    14 allocs
+Bus_Broadcast (10 subs)   173k  1.43µs    3.0KB   41 allocs
+DualTrackDispatch        23.2M  10.2ns      0B     0 allocs
 ```
 
 ### CLI
@@ -531,19 +598,19 @@ Beyond runtime-level evolution, ARES includes a **strategy-level Genetic Algorit
 | **Generation History** | Per-generation snapshots with metadata |
 | **Experience System** | 3-tier pipeline: ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### Benchmarks (Apple M3 Max, 2026-07-31)
+### Benchmarks (Apple M3 Max, 2026-08-17)
 
 ```
 === GA Genome (internal/ares_evolution/genome) ===
-CrossoverUniform (10 params)        496k   2.40µs   3.1KB   31 allocs
-CrossoverUniform (100 params)       69.6k  24.5µs   21.2KB  38 allocs
-TruncationSelection (pop=100)       205k   5.76µs       —    —
-TournamentSelection (pop=50,k=2)    282k   4.41µs       —    —
-RouletteWheelSelection (pop=100)    398k   2.98µs       —    —
-Evolve_OneGeneration (pop=10)       4.15M    303ns   344B     6 allocs
-Evolve_MultipleGenerations (100)    43.9k   28.4µs   34.4KB 600 allocs
-ApplyFitnessSharing (pop=100)         892   1.35ms    540KB 106 allocs
-RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
+CrossoverUniform (10 params)        100k   2.13µs   3.1KB   31 allocs
+CrossoverUniform (100 params)       16.2k  15.1µs   21.2KB  38 allocs
+TruncationSelection (pop=100)       42.3k  5.77µs   952B     3 allocs
+TournamentSelection (pop=50,k=2)    66.5k  3.79µs  14.4KB  101 allocs
+RouletteWheelSelection (pop=100)    94.4k  2.54µs   3.4KB    7 allocs
+Evolve_OneGeneration (pop=10)        820k   263ns   344B     6 allocs
+Evolve_MultipleGenerations (100)    8.71k  25.8µs  34.4KB  600 allocs
+ApplyFitnessSharing (pop=100)         188  1.23ms   540KB  106 allocs
+RealWorldEvolution (100 gen)           22  9.67ms   4.4MB 60085 allocs
 ```
 
 ### Examples

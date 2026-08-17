@@ -1,9 +1,7 @@
 # 项目源码分析报告索引
 
 > 对 `goagent`（ares agent 框架）逐模块进行源码审查，查找潜在 bug、逻辑问题与死代码。
-> 每个模块对应一份 markdown 报告。本文件为索引与全局高优先级问题汇总。
-
-**审查方法**：对每个模块读取全部非测试 Go 源文件，结合包间调用关系（LSP/文本搜索）验证死代码与逻辑问题，只报告可验证的真实问题。
+> 本索引保留与生产路径仍相关的报告；已修复模块的逐模块报告已删除（修复记录见下方进度表）。
 
 ---
 
@@ -65,85 +63,12 @@
 
 ---
 
-## 报告清单
+## 保留报告清单
 
-| # | 模块 | 报告 |
-|---|------|------|
-| 1 | 核心 Agent 循环 | [`internal-agentloop.md`](internal-agentloop.md) |
-| 2 | 竞技场/回归测试 | [`internal-ares-arena.md`](internal-ares-arena.md) |
-| 3 | Agent 与多智能体协作 | [`internal-agents.md`](internal-agents.md) |
-| 4 | 进化/遗传算法 | [`internal-ares-evolution.md`](internal-ares-evolution.md) |
-| 5 | 知识库 | [`internal-knowledge.md`](internal-knowledge.md) |
-| 6 | 存储层 | [`internal-storage.md`](internal-storage.md) |
-| 7 | 工具系统 | [`internal-tools.md`](internal-tools.md) |
-| 8 | 工作流引擎 | [`internal-workflow.md`](internal-workflow.md) |
-| 9 | 记忆系统 | [`internal-ares-memory.md`](internal-ares-memory.md) |
-| 10 | MCP 集成 | [`internal-ares-mcp.md`](internal-ares-mcp.md) |
-| 11 | 事件系统 | [`internal-ares-events.md`](internal-ares-events.md) |
-| 12 | 飞行记录/追踪 | [`internal-ares-flight.md`](internal-ares-flight.md) |
-| 13 | 评估系统 | [`internal-ares-eval.md`](internal-ares-eval.md) |
-| 14 | 归档 | [`internal-ares-archive.md`](internal-ares-archive.md) |
-| 15 | 运行时/混沌 | [`internal-ares-runtime.md`](internal-ares-runtime.md) |
-| 16 | Bootstrap 及辅助模块 | [`internal-ares-bootstrap.md`](internal-ares-bootstrap.md) |
-| 17 | 可观测性/协议/经验 | [`internal-ares-observability-protocol-experience.md`](internal-ares-observability-protocol-experience.md) |
-| 18 | API core/service | [`api-core-and-service.md`](api-core-and-service.md) |
-| 19 | cmd/api_impl/client/handler | [`cmd-and-api-impl.md`](cmd-and-api-impl.md) |
-| 20 | 监控 | [`internal-monitoring.md`](internal-monitoring.md) |
-| 21 | 仪表盘与发现 | [`internal-dashboard-and-discovery.md`](internal-dashboard-and-discovery.md) |
-| 22 | 进化协调/GA 管线 | [`internal-evolution.md`](internal-evolution.md) |
-| 23 | LLM 与工具包 | [`internal-llm-and-utils.md`](internal-llm-and-utils.md) |
-| 24 | SDK | [`sdk.md`](sdk.md) |
+> 逐模块审查报告（含全局问题汇总）已随修复完成归档删除；以下为仍被生产代码/文档引用的设计类报告。
 
----
-
-## 全局高优先级问题汇总（按严重度）
-
-### 🟥 BUG（可能造成崩溃 / 数据损坏 / 功能失效）
-
-| 模块 | 位置 | 问题 |
-|------|------|------|
-| storage | `postgres/pool.go` 313-321 | `QueryRow` 吞掉真实连接错误，伪装成 NoRows |
-| knowledge | `store/postgres/store.go` 391-400 | `HybridSearch` 参数与占位符不匹配，Postgres 向量召回必失败 |
-| dashboard | `ws_hub.go` 203/318 | WebSocket ping/unregister 竞争 → "send on closed channel" panic |
-| ares_memory | `distiller.go` 584-604 | KeepBoth 冲突分支丢 problem/confidence，持久化数据丢失 |
-| workflow | `runner_checkpoint.go` 312-314 | Acknowledge 失败不回滚，mutation 可能重复应用 |
-| ares_evolution | `regression_tester.go` 88-89 | 共享 `rng` 并发竞争 |
-| ares_protocol | `dlq.go` 43、187 | `MaxRetries` 从不设置（重试上限失效）+ `Retries++` 数据竞争 |
-| sdk | `sdk.go` 699-788 | `New()` 错误路径资源泄漏（llmSvc/MCP clients/bootstrap） |
-| sdk | `team.go` 75-127 | leader/runtime 无 nil guard |
-| ares_evolution | `shadow_evaluator.go` 162-203 | 影子评估总是阻止部署（samples 不足） |
-| workflow | `graph/graph.go` 179 | 静默丢弃不同条件边 |
-| ares_bootstrap | `provide_new_evolution.go` 343 | UpdateLiveDAG 的 Register 总失败，live-DAG executor 从不替换 |
-
-### 🟨 LOGIC（逻辑错误 / 结果不准确）
-
-| 模块 | 位置 | 问题 |
-|------|------|------|
-| agentloop | `Run()` 循环末尾 | 达到迭代上限时不发射 TaskCompleted |
-| ares_arena | `runStrategy` 381-445 | 取消/出错时返回 0 填充的不完整 scores |
-| ares_arena | `MinWinRate` | 被设置但从不参与判定（死配置） |
-| knowledge | `store/memory/store.go` 103 | 先 Limit 后 Offset，破坏分页 |
-| knowledge | `pipeline.go` 252 | mergeConfidence 可返回 >1.0 |
-| tools | `web_search.go` 104 | SSRF 自阻默认 SearXNG 端点 |
-| tools | `extractor.go` 76 | 求和忽略下界 a |
-| tools | `bridge.go` 226 | 多步计划从不保存证据 |
-| ares_memory | `production_manager.go` 139 | SearchSimilarTasks 永远空（expRepo 未接线） |
-| api/service | `workflow/service.go` 285 | ExecuteStream 忽略超时 |
-| api/service | `workflow/service.go` 188 | errgroup 未 await，执行错误丢失 |
-| api/service | `agent/service.go` 47 | CreateAgent 丢弃 config.Config |
-| monitoring | `dag/engine.go` 379 | task created 直接 Running |
-| discovery | `binary.go` 44 | symlink 绕过 allowlist（安全） |
-| cmd/ares | `start.go` 53-62 | `svc` 数据竞争 |
-
-### ⚪ DEAD_CODE（大量，详见各报告）
-
-- 多个 `constants.go` 未使用常量（tools/ares_evolution/llm）
-- 整个未接线的子系统：ares_arena/scorer.go、ares_runtime 内置插件/router、ares_experience 蒸馏管线、monitoring publisher 交互引擎、api/service/events 错误类型等
-- 不可达分支：`rollback_policy.go` `checkStart < 0`、`service/repository.go` `ErrNoRows`、`pipeline.go` nil 检查等
-
----
-
-## 特别注意
-
-- **`internal/ares_arena/regression.go`** 是本仓库唯一有未提交改动的文件（+80/-10），其中的自适应模式、beta 函数重写引入了 `MinWinRate` 未使用、`Samples` 报告配置值、`p>0.5` 过早停止等问题，建议提交前复查。
-- 各报告的"结论"表格含精确定位（文件/行号/优先级），可直接作为修复清单。
+| 报告 | 引用方 |
+|------|--------|
+| [`ares-capability-fabric-design.md`](ares-capability-fabric-design.md) | `docs/agent-birth-capabilities.md` / `.en.md` |
+| [`ares-runtime-capability-reserve.md`](ares-runtime-capability-reserve.md) | `cmd/ares/serve.go`（能力储备接线留痕） |
+| [`ares-vs-prime-agent.md`](ares-vs-prime-agent.md) | `README.md`（Agent-OS Primitives 依据） |
