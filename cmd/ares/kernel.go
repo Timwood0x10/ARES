@@ -152,7 +152,12 @@ func executeFabricTask(
 	}
 	executor, ok := executors[winner]
 	if !ok {
-		_ = fabric.Release(task.TaskID, winner, epoch)
+		if releaseErr := fabric.Release(task.TaskID, winner, epoch); releaseErr != nil {
+			// The task stays leased to an unknown executor; surface it so the
+			// recovery loop can requeue it rather than dropping the error
+			// silently (code_rules_v2 §3.1).
+			log.Printf("kernel fabric: executor %q not registered and release failed: %v", winner, releaseErr)
+		}
 		return fmt.Errorf("kernel fabric: executor %q not registered", winner)
 	}
 	return fabric.RunQuantum(task.TaskID, winner, epoch, func() (any, bool, error) {

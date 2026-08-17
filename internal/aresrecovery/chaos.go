@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 )
@@ -153,6 +152,3 @@ func (e *EvolutionAdapter) AdaptPopulation(ctx context.Context, spawn []agentfab
 	}
 	return spawned, nil
 }
-
-// keep references to avoid unused import lint in future iterations.
-var _ = time.Now

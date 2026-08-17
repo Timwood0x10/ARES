@@ -156,8 +156,12 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	}
 	executor, ok := s.executors[winner]
 	if !ok || executor == nil {
-		// Release so the task can be retried by another agent.
-		_ = s.fabric.Release(taskID, winner, epoch)
+		// Release so the task can be retried by another agent. A failed
+		// release leaves the task leased — surface it instead of dropping
+		// the error (code_rules_v2 §3.1).
+		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+			log.Printf("kernel scheduler: release %q for missing executor %q failed: %v", taskID, winner, releaseErr)
+		}
 		return nil
 	}
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {

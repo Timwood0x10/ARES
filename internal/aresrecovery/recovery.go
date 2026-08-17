@@ -134,12 +134,17 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 		return "", 0, fmt.Errorf("aresrecovery: acquire %s for %s: %w", taskID, agentID, err)
 	}
 	// Install the preserved checkpoint as the new agent's cognitive state so
-	// it resumes from where the dead agent left off.
+	// it resumes from where the dead agent left off. A failure to install the
+	// checkpoint must not be silent: the task is acquired by a replacement
+	// that cannot resume, so surface it for the recovery loop instead of
+	// pretending recovery succeeded (code_rules_v2 §3.1).
 	if t.Checkpoint != nil {
-		_ = r.agents.SetCognitiveState(agentID, agentfabric.CognitiveState{
+		if err := r.agents.SetCognitiveState(agentID, agentfabric.CognitiveState{
 			Checkpoint: t.Checkpoint,
 			Context:    t.Checkpoint,
-		})
+		}); err != nil {
+			return "", 0, fmt.Errorf("aresrecovery: install checkpoint for %s: %w", agentID, err)
+		}
 	}
 	return agentID, epoch, nil
 }
