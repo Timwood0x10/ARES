@@ -869,6 +869,52 @@ func withRecovery(next http.Handler) http.Handler {
 	})
 }
 
+// handleEvolutionTrajectory renders the recorded evolution trajectory
+// (v0.4.0 M3-1). When no provider is wired, it returns an empty list.
+func (a *APIv2) handleEvolutionTrajectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.evolutionTrajectory == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	trajectory := a.evolutionTrajectory.EvolutionTrajectory()
+	if trajectory == nil {
+		trajectory = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, trajectory)
+}
+
+// handleEvolutionFeedback receives a human feedback submission (v0.4.0 M3-2:
+// POST /api/evolution/feedback — rating + approval + attribution). The sink
+// records it for the Evolution system. Returns 501 when no sink is wired.
+func (a *APIv2) handleEvolutionFeedback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.evolutionFeedback == nil {
+		writeJSON(w, http.StatusNotImplemented, errResp("evolution feedback not wired"))
+		return
+	}
+	var fb EvolutionFeedback
+	if err := json.NewDecoder(r.Body).Decode(&fb); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid feedback body"))
+		return
+	}
+	if fb.CandidateID == "" {
+		writeJSON(w, http.StatusBadRequest, errResp("candidate_id required"))
+		return
+	}
+	if err := a.evolutionFeedback.SubmitFeedback(fb); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "recorded", "candidate_id": fb.CandidateID})
+}
+
 // ── Helpers ───────────────────────────────────
 
 func errResp(msg string) map[string]string {

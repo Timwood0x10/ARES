@@ -68,6 +68,36 @@ type SurvivalProvider interface {
 	GetResilienceScore() map[string]any
 }
 
+// EvolutionTrajectoryProvider supplies the evolution trajectory for the
+// dashboard (v0.4.0 M3-1). Implementations record per-generation snapshots
+// (best score, top strategies, changes); the dashboard renders them as JSON.
+type EvolutionTrajectoryProvider interface {
+	// EvolutionTrajectory returns the recorded generations (oldest first)
+	// as generic JSON-friendly values, or nil when nothing is recorded.
+	EvolutionTrajectory() []map[string]any
+}
+
+// EvolutionFeedback is a human review of an evolution candidate submitted via
+// the dashboard (v0.4.0 M3-2).
+type EvolutionFeedback struct {
+	// CandidateID is the reviewed strategy/candidate id.
+	CandidateID string `json:"candidate_id"`
+	// Rating is the human rating (1-5 scale).
+	Rating float64 `json:"rating"`
+	// Comments is free-form human commentary.
+	Comments string `json:"comments,omitempty"`
+	// Approved is the human approval decision.
+	Approved bool `json:"approved"`
+	// Reason explains the approval/denial.
+	Reason string `json:"reason,omitempty"`
+}
+
+// EvolutionFeedbackSink receives human feedback submissions (v0.4.0 M3-2).
+type EvolutionFeedbackSink interface {
+	// SubmitFeedback records one human feedback entry.
+	SubmitFeedback(fb EvolutionFeedback) error
+}
+
 // SurvivalStarter is an optional extension of SurvivalProvider that can
 // actually start a survival run. If the concrete provider does not implement
 // this interface, the /arena/survival POST endpoint returns 501.
@@ -86,6 +116,14 @@ type APIv2 struct {
 	survival SurvivalProvider
 	upgrader *websocket.Upgrader
 	apiKey   string // optional API key protecting destructive endpoints
+
+	// evolutionTrajectory is the optional v0.4.0 M3-1 provider rendering the
+	// evolution trajectory (nil disables the /evolution/trajectory endpoint).
+	evolutionTrajectory EvolutionTrajectoryProvider
+
+	// evolutionFeedback is the optional v0.4.0 M3-2 sink receiving human
+	// feedback submissions (nil disables POST /evolution/feedback).
+	evolutionFeedback EvolutionFeedbackSink
 
 	// Optional service muxes mounted by the wiring layer (ares_eval, memory,
 	// retrieval). They are *http.ServeMux instances built by the launcher
@@ -115,6 +153,20 @@ func NewAPIv2(orch *Orchestrator, mcp MCPStatusProvider, hub *WSHub) *APIv2 {
 // requests by default.
 func (a *APIv2) SetAPIKey(key string) {
 	a.apiKey = key
+}
+
+// SetEvolutionTrajectory wires the optional evolution trajectory provider
+// (v0.4.0 M3-1). When set, GET /evolution/trajectory renders the recorded
+// generations; nil disables the endpoint.
+func (a *APIv2) SetEvolutionTrajectory(provider EvolutionTrajectoryProvider) {
+	a.evolutionTrajectory = provider
+}
+
+// SetEvolutionFeedback wires the optional human feedback sink (v0.4.0 M3-2).
+// When set, POST /evolution/feedback records a human review; nil disables the
+// endpoint.
+func (a *APIv2) SetEvolutionFeedback(sink EvolutionFeedbackSink) {
+	a.evolutionFeedback = sink
 }
 
 // checkWSOrigin implements a strict WebSocket origin check.
@@ -224,6 +276,12 @@ func (a *APIv2) Handler() http.Handler {
 	mux.HandleFunc("/flight/decisions", a.handleFlightDecisions)
 	mux.HandleFunc("/flight/diagnostics", a.handleFlightDiagnostics)
 	mux.HandleFunc("/flight/genealogy", a.handleFlightGenealogy)
+
+	// ── Evolution (v0.4.0 M3-1 / M3-2) ────────────
+	// GET    /evolution/trajectory → recorded generation snapshots
+	// POST   /evolution/feedback   → submit human feedback on a candidate
+	mux.HandleFunc("/evolution/trajectory", a.handleEvolutionTrajectory)
+	mux.HandleFunc("/evolution/feedback", a.handleEvolutionFeedback)
 
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview

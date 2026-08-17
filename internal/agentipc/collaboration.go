@@ -19,6 +19,11 @@ import (
 //
 // They do not change the Bus primitives; they are composition layers on top.
 
+// taskIDKey is the payload key carrying the task id in collaboration
+// requests (delegation / pipeline / orchestration). Shared with Handoff
+// (primitives.go) so the wire format stays consistent.
+const taskIDKey = "task_id"
+
 // DelegateToSpecialist implements the delegation pattern (v0.4.0 M1-1): a
 // delegator (typically the Leader) hands a task to a Specialist agent and
 // waits for the result. The request carries the task id and the required
@@ -48,7 +53,7 @@ func (b *Bus) DelegateToSpecialist(ctx context.Context, delegator, specialist, t
 		return nil, fmt.Errorf("agentipc: specialization required")
 	}
 	body := map[string]any{
-		"task_id":        taskID,
+		taskIDKey:        taskID,
 		"specialization": specialization,
 		"payload":        payload,
 	}
@@ -156,7 +161,7 @@ func (b *Bus) Orchestrate(ctx context.Context, coordinator string, workers []str
 		go func() {
 			defer wg.Done()
 			body := map[string]any{
-				"task_id": taskID,
+				taskIDKey: taskID,
 				"payload": payload,
 			}
 			reply, err := b.Request(ctx, coordinator, worker, "orchestrate-worker", body, timeout)

@@ -389,3 +389,147 @@ func TestAPIAgentByIDPathParsing(t *testing.T) {
 		})
 	}
 }
+
+// stubTrajectoryProvider is a minimal EvolutionTrajectoryProvider for tests.
+type stubTrajectoryProvider struct {
+	trajectory []map[string]any
+}
+
+func (s *stubTrajectoryProvider) EvolutionTrajectory() []map[string]any {
+	return s.trajectory
+}
+
+// TestAPIEvolutionTrajectoryEmpty verifies /evolution/trajectory returns an
+// empty list when no provider is wired (v0.4.0 M3-1).
+func TestAPIEvolutionTrajectoryEmpty(t *testing.T) {
+	api, _ := setupAPI()
+	handler := api.Handler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evolution/trajectory", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("want empty trajectory, got %d entries", len(resp))
+	}
+}
+
+// TestAPIEvolutionTrajectoryRenders verifies the trajectory endpoint renders
+// the provider's recorded generations as JSON (v0.4.0 M3-1 Dashboard 集成).
+func TestAPIEvolutionTrajectoryRenders(t *testing.T) {
+	api, _ := setupAPI()
+	api.SetEvolutionTrajectory(&stubTrajectoryProvider{
+		trajectory: []map[string]any{
+			{"generation": 1, "best_score": 0.5, "breakthrough": false, "regression": false},
+			{"generation": 2, "best_score": 0.7, "breakthrough": true, "regression": false},
+		},
+	})
+	handler := api.Handler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/evolution/trajectory", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("want 2 generations, got %d", len(resp))
+	}
+	if resp[1]["generation"] != float64(2) || resp[1]["breakthrough"] != true {
+		t.Fatalf("second generation wrong: %+v", resp[1])
+	}
+}
+
+// TestAPIEvolutionTrajectoryMethodNotAllowed verifies non-GET is rejected.
+func TestAPIEvolutionTrajectoryMethodNotAllowed(t *testing.T) {
+	api, _ := setupAPI()
+	handler := api.Handler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/evolution/trajectory", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+// stubFeedbackSink records submissions for tests.
+type stubFeedbackSink struct {
+	submitted []EvolutionFeedback
+}
+
+func (s *stubFeedbackSink) SubmitFeedback(fb EvolutionFeedback) error {
+	s.submitted = append(s.submitted, fb)
+	return nil
+}
+
+// TestAPIEvolutionFeedbackNotWired verifies POST /evolution/feedback returns
+// 501 when no sink is wired.
+func TestAPIEvolutionFeedbackNotWired(t *testing.T) {
+	api, _ := setupAPI()
+	handler := api.Handler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/evolution/feedback",
+		bytes.NewBufferString(`{"candidate_id":"c1","rating":4.5,"approved":true}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", w.Code)
+	}
+}
+
+// TestAPIEvolutionFeedbackRecords verifies POST /evolution/feedback records
+// a human review through the sink (v0.4.0 M3-2).
+func TestAPIEvolutionFeedbackRecords(t *testing.T) {
+	api, _ := setupAPI()
+	sink := &stubFeedbackSink{}
+	api.SetEvolutionFeedback(sink)
+	handler := api.Handler()
+
+	body := `{"candidate_id":"cand-123","rating":4.5,"comments":"robust on edge cases","approved":true,"reason":"verified"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/evolution/feedback", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(sink.submitted) != 1 {
+		t.Fatalf("want 1 submission, got %d", len(sink.submitted))
+	}
+	got := sink.submitted[0]
+	if got.CandidateID != "cand-123" || got.Rating != 4.5 || !got.Approved || got.Comments == "" {
+		t.Fatalf("submitted feedback wrong: %+v", got)
+	}
+}
+
+// TestAPIEvolutionFeedbackMissingCandidate verifies a body without
+// candidate_id is rejected with 400.
+func TestAPIEvolutionFeedbackMissingCandidate(t *testing.T) {
+	api, _ := setupAPI()
+	api.SetEvolutionFeedback(&stubFeedbackSink{})
+	handler := api.Handler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/evolution/feedback",
+		bytes.NewBufferString(`{"rating":4.5}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}

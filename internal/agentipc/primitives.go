@@ -231,7 +231,7 @@ func (b *Bus) Delegate(ctx context.Context, delegator, to, topic string, payload
 //   - error: ErrAgentNotRegistered / ErrTimeout.
 func (b *Bus) Handoff(ctx context.Context, from, to, taskID string, contextSnapshot map[string]any, timeout time.Duration) (*Message, error) {
 	payload := map[string]any{
-		"task_id":   taskID,
+		taskIDKey:   taskID,
 		"context":   contextSnapshot,
 		"artifacts": []any{},
 	}

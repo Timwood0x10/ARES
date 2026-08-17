@@ -555,6 +555,18 @@ Bus_Send                 1.72M   139ns    280B     4 allocs
 Bus_RequestReply          211k  1.14µs    912B    14 allocs
 Bus_Broadcast (10 subs)   173k  1.43µs    3.0KB   41 allocs
 DualTrackDispatch        23.2M  10.2ns      0B     0 allocs
+
+=== v0.4.0 Advanced Features (M1-M4, 2026-08-17 新增) ===
+--- Multi-agent collaboration (internal/agentipc) ---
+Collaboration_Delegate (1 specialist)   185k  1.31µs   1.3KB   18 allocs
+Collaboration_Pipeline (3 stages)       66.6k  3.59µs   2.9KB   43 allocs
+Collaboration_Orchestrate (3 workers)   28.5k  8.47µs   4.4KB   56 allocs
+--- Observability (internal/aresrecovery) ---
+GlobalTracer_TraceTask                   3.49M  93.1ns   295B     0 allocs
+GlobalTracer_TraceMessage                2.92M  78.8ns   282B     0 allocs
+GlobalTracer_Spans (200 spans)           194k   1.06µs  10.0KB    5 allocs
+Sandbox_ReplayRecoveryChain              110k   2.18µs   5.9KB   53 allocs
+Sandbox_SimulateAgentDeath               204k   1.15µs   2.9KB   28 allocs
 ```
 
 ### CLI
