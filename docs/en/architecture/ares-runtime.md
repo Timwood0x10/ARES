@@ -300,8 +300,13 @@ a central Runtime component — consistent with Skill-first / Capability Fabric.
 8. spawn is a syscall, not an orchestration API.
 9. Preemption is cooperative — no fake OS hard preemption.
 10. No premature design — Auction / distributed Scheduler / full Actor /
-    Execution entity / complex resource scheduling / population optimization
-    are all deferred.
+    Execution entity remain deferred.
+    **v0.4.0 revision (2026-08-17)**: the following items move from "deferred"
+    to "scheduled": multi-agent collaboration patterns (delegation / pipeline /
+    orchestration), evolution-driven spawn decisions (auto spawn/clone policy),
+    evolution-driven resource allocation (complex resource scheduling), and
+    evolution-driven IPC protocol (message format / compression). See
+    "12. v0.4.0 Advanced Feature Roadmap" below.
 
 ### Task decomposition = Agent cognition
 
@@ -340,3 +345,65 @@ Three concepts do not mix:
 - **Agent suspended**: Agent lifecycle state (Lifecycle pillar)
 - **Execution yielded**: this quantum ended and handed execution back
   (execution boundary; the Scheduler decides the next state)
+
+## 12. v0.4.0 Advanced Feature Roadmap (decided 2026-08-17)
+
+> The core Runtime (P0-P5 + production wiring) is complete. v0.4.0 focuses on
+> advanced features built on the three pillars (Scheduler / IPC / Lifecycle)
+> without changing the core invariants (§11). The full roadmap and landing
+> plan live in `analysis-reports/v0.4.0-feature-suggestions-corrected.md`.
+
+### Priority matrix
+
+| Track | Difficulty | Value | Priority | Status |
+|-------|-----------|-------|----------|--------|
+| M1 Multi-agent collaboration | Medium | High | ⭐⭐⭐ P2 required | ✅ implemented (agentipc/collaboration.go) |
+| M2 Evolution-Runtime deep integration | Medium-high | High | ⭐⭐⭐ P2 required | 🔄 in progress (M2-1 implemented) |
+| M3 Explainability & human feedback | Medium | High | ⭐⭐⭐ P2 recommended | ⏳ pending |
+| M4 Global observability & debugging | Low | Medium | ⭐⭐ P3 optional | ⏳ pending |
+
+### M1 Multi-agent collaboration (P2 required) — realizing the "peer cognitive process" vision
+
+A **composition layer** over the IPC primitives (Send/Request/Reply/Delegate/
+Handoff/Subscribe); no central orchestration is introduced (the Coordinator is
+an Agent-level coordinator, not a Kernel scheduler):
+- **Delegation**: Leader → Specialist task handoff with result return
+  (`DelegateToSpecialist`)
+- **Pipeline**: A → B → C ordered execution, data flows via IPC (`Pipeline`)
+- **Orchestration**: a Coordinator fans work out to multiple Workers in
+  parallel with failure retry (`Orchestrate`)
+
+### M2 Evolution-Runtime deep integration (P2 required)
+
+Evolution expands from "influencing strategy parameters only" to runtime
+decision dimensions (**Evolution decides; Kernel enforces**):
+- **M2-1 spawn decisions**: spawn timing / quantity (population cap) /
+  capability-type preference
+  (`aresrecovery.EvolutionAwareSpawner` + `SpawnPolicySource` consumer interface)
+- **M2-2 resource allocation**: CPU/memory quota weight dynamic adjustment
+  (quota derived from the active strategy parameters)
+- **M2-3 IPC protocol**: message format / compression-rate optimization
+  (strategy-driven encoding choice)
+
+### M3 Explainability & human feedback (P2 recommended)
+
+- Evolution trajectory visualization (Dashboard: best-strategy path /
+  breakthrough changes / regressions)
+- Human feedback API (`POST /api/evolution/feedback`: rating + approval +
+  attribution)
+- Change attribution analysis (impact estimate per change)
+
+### M4 Global observability & debugging (P3 optional)
+
+- Cross-Fabric tracing (Task / Agent / Message spans)
+- Simulation sandbox (Replay historical events to verify recovery logic +
+  Simulate future scenarios)
+- Performance benchmarks (collaboration / tracing / sandbox)
+
+### Relation to the "no premature design" list (§11 invariant #10 revision)
+
+Promoted from deferred to scheduled (2026-08-17): multi-agent collaboration,
+auto spawn/clone policy, complex resource allocation (quota weights), new
+message format (IPC compression). Still deferred: Auction/bidding, Agent
+migration, distributed/multi-level Scheduler, full Actor model, Execution
+entity, new database.

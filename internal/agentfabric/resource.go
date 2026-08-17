@@ -37,6 +37,23 @@ func (f *Fabric) WithResourceBudget(budget map[string]float64) *Fabric {
 	return f
 }
 
+// UpdateResourceBudget dynamically replaces the resource budget (v0.4.0 M2-2:
+// evolution-driven resource allocation — the Evolution system adjusts CPU /
+// memory quota weights at runtime without recreating the fabric). Existing
+// allocations are NOT retroactively rejected: the new budget applies to
+// future spawn admission checks. A nil or empty map disables enforcement.
+//
+// Args:
+//   - budget: the new resource budget (name → max amount).
+func (f *Fabric) UpdateResourceBudget(budget map[string]float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resourceBudget = make(map[string]float64, len(budget))
+	for name, max := range budget {
+		f.resourceBudget[name] = max
+	}
+}
+
 // parseResourceClaim converts a SpawnSpec.Resources map into a numeric claim.
 // Numeric values are kept; non-numeric values are hints and ignored. Caller
 // does not need the lock — the input map is caller-owned.

@@ -277,7 +277,11 @@ Planner 降级为 **Agent 的 cognitive capability**（可选），不再是 Run
 7. **Process Tree ≠ Scheduling Graph**——spawn 因果关系树与 Task 依赖图并存不混。
 8. spawn 是 syscall，不是 orchestration API。
 9. 抢占是 cooperative——不做假 OS 硬抢占。
-10. 不提前设计——Auction / 分布式 Scheduler / 完整 Actor / Execution 实体 / 复杂资源调度 / population optimization 等全部暂缓。
+10. 不提前设计——Auction / 分布式 Scheduler / 完整 Actor / Execution 实体 等继续暂缓。
+    **v0.4.0 修订（2026-08-17）**：以下项从「暂缓」提升为「已排期」——
+    多 Agent 协作模式（委托/流水线/编排）、进化驱动的 spawn 决策（自动 spawn/clone 策略）、
+    进化驱动的资源分配（复杂资源调度）、进化驱动的 IPC 协议（消息格式/压缩）。
+    详见「十二、v0.4.0 高级特性主线」。
 
 ### Task decomposition = Agent cognition
 
@@ -309,3 +313,52 @@ Task 的 durable intent 尚未完成**——不是"Agent 被暂停了"。
 - **Task suspended**：durable intent 未完成，Task 状态 SUSPENDED（checkpoint 保留，可被他人 acquire）
 - **Agent suspended**：Agent 生命周期状态（Lifecycle 支柱）
 - **Execution yielded**：本次 quantum 结束交回执行权（execution boundary，Scheduler 决策下一状态）
+
+## 十二、v0.4.0 高级特性主线（2026-08-17 拍板）
+
+> 核心 Runtime（P0-P5 + 生产接线）已完成。v0.4.0 聚焦高级特性，围绕既有三支柱
+> （Scheduler / IPC / Lifecycle）扩展，不改变核心不变量（§11）。完整路线图与
+> 落地计划见 `analysis-reports/v0.4.0-feature-suggestions-corrected.md`。
+
+### 优先级矩阵
+
+| 方向 | 难度 | 价值 | 优先级 | 状态 |
+|------|------|------|--------|------|
+| M1 多 Agent 协作模式 | 中 | 高 | ⭐⭐⭐ P2 必做 | ✅ 已实现（agentipc/collaboration.go） |
+| M2 Evolution-Runtime 深度集成 | 中高 | 高 | ⭐⭐⭐ P2 必做 | 🔄 进行中（M2-1 已实现） |
+| M3 可解释性与人工反馈 | 中 | 高 | ⭐⭐⭐ P2 推荐 | ⏳ 待做 |
+| M4 全局观测与调试 | 低 | 中 | ⭐⭐ P3 可选 | ⏳ 待做 |
+
+### M1 多 Agent 协作模式（P2 必做）——兑现「同级认知进程」愿景
+
+基于 IPC 原语（Send/Request/Reply/Delegate/Handoff/Subscribe）的**组合层**，
+不引入中央编排（Coordinator 是 Agent 层协调者，非 Kernel 调度器）：
+- **委托模式**：Leader → Specialist 任务委派 + 结果回传（`DelegateToSpecialist`）
+- **流水线模式**：A → B → C 有序执行，数据经 IPC 传递（`Pipeline`）
+- **编排模式**：Coordinator 并行协调多个 Worker + 失败重试（`Orchestrate`）
+
+### M2 Evolution-Runtime 深度集成（P2 必做）
+
+进化从"只影响策略参数"扩展到运行时决策维度（**Evolution decides; Kernel enforces**）：
+- **M2-1 进化影响 spawn 决策**：Spawn 时机 / 数量（population 上限）/ 能力类型偏好
+  （`aresrecovery.EvolutionAwareSpawner` + `SpawnPolicySource` 消费方接口）
+- **M2-2 进化影响资源分配**：CPU/内存配额权重动态调整（配额来自活跃策略参数）
+- **M2-3 进化影响 IPC 协议**：消息格式 / 压缩率优化（策略驱动编码选择）
+
+### M3 可解释性与人工反馈（P2 推荐）
+
+- 进化轨迹可视化（Dashboard：最佳策略路径 / 突破性变更 / 退化点）
+- 人工反馈 API（`POST /api/evolution/feedback`：评分 + 批准 + 归因）
+- 变更归因分析（每项变更的影响预估）
+
+### M4 全局观测与调试（P3 可选）
+
+- 跨 Fabric 追踪（Task / Agent / Message span）
+- 仿真沙箱（Replay 历史事件验证恢复逻辑 + Simulate 未来场景）
+- 性能基准测试（协作模式 / 追踪 / 沙箱）
+
+### 与「不提前实现」清单的关系（§11 不变量 #10 修订）
+
+以下项从暂缓提升为已排期（2026-08-17）：多 Agent 协作模式、自动 spawn/clone 策略、
+复杂资源分配（配额权重）、新消息格式（IPC 压缩）。继续暂缓不变：Auction/bidding、
+Agent migration、分布式/多级 Scheduler、Actor 模型完整实现、Execution 实体、新数据库。
