@@ -121,9 +121,11 @@ func createLeaderAgent(
 	}
 
 	// Kernel assembly (P4 D4): wrap the legacy dispatcher in the dual-track
-	// kernel. The legacy leader path stays live (PolicyLegacyLeader default);
-	// the taskfabric new path runs in shadow, scoring every dispatched task
-	// without double-executing it. No behavior change until the flag flips.
+	// kernel. The flag starts at PolicyLegacyLeader (safe assembly default) and
+	// wireKernelPolicy flips it to PolicyTaskFabric by default at serve startup
+	// (only an explicit kernel.policy=legacy keeps the leader path live). Until
+	// then the taskfabric new path runs in shadow, scoring every dispatched
+	// task without double-executing it.
 	subCaps := make([]subAgentCapability, 0, len(cfg.Agents.Sub))
 	for _, s := range cfg.Agents.Sub {
 		subCaps = append(subCaps, subAgentCapability{ID: s.ID, Type: s.Type})

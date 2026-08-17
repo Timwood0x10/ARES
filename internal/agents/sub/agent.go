@@ -23,14 +23,15 @@ const (
 	KeyStatus  = "status"
 )
 
-// Agent represents the Sub Agent interface.
+// Agent represents the Sub Agent interface. Agents are execution units only
+// (ares-runtime.md: agents are not orchestrated, they are scheduled): the
+// Kernel owns dispatch and drives each agent step-by-step via Execute
+// (taskfabric.RunQuantum). There is deliberately no self-dispatch entry point
+// here — an agent never subscribes to events and runs tasks on its own.
 type Agent interface {
 	base.Agent
 	// Execute executes a task and returns result.
 	Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error)
-	// StartEventListener subscribes to task-scheduled events and processes them asynchronously.
-	// The listener runs until the agent is stopped or the context is cancelled.
-	StartEventListener(ctx context.Context) error
 }
 
 // TaskExecutor executes tasks.
@@ -74,9 +75,9 @@ func WithEventStore(store ares_events.EventStore) SubAgentOption {
 }
 
 // WithActionLog attaches an append-only action store. When set, every task
-// executed via the event listener records an actionlog.Entry (task result,
-// success/failure) for audit and replay (ares-vs-prime-agent 5.3: action
-// store).
+// executed via Execute (the Kernel's RunQuantum step) records an
+// actionlog.Entry (task result, success/failure) for audit and replay
+// (ares-vs-prime-agent 5.3: action store).
 func WithActionLog(store *actionlog.Store) SubAgentOption {
 	return func(a *subAgent) {
 		a.actionLog = store
@@ -321,7 +322,25 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
+		a.recordAction(ctx, task.TaskID, false, err.Error())
 		return nil, err
+	}
+
+	// Output guard (primitive 6): reject structurally inconsistent results at
+	// the boundary — a success carrying an error, or a failure with no detail —
+	// so contradictory state never propagates into aggregation/distillation.
+	if guardErr := outputguard.NewGuard().ValidateResult(result); guardErr != nil {
+		a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
+			KeyTaskID:                            task.TaskID,
+			KeyAgentID:                           a.id,
+			KeyError:                             guardErr.Error(),
+			ares_events.EventKeyTask:             taskEventText(task),
+			ares_events.EventKeyResult:           guardErr.Error(),
+			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+		})
+		a.recordAction(ctx, task.TaskID, false, guardErr.Error())
+		return result, fmt.Errorf("sub agent %s output guard rejected result: %w", a.id, guardErr)
 	}
 
 	a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
@@ -332,152 +351,9 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 		ares_events.EventKeyTenantID:         distillTenantID(),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 	})
+	a.recordAction(ctx, task.TaskID, result.Success, "")
 
 	return result, nil
-}
-
-// StartEventListener subscribes to EventSubTaskScheduled on the agent's event
-// stream and processes tasks asynchronously. Each received task is executed
-// via the executor and the result is published as EventSubTaskResult.
-//
-// The listener goroutine is tracked by streamWg and exits on context
-// cancellation, stopCh close, or event store close. Panics are recovered
-// (code_rules_v2 §4.1, §4.2).
-func (a *subAgent) StartEventListener(ctx context.Context) error {
-	if a.eventStore == nil {
-		return errors.New("sub agent: event store not configured")
-	}
-	if a.executor == nil {
-		return errors.ErrInvalidState
-	}
-
-	// Ensure the agent is started.
-	if a.Status() == models.AgentStatusOffline {
-		if err := a.Start(ctx); err != nil && err != errors.ErrAgentAlreadyStarted {
-			return err
-		}
-	}
-
-	subCh, err := a.eventStore.Subscribe(ctx, ares_events.EventFilter{
-		StreamIDs: []string{a.id},
-		Types:     []ares_events.EventType{ares_events.EventSubTaskScheduled},
-	})
-	if err != nil {
-		return fmt.Errorf("subscribe task scheduled: %w", err)
-	}
-
-	a.mu.RLock()
-	stopCh := a.stopCh
-	a.mu.RUnlock()
-
-	a.streamWg.Add(1)
-	go func() {
-		defer a.streamWg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("sub agent event listener panic recovered",
-					KeyAgentID, a.id, "panic", r)
-			}
-		}()
-
-		log.Info("sub agent event listener started", KeyAgentID, a.id)
-
-		for {
-			select {
-			case ev, ok := <-subCh:
-				if !ok {
-					log.Info("sub agent event listener stopped: channel closed",
-						KeyAgentID, a.id)
-					return
-				}
-				a.processScheduledEvent(ctx, ev)
-
-			case <-ctx.Done():
-				log.Info("sub agent event listener stopped: context cancelled",
-					KeyAgentID, a.id)
-				return
-
-			case <-stopCh:
-				log.Info("sub agent event listener stopped: agent stopping",
-					KeyAgentID, a.id)
-				return
-			}
-		}
-	}()
-
-	return nil
-}
-
-// processScheduledEvent executes a task from an EventSubTaskScheduled event
-// and publishes the result as EventSubTaskResult.
-func (a *subAgent) processScheduledEvent(ctx context.Context, ev *ares_events.Event) {
-	task, ok := ev.Payload["task"].(*models.Task)
-	if !ok || task == nil {
-		log.Error("sub agent: invalid task in scheduled event",
-			KeyAgentID, a.id, "event_id", ev.ID)
-		a.emitEvent(ctx, ares_events.EventSubTaskResult, map[string]any{
-			KeyTaskID:  ev.Payload[KeyTaskID],
-			KeyAgentID: a.id,
-			"error":    "invalid task in scheduled event",
-		})
-		return
-	}
-
-	log.Info("sub agent executing scheduled task",
-		KeyAgentID, a.id, KeyTaskID, task.TaskID)
-
-	a.emitEvent(ctx, ares_events.EventSubTaskStarted, map[string]any{
-		KeyTaskID:  task.TaskID,
-		KeyAgentID: a.id,
-	})
-
-	result, err := a.executor.Execute(ctx, task)
-
-	// Build result payload.
-	payload := map[string]any{
-		KeyTaskID:     task.TaskID,
-		KeyAgentID:    a.id,
-		"agent_type":  string(task.AgentType),
-		"task":        task,
-		"used_exp_id": task.UsedExperienceID,
-	}
-
-	if err != nil {
-		payload["error"] = err.Error()
-		payload["success"] = false
-		a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
-		a.recordAction(ctx, task.TaskID, false, err.Error())
-		log.Error("sub agent task execution failed",
-			KeyAgentID, a.id, KeyTaskID, task.TaskID, KeyError, err.Error())
-		return
-	}
-
-	payload["success"] = result.Success
-	payload["result"] = result
-	if result.Items != nil {
-		payload["items"] = result.Items
-	}
-	if !result.Success && result.Error != "" {
-		payload["error"] = result.Error
-	}
-
-	// Output guard (primitive 6): reject structurally inconsistent results at
-	// the boundary — a success carrying an error, or a failure with no detail —
-	// so contradictory state never propagates into aggregation/distillation.
-	if guardErr := outputguard.NewGuard().ValidateResult(result); guardErr != nil {
-		payload["success"] = false
-		payload["error"] = guardErr.Error()
-		a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
-		a.recordAction(ctx, task.TaskID, false, guardErr.Error())
-		log.Error("sub agent output guard rejected result",
-			KeyAgentID, a.id, KeyTaskID, task.TaskID, KeyError, guardErr.Error())
-		return
-	}
-
-	a.emitEvent(ctx, ares_events.EventSubTaskResult, payload)
-	a.recordAction(ctx, task.TaskID, result.Success, "")
-	log.Info("sub agent task completed",
-		KeyAgentID, a.id, KeyTaskID, task.TaskID, "success", result.Success)
 }
 
 // recordAction appends an actionlog entry for a finished task, when an action

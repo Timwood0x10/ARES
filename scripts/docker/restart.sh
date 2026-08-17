@@ -37,12 +37,12 @@ echo "PostgreSQL is ready."
 
 echo ""
 echo "=== Running test database migrations ==="
-cd "$ROOT" && go run ./cmd/setup_test_db
+cd "$ROOT" && go run ./cmd/ares db setup-test
 
 echo ""
 echo "=== Running production database migrations ==="
 export DB_NAME="ARES"
-cd "$ROOT" && go run ./cmd/migrate_db
+cd "$ROOT" && go run ./cmd/ares db migrate
 
 if [ -n "$SAVE_PATH" ]; then
   echo ""

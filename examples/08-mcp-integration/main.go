@@ -44,9 +44,9 @@
 //	"System Runtime snapshot: { … }"  → JSON snapshot of component states
 //
 // Things you can try to modify:
-//   - Replace ./cmd/mcp-null/ with a real MCP server (e.g. a filesystem or
-//     database tool server) to see how the agent interacts with live external
-//     tools.
+//   - Replace `ares mcp-null serve` with a real MCP server (e.g. a filesystem
+//     or database tool server) to see how the agent interacts with live
+//     external tools.
 //   - Add a second sdk.WithMCP(…) call to connect to multiple MCP servers
 //     simultaneously.
 //   - Change the agent's system prompt to steer which MCP tool it prefers.
@@ -69,11 +69,13 @@ func main() {
 	ctx := context.Background()
 
 	// ── Step 1: Build the MCP null-server binary ──
-	// Use exec.Command("go", "build", …) to compile the embedded MCP null server
-	// into a temporary binary. This simulates connecting to an external MCP tool
-	// server. The built binary is cleaned up via defer os.Remove.
-	mcpBin := filepath.Join(os.TempDir(), "ares-mcp-null")
-	build := exec.Command("go", "build", "-o", mcpBin, "./cmd/mcp-null/")
+	// Use exec.Command("go", "build", …) to compile the MCP null server into a
+	// temporary binary. It is served by the unified `ares` CLI (`ares mcp-null
+	// serve`, cmd/ares/mcp_null.go) — the standalone cmd/mcp-null/ entry was
+	// removed in the cmd consolidation. The built binary is cleaned up via
+	// defer os.Remove.
+	mcpBin := filepath.Join(os.TempDir(), "ares")
+	build := exec.Command("go", "build", "-o", mcpBin, "./cmd/ares")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ build MCP server: %v\n", err)
@@ -100,7 +102,7 @@ func main() {
 	opts = append(opts, sdk.WithMCP(sdk.MCPConn{
 		Name:    "null-server", // human-readable label for this MCP server
 		Command: mcpBin,        // path to the MCP server binary
-		Args:    []string{"serve"},
+		Args:    []string{"mcp-null", "serve"},
 	}))
 	rt := sdk.NewRuntime(opts...) // create Runtime with YAML options + MCP connection
 	defer rt.Close()

@@ -45,7 +45,6 @@ func (a *stubAgent) Execute(_ context.Context, task *models.Task) (*models.TaskR
 	}
 	return res, nil
 }
-func (a *stubAgent) StartEventListener(context.Context) error { return nil }
 func (a *stubAgent) executedCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -58,7 +57,7 @@ func (a *stubAgent) executedCount() int {
 func TestKernelSchedulerRunsFullFabricPath(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
-	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor})
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor}, nil)
 	sched.pollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -101,7 +100,7 @@ func TestKernelSchedulerRunsFullFabricPath(t *testing.T) {
 func TestKernelSchedulerNoCapableCandidate(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
-	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor})
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor}, nil)
 	sched.pollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -136,7 +135,7 @@ func TestKernelSchedulerNoCapableCandidate(t *testing.T) {
 func TestKernelSchedulerExecutionFailureRequeues(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code"), resultErr: "boom"}
-	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor})
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor}, nil)
 	sched.pollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())

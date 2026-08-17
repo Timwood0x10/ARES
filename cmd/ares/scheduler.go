@@ -27,6 +27,9 @@ import (
 type kernelScheduler struct {
 	fabric    *taskfabric.Fabric
 	executors map[string]sub.Agent
+	// tracker supplies real per-agent Load/Confidence to Schedule
+	// (v0.4.0 GAP4: real load tracking instead of a static placeholder).
+	tracker *loadTracker
 	// pollInterval is how often ReadyTasks is drained (default 500ms).
 	pollInterval time.Duration
 	// ttl is the lease granted to each winning agent.
@@ -43,19 +46,88 @@ type kernelScheduler struct {
 // window — the condition is a waiting state, not an error worth per-poll noise.
 const noCandidateLogInterval = 5 * time.Second
 
+// loadTracker records per-agent execution statistics so scheduling decisions
+// use real load and confidence instead of static placeholders (v0.4.0 GAP4:
+// "线程"的负载真实跟踪). It is shared by the kernel scheduler and the fabric
+// dispatch path (executeFabricTask) so both see the same live numbers. mu
+// guards all fields; every method is safe for concurrent use.
+type loadTracker struct {
+	mu       sync.Mutex
+	inflight map[string]int // agentID → tasks currently acquired (not finalized)
+	done     map[string]int // agentID → tasks finalized
+	ok       map[string]int // agentID → tasks that succeeded
+}
+
+// newLoadTracker creates an empty tracker.
+func newLoadTracker() *loadTracker {
+	return &loadTracker{
+		inflight: make(map[string]int),
+		done:     make(map[string]int),
+		ok:       make(map[string]int),
+	}
+}
+
+// begin records that agentID acquired a task.
+func (t *loadTracker) begin(agentID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.inflight[agentID]++
+}
+
+// end records a finalized task for agentID; success reports the outcome.
+func (t *loadTracker) end(agentID string, success bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.inflight[agentID]--
+	t.done[agentID]++
+	if success {
+		t.ok[agentID]++
+	}
+}
+
+// Load returns agentID's current utilization in [0,1]. Sub-agents are
+// single-slot executors (one quantum at a time), so load is the fraction of
+// the slot currently busy.
+func (t *loadTracker) Load(agentID string) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.inflight[agentID] > 0 {
+		return 1.0
+	}
+	return 0.0
+}
+
+// Confidence returns agentID's historical success rate in [0,1], defaulting
+// to 1.0 (neutral prior) before any history exists.
+func (t *loadTracker) Confidence(agentID string) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done[agentID] == 0 {
+		return 1.0
+	}
+	return float64(t.ok[agentID]) / float64(t.done[agentID])
+}
+
 // NewKernelScheduler creates a scheduler over a fabric with the given
-// executors (agentID → sub.Agent).
+// executors (agentID → sub.Agent). A nil tracker allocates a private one; pass
+// a shared tracker to keep Load/Confidence consistent with the fabric dispatch
+// path (executeFabricTask).
 //
 // Args:
 //   - fabric: the Task Fabric backing this scheduler.
 //   - executors: the agent registry (agentID → sub.Agent).
+//   - tracker: per-agent load/confidence source; nil creates a private one.
 //
 // Returns:
 //   - *kernelScheduler: ready to Run.
-func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]sub.Agent) *kernelScheduler {
+func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]sub.Agent, tracker *loadTracker) *kernelScheduler {
+	if tracker == nil {
+		tracker = newLoadTracker()
+	}
 	return &kernelScheduler{
 		fabric:       fabric,
 		executors:    executors,
+		tracker:      tracker,
 		pollInterval: 500 * time.Millisecond,
 		ttl:          5 * time.Minute,
 	}
@@ -135,6 +207,8 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	// always consistent with what can actually run. Each candidate declares its
 	// OWN capabilities (from the agent's Type), NOT the task's — the scorer
 	// compares the task's required capability against what the agent can do.
+	// Load/Confidence come from the live tracker (v0.4.0 GAP4): real busy
+	// fraction and historical success rate, not static placeholders.
 	cands := make([]taskfabric.Candidate, 0, len(s.executors))
 	for agentID, agent := range s.executors {
 		if agent == nil {
@@ -143,8 +217,8 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		cands = append(cands, taskfabric.Candidate{
 			AgentID:      agentID,
 			Capabilities: []string{string(agent.Type())},
-			Load:         float64(len(s.executors)) / 10, // coarse; replaced by real load in P5
-			Confidence:   1.0,                            // shadow: experience not threaded here
+			Load:         s.tracker.Load(agentID),
+			Confidence:   s.tracker.Confidence(agentID),
 		})
 	}
 	if len(cands) == 0 {
@@ -164,6 +238,9 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		}
 		return nil
 	}
+	// Track the busy slot while the quantum runs so the next Schedule sees the
+	// real load (v0.4.0 GAP4); end records the outcome for confidence.
+	s.tracker.begin(winner)
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
 		res, execErr := executor.Execute(ctx, s.toModelTask(tk))
 		if execErr != nil {
@@ -176,6 +253,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		}
 		return map[string]any{"result": "ok"}, true, nil
 	})
+	s.tracker.end(winner, err == nil)
 	if err == nil {
 		s.scheduled++
 	}

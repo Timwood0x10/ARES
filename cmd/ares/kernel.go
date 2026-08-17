@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -24,19 +25,19 @@ import (
 //
 // wireKernelDispatcher assembles the dual-track dispatch kernel:
 //
-//   - legacy:   the existing leader.TaskDispatcher (real dispatch, unchanged
-//     behavior — the current production path).
+//   - legacy:   the leader.TaskDispatcher path (real dispatch, unchanged
+//     behavior — retained as an explicit opt-out via kernel.policy=legacy).
 //   - newPath:  a taskfabric capability-aware scoring dispatcher. It is a
 //     pure observer in this stage: it computes "who would the Kernel pick" via
 //     taskfabric.Score/Pick without creating, acquiring or executing, so a
 //     task is never double-run.
 //
-// The PolicyFlag defaults to PolicyLegacyLeader (safety) with shadow mode ON,
-// so the new path starts "turning" immediately as an observer: every legacy
-// dispatch also scores the same task and counts mismatches (Mismatches()). An
-// operator flips the flag to PolicyTaskFabric once shadow equivalence is
-// verified (D4 gradual cutover); the real Create→Schedule→Acquire→RunQuantum
-// executor is wired at that point.
+// The PolicyFlag starts at PolicyLegacyLeader (safety) with shadow mode ON, so
+// the new path begins as an observer: every legacy dispatch also scores the
+// same task and counts mismatches (Mismatches()). Production flips to
+// PolicyTaskFabric by default — wireKernelPolicy treats any value other than
+// explicit "legacy" as taskfabric (D4 gradual cutover completed); the real
+// Create→Schedule→Acquire→RunQuantum executor is wired at that point.
 //
 // Returns:
 //   - *agentipc.DualTrackDispatcher: the assembled kernel dispatcher.
@@ -67,10 +68,12 @@ func wireKernelDispatcher(
 //   - kernel: the dual-track dispatcher assembled by wireKernelDispatcher.
 //   - fabric: the Task Fabric that executes tasks.
 //   - executors: agentID → sub.Agent that runs the acquired task.
+//   - tracker: shared per-agent load/confidence source (must be non-nil).
 func enableKernelExecution(
 	kernel *agentipc.DualTrackDispatcher,
 	fabric *taskfabric.Fabric,
 	executors map[string]sub.Agent,
+	tracker *loadTracker,
 ) {
 	// Turn shadow off first: with the new path about to become live, running
 	// legacy in shadow would re-dispatch every task (double execution).
@@ -79,7 +82,7 @@ func enableKernelExecution(
 	exec := &kernelFabricDispatcher{
 		candidates: kernelNewPathCandidates(kernel),
 		executeFn: func(ctx context.Context, task *models.Task) error {
-			return executeFabricTask(ctx, fabric, executors, task)
+			return executeFabricTask(ctx, fabric, executors, tracker, task)
 		},
 	}
 	kernel.SetNewPath(exec)
@@ -103,10 +106,18 @@ func kernelNewPathCandidates(kernel *agentipc.DualTrackDispatcher) []subAgentCap
 // drains ReadyTasks and picks it up once its dependencies complete
 // (ares-runtime.md §9: DAG as scheduling source). This keeps planner-declared
 // dependencies ordering the execution without a leader deciding "B now".
+//
+// Args:
+//   - ctx: task lifetime.
+//   - fabric: the Task Fabric that owns the task.
+//   - executors: agentID → sub.Agent that runs the acquired task.
+//   - tracker: shared per-agent load/confidence source (must be non-nil).
+//   - task: the task to run through the fabric path.
 func executeFabricTask(
 	ctx context.Context,
 	fabric *taskfabric.Fabric,
 	executors map[string]sub.Agent,
+	tracker *loadTracker,
 	task *models.Task,
 ) error {
 	if fabric == nil {
@@ -142,12 +153,21 @@ func executeFabricTask(
 		cands = append(cands, taskfabric.Candidate{
 			AgentID:      agentID,
 			Capabilities: []string{string(agent.Type())},
-			Load:         float64(len(executors)) / 10,
-			Confidence:   1.0,
+			Load:         tracker.Load(agentID),
+			Confidence:   tracker.Confidence(agentID),
 		})
 	}
 	winner, epoch, err := fabric.Schedule(task.TaskID, cands, 5*time.Minute)
 	if err != nil {
+		// ErrNoCapableCandidate is NOT a dispatch failure: the task is already
+		// READY in the fabric (Create above) and the kernelScheduler drains it
+		// as soon as a capable executor frees up (real-load scoring can reject a
+		// busy single-slot executor here). Returning an error would make the
+		// leader adapter count the task as failed even though it is queued —
+		// a silent drop (v0.4.0 GAP4 regression fix).
+		if errors.Is(err, taskfabric.ErrNoCapableCandidate) {
+			return nil
+		}
 		return fmt.Errorf("kernel fabric schedule: %w", err)
 	}
 	executor, ok := executors[winner]
@@ -160,7 +180,10 @@ func executeFabricTask(
 		}
 		return fmt.Errorf("kernel fabric: executor %q not registered", winner)
 	}
-	return fabric.RunQuantum(task.TaskID, winner, epoch, func() (any, bool, error) {
+	// Track the busy slot while the quantum runs so the next Schedule sees the
+	// real load; end records the outcome for confidence (v0.4.0 GAP4).
+	tracker.begin(winner)
+	err = fabric.RunQuantum(task.TaskID, winner, epoch, func() (any, bool, error) {
 		res, execErr := executor.Execute(ctx, task)
 		if execErr != nil {
 			return nil, false, execErr
@@ -170,6 +193,8 @@ func executeFabricTask(
 		}
 		return map[string]any{"result": "ok"}, true, nil
 	})
+	tracker.end(winner, err == nil)
+	return err
 }
 
 // subAgentCapability is the minimal capability surface the new-path scorer
@@ -235,9 +260,12 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 			kernel.executors[a.ID()] = a
 		}
 	}
-	enableKernelExecution(kernel.dual, kernel.fabric, kernel.executors)
+	// One shared load tracker for the scheduler and the fabric dispatch path,
+	// so Load/Confidence stay consistent across both entry points (GAP4).
+	tracker := newLoadTracker()
+	enableKernelExecution(kernel.dual, kernel.fabric, kernel.executors, tracker)
 	kernel.flag.Set(agentipc.PolicyTaskFabric)
-	sched := NewKernelScheduler(kernel.fabric, kernel.executors)
+	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
 	kernel.flipped = true
 	log.Printf("kernel: live flip to policy=taskfabric, Task Fabric scheduler started (%d executors)", len(kernel.executors))
 	go sched.Run(ctx)
@@ -246,16 +274,16 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 // wireKernelPolicy applies the configured dispatch policy to the assembled
 // kernel:
 //
-//   - "taskfabric": flips the flag to PolicyTaskFabric, replaces the shadow
-//     scorer with the real Task Fabric executor (Create→Schedule→Acquire→
-//     RunQuantum via the sub-agent executors), turns shadow mode off (avoiding
-//     double execution) and starts the kernelScheduler to drain ReadyTasks.
-//     The flip is done through flipKernelToTaskFabric, the same idempotent
-//     path a live mid-run flip uses. The Lifecycle pillar (agentfabric +
-//     aresrecovery) is assembled at the same time, so the Kernel exposes a
-//     single unified entry coordinating Scheduler + Lifecycle + IPC
-//     (ares-runtime.md §13 Kernel pillars).
-//   - anything else (default "legacy"): keeps the leader path live; the Task
+//   - default / "taskfabric": flips the flag to PolicyTaskFabric, replaces the
+//     shadow scorer with the real Task Fabric executor (Create→Schedule→
+//     Acquire→RunQuantum via the sub-agent executors), turns shadow mode off
+//     (avoiding double execution) and starts the kernelScheduler to drain
+//     ReadyTasks. The flip is done through flipKernelToTaskFabric, the same
+//     idempotent path a live mid-run flip uses. The Lifecycle pillar
+//     (agentfabric + aresrecovery) is assembled at the same time, so the
+//     Kernel exposes a single unified entry coordinating Scheduler + Lifecycle
+//   - IPC (ares-runtime.md §13 Kernel pillars).
+//   - "legacy" (explicit opt-out): keeps the leader path live; the Task
 //     Fabric path stays in shadow (scores only, Mismatches observable).
 //
 // The config-driven flip runs at startup; flipKernelToTaskFabric can be called
@@ -271,8 +299,8 @@ func wireKernelPolicy(
 	if kernel == nil || kernel.dual == nil || kernel.flag == nil {
 		return
 	}
-	if strings.ToLower(strings.TrimSpace(cfg.Kernel.Policy)) != "taskfabric" {
-		log.Printf("kernel: policy=legacy (default), Task Fabric path in shadow (Mismatches observable)")
+	if strings.ToLower(strings.TrimSpace(cfg.Kernel.Policy)) == "legacy" {
+		log.Printf("kernel: policy=legacy (explicit), Task Fabric path in shadow (Mismatches observable)")
 		return
 	}
 	flipKernelToTaskFabric(ctx, kernel, subAgents)

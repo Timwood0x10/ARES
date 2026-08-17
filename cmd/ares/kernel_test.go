@@ -198,7 +198,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	// Task B depends on task A; A is not created yet → B must not run.
 	b := models.NewTask("task_b", models.AgentType("write"), nil)
 	b.Context.Dependencies = []string{"task_a"}
-	if err := executeFabricTask(ctx, f, executors, b); err != nil {
+	if err := executeFabricTask(ctx, f, executors, newLoadTracker(), b); err != nil {
 		t.Fatalf("executeFabricTask(B): %v", err)
 	}
 	if writer.executedCount() != 0 {
@@ -210,7 +210,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 
 	// Run A through the fabric path; it completes and unlocks B.
 	a := models.NewTask("task_a", models.AgentType("research"), nil)
-	if err := executeFabricTask(ctx, f, executors, a); err != nil {
+	if err := executeFabricTask(ctx, f, executors, newLoadTracker(), a); err != nil {
 		t.Fatalf("executeFabricTask(A): %v", err)
 	}
 	if research.executedCount() != 1 {
@@ -222,7 +222,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	if !slicesEqual(ready, []string{"task_b"}) {
 		t.Fatalf("B must be ready after A completes, got %v", ready)
 	}
-	if err := executeFabricTask(ctx, f, executors, b); err != nil {
+	if err := executeFabricTask(ctx, f, executors, newLoadTracker(), b); err != nil {
 		t.Fatalf("executeFabricTask(B) after A ready: %v", err)
 	}
 	if writer.executedCount() != 1 {
@@ -258,7 +258,7 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 	executors := map[string]sub.Agent{"code_01": executor}
 
 	// Flip: replace the shadow scorer with the real executor, disable shadow.
-	enableKernelExecution(kernel, f, executors)
+	enableKernelExecution(kernel, f, executors, newLoadTracker())
 	flag.Set(agentipc.PolicyTaskFabric)
 
 	// Dispatch through the kernel (active path = fabric).
@@ -446,13 +446,28 @@ func TestDispatchRacingLiveFlipNoLoss(t *testing.T) {
 	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
 	wg.Wait()
 
-	// Every dispatch executed exactly once: legacy counts + fabric executions
-	// must equal the number of dispatched tasks (no loss, no double-run).
+	// Every dispatch must eventually execute exactly once: legacy counts +
+	// fabric executions must equal the number of dispatched tasks (no loss, no
+	// double-run). Since GAP4 the kernel scheduler drains the fabric asynchron
+	// (pollInterval 500ms): a task whose single-slot executor is busy is queued
+	// READY in the fabric and executed by the scheduler's next drain, so the
+	// final count is reached asynchronously — poll instead of asserting
+	// immediately after the dispatches return.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if inner.calls+executor.executedCount() == total {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	legacyCalls := inner.calls
 	fabricRuns := executor.executedCount()
 	if legacyCalls+fabricRuns != total {
 		t.Fatalf("execution loss or duplication: legacy=%d fabric=%d total=%d want %d",
 			legacyCalls, fabricRuns, legacyCalls+fabricRuns, total)
+	}
+	if fabricRuns > total {
+		t.Fatalf("double execution: fabric=%d exceeds total=%d", fabricRuns, total)
 	}
 }
 

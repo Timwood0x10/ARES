@@ -51,8 +51,6 @@ const (
 var statusConfigCandidates = []string{
 	"ares.yaml",
 	"config/ares.yaml",
-	"cmd/monitor-live/config.yaml",
-	"./cmd/monitor-live/config.yaml",
 }
 
 var (
@@ -74,7 +72,7 @@ Exit code is 0 when healthy, 1 when warnings were reported.`,
 		RunE: runStatus,
 	}
 	statusCmd.Flags().StringVar(&statusAddr, "addr", "", "Dashboard address to probe (default: config server or http://localhost:8080)")
-	statusCmd.Flags().StringVarP(&statusConfigPath, "config", "c", "", "Config file to inspect (default: auto-detect ares.yaml / cmd/monitor-live/config.yaml)")
+	statusCmd.Flags().StringVarP(&statusConfigPath, "config", "c", "", "Config file to inspect (default: auto-detect ares.yaml / config/ares.yaml)")
 	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Output report as JSON")
 	rootCmd.AddCommand(statusCmd)
 }
@@ -282,7 +280,7 @@ func statusConfigWarnings(cfg statusConfig) []string {
 	}
 	if p := cfg.Kernel.Policy; p != "" && p != "legacy" && p != "taskfabric" {
 		warnings = append(warnings, fmt.Sprintf(
-			"kernel.policy=%q is unknown — supported: legacy (default), taskfabric", p))
+			"kernel.policy=%q is unknown — supported: taskfabric (default), legacy", p))
 	}
 	return warnings
 }
@@ -292,6 +290,12 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 	if cfg == nil {
 		cfg = ares_config.NewMinimalConfig("", "", "")
 		minimal = true
+	}
+	// Empty policy is reported as the effective default "taskfabric"
+	// (wireKernelPolicy flips to Task Fabric unless "legacy" is explicit).
+	policy := cfg.Kernel.Policy
+	if strings.TrimSpace(policy) == "" {
+		policy = "taskfabric"
 	}
 	out := statusConfig{
 		Source:  source,
@@ -303,7 +307,7 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 			BaseURL:   cfg.LLM.BaseURL,
 			APIKeySet: cfg.LLM.APIKey != "" || os.Getenv("LLM_API_KEY") != "",
 		},
-		Kernel: statusKernel{Policy: cfg.Kernel.Policy},
+		Kernel: statusKernel{Policy: policy},
 		Memory: statusMemory{Enabled: cfg.Memory.IsEnabled()},
 		Agents: statusAgentConfig{
 			Leader: cfg.Agents.Leader.ID,
@@ -532,7 +536,9 @@ func kernelPolicyLabel(policy string) string {
 	case "taskfabric":
 		return "taskfabric (Task Fabric scheduler active)"
 	case "":
-		return "legacy (default, Task Fabric in shadow)"
+		return "taskfabric (default, Task Fabric scheduler active)"
+	case "legacy":
+		return "legacy (explicit, Task Fabric in shadow)"
 	default:
 		return policy
 	}

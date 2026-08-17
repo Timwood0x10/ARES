@@ -70,8 +70,8 @@ func TestStatusConfigToStatusMinimal(t *testing.T) {
 	if len(out.Agents.Sub) != 3 {
 		t.Fatalf("sub agents = %d, want 3 (default team)", len(out.Agents.Sub))
 	}
-	if out.Kernel.Policy != "" {
-		t.Fatalf("kernel policy = %q, want empty (legacy default)", out.Kernel.Policy)
+	if out.Kernel.Policy != "taskfabric" {
+		t.Fatalf("kernel policy = %q, want taskfabric (default)", out.Kernel.Policy)
 	}
 }
 

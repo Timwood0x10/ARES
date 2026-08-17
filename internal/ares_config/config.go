@@ -49,17 +49,17 @@ type Config struct {
 }
 
 // KernelConfig controls the dual-track dispatch kernel (ares-runtime.md P4 D4:
-// parallel + feature flag gradual cutover). When Policy is "legacy" (default),
-// the leader path stays live and the Task Fabric path runs in shadow mode
-// (scores every task, Mismatches observable). When Policy is "taskfabric", the
-// kernel flips to the Task Fabric path: the shadow scorer is replaced by the
-// real Create→Schedule→Acquire→RunQuantum executor, shadow mode is disabled
-// (to avoid double execution) and the kernelScheduler starts driving ready
-// tasks. The flip is safe to run at startup; flipKernelToTaskFabric is the
-// idempotent live mid-run variant.
+// parallel + feature flag gradual cutover). When Policy is "taskfabric" (the
+// default), the kernel flips to the Task Fabric path: the shadow scorer is
+// replaced by the real Create→Schedule→Acquire→RunQuantum executor, shadow
+// mode is disabled (to avoid double execution) and the kernelScheduler starts
+// driving ready tasks. When Policy is "legacy", the leader path stays live and
+// the Task Fabric path runs in shadow mode (scores every task, Mismatches
+// observable). The flip is safe to run at startup; flipKernelToTaskFabric is
+// the idempotent live mid-run variant.
 type KernelConfig struct {
-	// Policy selects the active dispatch policy: "legacy" (default) or
-	// "taskfabric".
+	// Policy selects the active dispatch policy: "taskfabric" (default) or
+	// "legacy". Empty selects the default ("taskfabric").
 	Policy string `yaml:"policy"`
 	// PollInterval is the kernelScheduler drain interval (default 500ms).
 	PollInterval string `yaml:"poll_interval"`

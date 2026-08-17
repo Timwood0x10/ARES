@@ -68,15 +68,15 @@ func init() {
 	}
 }
 
-// loadRecallConfig resolves the config path (falling back to the bundled
-// monitor-live config, mirroring loadServeConfig), loads it, and applies
-// environment overrides. Returns the loaded config or a wrapped error.
+// loadRecallConfig resolves the config path (falling back to ares.yaml,
+// mirroring loadServeConfig), loads it, and applies environment overrides.
+// Returns the loaded config or a wrapped error.
 func loadRecallConfig() (*ares_config.Config, error) {
 	configPath := recallConfigPath
 	if configPath == "" {
 		for _, p := range []string{
-			"cmd/monitor-live/config.yaml",
-			"./cmd/monitor-live/config.yaml",
+			"ares.yaml",
+			"./ares.yaml",
 		} {
 			if _, err := os.Stat(p); err == nil {
 				configPath = p
@@ -84,7 +84,7 @@ func loadRecallConfig() (*ares_config.Config, error) {
 			}
 		}
 		if configPath == "" {
-			configPath = "cmd/monitor-live/config.yaml"
+			configPath = "ares.yaml"
 		}
 	}
 

@@ -54,7 +54,7 @@ var serveCmd = &cobra.Command{
 MCP tools, and the monitoring dashboard.
 
 Flags:
-  --config  Path to config YAML (default: cmd/monitor-live/config.yaml)
+  --config  Path to config YAML (default: ares.yaml)
   --port    HTTP port for dashboard (overrides config)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runServe()
@@ -364,15 +364,11 @@ func runServe() error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
-	// Start sub-agent event listeners for event-driven dispatch.
-	// Each sub agent subscribes to EventSubTaskScheduled on its own stream
-	// and publishes EventSubTaskResult after execution (code_rules_v2 §5.1:
-	// single execution path, no dual-path bypass).
-	for _, sa := range subAgents {
-		if err := sa.StartEventListener(ctx); err != nil {
-			log.Printf("WARNING: failed to start event listener for sub-agent %q: %v", sa.ID(), err)
-		}
-	}
+	// Sub-agents are execution units only (ares-runtime.md: agents are not
+	// orchestrated, they are scheduled). The Kernel owns dispatch: in the
+	// taskfabric policy the kernelScheduler drives each task through
+	// RunQuantum → sub.Agent.Execute; agents never subscribe to the event
+	// stream and self-dispatch (self-dispatch was removed in v0.4.0).
 
 	// --- Submit real tasks ---
 	g.Go(func() error {
@@ -458,12 +454,12 @@ func createAndRegisterServeAgents(
 		return nil, nil, fmt.Errorf("create agents: %w", err)
 	}
 
-	// Configure the dual-track kernel per config: flip the policy to Task
-	// Fabric and start the scheduler when kernel.policy == "taskfabric"
-	// (ares-runtime.md P4 D4 gradual cutover). Default ("legacy") keeps the
-	// leader path live with the Task Fabric path observing in shadow. The
-	// shared EventStore is passed so the event-driven recovery loop (Kernel
-	// Lifecycle pillar) can subscribe to task lifecycle events.
+	// Configure the dual-track kernel per config: the Task Fabric path is the
+	// default and starts the scheduler unless kernel.policy == "legacy"
+	// (explicit opt-out keeps the leader path live with Task Fabric in shadow;
+	// ares-runtime.md P4 D4 gradual cutover). The shared EventStore is passed
+	// so the event-driven recovery loop (Kernel Lifecycle pillar) can subscribe
+	// to task lifecycle events.
 	if kernel != nil && kernel.dual != nil {
 		wireKernelPolicy(ctx, cfg, kernel, subAgents, store)
 	}
@@ -709,8 +705,8 @@ func loadServeConfig() (*ares_config.Config, error) {
 	configPath := serveConfigPath
 	if configPath == "" {
 		for _, p := range []string{
-			"cmd/monitor-live/config.yaml",
-			"./cmd/monitor-live/config.yaml",
+			"ares.yaml",
+			"./ares.yaml",
 		} {
 			if _, err := os.Stat(p); err == nil {
 				configPath = p
@@ -718,7 +714,7 @@ func loadServeConfig() (*ares_config.Config, error) {
 			}
 		}
 		if configPath == "" {
-			configPath = "cmd/monitor-live/config.yaml"
+			configPath = "ares.yaml"
 		}
 	}
 
