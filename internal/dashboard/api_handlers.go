@@ -915,6 +915,24 @@ func (a *APIv2) handleEvolutionFeedback(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "recorded", "candidate_id": fb.CandidateID})
 }
 
+// handleObservabilitySpans renders the Global Tracer's cross-Fabric spans
+// (v0.4.0 M4-1). When no provider is wired, it returns an empty list.
+func (a *APIv2) handleObservabilitySpans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.observability == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	spans := a.observability.Spans()
+	if spans == nil {
+		spans = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, spans)
+}
+
 // ── Helpers ───────────────────────────────────
 
 func errResp(msg string) map[string]string {

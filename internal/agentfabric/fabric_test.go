@@ -401,5 +401,38 @@ func TestConcurrentSpawnIsSafe(t *testing.T) {
 	}
 }
 
+// TestSpawnCarriesPriority verifies the scheduling priority requested at
+// spawn is carried onto the Agent (B2: OS-thread-style thread priority) and
+// that the default 0 stays 0.
+func TestSpawnCarriesPriority(t *testing.T) {
+	ctx := context.Background()
+	f := NewFabric()
+
+	a, err := f.Spawn(ctx, SpawnSpec{Identity: "high", Capabilities: []string{"rust"}, Priority: 2.0})
+	if err != nil {
+		t.Fatalf("Spawn high: %v", err)
+	}
+	if a.Priority != 2.0 {
+		t.Fatalf("want Priority=2.0, got %v", a.Priority)
+	}
+
+	b, err := f.Spawn(ctx, SpawnSpec{Identity: "normal", Capabilities: []string{"rust"}})
+	if err != nil {
+		t.Fatalf("Spawn normal: %v", err)
+	}
+	if b.Priority != 0.0 {
+		t.Fatalf("default priority must be 0, got %v", b.Priority)
+	}
+
+	// Get returns the same value (persisted on the agent).
+	got, err := f.Get("high")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Priority != 2.0 {
+		t.Fatalf("Get Priority = %v, want 2.0", got.Priority)
+	}
+}
+
 // keep references to avoid unused import lint.
 var _ = time.Now

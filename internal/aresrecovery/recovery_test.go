@@ -2,6 +2,7 @@ package aresrecovery
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -246,5 +247,111 @@ func TestChaosSuspendFailure(t *testing.T) {
 	inj := chaos.InjectedFailures()
 	if inj["a"] != FailureSuspend {
 		t.Fatalf("injection must be recorded, got %+v", inj)
+	}
+}
+
+// TestRestartAgentThroughSpawner verifies the evolution spawn gate: when a
+// Recovery is wired with an EvolutionAwareSpawner whose policy disables
+// spawning, the replacement spawn in RestartAgent is blocked with
+// ErrSpawnDisabled instead of bypassing the gate.
+func TestRestartAgentThroughSpawner(t *testing.T) {
+	tasks, agents, rec, _, _ := newRecoveryHarness(t)
+	ctx := context.Background()
+
+	// Dead agent that will need a replacement.
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{Identity: "dead"}); err != nil {
+		t.Fatalf("Spawn dead: %v", err)
+	}
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Wire the evolution gate: spawning disabled.
+	gate := NewEvolutionAwareSpawner(agents, &stubSpawnPolicySource{
+		policy: SpawnPolicy{Enabled: false},
+	})
+	rec.WithSpawner(gate)
+
+	if _, err := rec.RestartAgent(ctx, "dead", agentfabric.CognitiveState{}, []string{"rust"}); !errors.Is(err, ErrSpawnDisabled) {
+		t.Fatalf("restart spawn must hit the evolution gate, got %v", err)
+	}
+}
+
+// TestRecoverTaskCheckpointThroughSpawner verifies checkpoint recovery routes
+// the replacement spawn through the evolution gate's TIMING check (Enabled)
+// but BYPASSES the MaxConcurrent quota: recovery replaces a dead/expired agent
+// and must not be stranded by the population cap (v0.4.0 M2-1).
+func TestRecoverTaskCheckpointThroughSpawner(t *testing.T) {
+	tasks, agents, rec, _, _ := newRecoveryHarness(t)
+	ctx := context.Background()
+
+	// a1 fills the fabric up to the cap.
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{Identity: "a1", Capabilities: []string{"rust"}}); err != nil {
+		t.Fatalf("Spawn a1: %v", err)
+	}
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := tasks.Acquire("t1", "a1", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := tasks.Start("t1", "a1", epoch); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Agent yields at a checkpoint: task becomes SUSPENDED with the preserved
+	// checkpoint (the recoverable state RecoverTaskCheckpoint resumes).
+	if err := tasks.Yield("t1", "a1", epoch, []byte(`{"n":1}`)); err != nil {
+		t.Fatalf("Yield: %v", err)
+	}
+
+	// Wire the evolution gate with a cap of 1 (already reached by a1, which
+	// stays live). The recovery's replacement spawn must NOT be rejected by
+	// the cap — self-healing is not blocked by quota.
+	gate := NewEvolutionAwareSpawner(agents, &stubSpawnPolicySource{
+		policy: SpawnPolicy{Enabled: true, MaxConcurrent: 1},
+	})
+	rec.WithSpawner(gate)
+
+	repID, newEpoch, err := rec.RecoverTaskCheckpoint(ctx, "t1", "")
+	if err != nil {
+		t.Fatalf("recovery spawn must bypass the quota cap, got %v", err)
+	}
+	if repID == "" || newEpoch == 0 {
+		t.Fatalf("want replacement id + epoch, got %q %d", repID, newEpoch)
+	}
+}
+
+// TestRecoveryRespectsDisabledGate verifies recovery spawns still honor the
+// evolution TIMING gate: when spawning is disabled, a replacement spawn is
+// rejected with ErrSpawnDisabled (quota is bypassed, Enabled is not).
+func TestRecoveryRespectsDisabledGate(t *testing.T) {
+	tasks, agents, rec, _, _ := newRecoveryHarness(t)
+	ctx := context.Background()
+
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{Identity: "a1", Capabilities: []string{"rust"}}); err != nil {
+		t.Fatalf("Spawn a1: %v", err)
+	}
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := tasks.Acquire("t1", "a1", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := tasks.Start("t1", "a1", epoch); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := tasks.Yield("t1", "a1", epoch, []byte(`{"n":1}`)); err != nil {
+		t.Fatalf("Yield: %v", err)
+	}
+
+	gate := NewEvolutionAwareSpawner(agents, &stubSpawnPolicySource{
+		policy: SpawnPolicy{Enabled: false},
+	})
+	rec.WithSpawner(gate)
+
+	if _, _, err := rec.RecoverTaskCheckpoint(ctx, "t1", ""); !errors.Is(err, ErrSpawnDisabled) {
+		t.Fatalf("recovery spawn must honor the disabled gate, got %v", err)
 	}
 }

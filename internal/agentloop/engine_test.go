@@ -309,12 +309,16 @@ func TestEngine_EventsEmitted(t *testing.T) {
 	}
 
 	evs := sink.snapshot()
-	// 2 tool calls × (Started + Completed) + 1 TaskCompleted = 5 events.
+	// 3 LLM-call phase events (one per iteration) + 2 tool calls × (Started +
+	// Completed) + 1 TaskCompleted = 8 events.
 	wantTypes := []ares_events.EventType{
+		ares_events.EventLLMCall,
 		ares_events.EventToolCallStarted,
 		ares_events.EventToolCallCompleted,
+		ares_events.EventLLMCall,
 		ares_events.EventToolCallStarted,
 		ares_events.EventToolCallCompleted,
+		ares_events.EventLLMCall,
 		ares_events.EventTaskCompleted,
 	}
 	if len(evs) != len(wantTypes) {
@@ -334,13 +338,15 @@ func TestEngine_EventsEmitted(t *testing.T) {
 			t.Errorf("event[%d].Version = %d, want 0 (store assigns version)", i, ev.Version)
 		}
 	}
-	// Tool-call events stream under the agent name; TaskCompleted under the session.
-	for i := 0; i < 4; i++ {
+	// LLM-call and tool-call events stream under the agent name; TaskCompleted
+	// under the session. The first 7 events (3 LLM + 4 tool) use the agent
+	// stream.
+	for i := 0; i < 7; i++ {
 		if evs[i].StreamID != "agent-x" {
-			t.Errorf("tool event[%d].StreamID = %q, want %q", i, evs[i].StreamID, "agent-x")
+			t.Errorf("event[%d].StreamID = %q, want %q", i, evs[i].StreamID, "agent-x")
 		}
 	}
-	tc := evs[4]
+	tc := evs[7]
 	if tc.StreamID != "sess-events" {
 		t.Errorf("TaskCompleted.StreamID = %q, want %q", tc.StreamID, "sess-events")
 	}
@@ -396,13 +402,14 @@ func TestEngine_MaxIterationsEmitsTaskCompleted(t *testing.T) {
 	}
 
 	evs := sink.snapshot()
-	// 3 tool calls × (Started + Completed) + 1 TaskCompleted = 7 events.
-	if len(evs) != 7 {
-		t.Fatalf("got %d events, want 7 (6 tool + 1 TaskCompleted)", len(evs))
+	// 3 iterations × (1 LLM-call phase + 1 tool call × 2) + 1 TaskCompleted
+	// = 10 events: 3 LLM phase + 6 tool + 1 TaskCompleted.
+	if len(evs) != 10 {
+		t.Fatalf("got %d events, want 10 (3 LLM + 6 tool + 1 TaskCompleted)", len(evs))
 	}
-	tc := evs[6]
+	tc := evs[9]
 	if tc.Type != ares_events.EventTaskCompleted {
-		t.Fatalf("event[6].Type = %s, want %s", tc.Type, ares_events.EventTaskCompleted)
+		t.Fatalf("event[9].Type = %s, want %s", tc.Type, ares_events.EventTaskCompleted)
 	}
 	if tc.StreamID != "sess-cap" {
 		t.Errorf("TaskCompleted.StreamID = %q, want %q", tc.StreamID, "sess-cap")
@@ -443,8 +450,10 @@ func TestEngine_TaskCompletedGatedByDistill(t *testing.T) {
 			t.Fatal("TaskCompleted must not be emitted when DistillEnabled is false")
 		}
 	}
-	if len(evs) != 2 {
-		t.Errorf("expected 2 tool events (no TaskCompleted), got %d", len(evs))
+	// 2 iterations × (1 LLM-call phase + 1 tool call × 2) = 2 LLM + 2 tool
+	// events (no TaskCompleted).
+	if len(evs) != 4 {
+		t.Errorf("expected 4 events (2 LLM phase + 2 tool), got %d", len(evs))
 	}
 }
 
@@ -1017,27 +1026,36 @@ func TestEngine_ToolEventsNotDropped_RealStore(t *testing.T) {
 				t.Fatalf("ToolCalls = %d, want %d", res.ToolCalls, tt.toolCalls)
 			}
 
-			// The agent-name stream must hold every tool call's Started+Completed
-			// events (2*N). Before the fix, every event after the first tool call
-			// was dropped by ErrVersionConflict, leaving only 2.
+			// The agent-name stream must hold every LLM-call phase event plus
+			// every tool call's Started+Completed. Each iteration emits one
+			// EventLLMCall (thread-state observability) followed by the tool
+			// events; the final iteration emits a bare LLM-call event. So the
+			// agent stream holds (N+1) LLM-call + 2N tool events = 3N+1.
 			agentEvents, err := store.Read(context.Background(), "conflict-agent", ares_events.ReadOptions{})
 			if err != nil {
 				t.Fatalf("Read agent stream: %v", err)
 			}
-			wantCount := tt.toolCalls * 2
+			wantCount := tt.toolCalls*3 + 1
 			if len(agentEvents) != wantCount {
 				t.Fatalf("agent stream events = %d, want %d (events were dropped)",
 					len(agentEvents), wantCount)
 			}
 			for i := 0; i < tt.toolCalls; i++ {
-				started := agentEvents[i*2]
-				completed := agentEvents[i*2+1]
+				llmPhase := agentEvents[i*3]
+				started := agentEvents[i*3+1]
+				completed := agentEvents[i*3+2]
+				if llmPhase.Type != ares_events.EventLLMCall {
+					t.Errorf("event[%d].Type = %s, want %s", i*3, llmPhase.Type, ares_events.EventLLMCall)
+				}
 				if started.Type != ares_events.EventToolCallStarted {
-					t.Errorf("event[%d].Type = %s, want %s", i*2, started.Type, ares_events.EventToolCallStarted)
+					t.Errorf("event[%d].Type = %s, want %s", i*3+1, started.Type, ares_events.EventToolCallStarted)
 				}
 				if completed.Type != ares_events.EventToolCallCompleted {
-					t.Errorf("event[%d].Type = %s, want %s", i*2+1, completed.Type, ares_events.EventToolCallCompleted)
+					t.Errorf("event[%d].Type = %s, want %s", i*3+2, completed.Type, ares_events.EventToolCallCompleted)
 				}
+			}
+			if agentEvents[tt.toolCalls*3].Type != ares_events.EventLLMCall {
+				t.Errorf("final event[%d].Type = %s, want %s", tt.toolCalls*3, agentEvents[tt.toolCalls*3].Type, ares_events.EventLLMCall)
 			}
 			// The store assigns monotonic versions 1..2N; the engine no longer
 			// stamps a stale Version field (which previously conflicted with OCC).

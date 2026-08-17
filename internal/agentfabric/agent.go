@@ -44,6 +44,10 @@ type Agent struct {
 	// is PROVENANCE ONLY — parent/child does NOT form a permission
 	// hierarchy (§13 invariant #1: A ≡ B ≡ C).
 	Parent string
+	// Priority is the scheduling priority (>= 0; 0 = normal). It mirrors
+	// OS-thread priority: the taskfabric scheduler boosts higher-priority
+	// agents when choosing among capable candidates.
+	Priority float64
 	// SpawnedAt is when the agent was created via spawn.
 	SpawnedAt time.Time
 

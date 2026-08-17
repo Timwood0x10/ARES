@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 
 	"golang.org/x/sync/errgroup"
@@ -39,10 +40,39 @@ func (a *mcpStatusAdapter) ListServers() []dashboard.MCPServerStatusView {
 	return views
 }
 
-func ProvideDashboard(ctx context.Context, mcpMgr *ares_mcp.MCPManager, addr string) (*DashboardComponents, error) {
+// ProvideDashboard assembles the dashboard server and wires the v0.4.0 M3/M4
+// observability surfaces from the SHARED aresrecovery components (created once
+// in Bootstrap, not per-call), so the dashboard endpoints read the same tracer
+// / feedback store the runtime writes.
+//
+// Args:
+//   - ctx: lifetime of the hub goroutine.
+//   - mcpMgr: MCP status provider (may be nil).
+//   - addr: HTTP listen address.
+//   - evolutionTracer: shared evolution trajectory tracer (M3-1).
+//   - feedbackStore: shared human feedback store (M3-2).
+//   - globalTracer: shared cross-Fabric tracer (M4-1).
+func ProvideDashboard(
+	ctx context.Context,
+	mcpMgr *ares_mcp.MCPManager,
+	addr string,
+	evolutionTracer *aresrecovery.EvolutionTracer,
+	feedbackStore *aresrecovery.FeedbackStore,
+	globalTracer *aresrecovery.GlobalTracer,
+) (*DashboardComponents, error) {
 	hub := dashboard.NewWSHub()
 	statusProvider := &mcpStatusAdapter{mcp: mcpMgr}
 	api := dashboard.NewAPIv2(nil, statusProvider, hub)
+
+	// Wire the v0.4.0 M3/M4 observability surfaces: the evolution trajectory
+	// (M3-1), human feedback sink (M3-2) and cross-Fabric span provider (M4-1)
+	// are backed by the shared aresrecovery components, so the dashboard
+	// endpoints return data recorded by the runtime (GA generations, human
+	// feedback, task/agent lifecycle) instead of empty lists.
+	api.SetEvolutionTrajectory(NewEvolutionTrajectoryProvider(evolutionTracer))
+	api.SetEvolutionFeedback(NewEvolutionFeedbackSink(feedbackStore))
+	api.SetObservability(NewObservabilitySpansProvider(globalTracer))
+
 	hubGrp, hubCtx := errgroup.WithContext(ctx)
 	hubGrp.Go(func() error {
 		hub.Run()

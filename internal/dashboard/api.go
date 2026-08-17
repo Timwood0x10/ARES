@@ -98,6 +98,15 @@ type EvolutionFeedbackSink interface {
 	SubmitFeedback(fb EvolutionFeedback) error
 }
 
+// ObservabilitySpansProvider supplies cross-Fabric trace spans for the
+// observability endpoint (v0.4.0 M4-1). Implementations snapshot the Global
+// Tracer's spans as JSON-friendly values; the dashboard renders them.
+type ObservabilitySpansProvider interface {
+	// Spans returns a snapshot of the recorded spans (insertion order), or
+	// nil when nothing is recorded.
+	Spans() []map[string]any
+}
+
 // SurvivalStarter is an optional extension of SurvivalProvider that can
 // actually start a survival run. If the concrete provider does not implement
 // this interface, the /arena/survival POST endpoint returns 501.
@@ -124,6 +133,10 @@ type APIv2 struct {
 	// evolutionFeedback is the optional v0.4.0 M3-2 sink receiving human
 	// feedback submissions (nil disables POST /evolution/feedback).
 	evolutionFeedback EvolutionFeedbackSink
+
+	// observability is the optional v0.4.0 M4-1 cross-Fabric span provider
+	// (nil disables GET /observability/spans).
+	observability ObservabilitySpansProvider
 
 	// Optional service muxes mounted by the wiring layer (ares_eval, memory,
 	// retrieval). They are *http.ServeMux instances built by the launcher
@@ -167,6 +180,13 @@ func (a *APIv2) SetEvolutionTrajectory(provider EvolutionTrajectoryProvider) {
 // endpoint.
 func (a *APIv2) SetEvolutionFeedback(sink EvolutionFeedbackSink) {
 	a.evolutionFeedback = sink
+}
+
+// SetObservability wires the optional cross-Fabric span provider (v0.4.0
+// M4-1). When set, GET /observability/spans renders the Global Tracer's spans;
+// nil disables the endpoint.
+func (a *APIv2) SetObservability(provider ObservabilitySpansProvider) {
+	a.observability = provider
 }
 
 // checkWSOrigin implements a strict WebSocket origin check.
@@ -283,6 +303,10 @@ func (a *APIv2) Handler() http.Handler {
 	mux.HandleFunc("/evolution/trajectory", a.handleEvolutionTrajectory)
 	mux.HandleFunc("/evolution/feedback", a.handleEvolutionFeedback)
 
+	// ── Observability (v0.4.0 M4-1) ───────────────
+	// GET    /observability/spans  → cross-Fabric trace spans (Global Tracer)
+	mux.HandleFunc("/observability/spans", a.handleObservabilitySpans)
+
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview
 	mux.HandleFunc("/", a.handleRoot)
@@ -347,6 +371,13 @@ func (a *APIv2) MountGinRoutes(rg *gin.RouterGroup) {
 	rg.GET("/flight/decisions", a.wrapGin(a.handleFlightDecisions))
 	rg.GET("/flight/diagnostics", a.wrapGin(a.handleFlightDiagnostics))
 	rg.GET("/flight/genealogy", a.wrapGin(a.handleFlightGenealogy))
+
+	// ── Evolution (v0.4.0 M3-1 / M3-2) ──
+	rg.GET("/evolution/trajectory", a.wrapGin(a.handleEvolutionTrajectory))
+	rg.POST("/evolution/feedback", a.wrapGin(a.handleEvolutionFeedback))
+
+	// ── Observability (v0.4.0 M4-1) ──
+	rg.GET("/observability/spans", a.wrapGin(a.handleObservabilitySpans))
 
 	// ── Wired services (eval / memory / retrieval) ──
 	// Forwarded from pre-built *http.ServeMux instances supplied by the

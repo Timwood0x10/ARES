@@ -129,18 +129,22 @@ func TestEngine_ToolErrorAppendedToMessages(t *testing.T) {
 	if _, ok := findToolMessage(reqs[1].Messages, "Error: tool exploded"); !ok {
 		t.Error("final iteration messages missing tool error text")
 	}
-	// Started, Completed, TaskCompleted = 3 events in that order.
+	// 2 iterations × 1 EventLLMCall (thread-state phase) + Started + Completed
+	// + TaskCompleted = 5 events in that order.
 	evs := sink.snapshot()
-	if len(evs) != 3 {
-		t.Fatalf("expected 3 events, got %d", len(evs))
+	if len(evs) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(evs))
 	}
-	if evs[1].Type != ares_events.EventToolCallCompleted {
-		t.Fatalf("event[1].Type = %s, want %s", evs[1].Type, ares_events.EventToolCallCompleted)
+	if evs[0].Type != ares_events.EventLLMCall {
+		t.Fatalf("event[0].Type = %s, want %s", evs[0].Type, ares_events.EventLLMCall)
 	}
-	if got := evs[1].Payload["success"]; got != false {
+	if evs[2].Type != ares_events.EventToolCallCompleted {
+		t.Fatalf("event[2].Type = %s, want %s", evs[2].Type, ares_events.EventToolCallCompleted)
+	}
+	if got := evs[2].Payload["success"]; got != false {
 		t.Errorf("Completed success = %v, want false", got)
 	}
-	if got := evs[1].Payload["result"]; got != "Error: tool exploded" {
+	if got := evs[2].Payload["result"]; got != "Error: tool exploded" {
 		t.Errorf("Completed result = %v, want %q", got, "Error: tool exploded")
 	}
 }
@@ -192,8 +196,16 @@ func TestEngine_HumanRejectSkipsTool(t *testing.T) {
 	if got := toolEx.lastToolName(); got != "" {
 		t.Errorf("tool executor ran %q despite rejection", got)
 	}
-	if evs := sink.snapshot(); len(evs) != 0 {
-		t.Errorf("expected no events on rejection, got %d: %+v", len(evs), evs)
+	// The rejected tool must not be executed nor emitted as tool events; the
+	// only events are the two LLM-call phase events (one per iteration).
+	evs := sink.snapshot()
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 LLM phase events, got %d: %+v", len(evs), evs)
+	}
+	for i, ev := range evs {
+		if ev.Type != ares_events.EventLLMCall {
+			t.Errorf("event[%d].Type = %s, want %s (no tool events on rejection)", i, ev.Type, ares_events.EventLLMCall)
+		}
 	}
 	reqs := llm.snapshotReqs()
 	if len(reqs) != 2 {

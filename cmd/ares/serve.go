@@ -31,6 +31,7 @@ import (
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/ares_skills"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -260,8 +261,24 @@ func runServe() error {
 	// for direct sends; the leader-dispatched task path remains the primary
 	// execution route, this only adds a peer channel for supplementary
 	// notifications.
-	peerRegistry := buildPeerRegistry(leaderAgent, subAgents)
-	log.Printf("peer registry wired: %d agents registered", len(peerRegistry.IDs()))
+	//
+	// When the evolution system is wired, the peer channel is bridged through
+	// the evolution-aware IPC (v0.4.0 M2-3): every agent-to-agent message
+	// passes the active evolution wire policy (json | json+gzip). Without
+	// evolution the plain direct peer channel is used, preserving prior
+	// behavior.
+	var peerRegistry *peer.Registry
+	if comp.NewEvolution != nil {
+		bridge, err := wireEvolutionIPC(leaderAgent, subAgents, comp.NewEvolution.StrategyStore)
+		if err != nil {
+			return fmt.Errorf("wire evolution IPC: %w", err)
+		}
+		peerRegistry = bridge.reg
+		log.Printf("peer registry wired through evolution-aware IPC: %d agents registered", len(peerRegistry.IDs()))
+	} else {
+		peerRegistry = buildPeerRegistry(leaderAgent, subAgents)
+		log.Printf("peer registry wired: %d agents registered", len(peerRegistry.IDs()))
+	}
 	if leaderWithPeer, ok := leaderAgent.(interface {
 		SetPeerRegistry(*peer.Registry)
 	}); ok {
@@ -463,6 +480,41 @@ func createAndRegisterServeAgents(
 	if kernel != nil && kernel.dual != nil {
 		wireKernelPolicy(ctx, cfg, kernel, subAgents, store)
 	}
+
+	// Wire the evolution-aware spawn gate (v0.4.0 M2-1): the active evolution
+	// strategy's spawn params (spawn.enabled / max_concurrent / preferred
+	// capabilities) shape the recovery loop's replacement spawns through the
+	// Kernel's Recovery subsystem — "Evolution decides; Kernel enforces".
+	// Without an evolution store the gate is skipped and recovery spawns
+	// plain, preserving prior behavior.
+	if kernel != nil && kernel.recovery != nil && comp.NewEvolution != nil {
+		spawner := aresrecovery.NewEvolutionAwareSpawner(
+			kernel.agents,
+			ares_bootstrap.NewSpawnPolicySource(comp.NewEvolution.StrategyStore),
+		)
+		kernel.recovery.WithSpawner(spawner)
+		log.Printf("serve: evolution spawn gate wired (recovery spawns routed through evolution policy)")
+	}
+
+	// Wire the evolution-aware quota manager (v0.4.0 M2-2): the active
+	// evolution strategy's quota.budget param replaces the Agent Fabric's
+	// resource budget at runtime. A periodic loop pushes the latest policy so
+	// a deployed budget takes effect without restarting serve; a nil policy
+	// (or no quota param) falls back to the configured kernel resources.
+	if kernel != nil && kernel.agents != nil && comp.NewEvolution != nil {
+		quotaMgr := aresrecovery.NewEvolutionAwareQuotaManager(
+			kernel.agents,
+			ares_bootstrap.NewQuotaPolicySource(comp.NewEvolution.StrategyStore, cfg.Kernel.Resources),
+		)
+		go runKernelQuotaLoop(ctx, quotaMgr)
+		log.Printf("serve: evolution quota manager wired (resource budget follows evolution policy)")
+	}
+
+	// Feed the shared GlobalTracer from the Task Fabric's lifecycle events
+	// (v0.4.0 M4-1): this is the write side of /observability/spans. Without
+	// it the tracer stays empty and the dashboard span endpoint returns an
+	// empty list despite the wiring.
+	go runKernelTraceLoop(ctx, store, comp.GlobalTracer)
 
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {

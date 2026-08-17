@@ -146,6 +146,11 @@ type SubAgentConfig struct {
 	// Dependencies lists other sub-agent IDs whose tasks must COMPLETE before
 	// this sub-agent's task runs (Task Fabric DAG gate, ares-runtime.md §9).
 	Dependencies []string `yaml:"dependencies"`
+	// Priority is the scheduling priority of this sub-agent (>= 0; 0 =
+	// normal). It mirrors OS-thread priority: the kernel scheduler boosts
+	// higher-priority agents when choosing among capable candidates. Read by
+	// the kernel wiring (B2: thread priority) into the shared load tracker.
+	Priority float64 `yaml:"priority"`
 }
 
 // PromptsConfig holds prompt templates.

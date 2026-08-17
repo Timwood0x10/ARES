@@ -21,6 +21,10 @@ type SpawnSpec struct {
 	// Resources are resource hints (quota/capability/policy validation
 	// surface; P3 stores them opaquely, full enforcement is P5).
 	Resources map[string]any
+	// Priority is the scheduling priority of the new agent (>= 0; 0 =
+	// normal). It mirrors OS-thread priority: the taskfabric scheduler boosts
+	// higher-priority agents when choosing among capable candidates.
+	Priority float64
 }
 
 // Spawn is the Kernel syscall that creates a new Agent (design §13: spawn
@@ -70,6 +74,7 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		Capabilities:   append([]string(nil), spec.Capabilities...),
 		State:          StateIdle,
 		Parent:         spec.ParentID,
+		Priority:       spec.Priority,
 		SpawnedAt:      f.now(),
 		resources:      claim,
 		taskContext:    cloneMap(spec.TaskContext),

@@ -80,6 +80,31 @@ func NewEvolutionAwareSpawner(agents *agentfabric.Fabric, source SpawnPolicySour
 //   - *agentfabric.Agent: the spawned agent.
 //   - error: ErrSpawnDisabled / ErrSpawnLimitReached, or the fabric error.
 func (s *EvolutionAwareSpawner) Spawn(ctx context.Context, spec agentfabric.SpawnSpec) (*agentfabric.Agent, error) {
+	return s.spawn(ctx, spec, false)
+}
+
+// SpawnForRecovery creates an agent under the evolution policy for the
+// RECOVERY path (v0.4.0 M2-1): it applies the timing (Enabled) gate and the
+// capability merge, but SKIPS the MaxConcurrent quota check. Recovery spawns
+// replace a dead/expired agent — they do not grow the live population, so
+// letting a self-healing spawn be rejected by the population cap would strand
+// the task permanently (recovery must not be blocked by quota).
+//
+// Args:
+//   - ctx: for the policy lookup and the fabric spawn.
+//   - spec: the requested spawn spec; PreferredCapabilities from the policy
+//     are appended (deduplicated).
+//
+// Returns:
+//   - *agentfabric.Agent: the spawned agent.
+//   - error: ErrSpawnDisabled, or the fabric error.
+func (s *EvolutionAwareSpawner) SpawnForRecovery(ctx context.Context, spec agentfabric.SpawnSpec) (*agentfabric.Agent, error) {
+	return s.spawn(ctx, spec, true)
+}
+
+// spawn implements both spawn paths. skipQuota selects the recovery path
+// (MaxConcurrent is not enforced) vs the ordinary spawn (both gates apply).
+func (s *EvolutionAwareSpawner) spawn(ctx context.Context, spec agentfabric.SpawnSpec, skipQuota bool) (*agentfabric.Agent, error) {
 	if s.agents == nil {
 		return nil, errors.New("aresrecovery: evolution spawner has no agent fabric")
 	}
@@ -94,7 +119,7 @@ func (s *EvolutionAwareSpawner) Spawn(ctx context.Context, spec agentfabric.Spaw
 	if !policy.Enabled {
 		return nil, ErrSpawnDisabled
 	}
-	if policy.MaxConcurrent > 0 && len(s.agents.Agents()) >= policy.MaxConcurrent {
+	if !skipQuota && policy.MaxConcurrent > 0 && len(s.agents.Agents()) >= policy.MaxConcurrent {
 		return nil, ErrSpawnLimitReached
 	}
 	// Merge preferred capabilities (dedup, keep caller's explicit ones first).

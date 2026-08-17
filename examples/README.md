@@ -25,7 +25,13 @@ go run examples/01-quickstart/main.go
 | 07 | Human-in-Loop | `go run examples/07-human-in-loop/main.go` | `WithHumanInput` human approval for tool calls | ≤150 |
 | 08 | MCP | `go run examples/08-mcp-integration/main.go` | `WithMCP` connect to MCP server | ≤73 |
 | 09 | Full App | `go run examples/09-full-app/main.go` | Web UI + Agent + Tools + Memory + Stats (open :8080) | ≤240 |
+| 10 | GA Full Evolution | `go run examples/10-ga-full-evolution/main.go` | Full GA pipeline via public `api/evolution` (no internal/ import) | ≤383 |
+| 11 | Knowledge Import | `go run examples/11-knowledge-import/main.go` | Structure-aware markdown knowledge base import | ≤782 |
+| 12 | YAML-Driven Flags | `go run examples/12-yaml-driven-flags/main.go` | One YAML + one Go file starts an agent | ≤100 |
+| 13 | Archive AKG Chain | `go run examples/13-archive-akg-chain/main.go` | Raw conversation → AKG knowledge pipeline | ≤212 |
 | 14 | Tool Discovery | `go run examples/14-tool-discovery/main.go` | `WithToolDiscovery` MCP-style tool discovery + `discover_tools` meta-tool | ≤130 |
+| 15 | LLM Evolution Suite | `go run examples/15-llm-evolution-suite/main.go` | Consolidated REAL-LLM evolution suite (merged 15-18) | ≤135 |
+| 19 | GA Candidate E2E | `go run examples/19-ga-candidate-e2e/main.go` | Multi-generation GA evolution loop → evolved champion candidate | ≤413 |
 | 21 | AI Assistant | `go run examples/21-ai-assistant-integration/main.go` | `api/knowledge` KnowledgeService integration (no internal/ import) | ≤94 |
 | 22 | Evolution Blocks | `go run examples/22-evolution-blocks/main.go` | `api/evolution` building blocks: Mutator+Population+Promoter (no internal/ import) | ≤148 |
 | Eval | Evaluation | `go run examples/eval/main.go` | 5 scenarios: chat, tool, multi-agent, resilience, evolution | ≤264 |

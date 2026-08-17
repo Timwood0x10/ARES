@@ -51,6 +51,34 @@ func TestScoreLoadDiscountsBusyAgents(t *testing.T) {
 	}
 }
 
+// TestScorePriorityBoostsHighPriority verifies Priority boosts the score
+// (score × (1 + priority)) and that the default 0 keeps pre-priority behavior.
+func TestScorePriorityBoostsHighPriority(t *testing.T) {
+	normal := Candidate{Capabilities: []string{"rust"}, Load: 0.0, Confidence: 0.5}
+	boosted := Candidate{Capabilities: []string{"rust"}, Load: 0.0, Confidence: 0.5, Priority: 1.0}
+	base := Score("rust", normal)
+	high := Score("rust", boosted)
+	if high != 2*base {
+		t.Fatalf("priority 1.0 must double the score: base=%v high=%v", base, high)
+	}
+	if base != 0.5 {
+		t.Fatalf("priority 0 must keep pre-priority score, got %v", base)
+	}
+}
+
+// TestPickPrefersHighPriorityTieBreak verifies that among otherwise-equal
+// candidates, the higher-priority one wins (OS-thread analog).
+func TestPickPrefersHighPriorityTieBreak(t *testing.T) {
+	candidates := []Candidate{
+		{AgentID: "A", Capabilities: []string{"rust"}, Load: 0.0, Confidence: 0.9},
+		{AgentID: "B", Capabilities: []string{"rust"}, Load: 0.0, Confidence: 0.9, Priority: 0.5},
+	}
+	best := Pick("rust", candidates)
+	if best == nil || best.AgentID != "B" {
+		t.Fatalf("want B (higher priority) to win, got %+v", best)
+	}
+}
+
 // TestCapabilityOverlapProportional verifies proportional chain coverage: a
 // partial cover scores proportionally, a full cover scores 1, no overlap
 // scores 0, and an unconstrained task is open.

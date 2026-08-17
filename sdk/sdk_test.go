@@ -481,23 +481,32 @@ func TestAgentRun_ToolCallEvents(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("Read error: %v", rerr)
 	}
-	if len(evs) != 2 {
-		t.Fatalf("expected 2 tool events, got %d", len(evs))
+	// The agent stream now carries one EventLLMCall phase event per iteration
+	// (thread-state observability) plus the tool call's Started/Completed:
+	// iter0 = [LLMCall, Started, Completed], iter1 (final) = [LLMCall].
+	if len(evs) != 4 {
+		t.Fatalf("expected 4 agent events (2 LLM phase + 2 tool), got %d", len(evs))
 	}
-	if evs[0].Type != ares_events.EventToolCallStarted {
-		t.Errorf("event[0].Type = %s, want %s", evs[0].Type, ares_events.EventToolCallStarted)
+	if evs[0].Type != ares_events.EventLLMCall {
+		t.Errorf("event[0].Type = %s, want %s", evs[0].Type, ares_events.EventLLMCall)
 	}
-	if evs[1].Type != ares_events.EventToolCallCompleted {
-		t.Errorf("event[1].Type = %s, want %s", evs[1].Type, ares_events.EventToolCallCompleted)
+	if evs[1].Type != ares_events.EventToolCallStarted {
+		t.Errorf("event[1].Type = %s, want %s", evs[1].Type, ares_events.EventToolCallStarted)
 	}
-	if evs[1].Version <= evs[0].Version {
-		t.Errorf("versions not increasing: %d then %d", evs[0].Version, evs[1].Version)
+	if evs[2].Type != ares_events.EventToolCallCompleted {
+		t.Errorf("event[2].Type = %s, want %s", evs[2].Type, ares_events.EventToolCallCompleted)
+	}
+	if evs[3].Type != ares_events.EventLLMCall {
+		t.Errorf("event[3].Type = %s, want %s", evs[3].Type, ares_events.EventLLMCall)
+	}
+	if evs[2].Version <= evs[1].Version {
+		t.Errorf("versions not increasing: %d then %d", evs[1].Version, evs[2].Version)
 	}
 	// The completed event payload carries the tool name and success flag.
-	if got := evs[1].Payload["tool"]; got != "calculator" {
+	if got := evs[2].Payload["tool"]; got != "calculator" {
 		t.Errorf("completed tool = %v, want %q", got, "calculator")
 	}
-	if got := evs[1].Payload["success"]; got != true {
+	if got := evs[2].Payload["success"]; got != true {
 		t.Errorf("completed success = %v, want true", got)
 	}
 }

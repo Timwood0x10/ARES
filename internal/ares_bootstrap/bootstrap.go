@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -90,6 +91,19 @@ type Components struct {
 	// SystemRegistry backs SystemRuntime with one entry per constructed
 	// component, enabling dependency-aware lookup and snapshot queries.
 	SystemRegistry *system_runtime.Registry
+	// GlobalTracer is the shared cross-Fabric tracer (v0.4.0 M4-1). It is
+	// created once in Bootstrap and shared by the dashboard (read side:
+	// /observability/spans) and the kernel wiring (write side: task/agent
+	// lifecycle hooks). Nil when the dashboard observability wiring is
+	// skipped.
+	GlobalTracer *aresrecovery.GlobalTracer
+	// EvolutionTracer is the shared evolution trajectory tracer (v0.4.0
+	// M3-1). Shared by the dashboard (read side: /evolution/trajectory) and
+	// the GA wiring (write side: Record after each generation).
+	EvolutionTracer *aresrecovery.EvolutionTracer
+	// FeedbackStore is the shared human-feedback store (v0.4.0 M3-2). Written
+	// by POST /evolution/feedback; read by the evolution scoring path.
+	FeedbackStore *aresrecovery.FeedbackStore
 	// bgGroup manages all Bootstrap background goroutines (distillation
 	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
 	// (F06: no bare goroutines). WaitBackground blocks on it during shutdown.
@@ -248,7 +262,16 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	subscribeDistillationEvents(ctx, &comp)
 
 	// 6. Dashboard
-	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr)
+	// The v0.4.0 M3/M4 observability components (trajectory tracer, feedback
+	// store, global tracer) are created ONCE here and shared: the dashboard
+	// reads them via the provider adapters, and the runtime write hooks (GA
+	// generation recording, task/agent lifecycle tracing) write into the same
+	// instances — so the dashboard endpoints show live data, not empty lists.
+	comp.EvolutionTracer = aresrecovery.NewEvolutionTracer()
+	comp.FeedbackStore = aresrecovery.NewFeedbackStore()
+	comp.GlobalTracer = aresrecovery.NewGlobalTracer()
+	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr,
+		comp.EvolutionTracer, comp.FeedbackStore, comp.GlobalTracer)
 	if err != nil {
 		runCleanups()
 		return nil, err

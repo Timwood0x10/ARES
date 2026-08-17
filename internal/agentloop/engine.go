@@ -260,6 +260,13 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 		e.trace("[ares:trace] %s → LLM call (iter %d, %d msgs, %d tools)",
 			req.AgentName, iter, len(st.messages), len(st.activeTools))
 
+		// Thread-state observability: emit the LLM-call phase so the Runtime
+		// (as the OS scheduling the agent thread) can observe which phase the
+		// thread is in — LLM reasoning vs tool execution vs completed. The
+		// tool-call phases are already emitted; this closes the gap so an
+		// observer sees the full thread timeline, not just tool boundaries.
+		e.emitLLMCall(ctx, req.AgentName, iter, len(st.messages), len(st.activeTools))
+
 		resp, err := e.LLM.Generate(ctx, &core.GenerateRequest{
 			Messages: st.messages,
 			Tools:    st.activeTools,
@@ -491,6 +498,33 @@ func toolNameInSet(name string, tools []core.Tool) bool {
 		}
 	}
 	return false
+}
+
+// emitLLMCall appends an LLM-call phase event to the agent-name stream
+// (thread-state observability): it marks the reasoning phase of the agent
+// thread, complementing the tool-call Started/Completed events. Payload
+// carries the iteration, message count and active tool count so an observer
+// can reconstruct the thread's context at the call boundary. No-op when
+// Events is nil. Emission is best-effort observability, not control flow: an
+// Append failure is logged but never aborts the agent loop.
+func (e *Engine) emitLLMCall(ctx context.Context, agentName string, iter, msgCount, toolCount int) {
+	if e.Events == nil {
+		return
+	}
+	if err := e.Events.Append(ctx, agentName, []*ares_events.Event{{
+		Type:     ares_events.EventLLMCall,
+		StreamID: agentName,
+		Payload: map[string]any{
+			"iter":       iter,
+			"msg_count":  msgCount,
+			"tool_count": toolCount,
+		},
+	}}, 0); err != nil {
+		log.Warn("emit llm call event failed",
+			"agent", agentName,
+			"iter", iter,
+			"error", err)
+	}
 }
 
 // emitToolEvent appends a single tool-call event (Started or Completed) to the

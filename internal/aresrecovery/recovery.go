@@ -20,6 +20,12 @@ import (
 type Recovery struct {
 	tasks  *taskfabric.Fabric
 	agents *agentfabric.Fabric
+	// spawner is the optional evolution-aware spawn gate (v0.4.0 M2-1). When
+	// set, every replacement spawn goes through it so the evolution policy
+	// (Enabled / MaxConcurrent / PreferredCapabilities) shapes restarts and
+	// checkpoint recovery too — "Evolution decides; Kernel enforces". Nil
+	// keeps the plain fabric spawn.
+	spawner *EvolutionAwareSpawner
 	// policy is the restart policy (max attempts, backoff).
 	policy RestartPolicy
 	// restarts tracks how many times each agent id has been restarted.
@@ -78,6 +84,28 @@ func (r *Recovery) WithClock(now func() time.Time) *Recovery {
 	return r
 }
 
+// WithSpawner injects the evolution-aware spawn gate (v0.4.0 M2-1). When set,
+// every replacement spawn in RecoverTaskCheckpoint / RestartAgent is routed
+// through it, so the evolution policy shapes restart and recovery spawns.
+// Returns the Recovery for chaining.
+func (r *Recovery) WithSpawner(s *EvolutionAwareSpawner) *Recovery {
+	r.spawner = s
+	return r
+}
+
+// spawnAgent creates a replacement agent, routing through the evolution
+// spawner when wired, otherwise spawning directly on the fabric. Recovery
+// spawns ALWAYS use the recovery path (SpawnForRecovery): they replace a
+// dead/expired agent and must not be blocked by the population cap — a
+// self-healing spawn rejected by MaxConcurrent would strand the task forever
+// (v0.4.0 M2-1; recovery bypasses quota, not the Enabled gate).
+func (r *Recovery) spawnAgent(ctx context.Context, spec agentfabric.SpawnSpec) (*agentfabric.Agent, error) {
+	if r.spawner != nil {
+		return r.spawner.SpawnForRecovery(ctx, spec)
+	}
+	return r.agents.Spawn(ctx, spec)
+}
+
 // RequeueExpiredLeases sweeps the Task Fabric for expired leases and returns
 // the number of tasks requeued to READY (design: lease expiry → requeue).
 // A dead agent's lease expires; the task becomes acquirable again. This is
@@ -120,7 +148,7 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 	// Spawn or reuse the replacement agent.
 	agentID := replacementID
 	if agentID == "" {
-		spawned, err := r.agents.Spawn(ctx, agentfabric.SpawnSpec{
+		spawned, err := r.spawnAgent(ctx, agentfabric.SpawnSpec{
 			Capabilities: []string{t.Capability},
 		})
 		if err != nil {
@@ -174,7 +202,7 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	r.restarts[deadAgentID] = attempts + 1
 	r.mu.Unlock()
 	// Spawn the replacement with the dead agent's capabilities.
-	a, err := r.agents.Spawn(ctx, agentfabric.SpawnSpec{
+	a, err := r.spawnAgent(ctx, agentfabric.SpawnSpec{
 		Capabilities: capabilities,
 	})
 	if err != nil {

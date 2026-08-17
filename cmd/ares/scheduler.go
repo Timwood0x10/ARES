@@ -56,15 +56,35 @@ type loadTracker struct {
 	inflight map[string]int // agentID → tasks currently acquired (not finalized)
 	done     map[string]int // agentID → tasks finalized
 	ok       map[string]int // agentID → tasks that succeeded
+	// priorities maps agentID → OS-thread-style scheduling priority (>= 0; 0 =
+	// normal). Injected once from the agent fabric at kernel wiring time
+	// (B2: thread priority), read by every Schedule candidate build.
+	priorities map[string]float64
 }
 
 // newLoadTracker creates an empty tracker.
 func newLoadTracker() *loadTracker {
 	return &loadTracker{
-		inflight: make(map[string]int),
-		done:     make(map[string]int),
-		ok:       make(map[string]int),
+		inflight:   make(map[string]int),
+		done:       make(map[string]int),
+		ok:         make(map[string]int),
+		priorities: make(map[string]float64),
 	}
+}
+
+// SetPriority records an agent's scheduling priority (B2: thread priority).
+// It is set once at wiring time from the agent fabric; 0/absent = normal.
+func (t *loadTracker) SetPriority(agentID string, priority float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.priorities[agentID] = priority
+}
+
+// Priority returns an agent's scheduling priority (0 = normal when unset).
+func (t *loadTracker) Priority(agentID string) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.priorities[agentID]
 }
 
 // begin records that agentID acquired a task.
@@ -219,6 +239,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 			Capabilities: []string{string(agent.Type())},
 			Load:         s.tracker.Load(agentID),
 			Confidence:   s.tracker.Confidence(agentID),
+			Priority:     s.tracker.Priority(agentID),
 		})
 	}
 	if len(cands) == 0 {

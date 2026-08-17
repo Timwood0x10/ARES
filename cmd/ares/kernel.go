@@ -155,6 +155,7 @@ func executeFabricTask(
 			Capabilities: []string{string(agent.Type())},
 			Load:         tracker.Load(agentID),
 			Confidence:   tracker.Confidence(agentID),
+			Priority:     tracker.Priority(agentID),
 		})
 	}
 	winner, epoch, err := fabric.Schedule(task.TaskID, cands, 5*time.Minute)
@@ -226,7 +227,12 @@ type kernelHandle struct {
 	agents    *agentfabric.Fabric
 	recovery  *aresrecovery.Recovery
 	executors map[string]sub.Agent
-	flipped   bool
+	// tracker is the shared per-agent load/confidence/priority source for the
+	// scheduler and the fabric dispatch path. It is created by the flip and
+	// retained so wireKernelLifecycle can inject agent priorities into it
+	// (B2: OS-thread-style thread priority).
+	tracker *loadTracker
+	flipped bool
 }
 
 // flipKernelToTaskFabric performs a live mid-run flip of the dispatch kernel
@@ -263,6 +269,7 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 	// One shared load tracker for the scheduler and the fabric dispatch path,
 	// so Load/Confidence stay consistent across both entry points (GAP4).
 	tracker := newLoadTracker()
+	kernel.tracker = tracker
 	enableKernelExecution(kernel.dual, kernel.fabric, kernel.executors, tracker)
 	kernel.flag.Set(agentipc.PolicyTaskFabric)
 	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
@@ -347,6 +354,26 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 	}
 	kernel.agents = agents
 	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
+	// Inject agent priorities into the shared tracker so the scheduler's
+	// candidate scoring sees them (B2: OS-thread-style thread priority).
+	// The fabric is empty at wiring time (recovery spawns happen later), so
+	// the sub-agent config is the authoritative production source: each
+	// sub-agent's cfg priority is injected under its ID. Fabric agents that
+	// already carry their own priority (recovery spawns) are injected too,
+	// overriding the config value for that agent.
+	if kernel.tracker != nil {
+		for _, sub := range cfg.Agents.Sub {
+			if sub.Priority > 0 {
+				kernel.tracker.SetPriority(sub.ID, sub.Priority)
+			}
+		}
+		for _, id := range agents.Agents() {
+			a, err := agents.Get(id)
+			if err == nil && a.Priority > 0 {
+				kernel.tracker.SetPriority(id, a.Priority)
+			}
+		}
+	}
 	log.Printf("kernel: lifecycle wired (agentfabric budget=%d resources, recovery max_restarts=%d)",
 		len(cfg.Kernel.Resources), policy.MaxRestarts)
 	// Event-driven recovery loop: consumes task lifecycle events and runs the
@@ -360,6 +387,102 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 // sweeps TTL-based lease expiry (lease expiry is detected by a sweep, not by
 // an event, so a periodic safety net is required alongside the event channel).
 const recoverySweepInterval = time.Second
+
+// quotaApplyInterval is how often the evolution-aware quota manager pushes
+// the current evolution resource budget into the Agent Fabric (v0.4.0 M2-2).
+// The GA evolution ticker runs on a 5-minute cadence, so a 1-minute apply
+// loop keeps a deployed budget effective within a reasonable window without
+// burning CPU.
+const quotaApplyInterval = time.Minute
+
+// runKernelQuotaLoop periodically applies the evolution resource policy to
+// the Agent Fabric's budget (v0.4.0 M2-2). It applies once at startup so an
+// already-deployed policy is effective immediately, then re-applies on a
+// fixed interval — Apply is idempotent (replaces the budget in place), so a
+// nil/no-op policy leaves the configured kernel resources untouched.
+//
+// Args:
+//   - ctx: stops the loop.
+//   - mgr: the quota manager (nil disables the loop).
+func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuotaManager) {
+	if mgr == nil {
+		return
+	}
+	apply := func(phase string) {
+		if err := mgr.Apply(ctx); err != nil {
+			log.Printf("kernel: quota apply (%s): %v", phase, err)
+		}
+	}
+	apply("startup")
+	ticker := time.NewTicker(quotaApplyInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			apply("tick")
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// runKernelTraceLoop feeds the shared GlobalTracer (v0.4.0 M4-1) from the
+// Task Fabric's lifecycle events on the shared EventStore: task creation,
+// ready, acquired, started, completed, failed. It is the write side of
+// /observability/spans — without it the dashboard's span endpoint returns an
+// empty list even though the tracer is wired. The task id is the event's
+// StreamID (taskfabric.Fabric.record appends with t.ID as the stream).
+//
+// Args:
+//   - ctx: stops the loop.
+//   - store: the EventStore to subscribe from (nil disables the loop).
+//   - tracer: the shared global tracer (nil disables the loop).
+func runKernelTraceLoop(ctx context.Context, store ares_events.EventStore, tracer *aresrecovery.GlobalTracer) {
+	if store == nil || tracer == nil {
+		return
+	}
+	ch, err := store.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
+			ares_events.EventTaskCreated,
+			ares_events.EventTaskReady,
+			ares_events.EventTaskAcquired,
+			ares_events.EventTaskStarted,
+			ares_events.EventTaskCompleted,
+			ares_events.EventTaskFailed,
+		},
+	})
+	if err != nil {
+		log.Printf("kernel trace loop: subscribe failed: %v", err)
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			if ev.StreamID == "" {
+				continue
+			}
+			switch ev.Type {
+			case ares_events.EventTaskCreated:
+				tracer.TraceTask(ev.StreamID, "created", ev.Payload)
+			case ares_events.EventTaskReady:
+				tracer.TraceTask(ev.StreamID, "ready", ev.Payload)
+			case ares_events.EventTaskAcquired:
+				tracer.TraceTask(ev.StreamID, "acquired", ev.Payload)
+			case ares_events.EventTaskStarted:
+				tracer.TraceTask(ev.StreamID, "started", ev.Payload)
+			case ares_events.EventTaskCompleted:
+				tracer.Close(ev.StreamID, "completed")
+			case ares_events.EventTaskFailed:
+				tracer.Close(ev.StreamID, "failed")
+			}
+		}
+	}
+}
 
 // runKernelRecoveryLoop is the Kernel-level event-driven recovery loop
 // (ares-runtime.md §13 + P5, code-review-2025-01-16 #2). It reacts to task
