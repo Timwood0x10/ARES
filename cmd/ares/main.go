@@ -24,6 +24,7 @@
 //	ARES demo                          Start console demo with simulated workload
 //	ARES version                       Show version
 //	ARES doctor                        Diagnose environment
+//	ARES status                        Show runtime status at a glance
 //	ARES init                          Scaffold new project
 //	ARES run                           Run agent from config file
 //	ARES bench                         Run benchmark

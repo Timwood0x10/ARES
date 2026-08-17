@@ -24,6 +24,11 @@ const (
 	defaultLeaderID = "leader-1"
 )
 
+// DefaultLeaderID returns the leader agent ID used by the minimal config
+// path. Exported so CLI tooling (e.g. `ares status`) can report the assembled
+// default team without duplicating the literal.
+func DefaultLeaderID() string { return defaultLeaderID }
+
 // DefaultArchiveDir is the default round-archive directory. Exported so the
 // minimal service path (api_impl) can reuse the exact same default without
 // duplicating the literal, keeping the two wiring paths in sync.

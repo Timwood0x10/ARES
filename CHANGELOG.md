@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wireSkillCatalog` seeds the memory registry, registers the five skill tools, and starts the `SkillOutcomeRecorder` against the serve event store.
 - `createAgents`/`createLeaderAgent` accept an optional `leader.ExperienceLocator` that pre-fills `task.UsedExperienceID` from the catalog's best matching skill — the record-side attribution for the feedback loop.
 
+### CLI (`cmd/ares`)
+
+- **`ares status`** (`status.go`): one-command runtime overview. It probes the dashboard API (system health + live agent fleet) when `ares serve` is up, resolves the effective configuration (config file vs minimal assembly, LLM endpoint, kernel policy, memory, agent team, storage) and reports the Capability Fabric assets (indexed skills + accumulated experience records). Text and `--json` output; exit code 0 healthy / 1 on warnings (e.g. memory disabled or runtime unreachable).
+- `ares_config.DefaultLeaderID` exported so CLI tooling can report the assembled default agent team without duplicating the literal.
+
 ## [0.3.0] - 2026-08-11
 
 > Candidate release closed-loop release: a stateful candidate pipeline with three-gate verification, a release-time LLM-driven regression gate, batch request merging, and multi-provider LLM support.
