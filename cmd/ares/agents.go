@@ -88,9 +88,10 @@ func createLeaderAgent(
 	subAgentConfigs := make([]leader.SubAgentConfig, len(cfg.Agents.Sub))
 	for i, s := range cfg.Agents.Sub {
 		subAgentConfigs[i] = leader.SubAgentConfig{
-			ID:       s.ID,
-			Type:     s.Type,
-			Triggers: s.Triggers,
+			ID:           s.ID,
+			Type:         s.Type,
+			Triggers:     s.Triggers,
+			Dependencies: append([]string(nil), s.Dependencies...),
 		}
 	}
 	// The skill locator pre-fills task.UsedExperienceID with the best-matching

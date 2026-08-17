@@ -16,12 +16,18 @@ import (
 // via the optional EventSink so the Runtime can rebuild agent state from the
 // event log (Evidence-Driven).
 type Fabric struct {
-	mu       sync.Mutex // guards agents, children, idSeq
+	mu       sync.Mutex // guards agents, children, idSeq, resourceBudget, allocated
 	agents   map[string]*Agent
 	children map[string][]string // parentID -> childIDs (Process Tree; provenance only)
 	idSeq    int
 	now      func() time.Time // injectable clock for deterministic tests
 	sink     EventSink        // optional lifecycle event sink (nil = in-memory only)
+
+	// resourceBudget is the P5 resource quota (name → max total across live
+	// agents); nil/empty disables admission control. allocated tracks the
+	// currently claimed amounts. Both are guarded by mu.
+	resourceBudget map[string]float64
+	allocated      map[string]float64
 }
 
 // EventSink receives lifecycle events. Implementations may persist them
@@ -57,9 +63,11 @@ const (
 // NewFabric creates an empty Agent Fabric.
 func NewFabric() *Fabric {
 	return &Fabric{
-		agents:   make(map[string]*Agent),
-		children: make(map[string][]string),
-		now:      time.Now,
+		agents:         make(map[string]*Agent),
+		children:       make(map[string][]string),
+		now:            time.Now,
+		resourceBudget: make(map[string]float64),
+		allocated:      make(map[string]float64),
 	}
 }
 

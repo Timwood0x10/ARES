@@ -47,6 +47,12 @@ type Agent struct {
 	// SpawnedAt is when the agent was created via spawn.
 	SpawnedAt time.Time
 
+	// resources is the agent's P5 resource claim (name → amount), recorded at
+	// spawn for quota accounting and released on kill/retire. Guarded by
+	// Fabric.mu (the registry lock), not a.mu: it is only read/written under
+	// the fabric lock during spawn/kill/retire.
+	resources map[string]float64
+
 	mu             sync.RWMutex // guards CognitiveState, PrivateContext, State, Load
 	cognitive      CognitiveState
 	privateContext map[string]any

@@ -31,8 +31,11 @@ type SpawnSpec struct {
 // does NOT form a permission hierarchy.
 //
 // The Kernel validates the spec (non-empty capabilities when a parent is
-// present; non-duplicate id) before creating the agent. Spawn does NOT
-// schedule the new agent — that is the Scheduler's job.
+// present; non-duplicate id) and the resource quota (P5: a spawn whose
+// requested resources exceed the remaining budget is rejected with
+// ErrResourceQuotaExceeded — the claim is recorded and released on
+// kill/retire) before creating the agent. Spawn does NOT schedule the new
+// agent — that is the Scheduler's job.
 //
 // Args:
 //   - ctx: for the event sink.
@@ -40,11 +43,12 @@ type SpawnSpec struct {
 //
 // Returns:
 //   - *Agent: the newly created agent in StateIdle.
-//   - error: ErrAgentExists / ErrInvalidSpawnSpec.
+//   - error: ErrAgentExists / ErrInvalidSpawnSpec / ErrResourceQuotaExceeded.
 func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 	if err := validateSpawnSpec(spec); err != nil {
 		return nil, err
 	}
+	claim := parseResourceClaim(spec.Resources)
 	f.mu.Lock()
 	id := spec.Identity
 	if id == "" {
@@ -54,16 +58,25 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		f.mu.Unlock()
 		return nil, ErrAgentExists
 	}
+	// P5 resource admission: reject before mutating any state so a failed
+	// spawn leaves the fabric untouched (code_rules_v2 §3.6: validate first,
+	// then mutate).
+	if !f.canAllocateLocked(claim) {
+		f.mu.Unlock()
+		return nil, ErrResourceQuotaExceeded
+	}
 	a := &Agent{
 		Identity:       id,
 		Capabilities:   append([]string(nil), spec.Capabilities...),
 		State:          StateIdle,
 		Parent:         spec.ParentID,
 		SpawnedAt:      f.now(),
+		resources:      claim,
 		taskContext:    cloneMap(spec.TaskContext),
 		privateContext: make(map[string]any),
 	}
 	f.agents[id] = a
+	f.allocateLocked(claim)
 	if spec.ParentID != "" {
 		f.children[spec.ParentID] = append(f.children[spec.ParentID], id)
 	}
@@ -71,6 +84,7 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 	f.record(ctx, a, EventAgentSpawned, map[string]any{
 		"parent_id":    spec.ParentID,
 		"capabilities": spec.Capabilities,
+		"resources":    spec.Resources,
 	})
 	return a, nil
 }
@@ -159,6 +173,7 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 // RUNNING — suspend it first. A retired agent cannot be resumed; its in-flight
 // tasks (if any) are reclaimed by the Runtime (P5 Recovery). Retiring a parent
 // does NOT kill its children (§13 invariant #1: parent death ≠ child death).
+// The agent's resource claim is released back to the quota.
 //
 // Args:
 //   - ctx: for the event sink.
@@ -181,6 +196,8 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 		f.mu.Unlock()
 		return ErrAgentRunning
 	}
+	f.releaseLocked(a.resources)
+	a.resources = nil
 	a.mu.Lock()
 	a.State = StateRetired
 	a.mu.Unlock()
@@ -193,7 +210,8 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 // Retire, Kill works on any state and is the crash path. The agent entry is
 // removed from the registry, but its children survive (§13: Parent 死 ≠
 // Child 死). Children's Parent field is NOT cleared — it stays as
-// provenance. Task reclaim is P5 Recovery.
+// provenance. Task reclaim is P5 Recovery. The agent's resource claim is
+// released back to the quota.
 //
 // Args:
 //   - ctx: for the event sink.
@@ -209,6 +227,8 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 		return ErrAgentNotFound
 	}
 	delete(f.agents, agentID)
+	f.releaseLocked(a.resources)
+	a.resources = nil
 	// NOTE: children of a killed agent survive. We do NOT clear their Parent
 	// field — it remains as provenance. The Process Tree edge is preserved
 	// in f.children so the parent's causal descendants are still discoverable

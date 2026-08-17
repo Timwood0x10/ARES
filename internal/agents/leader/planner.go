@@ -32,7 +32,12 @@ type SubAgentConfig struct {
 	ID       string
 	Type     string
 	Triggers []string
-	Priority int // Optional. Defaults to 1 if unset or <= 0.
+	// Dependencies lists other sub-agent IDs whose tasks must COMPLETE before
+	// this sub-agent's task runs (DAG wiring, ares-runtime.md §9: the Task
+	// Fabric's ReadyTasks gates on completed dependencies). Referenced by
+	// sub-agent ID; Plan resolves them to the generated task IDs.
+	Dependencies []string
+	Priority     int // Optional. Defaults to 1 if unset or <= 0.
 }
 
 // ExperienceLocator returns the best matching experience ID for a given input.
@@ -208,12 +213,50 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 		tasks = append(tasks, task)
 	}
 
-	// Limit total tasks to maxTasks.
+	// Limit total tasks to maxTasks first: dependency resolution after the
+	// truncation guarantees no retained task references a dropped task (a
+	// reference to a truncated task would otherwise deadlock the DAG gate).
 	if len(tasks) > p.maxTasks {
 		tasks = tasks[:p.maxTasks]
 	}
 
+	// Resolve sub-agent-ID dependencies to the generated task IDs so the Task
+	// Fabric's DAG gate (ReadyTasks) can reference concrete tasks. A reference
+	// to a sub-agent that produced no task (trigger-filtered out or truncated
+	// by maxTasks) is dropped: a missing dependency must not permanently block
+	// the task.
+	resolveTaskDependencies(tasks)
+
 	return tasks, nil
+}
+
+// resolveTaskDependencies rewrites each task's Context.Dependencies from
+// sub-agent IDs (as declared in SubAgentConfig) to the generated task IDs of
+// the tasks created for those sub-agents. Dependencies on sub-agents that were
+// not selected (no task created — trigger-filtered out or truncated by
+// maxTasks) are dropped so they cannot deadlock the DAG.
+func resolveTaskDependencies(tasks []*models.Task) {
+	taskIDBySubAgent := make(map[string]string, len(tasks))
+	for _, t := range tasks {
+		if t == nil || t.Payload == nil {
+			continue
+		}
+		if saID, ok := t.Payload["subAgentID"].(string); ok && saID != "" {
+			taskIDBySubAgent[saID] = t.TaskID
+		}
+	}
+	for _, t := range tasks {
+		if t == nil || t.Context == nil || len(t.Context.Dependencies) == 0 {
+			continue
+		}
+		resolved := make([]string, 0, len(t.Context.Dependencies))
+		for _, dep := range t.Context.Dependencies {
+			if tid, ok := taskIDBySubAgent[dep]; ok {
+				resolved = append(resolved, tid)
+			}
+		}
+		t.Context.Dependencies = resolved
+	}
 }
 
 // createTask builds a Task from a SubAgentConfig.
@@ -229,6 +272,11 @@ func (p *taskPlanner) createTask(sa SubAgentConfig, profile *models.UserProfile,
 		TaskType:    models.AgentType(sa.Type),
 		AgentType:   models.AgentType(sa.Type),
 		UserProfile: profile,
+		// Context.Dependencies carries the DAG edges (ares-runtime.md §9: the
+		// Task Fabric gates ReadyTasks on completed dependencies). The values
+		// are sub-agent IDs at creation time; Plan resolves them to the
+		// generated task IDs before returning.
+		Context: &models.TaskContext{Dependencies: append([]string(nil), sa.Dependencies...)},
 		// task_desc carries the original task input so the outcome recorder
 		// can derive a precise experience pattern (not just the agent type).
 		Payload:   map[string]any{"subAgentID": sa.ID, "task_desc": inputText},

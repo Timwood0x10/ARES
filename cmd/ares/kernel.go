@@ -6,6 +6,7 @@ import (
 	"log"
 	"maps"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentipc"
@@ -53,6 +54,12 @@ func wireKernelDispatcher(
 // would double-execute). Callers invoke this in the same critical section as
 // flag.Set(PolicyTaskFabric).
 //
+// Order matters for a live mid-run flip: shadow is disabled BEFORE the new
+// path is swapped in, so a dispatch racing the flip can never run legacy in
+// shadow against the executing new path (double execution). In-flight legacy
+// dispatches complete synchronously (Dispatch blocks until the legacy path
+// returns), so nothing is orphaned.
+//
 // Args:
 //   - kernel: the dual-track dispatcher assembled by wireKernelDispatcher.
 //   - fabric: the Task Fabric that executes tasks.
@@ -62,6 +69,9 @@ func enableKernelExecution(
 	fabric *taskfabric.Fabric,
 	executors map[string]sub.Agent,
 ) {
+	// Turn shadow off first: with the new path about to become live, running
+	// legacy in shadow would re-dispatch every task (double execution).
+	kernel.SetShadow(false)
 	// Replace the shadow-only new path with the executing one.
 	exec := &kernelFabricDispatcher{
 		candidates: kernelNewPathCandidates(kernel),
@@ -70,9 +80,6 @@ func enableKernelExecution(
 		},
 	}
 	kernel.SetNewPath(exec)
-	// Turn shadow off: with the new path live, running legacy in shadow would
-	// re-dispatch every task (double execution).
-	kernel.SetShadow(false)
 }
 
 // kernelNewPathCandidates extracts the candidate list from the kernel's new
@@ -87,6 +94,12 @@ func kernelNewPathCandidates(kernel *agentipc.DualTrackDispatcher) []subAgentCap
 // executeFabricTask runs the full Task Fabric path for one task: Create →
 // Schedule (capability-aware) → Acquire (lease + fencing) → RunQuantum (one
 // agent step) → finalize. It is the real (non-shadow) new-path body.
+//
+// DAG gate: a task whose dependencies are not all COMPLETED is created (so it
+// becomes visible to ReadyTasks) but not scheduled here — the kernelScheduler
+// drains ReadyTasks and picks it up once its dependencies complete
+// (ares-runtime.md §9: DAG as scheduling source). This keeps planner-declared
+// dependencies ordering the execution without a leader deciding "B now".
 func executeFabricTask(
 	ctx context.Context,
 	fabric *taskfabric.Fabric,
@@ -96,13 +109,27 @@ func executeFabricTask(
 	if fabric == nil {
 		return taskfabric.ErrTaskNotFound
 	}
+	var deps []string
+	if task.Context != nil {
+		deps = append([]string(nil), task.Context.Dependencies...)
+	}
 	if err := fabric.Create(&taskfabric.Task{
-		ID:          task.TaskID,
-		Capability:  string(task.AgentType),
-		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
-		Checkpoint:  nil,
+		ID:           task.TaskID,
+		Capability:   string(task.AgentType),
+		Dependencies: deps,
+		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 1},
+		Checkpoint:   nil,
 	}); err != nil && err != taskfabric.ErrTaskExists {
 		return fmt.Errorf("kernel fabric create: %w", err)
+	}
+	ready, err := fabric.IsReady(task.TaskID)
+	if err != nil {
+		return fmt.Errorf("kernel fabric isready: %w", err)
+	}
+	if !ready {
+		// Dependencies not satisfied: leave the task READY in the fabric for
+		// the kernelScheduler to execute when its dependencies complete.
+		return nil
 	}
 	cands := make([]taskfabric.Candidate, 0, len(executors))
 	for agentID, agent := range executors {
@@ -147,10 +174,56 @@ type subAgentCapability struct {
 
 // kernelHandle carries the assembled dual-track kernel from agent construction
 // to the serve wiring so the policy can be flipped and the Task Fabric
-// scheduler started per configuration.
+// scheduler started per configuration. mu guards the live-flip state: a mid-run
+// flip must start the scheduler exactly once and must not race a concurrent
+// flip or the wiring read.
 type kernelHandle struct {
 	dual *agentipc.DualTrackDispatcher
 	flag *agentipc.PolicyFlag
+
+	mu        sync.Mutex
+	fabric    *taskfabric.Fabric
+	executors map[string]sub.Agent
+	flipped   bool
+}
+
+// flipKernelToTaskFabric performs a live mid-run flip of the dispatch kernel
+// from the legacy leader policy to the Task Fabric policy (ares-runtime.md P4
+// D4: parallel + feature flag gradual cutover, live variant).
+//
+// Idempotent: a second call after the flip is a no-op — the scheduler keeps
+// draining the same fabric. Safe mid-run: the swap order inside
+// enableKernelExecution (shadow off → new path → flag) guarantees a dispatch
+// racing the flip never double-executes, and in-flight legacy dispatches
+// complete synchronously before this returns, so no task is orphaned.
+//
+// Args:
+//   - ctx: lifetime of the Task Fabric scheduler started by the flip.
+//   - kernel: the assembled kernel handle.
+//   - subAgents: the executor registry (agentID → sub.Agent) for the fabric
+//     path; the same registry the startup wiring uses.
+func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents []sub.Agent) {
+	if kernel == nil || kernel.dual == nil || kernel.flag == nil {
+		return
+	}
+	kernel.mu.Lock()
+	defer kernel.mu.Unlock()
+	if kernel.flipped {
+		return
+	}
+	kernel.fabric = taskfabric.NewFabric()
+	kernel.executors = make(map[string]sub.Agent, len(subAgents))
+	for _, a := range subAgents {
+		if a != nil {
+			kernel.executors[a.ID()] = a
+		}
+	}
+	enableKernelExecution(kernel.dual, kernel.fabric, kernel.executors)
+	kernel.flag.Set(agentipc.PolicyTaskFabric)
+	sched := NewKernelScheduler(kernel.fabric, kernel.executors)
+	kernel.flipped = true
+	log.Printf("kernel: live flip to policy=taskfabric, Task Fabric scheduler started (%d executors)", len(kernel.executors))
+	go sched.Run(ctx)
 }
 
 // wireKernelPolicy applies the configured dispatch policy to the assembled
@@ -160,12 +233,14 @@ type kernelHandle struct {
 //     scorer with the real Task Fabric executor (Create→Schedule→Acquire→
 //     RunQuantum via the sub-agent executors), turns shadow mode off (avoiding
 //     double execution) and starts the kernelScheduler to drain ReadyTasks.
+//     The flip is done through flipKernelToTaskFabric, the same idempotent
+//     path a live mid-run flip uses.
 //   - anything else (default "legacy"): keeps the leader path live; the Task
 //     Fabric path stays in shadow (scores only, Mismatches observable).
 //
-// The flip happens once at startup. A live mid-run flip is intentionally not
-// wired yet (ares-runtime.md P4 D4): it requires the scheduler to take over
-// from a running leader without orphaning in-flight tasks.
+// The config-driven flip runs at startup; flipKernelToTaskFabric can be called
+// again at runtime for a live mid-run flip without orphaning in-flight tasks
+// (ares-runtime.md P4 D4).
 func wireKernelPolicy(
 	ctx context.Context,
 	cfg *ares_config.Config,
@@ -179,22 +254,7 @@ func wireKernelPolicy(
 		log.Printf("kernel: policy=legacy (default), Task Fabric path in shadow (Mismatches observable)")
 		return
 	}
-	// Build the fabric and executor registry for the real path.
-	fabric := taskfabric.NewFabric()
-	executors := make(map[string]sub.Agent, len(subAgents))
-	for _, a := range subAgents {
-		if a != nil {
-			executors[a.ID()] = a
-		}
-	}
-	enableKernelExecution(kernel.dual, fabric, executors)
-	kernel.flag.Set(agentipc.PolicyTaskFabric)
-	// Start the no-leader scheduler: it drains ReadyTasks and runs them via
-	// the fabric path. The leader stays registered but stops receiving new
-	// dispatches (the kernel routes to the fabric path now).
-	sched := NewKernelScheduler(fabric, executors)
-	log.Printf("kernel: policy=taskfabric, Task Fabric scheduler started (%d executors)", len(executors))
-	go sched.Run(ctx)
+	flipKernelToTaskFabric(ctx, kernel, subAgents)
 }
 
 type kernelLegacyDispatcher struct {
@@ -274,6 +334,9 @@ func (d *kernelTaskDispatcher) Dispatch(ctx context.Context, tasks []*models.Tas
 			continue
 		}
 		payload := map[string]any{"agent_type": string(task.AgentType)}
+		if task.Context != nil && len(task.Context.Dependencies) > 0 {
+			payload["dependencies"] = append([]string(nil), task.Context.Dependencies...)
+		}
 		if task.Payload != nil {
 			maps.Copy(payload, task.Payload)
 		}
@@ -290,8 +353,9 @@ func (d *kernelTaskDispatcher) Dispatch(ctx context.Context, tasks []*models.Tas
 }
 
 // taskFromPayload builds a models.Task from the agentipc dispatch arguments.
-// The payload is a map carrying the task's AgentType (capability) and any
-// opaque user data; absent metadata falls back to a default type.
+// The payload is a map carrying the task's AgentType (capability), its DAG
+// dependencies (Task Fabric gate, ares-runtime.md §9) and any opaque user
+// data; absent metadata falls back to a default type.
 func taskFromPayload(taskID string, payload any) (*models.Task, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("task id required")
@@ -300,6 +364,20 @@ func taskFromPayload(taskID string, payload any) (*models.Task, error) {
 	if m, ok := payload.(map[string]any); ok {
 		if at, ok := m["agent_type"].(string); ok && at != "" {
 			task.AgentType = models.AgentType(at)
+		}
+		// Dependencies arrive as []string when the payload passes through the
+		// kernel dispatcher directly (kernelTaskDispatcher.Dispatch) and as
+		// []any after a JSON round-trip — accept both so the DAG gate is
+		// never silently dropped.
+		switch deps := m["dependencies"].(type) {
+		case []string:
+			task.Context.Dependencies = append(task.Context.Dependencies, deps...)
+		case []any:
+			for _, dep := range deps {
+				if s, ok := dep.(string); ok && s != "" {
+					task.Context.Dependencies = append(task.Context.Dependencies, s)
+				}
+			}
 		}
 		task.Payload = m
 	}

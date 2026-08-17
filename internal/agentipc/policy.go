@@ -102,18 +102,37 @@ func NewDualTrackDispatcher(flag *PolicyFlag, legacy, newPath Dispatcher, shadow
 // the inactive path also runs and the outcomes are compared; a mismatch is
 // counted and surfaced via Mismatches().
 func (d *DualTrackDispatcher) Dispatch(ctx context.Context, agentID, taskID string, payload any) error {
+	// Snapshot the mutable state (shadow + both paths) under mu: SetShadow /
+	// SetNewPath can flip concurrently with in-flight dispatches (live mid-run
+	// flip), so reading the fields directly would race. The snapshot makes a
+	// single dispatch observe one consistent configuration.
+	shadow, legacy, newPath := d.snapshot()
 	if d.flag.IsLegacy() {
-		err := d.legacy.D(ctx, agentID, taskID, payload)
-		if d.shadow {
-			d.compareShadow(ctx, agentID, taskID, payload, err)
+		if legacy == nil {
+			return ErrDispatcherNotRegistered
+		}
+		err := legacy.D(ctx, agentID, taskID, payload)
+		if shadow {
+			d.compareShadow(ctx, agentID, taskID, payload, err, newPath)
 		}
 		return err
 	}
-	err := d.newPath.D(ctx, agentID, taskID, payload)
-	if d.shadow {
-		d.compareShadow(ctx, agentID, taskID, payload, err)
+	if newPath == nil {
+		return ErrDispatcherNotRegistered
+	}
+	err := newPath.D(ctx, agentID, taskID, payload)
+	if shadow {
+		d.compareShadow(ctx, agentID, taskID, payload, err, legacy)
 	}
 	return err
+}
+
+// snapshot returns a consistent view of the dispatcher's mutable state
+// (shadow flag and both paths) under one mu acquisition.
+func (d *DualTrackDispatcher) snapshot() (shadow bool, legacy, newPath Dispatcher) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.shadow, d.legacy, d.newPath
 }
 
 // SetShadow turns shadow mode on or off at runtime. Shadow must be disabled
@@ -144,14 +163,14 @@ func (d *DualTrackDispatcher) NewPath() Dispatcher {
 	return d.newPath
 }
 
-// compareShadow runs the inactive path and compares the outcome.
-func (d *DualTrackDispatcher) compareShadow(ctx context.Context, agentID, taskID string, payload any, activeErr error) {
-	var shadowErr error
-	if d.flag.IsLegacy() {
-		shadowErr = d.newPath.D(ctx, agentID, taskID, payload)
-	} else {
-		shadowErr = d.legacy.D(ctx, agentID, taskID, payload)
+// compareShadow runs the inactive path (passed in from the dispatch snapshot)
+// and compares its outcome with the active path's. shadowDispatcher may be nil
+// (path not wired) — then no comparison is possible and nothing is counted.
+func (d *DualTrackDispatcher) compareShadow(ctx context.Context, agentID, taskID string, payload any, activeErr error, shadowDispatcher Dispatcher) {
+	if shadowDispatcher == nil {
+		return
 	}
+	shadowErr := shadowDispatcher.D(ctx, agentID, taskID, payload)
 	// Equivalence: both must agree on success/failure. Error text may differ;
 	// we compare only the presence of an error.
 	if (activeErr == nil) != (shadowErr == nil) {

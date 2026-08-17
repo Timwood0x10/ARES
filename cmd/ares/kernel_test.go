@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/agentipc"
@@ -147,6 +149,96 @@ func TestTaskFromPayload(t *testing.T) {
 	}
 }
 
+// TestTaskFromPayloadRestoresDependencies verifies the DAG wiring: the kernel
+// dispatch payload carries Context.Dependencies through the agentipc hop so
+// executeFabricTask can create the fabric task with its DAG edges.
+func TestTaskFromPayloadRestoresDependencies(t *testing.T) {
+	cases := []struct {
+		name string
+		// deps is the payload value for "dependencies": []string comes from
+		// kernelTaskDispatcher.Dispatch (in-memory hop), []any comes from a
+		// JSON round-trip.
+		deps any
+	}{
+		{name: "in-memory []string", deps: []string{"task_a", "task_b"}},
+		{name: "json-shaped []any", deps: []any{"task_a", "task_b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{
+				"agent_type":   "write",
+				"dependencies": tc.deps,
+			}
+			task, err := taskFromPayload("t1", payload)
+			if err != nil {
+				t.Fatalf("taskFromPayload: %v", err)
+			}
+			if !slicesEqual(task.Context.Dependencies, []string{"task_a", "task_b"}) {
+				t.Fatalf("dependencies not restored: %v", task.Context.Dependencies)
+			}
+		})
+	}
+}
+
+// TestKernelDAGGateDefersDependentTask verifies the DAG-as-scheduling-source
+// wiring in the kernel path (ares-runtime.md §9): a task whose dependencies
+// are not all COMPLETED is created but NOT executed by executeFabricTask; it
+// only becomes executable once its dependencies complete.
+func TestKernelDAGGateDefersDependentTask(t *testing.T) {
+	f := taskfabric.NewFabric()
+	research := &stubAgent{id: "research_01", typ: models.AgentType("research")}
+	writer := &stubAgent{id: "writer_01", typ: models.AgentType("write")}
+	executors := map[string]sub.Agent{"research_01": research, "writer_01": writer}
+	ctx := context.Background()
+
+	// Task B depends on task A; A is not created yet → B must not run.
+	b := models.NewTask("task_b", models.AgentType("write"), nil)
+	b.Context.Dependencies = []string{"task_a"}
+	if err := executeFabricTask(ctx, f, executors, b); err != nil {
+		t.Fatalf("executeFabricTask(B): %v", err)
+	}
+	if writer.executedCount() != 0 {
+		t.Fatal("B must not execute before its dependency A completes")
+	}
+	if got := f.ReadyTasks(); len(got) != 0 {
+		t.Fatalf("no task must be ready before A completes, got %v", got)
+	}
+
+	// Run A through the fabric path; it completes and unlocks B.
+	a := models.NewTask("task_a", models.AgentType("research"), nil)
+	if err := executeFabricTask(ctx, f, executors, a); err != nil {
+		t.Fatalf("executeFabricTask(A): %v", err)
+	}
+	if research.executedCount() != 1 {
+		t.Fatalf("A must execute once, got %d", research.executedCount())
+	}
+
+	// Now B is ready: ReadyTasks surfaces it and executing it completes.
+	ready := f.ReadyTasks()
+	if !slicesEqual(ready, []string{"task_b"}) {
+		t.Fatalf("B must be ready after A completes, got %v", ready)
+	}
+	if err := executeFabricTask(ctx, f, executors, b); err != nil {
+		t.Fatalf("executeFabricTask(B) after A ready: %v", err)
+	}
+	if writer.executedCount() != 1 {
+		t.Fatalf("B must execute exactly once, got %d", writer.executedCount())
+	}
+}
+
+// slicesEqual is a tiny helper comparing two string slices (test-only).
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestEnableKernelExecutionRunsFabricPath verifies that after flipping to the
 // Task Fabric policy, the kernel's new path executes the task through the
 // fabric (Create→Schedule→Acquire→RunQuantum) instead of scoring only, and
@@ -226,5 +318,134 @@ func TestWireKernelPolicyTaskFabric(t *testing.T) {
 	}
 	if executor.executedCount() == 0 {
 		t.Fatal("executor must have run via the fabric path")
+	}
+}
+
+// TestFlipKernelToTaskFabricLive verifies the live mid-run flip: a task
+// dispatched while the kernel is still on the legacy policy runs through the
+// leader; after flipKernelToTaskFabric, new dispatches run through the Task
+// Fabric path (flag flipped, shadow off, no double execution).
+func TestFlipKernelToTaskFabricLive(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := &kernelTaskDispatcher{kernel: kernel}
+
+	// Before the flip: legacy leader dispatches (shadow scoring observes).
+	if _, err := adapter.Dispatch(ctx, []*models.Task{
+		models.NewTask("t-legacy", models.AgentType("code"), nil),
+	}); err != nil {
+		t.Fatalf("legacy dispatch: %v", err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("legacy dispatcher must run before flip, got %d calls", inner.calls)
+	}
+	if executor.executedCount() != 0 {
+		t.Fatal("executor must not run before flip (shadow only)")
+	}
+
+	// Live flip: same entry a runtime operator would call.
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	if !flag.IsTaskFabric() {
+		t.Fatal("flag must be TaskFabric after live flip")
+	}
+
+	// After the flip: new dispatches run through the fabric path. The legacy
+	// dispatcher must NOT be called again (shadow off, no double execution).
+	if _, err := adapter.Dispatch(ctx, []*models.Task{
+		models.NewTask("t-fabric", models.AgentType("code"), nil),
+	}); err != nil {
+		t.Fatalf("fabric dispatch: %v", err)
+	}
+	if executor.executedCount() != 1 {
+		t.Fatalf("executor must run exactly once via fabric path, got %d", executor.executedCount())
+	}
+	if inner.calls != 1 {
+		t.Fatalf("legacy dispatcher must not run after flip, got %d calls", inner.calls)
+	}
+}
+
+// TestFlipKernelToTaskFabricIdempotent verifies a second live flip is a no-op:
+// no second scheduler is started (a second scheduler would double-drain
+// ReadyTasks and double-execute tasks).
+func TestFlipKernelToTaskFabricIdempotent(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	if !flag.IsTaskFabric() {
+		t.Fatal("flag must be TaskFabric after first flip")
+	}
+
+	// Second flip: no-op (kernel.flipped guard). Executing a task afterwards
+	// must run it exactly once — a second scheduler would double-execute.
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	adapter := &kernelTaskDispatcher{kernel: kernel}
+	if _, err := adapter.Dispatch(ctx, []*models.Task{
+		models.NewTask("t1", models.AgentType("code"), nil),
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if executor.executedCount() != 1 {
+		t.Fatalf("task must execute exactly once after double flip, got %d", executor.executedCount())
+	}
+}
+
+// TestDispatchRacingLiveFlipNoLoss verifies the mid-run flip boundary under
+// concurrency (-race): dispatches racing the flag flip are each executed
+// exactly once — via legacy before the flip, via the fabric executor after —
+// with no task lost and none double-executed.
+func TestDispatchRacingLiveFlipNoLoss(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := &kernelTaskDispatcher{kernel: kernel}
+
+	const total = 60
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	// Half the dispatches race the flip from concurrent goroutines.
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			if _, err := adapter.Dispatch(ctx, []*models.Task{
+				models.NewTask(fmt.Sprintf("t-%d", n), models.AgentType("code"), nil),
+			}); err != nil {
+				t.Errorf("dispatch %d: %v", n, err)
+			}
+		}(i)
+	}
+	close(start)
+	// Flip while dispatches are in flight.
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	wg.Wait()
+
+	// Every dispatch executed exactly once: legacy counts + fabric executions
+	// must equal the number of dispatched tasks (no loss, no double-run).
+	legacyCalls := inner.calls
+	fabricRuns := executor.executedCount()
+	if legacyCalls+fabricRuns != total {
+		t.Fatalf("execution loss or duplication: legacy=%d fabric=%d total=%d want %d",
+			legacyCalls, fabricRuns, legacyCalls+fabricRuns, total)
 	}
 }

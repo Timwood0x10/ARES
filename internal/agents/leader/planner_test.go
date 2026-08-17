@@ -18,6 +18,69 @@ func newTestProfile() *models.UserProfile {
 	}
 }
 
+// TestPlan_DependenciesResolvedToTaskIDs verifies the DAG wiring: a sub-agent
+// declaring Dependencies on other sub-agent IDs gets Context.Dependencies
+// rewritten from sub-agent IDs to the generated task IDs, so the Task Fabric's
+// ReadyTasks gate can reference concrete tasks (ares-runtime.md §9).
+func TestPlan_DependenciesResolvedToTaskIDs(t *testing.T) {
+	subAgents := []SubAgentConfig{
+		{ID: "research_01", Type: "research", Triggers: nil},
+		{ID: "writer_01", Type: "write", Triggers: nil, Dependencies: []string{"research_01"}},
+		{ID: "publisher_01", Type: "publish", Triggers: nil, Dependencies: []string{"research_01", "writer_01"}},
+	}
+	planner := NewTaskPlannerWithConfig(10, subAgents)
+
+	tasks, err := planner.Plan(context.Background(), newTestProfile(), "write and publish an article")
+
+	require.NoError(t, err)
+	require.Len(t, tasks, 3)
+
+	// Map sub-agent ID → task ID.
+	taskIDBySubAgent := make(map[string]string, len(tasks))
+	for _, task := range tasks {
+		saID, _ := task.Payload["subAgentID"].(string)
+		taskIDBySubAgent[saID] = task.TaskID
+	}
+
+	// research has no dependencies.
+	for _, task := range tasks {
+		if task.Payload["subAgentID"] == "research_01" {
+			require.Empty(t, task.Context.Dependencies, "research must have no dependencies")
+		}
+		// writer depends on research (resolved to research's task ID).
+		if task.Payload["subAgentID"] == "writer_01" {
+			require.Equal(t, []string{taskIDBySubAgent["research_01"]}, task.Context.Dependencies,
+				"writer must depend on research's task ID")
+		}
+		// publisher depends on research + writer (both resolved to task IDs).
+		if task.Payload["subAgentID"] == "publisher_01" {
+			require.ElementsMatch(t, []string{taskIDBySubAgent["research_01"], taskIDBySubAgent["writer_01"]},
+				task.Context.Dependencies, "publisher must depend on research and writer task IDs")
+		}
+	}
+}
+
+// TestPlan_DependencyOnUnselectedSubAgentDropped verifies that a dependency on
+// a sub-agent that produced no task (trigger-filtered out) is dropped instead
+// of blocking the DAG forever.
+func TestPlan_DependencyOnUnselectedSubAgentDropped(t *testing.T) {
+	subAgents := []SubAgentConfig{
+		{ID: "research_01", Type: "research", Triggers: []string{"research"}},
+		{ID: "writer_01", Type: "write", Triggers: nil, Dependencies: []string{"research_01", "missing_01"}},
+	}
+	planner := NewTaskPlannerWithConfig(10, subAgents)
+
+	// Input does NOT match research's trigger: only writer gets a task.
+	tasks, err := planner.Plan(context.Background(), newTestProfile(), "write an article")
+
+	require.NoError(t, err)
+	require.Len(t, tasks, 1, "only writer should be selected (research trigger not matched)")
+	require.Equal(t, "writer_01", tasks[0].Payload["subAgentID"])
+	// Both the unselected research and the unknown "missing_01" are dropped;
+	// writer must not deadlock.
+	require.Empty(t, tasks[0].Context.Dependencies, "dependencies on unselected sub-agents must be dropped")
+}
+
 // TestPlan_NoSubAgents_BackwardCompat verifies that when no subAgents are
 // configured, Plan returns a single default task with AgentTypeTop.
 func TestPlan_NoSubAgents_BackwardCompat(t *testing.T) {
@@ -252,4 +315,46 @@ func TestPlan_TriggerCaseInsensitive(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tasks, 1, "trigger matching should be case-insensitive")
 	assert.Equal(t, models.AgentType("food"), tasks[0].AgentType)
+}
+
+// TestPlan_DependenciesAfterTruncation verifies the DAG wiring under the
+// maxTasks truncation: a retained task whose declared dependency was truncated
+// must have that dependency DROPPED (not left referencing a task that does not
+// exist). A dangling reference would permanently block the Task Fabric's
+// ReadyTasks gate — a deadlock (ares-runtime.md §9).
+func TestPlan_DependenciesAfterTruncation(t *testing.T) {
+	// 6 sub-agents in reverse dependency order: the first three (f, e, d) are
+	// kept by maxTasks=3, and d depends on c — which is truncated. After
+	// resolution d must carry NO dependencies.
+	subAgents := []SubAgentConfig{
+		{ID: "f", Type: "type_f", Triggers: nil, Dependencies: []string{"e"}},
+		{ID: "e", Type: "type_e", Triggers: nil, Dependencies: []string{"d"}},
+		{ID: "d", Type: "type_d", Triggers: nil, Dependencies: []string{"c"}},
+		{ID: "c", Type: "type_c", Triggers: nil, Dependencies: []string{"b"}},
+		{ID: "b", Type: "type_b", Triggers: nil, Dependencies: []string{"a"}},
+		{ID: "a", Type: "type_a", Triggers: nil},
+	}
+	planner := NewTaskPlannerWithConfig(3, subAgents)
+
+	tasks, err := planner.Plan(context.Background(), newTestProfile(), "plan all")
+	require.NoError(t, err)
+	require.Len(t, tasks, 3, "maxTasks=3 must truncate to 3 tasks")
+
+	byType := make(map[string]*models.Task, len(tasks))
+	for _, tk := range tasks {
+		byType[string(tk.AgentType)] = tk
+	}
+
+	// f → e must still be wired (both retained).
+	f, e := byType["type_f"], byType["type_e"]
+	require.NotNil(t, f, "task f must exist")
+	require.NotNil(t, e, "task e must exist")
+	assert.Equal(t, []string{e.TaskID}, f.Context.Dependencies,
+		"f must depend on the retained e task")
+
+	// d → c was truncated: the dangling edge must be dropped, not kept.
+	d := byType["type_d"]
+	require.NotNil(t, d, "task d must exist")
+	assert.Empty(t, d.Context.Dependencies,
+		"dependency on a truncated task must be dropped (no dangling reference)")
 }

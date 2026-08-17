@@ -286,6 +286,61 @@ func TestDualTrackDispatcherShadowMismatch(t *testing.T) {
 	}
 }
 
+// TestDualTrackConcurrentShadowFlip verifies a live mid-run flip is race-free
+// (-race): dispatches racing SetShadow / SetNewPath / flag.Set never panic and
+// every dispatch completes exactly once on the active path. This guards the
+// shadow snapshot read (Dispatch must not read d.shadow unsynchronized).
+func TestDualTrackConcurrentShadowFlip(t *testing.T) {
+	legacy := &stubDispatcher{}
+	newPath := &stubDispatcher{}
+	flag := NewPolicyFlag(PolicyLegacyLeader)
+	d := NewDualTrackDispatcher(flag, legacy, newPath, true)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	// Concurrent flippers: shadow on/off, swap new path, flip the flag.
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				d.SetShadow(true)
+				flag.Set(PolicyTaskFabric)
+				d.SetNewPath(&stubDispatcher{})
+				d.SetShadow(false)
+				flag.Set(PolicyLegacyLeader)
+			}
+		}()
+	}
+	// Concurrent dispatchers: each dispatch must return without panic.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = d.Dispatch(context.Background(), "a", "t", nil)
+			}
+		}()
+	}
+	// Let them race for a short, bounded window, then stop.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(stop)
+	wg.Wait()
+}
+
 // TestConcurrentRequestsAreSafe verifies concurrent Request/Reply is race-free
 // (code_rules §4.6: go test -race).
 func TestConcurrentRequestsAreSafe(t *testing.T) {

@@ -135,6 +135,9 @@ type SubAgentConfig struct {
 	Timeout    int      `yaml:"timeout"`  // seconds
 	Model      string   `yaml:"model"`    // Model for this agent (overrides global LLM model)
 	Provider   string   `yaml:"provider"` // Provider for this agent (overrides global LLM provider)
+	// Dependencies lists other sub-agent IDs whose tasks must COMPLETE before
+	// this sub-agent's task runs (Task Fabric DAG gate, ares-runtime.md §9).
+	Dependencies []string `yaml:"dependencies"`
 }
 
 // PromptsConfig holds prompt templates.

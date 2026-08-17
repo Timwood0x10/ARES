@@ -6,8 +6,8 @@
 
 ## 实施进度矩阵（2026-08-16 更新）
 
-> 与代码实际进度对齐。P0-P5 积木层全部已实现并有测试守护；剩余为"生产接线"层
-> （cmd/ares Kernel 组装入口、planner→DAG 接线、P5 资源强制）。
+> 与代码实际进度对齐。P0-P5 积木层与生产接线层（cmd/ares Kernel 组装入口、
+> planner→DAG 接线、live mid-run flip、P5 资源强制）全部已实现并有测试守护。
 
 | 阶段 | 内容 | 实现包 | 完成度 | 说明 |
 |------|------|--------|--------|------|
@@ -15,15 +15,15 @@
 | **P1** | Quantum + Capability Scheduler + Work Stealing + ConfidenceSource | `internal/taskfabric/` + `internal/ares_skills/experience_confidence.go` | ✅ 100% | RunQuantum / Schedule(Score=cap×load×conf) / Steal / Skill-first 接线 |
 | **P2** | DAG 调度源 + 抢占 + 事件升级全量 | `internal/taskfabric/` + `internal/ares_events/` | ✅ 100% | IsReady/ReadyTasks / Preempt(priority+cooperative) / task.* 事件持久化 |
 | **P3** | Agent Fabric（spawn/suspend/resume/retire/kill/recover + Process Tree + Cognitive State + Context 三层） | `internal/agentfabric/` | ✅ 100% | spawn=provenance 非 hierarchy；Parent 死 ≠ Child 死 |
-| **P4** | IPC 升级（Send/Request/Reply/Delegate/Handoff/Subscribe）+ 双轨迁移（PolicyFlag + DualTrackDispatcher） | `internal/agentipc/` | ✅ 90% | peer 原语全齐；**cmd/ares 接线进行中**（本日 Kernel 组装入口） |
-| **P5** | Recovery + Chaos + Evolution | `internal/aresrecovery/` | ✅ 80% | RequeueExpiredLeases/RecoverTaskCheckpoint/RestartAgent/FullRecoveryChain；**资源强制（cgroup 级）未做** |
+| **P4** | IPC 升级（Send/Request/Reply/Delegate/Handoff/Subscribe）+ 双轨迁移（PolicyFlag + DualTrackDispatcher） | `internal/agentipc/` | ✅ 100% | peer 原语全齐；cmd/ares Kernel 组装入口 + live mid-run flip 均已接线 |
+| **P5** | Recovery + Chaos + Evolution | `internal/aresrecovery/` | ✅ 100% | RequeueExpiredLeases/RecoverTaskCheckpoint/RestartAgent/FullRecoveryChain + 资源强制（agentfabric spawn 配额校验） |
 | **§8** | Capability-aware scheduling 与 Skill-first 打通 | `internal/ares_skills/experience_confidence.go` | ✅ 100% | Experience BestMatch → ConfidenceSource，编译期断言 |
 
 **接线状态（0.3.0 生产路径）**：
 - 🟢 **cmd/ares Kernel 组装入口**：`wireKernelDispatcher` 组装 `PolicyFlag + DualTrackDispatcher`（shadow=on）并包进 leader 实际 dispatcher——**shadow 在生产路径转起来**（Mismatches 可观测）；**flag 翻转已接线**：`cfg.Kernel.Policy="taskfabric"` 时 `wireKernelPolicy` 翻转 flag、把 shadow 评分器替换为真实 `executeFabricTask`（Create→Schedule→Acquire→RunQuantum）、关闭 shadow（防双跑）、启动 `kernelScheduler` 接管 `ReadyTasks` 消费。`agentipc` 新增 `SetShadow`/`SetNewPath`/`NewPath` 支持运行时切换。config `kernel.policy` 默认 `legacy`（安全）。**已实现、测试覆盖（-race）**。`make fmt && make check` 全绿。
-- 🟡 **planner → DAG 接线**：D3 决策 P1/P2 用 `Task.Dependencies` 手工构造；planner/live DAG 接入仍待做（leader 仍负责 plan）。
-- 🟡 **live mid-run flip**：flag 翻转目前仅启动时生效（config 驱动）；运行中翻转（不 orphan 在途任务）未接线。
-- 🟡 **P5 资源强制**：lease/恢复链路齐，但 cgroup/资源配额强制（spawn 校验 quota/resource）未实现。
+- 🟢 **planner → DAG 接线**：`SubAgentConfig.Dependencies`（config `subagents[].dependencies`）→ leader planner 产出 `models.Task.Context.Dependencies`（sub-agent ID 解析为 task ID，未选中依赖丢弃防死锁）→ kernel 派发 payload 透传 → `executeFabricTask` 带依赖 Create + `IsReady` 门控（依赖未完成只注册不执行，`kernelScheduler` 的 `ReadyTasks` 在依赖完成后接管）——DAG 成为真实调度源，leader 不再决定 "B now"。
+- 🟢 **live mid-run flip**：`flipKernelToTaskFabric(ctx, kernel, subAgents)` 幂等入口——关 shadow → 换真实执行器 → 翻转 flag → 启动 scheduler；顺序保证翻转竞态无双跑、在途 legacy 派发同步完成不 orphan（测试：dispatch 与翻转并发 60 任务零丢失零双跑，-race）。`DualTrackDispatcher.Dispatch` 改快照读（修 `SetShadow`/`SetNewPath` 并发竞态）。
+- 🟢 **P5 资源强制**：`agentfabric` 新增 `WithResourceBudget` 命名配额（如 `{"cpu": 8}`），`Spawn` 准入校验（超配额 `ErrResourceQuotaExceeded`，先校验后落盘），`Kill`/`Retire` 释放配额（双重释放幂等），并发 spawn 不超卖（-race 测试）。
 - 🟢 全部积木包测试全绿：`go test ./internal/taskfabric/ ./internal/agentfabric/ ./internal/agentipc/ ./internal/aresrecovery/ ./internal/ares_skills/`。
 
 ---

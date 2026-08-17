@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ares status`** (`status.go`): one-command runtime overview. It probes the dashboard API (system health + live agent fleet) when `ares serve` is up, resolves the effective configuration (config file vs minimal assembly, LLM endpoint, kernel policy, memory, agent team, storage) and reports the Capability Fabric assets (indexed skills + accumulated experience records). Text and `--json` output; exit code 0 healthy / 1 on warnings (e.g. memory disabled or runtime unreachable).
 - `ares_config.DefaultLeaderID` exported so CLI tooling can report the assembled default agent team without duplicating the literal.
 
+### Fixed
+
+- **Kernel DAG wiring** (`cmd/ares/kernel.go`): `taskFromPayload` now accepts `dependencies` as both `[]string` (in-memory hop via `kernelTaskDispatcher.Dispatch`) and `[]any` (JSON round-trip). Previously the `[]any`-only assertion silently dropped every DAG edge on the Task Fabric path, defeating the `IsReady` gate (ares-runtime.md §9). Test extended to cover both shapes.
+- **Planner DAG truncation** (`internal/agents/leader/planner.go`): dependency resolution now runs *after* the `maxTasks` truncation. Previously a retained task could depend on a truncated task — a dangling reference that permanently blocked the Task Fabric's `IsReady` gate (deadlock). Regression test `TestPlan_DependenciesAfterTruncation` covers the truncation-dependency interplay.
+
 ## [0.3.0] - 2026-08-11
 
 > Candidate release closed-loop release: a stateful candidate pipeline with three-gate verification, a release-time LLM-driven regression gate, batch request merging, and multi-provider LLM support.
