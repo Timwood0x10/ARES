@@ -143,8 +143,7 @@ type Distiller struct {
 	repo        ExperienceRepository
 	expStore    ExperienceStore // Optional: writes distilled memories to experience store
 	metrics     atomicMetrics   // Thread-safe atomic counters
-	distillWg   sync.WaitGroup  // Tracks event subscription goroutines
-	distillEg   *errgroup.Group // Manages async distillation goroutines
+	distillEg   *errgroup.Group // Manages the event-subscription goroutine (lifecycle via ctx)
 
 	// OnTaskCompleted is called when a task completion event is received.
 	// If set, the distiller invokes it with the task ID from the event payload.

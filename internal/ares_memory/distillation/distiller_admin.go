@@ -65,10 +65,11 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 
 	log.InfoContext(ctx, "[Memory Distillation] Event subscription started")
 
-	// Track goroutine lifecycle so callers can wait for drain.
-	d.distillWg.Add(1)
+	// Lifecycle is ctx-driven: the goroutine exits on ctx cancellation or
+	// channel close. The errgroup holds it so a panic in the subscription
+	// loop surfaces through the group instead of killing the process
+	// (code_rules_v2 §4.2).
 	d.distillEg.Go(func() error {
-		defer d.distillWg.Done()
 		var roundCounter int
 		for {
 			select {

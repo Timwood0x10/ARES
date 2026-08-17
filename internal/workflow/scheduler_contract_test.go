@@ -125,3 +125,80 @@ func TestScheduler_Contract_MergeForwardsEveryExecutionArrival(t *testing.T) {
 		t.Fatalf("second sink token = %q, want sink", got)
 	}
 }
+
+// TestScheduler_Contract_OnNodeFailedPropagatesToDataDependents locks the C4
+// failure-propagation semantics (code-review-2025-01-16): when a node fails,
+// its data-dependency downstream must NOT stay invisibly stuck — it is recorded
+// in Pending() and never becomes schedulable. The failure cascades through
+// markInactive (A→B→C), so no node in the failed chain enters the ready queue.
+func TestScheduler_Contract_OnNodeFailedPropagatesToDataDependents(t *testing.T) {
+	t.Parallel()
+
+	spec := NewWorkflow("fail-propagation").
+		AddNode(NodeSpec{ID: "a"}).
+		AddNode(NodeSpec{ID: "b"}).
+		AddNode(NodeSpec{ID: "c"}).
+		AddEdge(EdgeSpec{From: "a", To: "b", Kind: EdgeDataDependency}).
+		AddEdge(EdgeSpec{From: "b", To: "c", Kind: EdgeDataDependency}).
+		WithEntry("a")
+
+	scheduler, err := NewScheduler(spec, ScheduleFIFO)
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+	if got := scheduler.Next(); got != "a" {
+		t.Fatalf("first node = %q, want a", got)
+	}
+
+	// a fails → b must be recorded as pending (observable, not stuck) and the
+	// whole downstream chain must stay out of the ready queue.
+	scheduler.OnNodeFailed("a")
+
+	pending := scheduler.Pending()
+	found := false
+	for _, id := range pending {
+		if id == "b" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("b must be in Pending() after a's failure, got %v", pending)
+	}
+	if got := scheduler.Next(); got != "" {
+		t.Fatalf("no node must be ready after failure propagation, got %q", got)
+	}
+}
+
+// TestScheduler_Contract_FailureDoesNotDeadlockJoinAll locks the C4 follow-up:
+// a JoinAll node waits only for ACTIVATED predecessors (failed edges become
+// inactive). When one predecessor completes and another fails, the join is
+// still scheduled — failure prunes the dead edge instead of deadlocking the
+// workflow (complements TestScheduler_Contract_JoinAllWaitsOnlyForActivatedPredecessors).
+func TestScheduler_Contract_FailureDoesNotDeadlockJoinAll(t *testing.T) {
+	t.Parallel()
+
+	spec := NewWorkflow("fail-join-all").
+		AddNode(NodeSpec{ID: "left"}).
+		AddNode(NodeSpec{ID: "right"}).
+		AddNode(NodeSpec{ID: "join", Join: JoinAll}).
+		AddEdge(EdgeSpec{From: "left", To: "join", Kind: EdgeDataDependency}).
+		AddEdge(EdgeSpec{From: "right", To: "join", Kind: EdgeDataDependency}).
+		WithEntry("left", "right")
+
+	scheduler, err := NewScheduler(spec, ScheduleFIFO)
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+	_ = scheduler.Next()
+	_ = scheduler.Next()
+
+	// left completes; right fails. JoinAll waits only for activated
+	// predecessors — the failed right edge is inactive, so join still runs.
+	scheduler.OnNodeCompleted("left")
+	scheduler.OnNodeFailed("right")
+
+	if got := scheduler.Next(); got != "join" {
+		t.Fatalf("join must still be schedulable after one predecessor fails, got %q", got)
+	}
+}
