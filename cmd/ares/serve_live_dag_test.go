@@ -6,6 +6,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -78,4 +81,25 @@ func TestBuildLeaderLiveDAG_UnnamedSubAgent_FailsLoud(t *testing.T) {
 	_, err := buildLeaderLiveDAG(cfg)
 	require.Error(t, err, "unnamed sub-agent must be rejected")
 	assert.Contains(t, err.Error(), "empty ID and empty type")
+}
+
+// TestErrNoLLMAdapterSentinel verifies the sentinel introduced for the LLM
+// fallback chain is detectable with errors.Is and does not lose the wrapped
+// underlying error. This guards the "no error code" observation from the
+// v0.4.0 code review: callers can now distinguish "no LLM available" from
+// other serve failures via errors.Is(err, ErrNoLLMAdapter).
+func TestErrNoLLMAdapterSentinel(t *testing.T) {
+	base := errors.New("ollama dial: connection refused")
+	wrapped := fmt.Errorf("no LLM adapter available: %w (last attempt: %v)", ErrNoLLMAdapter, base)
+
+	if !errors.Is(wrapped, ErrNoLLMAdapter) {
+		t.Fatalf("errors.Is must match ErrNoLLMAdapter, got %v", wrapped)
+	}
+	if !strings.Contains(wrapped.Error(), base.Error()) {
+		t.Fatalf("wrapped error must retain the underlying error detail, got %v", wrapped)
+	}
+	// The sentinel itself is not the wrapped error (identity preserved).
+	if errors.Is(base, ErrNoLLMAdapter) {
+		t.Fatal("a plain adapter error must not match the sentinel")
+	}
 }

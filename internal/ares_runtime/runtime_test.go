@@ -1504,3 +1504,97 @@ func TestManager_GetAgent_AfterRestore(t *testing.T) {
 	require.NotNil(t, newAgent)
 	assert.Equal(t, newAgent, chaosUnwrap(gotAfter))
 }
+
+// deadHeartbeatAgent implements base.Agent AND base.Heartbeater with
+// IsAlive()==false, so the runtime health check detects it as dead and routes
+// it through the resurrection path (NotifyAgentDead).
+type deadHeartbeatAgent struct {
+	*mockAgent
+}
+
+// Heartbeat satisfies base.Heartbeater; a no-op for this mock.
+func (a *deadHeartbeatAgent) Heartbeat(context.Context) error { return nil }
+
+// IsAlive is the Heartbeater liveness probe; always false for this mock.
+func (a *deadHeartbeatAgent) IsAlive() bool { return false }
+
+// aliveHeartbeatAgent is the healthy counterpart: it implements Heartbeater
+// and reports alive, so the health check must NOT resurrect it.
+type aliveHeartbeatAgent struct {
+	*mockAgent
+}
+
+// Heartbeat satisfies base.Heartbeater; a no-op for this mock.
+func (a *aliveHeartbeatAgent) Heartbeat(context.Context) error { return nil }
+
+// IsAlive reports the agent as healthy.
+func (a *aliveHeartbeatAgent) IsAlive() bool { return true }
+
+// TestManager_HealthCheck_DetectsDeadHeartbeatAndResurrects is the health-poll
+// coverage gap from the v0.4.0 code review (observation 5): the background
+// health check must detect a dead heartbeater and trigger resurrection via
+// NotifyAgentDead → factory. It exercises healthCheck() directly rather than
+// waiting on the ticker, keeping the test fast and deterministic.
+func TestManager_HealthCheck_DetectsDeadHeartbeatAndResurrects(t *testing.T) {
+	factory := newMockFactory()
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, m.Start(ctx))
+
+	// A heartbeater agent that reports dead. The factory must be registered
+	// so NotifyAgentDead can resurrect through it.
+	dead := &deadHeartbeatAgent{mockAgent: newMockAgent("dead-hb")}
+	m.RegisterAgent(dead, factory.create())
+	require.NoError(t, m.StartAgent(ctx, dead))
+	time.Sleep(50 * time.Millisecond)
+
+	// Sanity: the agent is registered as active before the health check.
+	stats := m.Stats()
+	assert.Equal(t, 1, stats.ActiveAgents)
+
+	// Run one health check pass directly.
+	m.healthCheck()
+
+	// Resurrection is async (scheduleResurrection runs on the runtime errgroup
+	// with an immediate first attempt); poll the factory until it fires or we
+	// time out, so the test stays deterministic without over-sleeping.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		factory.mu.Lock()
+		callCount := len(factory.agents)
+		factory.mu.Unlock()
+		if callCount >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dead heartbeater was not resurrected within 3s (factory calls=0)")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestManager_HealthCheck_IgnoresHealthyHeartbeat verifies the health check
+// does not resurrect a heartbeater that reports alive.
+func TestManager_HealthCheck_IgnoresHealthyHeartbeat(t *testing.T) {
+	factory := newMockFactory()
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, m.Start(ctx))
+
+	// A Heartbeater agent that reports alive must not be resurrected.
+	alive := &aliveHeartbeatAgent{mockAgent: newMockAgent("healthy")}
+	m.RegisterAgent(alive, factory.create())
+	require.NoError(t, m.StartAgent(ctx, alive))
+	time.Sleep(50 * time.Millisecond)
+
+	m.healthCheck()
+	time.Sleep(200 * time.Millisecond)
+
+	factory.mu.Lock()
+	callCount := len(factory.agents)
+	factory.mu.Unlock()
+	assert.Equal(t, 0, callCount,
+		"healthy heartbeaters must not be resurrected")
+}
