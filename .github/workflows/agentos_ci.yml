@@ -1,0 +1,43 @@
+name: AgentOS Chaos CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Chaos-recovery e2e: exercises the arena→injector→resurrection wiring and
+  # the agent-pool benchmarks at scale. This is the P2 milestone's
+  # "fault injection + recovery" gate: it runs on every PR so a regression in
+  # the recovery path fails CI immediately.
+  chaos-e2e:
+    name: Chaos recovery e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Chaos recovery e2e (arena + runtime resurrection)
+        run: go test -race -count=1 -timeout=120s -run 'TestE2EChaosRecovery' ./internal/ares_arena/...
+
+      - name: Agent-pool benchmarks (sanity, short benchtime)
+        run: go test -bench='BenchmarkAgentPool' -benchtime=10x -run='^$' ./internal/ares_runtime/... 2>&1 | tee /tmp/bench.txt
+
+      - name: Upload benchmark sanity output
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentpool-bench
+          path: /tmp/bench.txt
+
+      - name: Report benchmark
+        run: grep -E "BenchmarkAgentPool" /tmp/bench.txt | tail -20

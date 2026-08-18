@@ -163,19 +163,50 @@ go build -o bin/ares ./cmd/ares
 > 只列 🔲 缺口；✅/⚠️ 项按「现状」中的证据已核实为已实现，**不要重复实现**。
 > 优先级遵循项目自身纪律（`ares-runtime.md` §11 不变量 #10）：没有真实消费者就不提前设计。
 
-### P0 — 安全层（M7，dashboard/arena 暴露面真实存在，先做）
-- [ ] 引入 `golang-jwt/jwt`，为 `/console/`、`/observability/*`、arena 等 HTTP 端点加 JWT 校验中间件（`monitoring/httputil/jwt.go`）。
-- [ ] 定义角色常量（`admin`/`operator`/`agent`）并映射到 API 权限，默认 deny。
-- [ ] 最小策略引擎（`security/policy.go`）+ 审计日志。
+### P0 — 安全层（M7，dashboard/arena 暴露面真实存在，先做）— ✅ 已实现（2026-08-18）
+- [x] JWT 校验中间件（`internal/ares_security/jwt.go` + `middleware.go`）——**标准库 HS256** 实现
+      （§10.1 优先标准库，不引 golang-jwt），Bearer 解析、exp/iat 校验、常量时间签名比较。
+- [x] 角色常量 + RBAC 矩阵（`rbac.go`）：`admin`⊃`operator`⊃`agent`，read/write/admin 权限，
+      `AllowRole` 默认 deny。
+- [x] 最小策略引擎 + **模块化审计日志**（`audit.go`）：`AuditLogger` 统一结构化记录
+      auth 决策 + 破坏性操作（kill/resume/retry、MCP tool call）；token 永不落日志。
+- [x] 配置接线：`security.jwt_secret` / `ARES_JWT_SECRET` / `ARES_AUTH_ENABLED`；
+      `ares auth token` CLI 签发。
+- [x] 测试：`jwt_test.go`（往返/过期/篡改/垃圾）、`rbac_test.go`（矩阵）、
+      `middleware_test.go`（allow/deny/审计流）、`audit_test.go`（模块化 sink）、
+      `http_api_test.go`（双凭据 API key∨JWT）。
+- 设计取舍：JWT 与旧 API key **双凭据并存**（向后兼容）；破坏性端点默认 deny。
 
-### P1 — 配置热加载（M6，已有 MCP 域 watcher 可复用）
-- [ ] 把 `ares_mcp/config_watcher.go` 的 fsnotify 模式推广为运行时全局 config store 热加载。
-- [ ] 实现 `/runtime/config` REST 端点返回当前配置快照（含变更历史）。
+### P1 — 配置热加载（M6，已有 MCP 域 watcher 可复用）— ✅ 已实现（2026-08-18）
+- [x] 运行时全局 `ConfigStore`（`internal/ares_config/store.go`）：`Current()` / `History()` /
+      `Reload(ctx, path)` / `Watch(ctx, path)` 四个方法，fsnotify + 200ms debounce，
+      失败 reload 保留上次有效配置并记入历史（上限 20 条）。
+- [x] `/runtime/config` REST 端点（`internal/monitoring/http_api.go`）：
+      返回脱敏配置快照（`Config.Redacted()` 遮蔽 LLM APIKey/Fallbacks、
+      Storage.Password、Security.JWTSecret）+ 变更历史；未挂 store 时不注册（404）。
+- [x] serve 接线（`cmd/ares/serve.go` / `serve_routine.go`）：`ares serve --config ares.yaml`
+      启动 watcher；minimal `--llm-url` 模式跳过 watcher 但仍提供快照端点。
+- [x] 测试：`store_test.go`（reload 成功/失败保旧/历史封顶/watch 重载）、
+      `redacted_test.go`（脱敏不篡改原值/空值不误标）、`http_api_test.go`
+      （快照脱敏 + 未挂载 404）。
+- 设计取舍：store 不向子系统推送变更（无回调、无依赖图），消费方按自身节奏轮询
+      `Current()`——保持接口精简，避免过度设计。
 
-### P2 — 故障注入 e2e（M10，已有 ci/integration-test 骨架）
-- [ ] 新增 `.github/workflows/agentos_ci.yml`：3 节点集群 + 随机 1‑200 agent + 网络延迟/CPU 过载注入 + 断言健康恢复/优雅关闭。
-- [ ] 接入 codecov 覆盖率徽章。
-- [ ] `benchmarks/benchmark_agent_pool_test.go`：agent‑pool 并发基准。
+### P2 — 故障注入 e2e（M10，已有 ci/integration-test 骨架）— ✅ 已实现（2026-08-18）
+- [x] `.github/workflows/agentos_ci.yml`：Chaos CI 工作流——`go test -race -run TestE2EChaosRecovery`
+      + agent-pool 基准 sanity（`-benchtime=10x`）上传产物。
+- [x] 混沌恢复 e2e（`internal/ares_arena/e2e_chaos_recovery_test.go`）：
+      `TestE2EChaosRecovery_InjectKillAndVerifyRestore`（8-agent 池崩溃一半→复活）
+      + `TestE2EChaosRecovery_Scale`（16/64/128 池崩溃 25%→复活）。走真实接线
+      arena→runtime.Manager→resurrection factory。
+- [x] agent-pool 基准（`internal/ares_runtime/benchmark_agent_pool_test.go`）：
+      `BenchmarkAgentPoolConcurrentRegisterStartStop`（16/64/256 池并发生命周期）、
+      `BenchmarkAgentPoolResurrection`（崩溃重建吞吐）。
+- [x] codecov 徽章：`ci.yml` 加 codecov-action 上传 `cover.out`；README 加
+      CI / Chaos CI / codecov 三枚徽章。
+- 说明：3 节点集群与网络延迟/CPU 过载注入属真实环境压测（需多主机），CI 中以
+      单进程内 arena→runtime 恢复链 e2e 覆盖同等的「故障→恢复」断言；多节点形态
+      留待真机压测环境，避免在 CI runner 上做脆弱的系统级故障注入（§10 不提前设计）。
 
 ### P3 — 资源隔离（M2，仅在出现多租户/硬隔离需求时做）
 - [ ] cgroup‑v2 wrapper（或至少 `setrlimit` 软隔离）——**当前无 cgroup 代码，且无消费方，暂缓**。

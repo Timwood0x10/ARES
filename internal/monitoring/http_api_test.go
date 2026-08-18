@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 
 	"github.com/gin-gonic/gin"
@@ -335,4 +336,56 @@ func TestHTTPServer_JWTAuthDeniesWhenSecretEmpty(t *testing.T) {
 	req.Header.Set("Authorization", bearerPrefix+"some-garbage-token")
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// ── /runtime/config (P1 hot-reload snapshot) ────────────────────────────────
+
+// TestHTTPServer_RuntimeConfig_ServesRedactedSnapshot verifies the read-only
+// /runtime/config endpoint returns the current config with secrets redacted
+// and the reload history.
+func TestHTTPServer_RuntimeConfig_ServesRedactedSnapshot(t *testing.T) {
+	store := ares_config.NewConfigStore(&ares_config.Config{
+		LLM: ares_config.LLMConfig{
+			Provider: "openai",
+			APIKey:   "sk-secret",
+			Model:    "gpt-4",
+		},
+		Security: ares_config.SecurityConfig{JWTSecret: "jwt-secret"},
+	})
+	p := NewConsole().(*MonitorPlugin)
+	srv := NewHTTPServer(p, WithConfigStore(store))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/runtime/config", nil)
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		Config  map[string]any `json:"config"`
+		History []any          `json:"history"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	// Secrets must not leak.
+	raw := w.Body.String()
+	assert.NotContains(t, raw, "sk-secret")
+	assert.NotContains(t, raw, "jwt-secret")
+	// Non-secret values are present (JSON marshaling uses Go field names).
+	llm, ok := body.Config["LLM"].(map[string]any)
+	require.True(t, ok, "config must contain LLM section")
+	assert.Equal(t, "openai", llm["Provider"])
+	assert.Equal(t, "gpt-4", llm["Model"])
+}
+
+// TestHTTPServer_RuntimeConfig_NotMountedWithoutStore verifies the endpoint is
+// not registered when no ConfigStore was attached (deny-by-default for the
+// surface).
+func TestHTTPServer_RuntimeConfig_NotMountedWithoutStore(t *testing.T) {
+	p := NewConsole().(*MonitorPlugin)
+	srv := NewHTTPServer(p)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/runtime/config", nil)
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }

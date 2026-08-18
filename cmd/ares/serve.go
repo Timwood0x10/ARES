@@ -13,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
@@ -149,6 +150,24 @@ func runServe() error {
 	compPtr.Store(comp)
 	store := comp.EventStore
 	mgr := comp.Runtime
+
+	// --- Runtime config store + hot-reload watcher (P1) ---
+	// The store holds the last-good config and its reload history, served via
+	// /runtime/config on the console HTTP server. When the serve command was
+	// started with an explicit config file, an fsnotify watcher hot-reloads it
+	// on change (failed reloads keep the previous config). With no config file
+	// (minimal --llm-url mode) the watcher is skipped — the store still serves
+	// the effective config snapshot.
+	cfgStore := ares_config.NewConfigStore(cfg)
+	if serveConfigPath != "" {
+		cfgPath := serveConfigPath
+		g.Go(func() error {
+			// Watch blocks until ctx cancels; a reload error is logged inside
+			// the store (recorded to history), so returning here is only for
+			// watcher setup failures and ctx cancellation.
+			return cfgStore.Watch(ctx, cfgPath)
+		})
+	}
 
 	// Stage 3 fix (B01): EventStore is wired into Memory during Bootstrap,
 	// not post-Bootstrap here. validateServeConfig has already enforced that
@@ -302,7 +321,7 @@ func runServe() error {
 
 	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
 	// cyclomatic complexity within lint limits) ---
-	if _, err := startServeHTTPAndHooks(ctx, g, cfg, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
+	if _, err := startServeHTTPAndHooks(ctx, g, cfg, cfgStore, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
 		return err
 	}
 

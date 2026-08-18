@@ -27,8 +27,8 @@ type AuthMiddleware struct {
 	secret []byte
 	// require is the minimum permission for the wrapped route.
 	require Permission
-	// logger is the audit sink; nil disables audit logging.
-	logger *slog.Logger
+	// audit is the modular audit sink; nil disables audit logging.
+	audit *AuditLogger
 	// now is the clock used for expiry checks (injectable for tests).
 	now func() time.Time
 }
@@ -37,10 +37,18 @@ type AuthMiddleware struct {
 type AuthOption func(*AuthMiddleware)
 
 // WithAuditLogger attaches an audit logger that records every auth decision
-// (allow/deny) with subject, role and path.
+// (allow/deny) with subject, role and path. Kept for compatibility; the sink
+// is an AuditLogger internally.
 func WithAuditLogger(l *slog.Logger) AuthOption {
+	return WithAudit(NewAuditLogger(l))
+}
+
+// WithAudit attaches the modular audit sink (see audit.go). It records auth
+// decisions and, when passed to the monitoring HTTP server, destructive
+// actions too.
+func WithAudit(a *AuditLogger) AuthOption {
 	return func(m *AuthMiddleware) {
-		m.logger = l
+		m.audit = a
 	}
 }
 
@@ -143,41 +151,34 @@ func (m *AuthMiddleware) Verify(r *http.Request) (*Principal, int) {
 func (m *AuthMiddleware) authenticate(r *http.Request) (*Principal, int) {
 	token := bearerToken(r.Header.Get("Authorization"))
 	if token == "" {
-		m.audit(r, "missing bearer token", "", "", http.StatusUnauthorized)
+		m.auditAuth(r, "missing bearer token", "", "", http.StatusUnauthorized)
 		return nil, http.StatusUnauthorized
 	}
 	sub, roleStr, err := VerifyJWT(m.secret, token, m.now())
 	if err != nil {
-		m.audit(r, "invalid token", sub, roleStr, http.StatusUnauthorized)
+		m.auditAuth(r, "invalid token", sub, roleStr, http.StatusUnauthorized)
 		return nil, http.StatusUnauthorized
 	}
 	role, err := ParseRole(roleStr)
 	if err != nil {
-		m.audit(r, "unknown role in token", sub, roleStr, http.StatusForbidden)
+		m.auditAuth(r, "unknown role in token", sub, roleStr, http.StatusForbidden)
 		return nil, http.StatusForbidden
 	}
 	if !AllowRole(role, m.require) {
-		m.audit(r, "insufficient role", sub, roleStr, http.StatusForbidden)
+		m.auditAuth(r, "insufficient role", sub, roleStr, http.StatusForbidden)
 		return nil, http.StatusForbidden
 	}
-	m.audit(r, "allowed", sub, roleStr, http.StatusOK)
+	m.auditAuth(r, "allowed", sub, roleStr, http.StatusOK)
 	return &Principal{Subject: sub, Role: role}, http.StatusOK
 }
 
-// audit records an auth decision when a logger is attached. The token itself
-// is never logged; only the decoded identity and the decision are.
-func (m *AuthMiddleware) audit(r *http.Request, decision, subject, role string, status int) {
-	if m.logger == nil {
+// auditAuth delegates to the modular AuditLogger. The token itself is never
+// logged; only the decoded identity and the decision are.
+func (m *AuthMiddleware) auditAuth(r *http.Request, decision, subject, role string, status int) {
+	if m.audit == nil {
 		return
 	}
-	m.logger.Info("auth",
-		"decision", decision,
-		"subject", subject,
-		"role", role,
-		"method", r.Method,
-		"path", r.URL.Path,
-		"status", status,
-	)
+	m.audit.Auth(decision, subject, role, r.Method, r.URL.Path, status)
 }
 
 // bearerToken extracts the token from an Authorization header. Only the

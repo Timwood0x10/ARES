@@ -9,6 +9,11 @@
 
 ```
 
+[![Go](https://img.shields.io/badge/go-1.26-blue.svg)](go.mod)
+[![CI](https://github.com/Timwood0x10/ares/actions/workflows/ci.yml/badge.svg)](https://github.com/Timwood0x10/ares/actions/workflows/ci.yml)
+[![Chaos CI](https://github.com/Timwood0x10/ares/actions/workflows/agentos_ci.yml/badge.svg)](https://github.com/Timwood0x10/ares/actions/workflows/agentos_ci.yml)
+[![codecov](https://codecov.io/gh/Timwood0x10/ares/branch/master/graph/badge.svg)](https://codecov.io/gh/Timwood0x10/ares)
+
 **⚠️  WARNING: AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL STAGE**
 
 This is the **FIRST attempt to build a knowledge graph WITHOUT relying on LLMs**. The current implementation uses:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,35 @@ func TestWrapGinAllowsAndDenies(t *testing.T) {
 func TestFromContextNilOnUnprotected(t *testing.T) {
 	if p := FromContext(context.Background()); p != nil {
 		t.Fatalf("FromContext on plain ctx = %+v, want nil", p)
+	}
+}
+
+// TestWrapAuditsThroughModule verifies auth decisions reach the modular audit
+// sink (WithAudit), both allow and deny paths.
+func TestWrapAuditsThroughModule(t *testing.T) {
+	audit, buf := newTestAuditLogger(t)
+	mw := NewAuthMiddleware([]byte(testSecret), PermWrite, WithAudit(audit))
+	tok := testToken(t, "operator", "alice")
+
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Allow path.
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/1/kill", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	// Deny path (missing token).
+	req = httptest.NewRequest(http.MethodPost, "/api/agents/1/kill", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := buf.String()
+	// slog's TextHandler quotes values containing spaces.
+	if !strings.Contains(out, "decision=allowed") || !strings.Contains(out, `decision="missing bearer token"`) {
+		t.Fatalf("audit sink must record both allow and deny decisions; got:\n%s", out)
+	}
+	if !strings.Contains(out, "subject=alice") {
+		t.Fatalf("audit must carry the subject; got:\n%s", out)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
@@ -292,6 +294,7 @@ func startServeHTTPAndHooks(
 	ctx context.Context,
 	g *errgroup.Group,
 	cfg *ares_config.Config,
+	cfgStore *ares_config.ConfigStore,
 	plugin *monitoring.MonitorPlugin,
 	mgr *ares_runtime.Manager,
 	registry *api_tools.Registry,
@@ -313,7 +316,12 @@ func startServeHTTPAndHooks(
 	// all destructive requests are denied (deny-by-default). Configure via
 	// ARES_API_KEY environment variable.
 	serveAPIKey := os.Getenv("ARES_API_KEY")
-	opts := []monitoring.HTTPServerOption{}
+	opts := []monitoring.HTTPServerOption{
+		monitoring.WithConfigStore(cfgStore),
+		// Modular audit: records auth decisions (middleware) and destructive
+		// actions (kill/resume/retry, MCP tool calls) on the process logger.
+		monitoring.WithAudit(ares_security.NewAuditLogger(slog.Default())),
+	}
 	if serveAPIKey != "" {
 		opts = append(opts, monitoring.WithAPIKey(serveAPIKey))
 	}

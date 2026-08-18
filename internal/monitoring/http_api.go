@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 
@@ -23,11 +24,22 @@ const bearerPrefix = "Bearer "
 // HTTPServer exposes the monitoring plugin over a Gin-based HTTP server.
 // It also mounts dashboard routes (arena, flight, ws, intel) for unified serving.
 type HTTPServer struct {
-	engine  *gin.Engine
-	plugin  *MonitorPlugin
-	dashAPI *dashboard.APIv2              // optional, mounts dashboard routes when set
-	apiKey  string                        // optional API key protecting destructive endpoints
-	auth    *ares_security.AuthMiddleware // optional JWT auth; nil = API key only
+	engine      *gin.Engine
+	plugin      *MonitorPlugin
+	dashAPI     *dashboard.APIv2              // optional, mounts dashboard routes when set
+	apiKey      string                        // optional API key protecting destructive endpoints
+	auth        *ares_security.AuthMiddleware // optional JWT auth; nil = API key only
+	configStore *ares_config.ConfigStore      // optional, mounts /runtime/config when set
+	audit       *ares_security.AuditLogger    // optional, records destructive actions
+}
+
+// WithAudit attaches the modular audit sink so destructive handlers
+// (kill/resume/retry, MCP tool calls) record who did what. The subject is
+// taken from the authenticated principal when present (JWT), else "api-key".
+func WithAudit(a *ares_security.AuditLogger) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.audit = a
+	}
 }
 
 // WithDashboardAPI attaches a dashboard API whose routes are mounted on /api.
@@ -51,12 +63,23 @@ func WithAPIKey(key string) HTTPServerOption {
 // presents either the API key or a valid JWT whose role holds write
 // permission (admin or operator). The JWT secret must be configured; an empty
 // secret leaves the middleware in deny-by-default mode, consistent with the
-// API-key posture.
+// API-key posture. When WithAudit was set first, the middleware reuses the
+// same audit sink for auth decisions.
 func WithJWT(secret []byte) HTTPServerOption {
 	return func(s *HTTPServer) {
 		if len(secret) > 0 {
-			s.auth = ares_security.NewAuthMiddleware(secret, ares_security.PermWrite)
+			s.auth = ares_security.NewAuthMiddleware(secret, ares_security.PermWrite,
+				ares_security.WithAudit(s.audit))
 		}
+	}
+}
+
+// WithConfigStore attaches the runtime ConfigStore so the /runtime/config
+// endpoint can serve the current config snapshot and reload history. Without
+// it the endpoint is not mounted (read-only surface, no auth required).
+func WithConfigStore(store *ares_config.ConfigStore) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.configStore = store
 	}
 }
 
@@ -182,6 +205,11 @@ func (s *HTTPServer) registerRoutes() {
 	// SSE placeholder
 	api.GET("/subscribe", s.handleSubscribe)
 
+	// Runtime config snapshot (read-only; mounted only when a store exists).
+	if s.configStore != nil {
+		api.GET("/runtime/config", s.handleRuntimeConfig)
+	}
+
 	// Intelligence — health, anomalies, insights (via plugin intel provider)
 	api.GET("/health", s.handleHealth)
 	api.GET("/health/agents", s.handleHealthAgents)
@@ -192,6 +220,18 @@ func (s *HTTPServer) registerRoutes() {
 	if s.dashAPI != nil {
 		s.dashAPI.MountGinRoutes(api)
 	}
+}
+
+// handleRuntimeConfig returns the current config snapshot (secrets redacted)
+// plus the reload history. Read-only; never echoes JWT secret, API keys or
+// DB passwords.
+func (s *HTTPServer) handleRuntimeConfig(c *gin.Context) {
+	cfg := s.configStore.Current()
+	redacted := cfg.Redacted()
+	c.JSON(http.StatusOK, gin.H{
+		"config":  redacted,
+		"history": s.configStore.History(),
+	})
 }
 
 // handleConsole returns the full console snapshot.
@@ -341,6 +381,7 @@ func (s *HTTPServer) handleRetryAgent(c *gin.Context) {
 // The agent ID is extracted from the Gin URL parameter ":id" (P1-8).
 func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
 	nodeID := c.Param("id")
+	s.auditAction(action, nodeID, c)
 	result, err := s.plugin.ExecuteAction(c.Request.Context(), nodeID, action)
 	if err != nil {
 		c.JSON(http.StatusNotImplemented, gin.H{
@@ -351,6 +392,21 @@ func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// auditAction records a destructive/privileged action on the modular audit
+// sink when one is attached. The subject is the authenticated principal's
+// identity (JWT) when present, else "api-key" for the legacy credential. The
+// outcome (ok) is filled after the action runs; failures are audited too.
+func (s *HTTPServer) auditAction(action, target string, c *gin.Context) {
+	if s.audit == nil {
+		return
+	}
+	subject := "api-key"
+	if p := ares_security.PrincipalFromGin(c); p != nil {
+		subject = p.Subject
+	}
+	s.audit.Action(action, subject, target, true)
 }
 
 // handleListMCPTools returns available MCP tools.
@@ -366,6 +422,7 @@ func (s *HTTPServer) handleListMCPTools(c *gin.Context) {
 // handleCallMCPTool invokes an MCP tool.
 func (s *HTTPServer) handleCallMCPTool(c *gin.Context) {
 	name := c.Param("name")
+	s.auditAction("call_mcp_tool", name, c)
 
 	var args map[string]any
 	if err := c.ShouldBindJSON(&args); err != nil && err.Error() != "EOF" {
