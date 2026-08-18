@@ -250,7 +250,11 @@ type kernelHandle struct {
 //   - kernel: the assembled kernel handle.
 //   - subAgents: the executor registry (agentID → sub.Agent) for the fabric
 //     path; the same registry the startup wiring uses.
-func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents []sub.Agent) {
+//   - store: the shared EventStore the Task Fabric publishes lifecycle events
+//     to. When non-nil the scheduler subscribes and drains immediately on
+//     dependency-relevant events (GAP 6: event-driven DAG completion) instead
+//     of waiting for the next poll tick.
+func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents []sub.Agent, store ares_events.EventStore) {
 	if kernel == nil || kernel.dual == nil || kernel.flag == nil {
 		return
 	}
@@ -273,6 +277,13 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 	enableKernelExecution(kernel.dual, kernel.fabric, kernel.executors, tracker)
 	kernel.flag.Set(agentipc.PolicyTaskFabric)
 	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
+	if store != nil {
+		sched.WithEventStore(store)
+	}
+	// Work stealing: let as many agents pick up ready tasks concurrently as
+	// there are executors (bounded internally at 32). Default 0 = unlimited
+	// up to the executor count.
+	sched.WithMaxConcurrent(0)
 	kernel.flipped = true
 	log.Printf("kernel: live flip to policy=taskfabric, Task Fabric scheduler started (%d executors)", len(kernel.executors))
 	go sched.Run(ctx)
@@ -310,7 +321,7 @@ func wireKernelPolicy(
 		log.Printf("kernel: policy=legacy (explicit), Task Fabric path in shadow (Mismatches observable)")
 		return
 	}
-	flipKernelToTaskFabric(ctx, kernel, subAgents)
+	flipKernelToTaskFabric(ctx, kernel, subAgents, store)
 
 	// Assemble the Lifecycle pillar (agentfabric + aresrecovery) under the
 	// same unified Kernel entry. The resource budget (P5: spawn quota

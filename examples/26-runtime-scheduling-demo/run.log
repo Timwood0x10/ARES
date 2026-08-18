@@ -1,0 +1,73 @@
+2026/08/17 22:12:02 INFO bootstrap: evolution disabled (cfg.Evolution.Enabled=false), skipping NewEvolution and background tickers module=ares_bootstrap
+2026/08/17 22:12:02 INFO flight recorder started module=flight
+2026/08/17 22:12:02 INFO bootstrap: knowledge retriever wired (AKG runtime → RAG) module=ares_bootstrap min_score=0
+2026/08/17 22:12:02 INFO bootstrap: RAG retrievers injected into memory manager module=ares_bootstrap count=1
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=eventstore state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=mcp state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=llm state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=evidence state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=knowledge state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=memory state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=runtime state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=dashboard state=started
+2026/08/17 22:12:02 INFO system_runtime: component ready module=system_runtime component=flight state=started
+2026/08/17 22:12:02 INFO system_runtime: all components started module=system_runtime count=9
+── 1/5 提交任务 (submit): Summarise the internal/taskfabric module: enumerate its files, explain each one's responsibility, and describe how the scheduler picks a capable agent for a task. ──
+📋 Task: Summarise the internal/taskfabric module: enumerate its files, explain each one's responsibility, and describe how the scheduler picks a capable agent for a task.
+
+2026/08/17 22:12:02 [team:trace] module-analysis → mode=0 input="Summarise the internal/taskfabric module: enumerate its files, explain each one's responsibility, and describe how the s..."
+2026/08/17 22:12:02 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/17 22:12:02 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/17 22:12:02 [ares:trace] coordinator → LLM call (iter 0, 3 msgs, 2 tools)
+2026/08/17 22:12:15 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/17 22:12:15 [ares:trace] coordinator → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:15 [ares:trace] coordinator → LLM call (iter 1, 5 msgs, 2 tools)
+2026/08/17 22:12:18 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/17 22:12:18 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/scheduler.go"})
+2026/08/17 22:12:18 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/task.go"})
+2026/08/17 22:12:18 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/fabric.go"})
+2026/08/17 22:12:18 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/state.go"})
+2026/08/17 22:12:18 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/lease.go"})
+2026/08/17 22:12:18 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/steal.go"})
+2026/08/17 22:12:18 [ares:trace] coordinator → LLM call (iter 2, 12 msgs, 2 tools)
+2026/08/17 22:12:21 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/17 22:12:21 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/confidence.go"})
+2026/08/17 22:12:21 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/dag.go"})
+2026/08/17 22:12:21 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/quantum.go"})
+2026/08/17 22:12:21 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/events.go"})
+2026/08/17 22:12:21 [ares:trace] coordinator → LLM call (iter 3, 17 msgs, 2 tools)
+2026/08/17 22:12:24 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/17 22:12:24 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/fabric.go", "defer_loading": "{\"offset\": 0, \"length\": 4000}"})
+2026/08/17 22:12:24 [ares:trace] coordinator → tool call: read_file({"path": "internal/taskfabric/scheduler.go", "defer_loading": "{\"offset\": 200, \"length\": 2000}"})
+2026/08/17 22:12:24 [ares:trace] coordinator → LLM call (iter 4, 20 msgs, 2 tools)
+2026/08/17 22:12:31 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/17 22:12:31 [ares:trace] coordinator ✓ done (13 tools, 0 total tokens, 28.94s)
+2026/08/17 22:12:31 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:35 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:35 [team:trace] module-analysis → tool call: read_file({"path": "internal/taskfabric/fabric.go"})
+2026/08/17 22:12:35 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:38 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:38 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:46 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:46 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:47 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:47 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:48 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:48 [team:trace] module-analysis → tool call: read_file({"path": "internal/taskfabric/dag.go"})
+2026/08/17 22:12:48 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:51 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:51 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:52 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:52 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:54 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:54 [team:trace] module-analysis → tool call: read_file({"path": "internal/taskfabric/steal.go"})
+2026/08/17 22:12:54 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:55 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:55 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:12:57 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:12:57 [team:trace] module-analysis → tool call: list_files({"path": "."})
+2026/08/17 22:12:57 [team:trace] module-analysis → executing code_reader
+2026/08/17 22:13:05 [team:trace] module-analysis → tool call: list_files({"path": "internal/taskfabric"})
+2026/08/17 22:13:05 [team:trace] module-analysis → tool call: read_file({"path": "internal/taskfabric/lease.go"})
+❌ team run: team synthesize: generate text: prompt exceeds maximum length of 8192 characters
+2026/08/17 22:13:05 INFO Memory manager stopped module=memory

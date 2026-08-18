@@ -355,3 +355,99 @@ func TestRecoveryRespectsDisabledGate(t *testing.T) {
 		t.Fatalf("recovery spawn must honor the disabled gate, got %v", err)
 	}
 }
+
+// TestYieldSuspendResumeFullChain verifies the complete thread lifecycle:
+// a task yields at a quantum boundary (SUSPENDED + preserved checkpoint),
+// its agent is suspended (lifecycle pause), resumed, and the task is
+// recovered with the checkpoint intact — the full yield→suspend→resume
+// round trip proving the "agent as thread" model (B1) end to end.
+func TestYieldSuspendResumeFullChain(t *testing.T) {
+	tasks, agents, rec, _, _ := newRecoveryHarness(t)
+	ctx := context.Background()
+
+	// Spawn the agent, create the task, run it to a quantum boundary.
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{Identity: "a1", Capabilities: []string{"rust"}}); err != nil {
+		t.Fatalf("Spawn a1: %v", err)
+	}
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := tasks.Acquire("t1", "a1", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := tasks.Start("t1", "a1", epoch); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Step 1 — yield: the agent hands execution back at the quantum boundary
+	// with a checkpoint; the task becomes SUSPENDED, checkpoint preserved.
+	ckpt := []byte(`{"step":3}`)
+	if err := tasks.Yield("t1", "a1", epoch, ckpt); err != nil {
+		t.Fatalf("Yield: %v", err)
+	}
+	tk, err := tasks.Task("t1")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.State != taskfabric.StateSuspended {
+		t.Fatalf("after yield: want SUSPENDED, got %s", tk.State)
+	}
+	if tk.Checkpoint == nil || string(tk.Checkpoint.([]byte)) != `{"step":3}` {
+		t.Fatalf("checkpoint must be preserved after yield, got %v", tk.Checkpoint)
+	}
+
+	// Step 2 — suspend the agent (lifecycle pause; the thread stops).
+	if err := agents.Suspend(ctx, "a1"); err != nil {
+		t.Fatalf("Suspend a1: %v", err)
+	}
+	a, err := agents.Get("a1")
+	if err != nil {
+		t.Fatalf("Get a1: %v", err)
+	}
+	if a.State != agentfabric.StateSuspended {
+		t.Fatalf("after suspend: want SUSPENDED, got %s", a.State)
+	}
+
+	// Step 3 — resume the agent (the thread restarts).
+	if err := agents.Resume(ctx, "a1"); err != nil {
+		t.Fatalf("Resume a1: %v", err)
+	}
+	a, err = agents.Get("a1")
+	if err != nil {
+		t.Fatalf("Get a1: %v", err)
+	}
+	if a.State != agentfabric.StateIdle {
+		t.Fatalf("after resume: want IDLE, got %s", a.State)
+	}
+
+	// Step 4 — recover the suspended task with a replacement agent that picks
+	// up the preserved checkpoint (Recovery path).
+	repID, newEpoch, err := rec.RecoverTaskCheckpoint(ctx, "t1", "")
+	if err != nil {
+		t.Fatalf("RecoverTaskCheckpoint: %v", err)
+	}
+	if repID == "" || newEpoch == 0 {
+		t.Fatalf("want replacement id + epoch, got %q %d", repID, newEpoch)
+	}
+	tk, err = tasks.Task("t1")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.Owner != repID {
+		t.Fatalf("replacement must own the task, got %q", tk.Owner)
+	}
+	// The checkpoint survives the whole chain: the recovered owner resumes
+	// from where the suspended thread stopped.
+	if tk.Checkpoint == nil || string(tk.Checkpoint.([]byte)) != `{"step":3}` {
+		t.Fatalf("checkpoint must survive suspend/resume/recover, got %v", tk.Checkpoint)
+	}
+	// The replacement agent carries the recovered cognitive state.
+	repCS, err := agents.CognitiveState(repID)
+	if err != nil {
+		t.Fatalf("CognitiveState replacement: %v", err)
+	}
+	if repCS.Checkpoint == nil {
+		t.Fatal("replacement must carry the checkpoint as cognitive state")
+	}
+}

@@ -357,7 +357,7 @@ func TestFlipKernelToTaskFabricLive(t *testing.T) {
 	}
 
 	// Live flip: same entry a runtime operator would call.
-	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, nil)
 	if !flag.IsTaskFabric() {
 		t.Fatal("flag must be TaskFabric after live flip")
 	}
@@ -390,14 +390,14 @@ func TestFlipKernelToTaskFabricIdempotent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, nil)
 	if !flag.IsTaskFabric() {
 		t.Fatal("flag must be TaskFabric after first flip")
 	}
 
 	// Second flip: no-op (kernel.flipped guard). Executing a task afterwards
 	// must run it exactly once — a second scheduler would double-execute.
-	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, nil)
 	adapter := &kernelTaskDispatcher{kernel: kernel}
 	if _, err := adapter.Dispatch(ctx, []*models.Task{
 		models.NewTask("t1", models.AgentType("code"), nil),
@@ -443,7 +443,7 @@ func TestDispatchRacingLiveFlipNoLoss(t *testing.T) {
 	}
 	close(start)
 	// Flip while dispatches are in flight.
-	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor})
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, nil)
 	wg.Wait()
 
 	// Every dispatch must eventually execute exactly once: legacy counts +

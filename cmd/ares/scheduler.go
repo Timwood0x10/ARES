@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
@@ -34,8 +36,20 @@ type kernelScheduler struct {
 	pollInterval time.Duration
 	// ttl is the lease granted to each winning agent.
 	ttl time.Duration
+	// eventStore is the shared EventStore the Task Fabric publishes lifecycle
+	// events to. When set, the scheduler subscribes to dependency-relevant
+	// task events (completed/failed/ready/… ) and drains immediately on each,
+	// so a task whose DAG dependencies have just completed runs without
+	// waiting for the next poll tick (GAP 6: event-driven DAG completion).
+	// Nil keeps pure 500ms polling (backward compatible).
+	eventStore ares_events.EventStore
+	// maxConcurrent caps how many ready tasks run in parallel during one
+	// drain (work stealing: multiple agents pick up tasks concurrently).
+	// <= 0 falls back to the executor count (bounded by 32).
+	maxConcurrent int
 	// scheduled counts successfully executed tasks (for observability).
-	scheduled int
+	// atomic: incremented from concurrent drain goroutines (work stealing).
+	scheduled atomic.Int64
 	// noCandidateMu guards lastNoCandidateLog for throttling unschedulable-task
 	// logs.
 	noCandidateMu      sync.Mutex
@@ -153,9 +167,23 @@ func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]sub.Agen
 	}
 }
 
+// WithMaxConcurrent caps how many ready tasks run in parallel per drain
+// (work stealing). <= 0 falls back to the executor count. Returns the
+// scheduler for chaining.
+func (s *kernelScheduler) WithMaxConcurrent(n int) *kernelScheduler {
+	s.maxConcurrent = n
+	return s
+}
+
 // Run drains ReadyTasks until ctx is cancelled or the fabric becomes nil.
 // It runs synchronously; callers start it in a goroutine. Panics from one
 // task's execution are recovered so a single bad step cannot kill the loop.
+//
+// When an event store is wired (WithEventStore), the scheduler also drains
+// immediately on dependency-relevant task events (completed / failed /
+// ready / created), so a task whose DAG dependencies just finished runs
+// without waiting for the next poll tick (GAP 6). The periodic poll remains
+// as a safety net for transitions that do not publish events.
 //
 // Args:
 //   - ctx: lifetime of the scheduling loop.
@@ -166,35 +194,95 @@ func (s *kernelScheduler) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
+
+	// Subscribe to dependency-relevant task events when a store is wired.
+	// The channel is nil (and the select case inert) when eventStore is nil,
+	// preserving the pure-polling path.
+	var events <-chan *ares_events.Event
+	if s.eventStore != nil {
+		ch, err := s.eventStore.Subscribe(ctx, ares_events.EventFilter{
+			Types: []ares_events.EventType{
+				ares_events.EventTaskCreated,
+				ares_events.EventTaskReady,
+				ares_events.EventTaskCompleted,
+				ares_events.EventTaskFailed,
+			},
+		})
+		if err != nil {
+			log.Printf("kernel scheduler: event subscribe failed, polling only: %v", err)
+		} else {
+			events = ch
+			log.Printf("kernel scheduler: event-driven drain enabled (task lifecycle events)")
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.drain(ctx)
+		case <-events:
+			// A dependency-relevant task event arrived: drain now instead of
+			// waiting up to one poll interval.
+			s.drain(ctx)
 		}
 	}
 }
 
-// drain executes every currently ready task.
+// WithEventStore wires the shared EventStore so the scheduler drains on task
+// lifecycle events (GAP 6: event-driven DAG completion) instead of waiting
+// for the next poll tick. Returns the scheduler for chaining.
+func (s *kernelScheduler) WithEventStore(store ares_events.EventStore) *kernelScheduler {
+	s.eventStore = store
+	return s
+}
+
+// drain executes every currently ready task. When the scheduler is configured
+// for concurrency (WithMaxConcurrent), ready tasks run in parallel (bounded by
+// maxConcurrent) so multiple agents pick up work at the same time — the
+// work-stealing substrate at the scheduler side. Panics from one task's
+// execution are recovered so a single bad step cannot kill the loop.
 func (s *kernelScheduler) drain(ctx context.Context) {
-	for _, taskID := range s.fabric.ReadyTasks() {
+	tasks := s.fabric.ReadyTasks()
+	if len(tasks) == 0 {
+		return
+	}
+	limit := s.maxConcurrent
+	if limit <= 0 {
+		limit = len(s.executors)
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > 32 {
+		limit = 32 // sanity cap: a drain never spawns unbounded goroutines
+	}
+
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for _, taskID := range tasks {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		func() {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
 			defer func() {
 				if recover() != nil {
-					log.Printf("kernel scheduler: panic executing task %q, continuing", taskID)
+					log.Printf("kernel scheduler: panic executing task %q, continuing", id)
 				}
 			}()
-			if err := s.execute(ctx, taskID); err != nil {
-				s.logFailure(taskID, err)
+			if err := s.execute(ctx, id); err != nil {
+				s.logFailure(id, err)
 			}
-		}()
+		}(taskID)
 	}
+	wg.Wait()
 }
 
 // logFailure logs a task failure, throttling ErrNoCapableCandidate: an
@@ -276,7 +364,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	})
 	s.tracker.end(winner, err == nil)
 	if err == nil {
-		s.scheduled++
+		s.scheduled.Add(1)
 	}
 	return err
 }
