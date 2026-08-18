@@ -9,10 +9,11 @@ import (
 )
 
 // TestEvolutionTrajectoryProvider verifies the tracer adapter renders recorded
-// generations as JSON-friendly values, and nil input yields nil (endpoint
-// disabled).
+// generations as JSON-friendly values enriched with change attribution
+// (M3-3) and human-feedback combined fitness (M3-2), and nil input yields nil
+// (endpoint disabled).
 func TestEvolutionTrajectoryProvider(t *testing.T) {
-	if got := NewEvolutionTrajectoryProvider(nil); got != nil {
+	if got := NewEvolutionTrajectoryProvider(nil, nil); got != nil {
 		t.Fatalf("nil tracer must yield nil provider, got %v", got)
 	}
 
@@ -20,13 +21,20 @@ func TestEvolutionTrajectoryProvider(t *testing.T) {
 	tracer.Record(1, 0.6, []string{"s1"}, []aresrecovery.GenerationChange{
 		{StrategyID: "s1", Description: "temp 0.7→0.4", Impact: 0.2},
 	})
-	provider := NewEvolutionTrajectoryProvider(tracer)
+	tracer.Record(2, 0.9, []string{"s1", "s2"}, []aresrecovery.GenerationChange{
+		{StrategyID: "s1", Description: "temp 0.4→0.3"},
+		{StrategyID: "s2", Description: "sampling top-p"},
+	})
+	store := aresrecovery.NewFeedbackStore()
+	store.Add(aresrecovery.HumanFeedback{CandidateID: "s2", Rating: 5, Approved: true, Comments: "great"})
+
+	provider := NewEvolutionTrajectoryProvider(tracer, store)
 	if provider == nil {
 		t.Fatal("non-nil tracer must yield a provider")
 	}
 	traj := provider.EvolutionTrajectory()
-	if len(traj) != 1 {
-		t.Fatalf("want 1 generation, got %d", len(traj))
+	if len(traj) != 2 {
+		t.Fatalf("want 2 generations, got %d", len(traj))
 	}
 	gen := traj[0]
 	if gen["generation"] != 1 || gen["best_score"] != 0.6 {
@@ -34,6 +42,31 @@ func TestEvolutionTrajectoryProvider(t *testing.T) {
 	}
 	if gen["breakthrough"] != false || gen["regression"] != false {
 		t.Fatalf("unexpected flags %v", gen)
+	}
+
+	// Generation 2 must be attributed: delta 0.9-0.6 = 0.3 split across the
+	// two changes (explicit Impact on s1 in gen 1 does not leak here).
+	gen2 := traj[1]
+	changes, ok := gen2["changes"].([]map[string]any)
+	if !ok || len(changes) != 2 {
+		t.Fatalf("want 2 attributed changes, got %v", gen2["changes"])
+	}
+	for _, c := range changes {
+		imp, _ := c["impact"].(float64)
+		if imp < 0.149 || imp > 0.151 {
+			t.Fatalf("want equal-split impact ~0.15, got %v", c["impact"])
+		}
+	}
+	// s2 is human-rated (5/5): combined_fitness = 0.3*0.9 + 0.7*5.
+	feedback, ok := gen2["feedback"].([]map[string]any)
+	if !ok || len(feedback) != 1 || feedback[0]["candidate_id"] != "s2" {
+		t.Fatalf("want feedback enrichment for s2, got %v", gen2["feedback"])
+	}
+	if got, want := feedback[0]["combined_fitness"].(float64), aresrecovery.CombinedFitness(0.9, 5); got < want-1e-9 || got > want+1e-9 {
+		t.Fatalf("combined fitness %v, want %v", got, want)
+	}
+	if feedback[0]["human_rating"] != float64(5) {
+		t.Fatalf("rating %v", feedback[0]["human_rating"])
 	}
 }
 

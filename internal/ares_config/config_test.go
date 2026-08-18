@@ -357,8 +357,8 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.LLM.Provider != defaultLLMProvider {
 		t.Errorf("LLM.Provider default = %v, want ollama", cfg.LLM.Provider)
 	}
-	if cfg.LLM.Model != "llama3.2" {
-		t.Errorf("LLM.Model default = %v, want llama3.2", cfg.LLM.Model)
+	if cfg.LLM.Model != defaultLLMModel {
+		t.Errorf("LLM.Model default = %v, want %s", cfg.LLM.Model, defaultLLMModel)
 	}
 	if cfg.LLM.Timeout != 60 {
 		t.Errorf("LLM.Timeout default = %v, want 60", cfg.LLM.Timeout)

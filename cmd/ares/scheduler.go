@@ -221,13 +221,26 @@ func (s *kernelScheduler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.drain(ctx)
+			s.safeDrain(ctx)
 		case <-events:
 			// A dependency-relevant task event arrived: drain now instead of
 			// waiting up to one poll interval.
-			s.drain(ctx)
+			s.safeDrain(ctx)
 		}
 	}
+}
+
+// safeDrain recovers a panic from one drain so the scheduling loop survives a
+// single bad drain (M2: kernel loops must not crash the process). Per-task
+// panics are already recovered inside drain; this guards the drain itself
+// (e.g. a panic inside ReadyTasks).
+func (s *kernelScheduler) safeDrain(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("kernel scheduler: panic in drain, continuing: %v", r)
+		}
+	}()
+	s.drain(ctx)
 }
 
 // WithEventStore wires the shared EventStore so the scheduler drains on task
@@ -243,11 +256,25 @@ func (s *kernelScheduler) WithEventStore(store ares_events.EventStore) *kernelSc
 // maxConcurrent) so multiple agents pick up work at the same time — the
 // work-stealing substrate at the scheduler side. Panics from one task's
 // execution are recovered so a single bad step cannot kill the loop.
+// TODO(tech-debt): the per-agent local ready-queue design
+// (taskfabric.AgentQueue/Steal, ares-runtime.md §5) was removed as unused
+// (v0.4.0 review P1: Steal 空转 — 要么接线要么删除); the shared ReadyTasks()
+// queue drained concurrently by bounded goroutines IS the stealing substrate.
+// Re-introduce per-agent queues only if profiling shows contention.
 func (s *kernelScheduler) drain(ctx context.Context) {
 	tasks := s.fabric.ReadyTasks()
 	if len(tasks) == 0 {
 		return
 	}
+	// Priority preemption (v0.4.0 review: fabric.Preempt was production-
+	// unused): if a READY task outranks a task that is RUNNING from a
+	// previous drain, cooperatively preempt the lower one so a capable
+	// executor can pick up the higher-priority work. Preempt hands the task
+	// back to READY with its checkpoint preserved (it resumes later), and the
+	// fencing token guarantees only the current holder is affected. This runs
+	// BEFORE this drain spawns its own goroutines — between quanta — so a
+	// quantum is never interrupted mid-step.
+	s.preemptLowerPriority(tasks)
 	limit := s.maxConcurrent
 	if limit <= 0 {
 		limit = len(s.executors)
@@ -285,6 +312,38 @@ func (s *kernelScheduler) drain(ctx context.Context) {
 	wg.Wait()
 }
 
+// preemptLowerPriority cooperatively preempts any RUNNING task whose priority
+// is lower than the highest-priority READY task in this drain, so the next
+// drain can hand the executor to the higher-priority work. No-op when no
+// priority information exists (all zeros) — the scheduler never churns a
+// running task on a tie or on unset priorities. The preempted task keeps its
+// checkpoint and returns to READY for a later quantum.
+func (s *kernelScheduler) preemptLowerPriority(ready []string) {
+	if len(s.executors) == 0 || len(ready) == 0 {
+		return
+	}
+	maxReady := 0
+	for _, id := range ready {
+		if tk, err := s.fabric.Task(id); err == nil && tk.Priority > maxReady {
+			maxReady = tk.Priority
+		}
+	}
+	if maxReady <= 0 {
+		return
+	}
+	for _, rt := range s.fabric.RunningTasks() {
+		if rt.Priority >= maxReady {
+			continue
+		}
+		if err := s.fabric.Preempt(rt.ID, rt.Owner, rt.Epoch, "higher-priority task arrived"); err != nil {
+			// A concurrently-finalized task (already COMPLETED/FAILED) or a
+			// stale epoch is a benign race, not worth log spam.
+			continue
+		}
+		log.Printf("kernel scheduler: preempted %q (priority %d) for higher-priority work (max ready %d)", rt.ID, rt.Priority, maxReady)
+	}
+}
+
 // logFailure logs a task failure, throttling ErrNoCapableCandidate: an
 // unschedulable task is a legitimate "waiting for a capable agent" state that
 // the scheduler re-polls every interval, so it must not spam the log. Other
@@ -318,6 +377,15 @@ type fabricTaskMeta struct {
 	// UsedExperienceID is the experience consumed by this task (bandit
 	// feedback linkage), preserved for the outcome recorder.
 	UsedExperienceID string
+	// StepCheckpoint is the quantum's durable progress/output. The scheduler
+	// wraps EVERY quantum's returned checkpoint (yield AND done) back into a
+	// fabricTaskMeta envelope, so the submission metadata survives a yield:
+	// RunQuantum overwrites the task Checkpoint with the step's checkpoint,
+	// and re-wrapping it inside the meta envelope means the next quantum's
+	// toModelTask can still restore UserProfile/Payload (v0.4.0 review
+	// Bug 3: yield→resume otherwise lost the profile and degraded to
+	// executeByType). nil before the first quantum runs.
+	StepCheckpoint any
 }
 
 // execute runs the full fabric path for one task: Schedule → Acquire →
@@ -367,6 +435,15 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	}
 	// Track the busy slot while the quantum runs so the next Schedule sees the
 	// real load (v0.3.0 GAP4); end records the outcome for confidence.
+	// Preserve the submission metadata across the quantum: the task's current
+	// checkpoint is the meta envelope written by submitFabricTask or by a
+	// previous quantum (yield/done re-wraps below). Capturing it here — before
+	// RunQuantum overwrites the task Checkpoint — is what keeps UserProfile
+	// alive through an arbitrary number of yield→resume cycles.
+	meta := fabricTaskMeta{}
+	if m, ok := tk.Checkpoint.(fabricTaskMeta); ok {
+		meta = m
+	}
 	s.tracker.begin(winner)
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
 		res, execErr := executor.Execute(ctx, s.toModelTask(tk))
@@ -396,7 +473,15 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 				out["metadata"] = res.Metadata
 			}
 		}
-		return out, true, nil
+		// Re-wrap the step output in the metadata envelope so a yield (or a
+		// later resume) still has UserProfile/Payload/UsedExperienceID
+		// (Bug 3). The dispatcher's outcomeFromFabric unwraps it on COMPLETED.
+		return fabricTaskMeta{
+			UserProfile:      meta.UserProfile,
+			Payload:          meta.Payload,
+			UsedExperienceID: meta.UsedExperienceID,
+			StepCheckpoint:   out,
+		}, true, nil
 	})
 	s.tracker.end(winner, err == nil)
 	if err == nil {
@@ -420,6 +505,16 @@ func (s *kernelScheduler) toModelTask(tk *taskfabric.Task) *models.Task {
 			t.UserProfile = meta.UserProfile
 			t.Payload = meta.Payload
 			t.UsedExperienceID = meta.UsedExperienceID
+			// A resumed quantum observes where the previous step left off
+			// (Bug 3): the step checkpoint rides inside the meta envelope,
+			// surfaced to the executor as payload["checkpoint"] exactly like
+			// the legacy plain-map case below.
+			if meta.StepCheckpoint != nil {
+				if t.Payload == nil {
+					t.Payload = make(map[string]any)
+				}
+				t.Payload["checkpoint"] = meta.StepCheckpoint
+			}
 			return t
 		}
 		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}

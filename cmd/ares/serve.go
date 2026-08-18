@@ -269,7 +269,7 @@ func runServe() error {
 	// behavior.
 	var peerRegistry *peer.Registry
 	if comp.NewEvolution != nil {
-		bridge, err := wireEvolutionIPC(leaderAgent, subAgents, comp.NewEvolution.StrategyStore)
+		bridge, err := wireEvolutionIPC(leaderAgent, subAgents, comp.NewEvolution.StrategyStore, comp.GlobalTracer)
 		if err != nil {
 			return fmt.Errorf("wire evolution IPC: %w", err)
 		}
@@ -506,7 +506,7 @@ func createAndRegisterServeAgents(
 			kernel.agents,
 			ares_bootstrap.NewQuotaPolicySource(comp.NewEvolution.StrategyStore, cfg.Kernel.Resources),
 		)
-		go runKernelQuotaLoop(ctx, quotaMgr)
+		go runKernelQuotaLoop(ctx, quotaMgr, parseKernelLoopConfig(cfg))
 		log.Printf("serve: evolution quota manager wired (resource budget follows evolution policy)")
 	}
 

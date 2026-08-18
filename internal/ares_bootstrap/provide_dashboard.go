@@ -69,7 +69,7 @@ func ProvideDashboard(
 	// are backed by the shared aresrecovery components, so the dashboard
 	// endpoints return data recorded by the runtime (GA generations, human
 	// feedback, task/agent lifecycle) instead of empty lists.
-	api.SetEvolutionTrajectory(NewEvolutionTrajectoryProvider(evolutionTracer))
+	api.SetEvolutionTrajectory(NewEvolutionTrajectoryProvider(evolutionTracer, feedbackStore))
 	api.SetEvolutionFeedback(NewEvolutionFeedbackSink(feedbackStore))
 	api.SetObservability(NewObservabilitySpansProvider(globalTracer))
 

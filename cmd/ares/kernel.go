@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -67,13 +68,9 @@ func wireKernelDispatcher(
 // Args:
 //   - kernel: the dual-track dispatcher assembled by wireKernelDispatcher.
 //   - fabric: the Task Fabric that executes tasks.
-//   - executors: agentID → sub.Agent that runs the acquired task.
-//   - tracker: shared per-agent load/confidence source (must be non-nil).
 func enableKernelExecution(
 	kernel *agentipc.DualTrackDispatcher,
 	fabric *taskfabric.Fabric,
-	executors map[string]sub.Agent,
-	tracker *loadTracker,
 ) {
 	// Turn shadow off first: with the new path about to become live, running
 	// legacy in shadow would re-dispatch every task (double execution).
@@ -88,7 +85,7 @@ func enableKernelExecution(
 	exec := &kernelFabricDispatcher{
 		candidates: kernelNewPathCandidates(kernel),
 		executeFn: func(ctx context.Context, task *models.Task) error {
-			return submitFabricTask(ctx, fabric, executors, tracker, task)
+			return submitFabricTask(ctx, fabric, task)
 		},
 	}
 	kernel.SetNewPath(exec)
@@ -114,8 +111,6 @@ func kernelNewPathCandidates(kernel *agentipc.DualTrackDispatcher) []subAgentCap
 // Args:
 //   - ctx: task lifetime (unused; kept for signature symmetry).
 //   - fabric: the Task Fabric that owns the task.
-//   - executors: unused here; the scheduler resolves executors at drain.
-//   - tracker: unused here; the scheduler tracks load/confidence.
 //   - task: the task to submit.
 //
 // Returns:
@@ -123,8 +118,6 @@ func kernelNewPathCandidates(kernel *agentipc.DualTrackDispatcher) []subAgentCap
 func submitFabricTask(
 	ctx context.Context,
 	fabric *taskfabric.Fabric,
-	executors map[string]sub.Agent,
-	tracker *loadTracker,
 	task *models.Task,
 ) error {
 	if fabric == nil {
@@ -138,7 +131,12 @@ func submitFabricTask(
 		ID:           task.TaskID,
 		Capability:   string(task.AgentType),
 		Dependencies: deps,
-		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 1},
+		Priority:     task.Priority,
+		// RetryPolicy.MaxRetries counts TOTAL attempts, not retries-after-the-first
+		// (taskfabric.CanRetry: Attempts < MaxRetries). MaxRetries: 1 therefore
+		// grants ZERO retries — a transient failure finalizes FAILED immediately
+		// (v0.4.0 review Bug 2). 2 = first attempt + one retry.
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
 		// Carry the submission-time metadata in the Checkpoint slot so the
 		// scheduler's toModelTask can restore it for the executor (LLM path
 		// needs the profile; the outcome recorder needs UsedExperienceID).
@@ -251,7 +249,7 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 	// so Load/Confidence stay consistent across both entry points (GAP4).
 	tracker := newLoadTracker()
 	kernel.tracker = tracker
-	enableKernelExecution(kernel.dual, kernel.fabric, kernel.executors, tracker)
+	enableKernelExecution(kernel.dual, kernel.fabric)
 	kernel.flag.Set(agentipc.PolicyTaskFabric)
 	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
 	if store != nil {
@@ -299,6 +297,13 @@ func wireKernelPolicy(
 		return
 	}
 	flipKernelToTaskFabric(ctx, kernel, subAgents, store)
+
+	// Apply the configured dispatch wait timeout to the batch adapter so a
+	// non-default kernel.dispatch_timeout takes effect (M3). The adapter
+	// falls back to the default when unset.
+	if kernel.taskDispatcher != nil {
+		kernel.taskDispatcher.eventTimeout = parseKernelLoopConfig(cfg).DispatchTimeout
+	}
 
 	// Assemble the Lifecycle pillar (agentfabric + aresrecovery) under the
 	// same unified Kernel entry. The resource budget (P5: spawn quota
@@ -367,28 +372,103 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 	// Event-driven recovery loop: consumes task lifecycle events and runs the
 	// recovery chain. This is the event-driven Agent loop (code-review-
 	// 2025-01-16 #2) at the Kernel level — the runtime reacts to TaskAcquired/
-	// Yielded/Expired events instead of a command loop.
-	go runKernelRecoveryLoop(ctx, store, kernel.recovery)
+	// Yielded/Expired events instead of a command loop. The loop's interval
+	// and per-sweep timeout come from config (M3); absent knobs use defaults.
+	go runKernelRecoveryLoop(ctx, store, kernel.recovery, parseKernelLoopConfig(cfg))
 }
 
 // recoverySweepInterval is how often the event-driven recovery loop also
 // sweeps TTL-based lease expiry (lease expiry is detected by a sweep, not by
 // an event, so a periodic safety net is required alongside the event channel).
+// It is the default when kernel.recovery_sweep_interval is not configured.
 const recoverySweepInterval = time.Second
+
+// recoverySweepTimeout bounds one recovery sweep. A hung store must not block
+// the recovery loop's event consumption nor pile up sweeps (C3); the sweep
+// runs async with this timeout so a slow store at worst drops triggers.
+const recoverySweepTimeout = 30 * time.Second
 
 // quotaApplyInterval is how often the evolution-aware quota manager pushes
 // the current evolution resource budget into the Agent Fabric (v0.3.0 M2-2).
 // The GA evolution ticker runs on a 5-minute cadence, so a 1-minute apply
 // loop keeps a deployed budget effective within a reasonable window without
-// burning CPU.
+// burning CPU. It is the default when kernel.quota_apply_interval is unset.
 const quotaApplyInterval = time.Minute
+
+// quotaApplyTimeout bounds one quota policy application. A hung policy store
+// must not stall the quota loop (C1), so every Apply runs under this timeout.
+const quotaApplyTimeout = 30 * time.Second
 
 // kernelDispatchTimeout bounds how long kernelTaskDispatcher.Dispatch waits
 // for a submitted task's completion event before reporting it failed. It
 // mirrors the legacy leader dispatcher's timeout contract
 // (DefaultDispatcherTimeoutSeconds = 300) so the kernel path does not time
-// out sooner than the path it replaces.
+// out sooner than the path it replaces. It is the default when
+// kernel.dispatch_timeout is not configured.
 const kernelDispatchTimeout = 300 * time.Second
+
+// kernelLoopConfig carries the tunable intervals/timeouts for the kernel
+// background loops (quota, recovery, dispatch). Zero durations fall back to
+// the package defaults, so an absent kernel loop config section keeps prior
+// behavior (zero-value usable, code_rules_v2 §5.4).
+type kernelLoopConfig struct {
+	// QuotaApplyInterval is how often the quota loop re-applies the budget.
+	QuotaApplyInterval time.Duration
+	// QuotaApplyTimeout bounds each quota Apply call.
+	QuotaApplyTimeout time.Duration
+	// RecoverySweepInterval is how often the recovery loop sweeps leases.
+	RecoverySweepInterval time.Duration
+	// RecoverySweepTimeout bounds each recovery sweep.
+	RecoverySweepTimeout time.Duration
+	// DispatchTimeout bounds Dispatch's wait for a worker completion event.
+	DispatchTimeout time.Duration
+}
+
+// withDefaults fills any zero-valued knob with the package default so a
+// partially-configured (or zero) kernelLoopConfig never drives a loop with a
+// zero ticker or a zero timeout.
+func (c kernelLoopConfig) withDefaults() kernelLoopConfig {
+	if c.QuotaApplyInterval <= 0 {
+		c.QuotaApplyInterval = quotaApplyInterval
+	}
+	if c.QuotaApplyTimeout <= 0 {
+		c.QuotaApplyTimeout = quotaApplyTimeout
+	}
+	if c.RecoverySweepInterval <= 0 {
+		c.RecoverySweepInterval = recoverySweepInterval
+	}
+	if c.RecoverySweepTimeout <= 0 {
+		c.RecoverySweepTimeout = recoverySweepTimeout
+	}
+	if c.DispatchTimeout <= 0 {
+		c.DispatchTimeout = kernelDispatchTimeout
+	}
+	return c
+}
+
+// parseKernelLoopConfig reads the kernel loop knobs from the serve config.
+// Empty or invalid duration strings log a warning and fall back to the
+// package default, so a bad config never disables a safety timeout.
+func parseKernelLoopConfig(cfg *ares_config.Config) kernelLoopConfig {
+	parse := func(raw string, fallback time.Duration) time.Duration {
+		if raw == "" {
+			return fallback
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			log.Printf("kernel: invalid duration %q, using default %s: %v", raw, fallback, err)
+			return fallback
+		}
+		return d
+	}
+	return kernelLoopConfig{
+		QuotaApplyInterval:    parse(cfg.Kernel.QuotaApplyInterval, quotaApplyInterval),
+		QuotaApplyTimeout:     parse(cfg.Kernel.QuotaApplyTimeout, quotaApplyTimeout),
+		RecoverySweepInterval: parse(cfg.Kernel.RecoverySweepInterval, recoverySweepInterval),
+		RecoverySweepTimeout:  parse(cfg.Kernel.RecoverySweepTimeout, recoverySweepTimeout),
+		DispatchTimeout:       parse(cfg.Kernel.DispatchTimeout, kernelDispatchTimeout),
+	}.withDefaults()
+}
 
 // runKernelQuotaLoop periodically applies the evolution resource policy to
 // the Agent Fabric's budget (v0.3.0 M2-2). It applies once at startup so an
@@ -399,17 +479,29 @@ const kernelDispatchTimeout = 300 * time.Second
 // Args:
 //   - ctx: stops the loop.
 //   - mgr: the quota manager (nil disables the loop).
-func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuotaManager) {
+//   - cfg: loop knobs; zero values fall back to the package defaults.
+func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuotaManager, cfg kernelLoopConfig) {
 	if mgr == nil {
 		return
 	}
+	cfg = cfg.withDefaults()
 	apply := func(phase string) {
-		if err := mgr.Apply(ctx); err != nil {
+		// A hung policy store must not stall the loop (C1): bound every Apply
+		// with a timeout and recover from any panic so the ticker keeps
+		// running (M2).
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("kernel: quota apply (%s) panic: %v", phase, r)
+			}
+		}()
+		applyCtx, cancel := context.WithTimeout(ctx, cfg.QuotaApplyTimeout)
+		defer cancel()
+		if err := mgr.Apply(applyCtx); err != nil {
 			log.Printf("kernel: quota apply (%s): %v", phase, err)
 		}
 	}
 	apply("startup")
-	ticker := time.NewTicker(quotaApplyInterval)
+	ticker := time.NewTicker(cfg.QuotaApplyInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -458,23 +550,51 @@ func runKernelTraceLoop(ctx context.Context, store ares_events.EventStore, trace
 			if !ok {
 				return
 			}
-			if ev.StreamID == "" {
-				continue
-			}
-			switch ev.Type {
-			case ares_events.EventTaskCreated:
-				tracer.TraceTask(ev.StreamID, "created", ev.Payload)
-			case ares_events.EventTaskReady:
-				tracer.TraceTask(ev.StreamID, "ready", ev.Payload)
-			case ares_events.EventTaskAcquired:
-				tracer.TraceTask(ev.StreamID, "acquired", ev.Payload)
-			case ares_events.EventTaskStarted:
-				tracer.TraceTask(ev.StreamID, "started", ev.Payload)
-			case ares_events.EventTaskCompleted:
-				tracer.Close(ev.StreamID, "completed")
-			case ares_events.EventTaskFailed:
-				tracer.Close(ev.StreamID, "failed")
-			}
+			// Recover per event so a single malformed event cannot kill the
+			// loop and stop span collection (M2: kernel loops must not crash
+			// the process).
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("kernel trace loop: panic processing event: %v", r)
+					}
+				}()
+				if ev.StreamID == "" {
+					return
+				}
+				// The executor (agent_id) rides in the fabric event payload
+				// (taskfabric.Fabric.record), so the same events that trace the
+				// TASK also trace the AGENT that drives it — wiring
+				// GlobalTracer.TraceAgent to a real production caller (v0.4.0
+				// review: TraceAgent was library-only).
+				agentID, _ := ev.Payload["agent_id"].(string)
+				switch ev.Type {
+				case ares_events.EventTaskCreated:
+					tracer.TraceTask(ev.StreamID, "created", ev.Payload)
+				case ares_events.EventTaskReady:
+					tracer.TraceTask(ev.StreamID, "ready", ev.Payload)
+				case ares_events.EventTaskAcquired:
+					tracer.TraceTask(ev.StreamID, "acquired", ev.Payload)
+					if agentID != "" {
+						tracer.TraceAgent(agentID, "acquired", ev.Payload)
+					}
+				case ares_events.EventTaskStarted:
+					tracer.TraceTask(ev.StreamID, "started", ev.Payload)
+					if agentID != "" {
+						tracer.TraceAgent(agentID, "started", ev.Payload)
+					}
+				case ares_events.EventTaskCompleted:
+					tracer.Close(ev.StreamID, "completed")
+					if agentID != "" {
+						tracer.Close(agentID, "completed")
+					}
+				case ares_events.EventTaskFailed:
+					tracer.Close(ev.StreamID, "failed")
+					if agentID != "" {
+						tracer.Close(agentID, "failed")
+					}
+				}
+			}()
 		}
 	}
 }
@@ -487,15 +607,24 @@ func runKernelTraceLoop(ctx context.Context, store ares_events.EventStore, trace
 // sweep complements the event channel because TTL-based lease expiry is only
 // observable by sweeping.
 //
+// Each sweep runs ASYNC with a per-sweep timeout (C3): a slow or hung store
+// must neither block the loop's event consumption nor pile up sweeps. A
+// buffered semaphore (capacity 1) drops a sweep trigger while the previous
+// one is still running. The sweep goroutine is bounded by sweepCtx (derived
+// from the loop ctx, so a shutdown cancels it) and releases the semaphore on
+// exit (code_rules_v2 §4.1: managed worker with a stop signal).
+//
 // Args:
 //   - ctx: stops the loop.
 //   - store: the EventStore to subscribe from (nil disables the event channel;
 //     the periodic sweep still runs).
 //   - recovery: the Recovery subsystem (nil disables the loop).
-func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, recovery *aresrecovery.Recovery) {
+//   - cfg: loop knobs; zero values fall back to the package defaults.
+func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, recovery *aresrecovery.Recovery, cfg kernelLoopConfig) {
 	if recovery == nil {
 		return
 	}
+	cfg = cfg.withDefaults()
 	var events <-chan *ares_events.Event
 	if store != nil {
 		ch, err := store.Subscribe(ctx, ares_events.EventFilter{
@@ -512,19 +641,63 @@ func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, re
 			log.Printf("kernel recovery loop: subscribe failed, periodic sweep only: %v", err)
 		}
 	}
-	ticker := time.NewTicker(recoverySweepInterval)
+	ticker := time.NewTicker(cfg.RecoverySweepInterval)
 	defer ticker.Stop()
+	// sem (capacity 1) guards against overlapping sweeps: a sweep that is
+	// still running (e.g. a stalled store) holds the single slot, so further
+	// triggers are dropped until it finishes. Bounded — at most one sweep
+	// goroutine exists beyond a hung one.
+	sem := make(chan struct{}, 1)
+	sweep := func() {
+		select {
+		case sem <- struct{}{}:
+		default:
+			return // previous sweep still running; drop this trigger (C3)
+		}
+		go func() {
+			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("kernel recovery loop: panic in recovery sweep: %v", r)
+				}
+			}()
+			sweepCtx, cancel := context.WithTimeout(ctx, cfg.RecoverySweepTimeout)
+			defer cancel()
+			// Honor the sweep timeout even though the requeue scan is
+			// in-memory: a cancelled/past-deadline sweep runs no scan at all
+			// (the next trigger retries).
+			select {
+			case <-sweepCtx.Done():
+				return
+			default:
+			}
+			// Requeue-only recovery (v0.4.0 review Bug 1): RecoverFromAgentDeath
+			// re-acquires each requeued task to a freshly SPAWNED replacement
+			// agent. That replacement is an agentfabric.Agent — NOT one of the
+			// kernelScheduler's registered sub.Agent executors — so nobody can
+			// execute the task; it stalls LEASED until its 1-minute lease
+			// expires (the phantom-agent bug). The kernel owns execution via
+			// the scheduler, which resumes READY tasks from the preserved
+			// checkpoint (toModelTask), so the kernel needs only the lease
+			// expiry → READY requeue half of the chain. RecoverFromAgentDeath
+			// stays for the chaos/sandbox sims where the agent fabric IS the
+			// executor.
+			if requeued := recovery.RequeueExpiredLeases(); requeued > 0 {
+				log.Printf("kernel recovery loop: requeued %d expired task(s)", requeued)
+			}
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			recovery.RecoverFromAgentDeath(ctx)
+			sweep()
 		case _, ok := <-events:
 			if !ok {
 				return
 			}
-			recovery.RecoverFromAgentDeath(ctx)
+			sweep()
 		}
 	}
 }
@@ -645,6 +818,19 @@ func (d *kernelTaskDispatcher) Dispatch(ctx context.Context, tasks []*models.Tas
 		return results, nil
 	}
 
+	// The wait bound applies to BOTH the subscription and the collection loop
+	// (C2): the subscription is scoped to waitCtx, so a finished Dispatch
+	// cancels it and the store releases its per-subscriber cleanup goroutine.
+	// Subscribing with the raw parent ctx would leave every completed
+	// Dispatch's subscription (and its goroutine) alive until the parent
+	// context is cancelled — accumulating across dispatches.
+	timeout := d.eventTimeout
+	if timeout <= 0 {
+		timeout = kernelDispatchTimeout
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Subscribe to the worker completion events BEFORE submitting so no
 	// completion can be missed between submit and the collection loop
 	// (mirrors dispatchViaEvents: subscribe-then-publish ordering). The
@@ -655,7 +841,7 @@ func (d *kernelTaskDispatcher) Dispatch(ctx context.Context, tasks []*models.Tas
 	// synchronously inside kernel.Dispatch, so no async completion event
 	// exists to wait for — skip the subscription entirely and report the
 	// synchronous success below.
-	resultCh, subErr := d.subscribeResults(ctx)
+	resultCh, subErr := d.subscribeResults(waitCtx)
 	if subErr != nil && !errors.Is(subErr, errNoResultSubscription) {
 		return d.failAll(tasks, "kernel dispatch: result collection unavailable: "+subErr.Error()), subErr
 	}
@@ -723,13 +909,8 @@ func (d *kernelTaskDispatcher) Dispatch(ctx context.Context, tasks []*models.Tas
 	// Block until every submitted task's final outcome is known or the
 	// dispatch timeout elapses. This is the synchronous wait that turns the
 	// kernel's async execution into the leader-expected blocking dispatch.
-	timeout := d.eventTimeout
-	if timeout <= 0 {
-		timeout = kernelDispatchTimeout
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
+	// waitCtx was created above (before subscribing) and is cancelled on
+	// return, which also releases the result subscription.
 	for len(pending) > 0 {
 		select {
 		case ev, ok := <-resultCh:
@@ -941,12 +1122,23 @@ type taskOutcome struct {
 
 // outcomeFromCheckpoint extracts the worker output the scheduler stored in
 // the quantum checkpoint (see kernelScheduler.execute: items/reason/metadata
-// ride inside a plain map[string]any). A missing or non-map checkpoint means
-// the task completed without a payload — still a success, just empty.
+// ride inside a map[string]any). The completed checkpoint is a fabricTaskMeta
+// envelope (Bug 3 fix: the meta is re-wrapped around every quantum's output),
+// so the step output is read from inside the envelope. A missing or non-map
+// checkpoint means the task completed without a payload — still a success,
+// just empty.
 func outcomeFromCheckpoint(tk *taskfabric.Task) *taskOutcome {
 	out := &taskOutcome{}
-	cp, ok := tk.Checkpoint.(map[string]any)
-	if !ok {
+	var cp map[string]any
+	switch c := tk.Checkpoint.(type) {
+	case fabricTaskMeta:
+		if step, ok := c.StepCheckpoint.(map[string]any); ok {
+			cp = step
+		}
+	case map[string]any:
+		cp = c
+	}
+	if cp == nil {
 		return out
 	}
 	if items, ok := cp["items"]; ok {
@@ -980,11 +1172,19 @@ func taskFromPayload(taskID string, payload any) (*models.Task, error) {
 			task.AgentType = models.AgentType(at)
 		}
 		// UserProfile arrives as the same-process struct reference (the
-		// kernelTaskDispatcher passes it through untouched). Without this
-		// restore the executor sees profile==nil and degrades to
+		// kernelTaskDispatcher passes it through untouched) — OR as a plain
+		// map after a JSON round-trip (web serve → HTTP → decode). Both are
+		// restored so the executor never sees profile==nil and degrades to
 		// executeByType — the serve no-op chain.
 		if up, ok := m["user_profile"].(*models.UserProfile); ok && up != nil {
 			task.UserProfile = up
+		} else if raw, ok := m["user_profile"].(map[string]any); ok {
+			if buf, err := json.Marshal(raw); err == nil {
+				var up models.UserProfile
+				if err := json.Unmarshal(buf, &up); err == nil {
+					task.UserProfile = &up
+				}
+			}
 		}
 		// Dependencies arrive as []string when the payload passes through the
 		// kernel dispatcher directly (kernelTaskDispatcher.Dispatch) and as

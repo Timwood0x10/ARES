@@ -265,6 +265,15 @@ func (s *MemoryEventStore) Stats() map[string]int64 {
 	}
 }
 
+// SubscriberCount returns the number of currently registered subscribers.
+// It exists for tests that assert a subscription is released when its context
+// is cancelled (leak checks); production code should not need it.
+func (s *MemoryEventStore) SubscriberCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.subscribers)
+}
+
 // notifySubscribers sends an event to all matching subscribers (non-blocking).
 func (s *MemoryEventStore) notifySubscribers(event *Event) {
 	for _, sub := range s.subscribers {

@@ -392,6 +392,42 @@ func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) er
 	return nil
 }
 
+// RunningTask is a snapshot of one currently-RUNNING task, for the
+// scheduler's preemption decision (the Scheduler decides WHO is preempted;
+// Preempt is the primitive that hands the task back).
+type RunningTask struct {
+	// ID is the task id.
+	ID string
+	// Owner is the current lease holder (must be the preempting agent).
+	Owner string
+	// Epoch is the fencing token the holder must present to Preempt.
+	Epoch uint64
+	// Priority is the task's scheduling priority (higher wins).
+	Priority int
+}
+
+// RunningTasks returns a snapshot of every currently-RUNNING task. It feeds
+// the scheduler's priority-preemption decision (v0.4.0 review: Preempt was
+// production-unused); the caller must not hold any fabric lock while calling
+// Preempt with the returned epochs.
+func (f *Fabric) RunningTasks() []RunningTask {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]RunningTask, 0, len(f.tasks))
+	for _, t := range f.tasks {
+		if t.State != StateRunning || t.Lease == nil {
+			continue
+		}
+		out = append(out, RunningTask{
+			ID:       t.ID,
+			Owner:    t.Owner,
+			Epoch:    t.Lease.Epoch,
+			Priority: t.Priority,
+		})
+	}
+	return out
+}
+
 // Task returns a copy of a task (ErrTaskNotFound when unknown). It returns a
 // snapshot, never the internal pointer: callers may read the returned task
 // freely while the fabric mutates the live task (state transitions under the

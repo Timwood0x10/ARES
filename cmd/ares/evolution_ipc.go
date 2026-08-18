@@ -35,27 +35,32 @@ const peerTopic = "peer"
 // evolutionIPCBridge holds the evolution-aware IPC bus and the peer registry
 // wired to it. The bridge is created once per serve; a nil policy source (no
 // evolution store) keeps plain json encoding, which is behaviorally identical
-// to the direct peer channel.
+// to the direct peer channel. A nil tracer disables cross-Fabric message
+// tracing (M4-1).
 type evolutionIPCBridge struct {
-	ipc *aresrecovery.EvolutionAwareIPC
-	reg *peer.Registry
+	ipc    *aresrecovery.EvolutionAwareIPC
+	reg    *peer.Registry
+	tracer *aresrecovery.GlobalTracer
 }
 
 // wireEvolutionIPC builds the evolution-aware peer bridge: a Bus whose Send
 // applies the active evolution IPC policy, with one bus handler per agent that
 // decodes the wire payload and forwards the original AHPMessage to the agent's
 // delivery function. The returned registry routes every peer send through the
-// bus.
+// bus. When tracer is non-nil, every peer send is also recorded as a
+// cross-Fabric message span (v0.3.0 M4-1 TraceMessage — the v0.4.0 review
+// flagged it as library-only; this is its production write path).
 //
 // Args:
 //   - leaderAgent: the leader agent (registered under its ID).
 //   - subAgents: the sub agents (registered under their IDs).
 //   - store: the evolution strategy store (nil → plain json, no-op policy).
+//   - tracer: the shared GlobalTracer (nil → no message tracing).
 //
 // Returns:
 //   - *evolutionIPCBridge: the wired bridge (registry + ipc).
 //   - error: when a bus handler cannot be registered.
-func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evolution.StrategyStore) (*evolutionIPCBridge, error) {
+func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evolution.StrategyStore, tracer *aresrecovery.GlobalTracer) (*evolutionIPCBridge, error) {
 	bus := agentipc.NewBus()
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, ares_bootstrap.NewIPCProtocolPolicySource(store))
 	reg := peer.NewRegistry()
@@ -90,6 +95,15 @@ func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evo
 		// Peer registry entry: route the peer send through the evolution-aware
 		// bus. The sender's identity comes from the message itself.
 		_ = reg.Register(targetID, func(ctx context.Context, m *ahp.AHPMessage) error {
+			if tracer != nil {
+				tracer.TraceMessage(m.MessageID, "sent", m.TaskID, map[string]any{
+					"from":       m.AgentID,
+					"to":         targetID,
+					"topic":      peerTopic,
+					"method":     string(m.Method),
+					"session_id": m.SessionID,
+				})
+			}
 			return ipc.Send(ctx, m.AgentID, targetID, peerTopic, m)
 		})
 	}

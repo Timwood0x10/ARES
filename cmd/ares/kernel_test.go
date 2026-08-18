@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -216,7 +217,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	// Submit B (depends on A) first: it must NOT run before A completes.
 	b := models.NewTask("task_b", models.AgentType("write"), nil)
 	b.Context.Dependencies = []string{"task_a"}
-	if err := submitFabricTask(ctx, f, executors, tracker, b); err != nil {
+	if err := submitFabricTask(ctx, f, b); err != nil {
 		t.Fatalf("submitFabricTask(B): %v", err)
 	}
 	time.Sleep(60 * time.Millisecond)
@@ -226,7 +227,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 
 	// Submit A: the scheduler runs it, completing A and unlocking B.
 	a := models.NewTask("task_a", models.AgentType("research"), nil)
-	if err := submitFabricTask(ctx, f, executors, tracker, a); err != nil {
+	if err := submitFabricTask(ctx, f, a); err != nil {
 		t.Fatalf("submitFabricTask(A): %v", err)
 	}
 
@@ -277,7 +278,7 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 	// Flip: replace the shadow scorer with the submit-only new path, disable
 	// shadow. The leader dispatch now SUBMITS the task; the kernelScheduler
 	// is the single executor (GAP #2: no double-path acquire race).
-	enableKernelExecution(kernel, f, executors, tracker)
+	enableKernelExecution(kernel, f)
 	flag.Set(agentipc.PolicyTaskFabric)
 
 	// Dispatch through the kernel (active path = fabric submit).
@@ -589,8 +590,11 @@ func TestWireKernelPolicyWiresLifecycle(t *testing.T) {
 // TestRunKernelRecoveryLoopEventDriven verifies the event-driven recovery loop
 // (code-review-2025-01-16 #2): task lifecycle events on the shared EventStore
 // drive the recovery chain instead of a command loop. Publishing an
-// EventTaskExpired event triggers RequeueExpiredLeases (the first recovery
-// path), so an expired task returns to READY.
+// EventTaskExpired event triggers the kernel's requeue-only recovery (v0.4.0
+// review Bug 1 fix): the expired task returns to READY, UNOWNED — NOT re-leased
+// to a phantom replacement agent that no registered executor can drive. The
+// kernelScheduler (which owns execution) picks up the READY task and resumes
+// from its preserved checkpoint.
 func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
@@ -612,10 +616,13 @@ func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runKernelRecoveryLoop(ctx, store, recovery)
+	go runKernelRecoveryLoop(ctx, store, recovery, kernelLoopConfig{})
 
 	// Publish the TaskExpired event (as CheckExpiredLeases would) and wait for
-	// the recovery sweep to requeue the task to READY.
+	// the requeue: the expired lease returns to READY, unowned. The OLD
+	// behavior handed it to a freshly-spawned replacement agent (LEASED to a
+	// phantom — see Bug 1); the kernel now requeues only and lets the
+	// scheduler re-acquire with registered executors.
 	if err := store.Append(ctx, "t1", []*ares_events.Event{
 		{Type: ares_events.EventTaskExpired, StreamID: "t1", Payload: map[string]any{}},
 	}, 0); err != nil {
@@ -625,8 +632,8 @@ func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		tk, err := tf.Task("t1")
-		if err == nil && tk.State == taskfabric.StateReady {
-			return // recovered: lease expired → task requeued to READY
+		if err == nil && tk.State == taskfabric.StateReady && tk.Owner == "" {
+			return // recovered: requeued to READY, awaiting a registered executor
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -634,7 +641,7 @@ func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Task: %v", err)
 	}
-	t.Fatalf("task must be requeued to READY after TaskExpired event, state=%s", tk.State)
+	t.Fatalf("task must be requeued to READY unowned after recovery (no phantom agent), state=%s owner=%q", tk.State, tk.Owner)
 }
 
 // resultStubAgent is a sub.Agent stub that returns a real worker result
@@ -801,5 +808,300 @@ func TestKernelDispatchEventDrivenWorkerFailure(t *testing.T) {
 	}
 	if r.Error == "" {
 		t.Fatalf("failed result must carry the worker error, got %+v", r)
+	}
+}
+
+// flakyQuotaSource blocks the FIRST ActiveQuotaPolicy call until its context
+// is cancelled (a policy store that hangs once), then answers subsequent calls
+// normally. Used by TestRunKernelQuotaLoopSurvivesBlockedApply.
+type flakyQuotaSource struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *flakyQuotaSource) ActiveQuotaPolicy(ctx context.Context) (aresrecovery.QuotaPolicy, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		<-ctx.Done() // block until the caller's timeout cancels ctx
+		return aresrecovery.QuotaPolicy{}, ctx.Err()
+	}
+	return aresrecovery.QuotaPolicy{}, nil
+}
+
+func (s *flakyQuotaSource) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestRunKernelQuotaLoopSurvivesBlockedApply (C1): a quota Apply that hangs on
+// the policy store must be bounded by the loop's per-apply timeout — the loop
+// must keep ticking instead of spinning forever on a single blocked Apply.
+func TestRunKernelQuotaLoopSurvivesBlockedApply(t *testing.T) {
+	source := &flakyQuotaSource{}
+	mgr := aresrecovery.NewEvolutionAwareQuotaManager(agentfabric.NewFabric(), source)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := kernelLoopConfig{
+		QuotaApplyInterval: 20 * time.Millisecond,
+		QuotaApplyTimeout:  50 * time.Millisecond,
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runKernelQuotaLoop(ctx, mgr, cfg)
+	}()
+
+	// The first Apply blocks (50ms), then the ticker must drive a second
+	// Apply — proof the loop survived the stalled call.
+	deadline := time.Now().Add(2 * time.Second)
+	for source.callCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := source.callCount(); got < 2 {
+		t.Fatalf("quota loop must survive a blocked Apply and tick again, calls=%d", got)
+	}
+	cancel()
+	<-done
+}
+
+// TestKernelDispatchReleasesResultSubscription (C2): after Dispatch returns,
+// the waitCtx-bounded result subscription must be released. Subscribing with
+// the raw parent ctx would leave every completed Dispatch's subscription — and
+// its cleanup goroutine — alive until the parent context is cancelled,
+// accumulating across dispatches.
+func TestKernelDispatchReleasesResultSubscription(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &resultStubAgent{id: "code_01", typ: models.AgentType("code")}
+	store := ares_events.NewMemoryEventStore()
+	defer func() { _ = store.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := newKernelTaskDispatcher(kernel, store)
+	handle.taskDispatcher = adapter
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, store)
+
+	// The flipped scheduler subscribes to task events on ctx (long-lived);
+	// wait for that baseline so the dispatch's subscription is the only
+	// transient one being measured.
+	deadline := time.Now().Add(2 * time.Second)
+	for store.SubscriberCount() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	before := store.SubscriberCount()
+
+	results, err := adapter.Dispatch(ctx, []*models.Task{
+		models.NewTask("t-sub", models.AgentType("code"), nil),
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("want one successful result, got %+v", results)
+	}
+
+	// The dispatch's subscription is released once Dispatch returns (its
+	// waitCtx is cancelled on exit); the long-lived scheduler subscription
+	// stays. Poll briefly for the async unsubscribe to settle.
+	deadline = time.Now().Add(2 * time.Second)
+	for store.SubscriberCount() != before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := store.SubscriberCount(); got != before {
+		t.Fatalf("result subscription must be released after Dispatch, want %d subscribers, got %d", before, got)
+	}
+}
+
+// TestToModelTaskPreservesMetaAcrossYieldCheckpoint verifies the v0.4.0 review
+// Bug 3 fix: a yielded task's checkpoint is the meta envelope re-wrapped by the
+// scheduler's quantum step, so toModelTask can still restore UserProfile/
+// Payload/UsedExperienceID on resume (the old code type-asserted a plain map
+// after a yield and degraded the executor to executeByType).
+func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
+	up := models.NewUserProfile("u1", "alice")
+	up.Style = []models.StyleTag{models.StyleMinimalist}
+	meta := fabricTaskMeta{
+		UserProfile:      up,
+		Payload:          map[string]any{"task_desc": "pick"},
+		UsedExperienceID: "exp-1",
+		// What RunQuantum stores after a yield: the step's durable progress.
+		StepCheckpoint: map[string]any{"step": 2},
+	}
+	s := NewKernelScheduler(taskfabric.NewFabric(), nil, nil)
+
+	tk := &taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: meta}
+	model := s.toModelTask(tk)
+	if model.UserProfile == nil || model.UserProfile.UserID != "u1" {
+		t.Fatalf("resume must restore UserProfile, got %+v", model.UserProfile)
+	}
+	if model.UsedExperienceID != "exp-1" {
+		t.Fatalf("resume must restore UsedExperienceID, got %q", model.UsedExperienceID)
+	}
+	step, ok := model.Payload["checkpoint"].(map[string]any)
+	if !ok || step["step"] != float64(2) && step["step"] != 2 {
+		t.Fatalf("resume must surface the step checkpoint in payload, got %#v", model.Payload)
+	}
+	// The initial (pre-quantum) envelope without StepCheckpoint must also still
+	// restore the profile, and must not invent a checkpoint key.
+	initModel := s.toModelTask(&taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: fabricTaskMeta{
+		UserProfile: up, Payload: map[string]any{"task_desc": "pick"}, UsedExperienceID: "exp-1",
+	}})
+	if initModel.UserProfile == nil || initModel.UsedExperienceID != "exp-1" {
+		t.Fatalf("initial envelope must restore meta, got profile=%+v exp=%q", initModel.UserProfile, initModel.UsedExperienceID)
+	}
+	if _, hasKey := initModel.Payload["checkpoint"]; hasKey {
+		t.Fatal("initial envelope must not expose a checkpoint key")
+	}
+}
+
+// TestRetryPolicyAllowsOneRetry verifies the v0.4.0 review Bug 2 fix:
+// submitFabricTask now grants ONE real retry (MaxRetries counts total
+// attempts, so 2 = first attempt + one retry). A transient failure requeues
+// the task to READY; only the second failure finalizes FAILED.
+func TestRetryPolicyAllowsOneRetry(t *testing.T) {
+	f := taskfabric.NewFabric()
+	task := models.NewTask("t-retry", models.AgentType("code"), nil)
+	if err := submitFabricTask(context.Background(), f, task); err != nil {
+		t.Fatalf("submitFabricTask: %v", err)
+	}
+	tk, err := f.Task("t-retry")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.RetryPolicy.MaxRetries != 2 {
+		t.Fatalf("submitFabricTask must grant 1 retry (MaxRetries=2), got %d", tk.RetryPolicy.MaxRetries)
+	}
+	// First execution fails → requeued to READY (the retry).
+	epoch, err := f.Acquire("t-retry", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire 1: %v", err)
+	}
+	if err := f.Start("t-retry", "agent-a", epoch); err != nil {
+		t.Fatalf("start 1: %v", err)
+	}
+	if err := f.Fail("t-retry", "agent-a", epoch); err != nil {
+		t.Fatalf("fail 1: %v", err)
+	}
+	tk, _ = f.Task("t-retry")
+	if tk.State != taskfabric.StateReady {
+		t.Fatalf("first failure must requeue (1 retry granted), got state %s", tk.State)
+	}
+	// Second execution fails → budget exhausted → FAILED.
+	epoch, err = f.Acquire("t-retry", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire 2: %v", err)
+	}
+	if err := f.Start("t-retry", "agent-a", epoch); err != nil {
+		t.Fatalf("start 2: %v", err)
+	}
+	if err := f.Fail("t-retry", "agent-a", epoch); err != nil {
+		t.Fatalf("fail 2: %v", err)
+	}
+	tk, _ = f.Task("t-retry")
+	if tk.State != taskfabric.StateFailed {
+		t.Fatalf("second failure must finalize FAILED, got state %s", tk.State)
+	}
+}
+
+// TestSchedulerPriorityPreemption verifies the v0.4.0 review wiring fix:
+// fabric.Preempt is exercised from the scheduler — a RUNNING low-priority task
+// is cooperatively handed back to READY (checkpoint preserved) when a READY
+// high-priority task arrives, freeing the executor for the next drain.
+func TestSchedulerPriorityPreemption(t *testing.T) {
+	f := taskfabric.NewFabric()
+	// A low-priority task that is RUNNING (executor busy across a drain).
+	if err := f.Create(&taskfabric.Task{ID: "low", Capability: "code", Priority: 1}); err != nil {
+		t.Fatalf("create low: %v", err)
+	}
+	epoch, err := f.Acquire("low", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire low: %v", err)
+	}
+	if err := f.Start("low", "agent-a", epoch); err != nil {
+		t.Fatalf("start low: %v", err)
+	}
+	if err := f.Yield("low", "agent-a", epoch, map[string]any{"step": 3}); err != nil {
+		t.Fatalf("yield low (checkpoint): %v", err)
+	}
+	// Re-acquire to RUNNING so there is a RUNNING task to preempt.
+	epoch, err = f.Acquire("low", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("re-acquire low: %v", err)
+	}
+	if err := f.Start("low", "agent-a", epoch); err != nil {
+		t.Fatalf("re-start low: %v", err)
+	}
+	// A higher-priority READY task.
+	if err := f.Create(&taskfabric.Task{ID: "high", Capability: "code", Priority: 10}); err != nil {
+		t.Fatalf("create high: %v", err)
+	}
+	rt := f.RunningTasks()
+	if len(rt) != 1 || rt[0].ID != "low" {
+		t.Fatalf("want exactly one running task (low), got %+v", rt)
+	}
+
+	s := NewKernelScheduler(f, map[string]sub.Agent{"agent-a": &stubAgent{id: "agent-a", typ: models.AgentType("code")}}, nil)
+	s.preemptLowerPriority([]string{"high"})
+
+	tk, err := f.Task("low")
+	if err != nil {
+		t.Fatalf("Task low: %v", err)
+	}
+	if tk.State != taskfabric.StateReady {
+		t.Fatalf("low-priority RUNNING task must be preempted to READY, got %s", tk.State)
+	}
+	if tk.Checkpoint == nil {
+		t.Fatal("preempted task must preserve its checkpoint")
+	}
+	// No-op on ties / unset priorities: a RUNNING task is never churned.
+	if err := f.Create(&taskfabric.Task{ID: "tie", Capability: "code", Priority: 0}); err != nil {
+		t.Fatalf("create tie: %v", err)
+	}
+	epoch, err = f.Acquire("tie", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire tie: %v", err)
+	}
+	if err := f.Start("tie", "agent-a", epoch); err != nil {
+		t.Fatalf("start tie: %v", err)
+	}
+	s.preemptLowerPriority([]string{"tie"})
+	tk, _ = f.Task("tie")
+	if tk.State != taskfabric.StateRunning {
+		t.Fatal("zero-priority preempt must not churn a running task")
+	}
+}
+
+// TestTaskFromPayloadRestoresJSONUserProfile verifies the v0.4.0 review Bug 3
+// (kernel side) fix: a user_profile that survived a JSON round-trip arrives as
+// a plain map, not a *models.UserProfile. taskFromPayload must still restore it
+// so the executor never degrades to executeByType.
+func TestTaskFromPayloadRestoresJSONUserProfile(t *testing.T) {
+	up := models.NewUserProfile("u1", "alice")
+	raw, err := json.Marshal(map[string]any{"user_profile": up})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := payload["user_profile"].(map[string]any); !ok {
+		t.Fatalf("test precondition: user_profile must be a plain map after round-trip, got %T", payload["user_profile"])
+	}
+	task, err := taskFromPayload("t-json", payload)
+	if err != nil {
+		t.Fatalf("taskFromPayload: %v", err)
+	}
+	if task.UserProfile == nil || task.UserProfile.UserID != "u1" {
+		t.Fatalf("JSON round-tripped profile must be restored, got %+v", task.UserProfile)
 	}
 }

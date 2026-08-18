@@ -71,6 +71,23 @@ type KernelConfig struct {
 	// MaxRestarts bounds agent restart attempts after a crash in the
 	// event-driven recovery loop (0 = aresrecovery default of 5).
 	MaxRestarts int `yaml:"max_restarts"`
+	// QuotaApplyInterval is how often the evolution-aware quota manager
+	// pushes the resource budget into the Agent Fabric (default "1m").
+	// Parsed with time.ParseDuration; empty/invalid falls back to the default.
+	QuotaApplyInterval string `yaml:"quota_apply_interval"`
+	// QuotaApplyTimeout bounds each quota policy application (default "30s").
+	// A hung policy store must not stall the quota loop (C1).
+	QuotaApplyTimeout string `yaml:"quota_apply_timeout"`
+	// RecoverySweepInterval is how often the recovery loop sweeps TTL-based
+	// lease expiry (default "1s").
+	RecoverySweepInterval string `yaml:"recovery_sweep_interval"`
+	// RecoverySweepTimeout bounds each recovery sweep (default "30s"). A hung
+	// store must neither block the recovery loop nor pile up sweeps (C3).
+	RecoverySweepTimeout string `yaml:"recovery_sweep_timeout"`
+	// DispatchTimeout bounds how long kernelTaskDispatcher.Dispatch waits for
+	// a submitted task's completion event before reporting it failed
+	// (default "300s", mirrors the legacy dispatcher timeout).
+	DispatchTimeout string `yaml:"dispatch_timeout"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that

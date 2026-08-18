@@ -49,8 +49,9 @@ func (s *stubIPCProtocolSource) ActiveIPCProtocolPolicy(context.Context) (aresre
 // the test can exercise the full json+gzip round trip without constructing
 // the large leader.Agent / sub.Agent interfaces. It creates the bus AND the
 // policy-aware IPC on the SAME bus, so the peer send reaches the registered
-// handler.
-func buildBridge(target *fakeMessageAgent, policy aresrecovery.IPCProtocolPolicy) *peer.Registry {
+// handler. A non-nil tracer records each peer send as a message span, exactly
+// like the production wiring (v0.4.0 review: TraceMessage was library-only).
+func buildBridge(target *fakeMessageAgent, policy aresrecovery.IPCProtocolPolicy, tracer *aresrecovery.GlobalTracer) *peer.Registry {
 	bus := agentipc.NewBus()
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, &stubIPCProtocolSource{policy: policy})
 	_ = bus.Register(target.ID(), func(ctx context.Context, msg *agentipc.Message) (*agentipc.Message, error) {
@@ -66,6 +67,12 @@ func buildBridge(target *fakeMessageAgent, policy aresrecovery.IPCProtocolPolicy
 	})
 	reg := peer.NewRegistry()
 	_ = reg.Register(target.ID(), func(ctx context.Context, m *ahp.AHPMessage) error {
+		if tracer != nil {
+			tracer.TraceMessage(m.MessageID, "sent", m.TaskID, map[string]any{
+				"from": m.AgentID,
+				"to":   target.ID(),
+			})
+		}
 		return ipc.Send(ctx, m.AgentID, target.ID(), peerTopic, m)
 	})
 	return reg
@@ -80,7 +87,7 @@ func TestEvolutionIPCBridgeRoundTrip(t *testing.T) {
 
 	reg := buildBridge(target, aresrecovery.IPCProtocolPolicy{
 		Encoding: aresrecovery.WireJSONGzip, MinCompressSize: 1,
-	})
+	}, nil)
 
 	msg := &ahp.AHPMessage{
 		MessageID: "m-roundtrip",
@@ -107,7 +114,7 @@ func TestEvolutionIPCBridgePlainJSON(t *testing.T) {
 	ctx := context.Background()
 	target := &fakeMessageAgent{id: "sub-1"}
 
-	reg := buildBridge(target, aresrecovery.IPCProtocolPolicy{Encoding: aresrecovery.WireJSON})
+	reg := buildBridge(target, aresrecovery.IPCProtocolPolicy{Encoding: aresrecovery.WireJSON}, nil)
 
 	msg := &ahp.AHPMessage{
 		MessageID: "m-plain",
@@ -165,5 +172,42 @@ func TestToAHPMessage(t *testing.T) {
 func TestToAHPMessageRejectsGarbage(t *testing.T) {
 	if _, err := toAHPMessage(42); err == nil {
 		t.Fatal("non-message payload must error")
+	}
+}
+
+// TestEvolutionIPCBridgeTracesMessage verifies the v0.4.0 review wiring: every
+// peer send through the evolution-aware bus also records a cross-Fabric
+// message span on the shared GlobalTracer (TraceMessage's production path,
+// previously library-only). The span is keyed by the message id and links to
+// the task it serves.
+func TestEvolutionIPCBridgeTracesMessage(t *testing.T) {
+	ctx := context.Background()
+	target := &fakeMessageAgent{id: "sub-1"}
+	tracer := aresrecovery.NewGlobalTracer()
+	reg := buildBridge(target, aresrecovery.IPCProtocolPolicy{Encoding: aresrecovery.WireJSON}, tracer)
+
+	msg := &ahp.AHPMessage{
+		MessageID: "m-trace",
+		TaskID:    "t1",
+		AgentID:   "leader",
+		Method:    ahp.AHPMethodTask,
+		Payload:   map[string]any{"hello": "world"},
+	}
+	if err := reg.Send(ctx, "sub-1", msg); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+
+	span := tracer.Span("m-trace")
+	if span == nil {
+		t.Fatalf("peer send must open a message span for %q", msg.MessageID)
+	}
+	if span.Kind != aresrecovery.SpanMessage || span.ParentID != "t1" {
+		t.Fatalf("span must be a message span linked to task t1, got %+v", span)
+	}
+	if len(span.Events) != 1 || span.Events[0].Name != "sent" {
+		t.Fatalf("want a single 'sent' event, got %+v", span.Events)
+	}
+	if span.Events[0].Detail["from"] != "leader" || span.Events[0].Detail["to"] != "sub-1" {
+		t.Fatalf("span detail must carry from/to, got %+v", span.Events[0].Detail)
 	}
 }
