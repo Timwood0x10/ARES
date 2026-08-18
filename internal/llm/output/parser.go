@@ -118,20 +118,25 @@ func (p *Parser) extractJSON(output string) string {
 		}
 	}
 
-	start := strings.Index(output, "{")
+	// Prefer whichever of '{' or '[' appears first: an array response
+	// ([{...},{...}]) must not be truncated to its first object by always
+	// looking for '{' first (pre-existing bug: array-formatted LLM output
+	// silently degraded to prose because the extracted "JSON" was a single
+	// object that unmarshaled to an empty Items slice).
+	start := strings.IndexByte(output, '{')
+	arrStart := strings.IndexByte(output, '[')
+	if arrStart != -1 && (start == -1 || arrStart < start) {
+		start = arrStart
+	}
 	if start == -1 {
-		start = strings.Index(output, "[")
-		if start == -1 {
-			return ""
-		}
-		end := findMatchingBracket(output, start, '[', ']')
-		if end == -1 {
-			return ""
-		}
-		return output[start:end]
+		return ""
 	}
 
-	end := findMatchingBracket(output, start, '{', '}')
+	open, close := byte('{'), byte('}')
+	if output[start] == '[' {
+		open, close = '[', ']'
+	}
+	end := findMatchingBracket(output, start, open, close)
 	if end == -1 {
 		return ""
 	}

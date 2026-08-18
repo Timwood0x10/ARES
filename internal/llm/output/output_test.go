@@ -3,6 +3,7 @@ package output
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,21 @@ func TestParser(t *testing.T) {
 		result := parser.extractJSON(input)
 		if result == "" {
 			t.Errorf("should extract json")
+		}
+	})
+
+	t.Run("extract json from array response keeps whole array", func(t *testing.T) {
+		// Regression: array-formatted LLM output ([{...},{...}]) must not be
+		// truncated to its first object by always preferring '{' over '['.
+		parser := NewParser()
+		input := `[{"item_id": "i1", "name": "Result", "category": "general"}, {"item_id": "i2", "name": "Second"}]`
+
+		result := parser.extractJSON(input)
+		if !strings.HasPrefix(result, "[") || !strings.HasSuffix(result, "]") {
+			t.Fatalf("extractJSON = %q, want a full array", result)
+		}
+		if strings.Count(result, "item_id") != 2 {
+			t.Fatalf("extractJSON = %q, want both array elements", result)
 		}
 	})
 

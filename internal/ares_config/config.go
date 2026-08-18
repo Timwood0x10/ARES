@@ -25,6 +25,20 @@ func SetAllowedConfigDir(dir string) {
 const (
 	// DefaultTaskDistillationPrompt is the default prompt for task distillation
 	DefaultTaskDistillationPrompt = "Please concisely summarize the key information for the following task, including: user needs, preferences, and budget range. Simply return a JSON object. {\"user_needs\": \"...\", \"preferences\": \"...\", \"budget\": \"...\"}"
+
+	// DefaultRecommendationPrompt is the default recommendation template used
+	// when the config omits prompts.recommendation. {{.input}} is the original
+	// task input (planner writes it to the task payload as task_desc) and
+	// {{.Category}} is the sub-agent type; the executor supplies both.
+	DefaultRecommendationPrompt = "You are a {{.Category}} specialist. Analyze the following task and recommend the best items/actions with clear reasoning.\n\nTask: {{.input}}\n\nReturn a structured list of recommendations with name, description and match reason."
+
+	// DefaultProfileExtractionPrompt is the default template used when the
+	// config omits prompts.profile_extraction.
+	DefaultProfileExtractionPrompt = "Extract the user profile (preferences, style, budget) from: {{.input}}"
+
+	// DefaultStyleAnalysisPrompt is the default template used when the config
+	// omits prompts.style_analysis.
+	DefaultStyleAnalysisPrompt = "Analyze the style of: {{.input}}"
 )
 
 // Config holds all configuration for the server.
@@ -46,6 +60,7 @@ type Config struct {
 	Embedding  EmbeddingConfig    `yaml:"embedding"`
 	Discovery  DiscoveryConfig    `yaml:"discovery"`
 	Kernel     KernelConfig       `yaml:"kernel"`
+	Security   SecurityConfig     `yaml:"security"`
 }
 
 // KernelConfig controls the dual-track dispatch kernel (ares-runtime.md P4 D4:
@@ -124,6 +139,26 @@ type EmbeddingConfig struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+}
+
+// SecurityConfig holds JWT authentication and RBAC settings for the HTTP
+// surfaces (monitoring console, dashboard, arena). When JWTSecret is empty
+// every protected endpoint stays deny-by-default (401) — the same posture as
+// the legacy ARES_API_KEY, so enabling JWT cannot accidentally open a
+// destructive endpoint. JWTSecret must be kept out of YAML config committed
+// to VCS; prefer the ARES_JWT_SECRET environment variable.
+type SecurityConfig struct {
+	// JWTSecret is the HS256 signing key for issued tokens. Empty disables
+	// JWT (deny all protected endpoints).
+	JWTSecret string `yaml:"jwt_secret"`
+	// JWTExpiry is the token lifetime, parsed with time.ParseDuration
+	// (default "24h"). Empty/invalid falls back to the default.
+	JWTExpiry string `yaml:"jwt_expiry"`
+	// AuthEnabled gates whether the JWT middleware is mounted at all. When
+	// true and JWTSecret is empty, protected endpoints deny (misconfig is
+	// safer than open). Default false preserves the pre-JWT behavior for
+	// read-only surfaces; destructive endpoints always require auth.
+	AuthEnabled bool `yaml:"auth_enabled"`
 }
 
 // LLMConfig holds LLM provider configuration.
@@ -493,6 +528,15 @@ func LoadFromEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("DB_DATABASE"); v != "" {
 		cfg.Storage.Database = v
+	}
+	// Security environment variables. JWTSecret prefers ARES_JWT_SECRET and
+	// must not be stored in committed YAML; ARES_AUTH_ENABLED toggles the
+	// middleware (any non-empty value enables).
+	if v := os.Getenv("ARES_JWT_SECRET"); v != "" {
+		cfg.Security.JWTSecret = v
+	}
+	if v := os.Getenv("ARES_AUTH_ENABLED"); v != "" {
+		cfg.Security.AuthEnabled = true
 	}
 
 	return nil

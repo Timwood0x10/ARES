@@ -352,28 +352,6 @@ func activeRoleInstructions(ctx context.Context) string {
 // It prepends the active role's system instructions when the leader switched
 // this execution to a specialized role via Handoff (Ch.10 multi-stage roles).
 func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Task, profile *models.UserProfile) ([]*models.RecommendItem, error) {
-	// Render prompt - support generic profile fields.
-	// Use lowercase keys to match template's {{index . "key"}} syntax.
-	promptData := map[string]any{
-		"Category": string(task.AgentType), // Uppercase to match template
-	}
-
-	// Check if this is a travel request - use Preferences map
-	if len(profile.Preferences) > 0 {
-		// Copy all preferences to promptData (lowercase keys)
-		for k, v := range profile.Preferences {
-			promptData[k] = v
-		}
-	}
-
-	// Include budget from profile.Budget for backward compatibility.
-	promptData["budget"] = formatBudget(profile.Budget)
-
-	// Also set style from profile
-	if len(profile.Style) > 0 {
-		promptData["style"] = profile.Style
-	}
-
 	// Apply live evolution strategy: override the prompt template if the
 	// active strategy provides one, and collect per-call LLM param overrides.
 	tpl := e.promptTpl
@@ -387,9 +365,9 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 		}
 	}
 
-	prompt, err := e.template.Render(tpl, promptData)
+	prompt, err := e.renderPrompt(tpl, task, profile)
 	if err != nil {
-		return nil, errors.Wrap(err, "render prompt")
+		return nil, err
 	}
 
 	// P0-3: prepend the active role's system instructions when the leader
@@ -410,6 +388,64 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 
 	// Fall back to text-only generation.
 	return e.executeWithLLMTextOnly(ctx, prompt, params)
+}
+
+// renderPrompt renders the worker prompt template with the task and profile
+// data. It fails fast on an empty result: an empty user message is rejected
+// by OpenAI-compatible providers with a 400 ("message content cannot be
+// empty"), which used to trip the failover chain and burn the cooldown (20s)
+// on every worker call. A missing template or a template that references
+// unset keys is a wiring error, not a retryable LLM failure.
+func (e *taskExecutor) renderPrompt(tpl string, task *models.Task, profile *models.UserProfile) (string, error) {
+	// Render prompt - support generic profile fields.
+	// Use lowercase keys to match template's {{index . "key"}} syntax.
+	promptData := map[string]any{
+		"Category": string(task.AgentType), // Uppercase to match template
+	}
+
+	// Carry the original task input into the template as {{.input}}: the
+	// planner writes it to the task payload as task_desc, so a config that
+	// omits prompts.recommendation (or a template that references .input)
+	// still renders a prompt that contains the actual task. Without this the
+	// rendered prompt was empty and every worker LLM call 400'd on empty
+	// user content (see DefaultRecommendationPrompt).
+	if task.Payload != nil {
+		if desc, ok := task.Payload["task_desc"].(string); ok && desc != "" {
+			promptData["input"] = desc
+		}
+	}
+	if _, ok := promptData["input"]; !ok {
+		promptData["input"] = string(task.AgentType)
+	}
+
+	// Check if this is a travel request - use Preferences map
+	if profile != nil && len(profile.Preferences) > 0 {
+		// Copy all preferences to promptData (lowercase keys)
+		for k, v := range profile.Preferences {
+			promptData[k] = v
+		}
+	}
+
+	// Include budget from profile.Budget for backward compatibility.
+	if profile != nil && profile.Budget != nil {
+		promptData["budget"] = formatBudget(profile.Budget)
+	}
+
+	// Also set style from profile
+	if profile != nil && len(profile.Style) > 0 {
+		promptData["style"] = profile.Style
+	}
+
+	prompt, err := e.template.Render(tpl, promptData)
+	if err != nil {
+		return "", errors.Wrap(err, "render prompt")
+	}
+
+	// Fail fast on an empty prompt (see doc comment above).
+	if strings.TrimSpace(prompt) == "" {
+		return "", fmt.Errorf("render prompt: empty prompt (template=%q)", tpl)
+	}
+	return prompt, nil
 }
 
 // activeStrategy fetches the currently-deployed evolution strategy, if any.
@@ -507,7 +543,20 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 		}
 	}
 
-	return nil, fmt.Errorf("exceeded max tool rounds (%d) without final answer", maxRounds)
+	// The agentic loop did not converge on a final text answer. Degrade
+	// gracefully to a plain text-only call with the original prompt instead
+	// of failing the task: tool-calling loops that never terminate are a
+	// model-behavior hazard (the worker exposes ~20 tools), not evidence the
+	// task cannot be answered. The text-only path reuses the same prompt and
+	// params, so the model produces a direct answer without tool pressure.
+	log.Warn("Chat API tool loop exceeded max rounds, degrading to text-only",
+		"max_rounds", maxRounds,
+		"msg_count", len(messages),
+	)
+	if e.llmAdapter == nil {
+		return nil, fmt.Errorf("exceeded max tool rounds (%d) without final answer and no text-only adapter", maxRounds)
+	}
+	return e.executeWithLLMTextOnly(ctx, prompt, params)
 }
 
 // executeToolCall parses arguments and calls the tool via toolBinder.

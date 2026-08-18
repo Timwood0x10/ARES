@@ -341,6 +341,33 @@ func TestLoadFromEnvInvalidPort(t *testing.T) {
 	}
 }
 
+// TestLoadFromEnvSecurity verifies the JWT/security environment variables are
+// loaded: ARES_JWT_SECRET sets Security.JWTSecret and ARES_AUTH_ENABLED turns
+// on Security.AuthEnabled.
+func TestLoadFromEnvSecurity(t *testing.T) {
+	cfg := &Config{}
+	if err := os.Setenv("ARES_JWT_SECRET", "env-secret"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	if err := os.Setenv("ARES_AUTH_ENABLED", "1"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	defer func() {
+		_ = os.Unsetenv("ARES_JWT_SECRET")
+		_ = os.Unsetenv("ARES_AUTH_ENABLED")
+	}()
+
+	if err := LoadFromEnv(cfg); err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
+	}
+	if cfg.Security.JWTSecret != "env-secret" {
+		t.Errorf("Security.JWTSecret = %q, want env-secret", cfg.Security.JWTSecret)
+	}
+	if !cfg.Security.AuthEnabled {
+		t.Error("Security.AuthEnabled = false, want true")
+	}
+}
+
 // TestSetDefaults tests the setDefaults method.
 func TestSetDefaults(t *testing.T) {
 	cfg := &Config{}
@@ -401,6 +428,22 @@ func TestSetDefaults(t *testing.T) {
 	}
 	if cfg.Validation.MaxRetries != 3 {
 		t.Errorf("Validation.MaxRetries default = %v, want 3", cfg.Validation.MaxRetries)
+	}
+	// Prompt templates must default so a config that omits the prompts
+	// section still renders a meaningful worker prompt (previously an empty
+	// prompts.recommendation rendered an empty prompt → provider 400 on
+	// empty user content → 20s failover cooldown per worker call).
+	if cfg.Prompts.Recommendation == "" {
+		t.Error("Prompts.Recommendation default = empty, want DefaultRecommendationPrompt")
+	}
+	if cfg.Prompts.ProfileExtraction == "" {
+		t.Error("Prompts.ProfileExtraction default = empty, want DefaultProfileExtractionPrompt")
+	}
+	if cfg.Prompts.StyleAnalysis == "" {
+		t.Error("Prompts.StyleAnalysis default = empty, want DefaultStyleAnalysisPrompt")
+	}
+	if cfg.Prompts.Recommendation != DefaultRecommendationPrompt {
+		t.Errorf("Prompts.Recommendation default = %q, want DefaultRecommendationPrompt", cfg.Prompts.Recommendation)
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_security"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,4 +252,87 @@ func TestHTTPServer_ConsoleStatic(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "--bg-deep:")
+}
+
+// ── JWT auth (dual credential: API key OR JWT) ──────────────────────────────
+
+// newJWTTestHTTPServer builds a server that accepts both the legacy API key
+// and a JWT with write permission (admin/operator).
+func newJWTTestHTTPServer(t *testing.T) *HTTPServer {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	p := NewConsole().(*MonitorPlugin)
+	return NewHTTPServer(p, WithAPIKey(testAPIKey), WithJWT([]byte(testJWTSecret)))
+}
+
+const testJWTSecret = "test-jwt-secret"
+
+func TestHTTPServer_JWTAcceptedOnProtectedEndpoint(t *testing.T) {
+	tok, err := ares_security.SignJWT([]byte(testJWTSecret), "deploy-user", "operator", time.Hour, time.Now())
+	require.NoError(t, err)
+
+	// MCP tool call is protected; a valid operator JWT must pass.
+	p := NewConsole(WithMCP(&mockMCPManager{
+		result: &MCPToolResult{ToolName: "tool1", Output: map[string]any{"ok": true}},
+	})).(*MonitorPlugin)
+	srv := NewHTTPServer(p, WithAPIKey(testAPIKey), WithJWT([]byte(testJWTSecret)))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", nil)
+	req.Header.Set("Authorization", bearerPrefix+tok)
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestHTTPServer_JWTRejectedWhenRoleInsufficient(t *testing.T) {
+	srv := newJWTTestHTTPServer(t)
+	// agent role has read only — protected (write) endpoint must deny.
+	tok, err := ares_security.SignJWT([]byte(testJWTSecret), "worker", "agent", time.Hour, time.Now())
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", nil)
+	req.Header.Set("Authorization", bearerPrefix+tok)
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestHTTPServer_JWTRejectedWhenExpired(t *testing.T) {
+	srv := newJWTTestHTTPServer(t)
+	tok, err := ares_security.SignJWT([]byte(testJWTSecret), "old-user", "operator", time.Minute, time.Now().Add(-2*time.Minute))
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", nil)
+	req.Header.Set("Authorization", bearerPrefix+tok)
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestHTTPServer_APIKeyStillAcceptedWithJWTConfigured(t *testing.T) {
+	// Backward compat: when both API key and JWT are configured, the API key
+	// path must keep working.
+	srv := newJWTTestHTTPServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
+	withTestAuth(req)
+	srv.ServeHTTP(w, req)
+	// The handler itself may 404/400 for unknown agent, but auth must pass
+	// (not 401).
+	assert.NotEqual(t, http.StatusUnauthorized, w.Code)
+	assert.NotEqual(t, http.StatusForbidden, w.Code)
+}
+
+func TestHTTPServer_JWTAuthDeniesWhenSecretEmpty(t *testing.T) {
+	// WithJWT([]byte("")) is a no-op (deny-by-default); the API key remains
+	// the only credential.
+	gin.SetMode(gin.TestMode)
+	p := NewConsole().(*MonitorPlugin)
+	srv := NewHTTPServer(p, WithJWT(nil), WithAPIKey(testAPIKey))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
+	req.Header.Set("Authorization", bearerPrefix+"some-garbage-token")
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }

@@ -610,8 +610,20 @@ func startServeHTTPAndHooks(
 	// all destructive requests are denied (deny-by-default). Configure via
 	// ARES_API_KEY environment variable.
 	serveAPIKey := os.Getenv("ARES_API_KEY")
+	opts := []monitoring.HTTPServerOption{}
 	if serveAPIKey != "" {
-		server = monitoring.NewHTTPServer(plugin, monitoring.WithAPIKey(serveAPIKey))
+		opts = append(opts, monitoring.WithAPIKey(serveAPIKey))
+	}
+	// JWT auth for the same destructive endpoints. A request is accepted when
+	// it presents either the API key or a valid JWT with write permission.
+	// Secret comes from security.jwt_secret / ARES_JWT_SECRET; when auth is
+	// enabled but no secret is set, protected endpoints stay deny-by-default
+	// (misconfig is safer than an open endpoint).
+	if cfg.Security.AuthEnabled {
+		opts = append(opts, monitoring.WithJWT([]byte(cfg.Security.JWTSecret)))
+	}
+	if len(opts) > 0 {
+		server = monitoring.NewHTTPServer(plugin, opts...)
 	}
 	handler := &actionHandler{inner: server, mgr: mgr, tools: registry, apiKey: serveAPIKey}
 

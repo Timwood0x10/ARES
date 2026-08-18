@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 
 	"github.com/gin-gonic/gin"
@@ -24,8 +25,9 @@ const bearerPrefix = "Bearer "
 type HTTPServer struct {
 	engine  *gin.Engine
 	plugin  *MonitorPlugin
-	dashAPI *dashboard.APIv2 // optional, mounts dashboard routes when set
-	apiKey  string           // optional API key protecting destructive endpoints
+	dashAPI *dashboard.APIv2              // optional, mounts dashboard routes when set
+	apiKey  string                        // optional API key protecting destructive endpoints
+	auth    *ares_security.AuthMiddleware // optional JWT auth; nil = API key only
 }
 
 // WithDashboardAPI attaches a dashboard API whose routes are mounted on /api.
@@ -44,6 +46,20 @@ func WithAPIKey(key string) HTTPServerOption {
 	}
 }
 
+// WithJWT enables JWT authentication on destructive endpoints as an
+// alternative to the legacy API key. When set, a request is accepted if it
+// presents either the API key or a valid JWT whose role holds write
+// permission (admin or operator). The JWT secret must be configured; an empty
+// secret leaves the middleware in deny-by-default mode, consistent with the
+// API-key posture.
+func WithJWT(secret []byte) HTTPServerOption {
+	return func(s *HTTPServer) {
+		if len(secret) > 0 {
+			s.auth = ares_security.NewAuthMiddleware(secret, ares_security.PermWrite)
+		}
+	}
+}
+
 // HTTPServerOption configures the HTTPServer.
 type HTTPServerOption func(*HTTPServer)
 
@@ -54,26 +70,37 @@ func WithGinMode(mode string) HTTPServerOption {
 	}
 }
 
-// requireAPIKey is a Gin middleware that enforces API key auth on a route.
-// When no key is configured on the server, every request is denied (deny by
-// default) to prevent unauthenticated access to destructive operations.
+// requireAPIKey is a Gin middleware that enforces auth on a route. A request
+// is accepted if it presents either the legacy API key or a valid JWT whose
+// role holds write permission (admin or operator). When neither credential is
+// configured, every request is denied (deny by default) to prevent
+// unauthenticated access to destructive operations.
 func (s *HTTPServer) requireAPIKey() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s.apiKey == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "API key not configured"})
+		// JWT path: valid token with write permission.
+		if s.auth != nil {
+			if princ, status := s.auth.Verify(c.Request); status == http.StatusOK {
+				c.Set("ares.principal", princ)
+				c.Next()
+				return
+			}
+		}
+		// Legacy API key path.
+		if s.apiKey != "" {
+			auth := c.GetHeader("Authorization")
+			if strings.HasPrefix(auth, bearerPrefix) {
+				token := strings.TrimPrefix(auth, bearerPrefix)
+				if token != "" && token == s.apiKey {
+					c.Next()
+					return
+				}
+			}
+		}
+		if s.apiKey == "" && s.auth == nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "auth not configured"})
 			return
 		}
-		auth := c.GetHeader("Authorization")
-		if !strings.HasPrefix(auth, bearerPrefix) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid Authorization header"})
-			return
-		}
-		token := strings.TrimPrefix(auth, bearerPrefix)
-		if token == "" || token != s.apiKey {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
-			return
-		}
-		c.Next()
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 	}
 }
 

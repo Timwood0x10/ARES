@@ -151,6 +151,20 @@ func (c *Config) setDefaults() {
 	if c.Output.SummaryTemplate == "" {
 		c.Output.SummaryTemplate = "Got {{.Count}} recommendations"
 	}
+	// Prompt templates default so a config that omits the prompts section
+	// still renders a meaningful worker prompt. Before this, an empty
+	// prompts.recommendation rendered an empty prompt and every worker LLM
+	// call failed with a provider 400 (empty user content), burning the
+	// failover cooldown (20s) per call.
+	if c.Prompts.Recommendation == "" {
+		c.Prompts.Recommendation = DefaultRecommendationPrompt
+	}
+	if c.Prompts.ProfileExtraction == "" {
+		c.Prompts.ProfileExtraction = DefaultProfileExtractionPrompt
+	}
+	if c.Prompts.StyleAnalysis == "" {
+		c.Prompts.StyleAnalysis = DefaultStyleAnalysisPrompt
+	}
 	// Storage defaults
 	if c.Storage.Type == "" {
 		c.Storage.Type = defaultStorageType
