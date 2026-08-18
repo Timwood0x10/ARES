@@ -303,7 +303,7 @@ func runServe() error {
 	//     FallbackRouter / NewEvolutionPlugin — complete, tested capability
 	//     reserves. Wiring them changes runtime behavior, which is a product/
 	//     direction decision (code_rules_v2 铁律 #4), so they are deferred. See
-	//     analysis-reports/ares-runtime-capability-reserve.md for the enablement
+	//     docs/analysis-reports/ares-runtime-capability-reserve.md for the enablement
 	//     path.
 	bus := ares_runtime.NewPluginBus()
 	tracker := data.NewAgentTracker()

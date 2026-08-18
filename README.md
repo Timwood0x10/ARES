@@ -204,7 +204,7 @@ See [examples/README.md](examples/README.md) for 9 hands-on examples.
 
 Platform-level primitives added since 0.3.0, all additive and tested. They are
 the "agent OS" building blocks distilled from the prime-agent comparison
-(see [analysis-reports/ares-vs-prime-agent.md](analysis-reports/ares-vs-prime-agent.md) for rationale).
+(see [docs/analysis-reports/ares-vs-prime-agent.md](docs/analysis-reports/ares-vs-prime-agent.md) for rationale).
 
 | Primitive | Package / API | Purpose |
 |-----------|---------------|---------|
