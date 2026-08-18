@@ -220,11 +220,11 @@ the "agent OS" building blocks distilled from the prime-agent comparison
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
 | Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
-| Task Fabric | `internal/taskfabric` | Durable Task 状态机 + Lease/fencing（epoch）+ capability-aware Scheduler（Score/Pick/Schedule）+ Work Stealing + DAG ReadyTasks + cooperative preempt（0.3.0 Kernel Scheduler 支柱） |
-| Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree（provenance 非 hierarchy）+ Cognitive State + Context 三层 + P5 资源配额（`WithResourceBudget`）（0.3.0 Kernel Lifecycle 支柱） |
-| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + `PolicyFlag`/`DualTrackDispatcher` 双轨渐进切换（shadow 等价验证）（0.3.0 Kernel IPC 支柱） |
-| Runtime Recovery | `internal/aresrecovery` | lease 过期 requeue / checkpoint 恢复 / agent restart / Chaos 故障注入验证（**Agent 死亡 ≠ Task 死亡**） |
-| Kernel 组装 | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`flipKernelToTaskFabric`/`kernelScheduler`——config `kernel.policy`（`legacy`/`taskfabric`）+ `subagents[].dependencies` DAG 接线 + live mid-run flip |
+| Task Fabric | `internal/taskfabric` | Durable Task state machine + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
+| Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
+| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + `PolicyFlag`/`DualTrackDispatcher` dual-track gradual switchover (shadow equivalence, observable) (0.3.0 Kernel IPC pillar) |
+| Runtime Recovery | `internal/aresrecovery` | lease-expiry requeue / checkpoint resume / agent restart / Chaos fault-injection validation (**Agent death ≠ Task death**) |
+| Kernel assembly | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`flipKernelToTaskFabric`/`kernelScheduler` — config `kernel.policy` (`legacy`/`taskfabric`) + `subagents[].dependencies` DAG wiring + live mid-run flip |
 
 Wiring: output guard validates sub-agent results; native tools and the peer
 registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
@@ -399,29 +399,37 @@ graph TB
     style Kernel fill:#3b2f2f,stroke:#f59e0b,color:#fff
 ```
 
-### Runtime Kernel（0.3.0 生产接线）
+### Runtime Kernel (0.3.0)
 
-ARES 从 "Agent Orchestration Framework"（leader+sub）演进为**面向 Agent 的动态计算运行时**：
-**Agents are not orchestrated. They are scheduled.** Leader 不再是架构角色，只是
-Execution Strategy / Policy 之一（`kernel.policy`: `legacy` 默认 / `taskfabric` 渐进割接）。
+ARES evolved from an "Agent Orchestration Framework" (leader+sub) into an
+**agent-oriented dynamic compute runtime**: **Agents are not orchestrated.
+They are scheduled.** The leader is no longer an architecture role — it is one
+Execution Strategy / Policy (`kernel.policy`: `legacy` default / `taskfabric`
+gradual cutover).
 
-Kernel 三支柱（`Agents decide the work. Kernel schedules the work.`）：
+The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the work.`):
 
-| 支柱 | 包 | 职责 |
-|------|----|------|
-| **Scheduler** | `internal/taskfabric` | durable Task 状态机 + Lease/fencing（epoch）、capability-aware 评分（`cap×load×conf`）、Work Stealing、DAG ReadyTasks 调度源、cooperative preempt |
-| **IPC** | `internal/agentipc` | 同级 peer 通信（Send/Request/Reply/Delegate/Handoff/Subscribe）+ `PolicyFlag`/`DualTrackDispatcher` 双轨渐进切换（shadow 等价验证，`Mismatches()` 可观测） |
-| **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree（provenance 非 hierarchy）+ Cognitive State + P5 资源配额（`WithResourceBudget`） |
+| Pillar | Package | Responsibility |
+|--------|---------|----------------|
+| **Scheduler** | `internal/taskfabric` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
+| **IPC** | `internal/agentipc` | peer-level communication (Send/Request/Reply/Delegate/Handoff/Subscribe) + `PolicyFlag`/`DualTrackDispatcher` dual-track gradual switchover (shadow equivalence, `Mismatches()` observable) |
+| **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
 
-- **DAG 即调度源**：planner 产出的 `subagents[].dependencies` 经 leader planner 解析为
-  `models.Task.Context.Dependencies`，kernel 派发透传，`executeFabricTask` 带依赖 Create +
-  `IsReady` 门控——依赖未完成只注册不执行，`kernelScheduler` 的 `ReadyTasks` 完成后接管。
-- **live mid-run flip**：`flipKernelToTaskFabric`（幂等）可在运行中从 legacy 切到 taskfabric，
-  关 shadow → 换真实执行器 → 翻转 flag → 启动 scheduler；不 orphan 在途任务、无双跑。
-- **Recovery**：`internal/aresrecovery` —— lease 过期 requeue / checkpoint 恢复 / agent
-  restart，验证 **Agent 死亡 ≠ Task 死亡**；Chaos 注入故障验证 Runtime 能恢复。
+- **DAG as scheduling source**: planner-produced `subagents[].dependencies`
+  are resolved into `models.Task.Context.Dependencies` by the leader planner,
+  carried through the kernel dispatch, and submitted to the fabric with the
+  DAG edges — a task whose dependencies are not yet complete is registered
+  but not executed; `kernelScheduler`'s `ReadyTasks` picks it up once they
+  finish.
+- **live mid-run flip**: `flipKernelToTaskFabric` (idempotent) switches from
+  legacy to taskfabric at runtime — shadow off → swap in the real executor →
+  flip the flag → start the scheduler; it never orphans in-flight tasks and
+  never double-executes.
+- **Recovery**: `internal/aresrecovery` — lease-expiry requeue / checkpoint
+  resume / agent restart, proving **Agent death ≠ Task death**; Chaos
+  fault-injection validates the Runtime recovers.
 
-详细设计见 [ARES Runtime 设计文档](docs/zh/architecture/ares-runtime.md) / [ARES Runtime Design](docs/en/architecture/ares-runtime.md)（权威模型，中英双份）。
+Full design: [ARES Runtime 设计文档](docs/zh/architecture/ares-runtime.md) / [ARES Runtime Design](docs/en/architecture/ares-runtime.md) (authoritative model, bilingual).
 
 ## Data Flow
 

@@ -1,0 +1,192 @@
+2026/08/18 09:36:09 INFO bootstrap: evolution disabled (cfg.Evolution.Enabled=false), skipping NewEvolution and background tickers module=ares_bootstrap
+2026/08/18 09:36:09 INFO flight recorder started module=flight
+2026/08/18 09:36:09 INFO bootstrap: knowledge retriever wired (AKG runtime → RAG) module=ares_bootstrap min_score=0
+2026/08/18 09:36:09 INFO bootstrap: RAG retrievers injected into memory manager module=ares_bootstrap count=1
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=eventstore state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=mcp state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=llm state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=evidence state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=knowledge state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=runtime state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=memory state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=dashboard state=started
+2026/08/18 09:36:09 INFO system_runtime: component ready module=system_runtime component=flight state=started
+2026/08/18 09:36:09 INFO system_runtime: all components started module=system_runtime count=9
+2026/08/18 09:36:09 system_runtime snapshot (startup): {
+  "taken_at": "2026-08-18T09:36:09.707628+08:00",
+  "components": [
+    {
+      "name": "eventstore",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.70752+08:00",
+      "instance_id": "eventstore-1787016969707520000"
+    },
+    {
+      "name": "runtime",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.7076+08:00",
+      "instance_id": "runtime-1787016969707600000"
+    },
+    {
+      "name": "memory",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.707605+08:00",
+      "instance_id": "memory-1787016969707605000"
+    },
+    {
+      "name": "mcp",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.707575+08:00",
+      "instance_id": "mcp-1787016969707575000"
+    },
+    {
+      "name": "llm",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.707581+08:00",
+      "instance_id": "llm-1787016969707581000"
+    },
+    {
+      "name": "dashboard",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.70761+08:00",
+      "instance_id": "dashboard-1787016969707610000"
+    },
+    {
+      "name": "evidence",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.707586+08:00",
+      "instance_id": "evidence-1787016969707586000"
+    },
+    {
+      "name": "flight",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.707615+08:00",
+      "instance_id": "flight-1787016969707615000"
+    },
+    {
+      "name": "knowledge",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-18T09:36:09.707591+08:00",
+      "instance_id": "knowledge-1787016969707591000"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "ready": 9,
+    "degraded": 0,
+    "failed": 0,
+    "disabled": 0,
+    "stopped": 0
+  }
+}
+2026/08/18 09:36:09 LLM adapter created: provider=openai model=agnes-2.5-flash
+2026/08/18 09:36:09 AKF tools registered with shared KnowledgeRuntime: 4
+2026/08/18 09:36:09 tools registered: 24
+2026/08/18 09:36:09 planner bridge: attached
+2026/08/18 09:36:09 INFO FailoverClient created module=llm total_clients=2 fallback_count=1 primary_model=agnes-2.5-flash timeout=2m0s cooldown=1m0s
+2026/08/18 09:36:09 chat client created: provider=openai model=agnes-2.5-flash
+2026/08/18 09:36:09 skill catalog: indexed 0 skills, 5 agent tools registered
+2026/08/18 09:36:09 kernel: dual-track dispatch assembled (policy=0, shadow=on, candidates=1)
+2026/08/18 09:36:09 kernel: live flip to policy=taskfabric, Task Fabric scheduler started (1 executors)
+2026/08/18 09:36:09 kernel: lifecycle wired (agentfabric budget=0 resources, recovery max_restarts=5)
+2026/08/18 09:36:09 INFO runtime: agent registered module=runtime agent_id=leader type=leader
+2026/08/18 09:36:09 INFO runtime: agent registered module=runtime agent_id=worker_01 type=worker
+2026/08/18 09:36:09 peer registry wired: 2 agents registered
+2026/08/18 09:36:09 kernel scheduler: event-driven drain enabled (task lifecycle events)
+2026/08/18 09:36:09 intelligence engine started: system=unknown anomalies=0
+2026/08/18 09:36:09 INFO runtime: DAG registered for agent module=runtime agent_id=leader
+2026/08/18 09:36:09 INFO runtime: started module=runtime agents=2
+=== ARES Console — Live Runtime ===
+Console:  http://localhost:8080/console/
+LLM:      openai / agnes-2.5-flash
+Tools:    [id_generator code_runner string_utils web_scraper query_knowledge http_request calculator skill_list log_analyzer embedding task_planner skill_activate distill_memory pdf_tool memory_search skill_search compile_context web_search build_graph json_tools data_transform hash_tool skill_experience text_processor datetime data_validation skill_load file_tools regex_tool]
+Press Ctrl+C to stop.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+2026/08/18 09:36:09 INFO Heartbeat monitor initialized module=leader agent_id=leader
+2026/08/18 09:36:09 INFO Message queue initialized module=leader agent_id=leader
+2026/08/18 09:36:09 INFO Memory consumer started module=leader agent_id=leader
+2026/08/18 09:36:09 INFO Leader agent started successfully module=leader agent_id=leader
+[GIN-debug] GET    /console/static/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (3 handlers)
+[GIN-debug] HEAD   /console/static/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (3 handlers)
+[GIN-debug] GET    /console/                 --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).registerRoutes.func1 (3 handlers)
+[GIN-debug] GET    /api/console              --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleConsole-fm (3 handlers)
+[GIN-debug] GET    /api/console/dag          --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleDAG-fm (3 handlers)
+[GIN-debug] GET    /api/console/cost-bar     --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCostBar-fm (3 handlers)
+[GIN-debug] GET    /api/agents               --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleListAgents-fm (3 handlers)
+[GIN-debug] GET    /api/agents/:id           --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleGetAgent-fm (3 handlers)
+[GIN-debug] POST   /api/agents/:id/kill      --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleKillAgent-fm (4 handlers)
+[GIN-debug] POST   /api/agents/:id/resume    --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleResumeAgent-fm (4 handlers)
+[GIN-debug] POST   /api/agents/:id/retry     --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleRetryAgent-fm (4 handlers)
+[GIN-debug] GET    /api/mcp/tools            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleListMCPTools-fm (3 handlers)
+[GIN-debug] POST   /api/mcp/tools/:name/call --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCallMCPTool-fm (4 handlers)
+[GIN-debug] GET    /api/tabs/:name           --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleTab-fm (3 handlers)
+[GIN-debug] GET    /api/cost                 --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCost-fm (3 handlers)
+[GIN-debug] GET    /api/trace/:id            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleTrace-fm (3 handlers)
+[GIN-debug] GET    /api/subscribe            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleSubscribe-fm (3 handlers)
+[GIN-debug] GET    /api/health               --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleHealth-fm (3 handlers)
+[GIN-debug] GET    /api/health/agents        --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleHealthAgents-fm (3 handlers)
+[GIN-debug] GET    /api/anomalies            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleAnomalies-fm (3 handlers)
+[GIN-debug] GET    /api/insights             --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleInsights-fm (3 handlers)
+2026/08/18 09:36:12 submitting task 1: 分析这个Go项目的代码架构，找出主要模块和它们之间的依赖关系
+2026/08/18 09:36:14 INFO Leader tasks created module=leader module=leader count=1
+2026/08/18 09:36:14 INFO Leader dispatching tasks module=leader module=leader
+2026/08/18 09:36:14 INFO Leader dispatch completed module=leader module=leader result_count=1
+2026/08/18 09:36:14 INFO Leader task result module=leader module=leader index=0 success=true items=0 error=""
+2026/08/18 09:36:14 task 1 completed
+2026/08/18 09:36:14 INFO [Memory Distillation] Starting task distillation module=memory task_id=task_1787016972712078000
+2026/08/18 09:36:14 WARN executeByType: no fallback handler registered module=sub agent_type=worker task_id=task_20260818093614_1
+2026/08/18 09:36:14 INFO [Memory Distillation] Task distilled successfully module=memory task_id=task_1787016972712078000 input_length=86
+2026/08/18 09:36:29 submitting task 2: Review the error handling patterns in this codebase and suggest improvements
+2026/08/18 09:36:30 INFO Leader tasks created module=leader module=leader count=1
+2026/08/18 09:36:30 INFO Leader dispatching tasks module=leader module=leader
+2026/08/18 09:36:30 INFO Leader dispatch completed module=leader module=leader result_count=1
+2026/08/18 09:36:30 INFO Leader task result module=leader module=leader index=0 success=true items=0 error=""
+2026/08/18 09:36:30 task 2 completed
+2026/08/18 09:36:30 WARN executeByType: no fallback handler registered module=sub agent_type=worker task_id=task_20260818093630_2
+2026/08/18 09:36:30 INFO [Memory Distillation] Starting task distillation module=memory task_id=task_1787016989003864000
+2026/08/18 09:36:30 INFO [Memory Distillation] Task distilled successfully module=memory task_id=task_1787016989003864000 input_length=76
+2026/08/18 09:36:45 submitting task 3: 分析这个项目中的并发安全问题，重点关注goroutine和channel的使用
+2026/08/18 09:36:47 INFO Leader tasks created module=leader module=leader count=1
+2026/08/18 09:36:47 INFO Leader dispatching tasks module=leader module=leader
+2026/08/18 09:36:47 INFO Leader dispatch completed module=leader module=leader result_count=1
+2026/08/18 09:36:47 INFO Leader task result module=leader module=leader index=0 success=true items=0 error=""
+2026/08/18 09:36:47 task 3 completed
+2026/08/18 09:36:47 WARN executeByType: no fallback handler registered module=sub agent_type=worker task_id=task_20260818093647_3
+2026/08/18 09:36:47 INFO [Memory Distillation] Starting task distillation module=memory task_id=task_1787017005049707000
+2026/08/18 09:36:47 INFO [Memory Distillation] Task distilled successfully module=memory task_id=task_1787017005049707000 input_length=85
+2026/08/18 09:37:02 submitting task 4: 找出代码库中的性能瓶颈，特别是热路径上的复杂度问题
+2026/08/18 09:37:03 INFO Leader tasks created module=leader module=leader count=1
+2026/08/18 09:37:03 INFO Leader dispatching tasks module=leader module=leader
+2026/08/18 09:37:03 INFO Leader dispatch completed module=leader module=leader result_count=1
+2026/08/18 09:37:03 INFO Leader task result module=leader module=leader index=0 success=true items=0 error=""
+2026/08/18 09:37:03 WARN executeByType: no fallback handler registered module=sub agent_type=worker task_id=task_20260818093703_4
+2026/08/18 09:37:03 INFO [Memory Distillation] Starting task distillation module=memory task_id=task_1787017022555039000
+2026/08/18 09:37:03 INFO [Memory Distillation] Task distilled successfully module=memory task_id=task_1787017022555039000 input_length=75
+2026/08/18 09:37:03 task 4 completed
+2026/08/18 09:37:18 submitting task 5: 评估这个项目的测试覆盖率，找出缺少测试的关键模块
+2026/08/18 09:37:19 INFO Leader tasks created module=leader module=leader count=1
+2026/08/18 09:37:19 INFO Leader dispatching tasks module=leader module=leader
+2026/08/18 09:37:19 INFO Leader dispatch completed module=leader module=leader result_count=1
+2026/08/18 09:37:19 INFO Leader task result module=leader module=leader index=0 success=true items=0 error=""
+2026/08/18 09:37:19 task 5 completed
+2026/08/18 09:37:19 INFO [Memory Distillation] Starting task distillation module=memory task_id=task_1787017038432613000
+2026/08/18 09:37:19 INFO [Memory Distillation] Task distilled successfully module=memory task_id=task_1787017038432613000 input_length=72
+2026/08/18 09:37:19 WARN executeByType: no fallback handler registered module=sub agent_type=worker task_id=task_20260818093719_5
+2026/08/18 09:37:34 submitting task 6: 分析这个Go项目的代码架构，找出主要模块和它们之间的依赖关系
+
+Shutting down...
+2026/08/18 09:37:40 INFO flight recorder stopped module=flight
+2026/08/18 09:37:40 INFO Memory manager stopped module=memory

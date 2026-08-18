@@ -140,6 +140,11 @@ type LLMFileConfig struct {
 	BaseURL     string  `yaml:"base_url"`
 	Temperature float64 `yaml:"temperature"`
 	MaxTokens   int     `yaml:"max_tokens"`
+	// MaxPromptLength caps the prompt character count (0 = provider default
+	// 8192). Previously NOT parsed here — the field existed in core.LLMConfig
+	// but the YAML→Option bridge dropped it, so a large value in ares.yaml
+	// was silently ignored and long agent runs died at 8192.
+	MaxPromptLength int `yaml:"max_prompt_length"`
 }
 
 // LoadConfigFile reads, parses and validates a YAML config file.
@@ -338,6 +343,17 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 
 	if c.LLM.BaseURL != "" {
 		opts = append(opts, WithBaseURL(c.LLM.BaseURL))
+	}
+
+	// MaxPromptLength: bridge the YAML field into core.LLMConfig. Without
+	// this the value in ares.yaml was silently dropped (the field existed in
+	// core.LLMConfig but nothing wired it), so long agent runs died at the
+	// 8192 provider default during synthesis.
+	if c.LLM.MaxPromptLength > 0 {
+		opts = append(opts, func(cfg *config) error {
+			cfg.llmCfg.MaxPromptLength = c.LLM.MaxPromptLength
+			return nil
+		})
 	}
 
 	// Database (optional). Without a host, sdk falls back to in-memory storage.

@@ -185,48 +185,54 @@ func TestTaskFromPayloadRestoresDependencies(t *testing.T) {
 }
 
 // TestKernelDAGGateDefersDependentTask verifies the DAG-as-scheduling-source
-// wiring in the kernel path (ares-runtime.md §9): a task whose dependencies
-// are not all COMPLETED is created but NOT executed by executeFabricTask; it
-// only becomes executable once its dependencies complete.
+// wiring in the kernel path (ares-runtime.md §9): the leader dispatch SUBMITS
+// tasks to the fabric (submitFabricTask) and the kernelScheduler drains only
+// READY tasks — a task whose dependencies are not all COMPLETED stays queued
+// until its dependency completes (it never executes out of order).
 func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	f := taskfabric.NewFabric()
 	research := &stubAgent{id: "research_01", typ: models.AgentType("research")}
 	writer := &stubAgent{id: "writer_01", typ: models.AgentType("write")}
 	executors := map[string]sub.Agent{"research_01": research, "writer_01": writer}
-	ctx := context.Background()
+	tracker := newLoadTracker()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Task B depends on task A; A is not created yet → B must not run.
+	// The scheduler drains READY tasks; the DAG gate means B waits for A.
+	sched := NewKernelScheduler(f, executors, tracker)
+	sched.pollInterval = 10 * time.Millisecond
+	go sched.Run(ctx)
+
+	// Submit B (depends on A) first: it must NOT run before A completes.
 	b := models.NewTask("task_b", models.AgentType("write"), nil)
 	b.Context.Dependencies = []string{"task_a"}
-	if err := executeFabricTask(ctx, f, executors, newLoadTracker(), b); err != nil {
-		t.Fatalf("executeFabricTask(B): %v", err)
+	if err := submitFabricTask(ctx, f, executors, tracker, b); err != nil {
+		t.Fatalf("submitFabricTask(B): %v", err)
 	}
+	time.Sleep(60 * time.Millisecond)
 	if writer.executedCount() != 0 {
 		t.Fatal("B must not execute before its dependency A completes")
 	}
-	if got := f.ReadyTasks(); len(got) != 0 {
-		t.Fatalf("no task must be ready before A completes, got %v", got)
+
+	// Submit A: the scheduler runs it, completing A and unlocking B.
+	a := models.NewTask("task_a", models.AgentType("research"), nil)
+	if err := submitFabricTask(ctx, f, executors, tracker, a); err != nil {
+		t.Fatalf("submitFabricTask(A): %v", err)
 	}
 
-	// Run A through the fabric path; it completes and unlocks B.
-	a := models.NewTask("task_a", models.AgentType("research"), nil)
-	if err := executeFabricTask(ctx, f, executors, newLoadTracker(), a); err != nil {
-		t.Fatalf("executeFabricTask(A): %v", err)
+	// Both tasks must complete, in dependency order.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if research.executedCount() == 1 && writer.executedCount() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if research.executedCount() != 1 {
 		t.Fatalf("A must execute once, got %d", research.executedCount())
 	}
-
-	// Now B is ready: ReadyTasks surfaces it and executing it completes.
-	ready := f.ReadyTasks()
-	if !slicesEqual(ready, []string{"task_b"}) {
-		t.Fatalf("B must be ready after A completes, got %v", ready)
-	}
-	if err := executeFabricTask(ctx, f, executors, newLoadTracker(), b); err != nil {
-		t.Fatalf("executeFabricTask(B) after A ready: %v", err)
-	}
 	if writer.executedCount() != 1 {
-		t.Fatalf("B must execute exactly once, got %d", writer.executedCount())
+		t.Fatalf("B must execute exactly once after A completes, got %d", writer.executedCount())
 	}
 }
 
@@ -256,24 +262,54 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
 	executors := map[string]sub.Agent{"code_01": executor}
+	tracker := newLoadTracker()
 
-	// Flip: replace the shadow scorer with the real executor, disable shadow.
-	enableKernelExecution(kernel, f, executors, newLoadTracker())
+	// Flip: replace the shadow scorer with the submit-only new path, disable
+	// shadow. The leader dispatch now SUBMITS the task; the kernelScheduler
+	// is the single executor (GAP #2: no double-path acquire race).
+	enableKernelExecution(kernel, f, executors, tracker)
 	flag.Set(agentipc.PolicyTaskFabric)
 
-	// Dispatch through the kernel (active path = fabric).
+	// Dispatch through the kernel (active path = fabric submit).
 	payload := map[string]any{"agent_type": "code"}
 	if err := kernel.Dispatch(context.Background(), "", "t1", payload); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 
-	// The task must have been created and executed in the fabric.
+	// After dispatch the task is SUBMITTED (READY), not yet executed — the
+	// scheduler must complete it.
 	tk, err := f.Task("t1")
 	if err != nil {
 		t.Fatalf("Task: %v", err)
 	}
+	if tk.State != taskfabric.StateReady {
+		t.Fatalf("after dispatch want READY (submitted, scheduler owns execution), got %s", tk.State)
+	}
+	if executor.executedCount() != 0 {
+		t.Fatalf("dispatch must NOT execute the task (scheduler owns execution), got %d", executor.executedCount())
+	}
+
+	// Now the kernelScheduler drains it to completion (single executor).
+	sched := NewKernelScheduler(f, executors, tracker)
+	sched.pollInterval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err = f.Task("t1")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	tk, err = f.Task("t1")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
 	if tk.State != taskfabric.StateCompleted {
-		t.Fatalf("want COMPLETED, got %s", tk.State)
+		t.Fatalf("want COMPLETED after scheduler drain, got %s", tk.State)
 	}
 	if executor.executedCount() != 1 {
 		t.Fatalf("executor must run once, got %d", executor.executedCount())
@@ -311,8 +347,9 @@ func TestWireKernelPolicyTaskFabric(t *testing.T) {
 		t.Fatal("flag must be TaskFabric after wireKernelPolicy(taskfabric)")
 	}
 
-	// The kernel's new path is now the real executor: dispatch through the
-	// batch adapter to run the full fabric path.
+	// The kernel's new path is now the submit-only fabric submitter; the
+	// scheduler goroutine started by wireKernelPolicy drains the submitted
+	// task. Dispatch submits; we poll until the scheduler completes it.
 	adapter := &kernelTaskDispatcher{kernel: kernel}
 	task := models.NewTask("t-policy", models.AgentType("code"), nil)
 	results, err := adapter.Dispatch(ctx, []*models.Task{task})
@@ -322,8 +359,12 @@ func TestWireKernelPolicyTaskFabric(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(results))
 	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && executor.executedCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if executor.executedCount() == 0 {
-		t.Fatal("executor must have run via the fabric path")
+		t.Fatal("executor must have run via the fabric scheduler")
 	}
 }
 
@@ -362,12 +403,18 @@ func TestFlipKernelToTaskFabricLive(t *testing.T) {
 		t.Fatal("flag must be TaskFabric after live flip")
 	}
 
-	// After the flip: new dispatches run through the fabric path. The legacy
-	// dispatcher must NOT be called again (shadow off, no double execution).
+	// After the flip: new dispatches submit through the fabric path. The
+	// legacy dispatcher must NOT be called again (shadow off, no double
+	// execution). The scheduler goroutine started by the flip drains the
+	// submitted task; poll until it executes exactly once.
 	if _, err := adapter.Dispatch(ctx, []*models.Task{
 		models.NewTask("t-fabric", models.AgentType("code"), nil),
 	}); err != nil {
 		t.Fatalf("fabric dispatch: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && executor.executedCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
 	}
 	if executor.executedCount() != 1 {
 		t.Fatalf("executor must run exactly once via fabric path, got %d", executor.executedCount())
@@ -395,7 +442,7 @@ func TestFlipKernelToTaskFabricIdempotent(t *testing.T) {
 		t.Fatal("flag must be TaskFabric after first flip")
 	}
 
-	// Second flip: no-op (kernel.flipped guard). Executing a task afterwards
+	// Second flip: no-op (kernel.flipped guard). Submitting a task afterwards
 	// must run it exactly once — a second scheduler would double-execute.
 	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, nil)
 	adapter := &kernelTaskDispatcher{kernel: kernel}
@@ -403,6 +450,10 @@ func TestFlipKernelToTaskFabricIdempotent(t *testing.T) {
 		models.NewTask("t1", models.AgentType("code"), nil),
 	}); err != nil {
 		t.Fatalf("dispatch: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && executor.executedCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
 	}
 	if executor.executedCount() != 1 {
 		t.Fatalf("task must execute exactly once after double flip, got %d", executor.executedCount())

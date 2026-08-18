@@ -1,0 +1,36 @@
+=== RUN   TestRealAgentParallelExecution
+2026/08/18 09:12:23 INFO bootstrap: evolution disabled (cfg.Evolution.Enabled=false), skipping NewEvolution and background tickers module=ares_bootstrap
+2026/08/18 09:12:23 INFO flight recorder started module=flight
+2026/08/18 09:12:23 INFO bootstrap: knowledge retriever wired (AKG runtime → RAG) module=ares_bootstrap min_score=0
+2026/08/18 09:12:23 INFO bootstrap: RAG retrievers injected into memory manager module=ares_bootstrap count=1
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=eventstore state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=mcp state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=llm state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=evidence state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=knowledge state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=runtime state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=memory state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=dashboard state=started
+2026/08/18 09:12:23 INFO system_runtime: component ready module=system_runtime component=flight state=started
+2026/08/18 09:12:23 INFO system_runtime: all components started module=system_runtime count=9
+2026/08/18 09:12:23 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/18 09:12:23 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/18 09:12:23 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/18 09:12:23 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/18 09:12:23 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/18 09:12:23 [ares:trace] worker_2 → LLM call (iter 0, 3 msgs, 0 tools)
+2026/08/18 09:12:23 [ares:trace] worker_1 → LLM call (iter 0, 3 msgs, 0 tools)
+2026/08/18 09:12:23 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/18 09:12:23 [ares:trace] worker_0 → LLM call (iter 0, 3 msgs, 0 tools)
+2026/08/18 09:12:24 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/18 09:12:24 [ares:trace] worker_0 ✓ done (0 tools, 110 total tokens, 1.009s)
+2026/08/18 09:12:24 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/18 09:12:24 [ares:trace] worker_1 ✓ done (0 tools, 107 total tokens, 1.012s)
+2026/08/18 09:12:26 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/18 09:12:26 [ares:trace] worker_2 ✓ done (0 tools, 129 total tokens, 2.17s)
+    real_agent_parallel_test.go:108: real agents: wall=2.17s serial_sum=4.192s
+    real_agent_parallel_test.go:112: real agent parallel execution OK: 3 agents overlapped, wall=2.17s vs serial=4.192s
+2026/08/18 09:12:26 INFO Memory manager stopped module=memory
+--- PASS: TestRealAgentParallelExecution (2.17s)
+PASS
+ok  	github.com/Timwood0x10/ares/cmd/ares	2.616s

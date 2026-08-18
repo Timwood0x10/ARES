@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -78,11 +77,17 @@ func enableKernelExecution(
 	// Turn shadow off first: with the new path about to become live, running
 	// legacy in shadow would re-dispatch every task (double execution).
 	kernel.SetShadow(false)
-	// Replace the shadow-only new path with the executing one.
+	// Replace the shadow-only new path with the submitting one. IMPORTANT: the
+	// leader dispatch only SUBMITS the task to the fabric (Create); the
+	// kernelScheduler is the single executor (Schedule→Acquire→RunQuantum on
+	// every READY task). Keeping the full execution in the dispatch path as
+	// well caused a double-path race: both the leader dispatch and the
+	// scheduler tried to acquire the same task, surfacing as
+	// "task not ready for acquire" in serve logs (GAP #2 fix).
 	exec := &kernelFabricDispatcher{
 		candidates: kernelNewPathCandidates(kernel),
 		executeFn: func(ctx context.Context, task *models.Task) error {
-			return executeFabricTask(ctx, fabric, executors, tracker, task)
+			return submitFabricTask(ctx, fabric, executors, tracker, task)
 		},
 	}
 	kernel.SetNewPath(exec)
@@ -97,23 +102,24 @@ func kernelNewPathCandidates(kernel *agentipc.DualTrackDispatcher) []subAgentCap
 	return nil
 }
 
-// executeFabricTask runs the full Task Fabric path for one task: Create →
-// Schedule (capability-aware) → Acquire (lease + fencing) → RunQuantum (one
-// agent step) → finalize. It is the real (non-shadow) new-path body.
-//
-// DAG gate: a task whose dependencies are not all COMPLETED is created (so it
-// becomes visible to ReadyTasks) but not scheduled here — the kernelScheduler
-// drains ReadyTasks and picks it up once its dependencies complete
-// (ares-runtime.md §9: DAG as scheduling source). This keeps planner-declared
-// dependencies ordering the execution without a leader deciding "B now".
+// submitFabricTask SUBMITS a task to the Task Fabric (Create with DAG edges)
+// WITHOUT executing it. Execution is the kernelScheduler's sole job: its
+// drain runs Schedule→Acquire→RunQuantum on every READY task. The leader
+// dispatch path must NOT also schedule the task — doing so created a
+// double-path race where both the leader dispatch (executeFabricTask) and the
+// kernelScheduler tried to acquire the same task, surfacing as
+// "task not ready for acquire" in serve logs (GAP #2 fix).
 //
 // Args:
-//   - ctx: task lifetime.
+//   - ctx: task lifetime (unused; kept for signature symmetry).
 //   - fabric: the Task Fabric that owns the task.
-//   - executors: agentID → sub.Agent that runs the acquired task.
-//   - tracker: shared per-agent load/confidence source (must be non-nil).
-//   - task: the task to run through the fabric path.
-func executeFabricTask(
+//   - executors: unused here; the scheduler resolves executors at drain.
+//   - tracker: unused here; the scheduler tracks load/confidence.
+//   - task: the task to submit.
+//
+// Returns:
+//   - error: fabric create error (ErrTaskExists is tolerated).
+func submitFabricTask(
 	ctx context.Context,
 	fabric *taskfabric.Fabric,
 	executors map[string]sub.Agent,
@@ -136,66 +142,7 @@ func executeFabricTask(
 	}); err != nil && err != taskfabric.ErrTaskExists {
 		return fmt.Errorf("kernel fabric create: %w", err)
 	}
-	ready, err := fabric.IsReady(task.TaskID)
-	if err != nil {
-		return fmt.Errorf("kernel fabric isready: %w", err)
-	}
-	if !ready {
-		// Dependencies not satisfied: leave the task READY in the fabric for
-		// the kernelScheduler to execute when its dependencies complete.
-		return nil
-	}
-	cands := make([]taskfabric.Candidate, 0, len(executors))
-	for agentID, agent := range executors {
-		if agent == nil {
-			continue
-		}
-		cands = append(cands, taskfabric.Candidate{
-			AgentID:      agentID,
-			Capabilities: []string{string(agent.Type())},
-			Load:         tracker.Load(agentID),
-			Confidence:   tracker.Confidence(agentID),
-			Priority:     tracker.Priority(agentID),
-		})
-	}
-	winner, epoch, err := fabric.Schedule(task.TaskID, cands, 5*time.Minute)
-	if err != nil {
-		// ErrNoCapableCandidate is NOT a dispatch failure: the task is already
-		// READY in the fabric (Create above) and the kernelScheduler drains it
-		// as soon as a capable executor frees up (real-load scoring can reject a
-		// busy single-slot executor here). Returning an error would make the
-		// leader adapter count the task as failed even though it is queued —
-		// a silent drop (v0.4.0 GAP4 regression fix).
-		if errors.Is(err, taskfabric.ErrNoCapableCandidate) {
-			return nil
-		}
-		return fmt.Errorf("kernel fabric schedule: %w", err)
-	}
-	executor, ok := executors[winner]
-	if !ok {
-		if releaseErr := fabric.Release(task.TaskID, winner, epoch); releaseErr != nil {
-			// The task stays leased to an unknown executor; surface it so the
-			// recovery loop can requeue it rather than dropping the error
-			// silently (code_rules_v2 §3.1).
-			log.Printf("kernel fabric: executor %q not registered and release failed: %v", winner, releaseErr)
-		}
-		return fmt.Errorf("kernel fabric: executor %q not registered", winner)
-	}
-	// Track the busy slot while the quantum runs so the next Schedule sees the
-	// real load; end records the outcome for confidence (v0.4.0 GAP4).
-	tracker.begin(winner)
-	err = fabric.RunQuantum(task.TaskID, winner, epoch, func() (any, bool, error) {
-		res, execErr := executor.Execute(ctx, task)
-		if execErr != nil {
-			return nil, false, execErr
-		}
-		if res != nil && res.Error != "" {
-			return nil, false, fmt.Errorf("%s", res.Error)
-		}
-		return map[string]any{"result": "ok"}, true, nil
-	})
-	tracker.end(winner, err == nil)
-	return err
+	return nil
 }
 
 // subAgentCapability is the minimal capability surface the new-path scorer

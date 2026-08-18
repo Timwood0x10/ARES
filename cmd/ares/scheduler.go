@@ -14,8 +14,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
-// kernelScheduler is the "no leader" execution engine (ares-runtime.md §核心
-// 命题: Agents are not orchestrated. They are scheduled). It repeatedly drains
+// kernelScheduler is the "no leader" execution engine (ares-runtime.md
+// Agents are not orchestrated. They are scheduled). It repeatedly drains
 // the fabric's ReadyTasks — the work source — and for each ready task:
 //
 //	Schedule (capability-aware) → Acquire (lease + fencing) → RunQuantum (one
