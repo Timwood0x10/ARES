@@ -25,6 +25,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
@@ -68,6 +69,7 @@ var (
 	serveLLMURL     string
 	serveLLMKey     string
 	serveLLMModel   string
+	serveAutopilot  bool
 )
 
 func init() {
@@ -77,6 +79,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveLLMURL, "llm-url", "", "LLM endpoint URL — minimal setup, no config file needed")
 	serveCmd.Flags().StringVar(&serveLLMKey, "llm-api-key", "", "LLM API key (minimal setup)")
 	serveCmd.Flags().StringVar(&serveLLMModel, "llm-model", "", "LLM model name (optional, provider default when empty)")
+	serveCmd.Flags().BoolVar(&serveAutopilot, "autopilot", false, "Enable the built-in demo task injector (submitTasks); off by default")
 }
 
 func runServe() error {
@@ -87,6 +90,10 @@ func runServe() error {
 	}
 	if err := validateServeConfig(cfg); err != nil {
 		return err
+	}
+	// --autopilot flag opts into the demo task injector (off by default).
+	if serveAutopilot {
+		cfg.Kernel.Autopilot = true
 	}
 
 	// --- Context with signal handling ---
@@ -285,7 +292,65 @@ func runServe() error {
 		leaderWithPeer.SetPeerRegistry(peerRegistry)
 	}
 
-	// --- PluginBus + MonitorPlugin ---
+	// --- PluginBus + MonitorPlugin (extracted to setupServeMonitoring to keep
+	// runServe's cyclomatic complexity within gocyclo's 30 limit) ---
+	plugin, err := setupServeMonitoring(ctx, g, cfg, mgr, registry, store)
+	if err != nil {
+		return err
+	}
+
+	// F04 (Stage 8): build the leader's real workflow DAG from the configured
+	// sub-agents and register it with the runtime manager BEFORE mgr.Start, so
+	// wireEvolutionLiveDAGs binds workflow/scheduler/recovery executors to the
+	// live DAG instead of the bootstrap synthetic placeholder.
+	liveDAG, dagErr := buildLeaderLiveDAG(cfg)
+	if dagErr != nil {
+		return fmt.Errorf("build leader live dag: %w", dagErr)
+	}
+	mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
+
+	// Inject the live agent DAGs into the evolution system's executors before
+	// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
+	// time. The leader's live DAG is now registered above, so the binding is
+	// real (F04 closed) rather than a no-op.
+	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
+
+	// --- Start runtime ---
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("start runtime: %w", err)
+	}
+
+	// Sub-agents are execution units only (ares-runtime.md: agents are not
+	// orchestrated, they are scheduled). The Kernel owns dispatch: in the
+	// taskfabric policy the kernelScheduler drives each task through
+	// RunQuantum → sub.Agent.Execute; agents never subscribe to the event
+	// stream and self-dispatch (self-dispatch was removed in v0.3.0).
+
+	// --- Submit real tasks (opt-in demo injector; off unless autopilot) ---
+	runAutopilotInjector(ctx, g, cfg, leaderAgent)
+
+	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
+	// cyclomatic complexity within lint limits) ---
+	if _, err := startServeHTTPAndHooks(ctx, g, cfg, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
+		return err
+	}
+
+	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
+	return g.Wait()
+}
+
+// setupServeMonitoring builds the PluginBus + MonitorPlugin console, the
+// dashboard intelligence engine, the evolution store bridge, and the
+// EventStore→PluginBus forwarder goroutine. Extracted from runServe to keep its
+// cyclomatic complexity within gocyclo's 30 limit.
+func setupServeMonitoring(
+	ctx context.Context,
+	g *errgroup.Group,
+	cfg *ares_config.Config,
+	mgr *ares_runtime.Manager,
+	registry *api_tools.Registry,
+	store ares_events.EventStore,
+) (*monitoring.MonitorPlugin, error) {
 	// NOTE: The ares_runtime plugin framework (PluginBus + capability discovery)
 	// is actively consumed by the production workflow Runner
 	// (internal/workflow/runner_plugins.go): CapCheckpoint/CapEvolution/Flusher/
@@ -330,7 +395,7 @@ func runServe() error {
 	).(*monitoring.MonitorPlugin)
 
 	if err := plugin.Start(ctx, bus); err != nil {
-		return fmt.Errorf("start monitor plugin: %w", err)
+		return nil, fmt.Errorf("start monitor plugin: %w", err)
 	}
 
 	// ── Intelligence engine: bridge dashboard.Engine → monitoring.IntelProvider ──
@@ -359,48 +424,21 @@ func runServe() error {
 		bridgeEvents(ctx, store, bus, meta)
 		return nil
 	})
+	return plugin, nil
+}
 
-	// F04 (Stage 8): build the leader's real workflow DAG from the configured
-	// sub-agents and register it with the runtime manager BEFORE mgr.Start, so
-	// wireEvolutionLiveDAGs binds workflow/scheduler/recovery executors to the
-	// live DAG instead of the bootstrap synthetic placeholder.
-	liveDAG, dagErr := buildLeaderLiveDAG(cfg)
-	if dagErr != nil {
-		return fmt.Errorf("build leader live dag: %w", dagErr)
+// runAutopilotInjector starts the built-in demo task injector (submitTasks)
+// when autopilot is enabled. Off by default so a production `ares serve`
+// does not burn LLM quota on synthetic work; enable it for local demos / UI
+// development instead of the dedicated `ares demo` console.
+func runAutopilotInjector(ctx context.Context, g *errgroup.Group, cfg *ares_config.Config, leaderAgent leader.Agent) {
+	if !cfg.Kernel.Autopilot {
+		return
 	}
-	mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
-
-	// Inject the live agent DAGs into the evolution system's executors before
-	// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
-	// time. The leader's live DAG is now registered above, so the binding is
-	// real (F04 closed) rather than a no-op.
-	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
-
-	// --- Start runtime ---
-	if err := mgr.Start(ctx); err != nil {
-		return fmt.Errorf("start runtime: %w", err)
-	}
-
-	// Sub-agents are execution units only (ares-runtime.md: agents are not
-	// orchestrated, they are scheduled). The Kernel owns dispatch: in the
-	// taskfabric policy the kernelScheduler drives each task through
-	// RunQuantum → sub.Agent.Execute; agents never subscribe to the event
-	// stream and self-dispatch (self-dispatch was removed in v0.3.0).
-
-	// --- Submit real tasks ---
 	g.Go(func() error {
 		submitTasks(ctx, leaderAgent)
 		return nil
 	})
-
-	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
-	// cyclomatic complexity within lint limits) ---
-	if _, err := startServeHTTPAndHooks(ctx, g, cfg, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
-		return err
-	}
-
-	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
-	return g.Wait()
 }
 
 // createAndRegisterServeAgents builds the leader and sub agents, wires the

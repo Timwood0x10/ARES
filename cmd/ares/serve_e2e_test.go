@@ -77,7 +77,7 @@ func TestServeProductionE2E(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	cmd := exec.CommandContext(ctx, bin, "serve")
+	cmd := exec.CommandContext(ctx, bin, "serve", "--autopilot")
 	// serve reads ares.yaml from its working directory; run it from the repo
 	// root so the real LLM config is found.
 	cmd.Dir = repoRoot

@@ -90,10 +90,14 @@ func NewOTelTracer(serviceName string, opts ...OTelOption) (*OTelTracer, error) 
 		cfg.metricReader = sdkmetric.NewManualReader()
 	}
 
+	// resource.Default() carries the SDK's schema URL; merging a second
+	// resource with a different schema URL (e.g. semconv/v1.26.0) fails on
+	// newer OTel SDKs ("conflicting Schema URL"). Align both sides by using
+	// the default resource's own schema URL for the injected attributes.
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
-			semconv.SchemaURL,
+			resource.Default().SchemaURL(),
 			semconv.ServiceName(serviceName),
 		),
 	)

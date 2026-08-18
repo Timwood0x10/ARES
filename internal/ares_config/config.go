@@ -86,8 +86,14 @@ type KernelConfig struct {
 	RecoverySweepTimeout string `yaml:"recovery_sweep_timeout"`
 	// DispatchTimeout bounds how long kernelTaskDispatcher.Dispatch waits for
 	// a submitted task's completion event before reporting it failed
-	// (default "300s", mirrors the legacy dispatcher timeout).
+	// (default "300s",  mirrors the legacy dispatcher timeout).
 	DispatchTimeout string `yaml:"dispatch_timeout"`
+	// Autopilot enables the built-in demo task injector (submitTasks), which
+	// periodically submits a fixed set of tasks to the leader agent. Off by
+	// default so a production `ares serve` does not burn LLM quota on
+	// synthetic work; enable it for local demos / UI development instead of
+	// the dedicated `ares demo` console.
+	Autopilot bool `yaml:"autopilot"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that

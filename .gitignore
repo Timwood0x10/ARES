@@ -58,3 +58,6 @@ examples/*/ares.yaml
 # Compiled demo binaries (48MB+; build on demand via go run)
 /26-runtime-scheduling-demo
 /examples/26-runtime-scheduling-demo/26-runtime-scheduling-demo
+
+# Compiled ares serve/demo binary (60MB+; build on demand via go build)
+/ares

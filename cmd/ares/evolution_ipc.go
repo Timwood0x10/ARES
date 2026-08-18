@@ -35,12 +35,12 @@ const peerTopic = "peer"
 // evolutionIPCBridge holds the evolution-aware IPC bus and the peer registry
 // wired to it. The bridge is created once per serve; a nil policy source (no
 // evolution store) keeps plain json encoding, which is behaviorally identical
-// to the direct peer channel. A nil tracer disables cross-Fabric message
-// tracing (M4-1).
+// to the direct peer channel. Cross-Fabric message tracing (M4-1) is applied
+// inline by the registry's send wrapper using the tracer passed to
+// wireEvolutionIPC, so it is not stored here.
 type evolutionIPCBridge struct {
-	ipc    *aresrecovery.EvolutionAwareIPC
-	reg    *peer.Registry
-	tracer *aresrecovery.GlobalTracer
+	ipc *aresrecovery.EvolutionAwareIPC
+	reg *peer.Registry
 }
 
 // wireEvolutionIPC builds the evolution-aware peer bridge: a Bus whose Send

@@ -357,7 +357,7 @@ Three concepts do not mix:
 
 | Track | Difficulty | Value | Priority | Status |
 |-------|-----------|-------|----------|--------|
-| M1 Multi-agent collaboration | Medium | High | ⭐⭐⭐ P2 required | ✅ implemented (agentipc/collaboration.go) |
+| M1 Multi-agent collaboration | Medium | High | ⭐⭐⭐ P2 required | ⚠️ library-ready / not wired in prod (agentipc/collaboration.go) |
 | M2 Evolution-Runtime deep integration | Medium-high | High | ⭐⭐⭐ P2 required | 🔄 in progress (M2-1 implemented) |
 | M3 Explainability & human feedback | Medium | High | ⭐⭐⭐ P2 recommended | ⏳ pending |
 | M4 Global observability & debugging | Low | Medium | ⭐⭐ P3 optional | ⏳ pending |
@@ -372,6 +372,17 @@ an Agent-level coordinator, not a Kernel scheduler):
 - **Pipeline**: A → B → C ordered execution, data flows via IPC (`Pipeline`)
 - **Orchestration**: a Coordinator fans work out to multiple Workers in
   parallel with failure retry (`Orchestrate`)
+
+> **Status note (v0.4.0 review)**: the collaboration primitives
+> (`DelegateToSpecialist`/`Pipeline`/`Orchestrate` and the IPC-layer
+> `Request`/`Reply`/`Delegate`/`Handoff`/`Subscribe`) are implemented in
+> `agentipc/collaboration.go` and `primitives.go` with unit tests, but the
+> production path (kernelScheduler / leader peer messaging) currently only uses
+> `Bus.Send`/`Register` — there is **no caller of the collaboration layer**. It is
+> "library-ready, not wired in prod", not delivered. Wire it once a real peer
+> message scenario exists (e.g. leader delegating to a peer specialist).
+> TODO(tech-debt): do not mark ✅ until wired; forcing wiring today would be
+> "wiring for wiring's sake".
 
 ### M2 Evolution-Runtime deep integration (P2 required)
 
