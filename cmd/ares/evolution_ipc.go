@@ -1,4 +1,4 @@
-// Evolution-aware IPC wiring (v0.4.0 M2-3): bridges the agent peer channel
+// Evolution-aware IPC wiring (v0.3.0 M2-3): bridges the agent peer channel
 // through aresrecovery.EvolutionAwareIPC so the active evolution strategy's
 // wire policy (ipc.encoding = json | json+gzip) shapes real agent-to-agent
 // messages — "Evolution decides; Kernel enforces", same as the spawn gate and

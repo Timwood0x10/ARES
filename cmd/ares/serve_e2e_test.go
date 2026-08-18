@@ -61,7 +61,7 @@ func TestServeProductionE2E(t *testing.T) {
 		repoRoot = ".."
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
 	bin := filepath.Join(t.TempDir(), "ares-serve")

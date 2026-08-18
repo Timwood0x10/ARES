@@ -278,10 +278,10 @@ Planner 降级为 **Agent 的 cognitive capability**（可选），不再是 Run
 8. spawn 是 syscall，不是 orchestration API。
 9. 抢占是 cooperative——不做假 OS 硬抢占。
 10. 不提前设计——Auction / 分布式 Scheduler / 完整 Actor / Execution 实体 等继续暂缓。
-    **v0.4.0 修订（2026-08-17）**：以下项从「暂缓」提升为「已排期」——
+    **v0.3.0 修订（2026-08-17）**：以下项从「暂缓」提升为「已排期」——
     多 Agent 协作模式（委托/流水线/编排）、进化驱动的 spawn 决策（自动 spawn/clone 策略）、
     进化驱动的资源分配（复杂资源调度）、进化驱动的 IPC 协议（消息格式/压缩）。
-    详见「十二、v0.4.0 高级特性主线」。
+    详见「十二、v0.3.0 高级特性主线」。
 
 ### Task decomposition = Agent cognition
 
@@ -314,11 +314,11 @@ Task 的 durable intent 尚未完成**——不是"Agent 被暂停了"。
 - **Agent suspended**：Agent 生命周期状态（Lifecycle 支柱）
 - **Execution yielded**：本次 quantum 结束交回执行权（execution boundary，Scheduler 决策下一状态）
 
-## 十二、v0.4.0 高级特性主线（2026-08-17 拍板）
+## 十二、v0.3.0 高级特性主线（2026-08-17 拍板）
 
-> 核心 Runtime（P0-P5 + 生产接线）已完成。v0.4.0 聚焦高级特性，围绕既有三支柱
+> 核心 Runtime（P0-P5 + 生产接线）已完成。v0.3.0 聚焦高级特性，围绕既有三支柱
 > （Scheduler / IPC / Lifecycle）扩展，不改变核心不变量（§11）。完整路线图与
-> 落地计划见 `docs/analysis-reports/v0.4.0-feature-suggestions-corrected.md`。
+> 落地计划见 `docs/analysis-reports/v0.3.0-feature-suggestions-corrected.md`。
 
 ### 优先级矩阵
 

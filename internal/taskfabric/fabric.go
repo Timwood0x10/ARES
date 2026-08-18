@@ -197,7 +197,8 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 }
 
 // Complete finalizes a RUNNING task owned by agentID (at the fenced epoch) as
-// COMPLETED.
+// COMPLETED. The task's Checkpoint is preserved as-is: a quantum may have
+// written progress (or a worker result) into it before completing.
 func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -205,6 +206,28 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 	if err != nil {
 		return err
 	}
+	if err := t.transition(StateCompleted); err != nil {
+		return err
+	}
+	f.record(t, EventTaskCompleted)
+	return nil
+}
+
+// CompleteWithCheckpoint finalizes a RUNNING task as COMPLETED while storing
+// the quantum's output in the task Checkpoint. The plain Complete keeps
+// whatever checkpoint was already on the task; this variant overwrites it
+// with the caller-supplied result so a worker outcome survives completion
+// (the kernel dispatch reads it back from the completed task — the serve
+// result-reflux fix). The scheduler calls this instead of Complete when the
+// step's quantum produced a real result.
+func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	t.Checkpoint = checkpoint
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}

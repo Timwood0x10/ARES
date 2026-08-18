@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Benchmarks for the v0.4.0 M1 collaboration patterns (delegation / pipeline /
+// Benchmarks for the v0.3.0 M1 collaboration patterns (delegation / pipeline /
 // orchestration). All handlers echo synchronously so the numbers isolate the
 // composition-layer overhead on top of the underlying request/reply primitives.
 

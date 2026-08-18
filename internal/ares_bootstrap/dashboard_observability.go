@@ -1,4 +1,4 @@
-// Package ares_bootstrap — dashboard observability adapters (v0.4.0 M3/M4).
+// Package ares_bootstrap — dashboard observability adapters (v0.3.0 M3/M4).
 //
 // Bridges aresrecovery's recording surfaces (EvolutionTracer / FeedbackStore
 // / GlobalTracer) to the dashboard's provider contracts so the existing

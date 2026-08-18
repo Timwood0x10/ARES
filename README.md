@@ -564,7 +564,7 @@ Bus_RequestReply          211k  1.14µs    912B    14 allocs
 Bus_Broadcast (10 subs)   173k  1.43µs    3.0KB   41 allocs
 DualTrackDispatch        23.2M  10.2ns      0B     0 allocs
 
-=== v0.4.0 Advanced Features (M1-M4, 2026-08-17 新增) ===
+=== v0.3.0 Advanced Features (M1-M4, 2026-08-17 新增) ===
 --- Multi-agent collaboration (internal/agentipc) ---
 Collaboration_Delegate (1 specialist)   185k  1.31µs   1.3KB   18 allocs
 Collaboration_Pipeline (3 stages)       66.6k  3.59µs   2.9KB   43 allocs

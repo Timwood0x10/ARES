@@ -40,7 +40,7 @@ func (a *mcpStatusAdapter) ListServers() []dashboard.MCPServerStatusView {
 	return views
 }
 
-// ProvideDashboard assembles the dashboard server and wires the v0.4.0 M3/M4
+// ProvideDashboard assembles the dashboard server and wires the v0.3.0 M3/M4
 // observability surfaces from the SHARED aresrecovery components (created once
 // in Bootstrap, not per-call), so the dashboard endpoints read the same tracer
 // / feedback store the runtime writes.
@@ -64,7 +64,7 @@ func ProvideDashboard(
 	statusProvider := &mcpStatusAdapter{mcp: mcpMgr}
 	api := dashboard.NewAPIv2(nil, statusProvider, hub)
 
-	// Wire the v0.4.0 M3/M4 observability surfaces: the evolution trajectory
+	// Wire the v0.3.0 M3/M4 observability surfaces: the evolution trajectory
 	// (M3-1), human feedback sink (M3-2) and cross-Fabric span provider (M4-1)
 	// are backed by the shared aresrecovery components, so the dashboard
 	// endpoints return data recorded by the runtime (GA generations, human

@@ -69,7 +69,7 @@ type SurvivalProvider interface {
 }
 
 // EvolutionTrajectoryProvider supplies the evolution trajectory for the
-// dashboard (v0.4.0 M3-1). Implementations record per-generation snapshots
+// dashboard (v0.3.0 M3-1). Implementations record per-generation snapshots
 // (best score, top strategies, changes); the dashboard renders them as JSON.
 type EvolutionTrajectoryProvider interface {
 	// EvolutionTrajectory returns the recorded generations (oldest first)
@@ -78,7 +78,7 @@ type EvolutionTrajectoryProvider interface {
 }
 
 // EvolutionFeedback is a human review of an evolution candidate submitted via
-// the dashboard (v0.4.0 M3-2).
+// the dashboard (v0.3.0 M3-2).
 type EvolutionFeedback struct {
 	// CandidateID is the reviewed strategy/candidate id.
 	CandidateID string `json:"candidate_id"`
@@ -92,14 +92,14 @@ type EvolutionFeedback struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// EvolutionFeedbackSink receives human feedback submissions (v0.4.0 M3-2).
+// EvolutionFeedbackSink receives human feedback submissions (v0.3.0 M3-2).
 type EvolutionFeedbackSink interface {
 	// SubmitFeedback records one human feedback entry.
 	SubmitFeedback(fb EvolutionFeedback) error
 }
 
 // ObservabilitySpansProvider supplies cross-Fabric trace spans for the
-// observability endpoint (v0.4.0 M4-1). Implementations snapshot the Global
+// observability endpoint (v0.3.0 M4-1). Implementations snapshot the Global
 // Tracer's spans as JSON-friendly values; the dashboard renders them.
 type ObservabilitySpansProvider interface {
 	// Spans returns a snapshot of the recorded spans (insertion order), or
@@ -126,15 +126,15 @@ type APIv2 struct {
 	upgrader *websocket.Upgrader
 	apiKey   string // optional API key protecting destructive endpoints
 
-	// evolutionTrajectory is the optional v0.4.0 M3-1 provider rendering the
+	// evolutionTrajectory is the optional v0.3.0 M3-1 provider rendering the
 	// evolution trajectory (nil disables the /evolution/trajectory endpoint).
 	evolutionTrajectory EvolutionTrajectoryProvider
 
-	// evolutionFeedback is the optional v0.4.0 M3-2 sink receiving human
+	// evolutionFeedback is the optional v0.3.0 M3-2 sink receiving human
 	// feedback submissions (nil disables POST /evolution/feedback).
 	evolutionFeedback EvolutionFeedbackSink
 
-	// observability is the optional v0.4.0 M4-1 cross-Fabric span provider
+	// observability is the optional v0.3.0 M4-1 cross-Fabric span provider
 	// (nil disables GET /observability/spans).
 	observability ObservabilitySpansProvider
 
@@ -169,20 +169,20 @@ func (a *APIv2) SetAPIKey(key string) {
 }
 
 // SetEvolutionTrajectory wires the optional evolution trajectory provider
-// (v0.4.0 M3-1). When set, GET /evolution/trajectory renders the recorded
+// (v0.3.0 M3-1). When set, GET /evolution/trajectory renders the recorded
 // generations; nil disables the endpoint.
 func (a *APIv2) SetEvolutionTrajectory(provider EvolutionTrajectoryProvider) {
 	a.evolutionTrajectory = provider
 }
 
-// SetEvolutionFeedback wires the optional human feedback sink (v0.4.0 M3-2).
+// SetEvolutionFeedback wires the optional human feedback sink (v0.3.0 M3-2).
 // When set, POST /evolution/feedback records a human review; nil disables the
 // endpoint.
 func (a *APIv2) SetEvolutionFeedback(sink EvolutionFeedbackSink) {
 	a.evolutionFeedback = sink
 }
 
-// SetObservability wires the optional cross-Fabric span provider (v0.4.0
+// SetObservability wires the optional cross-Fabric span provider (v0.3.0
 // M4-1). When set, GET /observability/spans renders the Global Tracer's spans;
 // nil disables the endpoint.
 func (a *APIv2) SetObservability(provider ObservabilitySpansProvider) {
@@ -297,13 +297,13 @@ func (a *APIv2) Handler() http.Handler {
 	mux.HandleFunc("/flight/diagnostics", a.handleFlightDiagnostics)
 	mux.HandleFunc("/flight/genealogy", a.handleFlightGenealogy)
 
-	// ── Evolution (v0.4.0 M3-1 / M3-2) ────────────
+	// ── Evolution (v0.3.0 M3-1 / M3-2) ────────────
 	// GET    /evolution/trajectory → recorded generation snapshots
 	// POST   /evolution/feedback   → submit human feedback on a candidate
 	mux.HandleFunc("/evolution/trajectory", a.handleEvolutionTrajectory)
 	mux.HandleFunc("/evolution/feedback", a.handleEvolutionFeedback)
 
-	// ── Observability (v0.4.0 M4-1) ───────────────
+	// ── Observability (v0.3.0 M4-1) ───────────────
 	// GET    /observability/spans  → cross-Fabric trace spans (Global Tracer)
 	mux.HandleFunc("/observability/spans", a.handleObservabilitySpans)
 
@@ -372,11 +372,11 @@ func (a *APIv2) MountGinRoutes(rg *gin.RouterGroup) {
 	rg.GET("/flight/diagnostics", a.wrapGin(a.handleFlightDiagnostics))
 	rg.GET("/flight/genealogy", a.wrapGin(a.handleFlightGenealogy))
 
-	// ── Evolution (v0.4.0 M3-1 / M3-2) ──
+	// ── Evolution (v0.3.0 M3-1 / M3-2) ──
 	rg.GET("/evolution/trajectory", a.wrapGin(a.handleEvolutionTrajectory))
 	rg.POST("/evolution/feedback", a.wrapGin(a.handleEvolutionFeedback))
 
-	// ── Observability (v0.4.0 M4-1) ──
+	// ── Observability (v0.3.0 M4-1) ──
 	rg.GET("/observability/spans", a.wrapGin(a.handleObservabilitySpans))
 
 	// ── Wired services (eval / memory / retrieval) ──

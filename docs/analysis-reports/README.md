@@ -72,5 +72,5 @@
 | [`ares-capability-fabric-design.md`](ares-capability-fabric-design.md) | `docs/agent-birth-capabilities.md` / `.en.md` |
 | [`ares-runtime-capability-reserve.md`](ares-runtime-capability-reserve.md) | `cmd/ares/serve.go`（能力储备接线留痕） |
 | [`ares-vs-prime-agent.md`](ares-vs-prime-agent.md) | `README.md`（Agent-OS Primitives 依据） |
-| [`v0.4.0-feature-suggestions-corrected.md`](v0.4.0-feature-suggestions-corrected.md) | v0.4.0 路线图（M1 多 Agent 协作 / M2 Evolution-Runtime 集成 / M3 可解释性与人工反馈 / M4 全局观测，含优先级矩阵与落地计划） |
+| [`v0.3.0-feature-suggestions-corrected.md`](v0.3.0-feature-suggestions-corrected.md) | v0.3.0 路线图（M1 多 Agent 协作 / M2 Evolution-Runtime 集成 / M3 可解释性与人工反馈 / M4 全局观测，含优先级矩阵与落地计划） |
 | [`CODE-REVIEW-SUMMARY.md`](CODE-REVIEW-SUMMARY.md) | 2026-08-17 深度 Code Review 完成报告（审查项与主要发现汇总） |

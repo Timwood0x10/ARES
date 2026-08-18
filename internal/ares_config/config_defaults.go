@@ -12,7 +12,7 @@ import (
 const (
 	defaultServerHost   = "localhost"
 	defaultLLMProvider  = "ollama"
-	defaultLLMModel     = "llama3.2"
+	defaultLLMModel     = "gemma4"
 	defaultOutputFormat = "simple"
 	defaultStorageType  = "postgres"
 	defaultPGVectorTbl  = "embeddings"

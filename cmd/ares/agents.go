@@ -131,12 +131,14 @@ func createLeaderAgent(
 		subCaps = append(subCaps, subAgentCapability{ID: s.ID, Type: s.Type})
 	}
 	kernelDispatcher, kernelFlag := wireKernelDispatcher(taskDispatcher, subCaps)
-	taskDispatcher = &kernelTaskDispatcher{kernel: kernelDispatcher}
+	taskDispatcher = newKernelTaskDispatcher(kernelDispatcher, store)
 	// Expose the assembled kernel to serve so it can flip the policy and start
-	// the Task Fabric scheduler per config.
+	// the Task Fabric scheduler per config. The batch adapter is retained so
+	// the flip can inject the fabric for result read-back.
 	if kernel != nil {
 		kernel.dual = kernelDispatcher
 		kernel.flag = kernelFlag
+		kernel.taskDispatcher = taskDispatcher.(*kernelTaskDispatcher)
 	}
 	// Kernel shadow mode is live: the Task Fabric path scores every dispatched
 	// task (no double execution) and Mismatches() counts divergence vs. the

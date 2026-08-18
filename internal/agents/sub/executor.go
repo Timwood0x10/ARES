@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -555,16 +556,29 @@ func (e *taskExecutor) executeWithLLMTextOnly(ctx context.Context, prompt string
 func (e *taskExecutor) parseRecommendResult(response string) ([]*models.RecommendItem, error) {
 	parser := output.NewParser()
 	result, err := parser.ParseRecommendResult(response)
-	if err != nil {
-		return nil, errors.Wrap(err, "parse result")
+	if err == nil && result != nil && result.Items != nil {
+		log.Info("Parsed result items", "count", len(result.Items))
+		return result.Items, nil
 	}
 
-	if result == nil || result.Items == nil {
-		return nil, errors.New("empty result from LLM")
+	// Strict parse failed: the model answered in prose (general-purpose
+	// tasks: architecture analysis, code review, …). Wrap the text in a
+	// single RecommendItem (Content carries it) so a real answer becomes a
+	// real result instead of a "invalid JSON" task failure — the last no-op
+	// gap in the serve path. Only a truly empty answer is an error.
+	if trimmed := strings.TrimSpace(response); trimmed != "" {
+		log.Debug("Strict parse failed, wrapping prose", "error", err)
+		item := &models.RecommendItem{
+			ItemID:      fmt.Sprintf("prose-%s-%d", e.agentID, time.Now().UnixNano()),
+			Category:    "general",
+			Name:        "Agent output",
+			Description: trimmed[:min(500, len(trimmed))],
+			Content:     trimmed,
+		}
+		return []*models.RecommendItem{item}, nil
 	}
 
-	log.Info("Parsed result items", "count", len(result.Items))
-	return result.Items, nil
+	return nil, errors.Wrap(err, "parse result")
 }
 
 func formatBudget(budget *models.PriceRange) string {

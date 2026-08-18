@@ -37,7 +37,7 @@ func (f *Fabric) WithResourceBudget(budget map[string]float64) *Fabric {
 	return f
 }
 
-// UpdateResourceBudget dynamically replaces the resource budget (v0.4.0 M2-2:
+// UpdateResourceBudget dynamically replaces the resource budget (v0.3.0 M2-2:
 // evolution-driven resource allocation — the Evolution system adjusts CPU /
 // memory quota weights at runtime without recreating the fabric). Existing
 // allocations are NOT retroactively rejected: the new budget applies to

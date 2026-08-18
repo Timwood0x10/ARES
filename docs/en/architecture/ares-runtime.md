@@ -301,12 +301,12 @@ a central Runtime component — consistent with Skill-first / Capability Fabric.
 9. Preemption is cooperative — no fake OS hard preemption.
 10. No premature design — Auction / distributed Scheduler / full Actor /
     Execution entity remain deferred.
-    **v0.4.0 revision (2026-08-17)**: the following items move from "deferred"
+    **v0.3.0 revision (2026-08-17)**: the following items move from "deferred"
     to "scheduled": multi-agent collaboration patterns (delegation / pipeline /
     orchestration), evolution-driven spawn decisions (auto spawn/clone policy),
     evolution-driven resource allocation (complex resource scheduling), and
     evolution-driven IPC protocol (message format / compression). See
-    "12. v0.4.0 Advanced Feature Roadmap" below.
+    "12. v0.3.0 Advanced Feature Roadmap" below.
 
 ### Task decomposition = Agent cognition
 
@@ -346,12 +346,12 @@ Three concepts do not mix:
 - **Execution yielded**: this quantum ended and handed execution back
   (execution boundary; the Scheduler decides the next state)
 
-## 12. v0.4.0 Advanced Feature Roadmap (decided 2026-08-17)
+## 12. v0.3.0 Advanced Feature Roadmap (decided 2026-08-17)
 
-> The core Runtime (P0-P5 + production wiring) is complete. v0.4.0 focuses on
+> The core Runtime (P0-P5 + production wiring) is complete. v0.3.0 focuses on
 > advanced features built on the three pillars (Scheduler / IPC / Lifecycle)
 > without changing the core invariants (§11). The full roadmap and landing
-> plan live in `docs/analysis-reports/v0.4.0-feature-suggestions-corrected.md`.
+> plan live in `docs/analysis-reports/v0.3.0-feature-suggestions-corrected.md`.
 
 ### Priority matrix
 

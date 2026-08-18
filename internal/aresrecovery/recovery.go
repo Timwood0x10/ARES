@@ -20,7 +20,7 @@ import (
 type Recovery struct {
 	tasks  *taskfabric.Fabric
 	agents *agentfabric.Fabric
-	// spawner is the optional evolution-aware spawn gate (v0.4.0 M2-1). When
+	// spawner is the optional evolution-aware spawn gate (v0.3.0 M2-1). When
 	// set, every replacement spawn goes through it so the evolution policy
 	// (Enabled / MaxConcurrent / PreferredCapabilities) shapes restarts and
 	// checkpoint recovery too — "Evolution decides; Kernel enforces". Nil
@@ -84,7 +84,7 @@ func (r *Recovery) WithClock(now func() time.Time) *Recovery {
 	return r
 }
 
-// WithSpawner injects the evolution-aware spawn gate (v0.4.0 M2-1). When set,
+// WithSpawner injects the evolution-aware spawn gate (v0.3.0 M2-1). When set,
 // every replacement spawn in RecoverTaskCheckpoint / RestartAgent is routed
 // through it, so the evolution policy shapes restart and recovery spawns.
 // Returns the Recovery for chaining.
@@ -98,7 +98,7 @@ func (r *Recovery) WithSpawner(s *EvolutionAwareSpawner) *Recovery {
 // spawns ALWAYS use the recovery path (SpawnForRecovery): they replace a
 // dead/expired agent and must not be blocked by the population cap — a
 // self-healing spawn rejected by MaxConcurrent would strand the task forever
-// (v0.4.0 M2-1; recovery bypasses quota, not the Enabled gate).
+// (v0.3.0 M2-1; recovery bypasses quota, not the Enabled gate).
 func (r *Recovery) spawnAgent(ctx context.Context, spec agentfabric.SpawnSpec) (*agentfabric.Agent, error) {
 	if r.spawner != nil {
 		return r.spawner.SpawnForRecovery(ctx, spec)

@@ -30,7 +30,7 @@ type kernelScheduler struct {
 	fabric    *taskfabric.Fabric
 	executors map[string]sub.Agent
 	// tracker supplies real per-agent Load/Confidence to Schedule
-	// (v0.4.0 GAP4: real load tracking instead of a static placeholder).
+	// (v0.3.0 GAP4: real load tracking instead of a static placeholder).
 	tracker *loadTracker
 	// pollInterval is how often ReadyTasks is drained (default 500ms).
 	pollInterval time.Duration
@@ -61,7 +61,7 @@ type kernelScheduler struct {
 const noCandidateLogInterval = 5 * time.Second
 
 // loadTracker records per-agent execution statistics so scheduling decisions
-// use real load and confidence instead of static placeholders (v0.4.0 GAP4:
+// use real load and confidence instead of static placeholders (v0.3.0 GAP4:
 // "线程"的负载真实跟踪). It is shared by the kernel scheduler and the fabric
 // dispatch path (executeFabricTask) so both see the same live numbers. mu
 // guards all fields; every method is safe for concurrent use.
@@ -302,6 +302,24 @@ func (s *kernelScheduler) logFailure(taskID string, err error) {
 	log.Printf("kernel scheduler: execute task %q failed: %v", taskID, err)
 }
 
+// fabricTaskMeta is the submission-time metadata envelope stored in a fabric
+// task's Checkpoint slot before execution (submitFabricTask) and restored by
+// toModelTask when the scheduler builds the models.Task for the executor.
+// Without this the executor saw profile==nil and degraded to an empty
+// executeByType fallback — a silent no-op that still reported success (the
+// serve result-reflux bug chain). The type is declared in the consumer
+// package (code_rules_v2: interfaces/contracts live at the consumer); the
+// fabric treats Checkpoint as opaque any.
+type fabricTaskMeta struct {
+	// UserProfile is the profile the leader attached to the task.
+	UserProfile *models.UserProfile
+	// Payload carries the task's opaque user data (incl. task_desc).
+	Payload map[string]any
+	// UsedExperienceID is the experience consumed by this task (bandit
+	// feedback linkage), preserved for the outcome recorder.
+	UsedExperienceID string
+}
+
 // execute runs the full fabric path for one task: Schedule → Acquire →
 // RunQuantum (delegating the actual work to the winning sub-agent) →
 // finalize. Errors are returned to the caller for logging; the fabric
@@ -315,7 +333,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	// always consistent with what can actually run. Each candidate declares its
 	// OWN capabilities (from the agent's Type), NOT the task's — the scorer
 	// compares the task's required capability against what the agent can do.
-	// Load/Confidence come from the live tracker (v0.4.0 GAP4): real busy
+	// Load/Confidence come from the live tracker (v0.3.0 GAP4): real busy
 	// fraction and historical success rate, not static placeholders.
 	cands := make([]taskfabric.Candidate, 0, len(s.executors))
 	for agentID, agent := range s.executors {
@@ -348,7 +366,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		return nil
 	}
 	// Track the busy slot while the quantum runs so the next Schedule sees the
-	// real load (v0.4.0 GAP4); end records the outcome for confidence.
+	// real load (v0.3.0 GAP4); end records the outcome for confidence.
 	s.tracker.begin(winner)
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
 		res, execErr := executor.Execute(ctx, s.toModelTask(tk))
@@ -360,7 +378,25 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		if res != nil && res.Error != "" {
 			return nil, false, fmt.Errorf("%s", res.Error)
 		}
-		return map[string]any{"result": "ok"}, true, nil
+		// Carry the worker's real output back through the fabric so the
+		// leader dispatch (which waits on task completion) can surface the
+		// actual items instead of the old "ok" placeholder — the last link
+		// in the no-op chain. The result rides in the quantum checkpoint:
+		// RunQuantum's done branch stores it via CompleteWithCheckpoint, and
+		// the dispatcher reads it back after polling the task to COMPLETED.
+		out := map[string]any{"result": "ok"}
+		if res != nil {
+			if items := res.Items; len(items) > 0 {
+				out["items"] = items
+			}
+			if res.Reason != "" {
+				out["reason"] = res.Reason
+			}
+			if len(res.Metadata) > 0 {
+				out["metadata"] = res.Metadata
+			}
+		}
+		return out, true, nil
 	})
 	s.tracker.end(winner, err == nil)
 	if err == nil {
@@ -370,11 +406,22 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 }
 
 // toModelTask maps a fabric Task back to the models.Task shape the sub-agent
-// executor expects. The fabric checkpoint (durable progress) rides in the
-// payload so a resumed quantum can observe where the previous step left off.
+// executor expects. The submission-time metadata (UserProfile + Payload +
+// UsedExperienceID) rides in the fabric Checkpoint slot inside a tagged
+// fabricTaskMeta envelope; restoring it here is what lets the executor take
+// the real LLM path instead of degrading to an empty fallback result
+// (profile==nil → executeByType). A genuine progress checkpoint (plain map,
+// written by RunQuantum) is preserved in the payload so a resumed quantum can
+// observe where the previous step left off.
 func (s *kernelScheduler) toModelTask(tk *taskfabric.Task) *models.Task {
 	t := models.NewTask(tk.ID, models.AgentType(tk.Capability), nil)
 	if tk.Checkpoint != nil {
+		if meta, ok := tk.Checkpoint.(fabricTaskMeta); ok {
+			t.UserProfile = meta.UserProfile
+			t.Payload = meta.Payload
+			t.UsedExperienceID = meta.UsedExperienceID
+			return t
+		}
 		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}
 	}
 	return t

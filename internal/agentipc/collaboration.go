@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// High-level multi-agent collaboration patterns (v0.4.0 M1). These build on
+// High-level multi-agent collaboration patterns (v0.3.0 M1). These build on
 // the peer primitives (Send/Request/Reply/Delegate/Handoff/Subscribe) and
 // provide the three coordination modes from the roadmap:
 //
@@ -24,7 +24,7 @@ import (
 // (primitives.go) so the wire format stays consistent.
 const taskIDKey = "task_id"
 
-// DelegateToSpecialist implements the delegation pattern (v0.4.0 M1-1): a
+// DelegateToSpecialist implements the delegation pattern (v0.3.0 M1-1): a
 // delegator (typically the Leader) hands a task to a Specialist agent and
 // waits for the result. The request carries the task id and the required
 // specialization so the receiving handler can decide acceptance. This is a
@@ -63,7 +63,7 @@ func (b *Bus) DelegateToSpecialist(ctx context.Context, delegator, specialist, t
 // ErrPipelineEmpty is returned when a pipeline is created with no stages.
 var ErrPipelineEmpty = errors.New("agentipc: pipeline requires at least one stage")
 
-// Pipeline runs a sequence of stages A → B → C in order (v0.4.0 M1-2). Each
+// Pipeline runs a sequence of stages A → B → C in order (v0.3.0 M1-2). Each
 // stage is an agent id; the output of stage N is passed as the input of stage
 // N+1 through the bus (Request/Reply). Stages execute strictly sequentially —
 // a stage's result is forwarded to the next stage before it starts. A stage
@@ -131,7 +131,7 @@ type OrchestrationResult struct {
 	Err error
 }
 
-// Orchestrate implements the orchestration pattern (v0.4.0 M1-3): a
+// Orchestrate implements the orchestration pattern (v0.3.0 M1-3): a
 // coordinator fans a task out to multiple workers in parallel and aggregates
 // the results. Each worker receives the same payload; workers run
 // concurrently (one goroutine each, bounded by a WaitGroup). A worker failure

@@ -870,7 +870,7 @@ func withRecovery(next http.Handler) http.Handler {
 }
 
 // handleEvolutionTrajectory renders the recorded evolution trajectory
-// (v0.4.0 M3-1). When no provider is wired, it returns an empty list.
+// (v0.3.0 M3-1). When no provider is wired, it returns an empty list.
 func (a *APIv2) handleEvolutionTrajectory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
@@ -887,7 +887,7 @@ func (a *APIv2) handleEvolutionTrajectory(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, trajectory)
 }
 
-// handleEvolutionFeedback receives a human feedback submission (v0.4.0 M3-2:
+// handleEvolutionFeedback receives a human feedback submission (v0.3.0 M3-2:
 // POST /api/evolution/feedback — rating + approval + attribution). The sink
 // records it for the Evolution system. Returns 501 when no sink is wired.
 func (a *APIv2) handleEvolutionFeedback(w http.ResponseWriter, r *http.Request) {
@@ -916,7 +916,7 @@ func (a *APIv2) handleEvolutionFeedback(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleObservabilitySpans renders the Global Tracer's cross-Fabric spans
-// (v0.4.0 M4-1). When no provider is wired, it returns an empty list.
+// (v0.3.0 M4-1). When no provider is wired, it returns an empty list.
 func (a *APIv2) handleObservabilitySpans(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))

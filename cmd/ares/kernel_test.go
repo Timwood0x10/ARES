@@ -10,6 +10,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
+	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -103,13 +104,20 @@ func TestWireKernelDispatcherLegacyErrorPropagates(t *testing.T) {
 }
 
 // TestKernelTaskDispatcherBatchAdapter verifies the batch adapter routes every
-// task through the kernel and returns the leader-shaped results.
+// task through the kernel and returns the leader-shaped results. With no
+// fabric and no event store the legacy path runs synchronously (each task
+// completes through the inner dispatcher), so results succeed without faking
+// worker output.
 func TestKernelTaskDispatcherBatchAdapter(t *testing.T) {
 	inner := &stubLeaderDispatcher{}
 	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
 		{ID: "code_01", Type: "code"},
 	})
-	adapter := &kernelTaskDispatcher{kernel: kernel}
+	// No fabric (legacy path): tasks run synchronously through the inner
+	// dispatcher. With a store wired the batch adapter observes completion via
+	// the event contract; without fabric there is nothing async to wait for,
+	// so each task reports a real (legacy) success.
+	adapter := newKernelTaskDispatcher(kernel, ares_events.NewMemoryEventStore())
 
 	tasks := []*models.Task{
 		models.NewTask("t1", models.AgentTypeTop, nil),
@@ -122,9 +130,11 @@ func TestKernelTaskDispatcherBatchAdapter(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("want 2 results, got %d", len(results))
 	}
+	// Legacy sync path (no fabric): the inner dispatcher completed each task,
+	// so success is real — but the reason must NOT be a fake worker output.
 	for _, r := range results {
 		if !r.Success {
-			t.Fatalf("result must succeed, got %+v", r)
+			t.Fatalf("legacy sync dispatch must succeed, got %+v", r)
 		}
 	}
 	if inner.calls != 2 {
@@ -625,4 +635,171 @@ func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
 		t.Fatalf("Task: %v", err)
 	}
 	t.Fatalf("task must be requeued to READY after TaskExpired event, state=%s", tk.State)
+}
+
+// resultStubAgent is a sub.Agent stub that returns a real worker result
+// (items + reason) and records the UserProfile it was executed with, so the
+// tests can verify the profile/result reflux chain end to end.
+type resultStubAgent struct {
+	id        string
+	typ       models.AgentType
+	mu        sync.Mutex
+	executed  []string
+	profiles  []*models.UserProfile
+	lastItems []*models.RecommendItem
+	lastReas  string
+}
+
+var _ sub.Agent = (*resultStubAgent)(nil)
+
+func (a *resultStubAgent) ID() string                  { return a.id }
+func (a *resultStubAgent) Type() models.AgentType      { return a.typ }
+func (a *resultStubAgent) Status() models.AgentStatus  { return models.AgentStatusReady }
+func (a *resultStubAgent) Start(context.Context) error { return nil }
+func (a *resultStubAgent) Stop(context.Context) error  { return nil }
+func (a *resultStubAgent) Process(context.Context, any) (any, error) {
+	return nil, nil
+}
+func (a *resultStubAgent) ProcessStream(context.Context, any) (<-chan base.AgentEvent, error) {
+	return nil, nil
+}
+func (a *resultStubAgent) Execute(_ context.Context, task *models.Task) (*models.TaskResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.executed = append(a.executed, task.TaskID)
+	a.profiles = append(a.profiles, task.UserProfile)
+	res := models.NewTaskResult(task.TaskID, task.AgentType)
+	res.SetSuccess([]*models.RecommendItem{
+		{ItemID: "item-1", Name: "First"},
+		{ItemID: "item-2", Name: "Second"},
+	}, "worker real reason")
+	a.lastItems = res.Items
+	a.lastReas = res.Reason
+	return res, nil
+}
+
+func (a *resultStubAgent) profileCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.profiles)
+}
+
+// TestKernelDispatchEventDrivenResultReflux is the contract test for the serve
+// result-reflux fix: a dispatch through the flipped kernel must return the
+// WORKER's real outcome (items/reason, not a placeholder success), and the
+// worker must see the submission-time UserProfile (no more profile==nil
+// degradation to an empty fallback).
+func TestKernelDispatchEventDrivenResultReflux(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &resultStubAgent{id: "code_01", typ: models.AgentType("code")}
+	store := ares_events.NewMemoryEventStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := newKernelTaskDispatcher(kernel, store)
+	handle.taskDispatcher = adapter
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, store)
+
+	profile := &models.UserProfile{UserID: "u-1"}
+	task := models.NewTask("t-reflux", models.AgentType("code"), profile)
+	task.Payload = map[string]any{"task_desc": "do the thing"}
+	results, err := adapter.Dispatch(ctx, []*models.Task{task})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if !r.Success {
+		t.Fatalf("worker completed, result must succeed, got %+v", r)
+	}
+	if len(r.Items) != 2 || r.Items[0].ItemID != "item-1" {
+		t.Fatalf("result must carry the worker's real items, got %+v", r.Items)
+	}
+	if r.Reason != "worker real reason" {
+		t.Fatalf("result must carry the worker's reason, got %q", r.Reason)
+	}
+	// The worker must have run with the submission-time profile restored.
+	if executor.profileCount() != 1 || executor.profiles[0] != profile {
+		t.Fatalf("worker must see the dispatch-time UserProfile, got %d profiles", executor.profileCount())
+	}
+}
+
+// TestKernelDispatchEventDrivenTimeout verifies a task that never completes
+// inside the dispatch window is reported as an explicit failure (never a fake
+// success) when the event store is wired but no worker ever finishes it.
+func TestKernelDispatchEventDrivenTimeout(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, _ := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	store := ares_events.NewMemoryEventStore()
+	adapter := newKernelTaskDispatcher(kernel, store)
+	// Fabric wired but no scheduler attached: the task is created in the
+	// fabric (async) and never executed, so no completion event ever arrives.
+	// With a real fabric the adapter waits and must time out into an explicit
+	// failure instead of a fake success.
+	adapter.fabric = taskfabric.NewFabric()
+	adapter.eventTimeout = 50 * time.Millisecond
+
+	// No fabric, no scheduler: the task is submitted through the kernel but
+	// never executed, so no completion event ever arrives. Dispatch must
+	// time out into an explicit failure.
+	results, err := adapter.Dispatch(context.Background(), []*models.Task{
+		models.NewTask("t-timeout", models.AgentType("code"), nil),
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Success {
+		t.Fatalf("uncompleted task must fail, got %+v", r)
+	}
+	if r.Error == "" {
+		t.Fatalf("failed result must carry a reason, got %+v", r)
+	}
+}
+
+// TestKernelDispatchEventDrivenWorkerFailure verifies a worker failure (the
+// sub-agent emits EventTaskFailed with an error payload) surfaces as a failed
+// TaskResult instead of a fake success.
+func TestKernelDispatchEventDrivenWorkerFailure(t *testing.T) {
+	inner := &stubLeaderDispatcher{}
+	kernel, flag := wireKernelDispatcher(inner, []subAgentCapability{
+		{ID: "code_01", Type: "code"},
+	})
+	handle := &kernelHandle{dual: kernel, flag: flag}
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code"), resultErr: "worker boom"}
+	store := ares_events.NewMemoryEventStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := newKernelTaskDispatcher(kernel, store)
+	handle.taskDispatcher = adapter
+	flipKernelToTaskFabric(ctx, handle, []sub.Agent{executor}, store)
+
+	results, err := adapter.Dispatch(ctx, []*models.Task{
+		models.NewTask("t-fail", models.AgentType("code"), nil),
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Success {
+		t.Fatalf("worker failure must surface as failed result, got %+v", r)
+	}
+	if r.Error == "" {
+		t.Fatalf("failed result must carry the worker error, got %+v", r)
+	}
 }

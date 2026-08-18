@@ -213,7 +213,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 					continue
 				}
 				// Record the generation trajectory into the shared tracer
-				// (v0.4.0 M3-1) so /evolution/trajectory returns live data
+				// (v0.3.0 M3-1) so /evolution/trajectory returns live data
 				// instead of an empty list. wired.Population exposes the
 				// per-generation Stats after a run.
 				if comp.EvolutionTracer != nil && wired.Population != nil {

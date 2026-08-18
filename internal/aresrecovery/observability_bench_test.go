@@ -9,7 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
-// Benchmarks for the v0.4.0 M4 observability features (global tracer +
+// Benchmarks for the v0.3.0 M4 observability features (global tracer +
 // simulation sandbox). These measure the per-event recording cost and the
 // recovery-chain replay throughput, which matter when tracing is enabled on a
 // live runtime.

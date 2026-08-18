@@ -438,7 +438,7 @@ nodes:
 - ❌ GA Evolution
 - ❌ Agent 自修改 Runtime
 - ❌ 自动创建新 Agent
-- ❌ VFS（推迟到 0.4.0）
+- ❌ VFS（推迟到 0.3.0）
 
 ---
 
@@ -469,7 +469,7 @@ nodes:
                     ↓ 压缩 + 归位
 0.3.0: Specialized Agent + Evidence + Verified Evolution
                     ↓
-0.4.0: VFS + 外部挂载 + A2A + GA Evolution（可选）
+0.3.0: VFS + 外部挂载 + A2A + GA Evolution（可选）
 ```
 
 **不变的：** Runtime、AHP、MCP、Knowledge Fabric、Chaos/Recovery

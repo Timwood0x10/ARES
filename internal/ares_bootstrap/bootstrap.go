@@ -91,17 +91,17 @@ type Components struct {
 	// SystemRegistry backs SystemRuntime with one entry per constructed
 	// component, enabling dependency-aware lookup and snapshot queries.
 	SystemRegistry *system_runtime.Registry
-	// GlobalTracer is the shared cross-Fabric tracer (v0.4.0 M4-1). It is
+	// GlobalTracer is the shared cross-Fabric tracer (v0.3.0 M4-1). It is
 	// created once in Bootstrap and shared by the dashboard (read side:
 	// /observability/spans) and the kernel wiring (write side: task/agent
 	// lifecycle hooks). Nil when the dashboard observability wiring is
 	// skipped.
 	GlobalTracer *aresrecovery.GlobalTracer
-	// EvolutionTracer is the shared evolution trajectory tracer (v0.4.0
+	// EvolutionTracer is the shared evolution trajectory tracer (v0.3.0
 	// M3-1). Shared by the dashboard (read side: /evolution/trajectory) and
 	// the GA wiring (write side: Record after each generation).
 	EvolutionTracer *aresrecovery.EvolutionTracer
-	// FeedbackStore is the shared human-feedback store (v0.4.0 M3-2). Written
+	// FeedbackStore is the shared human-feedback store (v0.3.0 M3-2). Written
 	// by POST /evolution/feedback; read by the evolution scoring path.
 	FeedbackStore *aresrecovery.FeedbackStore
 	// bgGroup manages all Bootstrap background goroutines (distillation
@@ -262,7 +262,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	subscribeDistillationEvents(ctx, &comp)
 
 	// 6. Dashboard
-	// The v0.4.0 M3/M4 observability components (trajectory tracer, feedback
+	// The v0.3.0 M3/M4 observability components (trajectory tracer, feedback
 	// store, global tracer) are created ONCE here and shared: the dashboard
 	// reads them via the provider adapters, and the runtime write hooks (GA
 	// generation recording, task/agent lifecycle tracing) write into the same

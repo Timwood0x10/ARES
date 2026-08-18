@@ -400,7 +400,7 @@ func (s *stubTrajectoryProvider) EvolutionTrajectory() []map[string]any {
 }
 
 // TestAPIEvolutionTrajectoryEmpty verifies /evolution/trajectory returns an
-// empty list when no provider is wired (v0.4.0 M3-1).
+// empty list when no provider is wired (v0.3.0 M3-1).
 func TestAPIEvolutionTrajectoryEmpty(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
@@ -422,7 +422,7 @@ func TestAPIEvolutionTrajectoryEmpty(t *testing.T) {
 }
 
 // TestAPIEvolutionTrajectoryRenders verifies the trajectory endpoint renders
-// the provider's recorded generations as JSON (v0.4.0 M3-1 Dashboard 集成).
+// the provider's recorded generations as JSON (v0.3.0 M3-1 Dashboard 集成).
 func TestAPIEvolutionTrajectoryRenders(t *testing.T) {
 	api, _ := setupAPI()
 	api.SetEvolutionTrajectory(&stubTrajectoryProvider{
@@ -493,7 +493,7 @@ func TestAPIEvolutionFeedbackNotWired(t *testing.T) {
 }
 
 // TestAPIEvolutionFeedbackRecords verifies POST /evolution/feedback records
-// a human review through the sink (v0.4.0 M3-2).
+// a human review through the sink (v0.3.0 M3-2).
 func TestAPIEvolutionFeedbackRecords(t *testing.T) {
 	api, _ := setupAPI()
 	sink := &stubFeedbackSink{}

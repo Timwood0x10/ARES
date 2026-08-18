@@ -280,7 +280,7 @@ func TestRestartAgentThroughSpawner(t *testing.T) {
 // TestRecoverTaskCheckpointThroughSpawner verifies checkpoint recovery routes
 // the replacement spawn through the evolution gate's TIMING check (Enabled)
 // but BYPASSES the MaxConcurrent quota: recovery replaces a dead/expired agent
-// and must not be stranded by the population cap (v0.4.0 M2-1).
+// and must not be stranded by the population cap (v0.3.0 M2-1).
 func TestRecoverTaskCheckpointThroughSpawner(t *testing.T) {
 	tasks, agents, rec, _, _ := newRecoveryHarness(t)
 	ctx := context.Background()

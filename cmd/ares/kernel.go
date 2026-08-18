@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -138,7 +139,16 @@ func submitFabricTask(
 		Capability:   string(task.AgentType),
 		Dependencies: deps,
 		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 1},
-		Checkpoint:   nil,
+		// Carry the submission-time metadata in the Checkpoint slot so the
+		// scheduler's toModelTask can restore it for the executor (LLM path
+		// needs the profile; the outcome recorder needs UsedExperienceID).
+		// The envelope type is opaque to the fabric; a genuine progress
+		// checkpoint replaces it once a quantum runs (RunQuantum yield).
+		Checkpoint: fabricTaskMeta{
+			UserProfile:      task.UserProfile,
+			Payload:          task.Payload,
+			UsedExperienceID: task.UsedExperienceID,
+		},
 	}); err != nil && err != taskfabric.ErrTaskExists {
 		return fmt.Errorf("kernel fabric create: %w", err)
 	}
@@ -174,6 +184,9 @@ type kernelHandle struct {
 	agents    *agentfabric.Fabric
 	recovery  *aresrecovery.Recovery
 	executors map[string]sub.Agent
+	// taskDispatcher is the batch adapter the leader calls (kernelTaskDispatcher).
+	// Retained so the live flip can inject the fabric for result read-back.
+	taskDispatcher *kernelTaskDispatcher
 	// tracker is the shared per-agent load/confidence/priority source for the
 	// scheduler and the fabric dispatch path. It is created by the flip and
 	// retained so wireKernelLifecycle can inject agent priorities into it
@@ -211,11 +224,28 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 		return
 	}
 	kernel.fabric = taskfabric.NewFabric()
+	if store != nil {
+		// Publish task lifecycle transitions to the shared stream from the
+		// flip itself: the kernelTaskDispatcher waits on EventTaskCompleted/
+		// Failed to reflux the worker result, so the fabric must emit into
+		// the same store the dispatch subscribes to. (wireKernelLifecycle
+		// also wires this when it runs; doing it here makes the flip
+		// self-sufficient for the result contract.)
+		kernel.fabric = kernel.fabric.WithEventStore(store)
+	}
 	kernel.executors = make(map[string]sub.Agent, len(subAgents))
 	for _, a := range subAgents {
 		if a != nil {
 			kernel.executors[a.ID()] = a
 		}
+	}
+	// The batch dispatcher reads the worker's structured output back from the
+	// completed fabric task (result-reflux fix): inject the fabric reference
+	// now that it exists. Tasks dispatched through the kernel before the flip
+	// (shadow mode) never complete in the fabric, so the injection only
+	// affects post-flip dispatches.
+	if kernel.taskDispatcher != nil {
+		kernel.taskDispatcher.fabric = kernel.fabric
 	}
 	// One shared load tracker for the scheduler and the fabric dispatch path,
 	// so Load/Confidence stay consistent across both entry points (GAP4).
@@ -347,14 +377,21 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 const recoverySweepInterval = time.Second
 
 // quotaApplyInterval is how often the evolution-aware quota manager pushes
-// the current evolution resource budget into the Agent Fabric (v0.4.0 M2-2).
+// the current evolution resource budget into the Agent Fabric (v0.3.0 M2-2).
 // The GA evolution ticker runs on a 5-minute cadence, so a 1-minute apply
 // loop keeps a deployed budget effective within a reasonable window without
 // burning CPU.
 const quotaApplyInterval = time.Minute
 
+// kernelDispatchTimeout bounds how long kernelTaskDispatcher.Dispatch waits
+// for a submitted task's completion event before reporting it failed. It
+// mirrors the legacy leader dispatcher's timeout contract
+// (DefaultDispatcherTimeoutSeconds = 300) so the kernel path does not time
+// out sooner than the path it replaces.
+const kernelDispatchTimeout = 300 * time.Second
+
 // runKernelQuotaLoop periodically applies the evolution resource policy to
-// the Agent Fabric's budget (v0.4.0 M2-2). It applies once at startup so an
+// the Agent Fabric's budget (v0.3.0 M2-2). It applies once at startup so an
 // already-deployed policy is effective immediately, then re-applies on a
 // fixed interval — Apply is idempotent (replaces the budget in place), so a
 // nil/no-op policy leaves the configured kernel resources untouched.
@@ -384,7 +421,7 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 	}
 }
 
-// runKernelTraceLoop feeds the shared GlobalTracer (v0.4.0 M4-1) from the
+// runKernelTraceLoop feeds the shared GlobalTracer (v0.3.0 M4-1) from the
 // Task Fabric's lifecycle events on the shared EventStore: task creation,
 // ready, acquired, started, completed, failed. It is the write side of
 // /observability/spans — without it the dashboard's span endpoint returns an
@@ -556,35 +593,377 @@ func (d *kernelFabricDispatcher) D(ctx context.Context, agentID, taskID string, 
 // calling Dispatch(ctx, tasks) as before; each task is routed through the
 // kernel dispatcher, so shadow scoring runs for every task without any change
 // to leader behavior.
+//
+// Result flow (fix for the fake-success bug): Dispatch does NOT return a
+// placeholder success after submitting. The kernel submits each task to the
+// Task Fabric (asynchronous execution — the kernelScheduler owns
+// Schedule→Acquire→RunQuantum) and then BLOCKS until the worker's real
+// completion event arrives for every task (or the dispatch timeout elapses),
+// reconstructing the leader-expected []*models.TaskResult from the actual
+// worker outcome. This restores the event-driven result contract the legacy
+// leader dispatcher had (dispatchViaEvents: subscribe → publish → collect)
+// that kernelTaskDispatcher previously bypassed, which made every leader
+// dispatch a silent no-op (success=true, items=0).
 type kernelTaskDispatcher struct {
 	kernel *agentipc.DualTrackDispatcher
+	// store is the shared EventStore the worker's EventTaskCompleted/Failed
+	// events land on (subAgent.Execute emits them under the sub-agent's
+	// stream with task_id in the payload). Nil disables event collection: a
+	// task whose result cannot be observed is reported as failed rather than
+	// silently faked as success (code_rules_v2 §0.2: no fake implementation).
+	store ares_events.EventStore
+	// eventTimeout bounds how long Dispatch waits for a task's completion
+	// event. It mirrors the legacy leader dispatcher's timeout contract
+	// (DefaultDispatcherTimeoutSeconds = 300s); <= 0 falls back to the same
+	// default.
+	eventTimeout time.Duration
+	// fabric lets Dispatch read the worker's structured output back from the
+	// completed fabric task (the scheduler stored it in the quantum
+	// checkpoint). Nil disables the read-back: the result still carries the
+	// event's textual output. Injected by the live flip.
+	fabric *taskfabric.Fabric
+}
+
+// newKernelTaskDispatcher assembles the batch adapter with the shared event
+// store wired for result collection.
+func newKernelTaskDispatcher(kernel *agentipc.DualTrackDispatcher, store ares_events.EventStore) *kernelTaskDispatcher {
+	return &kernelTaskDispatcher{kernel: kernel, store: store}
 }
 
 // Dispatch routes every task through the kernel dispatcher and aggregates the
 // per-task outcomes into the leader-expected []*models.TaskResult shape.
+//
+// The submission is asynchronous (fabric Create; the kernelScheduler runs the
+// task in the background), but the return is synchronous: Dispatch waits for
+// each task's real completion/failure event (broadcast subscription, so it
+// never competes with the scheduler/trace/recovery consumers) and reports the
+// worker's actual outcome. A task that times out or whose result cannot be
+// observed is reported as failed with the reason, never as a fake success.
 func (d *kernelTaskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]*models.TaskResult, error) {
+	results := make([]*models.TaskResult, 0, len(tasks))
+	if len(tasks) == 0 {
+		return results, nil
+	}
+
+	// Subscribe to the worker completion events BEFORE submitting so no
+	// completion can be missed between submit and the collection loop
+	// (mirrors dispatchViaEvents: subscribe-then-publish ordering). The
+	// broadcast store delivers every matching event to every subscriber, so
+	// the scheduler/trace/recovery consumers are unaffected.
+	//
+	// Pure legacy path (fabric == nil): the inner dispatcher runs each task
+	// synchronously inside kernel.Dispatch, so no async completion event
+	// exists to wait for — skip the subscription entirely and report the
+	// synchronous success below.
+	resultCh, subErr := d.subscribeResults(ctx)
+	if subErr != nil && !errors.Is(subErr, errNoResultSubscription) {
+		return d.failAll(tasks, "kernel dispatch: result collection unavailable: "+subErr.Error()), subErr
+	}
+
+	// Resolve the per-task final outcome as events arrive.
+	pending := make(map[string]*models.Task, len(tasks))
+	taskIndex := make(map[string]int, len(tasks))
+	for i, task := range tasks {
+		if task == nil {
+			continue
+		}
+		pending[task.TaskID] = task
+		taskIndex[task.TaskID] = i
+		results = append(results, nil) // placeholder, filled by the collection loop
+	}
+
+	// Submit every task through the kernel (async: fabric Create; the
+	// scheduler executes in the background). A submit error is a real failure
+	// for that task — record it and drop it from the pending set.
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		if err := d.kernel.Dispatch(ctx, "", task.TaskID, dispatchPayload(task)); err != nil {
+			idx := taskIndex[task.TaskID]
+			res := models.NewTaskResult(task.TaskID, task.AgentType)
+			res.SetError(err.Error())
+			results[idx] = res
+			delete(pending, task.TaskID)
+		}
+	}
+	if len(pending) == 0 {
+		return results, nil
+	}
+
+	// No event store, or no fabric at all: the results cannot be observed via
+	// events. Two distinct cases:
+	//
+	//   - fabric == nil (pure legacy path): the inner dispatcher ran each task
+	//     SYNCHRONOUSLY inside d.kernel.Dispatch above, so the task already
+	//     completed. Report real success (the dispatch did happen) with an
+	//     empty reason — this is not a fake worker output.
+	//   - fabric != nil but no store: the worker runs in the background and
+	//     cannot be observed without a store. Fail loudly rather than report
+	//     fake success (code_rules_v2 §0.2).
+	if resultCh == nil {
+		if d.fabric == nil {
+			for tid, task := range pending {
+				idx := taskIndex[tid]
+				res := models.NewTaskResult(tid, task.AgentType)
+				res.SetSuccess(nil, "dispatched via kernel (legacy sync)")
+				results[idx] = res
+			}
+			return results, nil
+		}
+		for tid, task := range pending {
+			idx := taskIndex[tid]
+			res := models.NewTaskResult(tid, task.AgentType)
+			res.SetError("kernel dispatch: no event store, result collection disabled")
+			results[idx] = res
+		}
+		return results, nil
+	}
+
+	// Block until every submitted task's final outcome is known or the
+	// dispatch timeout elapses. This is the synchronous wait that turns the
+	// kernel's async execution into the leader-expected blocking dispatch.
+	timeout := d.eventTimeout
+	if timeout <= 0 {
+		timeout = kernelDispatchTimeout
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for len(pending) > 0 {
+		select {
+		case ev, ok := <-resultCh:
+			if !ok {
+				// Stream closed: whatever is still pending can never be
+				// observed. Fail them explicitly rather than leave nil
+				// placeholders (which would aggregate as fake zeros).
+				d.failPending(results, pending, taskIndex, "kernel dispatch: event stream closed before result")
+				pending = map[string]*models.Task{}
+				continue
+			}
+			tid, ok := ev.Payload["task_id"].(string)
+			if !ok || tid == "" {
+				continue
+			}
+			if _, wanted := pending[tid]; !wanted {
+				continue
+			}
+			if res, done := d.resolveOutcome(ev, tid, pending[tid]); done {
+				results[taskIndex[tid]] = res
+				delete(pending, tid)
+			}
+		case <-waitCtx.Done():
+			// Timeout / parent cancel: mark every still-pending task failed
+			// with the reason so the leader never aggregates a fake success.
+			d.failPending(results, pending, taskIndex, "kernel dispatch: timed out waiting for worker result: "+waitCtx.Err().Error())
+			pending = map[string]*models.Task{}
+		}
+	}
+
+	// Any nil placeholder left behind (a task was in tasks but never got a
+	// result) must never surface: fail it explicitly.
+	for i, task := range tasks {
+		if task == nil {
+			continue
+		}
+		if results[i] == nil {
+			res := models.NewTaskResult(task.TaskID, task.AgentType)
+			res.SetError("kernel dispatch: no result observed for task")
+			results[i] = res
+		}
+	}
+	return results, nil
+}
+
+// errNoResultSubscription signals that no event subscription is needed (no
+// store, or pure legacy path without fabric). It is not an error: Dispatch
+// falls back to the synchronous legacy success path.
+var errNoResultSubscription = errors.New("kernel dispatch: no result subscription needed")
+
+// subscribeResults opens the broadcast subscription on the shared event store
+// for the worker's terminal events. Returns errNoResultSubscription when no
+// subscription is needed (no store, or pure legacy path without fabric).
+func (d *kernelTaskDispatcher) subscribeResults(ctx context.Context) (<-chan *ares_events.Event, error) {
+	if d.store == nil || d.fabric == nil {
+		return nil, errNoResultSubscription
+	}
+	return d.store.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
+			// The worker's terminal events. EventTaskCompleted fires from
+			// both subAgent.Execute (carries EventKeyResult, the worker's
+			// textual output) and fabric.record (task_id/agent_id/state
+			// only). EventTaskFailed fires from subAgent.Execute (real
+			// failure, carries error text) and from fabric.Fail (retry
+			// requeue — followed by EventTaskReady — or final FAILED). The
+			// collection loop resolves the final outcome per task.
+			ares_events.EventTaskCompleted,
+			ares_events.EventTaskFailed,
+		},
+	})
+}
+
+// failAll builds a failed TaskResult for every non-nil task in tasks.
+func (d *kernelTaskDispatcher) failAll(tasks []*models.Task, reason string) []*models.TaskResult {
 	results := make([]*models.TaskResult, 0, len(tasks))
 	for _, task := range tasks {
 		if task == nil {
 			continue
 		}
-		payload := map[string]any{"agent_type": string(task.AgentType)}
-		if task.Context != nil && len(task.Context.Dependencies) > 0 {
-			payload["dependencies"] = append([]string(nil), task.Context.Dependencies...)
-		}
-		if task.Payload != nil {
-			maps.Copy(payload, task.Payload)
-		}
-		err := d.kernel.Dispatch(ctx, "", task.TaskID, payload)
 		res := models.NewTaskResult(task.TaskID, task.AgentType)
-		if err != nil {
-			res.SetError(err.Error())
-		} else {
-			res.SetSuccess(nil, "dispatched via kernel")
-		}
+		res.SetError(reason)
 		results = append(results, res)
 	}
-	return results, nil
+	return results
+}
+
+// failPending marks every task still in pending with a failed result. It
+// writes through taskIndex into results and is used when the collection loop
+// can no longer observe the tasks (stream closed / timeout / cancel).
+func (d *kernelTaskDispatcher) failPending(results []*models.TaskResult, pending map[string]*models.Task, taskIndex map[string]int, reason string) {
+	for tid, task := range pending {
+		idx := taskIndex[tid]
+		res := models.NewTaskResult(tid, task.AgentType)
+		res.SetError(reason)
+		results[idx] = res
+	}
+}
+
+// dispatchPayload builds the agentipc dispatch payload for a task: the
+// capability (agent_type), the DAG dependencies and any opaque user data. The
+// UserProfile rides through as the same-process struct reference (no JSON
+// round-trip) so the executor sees the real profile — without this it
+// silently degrades to executeByType (empty result), the serve no-op chain.
+func dispatchPayload(task *models.Task) map[string]any {
+	payload := map[string]any{"agent_type": string(task.AgentType)}
+	if task.Context != nil && len(task.Context.Dependencies) > 0 {
+		payload["dependencies"] = append([]string(nil), task.Context.Dependencies...)
+	}
+	if task.Payload != nil {
+		maps.Copy(payload, task.Payload)
+	}
+	if task.UserProfile != nil {
+		payload["user_profile"] = task.UserProfile
+	}
+	return payload
+}
+
+// resolveOutcome decides whether ev is the final outcome for tid and, if so,
+// builds the leader-visible TaskResult from the worker's real output. task is
+// the pending task (non-nil when the caller found it in the pending set).
+//
+// Retry resolution: fabric.Fail publishes EventTaskFailed BEFORE a retry
+// requeues the task (failed→ready→re-execute). A single failed event is
+// therefore not proof of a final failure. The loop treats failed as final
+// only when the event carries the worker's error text (subAgent.Execute
+// emits KeyError; fabric.Fail does not) — a bare fabric failed is a retry in
+// flight and stays pending until the retry's terminal event resolves it.
+func (d *kernelTaskDispatcher) resolveOutcome(ev *ares_events.Event, tid string, task *models.Task) (*models.TaskResult, bool) {
+	if task == nil {
+		return nil, false
+	}
+	res := models.NewTaskResult(tid, task.AgentType)
+
+	switch ev.Type {
+	case ares_events.EventTaskCompleted:
+		// Terminal success. Prefer the worker's structured output read back
+		// from the fabric checkpoint; fall back to the event's text.
+		if out := d.outcomeFromFabric(tid); out != nil {
+			res.SetSuccess(out.items, out.reason)
+			res.Metadata = out.metadata
+			return res, true
+		}
+		if text, ok := ev.Payload[ares_events.EventKeyResult].(string); ok && text != "" {
+			res.SetSuccess(nil, text)
+			return res, true
+		}
+		// Neither the fabric checkpoint nor the event carries output: the
+		// task genuinely completed with no result (e.g. a pure state-machine
+		// transition). Success with an empty reason beats faking output.
+		res.SetSuccess(nil, "kernel: task completed")
+		return res, true
+	case ares_events.EventTaskFailed:
+		// A worker failure carries the error text under KeyError (subAgent
+		// emits it on real failures and output-guard rejections). A
+		// fabric-side failed carries only task_id/agent_id/state and is
+		// ambiguous: it fires both when a retry requeues the task
+		// (failed→ready→re-execute) and when the retry budget is exhausted
+		// (final FAILED). Resolve the ambiguity against the fabric state —
+		// the authoritative terminal state — instead of guessing from the
+		// event alone:
+		//   - fabric StateFailed  → final failure (retries exhausted): fail.
+		//   - fabric StateReady   → retry in flight: not final, keep waiting.
+		//   - no fabric / other   → fall back to the event's error text.
+		if errMsg, ok := ev.Payload["error"].(string); ok && errMsg != "" {
+			res.SetError(errMsg)
+			return res, true
+		}
+		if d.fabric != nil {
+			if tk, err := d.fabric.Task(tid); err == nil && tk != nil {
+				if tk.State == taskfabric.StateFailed {
+					res.SetError("kernel: task failed after retries exhausted")
+					return res, true
+				}
+				// READY (or anything else): retry in flight, not final.
+				return nil, false
+			}
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+// outcomeFromFabric reads the worker's structured output back from the
+// completed fabric task's checkpoint (the scheduler stored items/reason/
+// metadata there via RunQuantum → CompleteWithCheckpoint). Returns nil when
+// the fabric is not wired, the task is not yet COMPLETED, or the checkpoint
+// carries no output.
+func (d *kernelTaskDispatcher) outcomeFromFabric(tid string) *taskOutcome {
+	if d.fabric == nil {
+		return nil
+	}
+	tk, err := d.fabric.Task(tid)
+	if err != nil || tk == nil {
+		return nil
+	}
+	if tk.State != taskfabric.StateCompleted {
+		return nil
+	}
+	return outcomeFromCheckpoint(tk)
+}
+
+// taskOutcome is the worker output read back from a completed fabric task.
+type taskOutcome struct {
+	items    []*models.RecommendItem
+	reason   string
+	metadata map[string]any
+	err      string
+}
+
+// outcomeFromCheckpoint extracts the worker output the scheduler stored in
+// the quantum checkpoint (see kernelScheduler.execute: items/reason/metadata
+// ride inside a plain map[string]any). A missing or non-map checkpoint means
+// the task completed without a payload — still a success, just empty.
+func outcomeFromCheckpoint(tk *taskfabric.Task) *taskOutcome {
+	out := &taskOutcome{}
+	cp, ok := tk.Checkpoint.(map[string]any)
+	if !ok {
+		return out
+	}
+	if items, ok := cp["items"]; ok {
+		if list, ok := items.([]*models.RecommendItem); ok {
+			out.items = list
+		}
+	}
+	if reason, ok := cp["reason"].(string); ok {
+		out.reason = reason
+	}
+	if md, ok := cp["metadata"].(map[string]any); ok {
+		out.metadata = md
+	}
+	if e, ok := cp["error"].(string); ok && e != "" {
+		out.err = e
+	}
+	return out
 }
 
 // taskFromPayload builds a models.Task from the agentipc dispatch arguments.
@@ -599,6 +978,13 @@ func taskFromPayload(taskID string, payload any) (*models.Task, error) {
 	if m, ok := payload.(map[string]any); ok {
 		if at, ok := m["agent_type"].(string); ok && at != "" {
 			task.AgentType = models.AgentType(at)
+		}
+		// UserProfile arrives as the same-process struct reference (the
+		// kernelTaskDispatcher passes it through untouched). Without this
+		// restore the executor sees profile==nil and degrades to
+		// executeByType — the serve no-op chain.
+		if up, ok := m["user_profile"].(*models.UserProfile); ok && up != nil {
+			task.UserProfile = up
 		}
 		// Dependencies arrive as []string when the payload passes through the
 		// kernel dispatcher directly (kernelTaskDispatcher.Dispatch) and as

@@ -7,7 +7,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 )
 
-// Evolution-driven resource allocation (v0.4.0 M2-2): the Evolution system
+// Evolution-driven resource allocation (v0.3.0 M2-2): the Evolution system
 // adjusts CPU / memory quota weights at runtime. The quota manager applies the
 // evolution-produced budget to the Agent Fabric's resource admission control
 // (P5 budget) without recreating the fabric. As with spawn decisions,
@@ -31,7 +31,7 @@ type QuotaPolicySource interface {
 }
 
 // EvolutionAwareQuotaManager adjusts the Agent Fabric's resource budget from
-// the evolution policy (v0.4.0 M2-2). Apply() is idempotent and safe to call
+// the evolution policy (v0.3.0 M2-2). Apply() is idempotent and safe to call
 // repeatedly (e.g. after each evolution generation): it replaces the budget
 // in place via agentfabric.UpdateResourceBudget.
 type EvolutionAwareQuotaManager struct {

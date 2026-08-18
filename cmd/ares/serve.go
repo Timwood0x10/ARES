@@ -263,7 +263,7 @@ func runServe() error {
 	// notifications.
 	//
 	// When the evolution system is wired, the peer channel is bridged through
-	// the evolution-aware IPC (v0.4.0 M2-3): every agent-to-agent message
+	// the evolution-aware IPC (v0.3.0 M2-3): every agent-to-agent message
 	// passes the active evolution wire policy (json | json+gzip). Without
 	// evolution the plain direct peer channel is used, preserving prior
 	// behavior.
@@ -385,7 +385,7 @@ func runServe() error {
 	// orchestrated, they are scheduled). The Kernel owns dispatch: in the
 	// taskfabric policy the kernelScheduler drives each task through
 	// RunQuantum → sub.Agent.Execute; agents never subscribe to the event
-	// stream and self-dispatch (self-dispatch was removed in v0.4.0).
+	// stream and self-dispatch (self-dispatch was removed in v0.3.0).
 
 	// --- Submit real tasks ---
 	g.Go(func() error {
@@ -481,7 +481,7 @@ func createAndRegisterServeAgents(
 		wireKernelPolicy(ctx, cfg, kernel, subAgents, store)
 	}
 
-	// Wire the evolution-aware spawn gate (v0.4.0 M2-1): the active evolution
+	// Wire the evolution-aware spawn gate (v0.3.0 M2-1): the active evolution
 	// strategy's spawn params (spawn.enabled / max_concurrent / preferred
 	// capabilities) shape the recovery loop's replacement spawns through the
 	// Kernel's Recovery subsystem — "Evolution decides; Kernel enforces".
@@ -496,7 +496,7 @@ func createAndRegisterServeAgents(
 		log.Printf("serve: evolution spawn gate wired (recovery spawns routed through evolution policy)")
 	}
 
-	// Wire the evolution-aware quota manager (v0.4.0 M2-2): the active
+	// Wire the evolution-aware quota manager (v0.3.0 M2-2): the active
 	// evolution strategy's quota.budget param replaces the Agent Fabric's
 	// resource budget at runtime. A periodic loop pushes the latest policy so
 	// a deployed budget takes effect without restarting serve; a nil policy
@@ -511,7 +511,7 @@ func createAndRegisterServeAgents(
 	}
 
 	// Feed the shared GlobalTracer from the Task Fabric's lifecycle events
-	// (v0.4.0 M4-1): this is the write side of /observability/spans. Without
+	// (v0.3.0 M4-1): this is the write side of /observability/spans. Without
 	// it the tracer stays empty and the dashboard span endpoint returns an
 	// empty list despite the wiring.
 	go runKernelTraceLoop(ctx, store, comp.GlobalTracer)
