@@ -313,7 +313,7 @@ func runServe() error {
 	// Sub-agents are execution units only (ares-runtime.md: agents are not
 	// orchestrated, they are scheduled). The Kernel owns dispatch: in the
 	// taskfabric policy the kernelScheduler drives each task through
-	// RunQuantum → sub.Agent.Execute; agents never subscribe to the event
+	// RunQuantum → sub.Agent.ExecuteStep; agents never subscribe to the event
 	// stream and self-dispatch (self-dispatch was removed in v0.3.0).
 
 	// --- Submit real tasks (opt-in demo injector; off unless autopilot) ---

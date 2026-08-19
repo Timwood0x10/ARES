@@ -684,6 +684,11 @@ func (a *resultStubAgent) Execute(_ context.Context, task *models.Task) (*models
 	a.lastReas = res.Reason
 	return res, nil
 }
+func (a *resultStubAgent) ExecuteStep(_ context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	// Stub has no internal loop: the whole run completes in one quantum.
+	res, _ := a.Execute(context.Background(), task)
+	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
 
 func (a *resultStubAgent) profileCount() int {
 	a.mu.Lock()

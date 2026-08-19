@@ -45,6 +45,33 @@ func (f *Fabric) ReadyTasks() []string {
 	return out
 }
 
+// ResumableTasks returns the ids of every task that can run a quantum right
+// now: READY tasks (dependencies satisfied) plus SUSPENDED tasks whose lease
+// is still valid — a yielded task the scheduler resumes by re-acquiring at the
+// next quantum boundary (SUSPENDED semantics lock: "Continue is the
+// Scheduler's decision via re-acquire"). SUSPENDED tasks with an expired lease
+// are intentionally excluded: the crash-recovery path (CheckExpiredLeases)
+// requeues them to READY, and including them here too would let two drains
+// race the same task.
+func (f *Fabric) ResumableTasks() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for id, t := range f.tasks {
+		switch t.State {
+		case StateReady:
+			if depsCompletedLocked(f.tasks, t.Dependencies) {
+				out = append(out, id)
+			}
+		case StateSuspended:
+			if t.Lease != nil && !t.Lease.IsExpired(f.now()) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
 // depsCompletedLocked reports whether every dependency task exists and is
 // COMPLETED. Caller must hold f.mu.
 func depsCompletedLocked(tasks map[string]*Task, deps []string) bool {

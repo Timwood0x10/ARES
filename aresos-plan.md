@@ -169,6 +169,40 @@ Kernel 不负责替 Agent 做这些认知决策，只负责提供这些决策能
 scheduling policy」自身，而不是「哪个 Agent 当 Leader」。但这条先不做，
 等 Kernel 真跑起来再谈。
 
+9. OS 类比的边界：像到什么程度，不像到什么程度（2026-08-19 收敛）
+
+「Agent ≈ thread」说的是**运行时抽象与生命周期关系**，不是把 LLM 执行做成
+CPU thread 的硬实时实现：
+
+    OS:                              ARES:
+    Process / Thread                 Agent
+         ↓                                ↓
+    Kernel Scheduler                 ARES Kernel Scheduler
+         ↓                                ↓
+    CPU / Resource                   LLM / Tool / Resource
+
+类比成立的部分（ARES 要做）：
+- Agent 是被 Kernel 管理的可恢复执行实体（acquire / quantum / yield /
+  checkpoint / resume）
+- Agent 可以像进程一样死亡与恢复；Task 是 durable 的，Agent 是 disposable 的
+- Scheduler 只看能力/负载/租约，不看身份
+- 协作关系运行时动态形成，无预定义角色
+
+类比到此为止的部分（ARES 明确不做）：
+- ❌ 墙钟时间片抢占（hard timeslice）——Agent 是协作式（Cooperative Preemption）
+- ❌ 硬抢占正在 inference 的 LLM（无 SIGKILL 式杀推理）
+- ❌ CFS / 优先级调度算法
+- ❌ PCB / 寄存器级上下文切换
+- ❌ per-agent CPU 式 thread queue（共享 ReadyTasks 队列 + 并发 drain 已覆盖）
+- ❌ CANCELLED / ZOMBIE 等进程状态（属后续可靠性需求，非 Agent OS 核心）
+
+**Quantum 的精确定义（写进设计，避免被 CFS 挑刺）：**
+
+    Quantum is a cognitive execution boundary, not a wall-clock CPU timeslice.
+
+Quantum = 一轮认知/工具执行边界（如一轮 ReAct）。不是 50ms 时间片。
+Agent 在 quantum 边界自行决定继续 / yield / checkpoint / 完成。
+
 ⸻
 
 0. 总体模型
@@ -1332,16 +1366,33 @@ ARES is an Agent Operating System.
 
 ⸻
 
-开发顺序最终冻结为
+开发顺序最终冻结为（2026-08-19 收敛）
 
-阶段	核心问题	完成后的能力
-P0 ✅	Task 能不能独立存在？	Durable Task + Lease
-P1	Agent 能不能被调度执行？	Quantum + Scheduler + Stealing
-P2	多 Task 能不能动态运行？	DAG + Preemption + Event
-P3	Agent 能不能成为独立进程？	Cognitive State + Spawn + Lifecycle
-P4	Agent 能不能真正协作？	Peer IPC + Handoff + Leader 降级
-P5	Agent 死了系统还能活吗？	Recovery + Chaos
-P6	Runtime 能不能自己变好？	Evolution
+> 收敛原则：**不要做成「能运行 LLM 的 Linux」**。硬实时 OS 项（墙钟时间片、
+> 硬抢占 LLM、CFS、PCB/寄存器上下文切换、per-agent CPU 队列）**不在验收内**
+> （见「核心模型修正」第 9 条）。阶段编号保留 P0-P6 作为里程碑，但**开发重心
+> 按下面三档排序**：
+
+核心档（当前要做的，按序）：
+
+阶段	核心问题	完成后的能力	状态
+P0	Task 能不能独立存在？	Durable Task + Lease + Recovery	✅ 已完成
+P1	Agent 能不能被 Kernel 调度执行？	Quantum(=认知边界) + Checkpoint + Yield + Resume	✅ 已完成
+P2	Agent 能不能自主拆任务？	Spawn + Peer IPC + Synthesis（**自主性验收，最重要**）	🟡 原语已落地，见下方「P2 收敛验收」
+P3	Agent 死/资源受限系统还稳吗？	Token budget + Lease expiry + Checkpoint recovery（**Agent Runtime resource governance，不是 cgroup**）	🟡 部分
+P4	没有 Leader 也能跑？	Peer IPC + 拆掉旧 Leader/Sub 抽象	🟡 进行中
+
+次级档（已有，非当前重心）：
+
+阶段	完成后的能力	状态
+P5	Recovery + Chaos	✅ 已完成
+P6	Evolution（population + scheduling policy 自进化）	🟡 已接线，先不做
+
+明确不在验收内（不测）：
+
+- CANCELLED / ZOMBIE 进程状态（后续可靠性需求）
+- 墙钟时间片 / 硬抢占 LLM / CFS / PCB 级上下文切换 / per-agent CPU 队列
+- 模拟 Linux CFS 调度
 
 ⸻
 
@@ -1412,9 +1463,9 @@ Agent death is an execution failure, not a task failure.
 | 阶段 | 计划要求 | 代码库现状 | 结论 |
 |---|---|---|---|
 | P0 Task Kernel | Task/Lease/Epoch/CAS Acquire/Release/Checkpoint/Yield/Complete/Fail | `taskfabric`：`Acquire(taskID,agentID,ttl)(epoch,err)`、`Yield`、`Checkpoint`、epoch fencing、lease 过期→READY 全部存在 | ✅ 已完成 |
-| P1.1 Execution Quantum | `RunQuantum(taskID,agentID,epoch,step)`，Done→COMPLETED / Err→FAIL / !Done→SUSPENDED | `taskfabric/quantum.go` `RunQuantum` 完全一致；测试覆盖 SUSPENDED/COMPLETED/FAILED/stale epoch 全验收 | ✅ 已完成 |
+| P1.1 Execution Quantum | `RunQuantum(taskID,agentID,epoch,step)`，Done→COMPLETED / Err→FAIL / !Done→SUSPENDED | `taskfabric/quantum.go` `RunQuantum` 完全一致；测试覆盖 SUSPENDED/COMPLETED/FAILED/stale epoch 全验收。**2026-08-19 补齐调度器接线**：`taskExecutor` 新增 `ExecuteStep`（单轮 ReAct = 一个 quantum，`chatStepState` 为可序列化 PCB，§6.1 SchemaVersion + §6.2 TaskID 校验），`sub.Agent` 接口新增 `ExecuteStep`，`scheduler.go` step 闭包改为 `!Done → SUSPENDED(保留 checkpoint) → 下轮 drain 经 `ResumableTasks` 重新 acquire 恢复`；事件过滤器加 `task.yielded` 即时续跑。测试：`TestKernelSchedulerQuantumYieldResume`、`TestExecuteStepYieldsThenResumes` | ✅ 已完成 |
 | P1.2 AgentQueue | 每个 Agent 一个执行队列（A→Task1/5/8） | **已删除**（`steal.go` 作为死代码清理，注释明确「per-agent 队列被共享 ReadyTasks 队列并发 drain 取代」） | ⚠️ 计划 vs 代码冲突 |
-| P1.3 Work Stealing | 空闲 agent 偷别的队列任务（capability 匹配） | 共享队列 + 并发 drain（bounded goroutines）+ capability 打分；注释称「这就是 stealing substrate」；**无显式 per-agent steal 原语** | ⚠️ 语义等效但形态不同 |
+| P1.3 Work Stealing | 空闲 agent 偷别的队列任务（capability 匹配） | 共享队列 + 并发 drain（bounded goroutines）+ capability 打分；注释称「这就是 stealing substrate」；**无显式 per-agent steal 原语**。**2026-08-19 补验收 5/6/7**：`TestKernelSchedulerCapabilityPicksCorrectAgent`（能力选对）、`TestKernelSchedulerWorkStealingPicksIdleCapableAgent`（负载折扣→空闲 capable 接手）、`TestKernelSchedulerIncapableAgentCannotSteal`（无能力不允许偷） | ⚠️ 语义等效但形态不同 |
 | P2.1 DAG Ready | IsReady/ReadyTasks，A 完成→B/C READY | `kernelScheduler` + event-driven DAG 完成（GAP6） | ✅ |
 | P2.2 协作式抢占 | 高优任务→preempt 请求→agent 到 quantum 边界→checkpoint→yield→READY | `preemptLowerPriority` + `TestFabricPreemptPreservesCheckpoint` | ✅ |
 | P2.3 Event Store | TaskCreated…TaskStolen 全量事件 | `ares_events.EventStore` + kernel 循环订阅 | ✅ |
@@ -1478,3 +1529,64 @@ Agent death is an execution failure, not a task failure.
 > P3.4/P3.2/P6 差异已全部补做，端到端测试 + 生产接线全部落地。
 > 「Agent death is an execution failure, not a task failure」的哲学已在
 > recovery 链（requeue-only + CognitiveState 恢复）中体现。
+
+⸻
+
+### D. P2 收敛验收：Agent 自主性（2026-08-19 定稿）
+
+> P2 验收**不测**「Scheduler 有没有模拟 Linux CFS」。P2 验收只测一件事：
+> **Agent 有没有自主性**——它能自己决定怎么完成任务，而不是被 Leader/Planner
+> 指挥。以下 4 个 Case 是 P2 的唯一验收标准（均已由端到端测试覆盖）。
+
+**Case 1：Agent 独立完成**
+
+    Task A → Agent A → 自己执行 → COMPLETE
+
+Kernel 只负责调度，不干预 Agent 的决策。没有 Planner，没有 Leader。
+（覆盖：`TestP3_4_EndToEndSpawnSynthesis` 中单 Agent 直接完成的路径）
+
+**Case 2：Agent 自主拆分**
+
+    Task A → Agent A → 判断任务复杂 → Spawn B / Spawn C
+         → B、C 并行执行 → IPC 返回结果 → A 汇总 → A COMPLETE
+
+没有 Planner，没有 Leader。拆分是 A 的认知决策，不是框架预定义。
+（覆盖：`TestP3_4_EndToEndSpawnSynthesis`、`TestP3_4_ConcurrentSpawnSynthesis`）
+
+**Case 3：父 Agent 死亡，Task 不死亡**
+
+    A → Spawn B、C → A 💀
+         → B 继续、C 继续 → Kernel: lease expired → Task READY
+         → B/C/Anew acquire → checkpoint resume
+
+证明「Agent death ≠ Task death」。恢复链（requeue-only + CognitiveState）是
+唯一负责方，没有任何「Leader 接管」逻辑。
+（覆盖：`TestP3_4_ParentDeathChildrenContinueTasks`、`TestP3_4_P4_EndToEndSpawnIPC`）
+
+**Case 4：Agent 之间真正协作**
+
+    A → B: "帮我验证 FFI 边界" → B → A: "发现 3 个风险"
+    A → C: "帮我独立复核第二个风险" → C → A: "确认存在"
+
+这是 Peer Agent System 的证明：B 可以反驳 A、B 可以找 C 验证、C 可以再 Spawn D，
+**A ≡ B ≡ C ≡ D**，无任何权限差异。
+（覆盖：`agentipc/e2e_spawn_ipc_test.go` + collaboration 生产接线）
+
+⸻
+
+### E. 当前唯一大闭环（做完 ARES 才算立住）
+
+4 个 Case 各自通过还不够。最终需要一个**一个连续 E2E** 证明完整思想：
+
+    User → Agent A 收到大任务
+      → A 自主判断「任务太大」
+      → A Spawn B / C / D（Peer，无 subAgent 身份）
+      → B / C / D 并行工作（独立 Cognitive State）
+      → 期间某 Agent 故障 → Kernel 恢复 Task → 新 Agent 从 checkpoint 接续
+      → IPC 协作（B 反驳 / C 验证 / D 汇总）
+      → A 做 synthesis → 返回最终结果
+
+这个 Demo 跑通，ARES 的「Agent OS」才算真正立住。当前端到端测试已覆盖
+各段（P3.4 的 spawn-synthesis、P5 的 recovery、P4 的 IPC），下一步是把它们
+串成**一个连续的、可运行的、文档化的 Demo**（而不是分散的测试），作为
+v0.3 的发布验收。

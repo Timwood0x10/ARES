@@ -206,6 +206,9 @@ func (s *kernelScheduler) Run(ctx context.Context) {
 				ares_events.EventTaskReady,
 				ares_events.EventTaskCompleted,
 				ares_events.EventTaskFailed,
+				// A yielded task (SUSPENDED) resumes on the next drain; draining
+				// on the yield event skips the poll interval between quanta.
+				ares_events.EventTaskYielded,
 			},
 		})
 		if err != nil {
@@ -262,7 +265,10 @@ func (s *kernelScheduler) WithEventStore(store ares_events.EventStore) *kernelSc
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.
 func (s *kernelScheduler) drain(ctx context.Context) {
-	tasks := s.fabric.ReadyTasks()
+	// Work source: READY tasks (new work) plus SUSPENDED tasks (a yielded
+	// quantum the scheduler continues via re-acquire — the SUSPENDED
+	// semantics lock: "Continue is the Scheduler's decision via re-acquire").
+	tasks := s.fabric.ResumableTasks()
 	if len(tasks) == 0 {
 		return
 	}
@@ -446,41 +452,57 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	}
 	s.tracker.begin(winner)
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
-		res, execErr := executor.Execute(ctx, s.toModelTask(tk))
-		if execErr != nil {
+		out, stepErr := executor.ExecuteStep(ctx, s.toModelTask(tk))
+		if stepErr != nil {
 			// A step error flows to fabric.Fail, which requeues (retry budget)
 			// or finalizes FAILED — the fabric owns the retry policy.
-			return nil, false, execErr
+			return nil, false, stepErr
 		}
-		if res != nil && res.Error != "" {
-			return nil, false, fmt.Errorf("%s", res.Error)
+		if out == nil {
+			return nil, false, fmt.Errorf("executor returned a nil step outcome")
 		}
-		// Carry the worker's real output back through the fabric so the
+		if out.Result != nil && out.Result.Error != "" {
+			return nil, false, fmt.Errorf("%s", out.Result.Error)
+		}
+		if !out.Done {
+			// Yield (P1.1 Execution Quantum): the quantum made progress but the
+			// task is not complete. RunQuantum's not-done branch SUSPENDEDs the
+			// task with this checkpoint preserved; the next drain re-acquires
+			// it and the next quantum resumes from this PCB. Re-wrapping the
+			// submission metadata keeps UserProfile/Payload/UsedExperienceID
+			// alive across yield→resume cycles (Bug 3).
+			return fabricTaskMeta{
+				UserProfile:      meta.UserProfile,
+				Payload:          meta.Payload,
+				UsedExperienceID: meta.UsedExperienceID,
+				StepCheckpoint:   out.Checkpoint,
+			}, false, nil
+		}
+		// Done: carry the worker's real output back through the fabric so the
 		// leader dispatch (which waits on task completion) can surface the
 		// actual items instead of the old "ok" placeholder — the last link
 		// in the no-op chain. The result rides in the quantum checkpoint:
 		// RunQuantum's done branch stores it via CompleteWithCheckpoint, and
 		// the dispatcher reads it back after polling the task to COMPLETED.
-		out := map[string]any{"result": "ok"}
-		if res != nil {
+		outMap := map[string]any{"result": "ok"}
+		if res := out.Result; res != nil {
 			if items := res.Items; len(items) > 0 {
-				out["items"] = items
+				outMap["items"] = items
 			}
 			if res.Reason != "" {
-				out["reason"] = res.Reason
+				outMap["reason"] = res.Reason
 			}
 			if len(res.Metadata) > 0 {
-				out["metadata"] = res.Metadata
+				outMap["metadata"] = res.Metadata
 			}
 		}
-		// Re-wrap the step output in the metadata envelope so a yield (or a
-		// later resume) still has UserProfile/Payload/UsedExperienceID
-		// (Bug 3). The dispatcher's outcomeFromFabric unwraps it on COMPLETED.
+		// Re-wrap the step output in the metadata envelope so the dispatcher's
+		// outcomeFromFabric unwraps it on COMPLETED (same as pre-quantum).
 		return fabricTaskMeta{
 			UserProfile:      meta.UserProfile,
 			Payload:          meta.Payload,
 			UsedExperienceID: meta.UsedExperienceID,
-			StepCheckpoint:   out,
+			StepCheckpoint:   outMap,
 		}, true, nil
 	})
 	s.tracker.end(winner, err == nil)

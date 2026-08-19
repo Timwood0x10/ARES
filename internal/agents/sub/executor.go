@@ -33,6 +33,31 @@ type ChatClient interface {
 
 const defaultMaxToolRounds = 5
 
+// stepSchemaVersion is the current chatStepState schema (code_rules_v2 §6.1:
+// snapshot structs carry a version; decodeChatStepState rejects unknown ones).
+const stepSchemaVersion = 1
+
+// chatStepState is the resumable program-counter block (PCB) of one
+// tool-calling execution (plan P1.1 Execution Quantum: reason → tool call →
+// observation → checkpoint). A quantum (ExecuteStep) advances it by exactly
+// one ReAct round; when the LLM answers without tool calls it carries the
+// final answer to completion. It is JSON round-trippable so it can ride the
+// fabric's opaque checkpoint slot across a yield→resume cycle, and the resume
+// path always decodes into a fresh copy so a stored checkpoint is never
+// mutated in place across quanta (code_rules_v2 §6.3).
+//
+// TaskID is the resume identity check (§6.2): a checkpoint that does not
+// belong to the task being resumed is refused instead of executed.
+type chatStepState struct {
+	SchemaVersion int                `json:"schema_version"`
+	TaskID        string             `json:"task_id"`
+	Round         int                `json:"round"`
+	MaxRounds     int                `json:"max_rounds"`
+	Prompt        string             `json:"prompt"`
+	Params        map[string]any     `json:"params,omitempty"`
+	Messages      []*core.LLMMessage `json:"messages"`
+}
+
 // taskExecutor executes recommendation tasks.
 type taskExecutor struct {
 	toolBinder       ToolBinder
@@ -289,6 +314,198 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 	return result, nil
 }
 
+// ExecuteStep runs exactly one execution quantum (plan P1.1 Execution
+// Quantum) and returns its outcome. A quantum is one ReAct round of the
+// tool-calling loop (reason → tool call → observation) or — for executors
+// without a chat client / tools — the entire fallback or text-only execution
+// in a single step. The resumable state (chatStepState) rides in
+// task.Payload["checkpoint"]: the scheduler stores it in the fabric's opaque
+// checkpoint slot on yield and re-surfaces it here on resume, so the executor
+// itself stays stateless between quanta and can run different tasks
+// concurrently.
+//
+// The kernel scheduler calls this via sub.Agent.ExecuteStep inside
+// taskfabric.RunQuantum (Done→COMPLETED, !Done→SUSPENDED, Err→FAIL/requeue).
+// Execute remains the run-to-completion entry for the message-driven path.
+func (e *taskExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	if task == nil {
+		return nil, errors.ErrInvalidInput
+	}
+	result := models.NewTaskResult(task.TaskID, task.AgentType)
+	start := time.Now()
+
+	// Decode the resume checkpoint first: its presence marks a resumed quantum,
+	// and the tool-start lifecycle event must fire only on the first one
+	// (end/error fire on the final quantum — the same shape as Execute's run).
+	st, found, err := e.decodeChatStepState(task)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		e.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventToolStart,
+			AgentID: e.agentID,
+			Input:   task.TaskID,
+		})
+	}
+
+	// Non-LLM and profile-less paths are single-quantum by construction.
+	if e.llmAdapter == nil || profileFromTask(task) == nil {
+		return e.singleQuantum(ctx, task, result, start, func() ([]*models.RecommendItem, string, error) {
+			return e.executeByType(ctx, task)
+		})
+	}
+
+	// LLM path: resume a yielded tool loop or start a fresh one.
+	chatAvailable := e.chatClient != nil && e.toolBinder != nil && len(e.toolBinder.GetToolSchemas()) > 0
+	if st == nil {
+		prompt, params, err := e.renderPromptAndParams(ctx, task, profileFromTask(task))
+		if err != nil {
+			return nil, err
+		}
+		if !chatAvailable {
+			// Text-only: a single LLM call completes the task in one quantum.
+			items, err := e.executeWithLLMTextOnly(ctx, prompt, params)
+			if err != nil {
+				return nil, err
+			}
+			result.SetSuccess(items, "LLM recommendation completed")
+			result.Duration = time.Since(start)
+			e.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: e.agentID, Duration: time.Since(start)})
+			return &StepOutcome{Done: true, Result: result}, nil
+		}
+		st = &chatStepState{
+			SchemaVersion: stepSchemaVersion,
+			TaskID:        task.TaskID,
+			MaxRounds:     e.toolRounds(),
+			Prompt:        prompt,
+			Params:        params,
+			Messages:      []*core.LLMMessage{{Role: "user", Content: prompt}},
+		}
+	} else if !chatAvailable {
+		// A resumed checkpoint needs the same executor shape that produced it.
+		// Missing chat/tools wiring mid-task is a config error, not a retryable
+		// LLM failure — surface it instead of silently restarting.
+		return nil, fmt.Errorf("sub: resumed step requires chat executor (chat_client=%v tool_binder=%v)", e.chatClient != nil, e.toolBinder != nil)
+	}
+
+	// One ReAct round — or a text-only degradation when the round budget is
+	// already spent (the previous quantum ran the last tool round).
+	var items []*models.RecommendItem
+	var done bool
+	if st.Round >= st.MaxRounds {
+		log.Warn("Chat API tool loop exceeded max rounds, degrading to text-only",
+			"max_rounds", st.MaxRounds,
+			"msg_count", len(st.Messages),
+		)
+		items, err = e.executeWithLLMTextOnly(ctx, st.Prompt, st.Params)
+		done = true
+	} else {
+		items, done, err = e.chatStep(ctx, st)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if !done {
+		// Yield (P1.1): progress was made but the task is not complete. The
+		// fabric SUSPENDEDs the task with this checkpoint preserved; a later
+		// quantum resumes from it.
+		return &StepOutcome{Checkpoint: st}, nil
+	}
+	result.SetSuccess(items, "LLM recommendation completed")
+	result.Duration = time.Since(start)
+	e.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: e.agentID, Duration: time.Since(start)})
+	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// singleQuantum wraps a one-shot (non-yieldable) execution path — the
+// type-specific fallback — in a completed StepOutcome with the same event and
+// result shape as Execute's tail.
+func (e *taskExecutor) singleQuantum(ctx context.Context, task *models.Task, result *models.TaskResult, start time.Time, run func() ([]*models.RecommendItem, string, error)) (*StepOutcome, error) {
+	items, reason, err := run()
+	if err != nil {
+		result.SetError(err.Error())
+		e.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventToolError,
+			AgentID:  e.agentID,
+			Error:    err,
+			Duration: time.Since(start),
+		})
+		return &StepOutcome{Done: true, Result: result}, nil
+	}
+	result.SetSuccess(items, reason)
+	result.Duration = time.Since(start)
+	e.emitCallback(&ares_callbacks.Context{
+		Event:    ares_callbacks.EventToolEnd,
+		AgentID:  e.agentID,
+		Duration: time.Since(start),
+	})
+	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// decodeChatStepState restores a resumable chatStepState from a task's
+// payload["checkpoint"] entry — what the scheduler writes on yield (fabric
+// checkpoint → fabricTaskMeta.StepCheckpoint → payload["checkpoint"]) and
+// surfaces on resume. It always decodes into a fresh copy via JSON so the
+// fabric's stored checkpoint is never mutated across quanta (code_rules_v2
+// §6.3: the checkpoint a quantum returns is final; the next quantum works on
+// its own copy). Resume is refused when the checkpoint belongs to another task
+// (§6.2) or carries an unknown schema version (§6.1).
+//
+// Returns:
+//
+//	(nil, false, nil)  — no checkpoint entry; the caller starts fresh
+//	(&st, true, nil)   — a valid resumable checkpoint
+//	(nil, _, err)      — the checkpoint is present but cannot be resumed
+func (e *taskExecutor) decodeChatStepState(task *models.Task) (*chatStepState, bool, error) {
+	if task == nil || task.Payload == nil {
+		return nil, false, nil
+	}
+	raw, ok := task.Payload["checkpoint"]
+	if !ok || raw == nil {
+		return nil, false, nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, errors.Wrap(err, "marshal step checkpoint")
+	}
+	var st chatStepState
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, false, errors.Wrap(err, "unmarshal step checkpoint")
+	}
+	if st.SchemaVersion != stepSchemaVersion {
+		return nil, false, fmt.Errorf("sub: step checkpoint schema version %d unsupported (want %d)", st.SchemaVersion, stepSchemaVersion)
+	}
+	if st.TaskID != task.TaskID {
+		return nil, false, fmt.Errorf("sub: step checkpoint for task %q does not match task %q, refusing resume", st.TaskID, task.TaskID)
+	}
+	return &st, true, nil
+}
+
+// toolRounds returns the configured tool-loop round budget (0 → default 5).
+func (e *taskExecutor) toolRounds() int {
+	if e.maxToolRounds <= 0 {
+		return defaultMaxToolRounds
+	}
+	return e.maxToolRounds
+}
+
+// profileFromTask extracts the UserProfile from a task's direct field or its
+// payload (the "profile" entry), matching Execute's lookup so the quantum path
+// takes the same LLM-vs-fallback decision as the full-run path.
+func profileFromTask(task *models.Task) *models.UserProfile {
+	if task.UserProfile != nil {
+		return task.UserProfile
+	}
+	if task.Payload != nil {
+		if p, ok := task.Payload["profile"].(*models.UserProfile); ok {
+			return p
+		}
+	}
+	return nil
+}
+
 func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task, profile *models.UserProfile) ([]*models.RecommendItem, error) {
 	var lastErr error
 	for attempt := 0; attempt < e.maxRetries; attempt++ {
@@ -348,12 +565,34 @@ func activeRoleInstructions(ctx context.Context) string {
 	return profile.Instructions
 }
 
-// executeWithLLMSingle renders the prompt for a single LLM call.
-// It prepends the active role's system instructions when the leader switched
-// this execution to a specialized role via Handoff (Ch.10 multi-stage roles).
+// executeWithLLMSingle renders the prompt for a single LLM call and routes it
+// through the Chat+tools path (when a chat client and tools are available) or
+// the text-only path. It is the full-run (Execute) entry of the LLM pipeline;
+// ExecuteStep shares the same rendering via renderPromptAndParams.
 func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Task, profile *models.UserProfile) ([]*models.RecommendItem, error) {
-	// Apply live evolution strategy: override the prompt template if the
-	// active strategy provides one, and collect per-call LLM param overrides.
+	prompt, params, err := e.renderPromptAndParams(ctx, task, profile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try Chat API with tool support when chatClient is available and tools exist.
+	if e.chatClient != nil && e.toolBinder != nil {
+		schemas := e.toolBinder.GetToolSchemas()
+		if len(schemas) > 0 {
+			return e.executeWithChatAndTools(ctx, prompt, params)
+		}
+	}
+
+	// Fall back to text-only generation.
+	return e.executeWithLLMTextOnly(ctx, prompt, params)
+}
+
+// renderPromptAndParams renders the worker prompt (with the active evolution
+// strategy's template/param overrides and the active role's instructions) and
+// the per-call LLM params. Shared by the full-run path (executeWithLLMSingle)
+// and the quantum path (ExecuteStep) so a first quantum renders exactly what a
+// full run would.
+func (e *taskExecutor) renderPromptAndParams(ctx context.Context, task *models.Task, profile *models.UserProfile) (string, map[string]any, error) {
 	tpl := e.promptTpl
 	params := map[string]any{}
 	if st := e.activeStrategy(ctx); st != nil {
@@ -367,7 +606,7 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 
 	prompt, err := e.renderPrompt(tpl, task, profile)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	// P0-3: prepend the active role's system instructions when the leader
@@ -377,17 +616,7 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 		prompt = instructions + "\n\n" + prompt
 	}
 	log.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
-
-	// Try Chat API with tool support when chatClient is available and tools exist.
-	if e.chatClient != nil && e.toolBinder != nil {
-		schemas := e.toolBinder.GetToolSchemas()
-		if len(schemas) > 0 {
-			return e.executeWithChatAndTools(ctx, prompt, schemas, params)
-		}
-	}
-
-	// Fall back to text-only generation.
-	return e.executeWithLLMTextOnly(ctx, prompt, params)
+	return prompt, params, nil
 }
 
 // renderPrompt renders the worker prompt template with the task and profile
@@ -462,84 +691,31 @@ func (e *taskExecutor) activeStrategy(ctx context.Context) *agents.ActiveStrateg
 	return st
 }
 
-// executeWithChatAndTools uses the Chat API with native tool calling.
-// Implements the agentic loop: LLM → tool_calls → execute → result → LLM → final answer.
-func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt string, schemas []resources.ToolSchema, params map[string]any) ([]*models.RecommendItem, error) {
-	// Convert tool schemas to LLM format.
-	llmTools := make([]core.Tool, 0, len(schemas))
-	for _, s := range schemas {
-		llmTools = append(llmTools, resources.ToolSchemaToLLMTool(s))
+// executeWithChatAndTools uses the Chat API with native tool calling. It runs
+// the agentic loop to completion in-process: LLM → tool_calls → execute →
+// result → LLM → final answer. It drives the same chatStep primitive as the
+// quantum entry (ExecuteStep) — the only difference is how many rounds run in
+// one call: all of them here, exactly one per fabric quantum there
+// (code_rules_v2 §5.1: one loop body, two entry points).
+func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt string, params map[string]any) ([]*models.RecommendItem, error) {
+	maxRounds := e.toolRounds()
+	st := &chatStepState{
+		SchemaVersion: stepSchemaVersion,
+		Round:         0,
+		MaxRounds:     maxRounds,
+		Prompt:        prompt,
+		Params:        params,
+		Messages:      []*core.LLMMessage{{Role: "user", Content: prompt}},
 	}
-
-	// Build initial messages.
-	messages := []*core.LLMMessage{
-		{Role: "user", Content: prompt},
-	}
-
-	maxRounds := e.maxToolRounds
-	if maxRounds <= 0 {
-		maxRounds = defaultMaxToolRounds
-	}
-
-	for round := 0; round < maxRounds; round++ {
-		e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-			KeyAgentID:   e.agentID,
-			"round":      round + 1,
-			"max_rounds": maxRounds,
-			"tool_count": len(llmTools),
-			"msg_count":  len(messages),
-		})
-
-		resp, err := e.chatClient.Chat(ctx, messages, llmTools, params)
+	// Run rounds while the budget lasts; once spent without a final answer,
+	// degrade to a plain text-only call below.
+	for st.Round < st.MaxRounds {
+		items, done, err := e.chatStep(ctx, st)
 		if err != nil {
-			return nil, errors.Wrap(err, "chat API call failed")
+			return nil, err
 		}
-
-		// No tool calls: LLM gave a final text answer.
-		if len(resp.ToolCalls) == 0 {
-			log.Debug("Chat API returned final text", "round", round+1, "content_len", len(resp.Content))
-			return e.parseRecommendResult(resp.Content)
-		}
-
-		// Execute each tool call and collect results.
-		log.Debug("Chat API returned tool calls", "round", round+1, "count", len(resp.ToolCalls))
-
-		// Append assistant message with tool_calls to conversation.
-		messages = append(messages, &core.LLMMessage{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		})
-
-		// Keep tools available so the LLM can make additional calls if needed.
-		// The loop naturally terminates when the LLM produces a final text
-		// answer (no tool_calls in response).
-
-		// Execute each tool call and append tool result messages.
-		for _, tc := range resp.ToolCalls {
-			e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
-				KeyAgentID:     e.agentID,
-				"tool_name":    tc.Function.Name,
-				"tool_call_id": tc.ID,
-			})
-
-			result, err := e.executeToolCall(ctx, tc)
-			if err != nil {
-				log.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
-				result = fmt.Sprintf("error: %s", err.Error())
-			}
-
-			e.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
-				KeyAgentID:     e.agentID,
-				"tool_name":    tc.Function.Name,
-				"tool_call_id": tc.ID,
-			})
-
-			messages = append(messages, &core.LLMMessage{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
+		if done {
+			return items, nil
 		}
 	}
 
@@ -551,12 +727,91 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 	// params, so the model produces a direct answer without tool pressure.
 	log.Warn("Chat API tool loop exceeded max rounds, degrading to text-only",
 		"max_rounds", maxRounds,
-		"msg_count", len(messages),
+		"msg_count", len(st.Messages),
 	)
 	if e.llmAdapter == nil {
 		return nil, fmt.Errorf("exceeded max tool rounds (%d) without final answer and no text-only adapter", maxRounds)
 	}
 	return e.executeWithLLMTextOnly(ctx, prompt, params)
+}
+
+// chatStep advances a tool-calling execution by exactly one ReAct round: one
+// Chat API call, every requested tool call executed, and the resulting
+// messages appended to the state. It is the single loop body of the executor
+// (code_rules_v2 §5.1): the full-run path and the quantum path both drive it.
+//
+// Contract: the caller has verified st.Round < st.MaxRounds (the round budget
+// is enforced by the loop, not by this method).
+//
+// Returns:
+//
+//	items, true, nil  — the LLM answered with a final text result (done)
+//	nil, false, nil   — tool calls were executed; st carries the resumable
+//	                    state for the next round / quantum
+//	nil, false, err   — a hard failure (LLM or tool execution error)
+func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*models.RecommendItem, bool, error) {
+	schemas := e.toolBinder.GetToolSchemas()
+	llmTools := make([]core.Tool, 0, len(schemas))
+	for _, s := range schemas {
+		llmTools = append(llmTools, resources.ToolSchemaToLLMTool(s))
+	}
+
+	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
+		KeyAgentID:   e.agentID,
+		"round":      st.Round + 1,
+		"max_rounds": st.MaxRounds,
+		"tool_count": len(llmTools),
+		"msg_count":  len(st.Messages),
+	})
+
+	resp, err := e.chatClient.Chat(ctx, st.Messages, llmTools, st.Params)
+	if err != nil {
+		return nil, false, errors.Wrap(err, "chat API call failed")
+	}
+
+	// No tool calls: LLM gave a final text answer.
+	if len(resp.ToolCalls) == 0 {
+		log.Debug("Chat API returned final text", "round", st.Round+1, "content_len", len(resp.Content))
+		items, err := e.parseRecommendResult(resp.Content)
+		return items, true, err
+	}
+
+	// Append the assistant message with its tool calls, then execute each call
+	// and append its observation as a tool message — the conversation grows
+	// exactly as the pre-quantum implementation did, so a resumed round sees
+	// the accumulated context.
+	log.Debug("Chat API returned tool calls", "round", st.Round+1, "count", len(resp.ToolCalls))
+	st.Messages = append(st.Messages, &core.LLMMessage{
+		Role:      "assistant",
+		Content:   resp.Content,
+		ToolCalls: resp.ToolCalls,
+	})
+	for _, tc := range resp.ToolCalls {
+		e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
+			KeyAgentID:     e.agentID,
+			"tool_name":    tc.Function.Name,
+			"tool_call_id": tc.ID,
+		})
+
+		result, err := e.executeToolCall(ctx, tc)
+		if err != nil {
+			log.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
+			result = fmt.Sprintf("error: %s", err.Error())
+		}
+
+		e.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
+			KeyAgentID:     e.agentID,
+			"tool_name":    tc.Function.Name,
+			"tool_call_id": tc.ID,
+		})
+		st.Messages = append(st.Messages, &core.LLMMessage{
+			Role:       "tool",
+			Content:    result,
+			ToolCallID: tc.ID,
+		})
+	}
+	st.Round++
+	return nil, false, nil
 }
 
 // executeToolCall parses arguments and calls the tool via toolBinder.

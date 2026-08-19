@@ -25,13 +25,37 @@ const (
 
 // Agent represents the Sub Agent interface. Agents are execution units only
 // (ares-runtime.md: agents are not orchestrated, they are scheduled): the
-// Kernel owns dispatch and drives each agent step-by-step via Execute
-// (taskfabric.RunQuantum). There is deliberately no self-dispatch entry point
-// here — an agent never subscribes to events and runs tasks on its own.
+// Kernel owns dispatch and drives each task quantum-by-quantum via
+// ExecuteStep (taskfabric.RunQuantum). There is deliberately no self-dispatch
+// entry point here — an agent never subscribes to events and runs tasks on
+// its own.
 type Agent interface {
 	base.Agent
-	// Execute executes a task and returns result.
+	// Execute runs a task to completion and returns its result (used by the
+	// message-driven path).
 	Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error)
+	// ExecuteStep runs one execution quantum (plan P1.1 Execution Quantum).
+	// Done=false carries a resumable checkpoint: the task is SUSPENDED with
+	// the checkpoint preserved and a later quantum resumes from it.
+	ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error)
+}
+
+// StepOutcome is the result of one execution quantum (plan P1.1 Execution
+// Quantum). Done=false carries a resumable checkpoint so the caller (the
+// kernel scheduler's RunQuantum step) can yield and resume the task in a later
+// quantum; Done=true carries the finalized task result.
+type StepOutcome struct {
+	Done       bool
+	Result     *models.TaskResult
+	Checkpoint any
+}
+
+// stepExecutor is the optional quantum-capable contract implemented by the
+// production taskExecutor. The interface lives at the consumer (sub.Agent)
+// per code_rules_v2 §5.2; executors that predate quantum execution simply do
+// not implement it and subAgent falls back to one-shot Execute.
+type stepExecutor interface {
+	ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error)
 }
 
 // TaskExecutor executes tasks.
@@ -300,7 +324,7 @@ func (a *subAgent) IsAlive() bool {
 	return a.Status() == models.AgentStatusReady || a.Status() == models.AgentStatusBusy
 }
 
-// Execute executes a task and returns result.
+// Execute executes a task to completion and returns its result.
 func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 	if a.executor == nil {
 		return nil, errors.ErrNilPointer
@@ -312,18 +336,69 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	})
 
 	result, err := a.executor.Execute(ctx, task)
+	return a.finalizeErr(ctx, task, result, err)
+}
+
+// ExecuteStep runs one execution quantum and returns its outcome. The
+// per-task lifecycle events mirror Execute, split across quanta: TaskCreated
+// fires on the first quantum (no resume checkpoint yet), TaskCompleted/Failed
+// on the final one, so a multi-quantum task is announced once and finalized
+// once. Executors without quantum support fall back to one full run in a
+// single quantum.
+func (a *subAgent) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	if a.executor == nil {
+		return nil, errors.ErrNilPointer
+	}
+	if task == nil {
+		return nil, errors.ErrInvalidInput
+	}
+	if task.Payload == nil || task.Payload["checkpoint"] == nil {
+		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
+			KeyTaskID:  task.TaskID,
+			KeyAgentID: a.id,
+		})
+	}
+
+	se, ok := a.executor.(stepExecutor)
+	if !ok {
+		// Legacy executor without quantum support: the whole run is one quantum.
+		res, err := a.executor.Execute(ctx, task)
+		if _, finalErr := a.finalizeErr(ctx, task, res, err); finalErr != nil {
+			return nil, finalErr
+		}
+		return &StepOutcome{Done: true, Result: res}, nil
+	}
+
+	out, err := se.ExecuteStep(ctx, task)
 	if err != nil {
+		_, finalErr := a.finalizeErr(ctx, task, nil, err)
+		return nil, finalErr
+	}
+	if !out.Done {
+		// Yield: no boundary event yet — the task is still in flight.
+		return out, nil
+	}
+	_, guardErr := a.finalizeErr(ctx, task, out.Result, nil)
+	return out, guardErr
+}
+
+// finalizeErr applies the sub-agent boundary to a finished task outcome: the
+// output guard (primitive 6), completion/failure events and the action log.
+// It is the shared tail of Execute and ExecuteStep so both paths finalize
+// identically. Returns the (possibly rejected) result and any boundary error.
+func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *models.TaskResult, execErr error) (*models.TaskResult, error) {
+	if execErr != nil {
 		a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
 			KeyTaskID:                            task.TaskID,
 			KeyAgentID:                           a.id,
-			KeyError:                             err.Error(),
+			KeyError:                             execErr.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
-			ares_events.EventKeyResult:           err.Error(),
+			ares_events.EventKeyResult:           execErr.Error(),
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
-		a.recordAction(ctx, task.TaskID, false, err.Error())
-		return nil, err
+		a.recordAction(ctx, task.TaskID, false, execErr.Error())
+		return nil, execErr
 	}
 
 	// Output guard (primitive 6): reject structurally inconsistent results at

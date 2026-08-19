@@ -46,6 +46,13 @@ func (a *stubAgent) Execute(_ context.Context, task *models.Task) (*models.TaskR
 	}
 	return res, nil
 }
+func (a *stubAgent) ExecuteStep(_ context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	// The scheduler drives tasks quantum-by-quantum; a stub has no internal
+	// loop, so the whole run completes in one quantum (same behavior as the
+	// pre-quantum Execute path).
+	res, _ := a.Execute(context.Background(), task)
+	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
 func (a *stubAgent) executedCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -246,6 +253,11 @@ func (a *blockingAgent) Execute(ctx context.Context, task *models.Task) (*models
 	}
 	return models.NewTaskResult(task.TaskID, task.AgentType), nil
 }
+func (a *blockingAgent) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	// Same single-quantum contract as Execute (see stubAgent.ExecuteStep).
+	res, _ := a.Execute(ctx, task)
+	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
 
 func (a *blockingAgent) count() int {
 	a.mu.Lock()
@@ -332,5 +344,285 @@ func TestKernelSchedulerConcurrentDrainWorkStealing(t *testing.T) {
 		if got := ag.count(); got != 1 {
 			t.Fatalf("agent %s must execute its task once, got %d", ag.id, got)
 		}
+	}
+}
+
+// yieldAgent is a sub.Agent stub that yields on the first quantum (returning
+// a resumable checkpoint) and completes on the second, recording the
+// checkpoint it received on resume — the proof that the scheduler round-trips
+// the PCB across a SUSPENDED boundary.
+type yieldAgent struct {
+	id       string
+	typ      models.AgentType
+	mu       sync.Mutex
+	steps    int
+	lastCkpt any
+}
+
+var _ sub.Agent = (*yieldAgent)(nil)
+
+func (a *yieldAgent) ID() string                  { return a.id }
+func (a *yieldAgent) Type() models.AgentType      { return a.typ }
+func (a *yieldAgent) Status() models.AgentStatus  { return models.AgentStatusReady }
+func (a *yieldAgent) Start(context.Context) error { return nil }
+func (a *yieldAgent) Stop(context.Context) error  { return nil }
+func (a *yieldAgent) Process(context.Context, any) (any, error) {
+	return nil, nil
+}
+func (a *yieldAgent) ProcessStream(context.Context, any) (<-chan base.AgentEvent, error) {
+	return nil, nil
+}
+func (a *yieldAgent) Execute(_ context.Context, task *models.Task) (*models.TaskResult, error) {
+	res := models.NewTaskResult(task.TaskID, task.AgentType)
+	res.SetSuccess(nil, "done")
+	return res, nil
+}
+func (a *yieldAgent) ExecuteStep(_ context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steps++
+	if a.steps == 1 {
+		// Quantum 1: progress only — yield with a resumable PCB.
+		return &sub.StepOutcome{Checkpoint: map[string]any{"step": 1}}, nil
+	}
+	// Quantum 2: resumed from the previous checkpoint, now complete.
+	a.lastCkpt = task.Payload["checkpoint"]
+	res := models.NewTaskResult(task.TaskID, task.AgentType)
+	res.SetSuccess([]*models.RecommendItem{{ItemID: "i1", Category: "general", Name: "R"}}, "done after 2 quanta")
+	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
+func (a *yieldAgent) stepCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.steps
+}
+func (a *yieldAgent) resumeCheckpoint() any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastCkpt
+}
+
+// TestKernelSchedulerQuantumYieldResume is the P1 core contract at the
+// scheduler level: a task whose first quantum yields must SUSPEND (recorded as
+// a TaskYielded event), then resume with the checkpoint round-tripped and
+// complete — exactly the "Task A → Quantum#1 → checkpoint → yield → Quantum#2
+// → complete" acceptance scenario, driven through the real scheduler.
+func TestKernelSchedulerQuantumYieldResume(t *testing.T) {
+	f := taskfabric.NewFabric()
+	y := &yieldAgent{id: "code_01", typ: models.AgentType("code")}
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": y}, nil)
+	sched.pollInterval = 5 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx)
+
+	if err := f.Create(&taskfabric.Task{
+		ID:          "t-yield",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("t-yield")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tk, err := f.Task("t-yield")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.State != taskfabric.StateCompleted {
+		t.Fatalf("task must complete across 2 quanta, got %s", tk.State)
+	}
+	// The fabric must have recorded a yield boundary (Quantum#1 → SUSPENDED).
+	gotYielded := false
+	for _, ev := range f.Events() {
+		if ev.Type == taskfabric.EventTaskYielded && ev.TaskID == "t-yield" {
+			gotYielded = true
+		}
+	}
+	if !gotYielded {
+		t.Fatal("task must have yielded once (EventTaskYielded) before completing")
+	}
+	if got := y.stepCount(); got != 2 {
+		t.Fatalf("task must run exactly 2 quanta (yield + resume), got %d", got)
+	}
+	// Quantum 2 must have observed the checkpoint that quantum 1 produced.
+	if ck := y.resumeCheckpoint(); ck == nil {
+		t.Fatal("resumed quantum must receive the quantum-1 checkpoint")
+	} else if m, ok := ck.(map[string]any); !ok || m["step"] != 1 {
+		t.Fatalf("resumed quantum must see the previous PCB, got %#v", ck)
+	}
+}
+
+// TestKernelSchedulerCapabilityPicksCorrectAgent (P1 acceptance 5): when two
+// agents declare different capabilities, a task must be scheduled to the
+// capable one — never to the other, however idle.
+func TestKernelSchedulerCapabilityPicksCorrectAgent(t *testing.T) {
+	f := taskfabric.NewFabric()
+	codeAgent := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	docsAgent := &stubAgent{id: "docs_01", typ: models.AgentType("docs")}
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": codeAgent, "docs_01": docsAgent}, nil)
+	sched.pollInterval = 5 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx)
+
+	if err := f.Create(&taskfabric.Task{
+		ID:          "t-code",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("t-code")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tk, err := f.Task("t-code")
+	if err != nil || tk.State != taskfabric.StateCompleted {
+		t.Fatalf("t-code must complete, got %+v err=%v", tk, err)
+	}
+	if got := codeAgent.executedCount(); got != 1 {
+		t.Fatalf("code agent must execute the code task, ran %d", got)
+	}
+	if got := docsAgent.executedCount(); got != 0 {
+		t.Fatalf("docs agent must never run a code task, ran %d", got)
+	}
+}
+
+// TestKernelSchedulerWorkStealingPicksIdleCapableAgent (P1 acceptance 6): work
+// stealing in the shared-queue substrate is load-aware — a candidate at full
+// load (Load=1) scores 0, so an idle capable agent picks up the work it
+// cannot accept. The busy agent is marked busy via the shared load tracker
+// (drains are serialized by wg.Wait, so a mid-flight agent is modeled by its
+// Load, exactly what Schedule reads). Both code-capability tasks must be
+// executed by the idle agent while busy_01 stays at Load=1.
+func TestKernelSchedulerWorkStealingPicksIdleCapableAgent(t *testing.T) {
+	f := taskfabric.NewFabric()
+	tracker := newLoadTracker()
+	// busy_01 holds a (simulated) running task: Load=1, so Score(busy)=0.
+	tracker.begin("busy_01")
+	defer tracker.end("busy_01", true)
+
+	busy := &stubAgent{id: "busy_01", typ: models.AgentType("code")}
+	idle := &stubAgent{id: "idle_01", typ: models.AgentType("code")}
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"busy_01": busy, "idle_01": idle}, tracker)
+	sched.pollInterval = 5 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx)
+
+	for _, id := range []string{"t-a", "t-b"} {
+		if err := f.Create(&taskfabric.Task{
+			ID:          id,
+			Capability:  "code",
+			RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+		}); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, id := range []string{"t-a", "t-b"} {
+			tk, err := f.Task(id)
+			if err != nil || tk.State != taskfabric.StateCompleted {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, id := range []string{"t-a", "t-b"} {
+		if tk, err := f.Task(id); err != nil || tk.State != taskfabric.StateCompleted {
+			t.Fatalf("task %s must complete via the idle agent, got %+v err=%v", id, tk, err)
+		}
+	}
+	if got := idle.executedCount(); got != 2 {
+		t.Fatalf("idle capable agent must steal both tasks from the busy agent, idle ran %d", got)
+	}
+	if got := busy.executedCount(); got != 0 {
+		t.Fatalf("busy agent at Load=1 must never be scheduled, ran %d", got)
+	}
+}
+
+// TestKernelSchedulerIncapableAgentCannotSteal (P1 acceptance 7): an idle agent
+// that does not declare the required capability must never pick up a task,
+// even when the capable agent is busy — the task waits for a capable executor.
+func TestKernelSchedulerIncapableAgentCannotSteal(t *testing.T) {
+	const busyDelay = 300 * time.Millisecond
+	f := taskfabric.NewFabric()
+	busy := &blockingAgent{id: "code_01", typ: models.AgentType("code"), execDelay: busyDelay, meter: &concurrencyMeter{}}
+	docs := &stubAgent{id: "docs_01", typ: models.AgentType("docs")}
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": busy, "docs_01": docs}, nil)
+	sched.pollInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx)
+
+	if err := f.Create(&taskfabric.Task{
+		ID:          "t-slow",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}); err != nil {
+		t.Fatalf("Create t-slow: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if busy.count() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if busy.count() != 1 {
+		t.Fatal("code_01 must pick up t-slow")
+	}
+
+	// A second code task arrives while code_01 is busy. docs_01 is idle but
+	// incapable (Score=0) — it must not steal; the task completes only after
+	// code_01 frees up and runs it serially.
+	if err := f.Create(&taskfabric.Task{
+		ID:          "t-code-2",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}); err != nil {
+		t.Fatalf("Create t-code-2: %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("t-code-2")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tk, err := f.Task("t-code-2")
+	if err != nil || tk.State != taskfabric.StateCompleted {
+		t.Fatalf("t-code-2 must complete on the capable agent, got %+v err=%v", tk, err)
+	}
+	if got := docs.executedCount(); got != 0 {
+		t.Fatalf("incapable docs agent must never steal a code task, ran %d", got)
+	}
+	if got := busy.count(); got != 2 {
+		t.Fatalf("capable code agent must run both code tasks serially, ran %d", got)
 	}
 }
