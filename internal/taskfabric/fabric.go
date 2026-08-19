@@ -407,7 +407,7 @@ type RunningTask struct {
 }
 
 // RunningTasks returns a snapshot of every currently-RUNNING task. It feeds
-// the scheduler's priority-preemption decision (v0.4.0 review: Preempt was
+// the scheduler's priority-preemption decision (v0.3.0 review: Preempt was
 // production-unused); the caller must not hold any fabric lock while calling
 // Preempt with the returned epochs.
 func (f *Fabric) RunningTasks() []RunningTask {

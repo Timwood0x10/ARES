@@ -86,7 +86,7 @@ func TestBuildLeaderLiveDAG_UnnamedSubAgent_FailsLoud(t *testing.T) {
 // TestErrNoLLMAdapterSentinel verifies the sentinel introduced for the LLM
 // fallback chain is detectable with errors.Is and does not lose the wrapped
 // underlying error. This guards the "no error code" observation from the
-// v0.4.0 code review: callers can now distinguish "no LLM available" from
+// v0.3.0 code review: callers can now distinguish "no LLM available" from
 // other serve failures via errors.Is(err, ErrNoLLMAdapter).
 func TestErrNoLLMAdapterSentinel(t *testing.T) {
 	base := errors.New("ollama dial: connection refused")

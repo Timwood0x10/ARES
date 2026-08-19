@@ -48,7 +48,7 @@ type evolutionIPCBridge struct {
 // decodes the wire payload and forwards the original AHPMessage to the agent's
 // delivery function. The returned registry routes every peer send through the
 // bus. When tracer is non-nil, every peer send is also recorded as a
-// cross-Fabric message span (v0.3.0 M4-1 TraceMessage — the v0.4.0 review
+// cross-Fabric message span (v0.3.0 M4-1 TraceMessage — the v0.3.0 review
 // flagged it as library-only; this is its production write path).
 //
 // Args:

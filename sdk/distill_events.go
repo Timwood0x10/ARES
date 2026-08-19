@@ -59,6 +59,29 @@ func newEventBackend(
 	return ctx, cancel, eg, store
 }
 
+// wireSDKEventBackend selects the Runtime's event backend. Stage 8: when the
+// Bootstrap core is available, distillation subscribes to Bootstrap's shared
+// EventStore (single store across entry points) instead of a private SDK
+// store; otherwise the SDK falls back to newEventBackend. Extracted from New()
+// to keep the constructor under the 100-line limit.
+func wireSDKEventBackend(
+	bootstrapComp *ares_bootstrap.Components,
+	distillSvc *aresexp.DistillationService,
+	akgBridge *adapter.DistillBridge,
+) (
+	context.Context, context.CancelFunc, *errgroup.Group, ares_events.EventStore,
+) {
+	if bootstrapComp != nil && bootstrapComp.EventStore != nil {
+		rtCtx, rtCancel := context.WithCancel(context.Background())
+		eg := &errgroup.Group{}
+		if distillSvc != nil || akgBridge != nil {
+			wireDistillationSubscriber(rtCtx, eg, bootstrapComp.EventStore, distillSvc, akgBridge)
+		}
+		return rtCtx, rtCancel, eg, bootstrapComp.EventStore
+	}
+	return newEventBackend(distillSvc, akgBridge)
+}
+
 // wireDistillationSubscriber registers a background consumer of TaskCompleted
 // and TaskFailed events. For each event it:
 //   - feeds the completed task into the DistillationService (distSvc) so

@@ -26,10 +26,14 @@ func init() {
 		Use:   "version",
 		Short: "Show ARES version",
 		Run: func(_ *cobra.Command, _ []string) {
-			info, ok := debug.ReadBuildInfo()
 			v := version
-			if ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-				v = info.Main.Version
+			if v == "dev" {
+				// ldflags injection (main.version) absent (e.g. `go run` or a
+				// build without Makefile): fall back to the module pseudo-version
+				// from build info when one exists.
+				if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+					v = info.Main.Version
+				}
 			}
 			fmt.Printf("ARES %s (%s/%s, %s)\n", v, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		},

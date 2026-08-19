@@ -590,7 +590,7 @@ func TestWireKernelPolicyWiresLifecycle(t *testing.T) {
 // TestRunKernelRecoveryLoopEventDriven verifies the event-driven recovery loop
 // (code-review-2025-01-16 #2): task lifecycle events on the shared EventStore
 // drive the recovery chain instead of a command loop. Publishing an
-// EventTaskExpired event triggers the kernel's requeue-only recovery (v0.4.0
+// EventTaskExpired event triggers the kernel's requeue-only recovery (v0.3.0
 // review Bug 1 fix): the expired task returns to READY, UNOWNED — NOT re-leased
 // to a phantom replacement agent that no registered executor can drive. The
 // kernelScheduler (which owns execution) picks up the READY task and resumes
@@ -921,7 +921,7 @@ func TestKernelDispatchReleasesResultSubscription(t *testing.T) {
 	}
 }
 
-// TestToModelTaskPreservesMetaAcrossYieldCheckpoint verifies the v0.4.0 review
+// TestToModelTaskPreservesMetaAcrossYieldCheckpoint verifies the v0.3.0 review
 // Bug 3 fix: a yielded task's checkpoint is the meta envelope re-wrapped by the
 // scheduler's quantum step, so toModelTask can still restore UserProfile/
 // Payload/UsedExperienceID on resume (the old code type-asserted a plain map
@@ -963,7 +963,7 @@ func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	}
 }
 
-// TestRetryPolicyAllowsOneRetry verifies the v0.4.0 review Bug 2 fix:
+// TestRetryPolicyAllowsOneRetry verifies the v0.3.0 review Bug 2 fix:
 // submitFabricTask now grants ONE real retry (MaxRetries counts total
 // attempts, so 2 = first attempt + one retry). A transient failure requeues
 // the task to READY; only the second failure finalizes FAILED.
@@ -1012,7 +1012,7 @@ func TestRetryPolicyAllowsOneRetry(t *testing.T) {
 	}
 }
 
-// TestSchedulerPriorityPreemption verifies the v0.4.0 review wiring fix:
+// TestSchedulerPriorityPreemption verifies the v0.3.0 review wiring fix:
 // fabric.Preempt is exercised from the scheduler — a RUNNING low-priority task
 // is cooperatively handed back to READY (checkpoint preserved) when a READY
 // high-priority task arrives, freeing the executor for the next drain.
@@ -1080,7 +1080,7 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	}
 }
 
-// TestTaskFromPayloadRestoresJSONUserProfile verifies the v0.4.0 review Bug 3
+// TestTaskFromPayloadRestoresJSONUserProfile verifies the v0.3.0 review Bug 3
 // (kernel side) fix: a user_profile that survived a JSON round-trip arrives as
 // a plain map, not a *models.UserProfile. taskFromPayload must still restore it
 // so the executor never degrades to executeByType.

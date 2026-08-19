@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -86,13 +87,6 @@ func WithConfigStore(store *ares_config.ConfigStore) HTTPServerOption {
 // HTTPServerOption configures the HTTPServer.
 type HTTPServerOption func(*HTTPServer)
 
-// WithGinMode sets the Gin mode (debug, release, test).
-func WithGinMode(mode string) HTTPServerOption {
-	return func(_ *HTTPServer) {
-		gin.SetMode(mode)
-	}
-}
-
 // requireAPIKey is a Gin middleware that enforces auth on a route. A request
 // is accepted if it presents either the legacy API key or a valid JWT whose
 // role holds write permission (admin or operator). When neither credential is
@@ -113,7 +107,8 @@ func (s *HTTPServer) requireAPIKey() gin.HandlerFunc {
 			auth := c.GetHeader("Authorization")
 			if strings.HasPrefix(auth, bearerPrefix) {
 				token := strings.TrimPrefix(auth, bearerPrefix)
-				if token != "" && token == s.apiKey {
+				// Constant-time compare, matching cmd/ares/actions.go checkAuth.
+				if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.apiKey)) == 1 {
 					c.Next()
 					return
 				}
@@ -378,11 +373,12 @@ func (s *HTTPServer) handleRetryAgent(c *gin.Context) {
 }
 
 // executeNodeAction dispatches an action on a node.
-// The agent ID is extracted from the Gin URL parameter ":id" (P1-8).
+// The agent ID is extracted from the Gin URL parameter ":id" (P1-8). The
+// outcome is audited after the action runs so failures are recorded as such.
 func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
 	nodeID := c.Param("id")
-	s.auditAction(action, nodeID, c)
 	result, err := s.plugin.ExecuteAction(c.Request.Context(), nodeID, action)
+	s.auditAction(action, nodeID, c, err == nil)
 	if err != nil {
 		c.JSON(http.StatusNotImplemented, gin.H{
 			fieldAction: action,
@@ -397,8 +393,9 @@ func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
 // auditAction records a destructive/privileged action on the modular audit
 // sink when one is attached. The subject is the authenticated principal's
 // identity (JWT) when present, else "api-key" for the legacy credential. The
-// outcome (ok) is filled after the action runs; failures are audited too.
-func (s *HTTPServer) auditAction(action, target string, c *gin.Context) {
+// outcome (ok) reflects whether the action actually succeeded, so failed
+// destructive operations are distinguishable from successful ones in the log.
+func (s *HTTPServer) auditAction(action, target string, c *gin.Context, ok bool) {
 	if s.audit == nil {
 		return
 	}
@@ -406,7 +403,7 @@ func (s *HTTPServer) auditAction(action, target string, c *gin.Context) {
 	if p := ares_security.PrincipalFromGin(c); p != nil {
 		subject = p.Subject
 	}
-	s.audit.Action(action, subject, target, true)
+	s.audit.Action(action, subject, target, ok)
 }
 
 // handleListMCPTools returns available MCP tools.
@@ -422,7 +419,6 @@ func (s *HTTPServer) handleListMCPTools(c *gin.Context) {
 // handleCallMCPTool invokes an MCP tool.
 func (s *HTTPServer) handleCallMCPTool(c *gin.Context) {
 	name := c.Param("name")
-	s.auditAction("call_mcp_tool", name, c)
 
 	var args map[string]any
 	if err := c.ShouldBindJSON(&args); err != nil && err.Error() != "EOF" {
@@ -431,6 +427,8 @@ func (s *HTTPServer) handleCallMCPTool(c *gin.Context) {
 	}
 
 	result, err := s.plugin.CallMCPTool(c.Request.Context(), name, args)
+	// Audit the actual outcome so failed tool calls are logged as failures.
+	s.auditAction("call_mcp_tool", name, c, err == nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

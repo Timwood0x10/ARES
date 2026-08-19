@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> Security & hardening (v0.3.0 review round): JWT auth + RBAC + modular audit, runtime config hot-reload, chaos-recovery e2e and agent-pool benchmarks, versioning, and quality-gate compliance.
+
+### Added
+
+- **JWT authentication + RBAC** (`internal/ares_security/`): stdlib HS256 token
+  sign/verify, role hierarchy (`admin`⊃`operator`⊃`agent`) with a read/write/admin
+  permission matrix, and net/http + gin middleware (default deny). Destructive
+  console endpoints accept either the legacy API key **or** a valid JWT
+  (dual-credential, backward compatible). `ares auth token` CLI mints tokens.
+  Configure via `security.jwt_secret` / `ARES_JWT_SECRET` / `ARES_AUTH_ENABLED`.
+- **Modular audit logging** (`internal/ares_security/audit.go`): structured
+  `AuditLogger` records auth decisions and destructive actions (kill/resume/
+  retry, MCP tool calls); tokens are never logged.
+- **Runtime config hot-reload** (`internal/ares_config/store.go`): `ConfigStore`
+  with fsnotify watcher (200ms debounce); failed reloads keep the last-good
+  config and are recorded in history. `/runtime/config` endpoint serves the
+  redacted snapshot + history (`Config.Redacted()` masks API keys, DB passwords,
+  JWT secret).
+- **Chaos-recovery e2e** (`internal/ares_arena/e2e_chaos_recovery_test.go`):
+  crash-detection → resurrection through the real arena→runtime wiring, at
+  8/16/64/128 agent pool scales.
+- **Agent-pool benchmarks** (`internal/ares_runtime/benchmark_agent_pool_test.go`):
+  concurrent register/start/stop lifecycle and resurrection throughput.
+- **CI**: `.github/workflows/agentos_ci.yml` (chaos e2e + benchmark sanity),
+  codecov upload in `ci.yml`, coverage/CI badges in README.
+- **Versioning** (`VERSION` file + Makefile injection): `make build` embeds
+  `0.3.0-dev` into `main.version`; `ares version` prefers the injected version,
+  falling back to build-info pseudo-version. Deprecation policy documented in
+  `docs/design/versioning.md`.
+- **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md §6): security layer, config
+  hot-reload, and fault-injection e2e all marked implemented.
+
+### Changed
+
+- **`cmd/ares/serve.go` split**: runtime helpers moved to
+  `cmd/ares/serve_routine.go` (~900 lines) to keep the serve entry readable.
+- **`createLLMAdapterWithFallback`**: returns `ErrNoLLMAdapter` sentinel,
+  detectable with `errors.Is` while retaining the underlying error.
+- **`internal/llm/output/parser.go`**: `extractJSON` now keeps whole arrays
+  (`[{...},{...}]`) instead of truncating to the first object (bug fix).
+- **`cmd/ares/dev.go`**: `ares version` prefers the ldflags-injected version
+  over the module pseudo-version.
+
+### Fixed
+
+- **OTel resource merge** on SDK upgrade: `ares_observability` aligns the schema
+  URL with `resource.Default()` to avoid "conflicting Schema URL" failures.
+- **`ConfigStore` watcher race** in tests: settle window before rewrite.
+- **Health-check test gap**: `Manager.healthCheck()` now covered for dead
+  (resurrect) and alive (no-op) heartbeaters.
+- **`actionHandler` auth/audit bypass** (code review): `POST /api/agents/:id/{kill,
+  resume,retry}`, `/api/chaos/*` and `/api/tools/call` are intercepted by
+  `actionHandler` before the gin router — the JWT middleware and destructive-
+  action audit never ran there. The handler now accepts API key **or** JWT and
+  records every destructive action on the audit sink.
+- **Dead code removal** (code review): removed zero-caller `WithAuditLogger`,
+  `WithClock`, `WithGinMode` options.
+
 > Capability Fabric (SkillCatalog) release: declarative skill sources, zero-scan progressive disclosure, lazy MCP activation, and a closed agent loop from skill discovery to execution feedback.
 
 ### Capability Fabric (`internal/ares_skills/`)

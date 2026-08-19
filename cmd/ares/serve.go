@@ -266,7 +266,7 @@ func runServe() error {
 	// behavior.
 	var peerRegistry *peer.Registry
 	if comp.NewEvolution != nil {
-		bridge, err := wireEvolutionIPC(leaderAgent, subAgents, comp.NewEvolution.StrategyStore, comp.GlobalTracer)
+		bridge, err := wireEvolutionIPC(leaderAgent, subAgents, comp.NewEvolution.StrategyStore, comp.Observability.GlobalTracer)
 		if err != nil {
 			return fmt.Errorf("wire evolution IPC: %w", err)
 		}

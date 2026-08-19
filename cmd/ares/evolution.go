@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -47,29 +46,32 @@ func init() {
 	evolutionCmd.AddCommand(evolutionStatusCmd)
 }
 
-func getNewEvolution() *ares_bootstrap.NewEvolutionComponents {
+func getNewEvolution() (*ares_bootstrap.NewEvolutionComponents, error) {
 	// Components are cached so the expensive ProvideNewEvolution runs once.
 	if cachedComponents == nil {
 		// Create a minimal MutableDAG so workflow/scheduler/recovery genomes
 		// and their executors are properly registered (not nil).
 		dag, err := engine.NewMutableDAG(nil)
 		if err != nil {
-			log.Fatalf("create mutable dag: %v", err)
+			return nil, fmt.Errorf("create mutable dag: %w", err)
 		}
 		comp, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager(), nil)
 		if err != nil {
-			log.Fatalf("bootstrap evolution: %v", err)
+			return nil, fmt.Errorf("bootstrap evolution: %w", err)
 		}
 		cachedComponents = comp
 	}
-	return cachedComponents
+	return cachedComponents, nil
 }
 
 var cachedComponents *ares_bootstrap.NewEvolutionComponents
 
 func runEvolutionCycle() error {
 	ctx := context.Background()
-	ev := getNewEvolution()
+	ev, err := getNewEvolution()
+	if err != nil {
+		return err
+	}
 
 	fmt.Println("═══ Evolution Cycle ═══")
 	fmt.Println()
@@ -190,7 +192,10 @@ func runEvolutionCycle() error {
 }
 
 func showEvolutionStatus() error {
-	ev := getNewEvolution()
+	ev, err := getNewEvolution()
+	if err != nil {
+		return err
+	}
 
 	fmt.Println("═══ Evolution System Status ═══")
 	fmt.Println()

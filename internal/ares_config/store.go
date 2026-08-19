@@ -82,17 +82,22 @@ func (s *ConfigStore) Reload(ctx context.Context, path string) error {
 		s.record(false, fmt.Sprintf("reload failed: %v", err))
 		return fmt.Errorf("reload %s: %w", path, err)
 	}
+	// Publish the new config and record the history entry under one lock so
+	// readers never observe the new config before its history entry exists.
 	s.mu.Lock()
 	s.current = cfg
+	s.appendRecord(true, fmt.Sprintf("reloaded %s", filepath.Base(path)))
 	s.mu.Unlock()
-	s.record(true, fmt.Sprintf("reloaded %s", filepath.Base(path)))
 	return nil
 }
 
 // Watch starts an fsnotify loop on the config file (and its directory, to
 // catch atomic-save renames). It blocks until ctx is cancelled; run it in a
 // goroutine. Events are debounced 200ms so editor partial-writes coalesce
-// into a single reload.
+// into a single reload: a burst of config-targeted events (e.g. an
+// atomic-save Write→Rename chain) resets the timer and, once it fires, any
+// events that queued up during the window are drained before the single
+// reload runs.
 func (s *ConfigStore) Watch(ctx context.Context, path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -111,7 +116,15 @@ func (s *ConfigStore) Watch(ctx context.Context, path string) error {
 		return fmt.Errorf("watch config dir: %w", err)
 	}
 
+	const debounceDelay = 200 * time.Millisecond
 	var debounce *time.Timer
+	stopDebounce := func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}
+	defer stopDebounce()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -123,17 +136,41 @@ func (s *ConfigStore) Watch(ctx context.Context, path string) error {
 			if !configFileEvent(event, absPath) {
 				continue
 			}
+			// (Re)arm the debounce window. A nil channel (no timer yet)
+			// blocks the firing case below, so the timer only fires after
+			// at least one config event arrived.
 			if debounce == nil {
-				debounce = time.NewTimer(200 * time.Millisecond)
+				debounce = time.NewTimer(debounceDelay)
 			} else {
-				debounce.Reset(200 * time.Millisecond)
+				// Always stop + drain + reset, regardless of Stop()'s return:
+				// Stop()==true means the timer was still pending and would
+				// otherwise be cancelled without a reload (events silently
+				// dropped on editor fast-write bursts).
+				if !debounce.Stop() {
+					select {
+					case <-debounce.C:
+					default:
+					}
+				}
+				debounce.Reset(debounceDelay)
 			}
-			select {
-			case <-debounce.C:
-				_ = s.Reload(ctx, absPath)
-			case <-ctx.Done():
-				return ctx.Err()
+		case <-debounceC(debounce):
+			// Debounce window elapsed: drain any events that queued up
+			// during the window (non-blocking) so a rename chain coalesces
+			// into one reload instead of N.
+			for {
+				select {
+				case ev, ok := <-w.Events:
+					if !ok {
+						return nil
+					}
+					_ = ev // consumed for coalescing; already filtered above
+				default:
+					goto reload
+				}
 			}
+		reload:
+			_ = s.Reload(ctx, absPath)
 		case err, ok := <-w.Errors:
 			if !ok {
 				return nil
@@ -141,6 +178,16 @@ func (s *ConfigStore) Watch(ctx context.Context, path string) error {
 			s.record(false, fmt.Sprintf("watcher error: %v", err))
 		}
 	}
+}
+
+// debounceC returns the timer's channel, or a nil channel when there is no
+// armed timer. A nil channel never fires, so the Watch select only reacts to
+// timer expiry after a config event armed it.
+func debounceC(t *time.Timer) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
 }
 
 // configFileEvent reports whether a fsnotify event targets the config file:
@@ -162,6 +209,12 @@ func configFileEvent(event fsnotify.Event, cfgAbs string) bool {
 func (s *ConfigStore) record(ok bool, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.appendRecord(ok, msg)
+}
+
+// appendRecord appends a history entry under the caller-held lock, trimming
+// to the bounded history size.
+func (s *ConfigStore) appendRecord(ok bool, msg string) {
 	s.history = append(s.history, ConfigChange{Time: time.Now(), OK: ok, Message: msg})
 	if len(s.history) > s.maxHist {
 		s.history = s.history[len(s.history)-s.maxHist:]

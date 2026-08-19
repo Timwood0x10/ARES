@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -111,6 +112,44 @@ func TestHTTPServer_RetryAgent(t *testing.T) {
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+// TestHTTPServer_FailedActionAuditedAsFailure verifies the audit sink records
+// the actual outcome: a kill that fails (501 — no interaction engine) must be
+// logged with ok=false, not the previous always-true behavior.
+func TestHTTPServer_FailedActionAuditedAsFailure(t *testing.T) {
+	var buf bytes.Buffer
+	audit := ares_security.NewAuditLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	srv := NewHTTPServer(NewConsole().(*MonitorPlugin), WithAPIKey(testAPIKey), WithAudit(audit))
+
+	w := httptest.NewRecorder()
+	req := withTestAuth(httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil))
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+
+	raw := buf.String()
+	assert.Contains(t, raw, "action=kill")
+	assert.Contains(t, raw, "ok=false", "failed destructive action must be audited as a failure, got: %s", raw)
+}
+
+// TestHTTPServer_SuccessfulMCPToolCallAuditedAsSuccess verifies a successful
+// MCP tool call is audited with ok=true.
+func TestHTTPServer_SuccessfulMCPToolCallAuditedAsSuccess(t *testing.T) {
+	var buf bytes.Buffer
+	audit := ares_security.NewAuditLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	p := NewConsole(WithMCP(&mockMCPManager{
+		result: &MCPToolResult{ToolName: "tool1", Output: map[string]any{"ok": true}},
+	})).(*MonitorPlugin)
+	srv := NewHTTPServer(p, WithAPIKey(testAPIKey), WithAudit(audit))
+
+	w := httptest.NewRecorder()
+	req := withTestAuth(httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", nil))
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	raw := buf.String()
+	assert.Contains(t, raw, "action=call_mcp_tool")
+	assert.Contains(t, raw, "ok=true", "successful tool call must be audited as a success, got: %s", raw)
 }
 
 func TestHTTPServer_MCPTools_NoManager(t *testing.T) {

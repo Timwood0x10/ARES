@@ -291,6 +291,11 @@ func submitTasks(ctx context.Context, agent leader.Agent) {
 		"评估这个项目的测试覆盖率，找出缺少测试的关键模块",
 	}
 
+	// Ticker (not time.After in a loop) so there is no per-iteration timer
+	// allocation that leaks when ctx is cancelled mid-interval.
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
 	for i := 0; ; i++ {
 		select {
 		case <-ctx.Done():
@@ -311,7 +316,7 @@ func submitTasks(ctx context.Context, agent leader.Agent) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(15 * time.Second):
+		case <-ticker.C:
 		}
 	}
 }

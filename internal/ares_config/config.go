@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -14,11 +15,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var allowedConfigDir string
+// allowedConfigDir and its guard mutex restrict where Load may read config
+// files from (path-traversal protection). Guarded by a RWMutex so SetAllowed
+// can race safely with concurrent Load calls (e.g. hot-reload watchers).
+var (
+	allowedConfigDirMu sync.RWMutex
+	allowedConfigDir   string
+)
 
 // SetAllowedConfigDir sets the allowed directory for config files.
 // This is a security measure to prevent path traversal attacks.
 func SetAllowedConfigDir(dir string) {
+	allowedConfigDirMu.Lock()
+	defer allowedConfigDirMu.Unlock()
 	allowedConfigDir = dir
 }
 
@@ -442,12 +451,16 @@ type DistillConfig struct {
 func Load(path string) (*Config, error) {
 	// Security: validate path is within allowed directory using filepath.Rel
 	// to correctly reject path-traversal attempts (e.g. "/allowed/../secret").
-	if allowedConfigDir != "" {
+	// Snapshot under the read lock so SetAllowedConfigDir can race with Load.
+	allowedConfigDirMu.RLock()
+	dir := allowedConfigDir
+	allowedConfigDirMu.RUnlock()
+	if dir != "" {
 		absPath, err := filepath.Abs(path)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get absolute path: %w", err)
 		}
-		absDir, err := filepath.Abs(allowedConfigDir)
+		absDir, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get absolute directory: %w", err)
 		}
@@ -457,7 +470,7 @@ func Load(path string) (*Config, error) {
 		}
 		// Reject paths that escape the allowed directory via ".." prefix.
 		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("config path %s is outside allowed directory %s", path, allowedConfigDir)
+			return nil, fmt.Errorf("config path %s is outside allowed directory %s", path, dir)
 		}
 	}
 

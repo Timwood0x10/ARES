@@ -216,9 +216,9 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 				// (v0.3.0 M3-1) so /evolution/trajectory returns live data
 				// instead of an empty list. wired.Population exposes the
 				// per-generation Stats after a run.
-				if comp.EvolutionTracer != nil && wired.Population != nil {
+				if comp.Observability != nil && comp.Observability.EvolutionTracer != nil && wired.Population != nil {
 					stats := wired.Population.Stats()
-					comp.EvolutionTracer.Record(stats.Generation, stats.BestScore, nil, nil)
+					comp.Observability.EvolutionTracer.Record(stats.Generation, stats.BestScore, nil, nil)
 				}
 			case <-ctx.Done():
 				return nil

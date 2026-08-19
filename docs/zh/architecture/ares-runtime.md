@@ -337,7 +337,7 @@ Task 的 durable intent 尚未完成**——不是"Agent 被暂停了"。
 - **流水线模式**：A → B → C 有序执行，数据经 IPC 传递（`Pipeline`）
 - **编排模式**：Coordinator 并行协调多个 Worker + 失败重试（`Orchestrate`）
 
-> **状态说明（v0.4.0 review）**：上述协作原语（`DelegateToSpecialist`/`Pipeline`/`Orchestrate`
+> **状态说明（v0.3.0 review）**：上述协作原语（`DelegateToSpecialist`/`Pipeline`/`Orchestrate`
 > 及 IPC 层的 `Request/Reply/Delegate/Handoff/Subscribe`）已在 `agentipc/collaboration.go` 与
 > `primitives.go` 实现并通过单元测试，但**生产路径（kernelScheduler / leader peer 消息）目前只用
 > 到 `Bus.Send`/`Register`，无任何协作层调用方**——属于「库就绪、生产未接线」，而非已交付。

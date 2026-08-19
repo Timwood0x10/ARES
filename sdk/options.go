@@ -32,20 +32,7 @@ type ConfigOption = Option
 //	A Runtime option that applies the loaded configuration.
 func WithConfig(path string) ConfigOption {
 	return func(c *config) error {
-		sdkCfg, err := LoadConfigFile(path)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-		opts, err := sdkCfg.ToOptions()
-		if err != nil {
-			return fmt.Errorf("config to options: %w", err)
-		}
-		for _, opt := range opts {
-			if err := opt(c); err != nil {
-				return err
-			}
-		}
-		return nil
+		return applyConfigFile(c, path)
 	}
 }
 
@@ -58,21 +45,29 @@ func WithConfigFromEnv() ConfigOption {
 		if p := os.Getenv("ARES_YAML"); p != "" {
 			path = p
 		}
-		sdkCfg, err := LoadConfigFile(path)
-		if err != nil {
-			return fmt.Errorf("load config %s: %w", path, err)
-		}
-		opts, err := sdkCfg.ToOptions()
-		if err != nil {
-			return fmt.Errorf("config to options: %w", err)
-		}
-		for _, opt := range opts {
-			if err := opt(c); err != nil {
-				return err
-			}
-		}
-		return nil
+		return applyConfigFile(c, path)
 	}
+}
+
+// applyConfigFile is the shared implementation behind WithConfig and
+// WithConfigFromEnv: it loads the YAML file at path, converts it to internal
+// options, and applies them in order. Keeping the load→convert→apply loop in
+// one place guarantees every config entry point behaves identically.
+func applyConfigFile(c *config, path string) error {
+	sdkCfg, err := LoadConfigFile(path)
+	if err != nil {
+		return fmt.Errorf("load config %s: %w", path, err)
+	}
+	opts, err := sdkCfg.ToOptions()
+	if err != nil {
+		return fmt.Errorf("config to options: %w", err)
+	}
+	for _, opt := range opts {
+		if err := opt(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---- Runtime options ----

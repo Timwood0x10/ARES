@@ -50,7 +50,7 @@ func (s *stubIPCProtocolSource) ActiveIPCProtocolPolicy(context.Context) (aresre
 // the large leader.Agent / sub.Agent interfaces. It creates the bus AND the
 // policy-aware IPC on the SAME bus, so the peer send reaches the registered
 // handler. A non-nil tracer records each peer send as a message span, exactly
-// like the production wiring (v0.4.0 review: TraceMessage was library-only).
+// like the production wiring (v0.3.0 review: TraceMessage was library-only).
 func buildBridge(target *fakeMessageAgent, policy aresrecovery.IPCProtocolPolicy, tracer *aresrecovery.GlobalTracer) *peer.Registry {
 	bus := agentipc.NewBus()
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, &stubIPCProtocolSource{policy: policy})
@@ -175,7 +175,7 @@ func TestToAHPMessageRejectsGarbage(t *testing.T) {
 	}
 }
 
-// TestEvolutionIPCBridgeTracesMessage verifies the v0.4.0 review wiring: every
+// TestEvolutionIPCBridgeTracesMessage verifies the v0.3.0 review wiring: every
 // peer send through the evolution-aware bus also records a cross-Fabric
 // message span on the shared GlobalTracer (TraceMessage's production path,
 // previously library-only). The span is keyed by the message id and links to

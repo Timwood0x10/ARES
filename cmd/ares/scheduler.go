@@ -258,7 +258,7 @@ func (s *kernelScheduler) WithEventStore(store ares_events.EventStore) *kernelSc
 // execution are recovered so a single bad step cannot kill the loop.
 // TODO(tech-debt): the per-agent local ready-queue design
 // (taskfabric.AgentQueue/Steal, ares-runtime.md §5) was removed as unused
-// (v0.4.0 review P1: Steal 空转 — 要么接线要么删除); the shared ReadyTasks()
+// (v0.3.0 review P1: Steal 空转 — 要么接线要么删除); the shared ReadyTasks()
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.
 func (s *kernelScheduler) drain(ctx context.Context) {
@@ -266,7 +266,7 @@ func (s *kernelScheduler) drain(ctx context.Context) {
 	if len(tasks) == 0 {
 		return
 	}
-	// Priority preemption (v0.4.0 review: fabric.Preempt was production-
+	// Priority preemption (v0.3.0 review: fabric.Preempt was production-
 	// unused): if a READY task outranks a task that is RUNNING from a
 	// previous drain, cooperatively preempt the lower one so a capable
 	// executor can pick up the higher-priority work. Preempt hands the task
@@ -382,7 +382,7 @@ type fabricTaskMeta struct {
 	// fabricTaskMeta envelope, so the submission metadata survives a yield:
 	// RunQuantum overwrites the task Checkpoint with the step's checkpoint,
 	// and re-wrapping it inside the meta envelope means the next quantum's
-	// toModelTask can still restore UserProfile/Payload (v0.4.0 review
+	// toModelTask can still restore UserProfile/Payload (v0.3.0 review
 	// Bug 3: yield→resume otherwise lost the profile and degraded to
 	// executeByType). nil before the first quantum runs.
 	StepCheckpoint any

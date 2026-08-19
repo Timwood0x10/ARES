@@ -76,8 +76,10 @@ type KnowledgeObject struct {
 	// Confidence: Confidence is the stored reliability of a fact, Relevance
 	// is how well it matches the current query. The retriever ranks and
 	// filters on Relevance, NOT Confidence. Relevance is transient: it is
-	// not a persisted property and should be recomputed per query.
-	Relevance float64 `json:"relevance,omitempty"`
+	// not a persisted property, is recomputed per query, and is excluded
+	// from serialization (json:"-") so a streamed score can never leak into
+	// stored state or API responses.
+	Relevance float64 `json:"-"`
 }
 
 // ObjectStatus is the lifecycle state of a KnowledgeObject.

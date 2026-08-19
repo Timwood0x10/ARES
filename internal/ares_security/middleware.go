@@ -2,7 +2,6 @@ package ares_security
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -36,26 +35,12 @@ type AuthMiddleware struct {
 // AuthOption configures an AuthMiddleware.
 type AuthOption func(*AuthMiddleware)
 
-// WithAuditLogger attaches an audit logger that records every auth decision
-// (allow/deny) with subject, role and path. Kept for compatibility; the sink
-// is an AuditLogger internally.
-func WithAuditLogger(l *slog.Logger) AuthOption {
-	return WithAudit(NewAuditLogger(l))
-}
-
 // WithAudit attaches the modular audit sink (see audit.go). It records auth
 // decisions and, when passed to the monitoring HTTP server, destructive
 // actions too.
 func WithAudit(a *AuditLogger) AuthOption {
 	return func(m *AuthMiddleware) {
 		m.audit = a
-	}
-}
-
-// WithClock overrides the time source (test use only).
-func WithClock(f func() time.Time) AuthOption {
-	return func(m *AuthMiddleware) {
-		m.now = f
 	}
 }
 

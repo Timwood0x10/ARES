@@ -1028,3 +1028,49 @@ func TestValidOutputFormats(t *testing.T) {
 }
 
 // nolint: errcheck // Test code may ignore return values
+
+// TestSetAllowedConfigDir_PathTraversal verifies the path-traversal guard:
+// configs inside the allowed directory load, configs that escape it via ".."
+// are rejected before any file is read.
+func TestSetAllowedConfigDir_PathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	innerDir := filepath.Join(tmpDir, "allowed")
+	if err := os.MkdirAll(innerDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", innerDir, err)
+	}
+
+	// A minimal valid config file.
+	configContent := "server:\n  host: \"localhost\"\n  port: 8080\nllm:\n  provider: \"ollama\"\n  model: \"llama3.2\"\n"
+	inConfig := filepath.Join(innerDir, "config.yaml")
+	outConfig := filepath.Join(tmpDir, "secret.yaml")
+	if err := os.WriteFile(inConfig, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", inConfig, err)
+	}
+	if err := os.WriteFile(outConfig, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", outConfig, err)
+	}
+
+	SetAllowedConfigDir(innerDir)
+	t.Cleanup(func() { SetAllowedConfigDir("") })
+
+	// Inside the allowed dir: loads fine.
+	if _, err := Load(inConfig); err != nil {
+		t.Errorf("Load(%q) inside allowed dir failed: %v", inConfig, err)
+	}
+
+	// Outside via "..": must be rejected.
+	if _, err := Load(filepath.Join(innerDir, "..", "secret.yaml")); err == nil {
+		t.Error("Load() outside allowed dir succeeded, want path-traversal rejection")
+	}
+
+	// Outside via absolute path: must be rejected.
+	if _, err := Load(outConfig); err == nil {
+		t.Error("Load() of absolute path outside allowed dir succeeded, want rejection")
+	}
+
+	// Resetting the guard (empty dir) restores unrestricted loading.
+	SetAllowedConfigDir("")
+	if _, err := Load(outConfig); err != nil {
+		t.Errorf("Load(%q) after clearing allowed dir failed: %v", outConfig, err)
+	}
+}

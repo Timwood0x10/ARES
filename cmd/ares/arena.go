@@ -201,14 +201,18 @@ var arenaServeCmd = &cobra.Command{
 		inj := arena.NewInjector(nil, nil)
 		// Share the evolution components' evidence store so chaos failures land
 		// in the same store the GA genomes consume for fitness evaluation.
+		ev, err := getNewEvolution()
+		if err != nil {
+			return fmt.Errorf("get evolution components: %w", err)
+		}
 		var evStore evidence.Store
-		if ev := getNewEvolution(); ev != nil && ev.EvidenceStore != nil {
+		if ev != nil && ev.EvidenceStore != nil {
 			evStore = ev.EvidenceStore
 		}
 		svc := arena.NewService(inj, nil, evStore)
 
 		// Wire the evolution bridge: chaos fault detection → coordinator.
-		if ev := getNewEvolution(); ev != nil && ev.Coordinator != nil {
+		if ev != nil && ev.Coordinator != nil {
 			bridge := arena.NewEvolutionBridge(ev.Coordinator)
 			svc.SetEvolutionBridge(bridge)
 		}

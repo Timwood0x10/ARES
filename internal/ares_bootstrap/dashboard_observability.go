@@ -13,7 +13,7 @@ import (
 
 // evolutionTrajectoryAdapter adapts *aresrecovery.EvolutionTracer to
 // dashboard.EvolutionTrajectoryProvider. The adapter also consumes the two
-// components the v0.4.0 review flagged as library-only:
+// components the v0.3.0 review flagged as library-only:
 //
 //   - ChangeAttributor fills each generation change's Impact estimate (equal
 //     split of the score delta unless the evolution system supplied one);

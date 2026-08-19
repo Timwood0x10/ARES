@@ -91,12 +91,25 @@ type Components struct {
 	// SystemRegistry backs SystemRuntime with one entry per constructed
 	// component, enabling dependency-aware lookup and snapshot queries.
 	SystemRegistry *system_runtime.Registry
-	// GlobalTracer is the shared cross-Fabric tracer (v0.3.0 M4-1). It is
-	// created once in Bootstrap and shared by the dashboard (read side:
-	// /observability/spans) and the kernel wiring (write side: task/agent
-	// lifecycle hooks). Nil when the dashboard observability wiring is
-	// skipped.
-	GlobalTracer *aresrecovery.GlobalTracer
+	// Observability holds the shared v0.3.0 M3/M4 observability components:
+	// the evolution trajectory tracer, the human-feedback store, and the
+	// cross-Fabric tracer. All three are created together once in Bootstrap
+	// and shared by the dashboard (read side) and the runtime write hooks
+	// (GA generation recording, task/agent lifecycle tracing), so the
+	// dashboard endpoints show live data. Non-nil whenever Bootstrap
+	// completed; nil only when wiring never ran.
+	Observability *ObservabilityComponents
+	// bgGroup manages all Bootstrap background goroutines (distillation
+	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
+	// (F06: no bare goroutines). WaitBackground blocks on it during shutdown.
+	bgGroup errgroup.Group
+}
+
+// ObservabilityComponents groups the shared v0.3.0 M3/M4 observability
+// surfaces. They are constructed together as one subsystem — Bootstrap creates
+// all three unconditionally and the dashboard reads them via provider
+// adapters, so the flat Components struct stays scannable.
+type ObservabilityComponents struct {
 	// EvolutionTracer is the shared evolution trajectory tracer (v0.3.0
 	// M3-1). Shared by the dashboard (read side: /evolution/trajectory) and
 	// the GA wiring (write side: Record after each generation).
@@ -104,10 +117,11 @@ type Components struct {
 	// FeedbackStore is the shared human-feedback store (v0.3.0 M3-2). Written
 	// by POST /evolution/feedback; read by the evolution scoring path.
 	FeedbackStore *aresrecovery.FeedbackStore
-	// bgGroup manages all Bootstrap background goroutines (distillation
-	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
-	// (F06: no bare goroutines). WaitBackground blocks on it during shutdown.
-	bgGroup errgroup.Group
+	// GlobalTracer is the shared cross-Fabric tracer (v0.3.0 M4-1). It is
+	// shared by the dashboard (read side: /observability/spans) and the
+	// kernel wiring (write side: task/agent lifecycle hooks). Nil when the
+	// dashboard observability wiring is skipped.
+	GlobalTracer *aresrecovery.GlobalTracer
 }
 
 // WaitBackground blocks until all background goroutines started by Bootstrap
@@ -267,11 +281,14 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// reads them via the provider adapters, and the runtime write hooks (GA
 	// generation recording, task/agent lifecycle tracing) write into the same
 	// instances — so the dashboard endpoints show live data, not empty lists.
-	comp.EvolutionTracer = aresrecovery.NewEvolutionTracer()
-	comp.FeedbackStore = aresrecovery.NewFeedbackStore()
-	comp.GlobalTracer = aresrecovery.NewGlobalTracer()
+	comp.Observability = &ObservabilityComponents{
+		EvolutionTracer: aresrecovery.NewEvolutionTracer(),
+		FeedbackStore:   aresrecovery.NewFeedbackStore(),
+		GlobalTracer:    aresrecovery.NewGlobalTracer(),
+	}
 	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr,
-		comp.EvolutionTracer, comp.FeedbackStore, comp.GlobalTracer)
+		comp.Observability.EvolutionTracer, comp.Observability.FeedbackStore,
+		comp.Observability.GlobalTracer)
 	if err != nil {
 		runCleanups()
 		return nil, err

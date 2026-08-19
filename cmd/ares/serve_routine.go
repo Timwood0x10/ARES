@@ -257,7 +257,7 @@ func createAndRegisterServeAgents(
 	// (v0.3.0 M4-1): this is the write side of /observability/spans. Without
 	// it the tracer stays empty and the dashboard span endpoint returns an
 	// empty list despite the wiring.
-	go runKernelTraceLoop(ctx, store, comp.GlobalTracer)
+	go runKernelTraceLoop(ctx, store, comp.Observability.GlobalTracer)
 
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
@@ -316,11 +316,15 @@ func startServeHTTPAndHooks(
 	// all destructive requests are denied (deny-by-default). Configure via
 	// ARES_API_KEY environment variable.
 	serveAPIKey := os.Getenv("ARES_API_KEY")
+	// One shared audit sink for the gin middleware, the actionHandler and the
+	// monitoring server, so auth decisions and destructive actions land in the
+	// same process log stream (no duplicated loggers for one sink).
+	auditLogger := ares_security.NewAuditLogger(slog.Default())
 	opts := []monitoring.HTTPServerOption{
 		monitoring.WithConfigStore(cfgStore),
 		// Modular audit: records auth decisions (middleware) and destructive
 		// actions (kill/resume/retry, MCP tool calls) on the process logger.
-		monitoring.WithAudit(ares_security.NewAuditLogger(slog.Default())),
+		monitoring.WithAudit(auditLogger),
 	}
 	if serveAPIKey != "" {
 		opts = append(opts, monitoring.WithAPIKey(serveAPIKey))
@@ -336,7 +340,25 @@ func startServeHTTPAndHooks(
 	if len(opts) > 0 {
 		server = monitoring.NewHTTPServer(plugin, opts...)
 	}
-	handler := &actionHandler{inner: server, mgr: mgr, tools: registry, apiKey: serveAPIKey}
+
+	// The actionHandler intercepts agent/chaos/tool routes BEFORE the gin
+	// server, so it must carry the same credentials and audit sink as the gin
+	// middleware (v0.3.0 review: these routes were API-key-only and un-audited
+	// because the interception bypassed requireAPIKey). JWT is enabled exactly
+	// when the gin server gets it.
+	var authMW *ares_security.AuthMiddleware
+	if cfg.Security.AuthEnabled && cfg.Security.JWTSecret != "" {
+		authMW = ares_security.NewAuthMiddleware([]byte(cfg.Security.JWTSecret), ares_security.PermWrite,
+			ares_security.WithAudit(auditLogger))
+	}
+	handler := &actionHandler{
+		inner:  server,
+		mgr:    mgr,
+		tools:  registry,
+		apiKey: serveAPIKey,
+		auth:   authMW,
+		audit:  auditLogger,
+	}
 
 	httpSrv := &http.Server{
 		Addr:         addr,
@@ -529,6 +551,10 @@ func loadServeConfig() (*ares_config.Config, error) {
 		if configPath == "" {
 			configPath = "ares.yaml"
 		}
+		// Write the resolved path back so runServe's watcher starts for the
+		// auto-detected config too (previously Watch only ran with an explicit
+		// --config; hot-reload silently no-op'd on the default ares.yaml).
+		serveConfigPath = configPath
 	}
 
 	cfg, err := ares_config.Load(configPath)

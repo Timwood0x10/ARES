@@ -640,6 +640,30 @@ func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime, mem
 	return comps
 }
 
+// wireSDKEvolution wires the SDK's evolution hot-update path and its evidence
+// store. Stage 8: when the Bootstrap core supplies a NewEvolution it is reused
+// (the Bootstrap-assembled component wins and any SDK-owned evStore is
+// discarded); otherwise the SDK dual-track wiring is kept as a compatibility
+// fallback. T1.3 (evidence persistence): the persistent evidence store is
+// created only when it will actually be consumed — evolution enabled, an
+// SDK-owned knowledge runtime exists, and the Bootstrap core does not supply
+// its own NewEvolution. This avoids hard-failing startup for a
+// configured-but-unused Postgres and avoids an idle pool. SSLMode
+// normalization mirrors buildKnowledgeStore/buildPostgresPool (empty means
+// "disable" for local/dev PostgreSQL). Extracted from New() to keep the
+// constructor under the 100-line limit.
+func wireSDKEvolution(cfg *config, kw *knowledgeWiring, bootstrapComp *ares_bootstrap.Components) (*ares_bootstrap.NewEvolutionComponents, *postgres.Pool, error) {
+	evStore, pgPool, err := buildSDKEvidenceStore(cfg, kw.rt, bootstrapComp)
+	if err != nil {
+		return nil, nil, err
+	}
+	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt, nil, evStore)
+	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil {
+		evoComponents = bootstrapComp.NewEvolution
+	}
+	return evoComponents, pgPool, nil
+}
+
 // wireMCPClients connects to each configured MCP server, lists its tools, and
 // registers them into the SDK tool registry. Extracted from New() to keep the
 // constructor under the 100-line limit.
@@ -805,24 +829,13 @@ func New(opts ...Option) (*Runtime, error) {
 		}
 	}
 
-	// ---- Evolution hot-update (wires the live KnowledgeRuntime into the
-	// evolution patch system so knowledge patches affect the running engine).
+	// ---- Evolution hot-update + evidence store ----
 	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
 	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
-	// T1.3 (evidence persistence): create the persistent evidence store only
-	// when it will actually be consumed — evolution enabled, an SDK-owned
-	// knowledge runtime exists, and the Bootstrap core does not supply its own
-	// NewEvolution (which would discard evStore). This avoids hard-failing
-	// startup for a configured-but-unused Postgres and avoids an idle pool.
-	// SSLMode normalization mirrors buildKnowledgeStore/buildPostgresPool
-	// (empty means "disable" for local/dev PostgreSQL).
-	evStore, pgPool, err := buildSDKEvidenceStore(cfg, kw.rt, bootstrapComp)
+	// (wireSDKEvolution owns the T1.3 evidence-persistence gating.)
+	evoComponents, pgPool, err := wireSDKEvolution(cfg, kw, bootstrapComp)
 	if err != nil {
 		return nil, err
-	}
-	evoComponents := wireEvolutionHotUpdate(cfg, kw.rt, nil, evStore)
-	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil {
-		evoComponents = bootstrapComp.NewEvolution
 	}
 
 	// ---- RAG retriever wiring (best-effort, non-fatal) ----
@@ -838,19 +851,7 @@ func New(opts ...Option) (*Runtime, error) {
 	// Stage 8: when the Bootstrap core is available, subscribe distillation to
 	// Bootstrap's shared EventStore (single store across entry points) instead
 	// of a private SDK store; otherwise fall back to the SDK event backend.
-	var rtCtx context.Context
-	var rtCancel context.CancelFunc
-	eg := &errgroup.Group{}
-	var eventStore ares_events.EventStore
-	if bootstrapComp != nil && bootstrapComp.EventStore != nil {
-		eventStore = bootstrapComp.EventStore
-		rtCtx, rtCancel = context.WithCancel(context.Background())
-		if distillSvc != nil || akgBridge != nil {
-			wireDistillationSubscriber(rtCtx, eg, eventStore, distillSvc, akgBridge)
-		}
-	} else {
-		rtCtx, rtCancel, eg, eventStore = newEventBackend(distillSvc, akgBridge)
-	}
+	rtCtx, rtCancel, eg, eventStore := wireSDKEventBackend(bootstrapComp, distillSvc, akgBridge)
 
 	runtime := &Runtime{
 		llmSvc:           llmSvc,

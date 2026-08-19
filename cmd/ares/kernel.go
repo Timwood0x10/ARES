@@ -135,7 +135,7 @@ func submitFabricTask(
 		// RetryPolicy.MaxRetries counts TOTAL attempts, not retries-after-the-first
 		// (taskfabric.CanRetry: Attempts < MaxRetries). MaxRetries: 1 therefore
 		// grants ZERO retries — a transient failure finalizes FAILED immediately
-		// (v0.4.0 review Bug 2). 2 = first attempt + one retry.
+		// (v0.3.0 review Bug 2). 2 = first attempt + one retry.
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
 		// Carry the submission-time metadata in the Checkpoint slot so the
 		// scheduler's toModelTask can restore it for the executor (LLM path
@@ -565,7 +565,7 @@ func runKernelTraceLoop(ctx context.Context, store ares_events.EventStore, trace
 				// The executor (agent_id) rides in the fabric event payload
 				// (taskfabric.Fabric.record), so the same events that trace the
 				// TASK also trace the AGENT that drives it — wiring
-				// GlobalTracer.TraceAgent to a real production caller (v0.4.0
+				// GlobalTracer.TraceAgent to a real production caller (v0.3.0
 				// review: TraceAgent was library-only).
 				agentID, _ := ev.Payload["agent_id"].(string)
 				switch ev.Type {
@@ -671,7 +671,7 @@ func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, re
 				return
 			default:
 			}
-			// Requeue-only recovery (v0.4.0 review Bug 1): RecoverFromAgentDeath
+			// Requeue-only recovery (v0.3.0 review Bug 1): RecoverFromAgentDeath
 			// re-acquires each requeued task to a freshly SPAWNED replacement
 			// agent. That replacement is an agentfabric.Agent — NOT one of the
 			// kernelScheduler's registered sub.Agent executors — so nobody can

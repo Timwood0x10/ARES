@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -103,6 +104,42 @@ func TestConfigStoreWatchReloadsOnWrite(t *testing.T) {
 	for s.Current().Server.Port != 9999 {
 		if time.Now().After(deadline) {
 			t.Fatalf("watcher did not reload within 3s, port=%d", s.Current().Server.Port)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestConfigStoreWatchDebounceFastWrites verifies a burst of rapid writes (as
+// editors produce on atomic-save) still results in a reload. Regression for
+// the debounce bug where Stop()==true skipped Reset and the last event was
+// silently dropped.
+func TestConfigStoreWatchDebounceFastWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ares.yaml")
+	if err := os.WriteFile(path, []byte(storeYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewConfigStore(&Config{Server: ServerConfig{Port: 1}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Watch(ctx, path) }()
+	time.Sleep(150 * time.Millisecond)
+
+	// Burst: three rapid writes inside the 200ms debounce window.
+	for _, port := range []int{7000, 8000, 9999} {
+		yaml := "server:\n  port: " + strconv.Itoa(port) + "\nllm:\n  provider: openai\n  base_url: https://api.example.com/v1\n  api_key: sk-test\n  model: gpt-4\n"
+		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	// The final value must win after the debounce settles.
+	deadline := time.Now().Add(3 * time.Second)
+	for s.Current().Server.Port != 9999 {
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher did not reload to final port within 3s, port=%d", s.Current().Server.Port)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

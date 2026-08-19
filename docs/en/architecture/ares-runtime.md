@@ -373,7 +373,7 @@ an Agent-level coordinator, not a Kernel scheduler):
 - **Orchestration**: a Coordinator fans work out to multiple Workers in
   parallel with failure retry (`Orchestrate`)
 
-> **Status note (v0.4.0 review)**: the collaboration primitives
+> **Status note (v0.3.0 review)**: the collaboration primitives
 > (`DelegateToSpecialist`/`Pipeline`/`Orchestrate` and the IPC-layer
 > `Request`/`Reply`/`Delegate`/`Handoff`/`Subscribe`) are implemented in
 > `agentipc/collaboration.go` and `primitives.go` with unit tests, but the

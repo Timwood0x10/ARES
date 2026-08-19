@@ -12,6 +12,7 @@ import (
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 )
 
 // actionHandler wraps the monitoring HTTP handler with:
@@ -19,39 +20,77 @@ import (
 //   - Chaos engineering (random-kill/kill-all/recover)
 //   - Tool API (list/call)
 //
-// All destructive endpoints (agents, chaos, tools/call) require API key
-// authentication via the Authorization: Bearer header. When apiKey is empty,
-// all destructive requests are denied (deny-by-default).
+// All destructive endpoints (agents, chaos, tools/call) require authentication:
+// either the legacy API key (Authorization: Bearer <key>) or a valid JWT with
+// write permission (admin/operator) when JWT auth is configured. When neither
+// credential is available, all destructive requests are denied
+// (deny-by-default). Every destructive action is recorded on the modular audit
+// sink (v0.3.0 review: these paths were previously API-key-only and
+// un-audited because actionHandler intercepted the gin routes).
 type actionHandler struct {
 	inner  http.Handler
 	mgr    *ares_runtime.Manager
 	tools  *api_tools.Registry
-	apiKey string
+	apiKey string                        // legacy credential (nil/empty = disabled)
+	auth   *ares_security.AuthMiddleware // JWT credential (nil = disabled)
+	audit  *ares_security.AuditLogger    // modular audit sink (nil = disabled)
 }
 
-// checkAuth enforces API key authentication on destructive endpoints.
-// Returns true if the request is authorized, false otherwise.
-// When apiKey is empty, all requests are denied (deny-by-default).
-func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) bool {
-	if h.apiKey == "" {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "API key not configured"})
-		return false
+// checkAuth enforces authentication on destructive endpoints: the legacy API
+// key OR a valid JWT with write permission. Returns true if authorized.
+// When neither credential is configured, all requests are denied
+// (deny-by-default). A valid JWT that lacks write permission is rejected with
+// 403 Forbidden (not 401), so the "unauthenticated vs forbidden" distinction
+// matches the gin middleware.
+func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) *ares_security.Principal {
+	// JWT path first: a valid token with write permission.
+	jwtForbidden := false
+	if h.auth != nil {
+		if princ, status := h.auth.Verify(r); status == http.StatusOK {
+			return princ
+		} else if status == http.StatusForbidden {
+			jwtForbidden = true
+		}
 	}
-	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "missing or invalid Authorization header"})
-		return false
+	// Legacy API key path.
+	if h.apiKey != "" {
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if strings.HasPrefix(auth, prefix) {
+			token := strings.TrimPrefix(auth, prefix)
+			if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1 {
+				return &ares_security.Principal{Subject: "api-key", Role: ares_security.RoleOperator}
+			}
+		}
 	}
-	token := strings.TrimPrefix(auth, prefix)
-	if subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) != 1 {
+	if h.apiKey == "" && h.auth == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid API key"})
-		return false
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "auth not configured"})
+		return nil
 	}
-	return true
+	// A well-formed JWT was presented but the role lacks write permission.
+	// Report Forbidden (authenticated, not authorized) rather than the
+	// misleading Unauthorized the generic path would give.
+	if jwtForbidden {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "insufficient role: token is valid but lacks write permission"})
+		return nil
+	}
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid credentials"})
+	return nil
+}
+
+// auditAction records a destructive action on the modular audit sink.
+func (h *actionHandler) auditAction(action, target string, princ *ares_security.Principal, ok bool) {
+	if h.audit == nil {
+		return
+	}
+	subject := "unauthenticated"
+	if princ != nil {
+		subject = princ.Subject
+	}
+	h.audit.Action(action, subject, target, ok)
 }
 
 func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +98,8 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Agent lifecycle: POST /api/agents/:id/{kill,resume,retry}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/agents/") {
-		if !h.checkAuth(w, r) {
+		princ := h.checkAuth(w, r)
+		if princ == nil {
 			return
 		}
 		parts := strings.Split(strings.TrimPrefix(path, "/api/agents/"), "/")
@@ -67,10 +107,10 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			agentID, action := parts[0], parts[1]
 			switch action {
 			case "kill":
-				h.handleAction(w, r, agentID, "kill", h.mgr.StopAgent)
+				h.handleAction(w, r, agentID, "kill", princ, h.mgr.StopAgent)
 				return
 			case "resume", "retry":
-				h.handleAction(w, r, agentID, action, func(ctx context.Context, id string) error {
+				h.handleAction(w, r, agentID, action, princ, func(ctx context.Context, id string) error {
 					return h.mgr.RestartAgent(ctx, id)
 				})
 				return
@@ -80,19 +120,21 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/chaos/") {
-		if !h.checkAuth(w, r) {
+		princ := h.checkAuth(w, r)
+		if princ == nil {
 			return
 		}
-		h.handleChaos(w, r, strings.TrimPrefix(path, "/api/chaos/"))
+		h.handleChaos(w, r, princ, strings.TrimPrefix(path, "/api/chaos/"))
 		return
 	}
 
 	// Tool API: POST /api/tools/call
 	if r.Method == "POST" && path == "/api/tools/call" {
-		if !h.checkAuth(w, r) {
+		princ := h.checkAuth(w, r)
+		if princ == nil {
 			return
 		}
-		h.handleCallTool(w, r)
+		h.handleCallTool(w, r, princ)
 		return
 	}
 
@@ -108,15 +150,17 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ── Agent Lifecycle ──────────────────────────────────────
 
-func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, agentID, action string, fn func(context.Context, string) error) {
+func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, agentID, action string, princ *ares_security.Principal, fn func(context.Context, string) error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := fn(r.Context(), agentID); err != nil {
+		h.auditAction(action, agentID, princ, false)
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"action": action, "agent": agentID, "error": err.Error(), "status": "error",
 		})
 		return
 	}
+	h.auditAction(action, agentID, princ, true)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"action": action, "agent": agentID, "success": true,
 		"message": action + " agent " + agentID + " succeeded",
@@ -125,7 +169,7 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 
 // ── Chaos Engineering ────────────────────────────────────
 
-func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chaosType string) {
+func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal, chaosType string) {
 	w.Header().Set("Content-Type", "application/json")
 	switch chaosType {
 	case "random-kill":
@@ -137,10 +181,12 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 		}
 		target := agents[rand.Intn(len(agents))]
 		if err := h.mgr.StopAgent(r.Context(), target.ID); err != nil {
+			h.auditAction("chaos-random-kill", target.ID, princ, false)
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
 			return
 		}
+		h.auditAction("chaos-random-kill", target.ID, princ, true)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"chaos": "random-kill", "target": target.ID, "success": true,
 			"message": "chaos: killed random agent " + target.ID,
@@ -153,6 +199,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 				killed = append(killed, a.ID)
 			}
 		}
+		h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, true)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"chaos": "kill-all", "killed": killed, "success": true,
 		})
@@ -166,6 +213,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 				}
 			}
 		}
+		h.auditAction("chaos-recover", strings.Join(recovered, ","), princ, true)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"chaos": "recover", "recovered": recovered, "success": true,
 		})
@@ -185,7 +233,7 @@ type callToolRequest struct {
 	Params map[string]any `json:"params"`
 }
 
-func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request) {
+func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
 	w.Header().Set("Content-Type", "application/json")
 	var req callToolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -202,6 +250,7 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	if h.tools != nil {
 		result, err := h.tools.Execute(r.Context(), req.Name, req.Params)
 		if err != nil {
+			h.auditAction("call_tool", req.Name, princ, false)
 			// Distinguish "tool not found" from a real execution failure so
 			// callers get an accurate error instead of a blanket 404.
 			if _, ok := h.tools.Get(req.Name); ok {
@@ -218,6 +267,7 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		h.auditAction("call_tool", req.Name, princ, true)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tool": req.Name, "success": result.Success, "data": result.Data,
 		})

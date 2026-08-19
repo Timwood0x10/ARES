@@ -177,15 +177,22 @@ check-quick: lint test
 # reproducible and removes local paths (measured: bin/ares 56M -> 37M).
 LDFLAGS := -s -w
 
+# VERSION file is the single source of the release version; git tag overrides
+# it when present (e.g. v0.3.0). The value is injected into main.version so
+# `ares version` reports the build's actual version (P4).
+VERSION_FILE := $(if $(wildcard VERSION),$(shell cat VERSION),dev)
+VERSION := $(if $(TAG_VERSION),$(TAG_VERSION),$(VERSION_FILE))
+VERSION_LDFLAGS := -X main.version=$(VERSION)
+
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ares ./cmd/ares
+	go build -trimpath -ldflags "$(LDFLAGS) $(VERSION_LDFLAGS)" -o bin/ares ./cmd/ares
 
 build-all:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
+	go build -trimpath -ldflags "$(LDFLAGS) $(VERSION_LDFLAGS)" -o bin/ ./cmd/...
 
 # Install CLI
 install-cli:  ## Install ares CLI to $GOPATH/bin
-	go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/ares/...
+	go install -trimpath -ldflags "$(LDFLAGS) $(VERSION_LDFLAGS)" ./cmd/ares/...
 
 # Clean targets
 clean:

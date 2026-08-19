@@ -12,6 +12,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_security"
 )
 
+// defaultTokenTTL is the fallback lifetime for `ares auth token` when neither
+// --ttl nor security.jwt_expiry is configured.
+const defaultTokenTTL = "24h"
+
 func init() {
 	authCmd := &cobra.Command{
 		Use:   "auth",
@@ -37,6 +41,9 @@ ARES_AUTH_ENABLED=1).
 Roles: admin (full control), operator (write, no destructive chaos), agent
 (read-only).
 
+The token lifetime resolves in this order: --ttl flag, then the
+security.jwt_expiry config, then the built-in default of ` + defaultTokenTTL + `.
+
 Example:
   ARES_JWT_SECRET=changeme ares auth token --role operator --sub "deploy-user"`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -48,9 +55,19 @@ Example:
 			if secret == "" {
 				return fmt.Errorf("no JWT secret configured: set security.jwt_secret or ARES_JWT_SECRET")
 			}
-			ttl, err := time.ParseDuration(tokenTTL)
+			// Lifetime precedence: explicit --ttl flag > security.jwt_expiry
+			// config > defaultTokenTTL. An empty flag leaves the config (and
+			// the default) in charge.
+			ttlStr := tokenTTL
+			if ttlStr == "" {
+				ttlStr = cfg.Security.JWTExpiry
+			}
+			if ttlStr == "" {
+				ttlStr = defaultTokenTTL
+			}
+			ttl, err := time.ParseDuration(ttlStr)
 			if err != nil {
-				return fmt.Errorf("parse ttl %q: %w", tokenTTL, err)
+				return fmt.Errorf("parse ttl %q: %w", ttlStr, err)
 			}
 			if _, err := ares_security.ParseRole(tokenRole); err != nil {
 				return err
@@ -66,7 +83,7 @@ Example:
 	tokenCmd.Flags().StringVar(&tokenConfigPath, "config", "", "Path to ares.yaml (uses ARES_JWT_SECRET otherwise)")
 	tokenCmd.Flags().StringVar(&tokenRole, "role", "operator", "Role: admin, operator, or agent")
 	tokenCmd.Flags().StringVar(&tokenSubject, "sub", "cli-user", "Token subject")
-	tokenCmd.Flags().StringVar(&tokenTTL, "ttl", "24h", "Token lifetime (e.g. 24h, 1h30m)")
+	tokenCmd.Flags().StringVar(&tokenTTL, "ttl", "", "Token lifetime (e.g. 24h, 1h30m); defaults to security.jwt_expiry or "+defaultTokenTTL)
 	authCmd.AddCommand(tokenCmd)
 
 	rootCmd.AddCommand(authCmd)

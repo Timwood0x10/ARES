@@ -22,11 +22,11 @@ Transform the existing ARES runtime into a full‑featured **AgentOS** platform 
 | M3 统一事件总线 | ⚠️ | 进程内 `EventStore` + `PluginBus` + `agentipc`（bus/peer registry、json+gzip 演进策略）已存在；**NATS/Redis‑Stream 未引入**（且与 §11 不变量 #10「不提前设计」冲突） |
 | M4 健康 & 自愈 | ✅ | recovery loop（lease 过期/失败/抢占）、resurrection 插件、arena 故障注入、`/health` 探针 |
 | M5 可观测性 | ✅ | `ares_observability`（otel_tracer/prometheus）、GlobalTracer、`/observability/spans`、dashboard |
-| M6 配置热加载 | ⚠️ | `ares_mcp/config_watcher.go`（fsnotify，MCP 域）+ workflow reloader；**运行时全局 config store 热加载缺 `/runtime/config` API** |
-| M7 安全/RBAC | 🔲 | arena 有 API key 认证；**无 JWT 依赖（无 golang-jwt）、无 RBAC 中间件** |
-| M8 版本化 | ⚠️ | `CHANGELOG.md` + `ares version` 存在；**无 `VERSION` 文件、无 deprecation shim 包** |
-| M9 运维文档/Helm | ⚠️ | `docker-compose.yml` 已有；**无 `charts/` Helm 目录、无 `docs/operator/` run‑book** |
-| M10 CI/多节点 e2e | ⚠️ | `.github/workflows/` 已有 ci/cd/integration-test/release；**无多节点（3‑node）故障注入矩阵、无 coverage badge** |
+| M6 配置热加载 | ✅ | `ConfigStore`（fsnotify + 200ms debounce）+ `/runtime/config` 端点（快照级热重载，见 §6 P1 诚实标注） |
+| M7 安全/RBAC | ✅ | `ares_security`：标准库 HS256 JWT + RBAC 矩阵 + 模块化审计（§6 P0） |
+| M8 版本化 | ✅ | `VERSION` 文件 + Makefile 注入 `main.version` + `docs/design/versioning.md`（§6 P4） |
+| M9 运维文档/Helm | 🔲 | `docker-compose.yml` 已有；**`docs/operator/` run‑book 与 `charts/` Helm 未做**（见 §6「明确不做」） |
+| M10 CI/多节点 e2e | ⚠️ | `agentos_ci.yml` + codecov 徽章已做（§6 P2）；**多节点（3‑node）集群 e2e 留待真机压测** |
 | M11 生产发布 | 🔲 | 依赖上述缺口闭环后的发布节奏 |
 
 ---
@@ -95,29 +95,29 @@ Transform the existing ARES runtime into a full‑featured **AgentOS** platform 
 2. Initialize **OpenTelemetry tracer provider** (`internal/observability/otel_tracer.go`) linking to the tracer set up in recent commit. — ✅ `internal/ares_observability/otel_tracer.go`（已修 schema 冲突）+ GlobalTracer。
 3. Export **Prometheus** metrics via `monitoring.NewHTTPServer` (`/metrics`). — ✅ `internal/ares_observability/prometheus.go` + `/observability/spans`。
 
-### Phase 6 – Configuration & Hot‑Reload — ⚠️ 局部有，运行时全局缺口
-1. Introduce `config/v1/config.go` using Viper + spock for validation. — ⚠️ 配置加载/校验已有（`ares_config`，YAML + 校验），未用 Viper/spock（无必要）。
-2. Add `fsnotify` watcher that reloads config and pushes changes to `runtime.ConfigStore`. — ⚠️ 已有 `ares_mcp/config_watcher.go`（fsnotify，MCP 域）+ workflow reloader；**运行时全局 config store 热加载缺口**。
-3. Implement `/runtime/config` REST endpoint returning current config snapshot. — 🔲 缺口。
+### Phase 6 – Configuration & Hot‑Reload — ✅ 已实现（快照级，见 §6 P1）
+1. Introduce `config/v1/config.go` using Viper + spock for validation. — ✅ `ares_config`（YAML + 校验），未用 Viper/spock（§10.1 无必要不引依赖）。
+2. Add `fsnotify` watcher that reloads config and pushes changes to `runtime.ConfigStore`. — ✅ `ConfigStore.Watch`（fsnotify + 200ms debounce，`internal/ares_config/store.go`）。
+3. Implement `/runtime/config` REST endpoint returning current config snapshot. — ✅ `internal/monitoring/http_api.go`（脱敏快照 + 历史）。
 
-### Phase 7 – Security & RBAC — 🔲 缺口
-1. Add JWT validation middleware to all HTTP endpoints (`monitoring/httputil/jwt.go`). — 🔲 无 golang-jwt 依赖、无 JWT 中间件（arena 仅 API key）。
-2. Define role constants (`admin`, `operator`, `agent`) and map them to API permissions. — 🔲 缺口。
-3. Store a minimal **policy engine** (`security/policy.go`). — 🔲 缺口。
+### Phase 7 – Security & RBAC — ✅ 已实现（§6 P0）
+1. Add JWT validation middleware to all HTTP endpoints (`monitoring/httputil/jwt.go`). — ✅ `ares_security` 标准库 HS256 JWT + gin/net-http 中间件；破坏性端点双凭据（API key ∨ JWT）。
+2. Define role constants (`admin`, `operator`, `agent`) and map them to API permissions. — ✅ `rbac.go` 角色层级 + read/write/admin 矩阵，默认 deny。
+3. Store a minimal **policy engine** (`security/policy.go`). — ✅ `AllowRole`/`HasPermission` + `AuditLogger`（auth 决策 + 破坏性操作审计）。
 
-### Phase 8 – Versioning — ⚠️ 部分
-1. Add `VERSION` file and update `go.mod` to embed version. — 🔲 无 `VERSION` 文件（`ares version` 已存在，数据源可补）。
-2. Document deprecation policy in `docs/design/versioning.md`. — ⚠️ `CHANGELOG.md` 已有；deprecation 策略文档可补。
-3. Add shim layer to preserve older API signatures where needed. — 🔲 缺口（现阶段 API 面较稳，按需再建）。
+### Phase 8 – Versioning — ✅ 已实现（§6 P4）
+1. Add `VERSION` file and update `go.mod` to embed version. — ✅ `VERSION` + Makefile 注入 `main.version` ldflag。
+2. Document deprecation policy in `docs/design/versioning.md`. — ✅ 已建（SemVer + 弃用流程 + 配置兼容 + CHANGELOG 纪律）。
+3. Add shim layer to preserve older API signatures where needed. — ⏸ 按需再建（当前 API 面较稳，无破坏性变更待兼容）。
 
 ### Phase 9 – Operator Documentation & Examples — ⚠️ 部分
 1. Write `docs/operator/README.md` covering: Quick‑start with Docker‑Compose; Helm chart directory (`charts/ares-os/`); Config tuning, health checking, and upgrade steps. — ⚠️ `docker-compose.yml` 已有；**`charts/` Helm 目录、`docs/operator/` run‑book 缺口**。
 2. Add usage examples for custom Agent / Pub‑Sub API / `/metrics`. — ⚠️ `examples/` 已大量存在（SDK/team/GA/arena 等）；按需补齐即可。
 
-### Phase 10 – CI / Test Automation — ⚠️ 部分
-1. Add GitHub Actions workflow `.github/workflows/agentos_ci.yml` (3‑node cluster, 1‑200 agents, fault injection, health recovery SLA). — ⚠️ 已有 `ci.yml`/`cd.yml`/`integration-test.yml`/`release.yml`；**多节点故障注入矩阵缺口**。
-2. Publish a **coverage badge** and integrate with `codecov`. — 🔲 缺口。
-3. Add performance benchmarks (`benchmarks/benchmark_agent_pool_test.go`). — ⚠️ `benchmarks/` 与 `internal/agentfabric/benchmark_test.go` 已有；agent‑pool 基准可按需补。
+### Phase 10 – CI / Test Automation — ⚠️ 部分（单进程 e2e 已做，多节点留真机）
+1. Add GitHub Actions workflow `.github/workflows/agentos_ci.yml` (3‑node cluster, 1‑200 agents, fault injection, health recovery SLA). — ✅ `agentos_ci.yml`（混沌 e2e + 基准 sanity）；**3‑node 集群 e2e 留待真机压测**（见 §6 P2 说明）。
+2. Publish a **coverage badge** and integrate with `codecov`. — ✅ codecov-action + README 徽章。
+3. Add performance benchmarks (`benchmarks/benchmark_agent_pool_test.go`). — ✅ `internal/ares_runtime/benchmark_agent_pool_test.go`（并发生命周期 + 复活吞吐）。
 
 ---
 
@@ -191,6 +191,13 @@ go build -o bin/ares ./cmd/ares
       （快照脱敏 + 未挂载 404）。
 - 设计取舍：store 不向子系统推送变更（无回调、无依赖图），消费方按自身节奏轮询
       `Current()`——保持接口精简，避免过度设计。
+- **诚实标注（v0.4.0 code review）**：当前 `ConfigStore` 的**热重载是「快照级」**——
+      `Watch`/`Reload` 更新的是 store 内的配置快照，唯一消费方是 `/runtime/config`
+      端点（运维观测），**尚未热加载到任何运行子系统**（LLM adapter、kernel 循环、
+      agents 等启动时持有各自的 `cfg` 拷贝）。这是刻意的第一版范围：先把
+      「当前生效配置 + 失败历史」的观测面做起来，避免过早给子系统加热加载回调。
+      待某个子系统出现真实的热更新需求（如 LLM 端点切换、quota 阈值调整）时，
+      在 `serve` 的对应循环里轮询 `Current()` 即可增量接入。
 
 ### P2 — 故障注入 e2e（M10，已有 ci/integration-test 骨架）— ✅ 已实现（2026-08-18）
 - [x] `.github/workflows/agentos_ci.yml`：Chaos CI 工作流——`go test -race -run TestE2EChaosRecovery`
@@ -206,14 +213,18 @@ go build -o bin/ares ./cmd/ares
       CI / Chaos CI / codecov 三枚徽章。
 - 说明：3 节点集群与网络延迟/CPU 过载注入属真实环境压测（需多主机），CI 中以
       单进程内 arena→runtime 恢复链 e2e 覆盖同等的「故障→恢复」断言；多节点形态
-      留待真机压测环境，避免在 CI runner 上做脆弱的系统级故障注入（§10 不提前设计）。
+      留待真机压测环境，避免在 CI runner 上做脆弱的系统级故障注入（§11 不变量 #10：不提前设计）。
 
 ### P3 — 资源隔离（M2，仅在出现多租户/硬隔离需求时做）
 - [ ] cgroup‑v2 wrapper（或至少 `setrlimit` 软隔离）——**当前无 cgroup 代码，且无消费方，暂缓**。
 
-### P4 — 版本化收尾（M8，低风险顺手项）
-- [ ] 补 `VERSION` 文件并接入 `ares version` 数据源。
-- [ ] 写 `docs/design/versioning.md` deprecation 策略（shim 层按需再建）。
+### P4 — 版本化收尾（M8，低风险顺手项）— ✅ 已实现（2026-08-18）
+- [x] `VERSION` 文件（当前 `0.3.0`）+ Makefile 注入 `main.version` ldflag
+      （`make build` 嵌入；`TAG_VERSION` 可覆盖；`ares version` 优先注入值，buildinfo 回退）。
+- [x] `docs/design/versioning.md`：SemVer + deprecation 流程（标记/过渡/移除）+ 配置
+      schema 兼容 + CHANGELOG 纪律。
+- [x] CHANGELOG `[Unreleased]` 补本轮 P0-P4 + 质量修复条目。
+- 说明：shim 层按需再建——当前 API 面较稳，无破坏性变更待兼容。
 
 ### 明确不做（与 §11 不变量 #10 冲突）
 - [ ] NATS‑JetStream / Redis‑Stream 分布式总线（进程内 `EventStore`+`PluginBus`+`agentipc` 已覆盖；跨进程需求出现前不引入）。
