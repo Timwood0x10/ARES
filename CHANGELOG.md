@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **M1 collaboration wired into production IPC** (`cmd/ares/evolution_ipc.go`):
+  the `wireEvolutionIPC` bus handler now dispatches by topic —
+  `delegate-task`/`pipeline-stage`/`orchestrate-worker` messages reaching a
+  sub agent run through its `Execute` capability and reply with the result,
+  closing the "library-ready, not wired" gap for `DelegateToSpecialist` /
+  `Pipeline` / `Orchestrate`. Peer messages (the production channel) are
+  unaffected. Tests cover execution, rejection paths, and peer/collaboration
+  non-interference.
 - **`cmd/ares/serve.go` split**: runtime helpers moved to
   `cmd/ares/serve_routine.go` (~900 lines) to keep the serve entry readable.
 - **`createLLMAdapterWithFallback`**: returns `ErrNoLLMAdapter` sentinel,

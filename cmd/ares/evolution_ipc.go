@@ -26,11 +26,27 @@ import (
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 // peerTopic is the bus topic used for peer-channel messages routed through the
 // evolution-aware IPC bus.
 const peerTopic = "peer"
+
+// Collaboration topics carried by the agentipc collaboration primitives
+// (internal/agentipc/collaboration.go). The evolution IPC bridge registers a
+// handler for each so a production peer message on these topics has a real
+// responder that executes the delegated task on the target agent — closing the
+// "library-ready, not wired" gap for M1 collaboration (v0.4.0 review).
+const (
+	topicDelegateTask   = "delegate-task"
+	topicPipelineStage  = "pipeline-stage"
+	topicOrchestrateWrk = "orchestrate-worker"
+)
+
+// taskIDKey mirrors agentipc.taskIDKey — the payload key carrying the task id
+// in collaboration requests. Kept in sync with internal/agentipc/primitives.go.
+const taskIDKey = "task_id"
 
 // evolutionIPCBridge holds the evolution-aware IPC bus and the peer registry
 // wired to it. The bridge is created once per serve; a nil policy source (no
@@ -65,32 +81,27 @@ func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evo
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, ares_bootstrap.NewIPCProtocolPolicySource(store))
 	reg := peer.NewRegistry()
 
-	register := func(agentID string, send func(context.Context, *ahp.AHPMessage) error) {
+	register := func(agentID string, send func(context.Context, *ahp.AHPMessage) error, execute func(context.Context, *models.Task) (*models.TaskResult, error)) {
 		if agentID == "" || send == nil {
 			return
 		}
 		targetID := agentID
-		// Bus handler: decode the wire payload back to the original
-		// AHPMessage and deliver to the agent. Plain json sends pass through
-		// unchanged (Decode returns the payload as-is); json+gzip sends are
-		// restored here, so the agent always sees the original message.
+		// Bus handler: dispatch by topic. Peer messages (the production
+		// channel) are decoded and delivered to the agent unchanged; M1
+		// collaboration topics (delegate/pipeline/orchestrate) are executed on
+		// the target agent via its Execute capability, with the result
+		// returned as the request/reply reply. This closes the v0.4.0
+		// "library-ready, not wired" gap for collaboration.
 		_ = bus.Register(targetID, func(ctx context.Context, msg *agentipc.Message) (*agentipc.Message, error) {
-			payload, err := aresrecovery.Decode(msg.Payload)
-			if err != nil {
-				return nil, fmt.Errorf("evolution IPC decode: %w", err)
+			switch msg.Topic {
+			case topicDelegateTask, topicPipelineStage, topicOrchestrateWrk:
+				if execute == nil {
+					return nil, fmt.Errorf("agentipc: agent %s cannot execute collaboration task", targetID)
+				}
+				return executeCollaboration(ctx, targetID, msg, execute)
+			default:
+				return deliverPeer(ctx, msg, send)
 			}
-			ahpMsg, err := toAHPMessage(payload)
-			if err != nil {
-				return nil, err
-			}
-			if err := send(ctx, ahpMsg); err != nil {
-				return nil, err
-			}
-			// agentipc.Handler contract: a nil reply + nil error means the
-			// message was delivered and no reply is expected (fire-and-forget
-			// peer delivery). The Send primitive ignores the reply, so the
-			// nil value is the documented success path, not an invalid one.
-			return nil, nil //nolint:nilnil // documented Handler "no reply" contract.
 		})
 		// Peer registry entry: route the peer send through the evolution-aware
 		// bus. The sender's identity comes from the message itself.
@@ -110,20 +121,90 @@ func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evo
 
 	// SendMessage is exposed via interface assertion (same discovery as
 	// buildPeerRegistry); agents that do not implement it are skipped, not an
-	// error.
+	// error. Sub-agents additionally expose Execute — the capability that
+	// lets collaboration topics (delegate/pipeline/orchestrate) run a task on
+	// them and return the result.
 	if sender, ok := leaderAgent.(interface {
 		SendMessage(context.Context, *ahp.AHPMessage) error
 	}); ok {
-		register(leaderAgent.ID(), sender.SendMessage)
+		register(leaderAgent.ID(), sender.SendMessage, nil)
 	}
 	for _, sa := range subAgents {
 		if sender, ok := sa.(interface {
 			SendMessage(context.Context, *ahp.AHPMessage) error
 		}); ok {
-			register(sa.ID(), sender.SendMessage)
+			// sa is already sub.Agent (the wireEvolutionIPC signature types it
+			// as such), so its Execute capability is directly available.
+			register(sa.ID(), sender.SendMessage, sa.Execute)
 		}
 	}
 	return &evolutionIPCBridge{ipc: ipc, reg: reg}, nil
+}
+
+// deliverPeer decodes the wire payload and delivers it to the agent unchanged
+// (the production peer path). Plain json sends pass through unchanged; json+
+// gzip sends are restored here so the agent always sees the original message.
+func deliverPeer(ctx context.Context, msg *agentipc.Message, send func(context.Context, *ahp.AHPMessage) error) (*agentipc.Message, error) {
+	payload, err := aresrecovery.Decode(msg.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("evolution IPC decode: %w", err)
+	}
+	ahpMsg, err := toAHPMessage(payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := send(ctx, ahpMsg); err != nil {
+		return nil, err
+	}
+	// agentipc.Handler contract: a nil reply + nil error means the message
+	// was delivered and no reply is expected (fire-and-forget peer delivery).
+	return nil, nil //nolint:nilnil // documented Handler "no reply" contract.
+}
+
+// executeCollaboration runs an M1 collaboration request (delegate/pipeline/
+// orchestrate) on the target agent and returns the result as the reply. The
+// payload shape is the agentipc collaboration body: a map with "task_id" and
+// "payload" (and optionally "specialization" for delegate-task). The payload
+// is bridged into a *models.Task with the agent id set as the task type, so
+// the agent's Execute runs it through its normal executor path.
+func executeCollaboration(ctx context.Context, targetID string, msg *agentipc.Message, execute func(context.Context, *models.Task) (*models.TaskResult, error)) (*agentipc.Message, error) {
+	if execute == nil {
+		return nil, fmt.Errorf("agentipc: agent %s cannot execute collaboration task (no Execute capability)", targetID)
+	}
+	body, ok := msg.Payload.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agentipc: collaboration payload must be a map, got %T", msg.Payload)
+	}
+	taskID, _ := body[taskIDKey].(string)
+	if taskID == "" {
+		return nil, fmt.Errorf("agentipc: collaboration task missing %q", taskIDKey)
+	}
+	// The task payload is the nested "payload" field (or the whole body for
+	// pipeline stages, which carry the previous stage's output inline).
+	taskPayload := body
+	if p, ok := body["payload"]; ok {
+		if pm, ok := p.(map[string]any); ok {
+			taskPayload = pm
+		}
+	}
+	task := &models.Task{
+		TaskID:   taskID,
+		TaskType: models.AgentType(targetID),
+		Payload:  taskPayload,
+	}
+	result, err := execute(ctx, task)
+	if err != nil {
+		return nil, fmt.Errorf("agentipc: execute collaboration task %s on %s: %w", taskID, targetID, err)
+	}
+	return &agentipc.Message{
+		ID:            "collab-" + taskID,
+		From:          targetID,
+		To:            msg.From,
+		Topic:         msg.Topic + "-reply",
+		CorrelationID: msg.CorrelationID,
+		Payload:       result,
+		At:            msg.At,
+	}, nil
 }
 
 // toAHPMessage restores an *ahp.AHPMessage from a decoded payload. Plain

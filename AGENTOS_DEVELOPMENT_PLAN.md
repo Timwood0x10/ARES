@@ -25,7 +25,7 @@ Transform the existing ARES runtime into a full‑featured **AgentOS** platform 
 | M6 配置热加载 | ✅ | `ConfigStore`（fsnotify + 200ms debounce）+ `/runtime/config` 端点（快照级热重载，见 §6 P1 诚实标注） |
 | M7 安全/RBAC | ✅ | `ares_security`：标准库 HS256 JWT + RBAC 矩阵 + 模块化审计（§6 P0） |
 | M8 版本化 | ✅ | `VERSION` 文件 + Makefile 注入 `main.version` + `docs/design/versioning.md`（§6 P4） |
-| M9 运维文档/Helm | 🔲 | `docker-compose.yml` 已有；**`docs/operator/` run‑book 与 `charts/` Helm 未做**（见 §6「明确不做」） |
+| M9 运维文档/Helm | ⚠️ | `docs/operator/README.md` 已建（2026-08-19）；`charts/` Helm 明确不做（§6「明确不做」） |
 | M10 CI/多节点 e2e | ⚠️ | `agentos_ci.yml` + codecov 徽章已做（§6 P2）；**多节点（3‑node）集群 e2e 留待真机压测** |
 | M11 生产发布 | 🔲 | 依赖上述缺口闭环后的发布节奏 |
 
@@ -110,9 +110,10 @@ Transform the existing ARES runtime into a full‑featured **AgentOS** platform 
 2. Document deprecation policy in `docs/design/versioning.md`. — ✅ 已建（SemVer + 弃用流程 + 配置兼容 + CHANGELOG 纪律）。
 3. Add shim layer to preserve older API signatures where needed. — ⏸ 按需再建（当前 API 面较稳，无破坏性变更待兼容）。
 
-### Phase 9 – Operator Documentation & Examples — ⚠️ 部分
-1. Write `docs/operator/README.md` covering: Quick‑start with Docker‑Compose; Helm chart directory (`charts/ares-os/`); Config tuning, health checking, and upgrade steps. — ⚠️ `docker-compose.yml` 已有；**`charts/` Helm 目录、`docs/operator/` run‑book 缺口**。
-2. Add usage examples for custom Agent / Pub‑Sub API / `/metrics`. — ⚠️ `examples/` 已大量存在（SDK/team/GA/arena 等）；按需补齐即可。
+### Phase 9 – Operator Documentation & Examples — ⚠️ 部分（run-book 已建，Helm 明确不做）
+1. Write `docs/operator/README.md` covering: Quick‑start with Docker‑Compose; Helm chart directory (`charts/ares-os/`); Config tuning, health checking, and upgrade steps. — ✅ `docs/operator/README.md` 已建（2026-08-19：快速启动/配置/健康/认证/热重载/升级/排障）；
+   **`charts/` Helm 明确不做**（§6「明确不做」：无多租户真机消费者，不提前设计）。
+2. Add usage examples for custom Agent / Pub‑Sub API / `/metrics`. — ✅ `examples/` 已大量存在（SDK/team/GA/arena 等）；架构图文档 `docs/zh/architecture/ares-architecture.md` 已补。
 
 ### Phase 10 – CI / Test Automation — ⚠️ 部分（单进程 e2e 已做，多节点留真机）
 1. Add GitHub Actions workflow `.github/workflows/agentos_ci.yml` (3‑node cluster, 1‑200 agents, fault injection, health recovery SLA). — ✅ `agentos_ci.yml`（混沌 e2e + 基准 sanity）；**3‑node 集群 e2e 留待真机压测**（见 §6 P2 说明）。
