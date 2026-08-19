@@ -95,6 +95,16 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			limit = 20
 		}
 
+		// A nil searcher means the provider was wired without a backing search
+		// engine (e.g. memory distillation enabled before the vector index is
+		// ready). Degrade to an empty stream instead of nil-pointer panicking the
+		// process (code_rules_v2 §4.2: a single component must not kill the
+		// kernel). Log-free by design: callers treat an empty stream as "no
+		// memories".
+		if p.searcher == nil {
+			return nil
+		}
+
 		results, err := p.searcher.SearchSimilarTasks(gCtx, intent.Goal, limit)
 		if err != nil {
 			errCh <- fmt.Errorf("memory provider %q: %w", p.name, err)

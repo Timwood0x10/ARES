@@ -21,6 +21,10 @@ type SpawnSpec struct {
 	// Resources are resource hints (quota/capability/policy validation
 	// surface; P3 stores them opaquely, full enforcement is P5).
 	Resources map[string]any
+	// Governance is the P3 cognitive-execution budget (token/tool/deadline).
+	// Zero values mean unlimited. Set here so the Kernel admits the agent with
+	// its budgets from birth.
+	Governance Governance
 	// Priority is the scheduling priority of the new agent (>= 0; 0 =
 	// normal). It mirrors OS-thread priority: the taskfabric scheduler boosts
 	// higher-priority agents when choosing among capable candidates.
@@ -80,6 +84,15 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		taskContext:    cloneMap(spec.TaskContext),
 		privateContext: make(map[string]any),
 	}
+	// P3 governance: every agent carries a budget state from birth. A
+	// zero-value Governance means "unlimited" for all dimensions (the default
+	// for legacy agents), so ConsumeResource never fails with
+	// ErrAgentNotGoverned — it only fails when a non-zero budget is exceeded.
+	gov := &governanceState{cfg: spec.Governance}
+	if spec.Governance.Deadline > 0 {
+		gov.deadline = f.now().Add(spec.Governance.Deadline)
+	}
+	a.governance = gov
 	f.agents[id] = a
 	f.allocateLocked(claim)
 	if spec.ParentID != "" {

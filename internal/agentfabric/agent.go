@@ -61,6 +61,9 @@ type Agent struct {
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
+	// governance is the P3 budget state (see governance.go). Nil when the
+	// agent was spawned without budgets.
+	governance *governanceState
 }
 
 // CognitiveState is the agent's independent cognitive content (design §13:

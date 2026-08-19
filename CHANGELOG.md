@@ -41,6 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **P3 resource governance** (`internal/agentfabric/governance.go`):
+  `SpawnSpec.Governance{TokenBudget, ToolBudget, Deadline}` + `CheckResource` /
+  `ConsumeResource` / `DeadlineExceeded` / `ResetResource` / `BudgetUsage`.
+  Zero-value = unlimited (legacy agents unchanged); exceeding a budget returns
+  `ErrResourceExceeded` — the cooperative yield signal (not cgroups). Demo
+  `examples/aresos-demo` updated with a governed-agent step.
+- **Agent-OS Grand-Loop e2e + demo** (`aresos-plan.md` 附件 E): a single
+  continuous scenario (large task → A spawns B/C/D as peers → parallel work →
+  A dies → task survives → peer IPC collaboration → replacement resumes →
+  synthesis) as `internal/agentfabric/e2e_grand_loop_test.go` and a zero-dep
+  runnable demo at `examples/aresos-demo/`. Uses only public agentfabric /
+  agentipc APIs; no library code extended.
 - **M1 collaboration wired into production IPC** (`cmd/ares/evolution_ipc.go`):
   the `wireEvolutionIPC` bus handler now dispatches by topic —
   `delegate-task`/`pipeline-stage`/`orchestrate-worker` messages reaching a
@@ -60,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`MemoryProvider.Stream` nil-searcher panic** (found via run log
+  `scheduler_trace_with_logs.log`): a `MemoryProvider` wired without a backing
+  searcher nil-deref'd in `Stream` and crashed `ares serve` (SIGSEGV). It now
+  degrades to an empty stream. Regression test:
+  `TestStream_NilSearcherDoesNotPanic`.
 - **OTel resource merge** on SDK upgrade: `ares_observability` aligns the schema
   URL with `resource.Default()` to avoid "conflicting Schema URL" failures.
 - **`ConfigStore` watcher race** in tests: settle window before rewrite.

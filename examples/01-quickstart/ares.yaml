@@ -1,6 +1,6 @@
 # 01-quickstart configuration
 llm:
-  provider: ollama       # openai | anthropic | openrouter
+  provider: ollama # openai | anthropic | openrouter
   model: gemma4
 
 memory:

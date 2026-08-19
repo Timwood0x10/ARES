@@ -1379,7 +1379,7 @@ ARES is an Agent Operating System.
 P0	Task 能不能独立存在？	Durable Task + Lease + Recovery	✅ 已完成
 P1	Agent 能不能被 Kernel 调度执行？	Quantum(=认知边界) + Checkpoint + Yield + Resume	✅ 已完成
 P2	Agent 能不能自主拆任务？	Spawn + Peer IPC + Synthesis（**自主性验收，最重要**）	🟡 原语已落地，见下方「P2 收敛验收」
-P3	Agent 死/资源受限系统还稳吗？	Token budget + Lease expiry + Checkpoint recovery（**Agent Runtime resource governance，不是 cgroup**）	🟡 部分
+P3	Agent 死/资源受限系统还稳吗？	Token budget + Tool budget + Deadline + Lease expiry + Checkpoint recovery（**Agent Runtime resource governance，不是 cgroup**）	✅ 已实现（2026-08-19）
 P4	没有 Leader 也能跑？	Peer IPC + 拆掉旧 Leader/Sub 抽象	🟡 进行中
 
 次级档（已有，非当前重心）：
@@ -1586,7 +1586,16 @@ Kernel 只负责调度，不干预 Agent 的决策。没有 Planner，没有 Lea
       → IPC 协作（B 反驳 / C 验证 / D 汇总）
       → A 做 synthesis → 返回最终结果
 
-这个 Demo 跑通，ARES 的「Agent OS」才算真正立住。当前端到端测试已覆盖
-各段（P3.4 的 spawn-synthesis、P5 的 recovery、P4 的 IPC），下一步是把它们
-串成**一个连续的、可运行的、文档化的 Demo**（而不是分散的测试），作为
-v0.3 的发布验收。
+**状态：✅ 已落地（2026-08-19）**
+
+- 连续测试：`internal/agentfabric/e2e_grand_loop_test.go`
+  （`TestE2E_GrandLoop_CompleteAgentOS`）——把附件 D 的 4 个 Case 串成
+  一个连续故事（spawn → 并行 → 父死子续 → IPC 协作 → 替代者接续 → synthesis）。
+- 可运行 Demo：`examples/aresos-demo/main.go`（零依赖，`go run` 即出 7 步结果）；
+  说明见 `examples/aresos-demo/README.md`。
+- 两条都只复用公共 API（agentfabric / agentipc），**未扩展任何库层代码**，
+  符合「Demo 是演示、不是新 API」的边界。
+
+> 备注：Demo 的「agent 认知」是 demo 层决策函数（模拟一轮 ReAct），不是真实
+> LLM。真实 LLM 版本见 `examples/26-runtime-scheduling-demo`（leader/sub 编排，
+> 属 legacy 叙事，保留作对照）；本 Demo 是 peer-agent 模型的确定性验收。

@@ -285,3 +285,29 @@ func TestStream_ScoreBackedRelevance(t *testing.T) {
 	// Confidence is still the reliability prior.
 	assert.Equal(t, defaultReliability, objs[0].Confidence)
 }
+
+// TestStream_NilSearcherDoesNotPanic is the regression for the production
+// panic observed in scheduler_trace_with_logs.log: MemoryProvider wired
+// without a backing searcher used to nil-deref in Stream
+// (internal/knowledge/provider/memory/provider.go:98) and crash `ares serve`.
+// It must degrade to an empty, error-free stream instead.
+func TestStream_NilSearcherDoesNotPanic(t *testing.T) {
+	p := New("no-searcher", nil) // searcher not injected
+	intent := knowledge.Intent{Goal: "any", Scope: knowledge.Scope{MaxObjects: 5}}
+
+	objCh, errCh := p.Stream(context.Background(), intent)
+
+	// Empty object stream (no panic).
+	for range objCh {
+		t.Fatal("nil searcher must not emit objects")
+	}
+	// The error channel is closed (or carries a nil value) — the provider
+	// degrades gracefully; it must NOT surface a real error.
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("nil searcher must not report an error, got %v", err)
+		}
+	default:
+	}
+}

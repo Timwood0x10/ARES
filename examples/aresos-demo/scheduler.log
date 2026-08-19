@@ -1,0 +1,266 @@
+serve init
+2026/08/19 21:36:56 INFO bootstrap: evolution disabled (cfg.Evolution.Enabled=false), skipping NewEvolution and background tickers module=ares_bootstrap
+2026/08/19 21:36:56 INFO flight recorder started module=flight
+2026/08/19 21:36:56 INFO bootstrap: knowledge retriever wired (AKG runtime → RAG) module=ares_bootstrap min_score=0
+2026/08/19 21:36:56 INFO bootstrap: RAG retrievers injected into memory manager module=ares_bootstrap count=1
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=eventstore state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=mcp state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=llm state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=evidence state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=knowledge state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=runtime state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=memory state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=dashboard state=started
+2026/08/19 21:36:56 INFO system_runtime: component ready module=system_runtime component=flight state=started
+2026/08/19 21:36:56 INFO system_runtime: all components started module=system_runtime count=9
+2026/08/19 21:36:56 system_runtime snapshot (startup): {
+  "taken_at": "2026-08-19T21:36:56.264966+08:00",
+  "components": [
+    {
+      "name": "eventstore",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264871+08:00",
+      "instance_id": "eventstore-1787146616264871000"
+    },
+    {
+      "name": "runtime",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264949+08:00",
+      "instance_id": "runtime-1787146616264949000"
+    },
+    {
+      "name": "memory",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264952+08:00",
+      "instance_id": "memory-1787146616264952000"
+    },
+    {
+      "name": "mcp",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264937+08:00",
+      "instance_id": "mcp-1787146616264937000"
+    },
+    {
+      "name": "llm",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264941+08:00",
+      "instance_id": "llm-1787146616264941000"
+    },
+    {
+      "name": "dashboard",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264954+08:00",
+      "instance_id": "dashboard-1787146616264954000"
+    },
+    {
+      "name": "evidence",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264944+08:00",
+      "instance_id": "evidence-1787146616264944000"
+    },
+    {
+      "name": "flight",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264957+08:00",
+      "instance_id": "flight-1787146616264957000"
+    },
+    {
+      "name": "knowledge",
+      "mode": 0,
+      "state": 4,
+      "started_at": "2026-08-19T21:36:56.264947+08:00",
+      "instance_id": "knowledge-1787146616264947000"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "ready": 9,
+    "degraded": 0,
+    "failed": 0,
+    "disabled": 0,
+    "stopped": 0
+  }
+}
+2026/08/19 21:36:56 LLM adapter created: provider=openai model=agnes-2.5-flash
+2026/08/19 21:36:56 AKF tools registered with shared KnowledgeRuntime: 4
+2026/08/19 21:36:56 tools registered: 24
+2026/08/19 21:36:56 planner bridge: attached
+2026/08/19 21:36:56 INFO FailoverClient created module=llm total_clients=3 fallback_count=2 primary_model=agnes-2.5-flash timeout=1m0s cooldown=1m0s
+2026/08/19 21:36:56 chat client created: provider=openai model=agnes-2.5-flash
+2026/08/19 21:36:56 skill catalog: indexed 0 skills, 5 agent tools registered
+2026/08/19 21:36:56 kernel: dual-track dispatch assembled (policy=0, shadow=on, candidates=1)
+2026/08/19 21:36:56 kernel: live flip to policy=taskfabric, Task Fabric scheduler started (1 executors)
+2026/08/19 21:36:56 kernel: lifecycle wired (agentfabric budget=0 resources, recovery max_restarts=5)
+2026/08/19 21:36:56 INFO runtime: agent registered module=runtime agent_id=leader type=leader
+2026/08/19 21:36:56 INFO runtime: agent registered module=runtime agent_id=worker_01 type=worker
+2026/08/19 21:36:56 peer registry wired: 2 agents registered
+2026/08/19 21:36:56 kernel scheduler: event-driven drain enabled (task lifecycle events)
+2026/08/19 21:36:56 intelligence engine started: system=unknown anomalies=0
+2026/08/19 21:36:56 INFO runtime: DAG registered for agent module=runtime agent_id=leader
+2026/08/19 21:36:56 INFO Heartbeat monitor initialized module=leader agent_id=leader
+2026/08/19 21:36:56 INFO Message queue initialized module=leader agent_id=leader
+2026/08/19 21:36:56 INFO runtime: started module=runtime agents=2
+=== ARES Console — Live Runtime ===
+2026/08/19 21:36:56 INFO Memory consumer started module=leader agent_id=leader
+Console:  http://localhost:8080/console/
+LLM:      openai / agnes-2.5-flash
+Tools:    [string_utils http_request log_analyzer distill_memory regex_tool web_search task_planner code_runner datetime skill_search file_tools pdf_tool memory_search skill_load embedding data_transform web_scraper compile_context hash_tool build_graph calculator id_generator text_processor query_knowledge skill_list skill_experience data_validation json_tools skill_activate]
+Press Ctrl+C to stop.
+
+2026/08/19 21:36:56 INFO Leader agent started successfully module=leader agent_id=leader
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /console/static/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (3 handlers)
+[GIN-debug] HEAD   /console/static/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (3 handlers)
+[GIN-debug] GET    /console/                 --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).registerRoutes.func1 (3 handlers)
+[GIN-debug] GET    /api/console              --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleConsole-fm (3 handlers)
+[GIN-debug] GET    /api/console/dag          --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleDAG-fm (3 handlers)
+[GIN-debug] GET    /api/console/cost-bar     --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCostBar-fm (3 handlers)
+[GIN-debug] GET    /api/agents               --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleListAgents-fm (3 handlers)
+[GIN-debug] GET    /api/agents/:id           --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleGetAgent-fm (3 handlers)
+[GIN-debug] POST   /api/agents/:id/kill      --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleKillAgent-fm (4 handlers)
+[GIN-debug] POST   /api/agents/:id/resume    --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleResumeAgent-fm (4 handlers)
+[GIN-debug] POST   /api/agents/:id/retry     --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleRetryAgent-fm (4 handlers)
+[GIN-debug] GET    /api/mcp/tools            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleListMCPTools-fm (3 handlers)
+[GIN-debug] POST   /api/mcp/tools/:name/call --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCallMCPTool-fm (4 handlers)
+[GIN-debug] GET    /api/tabs/:name           --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleTab-fm (3 handlers)
+[GIN-debug] GET    /api/cost                 --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCost-fm (3 handlers)
+[GIN-debug] GET    /api/trace/:id            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleTrace-fm (3 handlers)
+[GIN-debug] GET    /api/subscribe            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleSubscribe-fm (3 handlers)
+[GIN-debug] GET    /api/health               --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleHealth-fm (3 handlers)
+[GIN-debug] GET    /api/health/agents        --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleHealthAgents-fm (3 handlers)
+[GIN-debug] GET    /api/anomalies            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleAnomalies-fm (3 handlers)
+[GIN-debug] GET    /api/insights             --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleInsights-fm (3 handlers)
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /console/static/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (3 handlers)
+[GIN-debug] HEAD   /console/static/*filepath --> github.com/gin-gonic/gin.(*RouterGroup).createStaticHandler.func1 (3 handlers)
+[GIN-debug] GET    /console/                 --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).registerRoutes.func1 (3 handlers)
+[GIN-debug] GET    /api/console              --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleConsole-fm (3 handlers)
+[GIN-debug] GET    /api/console/dag          --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleDAG-fm (3 handlers)
+[GIN-debug] GET    /api/console/cost-bar     --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCostBar-fm (3 handlers)
+[GIN-debug] GET    /api/agents               --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleListAgents-fm (3 handlers)
+[GIN-debug] GET    /api/agents/:id           --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleGetAgent-fm (3 handlers)
+[GIN-debug] POST   /api/agents/:id/kill      --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleKillAgent-fm (4 handlers)
+[GIN-debug] POST   /api/agents/:id/resume    --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleResumeAgent-fm (4 handlers)
+[GIN-debug] POST   /api/agents/:id/retry     --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleRetryAgent-fm (4 handlers)
+[GIN-debug] GET    /api/mcp/tools            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleListMCPTools-fm (3 handlers)
+[GIN-debug] POST   /api/mcp/tools/:name/call --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCallMCPTool-fm (4 handlers)
+[GIN-debug] GET    /api/tabs/:name           --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleTab-fm (3 handlers)
+[GIN-debug] GET    /api/cost                 --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleCost-fm (3 handlers)
+[GIN-debug] GET    /api/trace/:id            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleTrace-fm (3 handlers)
+[GIN-debug] GET    /api/subscribe            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleSubscribe-fm (3 handlers)
+[GIN-debug] GET    /api/runtime/config       --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleRuntimeConfig-fm (3 handlers)
+[GIN-debug] GET    /api/health               --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleHealth-fm (3 handlers)
+[GIN-debug] GET    /api/health/agents        --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleHealthAgents-fm (3 handlers)
+[GIN-debug] GET    /api/anomalies            --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleAnomalies-fm (3 handlers)
+[GIN-debug] GET    /api/insights             --> github.com/Timwood0x10/ares/internal/monitoring.(*HTTPServer).handleInsights-fm (3 handlers)
+2026/08/19 21:36:59 submitting task 1: 分析这个Go项目的代码架构，找出主要模块和它们之间的依赖关系
+
+Shutting down...
+2026/08/19 21:37:10 INFO flight recorder stopped module=flight
+2026/08/19 21:37:23 task 1 failed: agent not running
+2026/08/19 21:37:23 submitting task 2: Review the error handling patterns in this codebase and suggest improvements
+2026/08/19 21:37:23 INFO Leader agent stopped successfully module=leader agent_id=leader
+2026/08/19 21:37:23 INFO runtime: stopped module=runtime total_restarts=0
+2026/08/19 21:37:23 INFO Heartbeat monitor initialized module=leader agent_id=leader
+2026/08/19 21:37:23 INFO Message queue initialized module=leader agent_id=leader
+2026/08/19 21:37:23 INFO Memory manager stopped module=memory
+2026/08/19 21:37:23 INFO Memory consumer started module=leader agent_id=leader
+2026/08/19 21:37:23 INFO Leader agent started successfully module=leader agent_id=leader
+2026/08/19 21:37:23 INFO system_runtime: shutdown complete module=system_runtime
+2026/08/19 21:37:23 WARN memory operation failed, proceeding without module=leader operation=AddMessage error="add message: session not found"
+2026/08/19 21:37:23 system_runtime snapshot (shutdown): {
+  "taken_at": "2026-08-19T21:37:23.195229+08:00",
+  "components": [
+    {
+      "name": "eventstore",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264871+08:00",
+      "instance_id": "eventstore-1787146616264871000"
+    },
+    {
+      "name": "runtime",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264949+08:00",
+      "instance_id": "runtime-1787146616264949000"
+    },
+    {
+      "name": "memory",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264952+08:00",
+      "instance_id": "memory-1787146616264952000"
+    },
+    {
+      "name": "mcp",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264937+08:00",
+      "instance_id": "mcp-1787146616264937000"
+    },
+    {
+      "name": "llm",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264941+08:00",
+      "instance_id": "llm-1787146616264941000"
+    },
+    {
+      "name": "dashboard",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264954+08:00",
+      "instance_id": "dashboard-1787146616264954000"
+    },
+    {
+      "name": "evidence",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264944+08:00",
+      "instance_id": "evidence-1787146616264944000"
+    },
+    {
+      "name": "flight",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264957+08:00",
+      "instance_id": "flight-1787146616264957000"
+    },
+    {
+      "name": "knowledge",
+      "mode": 0,
+      "state": 8,
+      "started_at": "2026-08-19T21:36:56.264947+08:00",
+      "instance_id": "knowledge-1787146616264947000"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "ready": 0,
+    "degraded": 0,
+    "failed": 0,
+    "disabled": 0,
+    "stopped": 9
+  }
+}
+2026/08/19 21:37:23 INFO Leader tasks created module=leader module=leader count=1
+2026/08/19 21:37:23 INFO Leader dispatching tasks module=leader module=leader
+2026/08/19 21:37:23 INFO Leader dispatch completed module=leader module=leader result_count=1
+2026/08/19 21:37:23 INFO Leader task result module=leader module=leader index=0 success=false items=0 error="kernel dispatch: timed out waiting for worker result: context canceled"
+2026/08/19 21:37:23 task 2 failed: context canceled
+error: context canceled
