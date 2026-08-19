@@ -19,11 +19,14 @@
 功能状态：**实验性 —— API 可能变化，非生产就绪**。仅用于实验与反馈。
 
 ---
-**ARES** — 智能体运行时与进化系统（Agent Runtime & Evolution System）。
+**ARES** — 智能体操作系统（Agent Operating System）。
 
-用 Go 构建高韧性、自进化的 AI Agent。统一 SDK、DAG 工作流、混沌工程、MCP 支持。
+Agent 不是被编排器调用的函数，而是由内核管理的独立认知计算实体。它们自主产生工作、彼此平等通信（IPC）、持有独立的认知状态，并可以 spawn 其他 Agent。ARES Kernel 负责调度、同步、IPC、资源强制、生命周期与恢复。
 
-**运行时进化**：ARES 持续进化 DAG 拓扑、调度器、知识规划器和恢复策略 —— 全部在生产环境中运行，无需重启。LLM 是进化的参与者，而非主导者。
+> **Agents decide. The Kernel enforces.**
+> **Agent death is an execution failure, not a task failure.**
+
+具体而言：Task 是可持久化的工作单元，独立于任何 Agent 存活（lease + epoch fencing + checkpoint + 事件溯源恢复）；执行按语义边界量化为 quantum（reason → tool → observe → checkpoint → yield）并由内核调度；调度策略（能力匹配、负载、置信度、优先级）在生产环境中持续进化、无需重启。用 Go 构建，统一 SDK、DAG 工作流、混沌工程、MCP 支持。
 
 ## 快速开始
 

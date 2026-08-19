@@ -24,11 +24,14 @@ This is the **FIRST attempt to build a knowledge graph WITHOUT relying on LLMs**
 Feature status: **EXPERIMENTAL — API may change, not production-ready**. Please use for experimentation and feedback only.
 
 ---
-**ARES** — Agent Runtime & Evolution System.
+**ARES** — Agent Operating System (AgentOS).
 
-Build resilient, self-evolving AI agents in Go. Unified SDK, DAG workflow, chaos engineering, MCP support.
+Agents are autonomous cognitive processes, not functions invoked by an orchestrator. They independently create work, communicate as peers, maintain private cognitive state, and may spawn other agents. The ARES Kernel provides scheduling, synchronization, IPC, resource enforcement, lifecycle management, and recovery.
 
-**Runtime Evolution**: ARES continuously evolves its DAG topology, scheduler, knowledge planner, and recovery strategies — all in production, without restarts. LLM is a participant in evolution, not the leader.
+> **Agents decide. The Kernel enforces.**
+> **Agent death is an execution failure, not a task failure.**
+
+In practice: tasks are durable and outlive their executors (lease + epoch fencing + checkpoint + event-sourced recovery); execution is scheduled in cooperative semantic quanta (reason → tool → observe → checkpoint → yield); and scheduling policies — capability matching, load, confidence, priority — evolve in production without restarts. Built in Go with a unified SDK, DAG workflow, chaos engineering, and MCP support.
 
 ## Quick Start
 

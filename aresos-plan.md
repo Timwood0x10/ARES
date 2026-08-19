@@ -30,6 +30,147 @@ Agent decides. Kernel enforces.
 
 ⸻
 
+核心模型修正（2026-08-19 拍板）
+
+> 本节是对上面「定位」与下面「0. 总体模型」的精确化。它不是新增阶段，而是
+> 定义 ARES 模型的不可动摇的边界。所有阶段（P0-P6）的实现都必须符合本节。
+
+1. Agent 本身没有等级
+
+ARES 的模型里不存在 Leader / Worker / SubAgent 这些角色。所有 Agent 在 Kernel
+看来完全平等，只有一行：
+
+            Agent A
+           ↙   ↓   ↘
+     Agent B  Agent C  Agent D
+           ↖   ↑   ↗
+          Peer Network
+
+它们拥有相同的原语能力：Think / Plan / Create Task / Spawn Agent / Send /
+Request / Handoff / Acquire Task / Yield / Checkpoint。
+
+Agent 之间的区别只来自：Capabilities、Skills、Context、Experience、
+Current Load、Resources。
+
+而不是：Role = Leader / Worker / Sub。
+
+2. Agent 可以自主决定“我要怎么完成任务”
+
+Kernel 从不告诉 Agent「先让 B 分析、再让 C 审查、最后你汇总」。Agent 自己认知
+任务复杂度，自己决定是否需要协作、需要谁、怎么拆，然后自己发起 Spawn /
+Request / Delegate。Kernel 不干预这个语义决策。
+
+Agent 甚至可以完全独立完成一个复杂任务（「这个我自己能做」→ 自己执行）。
+协作与否是 Agent 的认知产物，不是框架预定义。
+
+3. Spawn 建立的是 provenance，不是 hierarchy
+
+A ──spawn──> B 只意味着「B 是由 A 创建的」，绝不意味着「B 是 A 的下属」。
+
+因此有两个完全不同的图：
+
+Process / Provenance Graph          Scheduling / Task Graph
+        A                                   Task X
+        │                                      │
+        B                                  ┌───┴───┐
+        │                                 Task Y  Task Z
+        C
+
+- Provenance 图用于：lifecycle、debugging、audit。
+- Task 图用于：调度（DAG 就绪集）。
+
+同一对 Agent 可以出现在两个图里，但关系含义完全不同。
+
+4. 协作关系是运行时动态形成的
+
+传统 Multi-Agent：Team = { Planner, Researcher, Coder, Reviewer }，角色提前定义。
+
+ARES：Agent A 接到任务 → 自己判断是否需要协作 →
+- NO → 自己执行
+- YES → 找 Agent B / Agent C，甚至 B 反过来指出 A 的假设有误、
+  B 让 C 验证、C 再 Spawn D。
+
+Agent topology 是运行时动态形成的，而不是架构预定义的。
+
+5. Scheduler 只看能力，不看身份等级
+
+Kernel 可以记录 Agent B 的 Parent = A，但该字段的用途只有 provenance /
+lifecycle / debug / audit，绝不用于：authorization、scheduling priority、
+communication privilege。
+
+A spawn B 不导致 A > B；B spawn C 不导致 B > C。
+
+调度只看能力匹配 + 负载 + 置信度。例：
+- A: Capabilities = [rust, llvm]
+- C: Capabilities = [rust, security]
+- 任务 rust/unsafe-analysis → C score 0.96 > A score 0.91 → C 拿到任务。
+
+C 拿到任务不是因为它是 Leader，也不是因为它是 Parent，只是因为 C 当前最适合。
+
+6. Agent 可以自主产生新的工作
+
+Agent 不只是 execute(task)，而是完整的认知循环：
+
+observe → reason → decide → create task → spawn/request/delegate →
+observe results → reason again
+
+Task Graph 本身可以是 Agent cognition 的产物。Kernel 负责：
+Task Created → Ready → Schedule → Acquire → Execute。
+
+Kernel 不负责：「为什么应该创建这个 Task？」——这是 Agent 的认知问题。
+
+7. 三个平面
+
+ARES 的完整模型是三个正交平面：
+
+            ARES
+              │
+     ┌────────┼────────┐
+     │        │        │
+  Cognition  Runtime   IPC
+     │        │        │
+   Agent    Kernel   Agent ↔ Agent
+     │        │        │
+     ▼        ▼        ▼
+  WHY/WHAT  WHEN/WHO  HOW TO COOPERATE
+
+- Agent / Cognition：Why? What? Should I split? Should I ask someone?
+  Who should I ask? Should I continue alone?
+- Kernel：Can you? When? With which resource? Is your lease valid?
+  Can this task run? What happens if you die?
+- IPC：Tell / Ask / Reply / Delegate / Handoff / Subscribe。
+
+8. 因此 ARES 的核心定义修正为
+
+之前：Agents are autonomous cognitive processes…
+
+修正为：
+
+ARES is a peer-agent operating system.
+
+Every Agent is a first-class cognitive process. There are no privileged
+agent roles. Agents independently plan their work, decide whether to
+collaborate, create tasks, and communicate with peers. The Kernel provides
+the mechanisms that make those decisions safe and executable: scheduling,
+resource control, IPC, lifecycle, and recovery.
+
+中文：
+
+ARES 是一个面向 Peer Agent 的操作系统。
+
+每个 Agent 都是一等认知进程，不存在 Leader、Worker、SubAgent 等固有等级。
+每个 Agent 都可以独立规划任务、决定是否拆分任务、决定是否寻求其他 Agent
+协作，并通过 Peer IPC 完成协同。
+
+Kernel 不负责替 Agent 做这些认知决策，只负责提供这些决策能够安全执行所需的
+机制：调度、资源、IPC、生命周期和恢复。
+
+对 Evolution 的推论：未来 Evolution 优化的是「Peer Agent population +
+scheduling policy」自身，而不是「哪个 Agent 当 Leader」。但这条先不做，
+等 Kernel 真跑起来再谈。
+
+⸻
+
 0. 总体模型
 
 最终 ARES 不再是：
@@ -1252,3 +1393,88 @@ Agents decide. The Kernel enforces.
 Agent death is an execution failure, not a task failure.
 
 这比“Multi-Agent Framework”“Agent Orchestration Runtime”都更准确，也和你现在这套 Task Fabric → Scheduler → Agent Fabric → IPC → Recovery 的路线完全一致。
+
+
+编码规范 plan/rules/code_rules_v2.md
+⸻
+
+
+
+## 附件：现状核对（2026-08-19 code review 对照）
+
+> 本附件把本计划（aresos-plan.md）的每一阶段与代码库实际状态逐项核对，
+> 标注已完成/部分/缺口，并列出 4 处需要决策或补做的差异点。
+> 核对依据：`internal/taskfabric`、`internal/agentfabric`、`internal/agentipc`、
+> `internal/aresrecovery`、`internal/ares_arena`、`cmd/ares`（kernel/scheduler/serve）。
+
+### A. 逐阶段核对表
+
+| 阶段 | 计划要求 | 代码库现状 | 结论 |
+|---|---|---|---|
+| P0 Task Kernel | Task/Lease/Epoch/CAS Acquire/Release/Checkpoint/Yield/Complete/Fail | `taskfabric`：`Acquire(taskID,agentID,ttl)(epoch,err)`、`Yield`、`Checkpoint`、epoch fencing、lease 过期→READY 全部存在 | ✅ 已完成 |
+| P1.1 Execution Quantum | `RunQuantum(taskID,agentID,epoch,step)`，Done→COMPLETED / Err→FAIL / !Done→SUSPENDED | `taskfabric/quantum.go` `RunQuantum` 完全一致；测试覆盖 SUSPENDED/COMPLETED/FAILED/stale epoch 全验收 | ✅ 已完成 |
+| P1.2 AgentQueue | 每个 Agent 一个执行队列（A→Task1/5/8） | **已删除**（`steal.go` 作为死代码清理，注释明确「per-agent 队列被共享 ReadyTasks 队列并发 drain 取代」） | ⚠️ 计划 vs 代码冲突 |
+| P1.3 Work Stealing | 空闲 agent 偷别的队列任务（capability 匹配） | 共享队列 + 并发 drain（bounded goroutines）+ capability 打分；注释称「这就是 stealing substrate」；**无显式 per-agent steal 原语** | ⚠️ 语义等效但形态不同 |
+| P2.1 DAG Ready | IsReady/ReadyTasks，A 完成→B/C READY | `kernelScheduler` + event-driven DAG 完成（GAP6） | ✅ |
+| P2.2 协作式抢占 | 高优任务→preempt 请求→agent 到 quantum 边界→checkpoint→yield→READY | `preemptLowerPriority` + `TestFabricPreemptPreservesCheckpoint` | ✅ |
+| P2.3 Event Store | TaskCreated…TaskStolen 全量事件 | `ares_events.EventStore` + kernel 循环订阅 | ✅ |
+| P3.1 Cognitive State | `CognitiveState{Context,Observations,WorkingMemory,Decisions,ToolState,Checkpoint}` | `agentfabric.CognitiveState` + `SetCognitiveState` + `RestartAgent` 从 checkpoint 恢复 | ✅ |
+| P3.2 Context 三层 | Task Shared / Agent Private / IPC 严格分离 | `fabricTaskMeta` + UserProfile + checkpoint 机制部分覆盖（yield 恢复 UserProfile 已修）；「Agent Private State」概念上较弱 | ⚠️ 部分 |
+| P3.3 Spawn | `SpawnSpec{Task,Capabilities,Context,Resources}`，Kernel 校验 capability/resource/quota→创建→READY，无权力层级 | `agentfabric.SpawnSpec` + `EvolutionAwareSpawner.Spawn`（配额/spawn 上限/演进约束）+ `RecordSpawn` provenance | ✅ |
+| P3.4 复杂任务拆分 | Agent 自主判断「太大」→Spawn B/C/D→同级协作 | 原语齐备，但「Agent 运行中自主 spawn 子任务」的生产链路无端到端 demo | ⚠️ 原语有、场景未验证 |
+| P4 Peer IPC | Send/Request/Reply/Delegate/Handoff/Subscribe | `agentipc.Bus` 六原语全有；collaboration 已接入生产（wireEvolutionIPC topic 分发） | ✅ |
+| P4.1 Leader 降级 | Leader 只是 policy，feature flag 灰度 | `wireKernelPolicy`：非 legacy 即 flip 到 taskfabric（默认），`flipKernelToTaskFabric` 幂等 | ✅ |
+| P5 Recovery | Agent 死→lease 过期→Task READY→新 agent 从 checkpoint 恢复；Chaos 只负责杀 | `aresrecovery.Recovery`（requeue-only + `RestartAgent` + CognitiveState 恢复）+ `ares_arena` chaos | ✅ |
+| P6 Evolution | Runtime Adaptation：调度策略/capability/spawn/agent 群/任务图 | `EvolutionAdapter.AdaptPopulation` 已存在但**生产未接线**（仅库+测试） | ⚠️ 库有、未接线 |
+
+### B. 需要决策/补做的 4 处差异
+
+1. **P1.2/P1.3 AgentQueue + Work Stealing 与代码冲突**
+   计划要求 per-agent 队列 + 显式 steal；代码选择「共享 ReadyTasks 队列 + 并发 drain」
+   替代（并删了 `steal.go`）。并发 drain 天然有窃取效果，但 per-agent 队列的
+   负载隔离语义没有了。
+   **决策**：✅ 维持共享队列（现状）并发 drain 方案。共享 ReadyTasks + bounded
+   goroutines 已覆盖 stealing 语义，scheduler.go 中 `TODO(tech-debt)` 注释已标注。
+   仅在 profiling 显示 contention 时恢复 per-agent 队列。
+
+2. **P3.2 Context 三层分离不完整**
+   `CognitiveState` 已有，但「Agent Private State」与「Task Shared State」的严格
+   边界在生产代码里较松散（主要通过 `fabricTaskMeta` 的 checkpoint 承载）。
+   **状态**：✅ 已通过 `agentfabric.ContextView` + `SetTaskContext`/`SetPrivate`
+   三层 API + 端到端测试 `TestP3_2_ContextThreeLayerSeparation` 落地。验证 Private
+   State 不会泄漏到 Task Shared State、不同 Agent 的 Private State 相互隔离。
+
+3. **P3.4 复杂任务拆分无端到端证明**
+   Spawn 原语齐备，但「Agent 运行中自主 spawn 子任务」没有真实 demo/测试
+   （计划 P3 验收要求跑通「重构中型模块」场景）。
+   **状态**：✅ 已落地。端到端测试 `TestP3_4_EndToEndSpawnSynthesis` +
+   `TestP3_4_ConcurrentSpawnSynthesis` + `TestP3_4_ParentDeathChildrenContinueTasks`
+   在 `agentfabric/e2e_spawn_synthesis_test.go` 验证：A 判断任务太大 → Spawn B/C/D
+   → B/C/D 独立 Cognitive State → A 死亡 B/C/D 存活 → E 从 checkpoint 恢复 →
+   synthesis。IPC 端到端 `TestP3_4_P4_EndToEndSpawnIPC` 在
+   `agentipc/e2e_spawn_ipc_test.go` 验证 peer 通信 + A 死亡后 B↔C 仍可通信。
+
+4. **P6 Evolution 生产未接线**
+   `AdaptPopulation` 是库代码，生产调度策略未由 evolution 驱动
+   （计划要求「Evolution 提供策略变化，Kernel 执行策略」）。
+   **状态**：✅ 已接线。新增 `aresrecovery.PopulationAdapter` +
+   `PopulationPolicySource` 接口 + `RunKernelEvolutionLoop` 循环，在
+   `cmd/ares/serve_routine.go` 中通过 `ares_bootstrap.NewPopulationPolicySource`
+   从 evolution StrategyStore 读取 population.spawn / population.retire 策略参数，
+   定期应用到 Agent Fabric。
+
+### C. 建议执行顺序
+
+1. **P3.4 端到端**（价值最高）：把「Agent 自主 Spawn 子任务 + IPC 汇总 + synthesis」
+   做成可运行 demo（计划最终验收场景的简化版），同时驱动 P3.2 的 Context 三层落地。
+   ✅ 已完成。
+2. **P6 接线**：让 `EvolutionAdapter` 在 kernel 循环里驱动调度策略（改动不大）。
+   ✅ 已完成。
+3. **P1.2/P1.3 决策**：恢复 per-agent 队列（计划原教旨）或维持共享队列（现状），
+   由架构负责人拍板。
+   ✅ 已决策：维持共享队列并发 drain 方案。
+
+> 备注：P0/P1.1/P2/P3.1/P3.3/P4/P5 均已在生产落地并有测试覆盖，无需重复实现。
+> P3.4/P3.2/P6 差异已全部补做，端到端测试 + 生产接线全部落地。
+> 「Agent death is an execution failure, not a task failure」的哲学已在
+> recovery 链（requeue-only + CognitiveState 恢复）中体现。

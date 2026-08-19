@@ -395,6 +395,18 @@ const recoverySweepTimeout = 30 * time.Second
 // burning CPU. It is the default when kernel.quota_apply_interval is unset.
 const quotaApplyInterval = time.Minute
 
+// evolutionApplyInterval is how often the evolution population adapter
+// applies the agent population policy (P6: Runtime Adaptation). Mirrors
+// the quota cadence — 1 minute keeps a deployed policy effective within a
+// reasonable window. It is the default when
+// kernel.evolution_apply_interval is unset.
+const evolutionApplyInterval = time.Minute
+
+// evolutionApplyTimeout bounds one population policy application. A hung
+// policy store must not stall the loop, so every Apply runs under this
+// timeout.
+const evolutionApplyTimeout = 30 * time.Second
+
 // quotaApplyTimeout bounds one quota policy application. A hung policy store
 // must not stall the quota loop (C1), so every Apply runs under this timeout.
 const quotaApplyTimeout = 30 * time.Second
@@ -416,6 +428,10 @@ type kernelLoopConfig struct {
 	QuotaApplyInterval time.Duration
 	// QuotaApplyTimeout bounds each quota Apply call.
 	QuotaApplyTimeout time.Duration
+	// EvolutionApplyInterval is how often the evolution population loop runs.
+	EvolutionApplyInterval time.Duration
+	// EvolutionApplyTimeout bounds each evolution Apply call.
+	EvolutionApplyTimeout time.Duration
 	// RecoverySweepInterval is how often the recovery loop sweeps leases.
 	RecoverySweepInterval time.Duration
 	// RecoverySweepTimeout bounds each recovery sweep.
@@ -433,6 +449,12 @@ func (c kernelLoopConfig) withDefaults() kernelLoopConfig {
 	}
 	if c.QuotaApplyTimeout <= 0 {
 		c.QuotaApplyTimeout = quotaApplyTimeout
+	}
+	if c.EvolutionApplyInterval <= 0 {
+		c.EvolutionApplyInterval = evolutionApplyInterval
+	}
+	if c.EvolutionApplyTimeout <= 0 {
+		c.EvolutionApplyTimeout = evolutionApplyTimeout
 	}
 	if c.RecoverySweepInterval <= 0 {
 		c.RecoverySweepInterval = recoverySweepInterval
@@ -462,11 +484,13 @@ func parseKernelLoopConfig(cfg *ares_config.Config) kernelLoopConfig {
 		return d
 	}
 	return kernelLoopConfig{
-		QuotaApplyInterval:    parse(cfg.Kernel.QuotaApplyInterval, quotaApplyInterval),
-		QuotaApplyTimeout:     parse(cfg.Kernel.QuotaApplyTimeout, quotaApplyTimeout),
-		RecoverySweepInterval: parse(cfg.Kernel.RecoverySweepInterval, recoverySweepInterval),
-		RecoverySweepTimeout:  parse(cfg.Kernel.RecoverySweepTimeout, recoverySweepTimeout),
-		DispatchTimeout:       parse(cfg.Kernel.DispatchTimeout, kernelDispatchTimeout),
+		QuotaApplyInterval:     parse(cfg.Kernel.QuotaApplyInterval, quotaApplyInterval),
+		QuotaApplyTimeout:      parse(cfg.Kernel.QuotaApplyTimeout, quotaApplyTimeout),
+		EvolutionApplyInterval: parse(cfg.Kernel.EvolutionApplyInterval, evolutionApplyInterval),
+		EvolutionApplyTimeout:  parse(cfg.Kernel.EvolutionApplyTimeout, evolutionApplyTimeout),
+		RecoverySweepInterval:  parse(cfg.Kernel.RecoverySweepInterval, recoverySweepInterval),
+		RecoverySweepTimeout:   parse(cfg.Kernel.RecoverySweepTimeout, recoverySweepTimeout),
+		DispatchTimeout:        parse(cfg.Kernel.DispatchTimeout, kernelDispatchTimeout),
 	}.withDefaults()
 }
 
@@ -511,6 +535,24 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 			return
 		}
 	}
+}
+
+// runKernelEvolutionLoop periodically applies the evolution population policy
+// (spawn/retire) to the Agent Fabric (P6: Runtime Adaptation). It applies once
+// at startup so an already-deployed policy is effective immediately, then
+// re-applies on a fixed interval. Apply is idempotent (an empty policy is a
+// no-op). The actual loop lives in aresrecovery.runKernelEvolutionLoop so the
+// aresrecovery package owns the adapter + loop together; this wrapper is the
+// serve-side entry that matches runKernelQuotaLoop's pattern (kernel.go owns
+// the serve wiring, the loop function lives in the subsystem package).
+//
+// Args:
+//   - ctx: stops the loop.
+//   - adapter: the population adapter (nil disables the loop).
+//   - cfg: loop knobs; zero values fall back to the package defaults.
+func runKernelEvolutionLoop(ctx context.Context, adapter *aresrecovery.PopulationAdapter, cfg kernelLoopConfig) {
+	cfg = cfg.withDefaults()
+	aresrecovery.RunKernelEvolutionLoop(ctx, adapter, cfg.EvolutionApplyInterval, cfg.EvolutionApplyTimeout)
 }
 
 // runKernelTraceLoop feeds the shared GlobalTracer (v0.3.0 M4-1) from the

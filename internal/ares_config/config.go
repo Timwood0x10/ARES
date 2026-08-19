@@ -112,6 +112,14 @@ type KernelConfig struct {
 	// a submitted task's completion event before reporting it failed
 	// (default "300s",  mirrors the legacy dispatcher timeout).
 	DispatchTimeout string `yaml:"dispatch_timeout"`
+	// EvolutionApplyInterval is how often the evolution population adapter
+	// applies the agent population policy (spawn/retire) to the Agent Fabric
+	// (default "1m"). Parsed with time.ParseDuration; empty/invalid falls back
+	// to the default.
+	EvolutionApplyInterval string `yaml:"evolution_apply_interval"`
+	// EvolutionApplyTimeout bounds each population policy application
+	// (default "30s"). A hung policy store must not stall the loop.
+	EvolutionApplyTimeout string `yaml:"evolution_apply_timeout"`
 	// Autopilot enables the built-in demo task injector (submitTasks), which
 	// periodically submits a fixed set of tasks to the leader agent. Off by
 	// default so a production `ares serve` does not burn LLM quota on

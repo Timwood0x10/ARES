@@ -253,6 +253,22 @@ func createAndRegisterServeAgents(
 		log.Printf("serve: evolution quota manager wired (resource budget follows evolution policy)")
 	}
 
+	// Wire the evolution population adapter (P6: Runtime Adaptation — agent
+	// population). The active evolution strategy's population.spawn /
+	// population.retire params drive the Kernel's spawn/retire primitives
+	// through a periodic loop — "Evolution decides; Kernel enforces". Without
+	// an evolution store the adapter is skipped and the population is managed
+	// manually (or by recovery spawns), preserving prior behavior.
+	if kernel != nil && kernel.agents != nil && comp.NewEvolution != nil {
+		popAdapter := aresrecovery.NewPopulationAdapter(
+			kernel.agents,
+			ares_bootstrap.NewPopulationPolicySource(comp.NewEvolution.StrategyStore),
+		)
+		loopCfg := parseKernelLoopConfig(cfg)
+		go runKernelEvolutionLoop(ctx, popAdapter, loopCfg)
+		log.Printf("serve: evolution population adapter wired (agent population follows evolution policy)")
+	}
+
 	// Feed the shared GlobalTracer from the Task Fabric's lifecycle events
 	// (v0.3.0 M4-1): this is the write side of /observability/spans. Without
 	// it the tracer stays empty and the dashboard span endpoint returns an
