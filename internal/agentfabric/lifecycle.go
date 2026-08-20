@@ -29,6 +29,20 @@ type SpawnSpec struct {
 	// normal). It mirrors OS-thread priority: the taskfabric scheduler boosts
 	// higher-priority agents when choosing among capable candidates.
 	Priority float64
+	// CognitionFactory produces the agent's execution body (Cognition) from
+	// its declared capabilities. When nil, the spawned agent has no execution
+	// capability and cannot run a quantum (it can still be managed by
+	// lifecycle operations). The factory is called once at spawn time, under
+	// the fabric lock, and the result is stored in Agent.cognition.
+	// (A1: 执行能力注入统一 Agent.)
+	CognitionFactory CognitionFactory
+	// ExperiencePrior is the distilled prior experience (aresos-agentos-plan
+	// G1: Memory Distill 挂到 agent 生命周期) loaded as the agent's initial
+	// cognitive context at spawn time. It is written into
+	// CognitiveState.Context so the agent starts with relevant distilled
+	// experience instead of a blank slate. Nil = no prior (zero-value usable,
+	// code_rules_v2 §5.4).
+	ExperiencePrior any
 }
 
 // Spawn is the Kernel syscall that creates a new Agent (design §13: spawn
@@ -83,6 +97,22 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		resources:      claim,
 		taskContext:    cloneMap(spec.TaskContext),
 		privateContext: make(map[string]any),
+	}
+	// A1: inject the execution body from the declared capabilities. The
+	// factory is called under the fabric lock; a nil factory leaves the agent
+	// without execution capability (managed but not schedulable).
+	if spec.CognitionFactory != nil {
+		a.cognition = spec.CognitionFactory(spec.Capabilities)
+	}
+	// G1: load the distilled prior experience as the agent's initial cognitive
+	// context so a spawned agent starts with reusable experience instead of a
+	// blank slate. Nil (zero value) leaves the agent with an empty cognitive
+	// state.
+	if spec.ExperiencePrior != nil {
+		a.cognitive = CognitiveState{
+			SchemaVersion: CognitiveStateSchemaVersion,
+			Context:       spec.ExperiencePrior,
+		}
 	}
 	// P3 governance: every agent carries a budget state from birth. A
 	// zero-value Governance means "unlimited" for all dimensions (the default
@@ -282,6 +312,9 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 		return ErrAgentRetired
 	}
 	a.mu.Lock()
+	if cognitive.SchemaVersion == 0 {
+		cognitive.SchemaVersion = CognitiveStateSchemaVersion
+	}
 	a.cognitive = cognitive
 	if a.State == StateSuspended {
 		a.State = StateIdle

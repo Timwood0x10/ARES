@@ -25,11 +25,14 @@ import (
 // createAgents builds the leader and sub agents with real LLM + tools.
 // strategySrc, when non-nil, lets live agents consume the active GA strategy.
 //
-// Legacy compat (W2): this function assembles the Leader → Sub pipeline
-// (Leader.Process → TaskPlanner.Plan → TaskDispatcher → Task Fabric).
-// The Peer Agent runtime (aresos-plan.md §6) replaces this path with
-// createPeerAgents, which skips the leader entirely. This path is retained
-// as the default until operators set kernel.leader_enabled: false.
+// Deprecated: the Leader → Sub pipeline (Leader.Process → TaskPlanner.Plan →
+// TaskDispatcher → Task Fabric) is the legacy orchestration model
+// (aresos-agentos-plan C1: 废弃 leader-sub). The Peer Agent runtime
+// (createPeerAgents) replaces it: a flat set of capability agents spawned into
+// the Agent Fabric, scheduled by the kernelScheduler from the fabric's live
+// population (B1). This function is retained ONLY behind the
+// kernel.leader_enabled=true gray switch (legacy compat) and must not be
+// extended.
 func createAgents(
 	cfg *ares_config.Config,
 	llmAdapter output.LLMAdapter,

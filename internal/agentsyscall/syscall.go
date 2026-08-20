@@ -49,6 +49,24 @@ type StepOutcome struct {
 	Result     *models.TaskResult
 }
 
+// cognitionFunc adapts an Executor to the agentfabric.Cognition contract
+// (aresos-agentos-plan C1: spawn 的 agent 带执行体). It converts the syscall
+// StepOutcome shape to the fabric one — the underlying quantum is the same
+// executor, so semantics are preserved by construction (code_rules_v2 §5.1).
+func cognitionFunc(executor Executor) agentfabric.Cognition {
+	return agentfabric.CognitionFunc(func(ctx context.Context, task *models.Task) (*agentfabric.StepOutcome, error) {
+		out, err := executor.ExecuteStep(ctx, task)
+		if err != nil {
+			return nil, err
+		}
+		return &agentfabric.StepOutcome{
+			Done:       out.Done,
+			Checkpoint: out.Checkpoint,
+			Result:     out.Result,
+		}, nil
+	})
+}
+
 // RegisterExecutorFn registers a dynamically spawned executor into the
 // scheduler so it can be selected for task execution. This is the same
 // method as kernelScheduler.RegisterExecutor.
@@ -134,12 +152,28 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	// Generate a unique agent ID when the LLM does not provide one.
 	agentID := fmt.Sprintf("spawned-%s-%d", args.Capability, k.idSeq.Add(1))
 
+	// C1: when an executor factory is wired, create the executor BEFORE spawn
+	// and inject it as the agent's CognitionFactory so the spawned agent is a
+	// REAL executable body (not just a provenance record) from birth. The
+	// factory is called exactly once — the same executor instance is reused
+	// for the scheduler registration below (code_rules_v2 §5.1: no second
+	// executor copy).
+	var executor Executor
+	if k.factory != nil {
+		executor = k.factory(agentID, args.Capability)
+	}
+
 	spec := agentfabric.SpawnSpec{
 		Identity:     agentID,
 		Capabilities: []string{args.Capability},
 		ParentID:     args.ParentID,
 		TaskContext:  args.TaskContext,
 		Resources:    args.Resources,
+	}
+	if executor != nil {
+		spec.CognitionFactory = func([]string) agentfabric.Cognition {
+			return cognitionFunc(executor)
+		}
 	}
 
 	agent, err := k.agents.Spawn(ctx, spec)
@@ -148,13 +182,10 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	}
 
 	registered := false
-	if k.factory != nil && k.register != nil {
-		executor := k.factory(agent.Identity, args.Capability)
-		if executor != nil {
-			k.register(agent.Identity, executor)
-			registered = true
-			log.Printf("agentsyscall: spawned agent %q (%s) registered as executor", agent.Identity, args.Capability)
-		}
+	if executor != nil && k.register != nil {
+		k.register(agent.Identity, executor)
+		registered = true
+		log.Printf("agentsyscall: spawned agent %q (%s) registered as executor", agent.Identity, args.Capability)
 	}
 
 	if !registered {

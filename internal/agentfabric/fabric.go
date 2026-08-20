@@ -120,6 +120,22 @@ func (f *Fabric) Agents() []string {
 	return out
 }
 
+// IsIdle reports whether agentID is currently IDLE (schedulable). It is the
+// thread-safe scheduling view of Agent.State: the scheduler reads it from
+// drain goroutines without holding the agent's internal lock. Unknown or
+// non-IDLE agents report false (B1: 候选 = StateIdle 且 capability 匹配).
+func (f *Fabric) IsIdle(agentID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.State == StateIdle
+}
+
 // Children returns the child agent IDs of a parent (Process Tree: spawn
 // causality). This is PROVENANCE ONLY — it does NOT imply a permission
 // hierarchy (§13 invariant #1: A ≡ B ≡ C). Returns nil for a leaf or unknown

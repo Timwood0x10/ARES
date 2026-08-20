@@ -128,28 +128,27 @@ func run(ctx context.Context) error {
 	})
 
 	// ── Step 5: Scenario 3 — Multi-Agent ──
-	// Measures leader/member team orchestration: NewTeam runs a leader and a
-	// worker; SubResults present means collaboration happened.
+	// Measures the peer-agent flow (H1): RegisterAgent registers peer
+	// capabilities; Submit dispatches the task to the matching agent.
 	_ = eval.Register(&evaluation.Scenario{
 		Name:        "multi-agent",
-		Description: "Leader/member team collaboration",
+		Description: "Peer-agent capability dispatch (RegisterAgent + Submit)",
 		Runs:        2,
 		Timeout:     60 * time.Second,
 		Runner: evaluation.RunnerFunc(func(ctx context.Context, task string) (*evaluation.Metrics, error) {
-			leader := rt.NewAgent("lead", sdk.WithInstruction("Plan and summarize."))
-			worker := rt.NewAgent("worker", sdk.WithInstruction("Execute tasks."))
-			team := rt.NewTeam("eval-team", leader, []*sdk.Agent{worker})
+			rt.RegisterAgent("lead", sdk.WithInstruction("Plan and summarize."))
+			rt.RegisterAgent("worker", sdk.WithInstruction("Execute tasks."))
 			start := time.Now()
-			result, err := team.Run(ctx, "Say hello briefly")
+			result, err := rt.Submit(ctx, sdk.Task{
+				Capability: "lead",
+				Input:      "Say hello briefly",
+			})
 			latency := time.Since(start)
 			if err != nil {
 				return &evaluation.Metrics{Task: task, Success: false, Score: 0, Latency: latency}, nil
 			}
 			score := 0.0
 			if result.Output != "" {
-				score = 0.5
-			}
-			if len(result.SubResults) > 0 {
 				score = 1.0
 			}
 			return &evaluation.Metrics{

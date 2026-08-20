@@ -1,6 +1,91 @@
 package agentfabric
 
-import "sync"
+import (
+	"errors"
+	"sync"
+)
+
+// ErrCognitiveStateSchemaVersion is returned by DecodeCognitiveState when the
+// state's schema version is from a future version the current code cannot
+// interpret. The caller must migrate the state or reject the agent recovery.
+var ErrCognitiveStateSchemaVersion = errors.New("agentfabric: cognitive state schema version mismatch")
+
+// DecodeCognitiveState decodes an agent's cognitive state through the single
+// versioned path (A2). It accepts:
+//
+//   - CognitiveState / *CognitiveState: the native struct. A version greater
+//     than CognitiveStateSchemaVersion returns ErrCognitiveStateSchemaVersion.
+//     A zero version (legacy pre-A2 state) is accepted as compatible.
+//   - map[string]any: a JSON-round-tripped state (e.g. after persistence and
+//     reload). The version is read from "schema_version"; unknown keys are
+//     left as raw values for the caller to reify.
+//   - nil: a zero-valued state.
+//
+// Returns:
+//   - CognitiveState: the decoded state.
+//   - error: ErrCognitiveStateSchemaVersion for a future schema version.
+func DecodeCognitiveState(v any) (CognitiveState, error) {
+	switch c := v.(type) {
+	case nil:
+		return CognitiveState{}, nil
+	case CognitiveState:
+		return checkCognitiveVersion(c)
+	case *CognitiveState:
+		if c == nil {
+			return CognitiveState{}, nil
+		}
+		return checkCognitiveVersion(*c)
+	case map[string]any:
+		return decodeCognitiveMap(c)
+	default:
+		// Unknown concrete type: treat as legacy opaque state.
+		return CognitiveState{Context: v}, nil
+	}
+}
+
+func checkCognitiveVersion(cs CognitiveState) (CognitiveState, error) {
+	if cs.SchemaVersion > CognitiveStateSchemaVersion {
+		return CognitiveState{}, ErrCognitiveStateSchemaVersion
+	}
+	return cs, nil
+}
+
+func decodeCognitiveMap(m map[string]any) (CognitiveState, error) {
+	if sv, ok := m["schema_version"]; ok {
+		version := 0
+		switch v := sv.(type) {
+		case float64:
+			version = int(v)
+		case int:
+			version = v
+		}
+		if version > CognitiveStateSchemaVersion {
+			return CognitiveState{}, ErrCognitiveStateSchemaVersion
+		}
+		cs := CognitiveState{SchemaVersion: version}
+		if v, ok := m["context"]; ok {
+			cs.Context = v
+		}
+		if v, ok := m["observation"]; ok {
+			cs.Observation = v
+		}
+		if v, ok := m["working_memory"]; ok {
+			cs.WorkingMemory = v
+		}
+		if v, ok := m["decision"]; ok {
+			cs.Decision = v
+		}
+		if v, ok := m["tool_state"]; ok {
+			cs.ToolState = v
+		}
+		if v, ok := m["checkpoint"]; ok {
+			cs.Checkpoint = v
+		}
+		return cs, nil
+	}
+	// A map without a version key: legacy opaque state carried in Context.
+	return CognitiveState{Context: m}, nil
+}
 
 // ContextLayer identifies the three context tiers (design §13: Context three
 // layers — do not share one brain).
@@ -128,13 +213,18 @@ func (f *Fabric) CognitiveState(agentID string) (CognitiveState, error) {
 }
 
 // SetCognitiveState replaces the agent's cognitive state (used by Recover
-// and by the agent itself to checkpoint progress).
+// and by the agent itself to checkpoint progress). A legacy state written
+// without a SchemaVersion (pre-A2 zero value) is upgraded to the current
+// version at the boundary, so every stored state carries a version.
 func (f *Fabric) SetCognitiveState(agentID string, cs CognitiveState) error {
 	f.mu.Lock()
 	a, ok := f.agents[agentID]
 	if !ok {
 		f.mu.Unlock()
 		return ErrAgentNotFound
+	}
+	if cs.SchemaVersion == 0 {
+		cs.SchemaVersion = CognitiveStateSchemaVersion
 	}
 	a.mu.Lock()
 	a.cognitive = cs

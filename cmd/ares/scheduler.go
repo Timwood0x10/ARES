@@ -82,6 +82,13 @@ type kernelScheduler struct {
 	// so the evolution feedback loop can read attribution and push derived
 	// confidence into the tracker. Nil skips recording (backward compatible).
 	attribution *aresrecovery.ExecutionAttribution
+	// agents is the optional agentfabric.Fabric whose live IDLE agents are
+	// schedulable candidates (aresos-agentos-plan B1: scheduler 候选来自
+	// agentfabric 动态群体). Every drain re-queries the fabric, so a spawned
+	// agent becomes schedulable immediately and a killed one disappears — no
+	// explicit registry sync. Nil keeps the static executor registry only
+	// (backward compatible with tests and minimal wiring).
+	agents *agentfabric.Fabric
 }
 
 // noCandidateLogInterval throttles "no capable candidate" logs to one per
@@ -281,6 +288,16 @@ func (s *kernelScheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) 
 	return s
 }
 
+// WithAgentFabric attaches the agent lifecycle fabric so every live, IDLE,
+// executable fabric agent is a schedulable candidate (B1: 单一调度回路 —
+// scheduler 只认统一 Agent). It is wired by the kernel lifecycle once the
+// fabric exists; nil keeps the static executor registry only. Returns the
+// scheduler for chaining.
+func (s *kernelScheduler) WithAgentFabric(f *agentfabric.Fabric) *kernelScheduler {
+	s.agents = f
+	return s
+}
+
 // WithMaxConcurrent caps how many ready tasks run in parallel per drain
 // (work stealing). <= 0 falls back to the executor count. Returns the
 // scheduler for chaining.
@@ -392,9 +409,33 @@ func (s *kernelScheduler) HasCapableExecutor(taskID string) bool {
 		if s.isBoundToOtherTask(agentID) {
 			continue
 		}
+		// C1: same single-source rule as executeUnbound — with the fabric
+		// wired, unbound static registrations are managed fabric agents.
+		if s.agents != nil && !s.isBoundToAnyTask(agentID) {
+			continue
+		}
 		cand := taskfabric.Candidate{Capabilities: []string{string(agent.Type())}}
 		if taskfabric.Score(tk.Capability, cand) > 0 {
 			return true
+		}
+	}
+	// B1: a live, IDLE, executable fabric agent can also resume the task.
+	if s.agents != nil {
+		for _, id := range s.agents.Agents() {
+			if _, ok := execs[id]; ok {
+				continue
+			}
+			if !s.agents.IsIdle(id) {
+				continue
+			}
+			a, err := s.agents.Get(id)
+			if err != nil || a == nil || !a.Executable() {
+				continue
+			}
+			cand := taskfabric.Candidate{Capabilities: a.Capabilities}
+			if taskfabric.Score(tk.Capability, cand) > 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -403,6 +444,22 @@ func (s *kernelScheduler) HasCapableExecutor(taskID string) bool {
 // isBoundToOtherTask reports whether agentID is a recovery executor bound to
 // some task (so it must not be offered for any other task).
 func (s *kernelScheduler) isBoundToOtherTask(agentID string) bool {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	for _, boundID := range s.boundExecutors {
+		if boundID == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+// isBoundToAnyTask reports whether agentID is reserved as a recovery executor
+// for ANY task. When the fabric is the single candidate source (peer mode,
+// s.agents != nil), unbound static registrations are managed as fabric agents
+// and must not be offered as candidates — only these reserved executors stay
+// in the static pool.
+func (s *kernelScheduler) isBoundToAnyTask(agentID string) bool {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	for _, boundID := range s.boundExecutors {
@@ -686,7 +743,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 
 // executeUnbound runs the fabric path for a task with no recovery binding:
 // the candidate pool is every registered, unbound executor whose capability
-// overlaps the task.
+// overlaps the task, plus every live IDLE fabric agent (B1).
 func (s *kernelScheduler) executeUnbound(ctx context.Context, taskID string) error {
 	execs := s.allExecutors()
 	cands := make([]taskfabric.Candidate, 0, len(execs))
@@ -697,6 +754,14 @@ func (s *kernelScheduler) executeUnbound(ctx context.Context, taskID string) err
 		if s.isBoundToOtherTask(agentID) {
 			continue
 		}
+		// C1: when the fabric is wired (peer mode), the fabric's live
+		// population is the SINGLE candidate source — the static registrations
+		// of the configured sub-agents have a managed copy in the fabric, so a
+		// chaos kill takes effect on the next drain. Only recovery-bound
+		// executors (reserved for their task) stay in the static pool.
+		if s.agents != nil && !s.isBoundToAnyTask(agentID) {
+			continue
+		}
 		cands = append(cands, taskfabric.Candidate{
 			AgentID:      agentID,
 			Capabilities: []string{string(agent.Type())},
@@ -705,6 +770,10 @@ func (s *kernelScheduler) executeUnbound(ctx context.Context, taskID string) err
 			Priority:     s.tracker.Priority(agentID),
 		})
 	}
+	// B1: live fabric agents are candidates too. Every drain re-queries the
+	// fabric, so a freshly spawned IDLE agent becomes schedulable immediately
+	// and a killed one disappears (spawn/kill 即时反映到候选集).
+	cands = s.appendFabricCandidates(cands, execs)
 	return s.executeWithCandidates(ctx, taskID, cands)
 }
 
@@ -723,15 +792,29 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 	if err != nil {
 		return err
 	}
-	executor, ok := s.lookupExecutor(winner)
-	if !ok || executor == nil {
-		// Release so the task can be retried by another agent. A failed
-		// release leaves the task leased — surface it instead of dropping
-		// the error (code_rules_v2 §3.1).
-		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Printf("kernel scheduler: release %q for missing executor %q failed: %v", taskID, winner, releaseErr)
+	// C1: when the fabric is wired, resolve the winner through the fabric
+	// FIRST — the fabric copy is the live, lifecycle-managed agent (kill/
+	// recovery affect it), so a same-id static registration must not shadow
+	// it. Only when the fabric has no live agent for the winner (legacy
+	// mode, or a recovery-bound static executor) fall back to the registry.
+	var executor CapabilityExecutor
+	var ok bool
+	if s.agents != nil {
+		executor = s.fabricExecutor(winner)
+	}
+	if executor == nil {
+		executor, ok = s.lookupExecutor(winner)
+		if !ok || executor == nil {
+			// The candidate snapshot is stale (agent was killed between
+			// Schedule and now, or the winner is not executable): release so
+			// the task can be retried by another agent. A failed release
+			// leaves the task leased — surface it instead of dropping the
+			// error (code_rules_v2 §3.1).
+			if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+				log.Printf("kernel scheduler: release %q for missing executor %q failed: %v", taskID, winner, releaseErr)
+			}
+			return nil
 		}
-		return nil
 	}
 	// Track the busy slot while the quantum runs so the next Schedule sees the
 	// real load (v0.3.0 GAP4); end records the outcome for confidence.

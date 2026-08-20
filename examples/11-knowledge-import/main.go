@@ -471,39 +471,19 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 
 	registerTools(rt, kb, opts.tenantID, tw)
 
-	// ── Step 14: Create leader and 8 sub-agent importers ──
-	// The leader discovers files and coordinates; sub-agents import them.
-	leader := rt.NewAgent("leader",
-		sdk.WithInstruction("You are the team leader. Discover files and coordinate the import."),
-		sdk.WithTools(toolList()...),
-	)
-
-	subs := make([]*sdk.Agent, 8)
-	for i := range subs {
-		subs[i] = rt.NewAgent(fmt.Sprintf("importer-%d", i+1),
-			sdk.WithInstruction("You are an import specialist. Read files and import them."),
-			sdk.WithTools(toolList()...),
-		)
-	}
-
-	// ── Step 15: Create a supervisor for sub-agent resurrection ──
-	// The supervisor tracks agent health and can resurrect killed agents
-	// during chaos-engineered runs.
+	// ── Step 14: Register the importer capability (H1) ──
+	// RegisterAgent creates the importer agent (with the import tools) and
+	// registers it as the handler for its capability; Submit dispatches the
+	// task to it. The legacy NewTeam/team.Run leader path is deprecated — the
+	// peer flow has no privileged orchestrator. A supervisor tracks agent
+	// health for chaos-engineered runs (resurrection demo).
 	supervisor := NewAgentSupervisor(ChaosConfig{Enabled: true})
-	for i, sub := range subs {
-		supervisor.RegisterAgent(fmt.Sprintf("importer-%d", i+1), sub)
-	}
-
-	// ── Step 16: Build and run the team ──
-	// NewTeam creates a team from leader and sub-agents. WithTeamConfig
-	// sets the execution mode (auto-split), verifier index, and concurrency.
-	team := rt.NewTeam("import-team", leader, subs)
-	team.WithTeamConfig(sdk.TeamConfig{
-		Mode: sdk.ModeAutoSplit, VerifierIndex: 7, MaxConcurrency: 3,
-	})
 
 	task := fmt.Sprintf("Read all markdown files from %s and import them into tenant %s", dir, opts.tenantID)
-	result, err := team.Run(ctx, task)
+	result, err := rt.Submit(ctx, sdk.Task{
+		Capability: "importer",
+		Input:      task,
+	})
 	if err != nil {
 		return err
 	}
@@ -514,7 +494,7 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 	} else {
 		slog.Info("all sub-agents completed successfully")
 	}
-	slog.Info("Team import done", "duration", result.Duration, "passed", result.Passed)
+	slog.Info("Import done", "duration", result.Duration)
 	return nil
 }
 

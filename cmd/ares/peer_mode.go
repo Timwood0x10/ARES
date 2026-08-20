@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -28,6 +29,13 @@ import (
 // The spawn_agent / create_task syscalls are wired into the shared ToolBinder
 // so every agent can autonomously decide to decompose work and spawn peers.
 // The Kernel enforces quota/capability validation on every spawn.
+// createPeerAgents builds a set of peer agents WITHOUT a Leader (C1: 平铺
+// capability agent 注册进 agentfabric 动态群体). Each configured sub-agent is
+// spawned into the Agent Fabric WITH its execution body (SubAgentCognition)
+// and its distilled experience prior (G1), so the scheduler's candidate pool —
+// queried live from the fabric (B1) — is exactly the set of real, executable
+// agents. There is no second registration table to keep in sync: spawn/kill
+// take effect on the next scheduler drain.
 func createPeerAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,
@@ -36,6 +44,7 @@ func createPeerAgents(
 	toolBinder sub.ToolBinder,
 	store ares_events.EventStore,
 	strategySrc agents.StrategySource,
+	expRepo repositories.ExperienceRepositoryInterface,
 ) ([]sub.Agent, *kernelHandle, error) {
 	kernel := &kernelHandle{}
 
@@ -105,12 +114,42 @@ func createPeerAgents(
 	}
 	kernel.agents = agents
 
+	// C1: configured sub-agents ARE the fabric's dynamic population — each is
+	// spawned WITH its execution body (SubAgentCognition) and its distilled
+	// experience prior (G1), instead of living only in the static executor
+	// registry. The scheduler queries the fabric on every drain (B1), so this
+	// is the single registration point: a future kill/retire immediately
+	// removes the candidate, and the recovery/chaos loops manage the SAME
+	// population they recover.
+	for _, sa := range subAgents {
+		if sa == nil {
+			continue
+		}
+		sa := sa // capture for the closure (spawn is synchronous, but keep the
+		// loop-scoped binding local for the CognitionFactory below)
+		if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
+			Identity:     sa.ID(),
+			Capabilities: []string{string(sa.Type())},
+			CognitionFactory: func([]string) agentfabric.Cognition {
+				return agentfabric.NewSubAgentCognition(sa)
+			},
+			ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),
+		}); err != nil {
+			return nil, nil, fmt.Errorf("peer mode: spawn agent %q into fabric: %w", sa.ID(), err)
+		}
+	}
+
 	policy := aresrecovery.DefaultRestartPolicy()
 	if cfg.Kernel.MaxRestarts > 0 {
 		policy.MaxRestarts = cfg.Kernel.MaxRestarts
 	}
 	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
 	sched.WithGovernance(agents)
+	// B1: the scheduler's candidate pool includes every live, IDLE, executable
+	// fabric agent — the configured peers spawned above, plus any spawned via
+	// the spawn_agent syscall. Static registered executors (recovery-bound)
+	// still win by skip logic in appendFabricCandidates.
+	sched.WithAgentFabric(agents)
 
 	// Wire the spawn_agent / create_task syscalls into the shared ToolBinder.
 	// Every agent's LLM executor sees these tools alongside the built-in
@@ -199,6 +238,31 @@ func newPeerExecutor(
 		},
 	)
 	return agent
+}
+
+// loadExperiencePrior loads the most recent distilled experience for the
+// agent and returns it as the G1 spawn prior (aresos-agentos-plan G1: Memory
+// Distill 挂到 agent 生命周期 — 蒸馏异步产出 → 经验仓库查询 → spawn 注入).
+// The prior is injected as SpawnSpec.ExperiencePrior so the agent starts with
+// reusable distilled experience as its cognitive context instead of a blank
+// slate. Returns nil when the repo is unavailable, the agent has no distilled
+// experience yet, or the query fails — a nil prior is the zero-value contract
+// (code_rules_v2 §5.4), never a startup error.
+func loadExperiencePrior(ctx context.Context, expRepo repositories.ExperienceRepositoryInterface, agentID string) any {
+	if expRepo == nil {
+		return nil
+	}
+	exps, err := expRepo.ListByAgent(ctx, agentID, ares_events.DefaultTenantID, 1)
+	if err != nil || len(exps) == 0 {
+		return nil
+	}
+	exp := exps[0]
+	return map[string]any{
+		"type":        exp.Type,
+		"problem":     exp.Problem,
+		"solution":    exp.Solution,
+		"constraints": exp.GetConstraints(),
+	}
 }
 
 // submitPeerTask creates a task directly in the Task Fabric for the peer-agent

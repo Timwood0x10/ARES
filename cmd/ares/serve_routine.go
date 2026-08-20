@@ -150,6 +150,13 @@ func runAutopilotInjector(ctx context.Context, g *errgroup.Group, cfg *ares_conf
 // GA strategy source into them, and registers them (with resurrection
 // factories) on the runtime manager. Extracted from runServe to keep its
 // cyclomatic complexity within lint limits.
+//
+// Deprecated: this is the legacy Leader ON wiring (aresos-agentos-plan C1:
+// 废弃 leader-sub), reachable only via kernel.leader_enabled=true. The
+// production path is the Peer Agent runtime (createPeerAgents) — a flat set
+// of capability agents spawned into the Agent Fabric and scheduled from the
+// fabric's live population. This function is retained for gray-scaling and
+// must not be extended.
 func createAndRegisterServeAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,

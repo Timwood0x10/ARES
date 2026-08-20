@@ -78,6 +78,13 @@ type Components struct {
 	// absent; ProvideEvolution and the api_impl launcher reuse it instead of
 	// building their own. Nil when the event store is unavailable.
 	FlightRecorder *flight.FlightRecorder
+	// ExpRepo is the experience repository used by distillation writes
+	// (Track A) and — in the Agent Fabric runtime — as the G1 spawn-prior
+	// source (aresos-agentos-plan G1: 蒸馏产出 → 经验仓库查询 → spawn 注入).
+	// It is the deps.ExpRepo when provided, or the repository created by
+	// wireDistillation when PostgreSQL distillation is enabled; nil otherwise
+	// (callers treat nil as "no prior", never as an error).
+	ExpRepo repositories.ExperienceRepositoryInterface
 	// EvidenceStore is the shared evidence store used by the flight recorder
 	// and (when enabled) the GA genomes. Always set, even when evolution is
 	// disabled, so downstream consumers (api/bootstrap, integration) can
@@ -261,6 +268,10 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// embClient is reused by wireRetrievers to build the MemoryRetriever, so
 	// the distillation and RAG retrieval paths share one embedding client.
 	guidanceProvider, embClient := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
+	// G1: expose the experience repository (deps-provided or distillation-
+	// created) so consumers can query distilled experiences — e.g. the Agent
+	// Fabric spawn path injects the latest experience as the spawn prior.
+	comp.ExpRepo = deps.ExpRepo
 
 	// AKG closed loop (0.2.9): build the KnowledgeStore (in-memory default,
 	// PG optional) and the write-side DistillBridge, gated on

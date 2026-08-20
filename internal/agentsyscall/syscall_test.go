@@ -86,6 +86,55 @@ func TestSpawnAgentCreatesAgentInFabric(t *testing.T) {
 	}
 }
 
+// TestSpawnAgentInjectsExecutableCognition verifies the C1 upgrade
+// (aresos-agentos-plan C1: spawn 的 agent 带执行体): when an executor factory
+// is wired, the agent spawned by the syscall carries a real Cognition from
+// birth — Agent.Executable() reports true and a quantum can be executed
+// through the fabric — not just a provenance record. The same executor
+// instance is registered for scheduling (factory called exactly once).
+func TestSpawnAgentInjectsExecutableCognition(t *testing.T) {
+	agents := agentfabric.NewFabric()
+	execCalls := 0
+	var registeredExec Executor
+	factory := func(agentID, capability string) Executor {
+		execCalls++
+		return &stubExecutor{id: agentID, typ: models.AgentType(capability)}
+	}
+	register := func(agentID string, executor Executor) {
+		registeredExec = executor
+	}
+	kernel := NewKernel(agents, nil, factory, register)
+
+	result, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{Capability: "coder"})
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	if !result.Registered {
+		t.Fatal("spawned agent must be registered when factory + register are wired")
+	}
+	if execCalls != 1 {
+		t.Fatalf("executor factory must be called exactly once, got %d", execCalls)
+	}
+
+	agent, err := agents.Get(result.AgentID)
+	if err != nil {
+		t.Fatalf("Get spawned agent: %v", err)
+	}
+	if !agent.Executable() {
+		t.Fatal("C1: spawned agent must be executable (Cognition injected), not a phantom")
+	}
+	out, err := agent.ExecuteStep(context.Background(), models.NewTask("t-c1", models.AgentType("coder"), nil))
+	if err != nil {
+		t.Fatalf("ExecuteStep: %v", err)
+	}
+	if !out.Done {
+		t.Fatal("spawned agent must complete a quantum")
+	}
+	if registeredExec == nil {
+		t.Fatal("executor must be registered for scheduling")
+	}
+}
+
 // TestSpawnAgentRegistersExecutor verifies that when a factory and register
 // function are wired, the spawned agent is registered as a scheduler executor.
 func TestSpawnAgentRegistersExecutor(t *testing.T) {

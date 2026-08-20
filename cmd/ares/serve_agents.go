@@ -22,10 +22,12 @@ import (
 // cyclomatic complexity within gocyclo's 30 limit.
 //
 // W2: Leader OFF mode — when kernel.leader_enabled is false, skip the leader
-// entirely and run purely on the Peer Agent path: sub-agents register directly
-// to the Kernel scheduler, and the spawn_agent / create_task syscalls are wired
-// into the tool binder for autonomous decomposition. The leader path is
-// retained as the default (legacy compat) until operators opt in.
+// entirely and run purely on the Peer Agent path: the configured sub-agents
+// spawn into the Agent Fabric as the dynamic population (C1), the scheduler
+// queries the fabric for candidates (B1), and the spawn_agent / create_task
+// syscalls are wired into the tool binder for autonomous decomposition. The
+// leader path is retained only behind kernel.leader_enabled=true (legacy
+// gray-scaling) — see Deprecated createAndRegisterServeAgents.
 func createAndServeAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,
@@ -40,8 +42,10 @@ func createAndServeAgents(
 		return createAndRegisterServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
 	}
 
-	// W2 Peer Agent mode: no leader, agents register directly to Kernel.
-	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, llmAdapter, chatClient, toolBinder, comp.EventStore, nil)
+	// W2 Peer Agent mode: no leader, agents register directly to Kernel. The
+	// Bootstrap experience repo (nil when distillation is not wired) feeds the
+	// G1 spawn prior.
+	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, llmAdapter, chatClient, toolBinder, comp.EventStore, nil, comp.ExpRepo)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create peer agents: %w", err)
 	}

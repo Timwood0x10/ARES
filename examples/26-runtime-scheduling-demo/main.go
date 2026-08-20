@@ -1,31 +1,28 @@
 // Runtime scheduling demo — submit a real task, let the runtime schedule it,
-// and watch the agent team split the work (leader plans → members execute →
-// leader synthesises). This is the "Agent as Thread" showcase: the runtime
-// owns dispatch, agents are disposable execution threads.
+// and watch a capability agent analyse the module (H1: RegisterAgent + Submit).
+// This is the "Agent as Thread" showcase: the runtime owns dispatch, agents
+// are disposable execution threads.
 //
-// LEGACY COMPATIBILITY: This example uses the Leader/Sub team orchestration
-// model. ARES has evolved into a Peer Agent operating system (aresos-plan.md
-// §1.1) where all agents are equal peers — no Leader/Worker hierarchy. The
-// Leader/Sub path is retained as kernel.policy=legacy for compatibility. For
-// the current model, see examples/aresos-demo.
+// ARES is a Peer Agent operating system (aresos-plan.md §1.1): all agents are
+// equal peers — no Leader/Worker hierarchy. The legacy Leader/Sub team path
+// (NewTeam/team.Run) is retained as kernel.policy=legacy for compatibility
+// and is Deprecated. This example demonstrates the current peer flow.
 //
 // Purpose:
 //
-//	Show the full loop for a code-module analysis task: a leader agent plans
-//	and splits the work, specialised members read the module files (via a
-//	sandboxed read_file / list_files tool) and analyse their slice, and the
-//	leader synthesises the final summary. Every phase is printed so you can
-//	see the runtime schedule each agent's turn.
+//	Show the full loop for a code-module analysis task: register a
+//	capability agent, submit the task, and let the runtime dispatch it to
+//	the matching agent, which reads the module files (via a sandboxed
+//	read_file / list_files tool) and produces the summary.
 //
 // Learning objectives:
 //   - How sdk.LoadConfigFile + ToOptions wire the LLM/runtime from ares.yaml.
 //   - How rt.ToolRegistry().Register adds a sandboxed read_file tool the
-//     agents can actually call (the runtime dispatches the tool call to the
-//     agent that asked for it).
-//   - How rt.NewTeam assembles a leader + members and team.Run orchestrates
-//     plan → delegate → execute → synthesise.
-//   - How TeamResult exposes Plan, SubResults, Output and Duration so you can
-//     observe the split work end to end.
+//     agent can actually call (the runtime dispatches the tool call).
+//   - How rt.RegisterAgent registers peer capabilities and rt.Submit
+//     dispatches a task to the matching agent.
+//   - How the Result exposes Output and Duration so you can observe the
+//     execution end to end.
 //
 // Core APIs used (with package paths):
 //   - sdk.LoadConfigFile             — github.com/Timwood0x10/ares/sdk
@@ -34,8 +31,8 @@
 //   - (*Runtime).ToolRegistry()      — github.com/Timwood0x10/ares/sdk
 //   - api/tools.ToolFunc             — github.com/Timwood0x10/ares/api/tools
 //   - rt.NewAgent / sdk.WithInstruction — github.com/Timwood0x10/ares/sdk
-//   - rt.NewTeam / team.Run          — github.com/Timwood0x10/ares/sdk
-//   - sdk.TeamResult / sdk.SubResult — github.com/Timwood0x10/ares/sdk
+//   - rt.RegisterAgent / rt.Submit   — github.com/Timwood0x10/ares/sdk
+//   - sdk.Task / sdk.Result          — github.com/Timwood0x10/ares/sdk
 //
 // Run (from the repo root):
 //
@@ -49,10 +46,8 @@
 //
 //	📋 Task: Summarise the taskfabric module: its files, responsibilities and
 //	        how the scheduler picks a capable agent for a task.
-//	📋 Plan:   <leader's split plan>
-//	📝 member code_reader: <per-member sub-result>
-//	📝 Result: <synthesised module summary>
-//	   sub-results: N | took: <duration>
+//	📝 Result: <the module summary>
+//	   took: <duration>
 package main
 
 import (
@@ -115,82 +110,49 @@ func main() {
 		}
 	}
 
-	// ── Step 3: Create the agent team ──
-	// The leader plans and splits the task; members analyse their slice using
-	// the file tools; the leader synthesises the final summary. Every agent
-	// that should call the tools gets them via WithTools.
-	leader := rt.NewAgent("coordinator",
-		sdk.WithInstruction(`You are a team lead for code-module analysis.
-Plan the work, delegate to members, and synthesise their findings into a concise
-module summary. Use list_files to find the module's files and read_file to
-inspect them when you need context for the plan.`),
-		sdk.WithTools(fileTools...),
-	)
-	analyst := rt.NewAgent("code_reader",
+	// ── Step 3: Register the capability agent (H1) ──
+	// RegisterAgent creates the agent and registers it as the handler for its
+	// capability; WithInstruction/WithTools configure it. The agent plans,
+	// inspects the module with the file tools, and produces the summary.
+	task := "Summarise the internal/taskfabric module: enumerate its files, " +
+		"explain each one's responsibility, and describe how the scheduler " +
+		"picks a capable agent for a task."
+
+	// ── 阶段记录 (Phase log) ──
+	// 每一步都打印，完整还原"任务提交 → runtime 调度 → agent 执行（含工具
+	// 调用）→ 完成"的全过程。
+	logPhase("1/3 提交任务 (submit)", task)
+	fmt.Printf("📋 Task: %s\n\n", task)
+
+	rt.RegisterAgent("code_reader",
 		sdk.WithInstruction(`You are a code analyst. Use list_files to enumerate the
 module's files and read_file to inspect each one. Summarise the responsibilities
 you find: what each file does and how the pieces fit together. Be factual and
 reference file paths.`),
 		sdk.WithTools(fileTools...),
 	)
-
-	team := rt.NewTeam("module-analysis", leader, []*sdk.Agent{analyst})
-
-	// ── Step 4: Submit the task and let the runtime schedule it ──
-	// team.Run drives plan → delegate → execute → synthesise. The runtime
-	// dispatches each agent's turn; the members' tool calls are routed back
-	// through the runtime's tool registry.
-	task := "Summarise the internal/taskfabric module: enumerate its files, " +
-		"explain each one's responsibility, and describe how the scheduler " +
-		"picks a capable agent for a task."
-
-	// ── 阶段记录 (Phase log) ──
-	// 每一步都打印，完整还原"任务提交 → leader 规划 → 拆分 → 每成员执行
-	// （含工具调用）→ 汇总"的全过程。
-	logPhase("1/5 提交任务 (submit)", task)
-	fmt.Printf("📋 Task: %s\n\n", task)
-
 	start := time.Now()
-	result, err := team.Run(ctx, task)
+	result, err := rt.Submit(ctx, sdk.Task{
+		Capability: "code_reader",
+		Input:      task,
+	})
 	elapsed := time.Since(start)
 	if err != nil {
 		if strings.Contains(err.Error(), "API key") {
 			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set your LLM key in ./ares.yaml (see examples/25-dual-endpoint-fallback)\n", err)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "❌ team run: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ submit: %v\n", err)
 		return
 	}
 
-	// ── Step 5: Print the full trace — plan, per-member results, synthesis ──
-	// leader 规划（Phase 2）：leader 先用工具发现文件并产出计划。
-	logPhase("2/5 leader 规划 (plan+discover)", "")
-	fmt.Printf("📋 Plan:\n%s\n\n", result.Plan)
-
-	// 拆分（Phase 3）：文件列表被分给各成员，并发执行。
-	logPhase(fmt.Sprintf("3/5 任务拆分 (split) → %d 个成员子任务", len(result.SubResults)), "")
-	for i, sub := range result.SubResults {
-		// 每成员执行（Phase 4）：成员用工具读取文件并产出分析。
-		logPhase(fmt.Sprintf("4/5 成员执行 (execute) #%d %s", i+1, sub.MemberName), "")
-		if sub.Error != "" {
-			fmt.Printf("📝 member #%d (%s) ❌ error: %s\n\n", i+1, sub.MemberName, sub.Error)
-			continue
-		}
-		fmt.Printf("📝 member #%d (%s):\n%s\n", i+1, sub.MemberName, sub.Output)
-		if sub.Duration != "" {
-			fmt.Printf("   ⏱ member #%d took: %s\n", i+1, sub.Duration)
-		}
-		fmt.Println()
-	}
-
-	// 汇总（Phase 5）：leader 综合各成员结果，产出最终输出；若有验证器则给出验证结论。
-	logPhase("5/5 leader 汇总 (synthesize)", "")
+	// ── Step 5: Print the trace — dispatch, execution, result ──
+	// runtime 调度（Phase 2）：Runtime 按 capability 匹配注册的 agent。
+	logPhase("2/3 runtime 调度 (dispatch → code_reader)", "")
+	logPhase("3/3 agent 执行 (execute)", "")
 	fmt.Printf("✅ Result:\n%s\n\n", result.Output)
-	if result.Verification != "" {
-		fmt.Printf("🔎 Verification:\n%s\n\n", result.Verification)
-	}
-	fmt.Printf("   passed: %v | sub-results: %d | took: %v (runtime elapsed: %v)\n",
-		result.Passed, len(result.SubResults), result.Duration.Round(time.Millisecond), elapsed.Round(time.Millisecond))
+	fmt.Printf("   tool_calls: %d | took: %v (runtime elapsed: %v)\n",
+		result.ToolCalls, result.Duration.Round(time.Millisecond), elapsed.Round(time.Millisecond))
 }
 
 // logPhase prints a phase banner so the demo's stdout is a complete, greppable

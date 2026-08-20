@@ -1,28 +1,24 @@
-// Multi-agent — demonstrates team-based leader/member orchestration with ARES.
+// Multi-agent — demonstrates multiple specialised agents with the peer
+// Runtime (H1: RegisterAgent + Submit, no leader/sub).
 //
-// LEGACY COMPATIBILITY: This example uses the Leader/Sub team orchestration
-// model (ares-runtime.md pre-0.3.0). ARES has evolved into a Peer Agent
-// operating system where all agents are first-class cognitive processes with
-// no inherent hierarchy (aresos-plan.md §1.1). The Leader/Sub model is retained
-// as a compatibility layer (kernel.policy=legacy) and will be deprecated in a
-// future release. For the current Peer Agent model, see
-// examples/aresos-demo (capability-based agents + autonomous spawn + IPC +
-// synthesis).
+// ARES is a Peer Agent operating system where all agents are first-class
+// cognitive processes with no inherent hierarchy (aresos-plan.md §1.1): a
+// flat set of capability agents registered on the Runtime, and tasks are
+// dispatched to the agent registered for their capability. The legacy
+// Leader/Sub team orchestration (NewTeam/team.Run) is retained only for
+// backward compatibility and is Deprecated.
 //
 // Purpose:
 //
-//	Show how to create a team of specialised agents (leader, researcher,
-//	writer), wire them together with NewTeam, and run a collaborative task
-//	where the leader plans and delegates, members execute concurrently, and
-//	the leader synthesises the final output.
+//	Show how to create specialised agents (coordinator, researcher, writer),
+//	register them as peer capabilities, and submit a task that the Runtime
+//	dispatches to the matching agent.
 //
 // Learning objectives (what this example teaches you):
 //   - How to create multiple agents with distinct system instructions.
-//   - How to assemble a Team from a leader agent and a slice of member agents.
-//   - How to call team.Run() and interpret the TeamResult (Plan, Output,
-//     SubResults, Duration).
-//   - How YAML-driven config keeps Go code minimal — only agent definitions
-//     and team orchestration need Go code.
+//   - How to register them as peer capabilities with RegisterAgent.
+//   - How to call Submit() and interpret the Result (Output, Duration).
+//   - How YAML-driven config keeps Go code minimal.
 //
 // Core APIs used (with package paths):
 //   - sdk.LoadConfigFile             — github.com/Timwood0x10/ares/sdk
@@ -30,9 +26,9 @@
 //   - sdk.NewRuntime                 — github.com/Timwood0x10/ares/sdk
 //   - rt.NewAgent                    — github.com/Timwood0x10/ares/sdk
 //   - sdk.WithInstruction            — github.com/Timwood0x10/ares/sdk
-//   - rt.NewTeam                     — github.com/Timwood0x10/ares/sdk
-//   - team.Run                       — github.com/Timwood0x10/ares/sdk
-//   - sdk.TeamResult (struct)        — github.com/Timwood0x10/ares/sdk
+//   - rt.RegisterAgent               — github.com/Timwood0x10/ares/sdk
+//   - rt.Submit                      — github.com/Timwood0x10/ares/sdk
+//   - sdk.Task (struct)              — github.com/Timwood0x10/ares/sdk
 //
 // Run:
 //
@@ -42,17 +38,14 @@
 //
 //	📋 Task: Research and write a one-paragraph summary about the Go programming language
 //
-//	📋 Plan:
-//	<the leader's plan for delegating the task>
-//
 //	📝 Result:
-//	<the synthesised final output from the leader>
+//	<the synthesised final output from the agent>
 //
-//	   sub-results: 2 | took: <duration>
+//	   took: <duration>
 //
 // If the run fails with an "API key" error, set OPENAI_API_KEY or install
-// Ollama. Try adding a fourth member agent or changing the leader's
-// instruction to alter delegation behaviour.
+// Ollama. Try adding a fourth agent or changing an agent's instruction to
+// alter the behaviour.
 package main
 
 import (
@@ -85,52 +78,45 @@ func main() {
 	// defer Close releases connections and background resources.
 	defer rt.Close()
 
-	// ── Step 2: Create team members ──
-	// Each agent gets a specialised system instruction via WithInstruction.
-	// The leader plans and delegates; members (researcher, writer) execute.
-	leader := rt.NewAgent("coordinator",
-		sdk.WithInstruction(`You are a team lead. You plan tasks, delegate to members, and synthesize results.
+	// ── Step 2: Register the peer capabilities (H1) ──
+	// RegisterAgent creates a capability agent and registers it on the
+	// Runtime; WithInstruction configures its system prompt. There is no
+	// leader and no hierarchy: Submit dispatches a task to the agent
+	// registered for its capability.
+	rt.RegisterAgent("coordinator",
+		sdk.WithInstruction(`You are a coordinator. You plan tasks and produce a clear synthesis.
 Be concise.`),
 	)
-
-	researcher := rt.NewAgent("researcher",
+	rt.RegisterAgent("researcher",
 		sdk.WithInstruction(`You are a researcher. You find facts, analyze data, and provide insights.
 Be factual and concise.`),
 	)
-
-	writer := rt.NewAgent("writer",
+	rt.RegisterAgent("writer",
 		sdk.WithInstruction(`You are a writer. You produce clear, well-structured content.
 Be concise and engaging.`),
 	)
 
-	// ── Step 3: Create the team ──
-	// NewTeam assembles a named team from a leader agent and a slice of member
-	// agents. The leader orchestrates; members execute concurrently.
-	team := rt.NewTeam("project-alpha", leader, []*sdk.Agent{researcher, writer})
-
-	// ── Step 4: Run the collaborative task ──
-	// team.Run executes a four-phase orchestration:
-	//   Phase 1 — Leader discovers and plans (runs with tools).
-	//   Phase 2 — Members execute concurrently with their assigned work.
-	//   Phase 3 — Verifier checks results (if configured).
-	//   Phase 4 — Leader synthesises the final output.
-	// The returned TeamResult contains Plan, Output, SubResults, and Duration.
+	// ── Step 3: Submit the task ──
+	// Submit is the uniform entry point: the Runtime picks the agent
+	// registered for the task's capability and returns the Result.
 	task := "Research and write a one-paragraph summary about the Go programming language"
 	fmt.Printf("📋 Task: %s\n", task)
 
-	result, err := team.Run(ctx, task)
+	result, err := rt.Submit(ctx, sdk.Task{
+		Capability: "coordinator",
+		Input:      task,
+	})
 	if err != nil {
 		// Provide a hint if the error is about a missing API key.
 		if strings.Contains(err.Error(), "API key") {
 			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set OPENAI_API_KEY or install Ollama\n", err)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "❌ team run: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ submit: %v\n", err)
 		return
 	}
 
-	// Print the leader's plan, the synthesised output, and sub-result count.
-	fmt.Printf("\n📋 Plan:\n%s\n\n", result.Plan)
+	// Print the output and duration.
 	fmt.Printf("📝 Result:\n%s\n", result.Output)
-	fmt.Printf("\n   sub-results: %d | took: %v\n", len(result.SubResults), result.Duration)
+	fmt.Printf("\n   took: %v\n", result.Duration)
 }

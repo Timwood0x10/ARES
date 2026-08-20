@@ -588,9 +588,13 @@ func WithTrace(isEnabled bool) Option {
 // ── Team options ───────────────────────────────────────────────────────────
 
 // TeamOption configures a Team during construction.
+//
+// Deprecated: see RunMode (sdk/team.go). Prefer RegisterAgent + Submit.
 type TeamOption func(*Team)
 
 // WithTeamConfig applies a complete TeamConfig to the team.
+//
+// Deprecated: see RunMode.
 func WithTeamConfig(cfg TeamConfig) TeamOption {
 	return func(t *Team) {
 		t.cfg = cfg
@@ -599,6 +603,8 @@ func WithTeamConfig(cfg TeamConfig) TeamOption {
 
 // WithAutoSplit configures auto-split mode (default). The leader
 // automatically breaks the task into sub-tasks and delegates them.
+//
+// Deprecated: see RunMode.
 func WithAutoSplit() TeamOption {
 	return func(t *Team) {
 		t.cfg.Mode = ModeAutoSplit
@@ -607,6 +613,8 @@ func WithAutoSplit() TeamOption {
 
 // WithExplicitGroups configures explicit assignment mode with the given groups.
 // Each GroupConfig specifies which members (by index) handle which task.
+//
+// Deprecated: see RunMode.
 func WithExplicitGroups(groups ...GroupConfig) TeamOption {
 	return func(t *Team) {
 		t.cfg.Mode = ModeExplicit
@@ -617,6 +625,8 @@ func WithExplicitGroups(groups ...GroupConfig) TeamOption {
 // WithVerifier sets the verifier agent by member index. The verifier
 // reviews all sub-results and reports PASS/FAIL before synthesis.
 // Use -1 to disable verification (default).
+//
+// Deprecated: see RunMode.
 func WithVerifier(index int) TeamOption {
 	return func(t *Team) {
 		t.cfg.VerifierIndex = index
@@ -625,6 +635,8 @@ func WithVerifier(index int) TeamOption {
 
 // WithMaxConcurrency caps the number of members that execute simultaneously.
 // 0 means unlimited (default).
+//
+// Deprecated: see RunMode.
 func WithMaxConcurrency(n int) TeamOption {
 	return func(t *Team) {
 		if n > 0 {

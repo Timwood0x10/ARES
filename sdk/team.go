@@ -17,19 +17,30 @@ import (
 // ── Run modes ──────────────────────────────────────────────────────────────
 
 // RunMode defines how the team assigns sub-tasks to its members.
+//
+// Deprecated: the Team API is the legacy leader-orchestration model
+// (aresos-agentos-plan C1/H1: 收敛 leader 概念). The forward-looking SDK flow
+// is RegisterAgent + Submit — a flat set of capability agents with no
+// privileged orchestrator. Retained for backward compatibility only.
 type RunMode int
 
 const (
 	// ModeAutoSplit instructs the leader to automatically discover files,
 	// divide them among members, and verify results.
+	//
+	// Deprecated: see RunMode.
 	ModeAutoSplit RunMode = iota
 	// ModeExplicit uses pre-configured GroupConfig assignments.
+	//
+	// Deprecated: see RunMode.
 	ModeExplicit
 )
 
 // ── Group config ───────────────────────────────────────────────────────────
 
 // GroupConfig assigns a specific task to a subset of team members.
+//
+// Deprecated: see RunMode.
 type GroupConfig struct {
 	Name    string
 	Indices []int
@@ -39,6 +50,8 @@ type GroupConfig struct {
 // ── Team config ────────────────────────────────────────────────────────────
 
 // TeamConfig controls the team orchestration behaviour.
+//
+// Deprecated: see RunMode.
 type TeamConfig struct {
 	Mode           RunMode
 	Groups         []GroupConfig
@@ -47,6 +60,8 @@ type TeamConfig struct {
 }
 
 // DefaultTeamConfig returns sensible defaults.
+//
+// Deprecated: see RunMode.
 func DefaultTeamConfig() TeamConfig {
 	return TeamConfig{
 		Mode:           ModeAutoSplit,
@@ -63,6 +78,8 @@ func DefaultTeamConfig() TeamConfig {
 //  2. File list is divided among members, who run concurrently.
 //  3. Verifier reviews results (if configured).
 //  4. Leader synthesises final output.
+//
+// Deprecated: see RunMode. Prefer RegisterAgent + Submit.
 type Team struct {
 	name    string
 	leader  *Agent
@@ -72,6 +89,8 @@ type Team struct {
 }
 
 // NewTeam creates a Team with a leader and member agents.
+//
+// Deprecated: see RunMode. Prefer RegisterAgent + Submit.
 func (r *Runtime) NewTeam(name string, leader *Agent, members []*Agent) *Team {
 	return &Team{
 		name:    name,
@@ -91,6 +110,8 @@ func (t *Team) WithTeamConfig(cfg TeamConfig) *Team {
 // ── Result types ───────────────────────────────────────────────────────────
 
 // SubResult holds the outcome of a single member execution.
+//
+// Deprecated: see RunMode.
 type SubResult struct {
 	MemberName string `json:"member_name"`
 	Output     string `json:"output"`
@@ -99,6 +120,8 @@ type SubResult struct {
 }
 
 // TeamResult holds the outcome of a full team execution.
+//
+// Deprecated: see RunMode.
 type TeamResult struct {
 	Plan         string        `json:"plan"`
 	SubResults   []SubResult   `json:"sub_results"`
