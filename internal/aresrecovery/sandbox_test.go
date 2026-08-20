@@ -112,7 +112,7 @@ func TestSandboxClockDrivesLeaseExpiry(t *testing.T) {
 
 	// With the frozen clock the lease is still valid → nothing requeued.
 	requeued := sb.recovery.RequeueExpiredLeases()
-	if requeued != 0 {
-		t.Fatalf("with a frozen clock nothing must expire, got %d", requeued)
+	if len(requeued) != 0 {
+		t.Fatalf("with a frozen clock nothing must expire, got %v", requeued)
 	}
 }

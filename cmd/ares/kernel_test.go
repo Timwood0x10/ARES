@@ -204,7 +204,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	f := taskfabric.NewFabric()
 	research := &stubAgent{id: "research_01", typ: models.AgentType("research")}
 	writer := &stubAgent{id: "writer_01", typ: models.AgentType("write")}
-	executors := map[string]sub.Agent{"research_01": research, "writer_01": writer}
+	executors := map[string]CapabilityExecutor{"research_01": research, "writer_01": writer}
 	tracker := newLoadTracker()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -272,7 +272,7 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
-	executors := map[string]sub.Agent{"code_01": executor}
+	executors := map[string]CapabilityExecutor{"code_01": executor}
 	tracker := newLoadTracker()
 
 	// Flip: replace the shadow scorer with the submit-only new path, disable
@@ -616,7 +616,7 @@ func TestRunKernelRecoveryLoopEventDriven(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runKernelRecoveryLoop(ctx, store, recovery, kernelLoopConfig{})
+	go runKernelRecoveryLoop(ctx, store, recovery, kernelLoopConfig{}, nil, nil, nil)
 
 	// Publish the TaskExpired event (as CheckExpiredLeases would) and wait for
 	// the requeue: the expired lease returns to READY, unowned. The OLD
@@ -1054,7 +1054,7 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 		t.Fatalf("want exactly one running task (low), got %+v", rt)
 	}
 
-	s := NewKernelScheduler(f, map[string]sub.Agent{"agent-a": &stubAgent{id: "agent-a", typ: models.AgentType("code")}}, nil)
+	s := NewKernelScheduler(f, map[string]CapabilityExecutor{"agent-a": &stubAgent{id: "agent-a", typ: models.AgentType("code")}}, nil)
 	s.preemptLowerPriority([]string{"high"})
 
 	tk, err := f.Task("low")
@@ -1108,5 +1108,274 @@ func TestTaskFromPayloadRestoresJSONUserProfile(t *testing.T) {
 	}
 	if task.UserProfile == nil || task.UserProfile.UserID != "u1" {
 		t.Fatalf("JSON round-tripped profile must be restored, got %+v", task.UserProfile)
+	}
+}
+
+// checkpointStubAgent is a sub.Agent stub that records the checkpoint it
+// observes on resume, so the W1 recovery E2E test can assert that a
+// replacement executor sees the dead agent's preserved checkpoint.
+type checkpointStubAgent struct {
+	id         string
+	typ        models.AgentType
+	mu         sync.Mutex
+	executed   []string
+	checkpoint any
+	observed   bool
+}
+
+var _ sub.Agent = (*checkpointStubAgent)(nil)
+
+func (a *checkpointStubAgent) ID() string                  { return a.id }
+func (a *checkpointStubAgent) Type() models.AgentType      { return a.typ }
+func (a *checkpointStubAgent) Status() models.AgentStatus  { return models.AgentStatusReady }
+func (a *checkpointStubAgent) Start(context.Context) error { return nil }
+func (a *checkpointStubAgent) Stop(context.Context) error  { return nil }
+func (a *checkpointStubAgent) Process(context.Context, any) (any, error) {
+	return nil, nil
+}
+func (a *checkpointStubAgent) ProcessStream(context.Context, any) (<-chan base.AgentEvent, error) {
+	return nil, nil
+}
+func (a *checkpointStubAgent) Execute(_ context.Context, task *models.Task) (*models.TaskResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.executed = append(a.executed, task.TaskID)
+	if task.Payload != nil {
+		if cp, ok := task.Payload["checkpoint"]; ok && cp != nil {
+			a.checkpoint = cp
+			a.observed = true
+		}
+	}
+	res := models.NewTaskResult(task.TaskID, task.AgentType)
+	res.SetSuccess(nil, "recovery executor completed")
+	return res, nil
+}
+func (a *checkpointStubAgent) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	res, err := a.Execute(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
+
+func (a *checkpointStubAgent) didObserveCheckpoint() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.observed
+}
+
+func (a *checkpointStubAgent) getCheckpoint() any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.checkpoint
+}
+
+// TestW1RecoveryClosureE2E verifies the W1 production-grade recovery闭环:
+//
+//	Task → executor A executes quantum#1 (writes checkpoint) → A crashes
+//	(lease expiry) → recovery loop → replacement executor A' registered →
+//	scheduler schedules A' → A' observes A's checkpoint → COMPLETE.
+//
+// The test proves:
+//  1. The replacement executor is a real registered executor (not phantom).
+//  2. The replacement observes the dead agent's preserved checkpoint.
+//  3. The task completes via the new executor.
+//  4. RequeueExpiredLeases → bound replacement registration have a caller
+//     through the real recovery loop.
+func TestW1RecoveryClosureE2E(t *testing.T) {
+	// Build a fabric with one task.
+	f := taskfabric.NewFabric()
+	if err := f.Create(&taskfabric.Task{
+		ID:          "w1-task",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
+		Checkpoint: fabricTaskMeta{
+			StepCheckpoint: map[string]any{"step": 1, "data": "quantum-1-output"},
+		},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Acquire and yield to simulate quantum#1 execution with a checkpoint.
+	epoch, err := f.Acquire("w1-task", "agent-A", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := f.Start("w1-task", "agent-A", epoch); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := f.Yield("w1-task", "agent-A", epoch, fabricTaskMeta{
+		StepCheckpoint: map[string]any{"step": 1, "data": "quantum-1-output"},
+	}); err != nil {
+		t.Fatalf("yield: %v", err)
+	}
+
+	// Verify the task is SUSPENDED with the checkpoint preserved.
+	tk, _ := f.Task("w1-task")
+	if tk.State != taskfabric.StateSuspended {
+		t.Fatalf("task must be SUSPENDED after yield, got %s", tk.State)
+	}
+	if tk.Checkpoint == nil {
+		t.Fatal("task must have a preserved checkpoint after yield")
+	}
+
+	// Expire the lease to simulate agent A's death.
+	f.WithClock(func() time.Time { return time.Now().Add(10 * time.Minute) })
+
+	// Build the recovery subsystem and scheduler.
+	agents := agentfabric.NewFabric()
+	recovery := aresrecovery.New(f, agents, aresrecovery.DefaultRestartPolicy())
+
+	// The replacement executor that will be created by the factory.
+	replacement := &checkpointStubAgent{id: "replacement-A", typ: models.AgentType("code")}
+
+	// Build the scheduler with NO initial executors (simulating A's death —
+	// the only executor is gone). The recovery loop will register the
+	// replacement dynamically.
+	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{}, nil)
+	sched.pollInterval = 20 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Register the replacement via the recovery loop's factory. The
+	// registerFn binds the executor to the specific recovered task.
+	registerFn := func(taskID, agentID string, executor CapabilityExecutor) {
+		sched.RegisterExecutorForTask(taskID, agentID, executor)
+	}
+	// Override the replacement to use our checkpoint-recording stub.
+	factoryFn := func(agentID, capability string) CapabilityExecutor {
+		replacement.id = agentID
+		return replacement
+	}
+	// No registered executor can resume the task (the scheduler starts empty),
+	// so the recovery loop must spawn a replacement.
+	hasCapable := func(taskID string) bool { return sched.HasCapableExecutor(taskID) }
+
+	// Start the recovery loop with the W1 full recovery chain.
+	go runKernelRecoveryLoop(ctx, nil, recovery, kernelLoopConfig{
+		RecoverySweepInterval: 50 * time.Millisecond,
+		RecoverySweepTimeout:  5 * time.Second,
+	}, registerFn, factoryFn, hasCapable)
+
+	// Start the scheduler.
+	go sched.Run(ctx)
+
+	// Wait for the task to complete via the replacement executor.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("w1-task")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Assert: task completed.
+	tk, err = f.Task("w1-task")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.State != taskfabric.StateCompleted {
+		t.Fatalf("task must be COMPLETED by replacement executor, got state %s", tk.State)
+	}
+
+	// Assert: the replacement executor observed the checkpoint from quantum#1.
+	if !replacement.didObserveCheckpoint() {
+		t.Fatal("replacement executor must observe the dead agent's checkpoint")
+	}
+	// The checkpoint rides inside a fabricTaskMeta envelope. After the fabric's
+	// yield→requeue→toModelTask path it may arrive as a map[string]any (the
+	// fabric stores Checkpoint as any, and the scheduler's toModelTask
+	// unwraps the envelope and places the StepCheckpoint into
+	// payload["checkpoint"]). Either form is valid as long as the step data is
+	// preserved.
+	cp := replacement.getCheckpoint()
+	switch v := cp.(type) {
+	case fabricTaskMeta:
+		step, ok := v.StepCheckpoint.(map[string]any)
+		if !ok {
+			t.Fatalf("step checkpoint must be a map, got %T", v.StepCheckpoint)
+		}
+		if step["data"] != "quantum-1-output" {
+			t.Fatalf("checkpoint data must be 'quantum-1-output', got %v", step["data"])
+		}
+	case map[string]any:
+		if v["data"] != "quantum-1-output" {
+			t.Fatalf("checkpoint data must be 'quantum-1-output', got %v", v["data"])
+		}
+	default:
+		t.Fatalf("checkpoint must be fabricTaskMeta or map[string]any, got %T", cp)
+	}
+}
+
+// TestW1RegisterExecutorDynamic verifies the scheduler's dynamic executor
+// registration: a task that was unschedulable (no capable candidate) becomes
+// schedulable after RegisterExecutor injects a matching executor.
+func TestW1RegisterExecutorDynamic(t *testing.T) {
+	f := taskfabric.NewFabric()
+	if err := f.Create(&taskfabric.Task{
+		ID:          "reg-task",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Scheduler with no executors — task is unschedulable.
+	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{}, nil)
+	sched.pollInterval = 20 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx)
+
+	// Wait a bit to confirm the task stays READY (no executor).
+	time.Sleep(100 * time.Millisecond)
+	tk, _ := f.Task("reg-task")
+	if tk.State != taskfabric.StateReady {
+		t.Fatalf("task must stay READY with no executor, got %s", tk.State)
+	}
+
+	// Dynamically register an executor.
+	executor := &stubAgent{id: "dynamic-1", typ: models.AgentType("code")}
+	sched.RegisterExecutor("dynamic-1", executor)
+
+	// Wait for the task to be scheduled and completed.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("reg-task")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	tk, _ = f.Task("reg-task")
+	if tk.State != taskfabric.StateCompleted {
+		t.Fatalf("task must be COMPLETED after dynamic executor registration, got %s", tk.State)
+	}
+}
+
+// TestW1UnregisterExecutor verifies that unregistering an executor removes it
+// from the scheduling candidate pool.
+func TestW1UnregisterExecutor(t *testing.T) {
+	f := taskfabric.NewFabric()
+	executor := &stubAgent{id: "removable", typ: models.AgentType("code")}
+	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"removable": executor}, nil)
+
+	// Verify it's registered.
+	if count := sched.executorCount(); count != 1 {
+		t.Fatalf("expected 1 executor, got %d", count)
+	}
+
+	// Unregister.
+	sched.UnregisterExecutor("removable")
+	if count := sched.executorCount(); count != 0 {
+		t.Fatalf("expected 0 executors after unregister, got %d", count)
+	}
+
+	// Lookup must return false.
+	if _, ok := sched.lookupExecutor("removable"); ok {
+		t.Fatal("lookup must return false after unregister")
 	}
 }

@@ -181,7 +181,7 @@ type kernelHandle struct {
 	fabric    *taskfabric.Fabric
 	agents    *agentfabric.Fabric
 	recovery  *aresrecovery.Recovery
-	executors map[string]sub.Agent
+	executors map[string]CapabilityExecutor
 	// taskDispatcher is the batch adapter the leader calls (kernelTaskDispatcher).
 	// Retained so the live flip can inject the fabric for result read-back.
 	taskDispatcher *kernelTaskDispatcher
@@ -235,10 +235,10 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 		// self-sufficient for the result contract.)
 		kernel.fabric = kernel.fabric.WithEventStore(store)
 	}
-	kernel.executors = make(map[string]sub.Agent, len(subAgents))
+	kernel.executors = make(map[string]CapabilityExecutor, len(subAgents))
 	for _, a := range subAgents {
 		if a != nil {
-			kernel.executors[a.ID()] = a
+			kernel.executors[a.ID()] = a // sub.Agent satisfies CapabilityExecutor
 		}
 	}
 	// The batch dispatcher reads the worker's structured output back from the
@@ -393,7 +393,15 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 	// 2025-01-16 #2) at the Kernel level — the runtime reacts to TaskAcquired/
 	// Yielded/Expired events instead of a command loop. The loop's interval
 	// and per-sweep timeout come from config (M3); absent knobs use defaults.
-	go runKernelRecoveryLoop(ctx, store, kernel.recovery, parseKernelLoopConfig(cfg))
+	//
+	// The leader path is REQUeue-only: the configured sub-agents are already
+	// registered as scheduler executors, so an expired lease simply returns the
+	// task to READY and an existing capable executor resumes it from its
+	// preserved checkpoint (via toModelTask). No replacement executor is
+	// injected here — spawning a synthetic "recovery" executor that claims
+	// success without running the LLM would hijack the task (W1 review). The
+	// peer path (createPeerAgents) wires a real factory + bound registration.
+	go runKernelRecoveryLoop(ctx, store, kernel.recovery, parseKernelLoopConfig(cfg), nil, nil, nil)
 }
 
 // recoverySweepInterval is how often the event-driven recovery loop also
@@ -663,10 +671,21 @@ func runKernelTraceLoop(ctx context.Context, store ares_events.EventStore, trace
 // runKernelRecoveryLoop is the Kernel-level event-driven recovery loop
 // (ares-runtime.md §13 + P5, code-review-2025-01-16 #2). It reacts to task
 // lifecycle events (TaskExpired / TaskFailed / TaskAcquired / TaskYielded) on
-// the shared EventStore and, on each, runs the full recovery chain
+// the shared EventStore and, on each, runs the recovery chain
 // (RequeueExpiredLeases → checkpoint resume → agent restart). A slow periodic
 // sweep complements the event channel because TTL-based lease expiry is only
 // observable by sweeping.
+//
+// W1 recovery闭环: when a factory + registerExecutor + hasCapableExecutor are
+// wired (peer mode), the sweep goes beyond requeue-only. For each task that
+// actually expired this sweep, if no registered executor can resume it, a
+// replacement executor is created and bound to exactly that task
+// (RegisterExecutorForTask), so the recovered task is driven by a real
+// executor — not a phantom, and never a hijacker of other tasks. Bound
+// executors are unregistered by the scheduler once the task reaches a terminal
+// state. When the factory is nil (leader path, chaos/sandbox), the loop is
+// requeue-only: existing registered executors resume the READY tasks from
+// their preserved checkpoints via toModelTask.
 //
 // Each sweep runs ASYNC with a per-sweep timeout (C3): a slow or hung store
 // must neither block the loop's event consumption nor pile up sweeps. A
@@ -681,7 +700,21 @@ func runKernelTraceLoop(ctx context.Context, store ares_events.EventStore, trace
 //     the periodic sweep still runs).
 //   - recovery: the Recovery subsystem (nil disables the loop).
 //   - cfg: loop knobs; zero values fall back to the package defaults.
-func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, recovery *aresrecovery.Recovery, cfg kernelLoopConfig) {
+//   - registerExecutor: registers a replacement executor bound to a specific
+//     recovered task (W1). nil = requeue-only mode.
+//   - executorFactory: creates a CapabilityExecutor for a replacement agentID
+//     and capability (W1). nil = requeue-only mode.
+//   - hasCapableExecutor: reports whether a registered executor can already
+//     resume the given task, in which case no replacement is spawned.
+func runKernelRecoveryLoop(
+	ctx context.Context,
+	store ares_events.EventStore,
+	recovery *aresrecovery.Recovery,
+	cfg kernelLoopConfig,
+	registerExecutor func(taskID, agentID string, executor CapabilityExecutor),
+	executorFactory func(agentID, capability string) CapabilityExecutor,
+	hasCapableExecutor func(taskID string) bool,
+) {
 	if recovery == nil {
 		return
 	}
@@ -732,19 +765,42 @@ func runKernelRecoveryLoop(ctx context.Context, store ares_events.EventStore, re
 				return
 			default:
 			}
-			// Requeue-only recovery (v0.3.0 review Bug 1): RecoverFromAgentDeath
-			// re-acquires each requeued task to a freshly SPAWNED replacement
-			// agent. That replacement is an agentfabric.Agent — NOT one of the
-			// kernelScheduler's registered sub.Agent executors — so nobody can
-			// execute the task; it stalls LEASED until its 1-minute lease
-			// expires (the phantom-agent bug). The kernel owns execution via
-			// the scheduler, which resumes READY tasks from the preserved
-			// checkpoint (toModelTask), so the kernel needs only the lease
-			// expiry → READY requeue half of the chain. RecoverFromAgentDeath
-			// stays for the chaos/sandbox sims where the agent fabric IS the
-			// executor.
-			if requeued := recovery.RequeueExpiredLeases(); requeued > 0 {
-				log.Printf("kernel recovery loop: requeued %d expired task(s)", requeued)
+			// W1 recovery闭环: requeue the tasks whose lease expired THIS
+			// sweep (not all READY tasks — a brand-new task is never a
+			// recovery candidate). For each requeued task, if no registered
+			// executor can already resume it, spawn a replacement executor
+			// and bind it to exactly that task. The scheduler unregisters the
+			// bound executor once the task reaches a terminal state.
+			//
+			// When executorFactory / registerExecutor are nil (leader path,
+			// tests, chaos/sandbox), the loop is requeue-only: the scheduler
+			// picks up the READY task with an existing executor and resumes
+			// from the preserved checkpoint via toModelTask.
+			requeued := recovery.RequeueExpiredLeases()
+			if len(requeued) == 0 {
+				return
+			}
+			log.Printf("kernel recovery loop: requeued %d expired task(s)", len(requeued))
+			if registerExecutor == nil || executorFactory == nil || hasCapableExecutor == nil {
+				return // requeue-only mode
+			}
+			for _, taskID := range requeued {
+				if hasCapableExecutor(taskID) {
+					continue // an existing executor resumes this task
+				}
+				tasks := recovery.RecoveryTasksFor([]string{taskID})
+				if len(tasks) == 0 {
+					continue
+				}
+				rt := tasks[0]
+				replacementID := fmt.Sprintf("recovery-%s-%d", taskID, time.Now().UnixNano())
+				executor := executorFactory(replacementID, rt.Capability)
+				if executor == nil {
+					log.Printf("kernel recovery loop: executor factory returned nil for %s (%s)", replacementID, rt.Capability)
+					continue
+				}
+				registerExecutor(taskID, replacementID, executor)
+				log.Printf("kernel recovery loop: replacement executor %q bound to task %q", replacementID, taskID)
 			}
 		}()
 	}

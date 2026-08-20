@@ -107,13 +107,15 @@ func (r *Recovery) spawnAgent(ctx context.Context, spec agentfabric.SpawnSpec) (
 }
 
 // RequeueExpiredLeases sweeps the Task Fabric for expired leases and returns
-// the number of tasks requeued to READY (design: lease expiry → requeue).
+// the ids of every task requeued to READY (design: lease expiry → requeue).
 // A dead agent's lease expires; the task becomes acquirable again. This is
-// the first recovery path.
+// the first recovery path. The returned ids are the ONLY tasks that were
+// expired — the caller must NOT iterate all READY tasks (which would hijack
+// brand-new tasks unrelated to any crash).
 //
 // Returns:
-//   - int: the number of requeued tasks.
-func (r *Recovery) RequeueExpiredLeases() int {
+//   - []string: the ids of every requeued task (empty when none).
+func (r *Recovery) RequeueExpiredLeases() []string {
 	return r.tasks.CheckExpiredLeases()
 }
 
@@ -234,16 +236,58 @@ func (r *Recovery) RestartCount(agentID string) int {
 //   - int: the number of tasks fully recovered (requeued + checkpoint resumed).
 func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 	requeued := r.RequeueExpiredLeases()
-	if requeued == 0 {
+	if len(requeued) == 0 {
 		return 0
 	}
-	// For each requeued task, resume its checkpoint with a new agent.
-	ready := r.tasks.ReadyTasks()
+	// Resume the checkpoint of exactly the tasks whose lease expired — not
+	// every READY task. A brand-new or released task is not a crash-recovery
+	// candidate and must not be grabbed by a replacement agent.
 	recovered := 0
-	for _, taskID := range ready {
+	for _, taskID := range requeued {
 		if _, _, err := r.RecoverTaskCheckpoint(ctx, taskID, ""); err == nil {
 			recovered++
 		}
 	}
 	return recovered
+}
+
+// RecoveryTask is a snapshot of a task that was requeued from an expired
+// lease (W1). It carries the minimal information the recovery loop needs to
+// spawn a replacement executor: the task ID and its required capability.
+type RecoveryTask struct {
+	// ID is the task identifier.
+	ID string
+	// Capability is the task's required capability (used to match a
+	// replacement executor).
+	Capability string
+	// Checkpoint is the preserved checkpoint from the dead agent (nil when
+	// the task had no checkpoint — a fresh start).
+	Checkpoint any
+}
+
+// RecoveryTasksFor returns a RecoveryTask snapshot for each requeued task id
+// from RequeueExpiredLeases (W1). Only the requeued ids are accepted — the
+// caller must pass exactly the ids returned by RequeueExpiredLeases, never
+// ReadyTasks, so a brand-new READY task is never mistaken for a crash-
+// recovery candidate.
+//
+// Args:
+//   - taskIDs: the ids returned by RequeueExpiredLeases.
+//
+// Returns:
+//   - []RecoveryTask: the tasks ready for recovery (empty when none).
+func (r *Recovery) RecoveryTasksFor(taskIDs []string) []RecoveryTask {
+	out := make([]RecoveryTask, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		t, err := r.tasks.Task(taskID)
+		if err != nil {
+			continue
+		}
+		out = append(out, RecoveryTask{
+			ID:         t.ID,
+			Capability: t.Capability,
+			Checkpoint: t.Checkpoint,
+		})
+	}
+	return out
 }

@@ -145,7 +145,7 @@ flowchart TB
     Core --- Chaos
 ```
 
-ARES uses a Leader-Sub architecture communicating via the AHP (Agent Heartbeat Protocol). The Leader handles planning, dispatching, and aggregation; Sub-Agents execute tasks in parallel.
+ARES uses a Peer Agent architecture where all agents are equal first-class cognitive processes (no Leader/Worker hierarchy). The Kernel provides scheduling, IPC, lifecycle, and recovery. Agents communicate via the AHP (Agent Heartbeat Protocol) and are scheduled by capability matching. The legacy Leader-Sub model is retained as a compatibility layer (kernel.policy=legacy).
 
 ### tRPC-Agent-Go — Go-Native Agent Runtime + Graph Workflows
 

@@ -1,24 +1,4 @@
-对。现在目标已经非常清楚了。
-
-而且我建议你从现在开始，不要再把 ARES 描述成 Agent Framework。你真正要做的是：
-
-ARES = Agent Operating System / Agent Runtime Kernel
-
-Agent 不再是 Runtime 调用的函数，而是 Kernel 管理的认知计算实体。
-
-Agent decides. Kernel schedules.
-
-不过要注意一个关键边界：
-
-Agent 类似 thread/process 一样被调度，但不是机械照搬 OS。
-
-OS 调度 CPU instruction；ARES 调度 Agent 的 semantic execution quantum。
-
-下面这份我建议直接作为 ARES 0.3.x → Agent OS 开发计划。
-
-⸻
-
-ARES Agent OS Development Plan
+# ARES Agent OS 开发计划（修订版 v2，2026-08-20）
 
 定位：Agent Operating System
 
@@ -30,12 +10,37 @@ Agent decides. Kernel enforces.
 
 ⸻
 
-核心模型修正（2026-08-19 拍板）
+## 0. 修订说明（v2 为什么改这份计划）
+
+v1（2026-08-19）把 P0-P6 定义为「库能力 + 局部验收」，据此项目完成度约 **80%~85%**。
+但 v1 真正想要的结果——真实 LLM Agent 自主决定拆分、Kernel 调度 Task、Peer Agent 通过
+IPC 协作、Agent 死亡后由新 Agent 从 checkpoint 继续执行、最终不依赖 Leader 完成任务——
+目前完成度约 **60%~65%**。
+
+差距的根源不是缺原语，而是**「旧 Leader 入口 + 新 Task Fabric 执行器」的混合架构仍然是
+生产默认路径**。taskfabric / agentfabric / agentipc / aresrecovery 四个子系统各自完整，
+但还没有被一条真实 Agent 执行的生产闭环串起来。v1 附件 A-E 把它们串了起来，只存在于
+库层测试与确定性 demo，不构成生产 runtime 验收。
+
+本修订（2026-08-20，依据全面现状核对，见 §3）做四件事：
+
+1. 保留 v1 的「核心模型修正」（§1）、「总体模型」（§2）、「四条架构纪律」（§7）——
+   它们是架构基石，不改。
+2. 用诚实基线（§3）替换旧版附件 A-E 的过度乐观结论。
+3. 把开发顺序从「P0-P6 阶段」改写为「W1-W5 五档工作」（§4-§6）——重心从补 API
+   转移到把已有原语合并成真实闭环。
+4. 重新定义最终验收（§6）：确定性 demo 降级为单元级验收，真实 runtime E2E 才是完成依据。
+
+**一句话：v2 的剩余工作不是再添加一个 API，而是打通生产闭环。**
+
+⸻
+
+## 1. 核心模型修正（2026-08-19 拍板，保留不变）
 
 > 本节是对上面「定位」与下面「0. 总体模型」的精确化。它不是新增阶段，而是
-> 定义 ARES 模型的不可动摇的边界。所有阶段（P0-P6）的实现都必须符合本节。
+> 定义 ARES 模型的不可动摇的边界。所有阶段（P0-P6 / W1-W5）的实现都必须符合本节。
 
-1. Agent 本身没有等级
+### 1.1 Agent 本身没有等级
 
 ARES 的模型里不存在 Leader / Worker / SubAgent 这些角色。所有 Agent 在 Kernel
 看来完全平等，只有一行：
@@ -54,7 +59,7 @@ Current Load、Resources。
 
 而不是：Role = Leader / Worker / Sub。
 
-2. Agent 可以自主决定“我要怎么完成任务”
+### 1.2 Agent 可以自主决定"我要怎么完成任务"
 
 Kernel 从不告诉 Agent「先让 B 分析、再让 C 审查、最后你汇总」。Agent 自己认知
 任务复杂度，自己决定是否需要协作、需要谁、怎么拆，然后自己发起 Spawn /
@@ -63,7 +68,7 @@ Request / Delegate。Kernel 不干预这个语义决策。
 Agent 甚至可以完全独立完成一个复杂任务（「这个我自己能做」→ 自己执行）。
 协作与否是 Agent 的认知产物，不是框架预定义。
 
-3. Spawn 建立的是 provenance，不是 hierarchy
+### 1.3 Spawn 建立的是 provenance，不是 hierarchy
 
 A ──spawn──> B 只意味着「B 是由 A 创建的」，绝不意味着「B 是 A 的下属」。
 
@@ -81,7 +86,7 @@ Process / Provenance Graph          Scheduling / Task Graph
 
 同一对 Agent 可以出现在两个图里，但关系含义完全不同。
 
-4. 协作关系是运行时动态形成的
+### 1.4 协作关系是运行时动态形成的
 
 传统 Multi-Agent：Team = { Planner, Researcher, Coder, Reviewer }，角色提前定义。
 
@@ -92,7 +97,7 @@ ARES：Agent A 接到任务 → 自己判断是否需要协作 →
 
 Agent topology 是运行时动态形成的，而不是架构预定义的。
 
-5. Scheduler 只看能力，不看身份等级
+### 1.5 Scheduler 只看能力，不看身份等级
 
 Kernel 可以记录 Agent B 的 Parent = A，但该字段的用途只有 provenance /
 lifecycle / debug / audit，绝不用于：authorization、scheduling priority、
@@ -107,7 +112,7 @@ A spawn B 不导致 A > B；B spawn C 不导致 B > C。
 
 C 拿到任务不是因为它是 Leader，也不是因为它是 Parent，只是因为 C 当前最适合。
 
-6. Agent 可以自主产生新的工作
+### 1.6 Agent 可以自主产生新的工作
 
 Agent 不只是 execute(task)，而是完整的认知循环：
 
@@ -119,7 +124,7 @@ Task Created → Ready → Schedule → Acquire → Execute。
 
 Kernel 不负责：「为什么应该创建这个 Task？」——这是 Agent 的认知问题。
 
-7. 三个平面
+### 1.7 三个平面
 
 ARES 的完整模型是三个正交平面：
 
@@ -140,7 +145,7 @@ ARES 的完整模型是三个正交平面：
   Can this task run? What happens if you die?
 - IPC：Tell / Ask / Reply / Delegate / Handoff / Subscribe。
 
-8. 因此 ARES 的核心定义修正为
+### 1.8 因此 ARES 的核心定义修正为
 
 之前：Agents are autonomous cognitive processes…
 
@@ -167,9 +172,9 @@ Kernel 不负责替 Agent 做这些认知决策，只负责提供这些决策能
 
 对 Evolution 的推论：未来 Evolution 优化的是「Peer Agent population +
 scheduling policy」自身，而不是「哪个 Agent 当 Leader」。但这条先不做，
-等 Kernel 真跑起来再谈。
+等 Kernel 真跑起来再谈（见 §6.4 W4）。
 
-9. OS 类比的边界：像到什么程度，不像到什么程度（2026-08-19 收敛）
+### 1.9 OS 类比的边界：像到什么程度，不像到什么程度（2026-08-19 收敛）
 
 「Agent ≈ thread」说的是**运行时抽象与生命周期关系**，不是把 LLM 执行做成
 CPU thread 的硬实时实现：
@@ -205,7 +210,7 @@ Agent 在 quantum 边界自行决定继续 / yield / checkpoint / 完成。
 
 ⸻
 
-0. 总体模型
+## 2. 总体模型（保留不变）
 
 最终 ARES 不再是：
 
@@ -257,1146 +262,428 @@ Kernel 决定：
 
 ⸻
 
-P0 — Task Kernel ✅
+## 3. 现状基线（2026-08-20 全面核对）
 
-你现在已经完成。
+> 核对方法：逐项对照 v1 计划（aresos-plan.md v1）与代码库实际状态。
+> 覆盖：internal/taskfabric、internal/agentfabric、internal/agentipc、
+> internal/aresrecovery、cmd/ares（kernel/scheduler/serve）、examples/aresos-demo。
+> 测试复核：`go test -race ./internal/taskfabric ./internal/agentfabric
+> ./internal/agentipc ./internal/aresrecovery ./cmd/ares` 全部通过（2026-08-20）。
+>
+> ⚠️ 本节为 W1-W5 开工前的基线快照；G1/G3/G4/G6 已由 W1-W4 闭环（见 §5-§9 完成状态），
+> 当前进度以 §5-§9 为准。
 
-目标
+### 3.1 已完成：库层基础设施
 
-建立 ARES 最基础的 durable work substrate。
+| 阶段 | 代码位置 | 状态 |
+|---|---|---|
+| P0 Task Kernel（Task/Lease/Epoch/CAS Acquire/Release/Checkpoint/Yield/Complete/Fail/Lease Expiry） | `internal/taskfabric` | ✅ |
+| P1.1 Execution Quantum（RunQuantum/ExecuteStep/ReAct 单轮 checkpoint/yield/resume） | `internal/taskfabric/quantum.go`、`cmd/ares/scheduler.go` | ✅ |
+| P1.2/P1.3 队列与 stealing（共享 ReadyTasks 并发 drain 取代 per-agent queue + 显式 steal） | `cmd/ares/scheduler.go` | ⚠️ 语义完成，形态不同（已决策保留） |
+| P2.1 DAG Ready（依赖完成后任务进入 READY，event-driven drain） | `internal/taskfabric/dag.go`、`cmd/ares/scheduler.go` | ✅ |
+| P2.2 协作式抢占（高优任务在 quantum 边界 preempt，checkpoint 保留） | `internal/taskfabric/preempt_test.go` | ✅ |
+| P2.3 Event Store（生命周期事件写入 + 事件重建测试） | `internal/ares_events`、`internal/taskfabric/event_store_test.go` | ✅ 库层；持久化语义见 W3 |
+| P3.1 Cognitive State（CognitiveState/checkpoint/恢复接口） | `internal/agentfabric` | ✅ |
+| P3.2 Context 三层（ContextView/SetTaskContext/SetPrivate + 隔离测试） | `internal/agentfabric/context.go` | ✅ |
+| P3.3 Spawn（SpawnSpec/资源预算校验/provenance） | `internal/agentfabric`、`internal/aresrecovery` | ✅ 原语完成；生产 syscall 见 W2 |
+| P4 Peer IPC（Send/Request/Reply/Delegate/Handoff/Subscribe） | `internal/agentipc` | ✅ 原语 + 局部生产接线 |
+| P5 Recovery（lease expiry/requeue/checkpoint/replacement agent） | `internal/aresrecovery` | ✅ 库层完成；生产接线见 W1 |
+| P6 Evolution（population/quota/spawn policy 接线） | `cmd/ares/serve_routine.go`、`internal/aresrecovery` | 🟡 接线完成，无反馈闭环，见 W4 |
 
-Task 不依附于 Agent。
+### 3.2 未完成：真实闭环（v2 要做的核心）
 
-Agent 💀
-   │
-   X
-   │
-Task ──────────► survives
+| # | 缺口 | 当前事实（代码证据） |
+|---|---|---|
+| G1 | 生产恢复不产生可执行 Agent | `cmd/ares/kernel.go` 恢复循环只 `RequeueExpiredLeases()`；`aresrecovery.RecoverTaskCheckpoint` 生成的 `agentfabric.Agent` 不是 scheduler 注册的 `sub.Agent` executor——kernel.go 注释原文称之为 phantom-agent bug（"nobody can execute the task; it stalls LEASED"）。`RecoverFromAgentDeath`/`RecoverTaskCheckpoint` 生产零调用。 |
+| G2 | 真实 LLM 不会自主 Spawn / Create Task | 生产 LLM executor（`sub.Agent`）没有受 Kernel 校验的 spawn syscall/tool；`Spawn` 只出现在单元/E2E 测试、`examples/aresos-demo`、recovery/evolution adapter。生产路径是 Leader.Process → TaskPlanner → TaskDispatcher → fabric。 |
+| G3 | Leader 仍是必经入口 | `cmd/ares/agents.go` 恒建 `leader.Agent`+`sub.Agent`+`TaskPlanner`+`TaskDispatcher`；`cmd/ares/serve_routine.go:212` 恒调用 `createAgents`；无 Leader OFF 启动模式；scheduler executor registry 是 `map[string]sub.Agent`。 |
+| G4 | 事件持久化 best-effort | `internal/taskfabric/fabric.go:500`：store append 失败 `_ = err`。内存状态已变、EventStore 未写，重启后事件日志与内存状态可能不一致。 |
+| G5 | checkpoint 无正式 schema | `taskfabric.Task.Checkpoint any`（task.go:23），经 `fabricTaskMeta` envelope 传递；Task Shared / Agent Private / IPC 三类数据边界未固化；无版本迁移策略。 |
+| G6 | Evolution 无反馈闭环 | 三个 loop（`kernel.go:526/572/684`）只在 `evolution.enabled` 时接线（`ares.yaml` 当前为 false），且只把 StrategyStore 参数应用到 Kernel；无运行结果归因、无失败率/成功率回写 scheduler scoring。 |
+| G7 | 文档/示例仍是旧叙事 | `README.md` 保留 Leader/sub/team；`examples/04-multi-agent`、`examples/26-runtime-scheduling-demo` 是 legacy 叙事；`ares.yaml` 仍是 `agents.leader` + `agents.sub[type]`。 |
 
-已完成
+### 3.3 与 v1 附件的差异裁决
 
-Task
-Lease
-Epoch
-CAS Acquire
-Release
-Checkpoint
-Yield
-Complete
-Fail
-Lease Expiry
-Event
-
-核心：
-
-Acquire(taskID, agentID, ttl) (epoch, error)
-Release(taskID, agentID, epoch) error
-Yield(taskID, agentID, epoch, checkpoint)
-Checkpoint(taskID, state) error
-
-验收
-
-竞争
-
-Agent A ──┐
-          ├── Acquire(Task X)
-Agent B ──┘
-
-只能一个成功。
-
-fencing
-
-A epoch=1
- ↓
-lease expired
-B epoch=2
- ↓
-acquire
-A late Release(epoch=1)
- ↓
-REJECT
-
-Recovery
-
-Agent A 💀
-    ↓
-lease expired
-    ↓
-Task → READY
-    ↓
-Agent B
-
-验收标准
-
-* go test -race ./...
-* CAS 正确
-* Epoch fencing 正确
-* Lease expiry 正确
-* Event 可重建 Task State
+1. v1 附件 B3/E 声称「P3.4 端到端 + grand loop 已落地」——**准确但仅限库层**。
+   `internal/agentfabric/e2e_grand_loop_test.go` 等测试确实通过，但它们直接操作
+   fabric/agentipc API，不经过生产路径。
+2. v1 附件 E 声称「状态：✅ 已落地」——**demo 结果是硬编码的**
+   （`examples/aresos-demo/main.go:203`：`decision := "report: 17 unsafe blocks, ..."`），
+   且全程手动 `SetCognitiveState`/`Spawn`/`Kill`/`A2`。它能证明「API 组合逻辑」，
+   不能证明「ARES 真实 Agent OS runtime 已完成」。
+3. v1 附件 P5「requeue-only + scheduler 重新调度」被当作生产恢复——**与计划最初要求
+   「新 Agent 从 checkpoint 恢复」有差别**：恢复的是 Task 执行，不是新的
+   agentfabric.Agent 执行实体恢复（即 G1）。
+4. v1 附件 P1.2/P1.3「共享队列并发 drain 已决策保留」——**维持**，除非 profiling
+   证明共享队列成为瓶颈。
 
 ⸻
 
-P1 — Semantic Scheduler
+## 4. 修订后的开发计划：W1-W5 五档工作
 
-这是现在最重要的一阶段。
+### 4.0 总体顺序（2026-08-20 冻结）
 
-目标不是调度 Agent。
+| 档位 | 核心问题 | 完成后的能力 | 依赖 |
+|---|---|---|---|
+| W1 | 恢复能不能让**新 Agent** 真正接续执行？ | 生产级恢复闭环（phantom-agent 消除） | 无 |
+| W2 | 真实 Agent 能不能自主拆任务 + 无 Leader 也完成任务？ | 自主性 + Leader OFF 验收 | W1（恢复为自主 spawn 的底） |
+| W3 | 事件与 checkpoint 够不够 durable？ | 一致性语义 + 固化协议 | W1（replacement 消费 checkpoint） |
+| W4 | Evolution 能不能用运行结果改变下一轮调度？ | 完整反馈闭环 | W2（真实执行数据来源） |
+| W5 | 代码之外的世界还旧吗？ | 文档/示例/配置对齐 | 可并行 |
 
-目标是：
-
-让 Agent 的执行第一次变成可让出的 Quantum。
-
-⸻
-
-P1.1 Execution Quantum
-
-现在：
-
-Agent.Run(Task)
-       │
-       └──────────────► 完成
-
-改成：
-
-Agent
- │
- ├── Quantum 1
- │
- ├── yield
- │
- ├── Quantum 2
- │
- ├── yield
- │
- └── Quantum N
-        │
-        ▼
-      complete
-
-一个 Quantum 可以是：
-
-reason
-→ tool call
-→ observation
-→ checkpoint
-
-而不是 CPU instruction。
+> 明确的非目标（不测，同 v1）：CANCELLED/ZOMBIE 进程状态、墙钟时间片/硬抢占 LLM、
+> CFS/PCB 级上下文切换、per-agent CPU 队列、模拟 Linux CFS 调度。
 
 ⸻
 
-API
+## 5. W1 生产级恢复闭环（最优先） ✅ 已完成
 
-保持简单：
+> **完成状态 (2026-08-20，code review 修复后)**：W1 全部完成。初版实现（
+> `newReplacementExecutor`/`replacementExecutor`/`TasksReadyForRecovery`）经 code
+> review 发现两个致命缺陷后被替换：① 恢复循环对**所有** READY 任务注册替换 executor，
+> 劫持新建任务并以罐头成功完成；② 生产替换 executor 是假实现，不读 checkpoint、不跑
+> LLM。修复后的最终形态：
+>
+> - ✅ scheduler 支持 executor 动态注册/注销（`RegisterExecutor`/`UnregisterExecutor`，
+>   线程安全，`execMu` 保护）
+> - ✅ **任务绑定注册** `RegisterExecutorForTask(taskID, agentID, executor)`：替换
+>   executor 只服务被恢复的那一个任务（`execute()` 对绑定任务只给该 executor 当候选，
+>   绑定 executor 对其它任务一律排除）；任务到终态（COMPLETED/FAILED）自动
+>   `UnregisterExecutor`，注册表不会无界增长
+> - ✅ `CheckExpiredLeases()`/`RequeueExpiredLeases()` 改为返回**实际过期任务 ID 列表**
+>   （`[]string`），恢复链只处理本次真正过期的任务，不再扫描全部 READY
+> - ✅ 恢复循环升级为完整恢复链：requeue → 若无可用 executor 才 spawn replacement →
+>   **绑定到具体任务** → 注册 → resume quantum；`hasCapableExecutor` 门控避免无谓 spawn
+> - ✅ checkpoint 被真实 executor 消费：`toModelTask`/`extractTaskMeta` 解码
+>   `fabricTaskMeta` 与 create_task 的 `FabricTaskMetaEnvelope`，StepCheckpoint 作为
+>   `payload["checkpoint"]` 供续跑
+> - ✅ **生产恢复使用真实 executor**：peer 模式恢复 factory 用 `newPeerExecutor`
+>   （完整 sub.Agent + LLM + tools），从 checkpoint 真实续跑；leader 路径 requeue-only
+>   （已有 sub-agent executor 直接续跑）
+> - ❌ 已删除：`newReplacementExecutor`/`replacementExecutor`（罐头成功假实现）、
+>   `TasksReadyForRecovery()`（返回全部 READY 的劫持源头）
+> - ✅ E2E 测试 `TestW1RecoveryClosureE2E`：checkpoint 消费 + 绑定注册 + 真实 crash 路径
+> - ✅ `TestW1RegisterExecutorDynamic` / `TestW1UnregisterExecutor`：动态注册/注销
+> - ✅ `RecoverFromAgentDeath` / `RecoverTaskCheckpoint` 存在生产调用者
+>   （`runKernelRecoveryLoop`）
 
-RunQuantum(
-    taskID string,
-    agentID string,
-    epoch uint64,
-    step QuantumStep,
-) error
+### 5.1 目标
 
-结果：
+把 `aresrecovery` 从「库测试通过」升级为「生产恢复真实成立」：
+Agent 死亡后，Kernel 创建新 Agent A'，A' 从旧 Agent 的 CognitiveState checkpoint
+恢复，**注册为 scheduler 可执行的 executor**，并从 checkpoint 继续执行后续 quantum。
 
-type QuantumResult struct {
-    Checkpoint *Checkpoint
-    Done       bool
-    Err        error
-}
+### 5.2 现状
 
-语义：
+- `kernelScheduler.executors map[string]sub.Agent`——scheduler 只能执行已注册的
+  `sub.Agent`。
+- `cmd/ares/kernel.go` 恢复循环只做 `RequeueExpiredLeases()`，新任务由 scheduler
+  从**已有** executor 池重新选择（"旧 Agent 死亡 → Task READY → 已有 executor 接手"）。
+- `aresrecovery.RecoverTaskCheckpoint` / `RestartAgent` 能生成 `agentfabric.Agent`，
+  但它没有 `ExecuteStep`，也不是 scheduler 注册的 executor → phantom-agent bug：
+  任务被 LEASED 却无人能执行，直到 lease 过期。
 
-Done
- ↓
-COMPLETED
-Err
- ↓
-FAIL / retry
-!Done
- ↓
-SUSPENDED
+### 5.3 工作项
 
-⸻
+1. **scheduler 支持 executor 动态注册/注销**：`kernelScheduler` 增加
+   `RegisterExecutor(agentID, executor)` / `UnregisterExecutor(agentID)`，
+   线程安全，供恢复路径在运行时注入 replacement。
+2. **让 replacement agent 具备 ExecuteStep 能力**：为 `agentfabric.Agent` 增加
+   `ExecuteStep`（或建立 adapter 到 `sub.Agent` executor 接口），使恢复出的实体
+   能被 scheduler 真正执行。
+3. **replacement agent 注册进 scheduler**：`aresrecovery` 恢复链路完成后，把新
+   agent 注册为 executor；恢复失败时回滚注册并释放 lease。
+4. **checkpoint 被实际 executor 消费**：A' 的 `ExecuteStep` 输入必须包含 A 写入
+   checkpoint 的 `StepCheckpoint`（`cmd/ares/scheduler.go` 的 `toModelTask` 已具备
+   解码能力，恢复路径要复用同一解码逻辑）。
+5. **kernel recovery loop 升级为完整恢复链**：`cmd/ares/kernel.go` 的
+   `runKernelRecoveryLoop` 从「只 requeue」改为「requeue → spawn replacement →
+   register executor → acquire → resume quantum」，消除 phantom-agent 降级路径。
+6. **失败注入走真实路径**：新增 E2E 必须通过 lease expiry / crash path 触发恢复，
+   禁止测试直接手动创建 A2。
 
-P1.2 AgentQueue
+### 5.4 验收
 
-建立最简单的：
-
-AgentQueue
-
-但注意：
-
-这是 Agent 的执行队列，不是 AgentScheduler。
-
-例如：
-
-Agent A
- ├── Task 1
- ├── Task 5
- └── Task 8
-
-Scheduler 从 Ready Tasks 中选择 Agent：
-
-Task
- ↓
-Capability match
- ↓
-Load
- ↓
-Confidence
- ↓
-Priority
- ↓
-Acquire
- ↓
-Agent Queue
-
-⸻
-
-P1.3 Work Stealing
-
-空闲 Agent：
-
-Agent C idle
-
-检查：
-
-Agent A queue
-Agent B queue
-
-找到：
-
-Task requires rust
-Agent C supports rust
-
-然后：
-
-Steal
- ↓
-Acquire
- ↓
-execute
+- 连续 E2E：Task → executor A 执行 quantum#1（写入 checkpoint）→ A 崩溃（真实
+  crash/lease expiry）→ recovery 循环 → 新 executor A' 注册 → scheduler 调度 A'
+  → A' 的 quantum#2 观察到 quantum#1 的中间状态 → COMPLETE。
+- 断言 checkpoint 消费：A' 的 ExecuteStep 输入包含 A 保存的 StepCheckpoint，
+  而不是从零开始。
+- 断言 recovery 后任务由**新** executor 执行（A' 与 A 不是同一实体）。
+- `RecoverFromAgentDeath` / `RecoverTaskCheckpoint` 存在生产调用者（不再是
+  test-only）。
+- 全量 `go test -race ./...` 通过，新增测试覆盖上述路径。
 
 ⸻
 
-P1 验收
+## 6. W2 真实 Agent 自主性与无 Leader 验收 ✅ 已完成
 
-必须能跑出：
+> **完成状态 (2026-08-20)**：W2 全部完成。
+>
+> - ✅ `internal/agentsyscall` 新包：`spawn_agent` / `create_task` Kernel syscall +
+>   校验（capability / quota / provenance）+ `ToolSchemas` + `BindTools`，经共享
+>   ToolBinder 暴露给真实 LLM executor（`sub.Agent`）
+> - ✅ `create_task` 创建真实 Task Fabric Task（Create → READY，payload 经
+>   `FabricTaskMetaEnvelope` 携带，`toModelTask`/`extractTaskMeta` 解码）
+> - ✅ `spawn_agent` 经 `CognitionFactory`/ExecutorFactory 产出完整 sub.Agent 并注册为
+>   scheduler executor（生产路径 `createPeerAgents` 注入真实 factory）
+> - ✅ 无 Leader 启动模式：`kernel.leader_enabled: false`（`KernelConfig.LeaderEnabled`，
+>   默认 nil→true 兼容）+ `createPeerAgents` + `createAndServeAgents` 按配置分发；
+>   `serve.go` 在 Leader OFF 下跳过 leader 组装/DAG/autopilot
+> - ✅ 调度以 capability 为核心：`CapabilityExecutor` 接口（ID/Type/ExecuteStep）取代
+>   scheduler 对 `sub.Agent` 的强绑定；`minimalCapabilityExecutor` 编译期证明非 sub.Agent
+>   也可调度（W2-5）
+> - ✅ Peer IPC 协作原语（`agentipc`）+ `e2e_spawn_synthesis_test.go` 合成闭环
+> - ✅ 验收测试：Case 1 独立完成 / Case 2 自主拆分 / Case 3 父死子续 / Case 4 真正协作 /
+>   `TestW2LongTaskStability` / `TestW2LeaderOffConfig`
+> - ✅ 旧 Leader 路径标记 legacy compat（`agents.go` 注释、`kernel.policy=legacy`）
 
-Task A
-  │
-  ├── Quantum #1
-  │
-  ├── checkpoint
-  │
-  ├── yield
-  │
-  ├── Quantum #2
-  │
-  └── complete
+### 6.1 目标
 
-测试：
+- 真实 LLM Agent 在运行中**自主判断**是否拆分任务，通过受 Kernel 校验的
+  syscall/tool 创建 Task / Spawn Agent，而不是由 Leader 的 TaskPlanner 预先拆分。
+- 关闭 Leader 后，一组平等 Peer Agent 直接注册到 Kernel，仍能完成任务。
 
-1. Quantum 未完成 → SUSPENDED
-2. Quantum 完成 → COMPLETED
-3. Quantum error → FAILED
-4. stale epoch → reject
-5. Capability Scheduler 选择正确 Agent
-6. Work stealing 能偷
-7. 无能力 Agent 不允许偷
-8. go test -race ./...
+### 6.2 现状
 
-P1 完成后的效果
+- 生产入口固定为：User → `leader.Agent.Process` → `TaskPlanner.Plan` →
+  `leader.TaskDispatcher` → Task Fabric → `sub.Agent`。
+- `agentfabric.Spawn` 的调用只出现在测试、`examples/aresos-demo`、
+  recovery/evolution adapter；真实运行的 LLM executor 没有自主 Spawn 的闭环。
+- `ares.yaml` 仍是 `agents.leader` + `agents.sub[type]`；无 Leader OFF 模式。
 
-这是第一个非常重要的里程碑：
+### 6.3 工作项
 
-ARES 不再是“Task → Agent → Run to completion”。
+1. **给真实 Agent 暴露 spawn syscall/tool**：新增 `spawn_agent` / `create_task`
+   tool（或等价 Kernel syscall），参数经 Kernel 校验（capability / resource /
+   quota），校验通过才创建 Task 并进入 fabric。对真实 LLM executor（`sub.Agent`）
+   与 `agentfabric.Agent` 一致暴露。
+2. **Spawn 结果转换为 Task Fabric Task**：`spawn_agent` 创建真正的
+   `taskfabric.Task`（Create → READY），进入 scheduler 的 ReadyTasks 队列。
+3. **LLM 自主决定拆分**：拆分语义由 Agent cognition 产出（tool call 参数），
+   `TaskPlanner` 不再作为默认拆分者；旧 planner 路径降级为 legacy。
+4. **子任务进入 scheduler**：由 Kernel 统一调度 B/C/D，而不是由 Leader dispatcher
+   管理。
+5. **父 Agent 通过 IPC 收集结果并 synthesis**：A spawn B/C/D 后通过
+   `agentipc`（Request/Reply）收集子结果，自行 synthesis。验证结果确实来自
+   B/C/D 的输出，而不是写死。
+6. **无 Leader 启动模式**：允许一组平等 Agent 直接注册到 Kernel（跳过
+   `createAgents` 的 leader 组装）；`serve_routine.go` 增加 Leader OFF 分支。
+7. **调度以 capability 为核心**：移除 scheduler 对 `sub.Agent` 类型/角色的强绑定，
+   候选打分只依赖 capability + load + confidence + priority。
+8. **旧 Leader 路径标记为 legacy compat**：`wireKernelPolicy` 的 legacy 分支明确
+   标注为兼容层，不是默认心智模型。
 
-而变成：
+### 6.4 验收
 
-Task → Agent → Quantum → Kernel → Agent → Quantum。
-
-此时才真正开始像 Runtime。
-
-⸻
-
-P2 — Task Scheduling Kernel
-
-这一阶段让 Scheduler 真正成为 Kernel 的核心。
-
-⸻
-
-P2.1 DAG Ready
-
-Scheduler 不负责规划 DAG。
-
-只负责：
-
-IsReady(task)
-ReadyTasks()
-
-例如：
-
-A
-├── B
-└── C
-     │
-     ▼
-     D
-
-初始：
-
-A READY
-B WAIT
-C WAIT
-D WAIT
-
-A 完成：
-
-B READY
-C READY
-
-B/C 都完成：
-
-D READY
-
-Scheduler 只问：
-
-“现在谁 ready？”
+- **Case 1（独立完成）**：无 Planner、无 Leader，单个 Agent 自主完成任务 → COMPLETE。
+- **Case 2（自主拆分）**：Agent A 判断任务复杂 → 调用 `spawn_agent` → Kernel 校验
+  → 创建 Task → B/C 进入 scheduler 执行 → A 通过 IPC 收集结果 → A synthesis →
+  COMPLETE。拆分是 A 的 tool call 决定，不是框架预定义。
+- **Case 3（父死子续）**：A 死亡 → B/C 继续 → 被 A spawn 的任务不死亡 →
+  recovery 链路接续（依赖 W1）。
+- **Case 4（真正协作）**：A→B 请求、B→A 回复、B→C 验证、C→D spawn；A ≡ B ≡ C ≡ D，
+  无权限差异。
+- **Leader OFF 验收**：`agents.leader` 关闭后，用户任务仍能完成；调度全程无
+  role/type 参与，只有 capability/load/confidence/priority。
+- 上述 Case 必须通过**真实生产路径**（scheduler + fabric + executor + IPC），
+  不能只靠库层 E2E 测试。
 
 ⸻
 
-P2.2 Cooperative Preemption
+## 7. W3 Durability 与协议稳定性 🟡 部分完成
 
-不是：
+> **完成状态 (2026-08-20，code review 修复后)**：
+>
+> - ✅ EventStore 一致性语义：区分 must-persist 事件（TaskCreated/Checkpointed/
+>   Completed/Failed/Expired）与 observability 事件
+> - ✅ 关键事件失败策略：`isMustPersistEvent` + `record` 中 must-persist 事件 append
+>   失败时 log（不再 `_ = err` 静默吞错）
+> - ✅ store 故障测试：`TestW3MustPersistEventFailureIsLogged` /
+>   `TestW3ObservabilityEventFailureIsSilent` / `TestW3StoreFailureDoesNotBreakStateMachine`
+> - 🟡 checkpoint schema 固化（库层）：`CheckpointEnvelope` 带 `schema_version` +
+>   `DecodeCheckpoint`/`EncodeCheckpoint`/`MarshalCheckpoint` + 测试（RoundTrip /
+>   RejectsFutureVersion / NilAndRaw / MarshalWrapsRawValue）
+> - 🟡 **统一解码**：scheduler 侧的解码统一在 `toModelTask`/`extractTaskMeta`
+>   （兼容 `fabricTaskMeta` 与 create_task 的 `FabricTaskMetaEnvelope` 两种 envelope）；
+>   库层 `taskfabric.DecodeCheckpoint` 尚未被 scheduler 采用（scheduler 未迁移到
+>   `CheckpointEnvelope`，旧协议与新 schema 并存）——剩余迁移项
 
-kill Agent
+### 7.1 目标
 
-而是：
+把「best-effort 事件 + opaque checkpoint」升级为「可验证的 durable 协议」，
+保证重启后事件日志能重建状态、checkpoint 能被 scheduler/recovery/executor
+统一解码。
 
-high priority Task
-       ↓
-Scheduler requests preempt
-       ↓
-Agent reaches quantum boundary
-       ↓
-checkpoint
-       ↓
-yield
-       ↓
-Task READY
+### 7.2 现状
 
-例如：
+- `internal/taskfabric/fabric.go:500`：store append 失败静默忽略。
+- `taskfabric.Task.Checkpoint any`；scheduler/recovery 通过 `fabricTaskMeta`
+  envelope 约定字段，无 schema、无版本。
 
-Agent A
- └── low priority Task X
+### 7.3 工作项
 
-突然：
+1. **定义 EventStore 一致性语义**：区分「必须持久化的事件」（TaskCreated /
+   Checkpointed / Yielded / Completed / Failed）与「可观测性事件」（Trace /
+   观测指标）。
+2. **关键事件失败策略**：must-persist 事件 append 失败时，至少告警 + 有限重试 +
+   recovery 策略；禁止静默吞错。
+3. **固化 checkpoint schema**：定义 Task Shared State / Agent Private State /
+   IPC message state 三类数据边界；加入 `schema_version` 字段；定义版本迁移策略。
+4. **统一解码**：scheduler、recovery、executor 对 checkpoint 使用同一解码函数
+   （把 `cmd/ares/scheduler.go` 的 `toModelTask` 解码逻辑提升为共享库函数）。
+5. **store 故障测试**：append 失败 → 不静默丢失 durable state；「写入失败后重启
+   恢复」的测试（replay 结果与内存状态一致或可检测偏差）。
 
-Task Y priority=100
+### 7.4 验收
 
-Scheduler：
-
-X → preempt
-Y → acquire
-
-Agent A 并没有被强制打断。
-
-⸻
-
-P2.3 Event Store
-
-所有重要状态：
-
-TaskCreated
-TaskReady
-TaskAcquired
-TaskStarted
-TaskYielded
-TaskCheckpointed
-TaskPreempted
-TaskReleased
-TaskCompleted
-TaskFailed
-TaskExpired
-TaskStolen
-
-进入 EventStore。
+- 文档化的一致性语义 + 关键事件清单。
+- 强制失败路径测试：EventStore 注入故障 → 断言系统行为符合策略（告警/重试/阻断），
+  内存状态与事件日志不一致可被检测。
+- checkpoint schema 带版本字段，跨版本迁移有测试。
+- 长期不再以裸 `any` 作为跨重启协议。
 
 ⸻
 
-P2 验收
+## 8. W4 Evolution 完整反馈闭环 ✅ 已完成
 
-必须能证明：
+> **完成状态 (2026-08-20，code review 修复后)**：W4 全部完成。初版实现只有库层测试
+> （`ExecutionAttribution` + `EvolutionFeedbackAdapter` + `RunEvolutionFeedbackLoop`），
+> 但 `attribution.Record` 生产零调用、`RunEvolutionFeedbackLoop` 未启动。修复后：
+>
+> - ✅ 采集真实执行结果：`ExecutionAttribution` 结构体，per-agent + per-capability
+>   成功/失败跟踪
+> - ✅ **生产接线**：`scheduler.executeWithCandidates` 在 `loadTracker.end` 处调用
+>   `attribution.Record(winner, taskCapability, success)`（`createPeerAgents` 装配
+>   `WithAttribution`）
+> - ✅ 回写 scheduler scoring：`EvolutionFeedbackAdapter` + `ConfidenceInjector` 接口 +
+>   `loadTracker.SetAgentConfidence`
+> - ✅ **反馈 loop 生产接线**：`createPeerAgents` 启动 `RunEvolutionFeedbackLoop(ctx,
+>   adapter, 10s)`；leader 路径暂未接线（leader 路径的 feedback 是未来迁移项）
+> - ✅ `loadTracker.Confidence` 支持 evolution override（`confidenceOverride` map）
+> - ✅ 策略改变测试：`TestW4EvolutionFeedbackChangesSchedulerBehavior`（执行结果 →
+>   confidence 更新 → scheduler 行为改变）
+> - ✅ per-capability 归因测试：`TestW4CapabilityConfidenceAttribution`
+> - ✅ 幂等性测试：`TestW4FeedbackAdapterApplyIsIdempotent`
+> - ✅ nil 安全测试：`TestW4FeedbackAdapterNilSafe`
 
-Task A
- ↓
-RUNNING
- ↓
-checkpoint
- ↓
-preempt
- ↓
-READY
- ↓
-Agent B
- ↓
-RUNNING
- ↓
-complete
+### 8.1 目标
 
-同时：
+Evolution 从「周期性应用策略参数」升级为「运行结果 → 经验统计 → 策略变化 →
+下一轮调度可观测改变」的完整闭环。
 
-Event log
-    ↓
-replay
-    ↓
-same state
+### 8.2 现状
 
-P2 完成后的效果
+- `cmd/ares/kernel.go` 三个 loop（quota / population / spawn）已接线，但只把
+  StrategyStore 参数应用到 Kernel。
+- 无调度结果按 capability / agent / task 类型归因；无失败率/成功率回写
+  scheduler scoring；无「policy update → scheduler behavior change」测试。
+- `ares.yaml` `evolution.enabled: false`，生产默认不启用。
 
-ARES 已经拥有一个真正意义上的：
+### 8.3 工作项
 
-durable cooperative task scheduler
+1. **采集真实执行结果**：从 fabric 完成/失败事件与 `loadTracker` 归因
+   （capability、agent、task 类型、success/fail）。
+2. **回写 scheduler scoring**：把归因结果写入 `loadTracker.Confidence` /
+   capability 分数，使失败多的 agent/capability 在下一轮被降权。
+3. **Evolution 修改 capability matching / spawn 策略**：策略变化必须实际改变
+   `taskfabric.Score` 的参数（权重/置信度），而不是只改变 population 数量。
+4. **Evolution 建议任务拆分策略**：如某类任务频繁失败 → 建议自动 spawn reviewer。
+5. **测试证明策略改变运行行为**：一个 policy update → scheduler behavior change
+   的端到端测试（更新前调度给 A，更新后调度给 C，且差异可断言）。
 
-⸻
+### 8.4 验收
 
-P3 — Agent Process Model
-
-这是 ARES 从 Runtime → Agent OS 的真正转折点。
-
-之前：
-
-Agent = executor
-
-现在：
-
-Agent = cognitive process
-
-⸻
-
-P3.1 Agent Cognitive State
-
-定义：
-
-type CognitiveState struct {
-    Context
-    Observations
-    WorkingMemory
-    Decisions
-    ToolState
-    Checkpoint
-}
-
-重点：
-
-Runtime 不保存 hidden CoT。
-
-Runtime 只保存：
-
-Agent 自己声明的、可恢复的 cognitive state。
-
-例如：
-
-Agent A
-Goal:
-    audit unsafe FFI
-Working Memory:
-    discovered 17 unsafe blocks
-Observations:
-    FFI boundary X suspicious
-Decision:
-    investigate X
-Tool State:
-    llvm-analysis completed
-Checkpoint:
-    ...
+- 归因数据落库 + 有查询接口。
+- scheduler 打分随运行结果变化（测试断言）。
+- Evolution 参数更新在下一轮调度产生可观测差异（测试断言）。
+- `evolution.enabled` 打开时完整闭环生效。
 
 ⸻
 
-P3.2 Context 三层
+## 9. W5 清理旧架构叙事 ✅ 已完成
 
-严格分离：
+> **完成状态 (2026-08-20)**：W5 完成（文档/示例层面）。
+>
+> - ✅ `examples/04-multi-agent/main.go`：标注为 LEGACY COMPATIBILITY
+> - ✅ `examples/26-runtime-scheduling-demo/main.go`：标注为 LEGACY COMPATIBILITY
+> - ✅ `docs/en/framework-comparison.md`：ARES 核心抽象更新为 Peer Agent + Kernel
+> - ✅ `docs/framework-comparison-langchain-crewai-agentscope-goagent-en.md`：更新架构描述
+> - ✅ `docs/zh/README.md`：Leader/Sub 标注为 (legacy)
+> - ✅ `README.md`：已包含 Peer Agent 叙事（0.3.0 更新）
+> - ✅ `examples/aresos-demo/README.md`：已为 Peer Agent 示例
 
-Task Shared State
-       │
-       ├── goal
-       ├── constraints
-       ├── artifacts
-       ├── decisions
-       └── checkpoints
-Agent Private State
-       │
-       ├── reasoning context
-       ├── observations
-       ├── hypotheses
-       └── scratchpad
-IPC
-       │
-       ├── Send
-       ├── Request
-       └── Reply
+### 9.1 目标
 
-不要：
+让代码、配置、文档、示例的叙事与 Peer Agent 模型对齐，避免架构方向漂移。
 
-Agent A context == Agent B context
+### 9.2 现状
 
-而是：
+- `README.md` 保留 Leader/sub orchestration、team、Leader Failover 等表述。
+- `examples/04-multi-agent`、`examples/26-runtime-scheduling-demo` 是 legacy 叙事。
+- `ares.yaml` 仍是 `agents.leader` + `agents.sub[type]`。
+- `parentID` 被写入监控 metadata 并可能展示为角色关系。
 
-A.private ≠ B.private
-A ──IPC──► B
+### 9.3 工作项
 
-⸻
+1. `examples/04-multi-agent`、`examples/26-runtime-scheduling-demo` 标注为 legacy
+   对照实现。
+2. 新增 peer-agent runtime 示例（capability-based agents + 自主 spawn + IPC +
+   synthesis），提升为默认示例。
+3. 更新配置示例为 capability-based agents。
+4. 更新 docs 中 Leader/Sub 的定位（legacy compatibility，不是默认模型）。
+5. 明确 `parentID` 只有 provenance 语义，不是权限/调度等级/通信特权。
 
-P3.3 Spawn
+### 9.4 验收
 
-这是你刚才提出的自动拆分复杂任务真正落地的地方。
-
-定义：
-
-type SpawnSpec struct {
-    Task         TaskSpec
-    Capabilities []string
-    Context      ContextSpec
-    Resources    ResourceSpec
-}
-
-Agent：
-
-child, err := agent.Spawn(spec)
-
-Kernel 做：
-
-validate capability
-validate resource
-validate quota
-create Agent
-create Task
-record provenance
-Task → READY
-
-但是：
-
-spawn 不建立权力层级。
-
-A spawn B
-A ≡ B
+- 文档与示例不再把 Leader/Sub 作为默认心智模型。
+- 新 peer-agent 示例可运行，且不依赖 leader。
 
 ⸻
 
-P3.4 复杂任务拆分
+## 10. 最终验收：Agent OS Runtime E2E（重定义）
 
-最终：
+v1 的最终验收是 `examples/aresos-demo`（确定性模拟）。v2 把它重定义为**两层**：
 
-User
- ↓
-Agent A
- ↓
-认知判断：
-“这个任务太大”
- ↓
-Spawn B
-Spawn C
-Spawn D
- ↓
-Kernel
- ↓
-Scheduler
- ↓
-B/C/D
+### 10.1 单元级验收（保留 v1 demo，降级为基线）
 
-例如：
+`examples/aresos-demo` 继续保留，作为「API 组合逻辑」的确定性基线。它证明：
+库原语齐全、手动组合可跑通 7 步故事。**它不再作为「Agent OS 已完成」的证据。**
 
-Agent A
-“重构认证系统”
-      ├── Spawn B
-      │     “分析现有认证架构”
-      │
-      ├── Spawn C
-      │     “设计新认证方案”
-      │
-      └── Spawn D
-            “进行安全审计”
+### 10.2 runtime E2E（完成依据）
 
-然后：
+新增一个连续 runtime E2E，**至少使用 fake LLM**（可注入确定性输出），但真实经过
+完整生产路径：
 
-B ──┐
-C ──┼── IPC ──► A
-D ──┘
+    User → 任务创建（fabric.Create / scheduler）
+      → Agent A 执行 quantum#1（真实 ExecuteStep + checkpoint）
+      → A 自主决定拆分 → spawn_agent tool → Kernel 校验 → Task B/C/D READY
+      → scheduler 按 capability 调度 B/C/D（真实 Schedule/Acquire/RunQuantum）
+      → B 在 quantum 边界 yield → 恢复 / 续跑
+      → C 通过 IPC Request/Reply 与 A 协作
+      → B 崩溃 → lease expiry → recovery 创建 B' 并注册 → B' 从 checkpoint 续跑
+      → 各结果经 IPC 汇聚 → A synthesis（结果来自 B/C/D 输出，非写死）
+      → 最终结果返回
 
-⸻
+覆盖的机制：Task Fabric（Create/Schedule/Acquire/Lease expiry）· Kernel Scheduler
+（quantum 调度）· ExecuteStep · Checkpoint · Yield · Recovery（replacement
+executor 注册）· Peer IPC · synthesis。
 
-P3 验收
+### 10.3 可选：真实 LLM demo
 
-必须完成一个真实场景：
+真实 LLM 版本可以存在（复用 `examples/26-runtime-scheduling-demo` 的 LLM 接入），
+但**不把 LLM 输出作为唯一测试依据**——LLM 输出只作为补充演示，验收断言全部基于
+fake LLM 的确定性路径。
 
-Task: 重构某个中型模块
+### 10.4 synthesis 判定规则
 
-Agent A 判断：
-
-too complex
-
-然后：
-
-A
-├── spawn B
-├── spawn C
-└── spawn D
-
-要求：
-
-* B/C/D 是同级 Agent
-* A/B/C/D 可以互相 IPC
-* B/C/D 有独立 Cognitive State
-* B/C/D 可以独立 checkpoint
-* A 死亡，B/C/D 不死亡
-* B/C/D 可以继续执行
-* Task 不因 A 死亡而消失
-* 新 Agent 可以从 checkpoint 恢复
-
-P3 完成意味着：
-
-ARES 第一次真正成为 Agent OS。
+测试不能通过比对写死的最终报告来判断 synthesis 成功。必须验证最终结果确实
+**来源于 B/C/D 的输出**（例如：synthesis 输入 = B/C/D 的 ExecuteStep 产物，
+断言结果字段与子 Agent 输出逐项对应）。
 
 ⸻
 
-P4 — Peer IPC
-
-现在让 Agent 真正成为：
-
-Peer
-
-而不是：
-
-Leader → Sub
-
-⸻
-
-IPC API
-
-最小集合：
-
-Send()
-Request()
-Reply()
-Delegate()
-Handoff()
-Subscribe()
-
-例如：
-
-Agent A
- │
- │ Request:
- │ “帮我验证 LLVM ABI”
- ▼
-Agent B
- │
- │ Reply:
- │ “发现两个 ABI mismatch”
- ▼
-Agent A
-
-⸻
-
-Handoff
-
-Agent A：
-
-我无法继续
-
-不是：
-
-Leader 帮我找人
-
-而是：
-
-A
- │
- └── Handoff(Task X)
-          │
-          ▼
-       Kernel
-          │
-          ▼
-       Agent C
-
-Kernel 负责：
-
-lease
-checkpoint
-ownership
-schedule
-
-Agent 负责：
-
-语义交接
-
-⸻
-
-P4.1 Leader 降级
-
-旧：
-
-Leader
- ├── planner
- ├── dispatch
- └── subAgent
-
-新：
-
-Agent
- │
- ├── cognition
- ├── spawn
- ├── IPC
- └── task production
-Kernel
- │
- ├── Scheduler
- ├── Lifecycle
- └── IPC
-
-Legacy Leader 可以暂时存在：
-
-Legacy Leader Policy
-       │
-       ▼
-Task Fabric
-       │
-       ▼
-Scheduler
-       │
-       ▼
-Agents
-
-通过 feature flag 灰度。
-
-⸻
-
-P4 验收
-
-必须证明：
-
-A ≡ B ≡ C
-
-也就是：
-
-* A 可以给 B 发消息
-* B 可以给 A 发消息
-* B 可以给 C 发消息
-* Child 可以与 Parent 通信
-* Child 可以与非 Parent 通信
-* Parent 死亡不影响 Child
-* 不存在 Leader 权限绕过
-
-然后：
-
-Leader OFF
-
-整个系统仍然可以完成任务。
-
-这个验收非常关键：
-
-关闭 Leader 后，ARES 仍然能工作。
-
-这才说明 Leader 真正只是 Policy。
-
-⸻
-
-P5 — Recovery Kernel
-
-现在才开始系统性解决：
-
-Agent 为什么死了都没关系？
-
-⸻
-
-Recovery
-
-Agent A
- │
- │ Task X
- │
- 💀
- │
- ▼
-Kernel detects failure
- │
- ▼
-Lease expiry
- │
- ▼
-Task X READY
- │
- ▼
-Checkpoint
- │
- ▼
-Agent B acquire
- │
- ▼
-resume
-
-⸻
-
-P5.1 Agent Restart
-
-如果：
-
-Agent A 💀
-
-Kernel 可以：
-
-recover
-
-创建：
-
-Agent A'
-
-从：
-
-CognitiveState checkpoint
-
-恢复。
-
-注意：
-
-A' != A
-
-但：
-
-CognitiveState(A')
-≈
-Checkpoint(A)
-
-⸻
-
-P5.2 Chaos
-
-Chaos 不负责恢复。
-
-它只负责：
-
-故意杀。
-
-例如：
-
-kill Agent
-expire lease
-drop IPC
-delay tool
-crash execution
-
-Recovery：
-
-发现问题
- ↓
-恢复
-
-Chaos：
-
-制造问题
- ↓
-验证 Recovery
-
-严格分开。
-
-⸻
-
-P5 验收
-
-完整演示：
-
-Task
- │
- ▼
-Agent A
- │
- ├── checkpoint #1
- ├── spawn B
- ├── IPC C
- │
- 💥 A dies
- │
- ▼
-Kernel Recovery
- │
- ▼
-Task survives
- │
- ▼
-B/C continue
- │
- ▼
-new Agent D
- │
- ▼
-resume checkpoint
- │
- ▼
-COMPLETED
-
-如果这个测试稳定通过：
-
-Agent 死亡 ≠ Task 死亡
-
-就不再是架构宣言，而是事实。
-
-⸻
-
-P6 — Evolution
-
-最后才把你原来 ARES 的 Evolution 接回来。
-
-Evolution 不再只是：
-
-优化 Agent
-
-而是：
-
-Runtime Adaptation
-
-它可以优化：
-
-Scheduling Policy
-        ↓
-Capability Matching
-        ↓
-Spawn Strategy
-        ↓
-Agent Population
-        ↓
-Task Graph
-
-例如：
-
-过去：
-Rust Task
-Agent A success rate = 60%
-Evolution
-     ↓
-发现 Agent C = 94%
-     ↓
-Scheduler policy 更新
-
-或者：
-
-某类任务经常失败
-       ↓
-Evolution
-       ↓
-建议自动 spawn reviewer
-
-但这里必须坚持：
-
-Evolution 提供策略变化，Kernel 执行策略。
-
-⸻
-
-最终验收：Agent OS Demo
-
-整个 ARES 0.3.x 最终应该能够完成一个这样的实验。
-
-⸻
-
-Scenario
-
-用户：
-
-“分析这个大型 Rust 项目中的 unsafe FFI 风险，并给出修复方案。”
-
-⸻
-
-Step 1
-
-Agent A 获得 Task：
-
-Analyze FFI risks
-
-⸻
-
-Step 2
-
-A 自己判断：
-
-Task too large
-
-⸻
-
-Step 3
-
-A：
-
-Spawn B → code structure analysis
-Spawn C → FFI safety analysis
-Spawn D → dependency analysis
-
-⸻
-
-Step 4
-
-Kernel：
-
-B/C/D → READY
-
-Scheduler：
-
-capability matching
-load
-confidence
-priority
-
-分别分配执行。
-
-⸻
-
-Step 5
-
-B：
-
-checkpoint
-yield
-
-Scheduler：
-
-继续 / handoff / suspend
-
-⸻
-
-Step 6
-
-C 发现：
-
-interesting FFI boundary
-
-通过 IPC：
-
-C → A
-
-⸻
-
-Step 7
-
-A 发现 D 的结果不足：
-
-A → D Request
-
-⸻
-
-Step 8
-
-B 突然死亡：
-
-B 💥
-
-Kernel：
-
-lease expiry
-checkpoint recovery
-
-重新：
-
-Task → READY
-
-⸻
-
-Step 9
-
-E acquire：
-
-E → resume B checkpoint
-
-⸻
-
-Step 10
-
-最终：
-
-A
-├── B result
-├── C result
-└── D result
-
-A 做 synthesis。
-
-⸻
-
-最终：
-
-               USER
-                 │
-                 ▼
-              Agent A
-                 │
-        ┌────────┼────────┐
-        │        │        │
-      spawn    spawn    spawn
-        │        │        │
-        ▼        ▼        ▼
-      Agent B  Agent C  Agent D
-        │        │        │
-        └────IPC─┼────────┘
-                 │
-             Kernel
-                 │
-        ┌────────┴────────┐
-        │                 │
-    Scheduler          Recovery
-        │                 │
-        ▼                 ▼
-     Quantum           Agent 💀
-        │                 │
-        └────────┬────────┘
-                 ▼
-             Agent E
-                 │
-              resume
-                 │
-                 ▼
-             Agent A
-                 │
-              synthesis
-                 │
-                 ▼
-               RESULT
-
-这时候你就可以非常有底气地说：
-
-ARES is an Agent Operating System.
-
-⸻
-
-开发顺序最终冻结为（2026-08-19 收敛）
-
-> 收敛原则：**不要做成「能运行 LLM 的 Linux」**。硬实时 OS 项（墙钟时间片、
-> 硬抢占 LLM、CFS、PCB/寄存器上下文切换、per-agent CPU 队列）**不在验收内**
-> （见「核心模型修正」第 9 条）。阶段编号保留 P0-P6 作为里程碑，但**开发重心
-> 按下面三档排序**：
-
-核心档（当前要做的，按序）：
-
-阶段	核心问题	完成后的能力	状态
-P0	Task 能不能独立存在？	Durable Task + Lease + Recovery	✅ 已完成
-P1	Agent 能不能被 Kernel 调度执行？	Quantum(=认知边界) + Checkpoint + Yield + Resume	✅ 已完成
-P2	Agent 能不能自主拆任务？	Spawn + Peer IPC + Synthesis（**自主性验收，最重要**）	🟡 原语已落地，见下方「P2 收敛验收」
-P3	Agent 死/资源受限系统还稳吗？	Token budget + Tool budget + Deadline + Lease expiry + Checkpoint recovery（**Agent Runtime resource governance，不是 cgroup**）	✅ 已实现（2026-08-19）
-P4	没有 Leader 也能跑？	Peer IPC + 拆掉旧 Leader/Sub 抽象	🟡 进行中
-
-次级档（已有，非当前重心）：
-
-阶段	完成后的能力	状态
-P5	Recovery + Chaos	✅ 已完成
-P6	Evolution（population + scheduling policy 自进化）	🟡 已接线，先不做
-
-明确不在验收内（不测）：
-
-- CANCELLED / ZOMBIE 进程状态（后续可靠性需求）
-- 墙钟时间片 / 硬抢占 LLM / CFS / PCB 级上下文切换 / per-agent CPU 队列
-- 模拟 Linux CFS 调度
-
-⸻
-
-最重要的四条架构纪律
+## 11. 最重要的四条架构纪律（保留不变）
 
 以后无论实现什么功能，都先问这四个问题：
 
@@ -1416,16 +703,16 @@ Agent       → disposable
 
 ③ 这是语义协作还是系统调度？
 
-“帮我分析这个”
+"帮我分析这个"
         → IPC
-“谁现在执行它？”
+"谁现在执行它？"
         → Scheduler
 
 ④ 能不能不做？
 
 如果只是为了：
 
-“更像操作系统”
+"更像操作系统"
 
 而不是解决真实 Agent runtime 问题：
 
@@ -1433,7 +720,7 @@ Agent       → disposable
 
 ⸻
 
-我尤其建议你把这次 ARES 的核心愿景正式收敛成这一段，甚至可以放进 README：
+## 12. 愿景（不变）
 
 ARES is an Agent Operating System.
 
@@ -1443,159 +730,42 @@ Agents decide. The Kernel enforces.
 
 Agent death is an execution failure, not a task failure.
 
-这比“Multi-Agent Framework”“Agent Orchestration Runtime”都更准确，也和你现在这套 Task Fabric → Scheduler → Agent Fabric → IPC → Recovery 的路线完全一致。
-
-
-编码规范 plan/rules/code_rules_v2.md
 ⸻
 
+## 13. 附：v1 P0-P6 已完成项（基础设施，保留不再开发）
 
+> 以下为 v1 已定义且已实现的库层原语。v2 不再把它们作为开发项，
+> 仅在对应工作流（W1-W5）需要时引用。详细 API 定义见 v1 备份
+> `aresos-plan.md.v1.bak`。
 
-## 附件：现状核对（2026-08-19 code review 对照）
-
-> 本附件把本计划（aresos-plan.md）的每一阶段与代码库实际状态逐项核对，
-> 标注已完成/部分/缺口，并列出 4 处需要决策或补做的差异点。
-> 核对依据：`internal/taskfabric`、`internal/agentfabric`、`internal/agentipc`、
-> `internal/aresrecovery`、`internal/ares_arena`、`cmd/ares`（kernel/scheduler/serve）。
-
-### A. 逐阶段核对表
-
-| 阶段 | 计划要求 | 代码库现状 | 结论 |
-|---|---|---|---|
-| P0 Task Kernel | Task/Lease/Epoch/CAS Acquire/Release/Checkpoint/Yield/Complete/Fail | `taskfabric`：`Acquire(taskID,agentID,ttl)(epoch,err)`、`Yield`、`Checkpoint`、epoch fencing、lease 过期→READY 全部存在 | ✅ 已完成 |
-| P1.1 Execution Quantum | `RunQuantum(taskID,agentID,epoch,step)`，Done→COMPLETED / Err→FAIL / !Done→SUSPENDED | `taskfabric/quantum.go` `RunQuantum` 完全一致；测试覆盖 SUSPENDED/COMPLETED/FAILED/stale epoch 全验收。**2026-08-19 补齐调度器接线**：`taskExecutor` 新增 `ExecuteStep`（单轮 ReAct = 一个 quantum，`chatStepState` 为可序列化 PCB，§6.1 SchemaVersion + §6.2 TaskID 校验），`sub.Agent` 接口新增 `ExecuteStep`，`scheduler.go` step 闭包改为 `!Done → SUSPENDED(保留 checkpoint) → 下轮 drain 经 `ResumableTasks` 重新 acquire 恢复`；事件过滤器加 `task.yielded` 即时续跑。测试：`TestKernelSchedulerQuantumYieldResume`、`TestExecuteStepYieldsThenResumes` | ✅ 已完成 |
-| P1.2 AgentQueue | 每个 Agent 一个执行队列（A→Task1/5/8） | **已删除**（`steal.go` 作为死代码清理，注释明确「per-agent 队列被共享 ReadyTasks 队列并发 drain 取代」） | ⚠️ 计划 vs 代码冲突 |
-| P1.3 Work Stealing | 空闲 agent 偷别的队列任务（capability 匹配） | 共享队列 + 并发 drain（bounded goroutines）+ capability 打分；注释称「这就是 stealing substrate」；**无显式 per-agent steal 原语**。**2026-08-19 补验收 5/6/7**：`TestKernelSchedulerCapabilityPicksCorrectAgent`（能力选对）、`TestKernelSchedulerWorkStealingPicksIdleCapableAgent`（负载折扣→空闲 capable 接手）、`TestKernelSchedulerIncapableAgentCannotSteal`（无能力不允许偷） | ⚠️ 语义等效但形态不同 |
-| P2.1 DAG Ready | IsReady/ReadyTasks，A 完成→B/C READY | `kernelScheduler` + event-driven DAG 完成（GAP6） | ✅ |
-| P2.2 协作式抢占 | 高优任务→preempt 请求→agent 到 quantum 边界→checkpoint→yield→READY | `preemptLowerPriority` + `TestFabricPreemptPreservesCheckpoint` | ✅ |
-| P2.3 Event Store | TaskCreated…TaskStolen 全量事件 | `ares_events.EventStore` + kernel 循环订阅 | ✅ |
-| P3.1 Cognitive State | `CognitiveState{Context,Observations,WorkingMemory,Decisions,ToolState,Checkpoint}` | `agentfabric.CognitiveState` + `SetCognitiveState` + `RestartAgent` 从 checkpoint 恢复 | ✅ |
-| P3.2 Context 三层 | Task Shared / Agent Private / IPC 严格分离 | `fabricTaskMeta` + UserProfile + checkpoint 机制部分覆盖（yield 恢复 UserProfile 已修）；「Agent Private State」概念上较弱 | ⚠️ 部分 |
-| P3.3 Spawn | `SpawnSpec{Task,Capabilities,Context,Resources}`，Kernel 校验 capability/resource/quota→创建→READY，无权力层级 | `agentfabric.SpawnSpec` + `EvolutionAwareSpawner.Spawn`（配额/spawn 上限/演进约束）+ `RecordSpawn` provenance | ✅ |
-| P3.4 复杂任务拆分 | Agent 自主判断「太大」→Spawn B/C/D→同级协作 | 原语齐备，但「Agent 运行中自主 spawn 子任务」的生产链路无端到端 demo | ⚠️ 原语有、场景未验证 |
-| P4 Peer IPC | Send/Request/Reply/Delegate/Handoff/Subscribe | `agentipc.Bus` 六原语全有；collaboration 已接入生产（wireEvolutionIPC topic 分发） | ✅ |
-| P4.1 Leader 降级 | Leader 只是 policy，feature flag 灰度 | `wireKernelPolicy`：非 legacy 即 flip 到 taskfabric（默认），`flipKernelToTaskFabric` 幂等 | ✅ |
-| P5 Recovery | Agent 死→lease 过期→Task READY→新 agent 从 checkpoint 恢复；Chaos 只负责杀 | `aresrecovery.Recovery`（requeue-only + `RestartAgent` + CognitiveState 恢复）+ `ares_arena` chaos | ✅ |
-| P6 Evolution | Runtime Adaptation：调度策略/capability/spawn/agent 群/任务图 | `EvolutionAdapter.AdaptPopulation` 已存在但**生产未接线**（仅库+测试） | ⚠️ 库有、未接线 |
-
-### B. 需要决策/补做的 4 处差异
-
-1. **P1.2/P1.3 AgentQueue + Work Stealing 与代码冲突**
-   计划要求 per-agent 队列 + 显式 steal；代码选择「共享 ReadyTasks 队列 + 并发 drain」
-   替代（并删了 `steal.go`）。并发 drain 天然有窃取效果，但 per-agent 队列的
-   负载隔离语义没有了。
-   **决策**：✅ 维持共享队列（现状）并发 drain 方案。共享 ReadyTasks + bounded
-   goroutines 已覆盖 stealing 语义，scheduler.go 中 `TODO(tech-debt)` 注释已标注。
-   仅在 profiling 显示 contention 时恢复 per-agent 队列。
-
-2. **P3.2 Context 三层分离不完整**
-   `CognitiveState` 已有，但「Agent Private State」与「Task Shared State」的严格
-   边界在生产代码里较松散（主要通过 `fabricTaskMeta` 的 checkpoint 承载）。
-   **状态**：✅ 已通过 `agentfabric.ContextView` + `SetTaskContext`/`SetPrivate`
-   三层 API + 端到端测试 `TestP3_2_ContextThreeLayerSeparation` 落地。验证 Private
-   State 不会泄漏到 Task Shared State、不同 Agent 的 Private State 相互隔离。
-
-3. **P3.4 复杂任务拆分无端到端证明**
-   Spawn 原语齐备，但「Agent 运行中自主 spawn 子任务」没有真实 demo/测试
-   （计划 P3 验收要求跑通「重构中型模块」场景）。
-   **状态**：✅ 已落地。端到端测试 `TestP3_4_EndToEndSpawnSynthesis` +
-   `TestP3_4_ConcurrentSpawnSynthesis` + `TestP3_4_ParentDeathChildrenContinueTasks`
-   在 `agentfabric/e2e_spawn_synthesis_test.go` 验证：A 判断任务太大 → Spawn B/C/D
-   → B/C/D 独立 Cognitive State → A 死亡 B/C/D 存活 → E 从 checkpoint 恢复 →
-   synthesis。IPC 端到端 `TestP3_4_P4_EndToEndSpawnIPC` 在
-   `agentipc/e2e_spawn_ipc_test.go` 验证 peer 通信 + A 死亡后 B↔C 仍可通信。
-
-4. **P6 Evolution 生产未接线**
-   `AdaptPopulation` 是库代码，生产调度策略未由 evolution 驱动
-   （计划要求「Evolution 提供策略变化，Kernel 执行策略」）。
-   **状态**：✅ 已接线。新增 `aresrecovery.PopulationAdapter` +
-   `PopulationPolicySource` 接口 + `RunKernelEvolutionLoop` 循环，在
-   `cmd/ares/serve_routine.go` 中通过 `ares_bootstrap.NewPopulationPolicySource`
-   从 evolution StrategyStore 读取 population.spawn / population.retire 策略参数，
-   定期应用到 Agent Fabric。
-
-### C. 建议执行顺序
-
-1. **P3.4 端到端**（价值最高）：把「Agent 自主 Spawn 子任务 + IPC 汇总 + synthesis」
-   做成可运行 demo（计划最终验收场景的简化版），同时驱动 P3.2 的 Context 三层落地。
-   ✅ 已完成。
-2. **P6 接线**：让 `EvolutionAdapter` 在 kernel 循环里驱动调度策略（改动不大）。
-   ✅ 已完成。
-3. **P1.2/P1.3 决策**：恢复 per-agent 队列（计划原教旨）或维持共享队列（现状），
-   由架构负责人拍板。
-   ✅ 已决策：维持共享队列并发 drain 方案。
-
-> 备注：P0/P1.1/P2/P3.1/P3.3/P4/P5 均已在生产落地并有测试覆盖，无需重复实现。
-> P3.4/P3.2/P6 差异已全部补做，端到端测试 + 生产接线全部落地。
-> 「Agent death is an execution failure, not a task failure」的哲学已在
-> recovery 链（requeue-only + CognitiveState 恢复）中体现。
+- **P0 Task Kernel**：Task、Lease、Epoch、CAS Acquire、Release、Checkpoint、
+  Yield、Complete、Fail、Lease Expiry、Event。验收含竞争/fencing/recovery，
+  已有测试。
+- **P1.1 Execution Quantum**：`RunQuantum(taskID, agentID, epoch, step)`；
+  Done→COMPLETED / Err→FAIL / !Done→SUSPENDED。已接入 scheduler
+  `ExecuteStep` + `ResumableTasks` 续跑。
+- **P1.2/P1.3 AgentQueue + Work Stealing**：已决策用共享 ReadyTasks 队列 +
+  并发 drain 取代 per-agent queue + 显式 steal（steal.go 已删除）。
+- **P2.1 DAG Ready**：IsReady / ReadyTasks / event-driven DAG 完成。
+- **P2.2 Cooperative Preemption**：高优任务在 quantum 边界 preempt，checkpoint
+  保留（preempt_test.go）。
+- **P2.3 Event Store**：TaskCreated…TaskStolen 事件进入 EventStore，事件重建
+  测试存在；持久化语义见 W3。
+- **P3.1 Cognitive State**：`CognitiveState{Context,Observations,WorkingMemory,
+  Decisions,ToolState,Checkpoint}` + 恢复接口。
+- **P3.2 Context 三层**：ContextView / SetTaskContext / SetPrivate + 隔离测试。
+- **P3.3 Spawn**：SpawnSpec + 资源/配额校验 + provenance；生产 syscall 见 W2。
+- **P4 Peer IPC**：Send / Request / Reply / Delegate / Handoff / Subscribe。
+- **P5 Recovery**：lease expiry → requeue → checkpoint resume → agent restart；
+  chaos/sandbox 走 agent-fabric-as-executor 路径；生产接线见 W1。
+- **P6 Evolution**：population / quota / spawn policy 接线；反馈闭环见 W4。
 
 ⸻
 
-### D. P2 收敛验收：Agent 自主性（2026-08-19 定稿）
+## 14. 修订记录
 
-> P2 验收**不测**「Scheduler 有没有模拟 Linux CFS」。P2 验收只测一件事：
-> **Agent 有没有自主性**——它能自己决定怎么完成任务，而不是被 Leader/Planner
-> 指挥。以下 4 个 Case 是 P2 的唯一验收标准（均已由端到端测试覆盖）。
-
-**Case 1：Agent 独立完成**
-
-    Task A → Agent A → 自己执行 → COMPLETE
-
-Kernel 只负责调度，不干预 Agent 的决策。没有 Planner，没有 Leader。
-（覆盖：`TestP3_4_EndToEndSpawnSynthesis` 中单 Agent 直接完成的路径）
-
-**Case 2：Agent 自主拆分**
-
-    Task A → Agent A → 判断任务复杂 → Spawn B / Spawn C
-         → B、C 并行执行 → IPC 返回结果 → A 汇总 → A COMPLETE
-
-没有 Planner，没有 Leader。拆分是 A 的认知决策，不是框架预定义。
-（覆盖：`TestP3_4_EndToEndSpawnSynthesis`、`TestP3_4_ConcurrentSpawnSynthesis`）
-
-**Case 3：父 Agent 死亡，Task 不死亡**
-
-    A → Spawn B、C → A 💀
-         → B 继续、C 继续 → Kernel: lease expired → Task READY
-         → B/C/Anew acquire → checkpoint resume
-
-证明「Agent death ≠ Task death」。恢复链（requeue-only + CognitiveState）是
-唯一负责方，没有任何「Leader 接管」逻辑。
-（覆盖：`TestP3_4_ParentDeathChildrenContinueTasks`、`TestP3_4_P4_EndToEndSpawnIPC`）
-
-**Case 4：Agent 之间真正协作**
-
-    A → B: "帮我验证 FFI 边界" → B → A: "发现 3 个风险"
-    A → C: "帮我独立复核第二个风险" → C → A: "确认存在"
-
-这是 Peer Agent System 的证明：B 可以反驳 A、B 可以找 C 验证、C 可以再 Spawn D，
-**A ≡ B ≡ C ≡ D**，无任何权限差异。
-（覆盖：`agentipc/e2e_spawn_ipc_test.go` + collaboration 生产接线）
-
-⸻
-
-### E. 当前唯一大闭环（做完 ARES 才算立住）
-
-4 个 Case 各自通过还不够。最终需要一个**一个连续 E2E** 证明完整思想：
-
-    User → Agent A 收到大任务
-      → A 自主判断「任务太大」
-      → A Spawn B / C / D（Peer，无 subAgent 身份）
-      → B / C / D 并行工作（独立 Cognitive State）
-      → 期间某 Agent 故障 → Kernel 恢复 Task → 新 Agent 从 checkpoint 接续
-      → IPC 协作（B 反驳 / C 验证 / D 汇总）
-      → A 做 synthesis → 返回最终结果
-
-**状态：✅ 已落地（2026-08-19）**
-
-- 连续测试：`internal/agentfabric/e2e_grand_loop_test.go`
-  （`TestE2E_GrandLoop_CompleteAgentOS`）——把附件 D 的 4 个 Case 串成
-  一个连续故事（spawn → 并行 → 父死子续 → IPC 协作 → 替代者接续 → synthesis）。
-- 可运行 Demo：`examples/aresos-demo/main.go`（零依赖，`go run` 即出 7 步结果）；
-  说明见 `examples/aresos-demo/README.md`。
-- 两条都只复用公共 API（agentfabric / agentipc），**未扩展任何库层代码**，
-  符合「Demo 是演示、不是新 API」的边界。
-
-> 备注：Demo 的「agent 认知」是 demo 层决策函数（模拟一轮 ReAct），不是真实
-> LLM。真实 LLM 版本见 `examples/26-runtime-scheduling-demo`（leader/sub 编排，
-> 属 legacy 叙事，保留作对照）；本 Demo 是 peer-agent 模型的确定性验收。
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| v1 | 2026-08-19 | 初始计划：P0-P6 阶段定义 + 附件 A-E 现状核对 |
+| v2 | 2026-08-20 | 依据全面核对（见 §3）修正：承认库层完成但生产闭环未通；P0-P6 改写为 W1-W5 五档工作；最终验收升级为 runtime E2E；v1 备份于 `aresos-plan.md.v1.bak` |
+| v2.1 | 2026-08-20 | W1-W4 落地 code review 修复后更新进度：W1 恢复闭环改任务绑定 + 真实 executor；W2 完成（agentsyscall + Leader OFF）；W3 更正为部分完成（schema 库层就绪、scheduler 未迁移）；W4 补生产接线 |

@@ -9,8 +9,9 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
-	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
@@ -27,9 +28,17 @@ import (
 //
 // Failure policy: a scheduling or execution failure for one task is logged and
 // the loop continues — one bad task must never take down the scheduler.
+//
+// Dynamic executor registration (W1): RegisterExecutor / UnregisterExecutor
+// let the recovery loop inject a replacement agent at runtime so a recovered
+// task is executed by a real executor, not a phantom agent. execMu guards the
+// executor map for concurrent register/unregister/lookup from drain goroutines.
 type kernelScheduler struct {
 	fabric    *taskfabric.Fabric
-	executors map[string]sub.Agent
+	executors map[string]CapabilityExecutor
+	// execMu guards the executors map for dynamic register/unregister (W1).
+	// A separate lock avoids reentrancy with the fabric mutex during drain.
+	execMu sync.RWMutex
 	// tracker supplies real per-agent Load/Confidence to Schedule
 	// (v0.3.0 GAP4: real load tracking instead of a static placeholder).
 	tracker *loadTracker
@@ -62,6 +71,17 @@ type kernelScheduler struct {
 	// budget-exhausted agent yields the task back instead of burning tokens it
 	// cannot afford (aresos-plan.md P3: cooperative yield, not hard preempt).
 	governance *agentfabric.Fabric
+	// boundExecutors maps taskID → executorID for W1 recovery executors. A
+	// recovery executor is bound to exactly one task: execute() only offers it
+	// as a candidate for that task, never for another READY task, so a
+	// replacement spawned for a recovered task cannot hijack new tasks.
+	// Guarded by execMu.
+	boundExecutors map[string]string
+	// attribution is the optional W4 execution-outcome source. When wired,
+	// execute() records every finalized outcome (agent, capability, success)
+	// so the evolution feedback loop can read attribution and push derived
+	// confidence into the tracker. Nil skips recording (backward compatible).
+	attribution *aresrecovery.ExecutionAttribution
 }
 
 // noCandidateLogInterval throttles "no capable candidate" logs to one per
@@ -114,6 +134,12 @@ func (s *kernelScheduler) consumeBudget(winner string) {
 // "线程"的负载真实跟踪). It is shared by the kernel scheduler and the fabric
 // dispatch path (executeFabricTask) so both see the same live numbers. mu
 // guards all fields; every method is safe for concurrent use.
+//
+// W4 Evolution feedback: SetAgentConfidence lets the evolution feedback
+// adapter override the computed confidence with an evolution-derived value.
+// When a confidenceOverride is set (> 0), Confidence returns it instead of
+// the raw success rate. This is the write path for the W4 feedback loop:
+// execution results → evolution → SetAgentConfidence → next Schedule.
 type loadTracker struct {
 	mu       sync.Mutex
 	inflight map[string]int // agentID → tasks currently acquired (not finalized)
@@ -123,15 +149,23 @@ type loadTracker struct {
 	// normal). Injected once from the agent fabric at kernel wiring time
 	// (B2: thread priority), read by every Schedule candidate build.
 	priorities map[string]float64
+	// confidenceOverride maps agentID → evolution-derived confidence [0,1].
+	// When >= 0, Confidence returns this instead of the raw success rate.
+	// Set by the W4 evolution feedback adapter (SetAgentConfidence).
+	// A negative value means "no override" (use the computed success rate).
+	// The map uses ok=false to mean "no override set"; a value of 0.0 is a
+	// valid confidence (total failure) and must not be treated as unset.
+	confidenceOverride map[string]float64
 }
 
 // newLoadTracker creates an empty tracker.
 func newLoadTracker() *loadTracker {
 	return &loadTracker{
-		inflight:   make(map[string]int),
-		done:       make(map[string]int),
-		ok:         make(map[string]int),
-		priorities: make(map[string]float64),
+		inflight:           make(map[string]int),
+		done:               make(map[string]int),
+		ok:                 make(map[string]int),
+		priorities:         make(map[string]float64),
+		confidenceOverride: make(map[string]float64),
 	}
 }
 
@@ -181,39 +215,70 @@ func (t *loadTracker) Load(agentID string) float64 {
 }
 
 // Confidence returns agentID's historical success rate in [0,1], defaulting
-// to 1.0 (neutral prior) before any history exists.
+// to 1.0 (neutral prior) before any history exists. When the W4 evolution
+// feedback adapter has set a confidence override (>= 0), that value is
+// returned instead — the evolution system's derived confidence takes
+// priority over the raw success rate.
 func (t *loadTracker) Confidence(agentID string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if override, ok := t.confidenceOverride[agentID]; ok && override >= 0 {
+		return override
+	}
 	if t.done[agentID] == 0 {
 		return 1.0
 	}
 	return float64(t.ok[agentID]) / float64(t.done[agentID])
 }
 
+// SetAgentConfidence updates the evolution-derived confidence for agentID
+// (W4: 回写 scheduler scoring). A value in [0,1] overrides the computed
+// success rate; a negative value (< 0) clears the override (revert to raw
+// success rate). This method implements the aresrecovery.ConfidenceInjector
+// interface so the EvolutionFeedbackAdapter can push confidence updates
+// without importing the scheduler package.
+func (t *loadTracker) SetAgentConfidence(agentID string, confidence float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if confidence < 0 {
+		delete(t.confidenceOverride, agentID)
+		return
+	}
+	t.confidenceOverride[agentID] = confidence
+}
+
 // NewKernelScheduler creates a scheduler over a fabric with the given
-// executors (agentID → sub.Agent). A nil tracker allocates a private one; pass
-// a shared tracker to keep Load/Confidence consistent with the fabric dispatch
-// path (executeFabricTask).
+// executors (agentID → CapabilityExecutor). A nil tracker allocates a private
+// one; pass a shared tracker to keep Load/Confidence consistent with the fabric
+// dispatch path (executeFabricTask).
 //
 // Args:
 //   - fabric: the Task Fabric backing this scheduler.
-//   - executors: the agent registry (agentID → sub.Agent).
+//   - executors: the agent registry (agentID → CapabilityExecutor).
 //   - tracker: per-agent load/confidence source; nil creates a private one.
 //
 // Returns:
 //   - *kernelScheduler: ready to Run.
-func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]sub.Agent, tracker *loadTracker) *kernelScheduler {
+func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tracker *loadTracker) *kernelScheduler {
 	if tracker == nil {
 		tracker = newLoadTracker()
 	}
 	return &kernelScheduler{
-		fabric:       fabric,
-		executors:    executors,
-		tracker:      tracker,
-		pollInterval: 500 * time.Millisecond,
-		ttl:          5 * time.Minute,
+		fabric:         fabric,
+		executors:      executors,
+		boundExecutors: make(map[string]string),
+		tracker:        tracker,
+		pollInterval:   500 * time.Millisecond,
+		ttl:            5 * time.Minute,
 	}
+}
+
+// WithAttribution attaches the W4 execution-outcome source (aresrecovery.
+// ExecutionAttribution). When set, execute() records every finalized outcome
+// after the quantum. Returns the scheduler for chaining.
+func (s *kernelScheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) *kernelScheduler {
+	s.attribution = a
+	return s
 }
 
 // WithMaxConcurrent caps how many ready tasks run in parallel per drain
@@ -222,6 +287,158 @@ func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]sub.Agen
 func (s *kernelScheduler) WithMaxConcurrent(n int) *kernelScheduler {
 	s.maxConcurrent = n
 	return s
+}
+
+// RegisterExecutor dynamically registers an executor under agentID so the
+// scheduler can execute tasks assigned to it (W1: production-grade recovery
+// 闭环). The recovery loop calls this after spawning a replacement agent so
+// the new agent is a real executor, not a phantom. Safe for concurrent use
+// with drain goroutines: execMu guards the map.
+//
+// Args:
+//   - agentID: the replacement agent's identity.
+//   - executor: the CapabilityExecutor (must be non-nil).
+func (s *kernelScheduler) RegisterExecutor(agentID string, executor CapabilityExecutor) {
+	if agentID == "" || executor == nil {
+		return
+	}
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	s.executors[agentID] = executor
+	log.Printf("kernel scheduler: registered replacement executor %q", agentID)
+}
+
+// RegisterExecutorForTask registers an executor bound to exactly one task
+// (W1 recovery). The executor is only ever offered as a candidate for taskID
+// — execute() filters it out for every other READY task, so a replacement
+// spawned for a recovered task can never hijack a brand-new task. When the
+// task reaches a terminal state (COMPLETED / FAILED) execute() unregisters
+// the bound executor automatically.
+//
+// Args:
+//   - taskID: the recovered task the executor is bound to.
+//   - agentID: the replacement executor's identity.
+//   - executor: the CapabilityExecutor (must be non-nil).
+func (s *kernelScheduler) RegisterExecutorForTask(taskID, agentID string, executor CapabilityExecutor) {
+	if taskID == "" || agentID == "" || executor == nil {
+		return
+	}
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	s.executors[agentID] = executor
+	s.boundExecutors[taskID] = agentID
+	log.Printf("kernel scheduler: registered recovery executor %q bound to task %q", agentID, taskID)
+}
+
+// boundFor returns the executor id bound to taskID, if any. Safe for
+// concurrent use.
+func (s *kernelScheduler) boundFor(taskID string) (string, bool) {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	id, ok := s.boundExecutors[taskID]
+	return id, ok
+}
+
+// unbindFor removes the executor binding for taskID and returns the bound
+// executor id ("" when none). Callers use it to unregister a recovery
+// executor once its task reaches a terminal state.
+func (s *kernelScheduler) unbindFor(taskID string) string {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	id := s.boundExecutors[taskID]
+	delete(s.boundExecutors, taskID)
+	return id
+}
+
+// UnregisterExecutor removes an executor from the registry and clears any
+// task binding it had. The recovery loop calls this when a replacement agent
+// itself fails, so stale executors are not selected for scheduling. Safe for
+// concurrent use.
+//
+// Args:
+//   - agentID: the agent to remove.
+func (s *kernelScheduler) UnregisterExecutor(agentID string) {
+	if agentID == "" {
+		return
+	}
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	delete(s.executors, agentID)
+	for taskID, boundID := range s.boundExecutors {
+		if boundID == agentID {
+			delete(s.boundExecutors, taskID)
+		}
+	}
+}
+
+// HasCapableExecutor reports whether a registered, unbound executor can
+// execute taskID (capability overlap > 0). The recovery loop calls this for
+// each requeued task to decide whether a replacement executor is needed:
+// when an existing executor can already resume the task, no spawn is
+// required and the task simply returns to READY.
+func (s *kernelScheduler) HasCapableExecutor(taskID string) bool {
+	tk, err := s.fabric.Task(taskID)
+	if err != nil {
+		return false
+	}
+	if _, ok := s.boundFor(taskID); ok {
+		return true
+	}
+	execs := s.allExecutors()
+	for agentID, agent := range execs {
+		if agent == nil {
+			continue
+		}
+		if s.isBoundToOtherTask(agentID) {
+			continue
+		}
+		cand := taskfabric.Candidate{Capabilities: []string{string(agent.Type())}}
+		if taskfabric.Score(tk.Capability, cand) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// isBoundToOtherTask reports whether agentID is a recovery executor bound to
+// some task (so it must not be offered for any other task).
+func (s *kernelScheduler) isBoundToOtherTask(agentID string) bool {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	for _, boundID := range s.boundExecutors {
+		if boundID == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+// executorCount returns the current number of registered executors under a
+// read lock. Used by drain to compute the concurrency limit.
+func (s *kernelScheduler) executorCount() int {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	return len(s.executors)
+}
+
+// lookupExecutor safely retrieves an executor under a read lock.
+func (s *kernelScheduler) lookupExecutor(agentID string) (CapabilityExecutor, bool) {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	e, ok := s.executors[agentID]
+	return e, ok && e != nil
+}
+
+// allExecutors returns a snapshot of the executor map under a read lock. The
+// drain goroutines iterate this snapshot to build the candidate list.
+func (s *kernelScheduler) allExecutors() map[string]CapabilityExecutor {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	out := make(map[string]CapabilityExecutor, len(s.executors))
+	for k, v := range s.executors {
+		out[k] = v
+	}
+	return out
 }
 
 // Run drains ReadyTasks until ctx is cancelled or the fabric becomes nil.
@@ -332,7 +549,7 @@ func (s *kernelScheduler) drain(ctx context.Context) {
 	s.preemptLowerPriority(tasks)
 	limit := s.maxConcurrent
 	if limit <= 0 {
-		limit = len(s.executors)
+		limit = s.executorCount()
 	}
 	if limit <= 0 {
 		limit = 1
@@ -374,7 +591,7 @@ func (s *kernelScheduler) drain(ctx context.Context) {
 // running task on a tie or on unset priorities. The preempted task keeps its
 // checkpoint and returns to READY for a later quantum.
 func (s *kernelScheduler) preemptLowerPriority(ready []string) {
-	if len(s.executors) == 0 || len(ready) == 0 {
+	if s.executorCount() == 0 || len(ready) == 0 {
 		return
 	}
 	maxReady := 0
@@ -448,19 +665,50 @@ type fabricTaskMeta struct {
 // finalize. Errors are returned to the caller for logging; the fabric
 // state machine (RetryPolicy) decides requeue vs. final failure.
 func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
-	tk, err := s.fabric.Task(taskID)
-	if err != nil {
-		return err
-	}
 	// Build the candidate list from the registered executors so scheduling is
 	// always consistent with what can actually run. Each candidate declares its
 	// OWN capabilities (from the agent's Type), NOT the task's — the scorer
 	// compares the task's required capability against what the agent can do.
 	// Load/Confidence come from the live tracker (v0.3.0 GAP4): real busy
 	// fraction and historical success rate, not static placeholders.
-	cands := make([]taskfabric.Candidate, 0, len(s.executors))
-	for agentID, agent := range s.executors {
+	//
+	// W1 recovery binding: a recovery executor bound to THIS task is the only
+	// candidate (the replacement must run the task it was spawned for). Bound
+	// executors of OTHER tasks are excluded so a replacement can never hijack
+	// a different READY task.
+	execs := s.allExecutors()
+	if boundID, bound := s.boundFor(taskID); bound {
+		cands := make([]taskfabric.Candidate, 0, 1)
+		if agent, ok := execs[boundID]; ok && agent != nil {
+			cands = append(cands, taskfabric.Candidate{
+				AgentID:      boundID,
+				Capabilities: []string{string(agent.Type())},
+				Load:         s.tracker.Load(boundID),
+				Confidence:   s.tracker.Confidence(boundID),
+				Priority:     s.tracker.Priority(boundID),
+			})
+		}
+		if len(cands) == 0 {
+			// The bound executor is gone (already unregistered) — fall through
+			// to the normal pool so the task is not stranded.
+			return s.executeUnbound(ctx, taskID)
+		}
+		return s.executeWithCandidates(ctx, taskID, cands)
+	}
+	return s.executeUnbound(ctx, taskID)
+}
+
+// executeUnbound runs the fabric path for a task with no recovery binding:
+// the candidate pool is every registered, unbound executor whose capability
+// overlaps the task.
+func (s *kernelScheduler) executeUnbound(ctx context.Context, taskID string) error {
+	execs := s.allExecutors()
+	cands := make([]taskfabric.Candidate, 0, len(execs))
+	for agentID, agent := range execs {
 		if agent == nil {
+			continue
+		}
+		if s.isBoundToOtherTask(agentID) {
 			continue
 		}
 		cands = append(cands, taskfabric.Candidate{
@@ -471,6 +719,17 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 			Priority:     s.tracker.Priority(agentID),
 		})
 	}
+	return s.executeWithCandidates(ctx, taskID, cands)
+}
+
+// executeWithCandidates runs the shared Schedule → Acquire → RunQuantum →
+// finalize path for a prebuilt candidate list. The task capability is read
+// for W4 attribution at the outcome boundary.
+func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID string, cands []taskfabric.Candidate) error {
+	tk, err := s.fabric.Task(taskID)
+	if err != nil {
+		return err
+	}
 	if len(cands) == 0 {
 		return taskfabric.ErrNoCapableCandidate
 	}
@@ -478,7 +737,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	executor, ok := s.executors[winner]
+	executor, ok := s.lookupExecutor(winner)
 	if !ok || executor == nil {
 		// Release so the task can be retried by another agent. A failed
 		// release leaves the task leased — surface it instead of dropping
@@ -495,10 +754,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	// previous quantum (yield/done re-wraps below). Capturing it here — before
 	// RunQuantum overwrites the task Checkpoint — is what keeps UserProfile
 	// alive through an arbitrary number of yield→resume cycles.
-	meta := fabricTaskMeta{}
-	if m, ok := tk.Checkpoint.(fabricTaskMeta); ok {
-		meta = m
-	}
+	meta := extractTaskMeta(tk)
 	// P3 pre-quantum gate: if the winner's budget/deadline is exhausted, yield
 	// the task back (release the lease) so another capable agent (or a later
 	// quantum after ResetResource) can pick it up. This closes the P3 loop at
@@ -566,6 +822,13 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		}, true, nil
 	})
 	s.tracker.end(winner, err == nil)
+	// W4 evolution feedback: record the outcome for the feedback loop. The
+	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
+	// the tracker's confidence override (SetAgentConfidence) so the next
+	// Schedule sees the evolution-derived confidence.
+	if s.attribution != nil {
+		s.attribution.Record(winner, tk.Capability, err == nil)
+	}
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
 	// round) so the next gate sees the new balance. Runs even on step errors —
 	// the quantum did execute (or partially execute) and spent budget.
@@ -574,6 +837,16 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	}
 	if err == nil {
 		s.scheduled.Add(1)
+	}
+	// W1 recovery binding: when the task reaches a terminal state, unregister
+	// the bound recovery executor so the executor map does not grow unboundedly
+	// and the executor is not offered as a candidate for other tasks.
+	tk2, tkErr := s.fabric.Task(taskID)
+	if tkErr == nil && (tk2.State == taskfabric.StateCompleted || tk2.State == taskfabric.StateFailed) {
+		if boundID := s.unbindFor(taskID); boundID != "" {
+			s.UnregisterExecutor(boundID)
+			log.Printf("kernel scheduler: unregistered recovery executor %q after task %q reached %s", boundID, taskID, tk2.State)
+		}
 	}
 	return err
 }
@@ -590,22 +863,55 @@ func (s *kernelScheduler) toModelTask(tk *taskfabric.Task) *models.Task {
 	t := models.NewTask(tk.ID, models.AgentType(tk.Capability), nil)
 	if tk.Checkpoint != nil {
 		if meta, ok := tk.Checkpoint.(fabricTaskMeta); ok {
-			t.UserProfile = meta.UserProfile
-			t.Payload = meta.Payload
-			t.UsedExperienceID = meta.UsedExperienceID
-			// A resumed quantum observes where the previous step left off
-			// (Bug 3): the step checkpoint rides inside the meta envelope,
-			// surfaced to the executor as payload["checkpoint"] exactly like
-			// the legacy plain-map case below.
-			if meta.StepCheckpoint != nil {
-				if t.Payload == nil {
-					t.Payload = make(map[string]any)
-				}
-				t.Payload["checkpoint"] = meta.StepCheckpoint
-			}
-			return t
+			return applyMeta(t, meta)
+		}
+		// A task created via the create_task syscall carries the syscall
+		// package's envelope — decode it through the same path so the
+		// executor sees the Payload the LLM submitted (P1-1: toModelTask
+		// must not drop it into the raw "checkpoint" bucket).
+		if env, ok := tk.Checkpoint.(agentsyscall.FabricTaskMetaEnvelope); ok {
+			return applyMeta(t, fabricTaskMeta{
+				UserProfile:      env.UserProfile,
+				Payload:          env.Payload,
+				UsedExperienceID: env.UsedExperienceID,
+				StepCheckpoint:   env.StepCheckpoint,
+			})
 		}
 		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}
 	}
 	return t
+}
+
+// applyMeta restores a models.Task from a fabricTaskMeta envelope, surfacing a
+// resumed quantum's step checkpoint as payload["checkpoint"].
+func applyMeta(t *models.Task, meta fabricTaskMeta) *models.Task {
+	t.UserProfile = meta.UserProfile
+	t.Payload = meta.Payload
+	t.UsedExperienceID = meta.UsedExperienceID
+	if meta.StepCheckpoint != nil {
+		if t.Payload == nil {
+			t.Payload = make(map[string]any)
+		}
+		t.Payload["checkpoint"] = meta.StepCheckpoint
+	}
+	return t
+}
+
+// extractTaskMeta reads the submission-time metadata envelope from a task's
+// checkpoint, handling both the local fabricTaskMeta and the create_task
+// syscall's envelope. Returns a zero envelope when neither is present.
+func extractTaskMeta(tk *taskfabric.Task) fabricTaskMeta {
+	switch cp := tk.Checkpoint.(type) {
+	case fabricTaskMeta:
+		return cp
+	case agentsyscall.FabricTaskMetaEnvelope:
+		return fabricTaskMeta{
+			UserProfile:      cp.UserProfile,
+			Payload:          cp.Payload,
+			UsedExperienceID: cp.UsedExperienceID,
+			StepCheckpoint:   cp.StepCheckpoint,
+		}
+	default:
+		return fabricTaskMeta{}
+	}
 }

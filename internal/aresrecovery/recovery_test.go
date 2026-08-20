@@ -47,8 +47,8 @@ func TestRequeueExpiredLeases(t *testing.T) {
 	// Advance past the TTL.
 	*now = now.Add(2 * time.Minute)
 	requeued := rec.RequeueExpiredLeases()
-	if requeued != 1 {
-		t.Fatalf("want 1 requeued, got %d", requeued)
+	if len(requeued) != 1 || requeued[0] != "t1" {
+		t.Fatalf("want [t1] requeued, got %v", requeued)
 	}
 	// Agent b can now acquire the requeued task.
 	if _, err := tasks.Acquire("t1", "b", time.Minute); err != nil {

@@ -126,6 +126,24 @@ type KernelConfig struct {
 	// synthetic work; enable it for local demos / UI development instead of
 	// the dedicated `ares demo` console.
 	Autopilot bool `yaml:"autopilot"`
+	// LeaderEnabled controls whether the Leader agent is assembled at startup.
+	// When false (W2: Leader OFF mode), serve skips leader creation and runs
+	// purely on the Task Fabric path: sub-agents register directly with the
+	// Kernel scheduler, tasks are submitted via the fabric, and agents decide
+	// decomposition via the spawn_agent / create_task syscalls. This is the
+	// Peer Agent model (aresos-plan.md §1.8: no privileged agent roles).
+	// Default true (backward compatible — the leader path stays the default
+	// until operators opt in to the peer-agent runtime).
+	LeaderEnabled *bool `yaml:"leader_enabled"`
+}
+
+// IsLeaderEnabled reports whether the Leader agent should be assembled.
+// Defaults to true when LeaderEnabled is nil (backward compatible).
+func (k KernelConfig) IsLeaderEnabled() bool {
+	if k.LeaderEnabled == nil {
+		return true
+	}
+	return *k.LeaderEnabled
 }
 
 // DiscoveryConfig configures the optional service discovery engine that

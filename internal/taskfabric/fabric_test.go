@@ -52,13 +52,13 @@ func TestFabricLeaseExpiryRequeues(t *testing.T) {
 		t.Fatalf("Acquire: %v", err)
 	}
 	// Lease not expired yet: nothing requeued.
-	if n := f.CheckExpiredLeases(); n != 0 {
-		t.Fatalf("want 0 requeued before expiry, got %d", n)
+	if n := f.CheckExpiredLeases(); len(n) != 0 {
+		t.Fatalf("want 0 requeued before expiry, got %d", len(n))
 	}
 	// Advance past the TTL.
 	now = now.Add(2 * time.Minute)
-	if n := f.CheckExpiredLeases(); n != 1 {
-		t.Fatalf("want 1 requeued after expiry, got %d", n)
+	if n := f.CheckExpiredLeases(); len(n) != 1 || n[0] != "t1" {
+		t.Fatalf("want [t1] requeued after expiry, got %v", n)
 	}
 	if _, err := f.Acquire("t1", "agent-b", time.Minute); err != nil {
 		t.Fatalf("agent-b must acquire after expiry: %v", err)
@@ -126,8 +126,8 @@ func TestFabricFencingTokenRejectsStaleOperations(t *testing.T) {
 	// Cross-owner takeover: A's lease expires, B acquires, A's late Release
 	// must NOT free B's task.
 	now = now.Add(2 * time.Minute)
-	if n := f.CheckExpiredLeases(); n != 1 {
-		t.Fatalf("want 1 requeued, got %d", n)
+	if n := f.CheckExpiredLeases(); len(n) != 1 {
+		t.Fatalf("want 1 requeued, got %v", n)
 	}
 	eB, err := f.Acquire("t1", "agent-b", time.Minute)
 	if err != nil {

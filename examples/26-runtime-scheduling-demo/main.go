@@ -3,6 +3,12 @@
 // leader synthesises). This is the "Agent as Thread" showcase: the runtime
 // owns dispatch, agents are disposable execution threads.
 //
+// LEGACY COMPATIBILITY: This example uses the Leader/Sub team orchestration
+// model. ARES has evolved into a Peer Agent operating system (aresos-plan.md
+// §1.1) where all agents are equal peers — no Leader/Worker hierarchy. The
+// Leader/Sub path is retained as kernel.policy=legacy for compatibility. For
+// the current model, see examples/aresos-demo.
+//
 // Purpose:
 //
 //	Show the full loop for a code-module analysis task: a leader agent plans

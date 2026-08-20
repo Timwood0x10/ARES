@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -248,39 +247,18 @@ func runServe() error {
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
 	// --- Create + register agents with the runtime manager ---
-	leaderAgent, subAgents, err := createAndRegisterServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+	leaderAgent, subAgents, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
 	if err != nil {
 		return err
 	}
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
-	// Registers the leader and every sub agent's message sender (primitive 2:
-	// peer-to-peer agent communication). The registry is the discovery surface
-	// for direct sends; the leader-dispatched task path remains the primary
-	// execution route, this only adds a peer channel for supplementary
-	// notifications.
-	//
-	// When the evolution system is wired, the peer channel is bridged through
-	// the evolution-aware IPC (v0.3.0 M2-3): every agent-to-agent message
-	// passes the active evolution wire policy (json | json+gzip). Without
-	// evolution the plain direct peer channel is used, preserving prior
-	// behavior.
-	var peerRegistry *peer.Registry
-	if comp.NewEvolution != nil {
-		bridge, err := wireEvolutionIPC(leaderAgent, subAgents, comp.NewEvolution.StrategyStore, comp.Observability.GlobalTracer)
-		if err != nil {
-			return fmt.Errorf("wire evolution IPC: %w", err)
-		}
-		peerRegistry = bridge.reg
-		log.Printf("peer registry wired through evolution-aware IPC: %d agents registered", len(peerRegistry.IDs()))
-	} else {
-		peerRegistry = buildPeerRegistry(leaderAgent, subAgents)
-		log.Printf("peer registry wired: %d agents registered", len(peerRegistry.IDs()))
-	}
-	if leaderWithPeer, ok := leaderAgent.(interface {
-		SetPeerRegistry(*peer.Registry)
-	}); ok {
-		leaderWithPeer.SetPeerRegistry(peerRegistry)
+	// setupPeerRegistry builds the registry AND attaches it to the leader
+	// (SetPeerRegistry) when one exists; the registry itself is only needed
+	// by downstream wiring that currently does not use it, so discard the
+	// handle.
+	if _, err := setupPeerRegistry(leaderAgent, subAgents, comp); err != nil {
+		return err
 	}
 
 	// --- PluginBus + MonitorPlugin (extracted to setupServeMonitoring to keep
@@ -294,17 +272,19 @@ func runServe() error {
 	// sub-agents and register it with the runtime manager BEFORE mgr.Start, so
 	// wireEvolutionLiveDAGs binds workflow/scheduler/recovery executors to the
 	// live DAG instead of the bootstrap synthetic placeholder.
-	liveDAG, dagErr := buildLeaderLiveDAG(cfg)
-	if dagErr != nil {
-		return fmt.Errorf("build leader live dag: %w", dagErr)
-	}
-	mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
+	if leaderAgent != nil {
+		liveDAG, dagErr := buildLeaderLiveDAG(cfg)
+		if dagErr != nil {
+			return fmt.Errorf("build leader live dag: %w", dagErr)
+		}
+		mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
 
-	// Inject the live agent DAGs into the evolution system's executors before
-	// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
-	// time. The leader's live DAG is now registered above, so the binding is
-	// real (F04 closed) rather than a no-op.
-	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
+		// Inject the live agent DAGs into the evolution system's executors before
+		// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
+		// time. The leader's live DAG is now registered above, so the binding is
+		// real (F04 closed) rather than a no-op.
+		wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
+	}
 
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
@@ -318,7 +298,9 @@ func runServe() error {
 	// stream and self-dispatch (self-dispatch was removed in v0.3.0).
 
 	// --- Submit real tasks (opt-in demo injector; off unless autopilot) ---
-	runAutopilotInjector(ctx, g, cfg, leaderAgent)
+	if leaderAgent != nil {
+		runAutopilotInjector(ctx, g, cfg, leaderAgent)
+	}
 
 	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
 	// cyclomatic complexity within lint limits) ---

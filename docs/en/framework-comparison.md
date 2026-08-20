@@ -14,7 +14,7 @@
 | **CrewAI** | Crew + Agent + Task | Team collaboration metaphor, role-driven | Python |
 | **AutoGen/AG2** | ConversableAgent + GroupChat | Conversation-driven, message passing | Python |
 | **Semantic Kernel** | Kernel + Plugin + Function | Enterprise middleware, DI container | C#/Python/Java |
-| **ARES** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Go |
+| **ARES** | Peer Agent + Kernel + DAG + AHP | Agent Operating System, peer-to-peer, capability-scheduled | Go |
 
 ### 1.2 Architecture Diagrams
 

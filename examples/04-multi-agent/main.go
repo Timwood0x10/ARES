@@ -1,5 +1,14 @@
 // Multi-agent — demonstrates team-based leader/member orchestration with ARES.
 //
+// LEGACY COMPATIBILITY: This example uses the Leader/Sub team orchestration
+// model (ares-runtime.md pre-0.3.0). ARES has evolved into a Peer Agent
+// operating system where all agents are first-class cognitive processes with
+// no inherent hierarchy (aresos-plan.md §1.1). The Leader/Sub model is retained
+// as a compatibility layer (kernel.policy=legacy) and will be deprecated in a
+// future release. For the current Peer Agent model, see
+// examples/aresos-demo (capability-based agents + autonomous spawn + IPC +
+// synthesis).
+//
 // Purpose:
 //
 //	Show how to create a team of specialised agents (leader, researcher,

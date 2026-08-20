@@ -59,8 +59,8 @@
 | 组件 | 中文 | English |
 |------|------|---------|
 | Agents | [Agent 定义](./components/agents-definition.md) | [Agent Definition](../en/components/agents-definition.md) |
-| Leader Agent | [Leader Agent](./components/agents-leader.md) | [Leader Agent](../en/components/agents-leader.md) |
-| Sub Agent | [Sub Agent](./components/agents-sub.md) | [Sub Agent](../en/components/agents-sub.md) |
+| Leader Agent (legacy) | [Leader Agent](./components/agents-leader.md) | [Leader Agent](../en/components/agents-leader.md) |
+| Sub Agent (legacy) | [Sub Agent](./components/agents-sub.md) | [Sub Agent](../en/components/agents-sub.md) |
 | Runtime | [Runtime 层](./architecture/runtime.md) | [Runtime Layer](../en/architecture/runtime.md) |
 | 记忆 | [记忆组件](./components/memory.md) | [Memory](../en/components/memory.md) |
 | LLM | [LLM 组件](./components/llm.md) | [LLM](../en/components/llm.md) |

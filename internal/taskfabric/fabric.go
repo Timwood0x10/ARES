@@ -3,6 +3,7 @@ package taskfabric
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -284,12 +285,15 @@ func (f *Fabric) Release(id, agentID string, epoch uint64) error {
 
 // CheckExpiredLeases requeues every task whose lease expired without renewal.
 // This is the crash-recovery primitive: a dead agent's tasks return to READY
-// and become acquirable again. Returns the number of requeued tasks.
-func (f *Fabric) CheckExpiredLeases() int {
+// and become acquirable again. Returns the ids of every requeued task so the
+// recovery path can act on exactly the tasks that expired — not on all READY
+// tasks (a task that is READY for the first time, or was released/steal-
+// requeued, is not a recovery candidate and must not be treated as one).
+func (f *Fabric) CheckExpiredLeases() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := f.now()
-	requeued := 0
+	var requeued []string
 	for _, t := range f.tasks {
 		if t.Lease == nil || !t.Lease.IsExpired(now) {
 			continue
@@ -307,7 +311,7 @@ func (f *Fabric) CheckExpiredLeases() int {
 		t.Owner = ""
 		t.Lease = nil
 		f.record(t, EventTaskExpired)
-		requeued++
+		requeued = append(requeued, t.ID)
 	}
 	return requeued
 }
@@ -484,8 +488,15 @@ func (f *Fabric) record(t *Task, typ EventType) {
 	if f.store == nil {
 		return
 	}
-	// Best-effort persistence: a failed append must never break the state
-	// machine — the in-memory log stays authoritative within a process.
+	// W3 Durability: must-persist events (TaskCreated, TaskCheckpointed,
+	// TaskCompleted, TaskFailed, TaskExpired) carry state the runtime relies
+	// on for recovery and replay. A failed append for these events is no
+	// longer silently swallowed — it is logged so a durable-state divergence
+	// (in-memory vs event log) is detectable. The in-memory state machine
+	// still stays authoritative within a process (the append failure does not
+	// roll back the transition), so the state machine is never broken by a
+	// store fault. Observability events (Trace, Ready, etc.) remain
+	// best-effort and silent on failure.
 	if err := f.store.Append(context.Background(), t.ID, []*ares_events.Event{{
 		Type:       taskEventType(typ),
 		StreamID:   t.ID,
@@ -497,7 +508,30 @@ func (f *Fabric) record(t *Task, typ EventType) {
 		},
 		Timestamp: ev.At,
 	}}, 0); err != nil {
-		_ = err // best-effort, see above
+		if isMustPersistEvent(typ) {
+			// W3: log the divergence so it is detectable. A must-persist event
+			// that fails to append means the event log is out of sync with the
+			// in-memory state — a recovery replay from the event log would miss
+			// this transition. The runtime continues (in-memory is
+			// authoritative), but the operator can see the gap.
+			log.Printf("taskfabric: must-persist event %s for task %s append failed (durable log diverges from memory): %v", typ, t.ID, err)
+		}
+		// Observability events: silent best-effort (unchanged).
+	}
+}
+
+// isMustPersistEvent reports whether a lifecycle event is a must-persist
+// transition (W3): the runtime's recovery/replay correctness depends on these
+// events being in the durable log. Other events (Ready, Acquired, Started,
+// Yielded, Preempted, Released, Stolen) are observability-only: they enrich
+// the trace but are not required for state rebuild.
+func isMustPersistEvent(typ EventType) bool {
+	switch typ {
+	case EventTaskCreated, EventTaskCheckpointed, EventTaskCompleted,
+		EventTaskFailed, EventTaskExpired:
+		return true
+	default:
+		return false
 	}
 }
 

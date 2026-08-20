@@ -192,7 +192,7 @@ func (s *Sandbox) Simulate(ctx context.Context, deadAgentID, taskID string) (*Si
 		Scenario:       "agent death → lease expiry → recovery chain",
 		DeadAgent:      deadAgentID,
 		FinalTaskState: s.taskState(taskID),
-		Recovered:      requeued > 0 || recovered > 0,
+		Recovered:      len(requeued) > 0 || recovered > 0,
 	}, nil
 }
 
