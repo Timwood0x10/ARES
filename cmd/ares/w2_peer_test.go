@@ -78,7 +78,7 @@ func TestW2Case1IndependentCompletion(t *testing.T) {
 		ID:          taskID,
 		Capability:  "coder",
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
-		Checkpoint: fabricTaskMeta{
+		Checkpoint: &taskfabric.CheckpointEnvelope{
 			Payload: map[string]any{"task_desc": "write a function"},
 		},
 	}); err != nil {

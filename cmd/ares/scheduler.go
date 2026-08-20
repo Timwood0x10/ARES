@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
-	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -633,32 +633,18 @@ func (s *kernelScheduler) logFailure(taskID string, err error) {
 	log.Printf("kernel scheduler: execute task %q failed: %v", taskID, err)
 }
 
-// fabricTaskMeta is the submission-time metadata envelope stored in a fabric
-// task's Checkpoint slot before execution (submitFabricTask) and restored by
-// toModelTask when the scheduler builds the models.Task for the executor.
-// Without this the executor saw profile==nil and degraded to an empty
-// executeByType fallback — a silent no-op that still reported success (the
-// serve result-reflux bug chain). The type is declared in the consumer
-// package (code_rules_v2: interfaces/contracts live at the consumer); the
-// fabric treats Checkpoint as opaque any.
-type fabricTaskMeta struct {
-	// UserProfile is the profile the leader attached to the task.
-	UserProfile *models.UserProfile
-	// Payload carries the task's opaque user data (incl. task_desc).
-	Payload map[string]any
-	// UsedExperienceID is the experience consumed by this task (bandit
-	// feedback linkage), preserved for the outcome recorder.
-	UsedExperienceID string
-	// StepCheckpoint is the quantum's durable progress/output. The scheduler
-	// wraps EVERY quantum's returned checkpoint (yield AND done) back into a
-	// fabricTaskMeta envelope, so the submission metadata survives a yield:
-	// RunQuantum overwrites the task Checkpoint with the step's checkpoint,
-	// and re-wrapping it inside the meta envelope means the next quantum's
-	// toModelTask can still restore UserProfile/Payload (v0.3.0 review
-	// Bug 3: yield→resume otherwise lost the profile and degraded to
-	// executeByType). nil before the first quantum runs.
-	StepCheckpoint any
-}
+// Submission-time metadata (UserProfile + Payload + UsedExperienceID) rides in
+// the task's Checkpoint slot inside a *taskfabric.CheckpointEnvelope (W3
+// schema, unversioned-v0 → versioned-v1 migration). Without the envelope the
+// executor saw profile==nil and degraded to an empty executeByType fallback —
+// a silent no-op that still reported success (the serve result-reflux bug
+// chain). The scheduler re-wraps EVERY quantum's returned checkpoint (yield
+// AND done) back into an envelope (EncodeCheckpoint), so the submission
+// metadata survives a yield: RunQuantum overwrites the task Checkpoint with
+// the step's checkpoint, and re-wrapping it inside the envelope means the next
+// quantum's toModelTask can still restore UserProfile/Payload (v0.3.0 review
+// Bug 3: yield→resume otherwise lost the profile and degraded to
+// executeByType). nil before the first quantum runs.
 
 // execute runs the full fabric path for one task: Schedule → Acquire →
 // RunQuantum (delegating the actual work to the winning sub-agent) →
@@ -754,7 +740,10 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 	// previous quantum (yield/done re-wraps below). Capturing it here — before
 	// RunQuantum overwrites the task Checkpoint — is what keeps UserProfile
 	// alive through an arbitrary number of yield→resume cycles.
-	meta := extractTaskMeta(tk)
+	meta, decodeErr := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	if decodeErr != nil {
+		log.Printf("kernel scheduler: decode checkpoint for task %q: %v", taskID, decodeErr)
+	}
 	// P3 pre-quantum gate: if the winner's budget/deadline is exhausted, yield
 	// the task back (release the lease) so another capable agent (or a later
 	// quantum after ResetResource) can pick it up. This closes the P3 loop at
@@ -787,12 +776,12 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 			// it and the next quantum resumes from this PCB. Re-wrapping the
 			// submission metadata keeps UserProfile/Payload/UsedExperienceID
 			// alive across yield→resume cycles (Bug 3).
-			return fabricTaskMeta{
+			return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
 				UserProfile:      meta.UserProfile,
 				Payload:          meta.Payload,
 				UsedExperienceID: meta.UsedExperienceID,
 				StepCheckpoint:   out.Checkpoint,
-			}, false, nil
+			}), false, nil
 		}
 		// Done: carry the worker's real output back through the fabric so the
 		// leader dispatch (which waits on task completion) can surface the
@@ -814,12 +803,12 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 		}
 		// Re-wrap the step output in the metadata envelope so the dispatcher's
 		// outcomeFromFabric unwraps it on COMPLETED (same as pre-quantum).
-		return fabricTaskMeta{
+		return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
 			UserProfile:      meta.UserProfile,
 			Payload:          meta.Payload,
 			UsedExperienceID: meta.UsedExperienceID,
 			StepCheckpoint:   outMap,
-		}, true, nil
+		}), true, nil
 	})
 	s.tracker.end(winner, err == nil)
 	// W4 evolution feedback: record the outcome for the feedback loop. The
@@ -853,65 +842,56 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 
 // toModelTask maps a fabric Task back to the models.Task shape the sub-agent
 // executor expects. The submission-time metadata (UserProfile + Payload +
-// UsedExperienceID) rides in the fabric Checkpoint slot inside a tagged
-// fabricTaskMeta envelope; restoring it here is what lets the executor take
-// the real LLM path instead of degrading to an empty fallback result
-// (profile==nil → executeByType). A genuine progress checkpoint (plain map,
-// written by RunQuantum) is preserved in the payload so a resumed quantum can
-// observe where the previous step left off.
+// UsedExperienceID) rides in the fabric Checkpoint slot inside a
+// *taskfabric.CheckpointEnvelope (W3 schema); restoring it here is what lets
+// the executor take the real LLM path instead of degrading to an empty
+// fallback result (profile==nil → executeByType). A genuine progress
+// checkpoint (plain map, written by RunQuantum) is preserved in the payload so
+// a resumed quantum can observe where the previous step left off. Decode goes
+// through the single shared protocol (taskfabric.DecodeCheckpoint) — the same
+// path recovery and every other consumer use.
 func (s *kernelScheduler) toModelTask(tk *taskfabric.Task) *models.Task {
 	t := models.NewTask(tk.ID, models.AgentType(tk.Capability), nil)
-	if tk.Checkpoint != nil {
-		if meta, ok := tk.Checkpoint.(fabricTaskMeta); ok {
-			return applyMeta(t, meta)
-		}
-		// A task created via the create_task syscall carries the syscall
-		// package's envelope — decode it through the same path so the
-		// executor sees the Payload the LLM submitted (P1-1: toModelTask
-		// must not drop it into the raw "checkpoint" bucket).
-		if env, ok := tk.Checkpoint.(agentsyscall.FabricTaskMetaEnvelope); ok {
-			return applyMeta(t, fabricTaskMeta{
-				UserProfile:      env.UserProfile,
-				Payload:          env.Payload,
-				UsedExperienceID: env.UsedExperienceID,
-				StepCheckpoint:   env.StepCheckpoint,
-			})
-		}
-		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}
+	if tk.Checkpoint == nil {
+		return t
 	}
-	return t
-}
-
-// applyMeta restores a models.Task from a fabricTaskMeta envelope, surfacing a
-// resumed quantum's step checkpoint as payload["checkpoint"].
-func applyMeta(t *models.Task, meta fabricTaskMeta) *models.Task {
-	t.UserProfile = meta.UserProfile
-	t.Payload = meta.Payload
-	t.UsedExperienceID = meta.UsedExperienceID
-	if meta.StepCheckpoint != nil {
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	if err != nil {
+		log.Printf("kernel scheduler: toModelTask decode checkpoint for task %q: %v", tk.ID, err)
+		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}
+		return t
+	}
+	t.UserProfile = reifyUserProfile(dc.UserProfile)
+	t.Payload = dc.Payload
+	t.UsedExperienceID = dc.UsedExperienceID
+	// A resumed quantum observes where the previous step left off (Bug 3):
+	// the step checkpoint is surfaced to the executor as payload["checkpoint"].
+	if dc.StepCheckpoint != nil {
 		if t.Payload == nil {
 			t.Payload = make(map[string]any)
 		}
-		t.Payload["checkpoint"] = meta.StepCheckpoint
+		t.Payload["checkpoint"] = dc.StepCheckpoint
 	}
 	return t
 }
 
-// extractTaskMeta reads the submission-time metadata envelope from a task's
-// checkpoint, handling both the local fabricTaskMeta and the create_task
-// syscall's envelope. Returns a zero envelope when neither is present.
-func extractTaskMeta(tk *taskfabric.Task) fabricTaskMeta {
-	switch cp := tk.Checkpoint.(type) {
-	case fabricTaskMeta:
-		return cp
-	case agentsyscall.FabricTaskMetaEnvelope:
-		return fabricTaskMeta{
-			UserProfile:      cp.UserProfile,
-			Payload:          cp.Payload,
-			UsedExperienceID: cp.UsedExperienceID,
-			StepCheckpoint:   cp.StepCheckpoint,
-		}
+// reifyUserProfile converts a decoded envelope UserProfile (typed pointer, or
+// a raw map after a JSON round-trip) back into the *models.UserProfile the
+// executor expects. A value that cannot be reified yields nil (the executor
+// then degrades exactly as before).
+func reifyUserProfile(v any) *models.UserProfile {
+	switch up := v.(type) {
+	case *models.UserProfile:
+		return up
+	case nil:
+		return nil
 	default:
-		return fabricTaskMeta{}
+		if buf, err := json.Marshal(up); err == nil {
+			var p models.UserProfile
+			if err := json.Unmarshal(buf, &p); err == nil {
+				return &p
+			}
+		}
+		return nil
 	}
 }

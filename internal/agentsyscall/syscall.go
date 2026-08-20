@@ -208,7 +208,7 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		Priority:     args.Priority,
 		Dependencies: args.Dependencies,
 		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
-		Checkpoint: FabricTaskMetaEnvelope{
+		Checkpoint: &taskfabric.CheckpointEnvelope{
 			Payload: args.Payload,
 		},
 	}
@@ -223,17 +223,6 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		TaskID: taskID,
 		State:  string(taskfabric.StateReady),
 	}, nil
-}
-
-// FabricTaskMetaEnvelope carries the task payload through the fabric's opaque
-// checkpoint slot. It mirrors cmd/ares.fabricTaskMeta but lives here so the
-// syscall package is self-contained. The scheduler's toModelTask decodes
-// the envelope (or a plain map) when building the models.Task for the executor.
-type FabricTaskMetaEnvelope struct {
-	UserProfile      *models.UserProfile
-	Payload          map[string]any
-	UsedExperienceID string
-	StepCheckpoint   any
 }
 
 // BindTools registers the spawn_agent and create_task tools on the given

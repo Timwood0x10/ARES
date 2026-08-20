@@ -934,7 +934,7 @@ func TestKernelDispatchReleasesResultSubscription(t *testing.T) {
 func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	up := models.NewUserProfile("u1", "alice")
 	up.Style = []models.StyleTag{models.StyleMinimalist}
-	meta := fabricTaskMeta{
+	meta := &taskfabric.CheckpointEnvelope{
 		UserProfile:      up,
 		Payload:          map[string]any{"task_desc": "pick"},
 		UsedExperienceID: "exp-1",
@@ -957,7 +957,7 @@ func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	}
 	// The initial (pre-quantum) envelope without StepCheckpoint must also still
 	// restore the profile, and must not invent a checkpoint key.
-	initModel := s.toModelTask(&taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: fabricTaskMeta{
+	initModel := s.toModelTask(&taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: &taskfabric.CheckpointEnvelope{
 		UserProfile: up, Payload: map[string]any{"task_desc": "pick"}, UsedExperienceID: "exp-1",
 	}})
 	if initModel.UserProfile == nil || initModel.UsedExperienceID != "exp-1" {
@@ -1189,7 +1189,7 @@ func TestW1RecoveryClosureE2E(t *testing.T) {
 		ID:          "w1-task",
 		Capability:  "code",
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-		Checkpoint: fabricTaskMeta{
+		Checkpoint: &taskfabric.CheckpointEnvelope{
 			StepCheckpoint: map[string]any{"step": 1, "data": "quantum-1-output"},
 		},
 	}); err != nil {
@@ -1204,7 +1204,7 @@ func TestW1RecoveryClosureE2E(t *testing.T) {
 	if err := f.Start("w1-task", "agent-A", epoch); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if err := f.Yield("w1-task", "agent-A", epoch, fabricTaskMeta{
+	if err := f.Yield("w1-task", "agent-A", epoch, &taskfabric.CheckpointEnvelope{
 		StepCheckpoint: map[string]any{"step": 1, "data": "quantum-1-output"},
 	}); err != nil {
 		t.Fatalf("yield: %v", err)
@@ -1284,28 +1284,18 @@ func TestW1RecoveryClosureE2E(t *testing.T) {
 	if !replacement.didObserveCheckpoint() {
 		t.Fatal("replacement executor must observe the dead agent's checkpoint")
 	}
-	// The checkpoint rides inside a fabricTaskMeta envelope. After the fabric's
-	// yield→requeue→toModelTask path it may arrive as a map[string]any (the
-	// fabric stores Checkpoint as any, and the scheduler's toModelTask
-	// unwraps the envelope and places the StepCheckpoint into
-	// payload["checkpoint"]). Either form is valid as long as the step data is
+	// The checkpoint rides inside a *taskfabric.CheckpointEnvelope. After the
+	// fabric's yield→requeue→toModelTask path it arrives as a map[string]any
+	// (the scheduler's toModelTask unwraps the envelope and places the
+	// StepCheckpoint into payload["checkpoint"]) — the step data must be
 	// preserved.
 	cp := replacement.getCheckpoint()
-	switch v := cp.(type) {
-	case fabricTaskMeta:
-		step, ok := v.StepCheckpoint.(map[string]any)
-		if !ok {
-			t.Fatalf("step checkpoint must be a map, got %T", v.StepCheckpoint)
-		}
-		if step["data"] != "quantum-1-output" {
-			t.Fatalf("checkpoint data must be 'quantum-1-output', got %v", step["data"])
-		}
-	case map[string]any:
-		if v["data"] != "quantum-1-output" {
-			t.Fatalf("checkpoint data must be 'quantum-1-output', got %v", v["data"])
-		}
-	default:
-		t.Fatalf("checkpoint must be fabricTaskMeta or map[string]any, got %T", cp)
+	v, ok := cp.(map[string]any)
+	if !ok {
+		t.Fatalf("checkpoint must be map[string]any, got %T", cp)
+	}
+	if v["data"] != "quantum-1-output" {
+		t.Fatalf("checkpoint data must be 'quantum-1-output', got %v", v["data"])
 	}
 }
 

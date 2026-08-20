@@ -225,7 +225,7 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 		ID:          taskID,
 		Capability:  capability,
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-		Checkpoint: fabricTaskMeta{
+		Checkpoint: &taskfabric.CheckpointEnvelope{
 			Payload: payload,
 		},
 	}

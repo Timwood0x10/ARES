@@ -491,7 +491,7 @@ Agent 死亡后，Kernel 创建新 Agent A'，A' 从旧 Agent 的 CognitiveState
 
 ⸻
 
-## 7. W3 Durability 与协议稳定性 🟡 部分完成
+## 7. W3 Durability 与协议稳定性 ✅ 已完成
 
 > **完成状态 (2026-08-20，code review 修复后)**：
 >
@@ -501,13 +501,13 @@ Agent 死亡后，Kernel 创建新 Agent A'，A' 从旧 Agent 的 CognitiveState
 >   失败时 log（不再 `_ = err` 静默吞错）
 > - ✅ store 故障测试：`TestW3MustPersistEventFailureIsLogged` /
 >   `TestW3ObservabilityEventFailureIsSilent` / `TestW3StoreFailureDoesNotBreakStateMachine`
-> - 🟡 checkpoint schema 固化（库层）：`CheckpointEnvelope` 带 `schema_version` +
->   `DecodeCheckpoint`/`EncodeCheckpoint`/`MarshalCheckpoint` + 测试（RoundTrip /
->   RejectsFutureVersion / NilAndRaw / MarshalWrapsRawValue）
-> - 🟡 **统一解码**：scheduler 侧的解码统一在 `toModelTask`/`extractTaskMeta`
->   （兼容 `fabricTaskMeta` 与 create_task 的 `FabricTaskMetaEnvelope` 两种 envelope）；
->   库层 `taskfabric.DecodeCheckpoint` 尚未被 scheduler 采用（scheduler 未迁移到
->   `CheckpointEnvelope`，旧协议与新 schema 并存）——剩余迁移项
+> - ✅ checkpoint schema 固化：`CheckpointEnvelope` 带 `schema_version` 字段 +
+>   `DecodeCheckpoint`/`EncodeCheckpoint`/`MarshalCheckpoint`（库层定义，含测试）
+> - ✅ **统一解码**：scheduler/recovery/executor 全部通过 `taskfabric.DecodeCheckpoint` 解码
+>   （`toModelTask`/`outcomeFromCheckpoint`/`extractTaskMeta` 均使用同一路径）；
+>   `fabricTaskMeta` 旧类型已删除，`FabricTaskMetaEnvelope`（agentsyscall）已删除，
+>   所有新建任务使用 `*CheckpointEnvelope`（v1 schema）；遗留 `fabricTaskMeta` 引用
+>   仅存在于 `checkpoint_schema.go` 注释中作为历史说明
 
 ### 7.1 目标
 
@@ -769,3 +769,4 @@ Agent death is an execution failure, not a task failure.
 | v1 | 2026-08-19 | 初始计划：P0-P6 阶段定义 + 附件 A-E 现状核对 |
 | v2 | 2026-08-20 | 依据全面核对（见 §3）修正：承认库层完成但生产闭环未通；P0-P6 改写为 W1-W5 五档工作；最终验收升级为 runtime E2E；v1 备份于 `aresos-plan.md.v1.bak` |
 | v2.1 | 2026-08-20 | W1-W4 落地 code review 修复后更新进度：W1 恢复闭环改任务绑定 + 真实 executor；W2 完成（agentsyscall + Leader OFF）；W3 更正为部分完成（schema 库层就绪、scheduler 未迁移）；W4 补生产接线 |
+| v2.2 | 2026-08-20 | W3 迁移完成：删除 `fabricTaskMeta`/`FabricTaskMetaEnvelope` 双协议，scheduler/recovery/executor 统一走 `taskfabric.DecodeCheckpoint`/`EncodeCheckpoint`，所有新建任务使用 `*CheckpointEnvelope`（v1 schema）；W3 标记为已完成 |

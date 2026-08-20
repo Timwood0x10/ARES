@@ -140,9 +140,10 @@ func submitFabricTask(
 		// Carry the submission-time metadata in the Checkpoint slot so the
 		// scheduler's toModelTask can restore it for the executor (LLM path
 		// needs the profile; the outcome recorder needs UsedExperienceID).
-		// The envelope type is opaque to the fabric; a genuine progress
-		// checkpoint replaces it once a quantum runs (RunQuantum yield).
-		Checkpoint: fabricTaskMeta{
+		// The envelope is the W3 versioned protocol (*CheckpointEnvelope);
+		// a genuine progress checkpoint replaces it once a quantum runs
+		// (RunQuantum yield).
+		Checkpoint: &taskfabric.CheckpointEnvelope{
 			UserProfile:      task.UserProfile,
 			Payload:          task.Payload,
 			UsedExperienceID: task.UsedExperienceID,
@@ -1239,23 +1240,20 @@ type taskOutcome struct {
 
 // outcomeFromCheckpoint extracts the worker output the scheduler stored in
 // the quantum checkpoint (see kernelScheduler.execute: items/reason/metadata
-// ride inside a map[string]any). The completed checkpoint is a fabricTaskMeta
-// envelope (Bug 3 fix: the meta is re-wrapped around every quantum's output),
-// so the step output is read from inside the envelope. A missing or non-map
-// checkpoint means the task completed without a payload — still a success,
-// just empty.
+// ride inside a map[string]any). The completed checkpoint is a
+// *taskfabric.CheckpointEnvelope (W3 schema; the meta is re-wrapped around
+// every quantum's output via EncodeCheckpoint), so the step output is read
+// from inside the envelope through the single shared decode path. A missing
+// or non-map checkpoint means the task completed without a payload — still a
+// success, just empty.
 func outcomeFromCheckpoint(tk *taskfabric.Task) *taskOutcome {
 	out := &taskOutcome{}
-	var cp map[string]any
-	switch c := tk.Checkpoint.(type) {
-	case fabricTaskMeta:
-		if step, ok := c.StepCheckpoint.(map[string]any); ok {
-			cp = step
-		}
-	case map[string]any:
-		cp = c
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	if err != nil {
+		return out
 	}
-	if cp == nil {
+	cp, ok := dc.StepCheckpoint.(map[string]any)
+	if !ok || cp == nil {
 		return out
 	}
 	if items, ok := cp["items"]; ok {
