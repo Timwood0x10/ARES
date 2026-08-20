@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -326,5 +327,18 @@ func runServe() error {
 	}
 
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
-	return g.Wait()
+	// A context cancellation (SIGINT/SIGTERM → graceful shutdown) surfaces as
+	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
+	// normalized to nil so `ares serve` exits 0 on Ctrl-C (code_rules_v2 §3.1).
+	return normalizeShutdownErr(g.Wait())
+}
+
+// normalizeShutdownErr treats context cancellation (graceful shutdown) as a
+// clean exit: Ctrl-C is not a failure. Extracted so runServe stays within the
+// cyclomatic-complexity limit.
+func normalizeShutdownErr(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }

@@ -229,6 +229,16 @@ func createExecutor(
 	subCfg ares_config.SubAgentConfig,
 	strategySrc agents.StrategySource,
 ) sub.TaskExecutor {
+	opts := []sub.TaskExecutorOption{
+		sub.WithChatClient(chatClient),
+		sub.WithStrategySource(strategySrc),
+	}
+	// Configurable tool-loop depth: max_tool_rounds per sub-agent overrides the
+	// executor default (5). 0/unset keeps the library default (config over
+	// magic constants, code_rules_v2).
+	if subCfg.MaxToolRounds > 0 {
+		opts = append(opts, sub.WithMaxToolRounds(subCfg.MaxToolRounds))
+	}
 	return sub.NewTaskExecutorWithValidation(
 		toolBinder,
 		llmAdapter,
@@ -238,8 +248,7 @@ func createExecutor(
 		subCfg.MaxRetries,
 		cfg.Validation.RetryOnFail,
 		cfg.Validation.StrictMode,
-		sub.WithChatClient(chatClient),
-		sub.WithStrategySource(strategySrc),
+		opts...,
 	)
 }
 

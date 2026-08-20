@@ -575,12 +575,16 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 		return nil, err
 	}
 
-	// Try Chat API with tool support when chatClient is available and tools exist.
-	if e.chatClient != nil && e.toolBinder != nil {
-		schemas := e.toolBinder.GetToolSchemas()
-		if len(schemas) > 0 {
-			return e.executeWithChatAndTools(ctx, prompt, params)
-		}
+	// Try Chat API with tool support when chatClient is available and the
+	// executor has registered tools. The gate is the FULL registered tool set
+	// (ListTools), not the LLM-advertised subset (GetToolSchemas): the
+	// active-tools filter (progressive disclosure) only narrows which schemas
+	// reach the model — it must not flip the executor into text-only mode and
+	// leave plan_tasks with available_tools=0 (run log
+	// scheduler_trace_with_logs.log). executeWithChatAndTools degrades
+	// internally if the advertised set is empty.
+	if e.chatClient != nil && e.toolBinder != nil && len(e.toolBinder.ListTools()) > 0 {
+		return e.executeWithChatAndTools(ctx, prompt, params)
 	}
 
 	// Fall back to text-only generation.

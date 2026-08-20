@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -101,5 +102,20 @@ func TestErrNoLLMAdapterSentinel(t *testing.T) {
 	// The sentinel itself is not the wrapped error (identity preserved).
 	if errors.Is(base, ErrNoLLMAdapter) {
 		t.Fatal("a plain adapter error must not match the sentinel")
+	}
+}
+
+// TestNormalizeShutdownErr verifies graceful shutdown (SIGINT/SIGTERM →
+// context.Canceled) exits 0 (nil), while real errors pass through.
+func TestNormalizeShutdownErr(t *testing.T) {
+	if err := normalizeShutdownErr(context.Canceled); err != nil {
+		t.Fatalf("context.Canceled must normalize to nil, got %v", err)
+	}
+	if err := normalizeShutdownErr(context.DeadlineExceeded); err == nil {
+		t.Fatal("deadline exceeded is NOT a graceful shutdown — must pass through")
+	}
+	realErr := errors.New("boom")
+	if normalizeShutdownErr(realErr) != realErr {
+		t.Fatal("real errors must pass through unchanged")
 	}
 }

@@ -185,6 +185,10 @@ type kernelHandle struct {
 	// taskDispatcher is the batch adapter the leader calls (kernelTaskDispatcher).
 	// Retained so the live flip can inject the fabric for result read-back.
 	taskDispatcher *kernelTaskDispatcher
+	// scheduler is the running kernelScheduler (set at flip time). Retained so
+	// wireKernelLifecycle can attach the P3 governance provider once the agent
+	// fabric exists (the flip may run before the lifecycle wiring).
+	scheduler *kernelScheduler
 	// tracker is the shared per-agent load/confidence/priority source for the
 	// scheduler and the fabric dispatch path. It is created by the flip and
 	// retained so wireKernelLifecycle can inject agent priorities into it
@@ -259,6 +263,15 @@ func flipKernelToTaskFabric(ctx context.Context, kernel *kernelHandle, subAgents
 	// there are executors (bounded internally at 32). Default 0 = unlimited
 	// up to the executor count.
 	sched.WithMaxConcurrent(0)
+	// P3 governance: the scheduler enforces agent budgets (token/tool/deadline)
+	// at each quantum boundary. The agent fabric may not exist yet at flip time
+	// (wireKernelLifecycle assembles it later), so the scheduler self-heals: a
+	// nil governance provider skips enforcement, and wireKernelLifecycle wires
+	// it in once the fabric is up.
+	if kernel.agents != nil {
+		sched.WithGovernance(kernel.agents)
+	}
+	kernel.scheduler = sched
 	kernel.flipped = true
 	log.Printf("kernel: live flip to policy=taskfabric, Task Fabric scheduler started (%d executors)", len(kernel.executors))
 	go sched.Run(ctx)
@@ -347,6 +360,12 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 	}
 	kernel.agents = agents
 	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
+	// P3 governance: the scheduler may have started before this lifecycle
+	// wiring (flip runs first); attach the budget provider now so quantum
+	// boundaries enforce token/tool/deadline budgets.
+	if kernel.scheduler != nil {
+		kernel.scheduler.WithGovernance(agents)
+	}
 	// Inject agent priorities into the shared tracker so the scheduler's
 	// candidate scoring sees them (B2: OS-thread-style thread priority).
 	// The fabric is empty at wiring time (recovery spawns happen later), so

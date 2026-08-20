@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -624,5 +625,127 @@ func TestKernelSchedulerIncapableAgentCannotSteal(t *testing.T) {
 	}
 	if got := busy.count(); got != 2 {
 		t.Fatalf("capable code agent must run both code tasks serially, ran %d", got)
+	}
+}
+
+// TestKernelSchedulerP3GovernanceYieldsOnBudgetExhausted verifies the P3
+// wiring at the scheduler boundary: when the winning agent's tool budget is
+// exhausted, the pre-quantum gate yields the task back (Release → READY)
+// instead of running it, and the agent never executes again.
+func TestKernelSchedulerP3GovernanceYieldsOnBudgetExhausted(t *testing.T) {
+	ctx := context.Background()
+	f := taskfabric.NewFabric()
+
+	// An agent fabric with a governed agent: tool budget 1, so the FIRST
+	// quantum passes the gate and consumes, the SECOND is gated out.
+	agents := agentfabric.NewFabric()
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
+		Identity:   "code_01",
+		Governance: agentfabric.Governance{ToolBudget: 1},
+	}); err != nil {
+		t.Fatalf("spawn governed agent: %v", err)
+	}
+
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor}, nil)
+	sched.pollInterval = 5 * time.Millisecond
+	sched.WithGovernance(agents)
+
+	sctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(sctx)
+
+	if err := f.Create(&taskfabric.Task{
+		ID:          "t1",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 3},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The task must be COMPLETED (1 quantum ran and finished it).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("t1")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	tk, err := f.Task("t1")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk.State != taskfabric.StateCompleted {
+		t.Fatalf("want COMPLETED after first quantum, got %s", tk.State)
+	}
+	if got := executor.executedCount(); got != 1 {
+		t.Fatalf("governed agent must run exactly once, ran %d", got)
+	}
+
+	// Second task: budget is now exhausted → gate yields, task stays READY,
+	// executor never runs again.
+	if err := f.Create(&taskfabric.Task{
+		ID:          "t2",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 3},
+	}); err != nil {
+		t.Fatalf("Create t2: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := executor.executedCount(); got != 1 {
+		t.Fatalf("budget-exhausted agent must not run t2, ran %d", got)
+	}
+}
+
+// TestKernelSchedulerP3GovernanceDeadlineYields verifies the deadline arm of
+// the P3 gate: a deadline-expired agent has its task released back to READY.
+func TestKernelSchedulerP3GovernanceDeadlineYields(t *testing.T) {
+	ctx := context.Background()
+	f := taskfabric.NewFabric()
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	agents := agentfabric.NewFabric().WithClock(func() time.Time { return now })
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
+		Identity:   "code_01",
+		Governance: agentfabric.Governance{Deadline: time.Minute},
+	}); err != nil {
+		t.Fatalf("spawn governed agent: %v", err)
+	}
+
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	sched := NewKernelScheduler(f, map[string]sub.Agent{"code_01": executor}, nil)
+	sched.pollInterval = 5 * time.Millisecond
+	sched.WithGovernance(agents)
+
+	sctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(sctx)
+
+	// First task completes within the deadline.
+	if err := f.Create(&taskfabric.Task{
+		ID: "t1", Capability: "code", RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 3},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := f.Task("t1")
+		if err == nil && tk.State == taskfabric.StateCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Advance the clock past the deadline; the next task must be gated out.
+	now = now.Add(2 * time.Minute)
+	if err := f.Create(&taskfabric.Task{
+		ID: "t2", Capability: "code", RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 3},
+	}); err != nil {
+		t.Fatalf("Create t2: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := executor.executedCount(); got != 1 {
+		t.Fatalf("deadline-expired agent must not run t2, ran %d", got)
 	}
 }

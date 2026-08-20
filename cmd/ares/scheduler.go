@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -54,11 +55,59 @@ type kernelScheduler struct {
 	// logs.
 	noCandidateMu      sync.Mutex
 	lastNoCandidateLog time.Time
+	// governance is the P3 cognitive-execution budget provider (agentfabric:
+	// token/tool budgets + deadline). Nil skips enforcement (backward
+	// compatible). When set, execute() checks the budget at each quantum
+	// boundary (before CheckResource / after ConsumeResource+Deadline) so a
+	// budget-exhausted agent yields the task back instead of burning tokens it
+	// cannot afford (aresos-plan.md P3: cooperative yield, not hard preempt).
+	governance *agentfabric.Fabric
 }
 
 // noCandidateLogInterval throttles "no capable candidate" logs to one per
 // window — the condition is a waiting state, not an error worth per-poll noise.
 const noCandidateLogInterval = 5 * time.Second
+
+// WithGovernance attaches the P3 budget provider (agentfabric.Fabric). It is
+// wired by the kernel lifecycle once the agent fabric exists; without it the
+// scheduler enforces nothing (backward compatible with tests and minimal
+// wiring). The provider is read-only here — the scheduler checks and consumes,
+// it never mutates budgets.
+func (s *kernelScheduler) WithGovernance(g *agentfabric.Fabric) *kernelScheduler {
+	s.governance = g
+	return s
+}
+
+// budgetOK reports whether the winning agent may start a new quantum. It is
+// the P3 pre-quantum gate: deadline first (a deadline-expired agent is dead
+// weight), then the tool budget for this quantum's expected 1 tool round. A
+// denial is a cooperative yield — the scheduler returns the task to READY
+// instead of burning a quantum the agent cannot afford.
+func (s *kernelScheduler) budgetOK(winner string) bool {
+	if s.governance == nil {
+		return true
+	}
+	if over, err := s.governance.DeadlineExceeded(winner); err == nil && over {
+		return false
+	}
+	ok, err := s.governance.CheckResource(winner, 0, 1)
+	if err != nil {
+		return true // unknown agent (not spawned via fabric) → don't block
+	}
+	return ok
+}
+
+// consumeBudget records the winning agent's quantum consumption (1 tool round)
+// after a completed quantum. Errors (budget exceeded mid-quantum) are logged,
+// not fatal — the task already ran; the next quantum's gate stops further work.
+func (s *kernelScheduler) consumeBudget(winner string) {
+	if s.governance == nil {
+		return
+	}
+	if err := s.governance.ConsumeResource(winner, 0, 1); err != nil {
+		log.Printf("kernel scheduler: agent %s budget consumption: %v", winner, err)
+	}
+}
 
 // loadTracker records per-agent execution statistics so scheduling decisions
 // use real load and confidence instead of static placeholders (v0.3.0 GAP4:
@@ -450,6 +499,17 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 	if m, ok := tk.Checkpoint.(fabricTaskMeta); ok {
 		meta = m
 	}
+	// P3 pre-quantum gate: if the winner's budget/deadline is exhausted, yield
+	// the task back (release the lease) so another capable agent (or a later
+	// quantum after ResetResource) can pick it up. This closes the P3 loop at
+	// the scheduler boundary — the fabric's state machine (Release→READY)
+	// drives the requeue, matching the plan's "budget.exceeded → yield()".
+	if !s.budgetOK(winner) {
+		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+			log.Printf("kernel scheduler: release %q for budget-exhausted %q failed: %v", taskID, winner, releaseErr)
+		}
+		return nil
+	}
 	s.tracker.begin(winner)
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
 		out, stepErr := executor.ExecuteStep(ctx, s.toModelTask(tk))
@@ -506,6 +566,12 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 		}, true, nil
 	})
 	s.tracker.end(winner, err == nil)
+	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
+	// round) so the next gate sees the new balance. Runs even on step errors —
+	// the quantum did execute (or partially execute) and spent budget.
+	if s.governance != nil {
+		s.consumeBudget(winner)
+	}
 	if err == nil {
 		s.scheduled.Add(1)
 	}

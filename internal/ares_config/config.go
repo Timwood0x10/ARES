@@ -226,6 +226,11 @@ type SubAgentConfig struct {
 	// higher-priority agents when choosing among capable candidates. Read by
 	// the kernel wiring (B2: thread priority) into the shared load tracker.
 	Priority float64 `yaml:"priority"`
+	// MaxToolRounds caps the tool-calling iterations per task execution for
+	// this agent (default 5 when 0/unset — see sub.defaultMaxToolRounds).
+	// Exposed so operators can tune tool-loop depth without code changes
+	// (code_rules_v2: config over magic constants).
+	MaxToolRounds int `yaml:"max_tool_rounds"`
 }
 
 // PromptsConfig holds prompt templates.

@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	resources_core "github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -184,4 +185,37 @@ func TestExecuteStepRoundBudgetExhaustedDegradesToTextOnly(t *testing.T) {
 	require.True(t, out2.Done)
 	require.True(t, out2.Result.Success)
 	require.Len(t, out2.Result.Items, 1)
+}
+
+// emptySchemasBinder has registered tools (ListTools non-empty) but an empty
+// LLM-advertised schema set — the exact condition that caused
+// available_tools=0 in scheduler_trace_with_logs.log when the active-tools
+// subset was empty. The executor must still enter the Chat+tools path.
+type emptySchemasBinder struct{ *stubToolBinder }
+
+func (b *emptySchemasBinder) GetToolSchemas() []resources_core.ToolSchema {
+	return nil
+}
+
+// TestExecuteWithLLMSingle_UsesChatWhenToolsRegisteredButSchemasEmpty is the
+// regression for the run-log finding: the gate for the Chat+tools path must be
+// the FULL registered tool set, not the (active-tools-filtered) advertised
+// schema set. With ListTools=["web_search"] but GetToolSchemas()=nil the
+// executor must still call the Chat API (the tool loop degrades internally
+// when no schemas reach the model), instead of silently dropping to
+// text-only and starving plan_tasks of available_tools.
+func TestExecuteWithLLMSingle_UsesChatWhenToolsRegisteredButSchemasEmpty(t *testing.T) {
+	client := &scriptedChatClient{rounds: []func(messages []*core.LLMMessage) *core.GenerateResponse{
+		func(messages []*core.LLMMessage) *core.GenerateResponse {
+			// The Chat API must be reached even with zero advertised schemas.
+			return &core.GenerateResponse{Content: `{"category":"general","item_id":"x","name":"Result","description":"answer"}`}
+		},
+	}}
+	e := newStepExecutor(t, client, 3)
+	e.toolBinder = &emptySchemasBinder{stubToolBinder: &stubToolBinder{}}
+
+	items, err := e.executeWithLLMSingle(t.Context(), &models.Task{TaskID: "t1"}, nil)
+	require.NoError(t, err)
+	require.Len(t, items, 1, "Chat path must be used and produce a parsed result")
+	require.Equal(t, 1, client.calls(), "Chat API must be called exactly once")
 }

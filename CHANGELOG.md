@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **P3 governance wired into the scheduler** (`cmd/ares/scheduler.go`): the
+  kernel scheduler enforces agent budgets at each quantum boundary —
+  pre-quantum `CheckResource`/deadline gate (yields the task back via Release
+  when exhausted) and post-quantum `ConsumeResource`. Wired through
+  `kernel.scheduler.WithGovernance(agents)` at flip + lifecycle time. Tests:
+  `TestKernelSchedulerP3GovernanceYieldsOnBudgetExhausted` /
+  `TestKernelSchedulerP3GovernanceDeadlineYields`.
+- **Configurable tool-loop depth**: `agents.sub[].max_tool_rounds` overrides
+  the executor default (5), wired through `createExecutor`
+  (`sub.WithMaxToolRounds`).
 - **JWT authentication + RBAC** (`internal/ares_security/`): stdlib HS256 token
   sign/verify, role hierarchy (`admin`⊃`operator`⊃`agent`) with a read/write/admin
   permission matrix, and net/http + gin middleware (default deny). Destructive
@@ -72,11 +82,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`available_tools=0` starvation** (found via run log
+  `scheduler_trace_with_logs.log`): `executeWithLLMSingle` gated the
+  Chat+tools path on `GetToolSchemas()` — the LLM-advertised subset narrowed
+  by `activeTools` (progressive disclosure). When the active subset was empty,
+  the executor fell back to text-only and the LLM's `plan_tasks` calls carried
+  `available_tools=0` (plus `Failed to parse plan`). The gate now uses the
+  FULL registered tool set (`toolBinder.ListTools()`); the advertised subset
+  only narrows schemas reaching the model. Regression test:
+  `TestExecuteWithLLMSingle_UsesChatWhenToolsRegisteredButSchemasEmpty`.
 - **`MemoryProvider.Stream` nil-searcher panic** (found via run log
   `scheduler_trace_with_logs.log`): a `MemoryProvider` wired without a backing
   searcher nil-deref'd in `Stream` and crashed `ares serve` (SIGSEGV). It now
   degrades to an empty stream. Regression test:
   `TestStream_NilSearcherDoesNotPanic`.
+- **Graceful shutdown exit code** (`cmd/ares/serve.go`): SIGINT/SIGTERM now
+  normalizes `context.Canceled` to a nil exit (Ctrl-C exits 0, not an error).
+  Test: `TestNormalizeShutdownErr`.
 - **OTel resource merge** on SDK upgrade: `ares_observability` aligns the schema
   URL with `resource.Default()` to avoid "conflicting Schema URL" failures.
 - **`ConfigStore` watcher race** in tests: settle window before rewrite.
