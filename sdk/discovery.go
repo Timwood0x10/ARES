@@ -20,17 +20,29 @@ import (
 // to the LLM tool list, and returns a discoveringExecutor (so the meta-tool is
 // callable without being registered in the public registry) plus a
 // sourceExpander (so runtime-discovered names are expanded into LLM defs).
+//
+// D1: the runtime's syscall tools (spawn_agent/create_task) are appended to
+// the static LLM tool list in every fallback path, so an SDK agent sees them
+// regardless of its own WithTools list or discovery state (the tools execute
+// against the same toolReg the engine uses).
 func (a *Agent) resolveTools(
 	ctx context.Context,
 	input string,
 ) ([]core.Tool, agentloop.ToolExecutor, agentloop.ToolExpander) {
+	legacy := func() ([]core.Tool, agentloop.ToolExecutor, agentloop.ToolExpander) {
+		llmTools := a.toCoreTools(a.tools)
+		if a.runtime != nil {
+			llmTools = append(llmTools, a.runtime.syscallTools...)
+		}
+		return llmTools, a.runtime.toolReg, nil
+	}
 	if !a.discovery {
-		return a.toCoreTools(a.tools), a.runtime.toolReg, nil
+		return legacy()
 	}
 	source := a.resolveToolSource()
 	if source == nil {
 		// resolveToolSource already logged the fallback reason.
-		return a.toCoreTools(a.tools), a.runtime.toolReg, nil
+		return legacy()
 	}
 	available, err := source.Tools(ctx)
 	if err != nil {

@@ -75,6 +75,11 @@ func (r *Runtime) ensureScheduler() {
 		r.sched = kernelscheduler.New(r.sdkFabric, r.sdkExecutors, nil)
 		r.sched.PollInterval = 20 * time.Millisecond
 		go r.sched.Run(r.schedCtx)
+		// D1: the SDK is a peer-runtime facade — wire the same kernel
+		// syscalls (spawn_agent/create_task) into the tool registry so SDK
+		// users can autonomously decompose tasks. Registered after sched
+		// exists because the syscall Kernel needs the shared fabric + sched.
+		r.wireSyscalls()
 	})
 }
 

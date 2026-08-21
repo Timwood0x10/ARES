@@ -500,21 +500,26 @@ func TestW2LongTaskStability(t *testing.T) {
 func TestW2LeaderOffConfig(t *testing.T) {
 	// Default: Leader OFF (Peer Agent runtime is the default path).
 	cfg := &ares_config.KernelConfig{}
-	if cfg.IsLeaderEnabled() {
+	//lint:ignore SA1019 test targets the deprecated method itself
+	if cfg.IsLeaderEnabled() { //nolint:staticcheck
 		t.Fatal("default must be leader disabled (Peer Agent runtime is the default path)")
 	}
 
 	// Explicit false.
 	off := false
-	cfg.LeaderEnabled = &off
-	if cfg.IsLeaderEnabled() {
+	//lint:ignore SA1019 test targets the deprecated field itself
+	cfg.LeaderEnabled = &off //nolint:staticcheck
+	//lint:ignore SA1019 test targets the deprecated method itself
+	if cfg.IsLeaderEnabled() { //nolint:staticcheck
 		t.Fatal("leader must be disabled when leader_enabled=false")
 	}
 
 	// Explicit true.
 	on := true
-	cfg.LeaderEnabled = &on
-	if !cfg.IsLeaderEnabled() {
+	//lint:ignore SA1019 test targets the deprecated field itself
+	cfg.LeaderEnabled = &on //nolint:staticcheck
+	//lint:ignore SA1019 test targets the deprecated method itself
+	if !cfg.IsLeaderEnabled() { //nolint:staticcheck
 		t.Fatal("leader must be enabled when leader_enabled=true")
 	}
 }

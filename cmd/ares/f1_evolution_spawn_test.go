@@ -81,3 +81,75 @@ func TestF1_EvolutionSpawnedAgentIsExecutableAndSchedulable(t *testing.T) {
 		t.Fatalf("GA-spawned agent must be scheduled and complete the task, got %s", state)
 	}
 }
+
+// TestF1GAInterventionChangesCandidateOrdering is the F1 scheduling-weight
+// acceptance (review P2: TestF1 only verified an agent CAN be selected, not
+// that GA intervention actually REORDERS candidates). Two equally-capable
+// agents, same task capability: before the GA intervention agent-A (higher
+// confidence) wins; after the intervention flips the confidences, agent-B
+// wins. The ordering change must be observable through the real scheduler
+// chain (candidate build → ConfidenceFor → Score → Schedule), not just a
+// unit-level Pick call.
+func TestF1GAInterventionChangesCandidateOrdering(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := taskfabric.NewFabric()
+	tracker := newLoadTracker()
+	agentA := &stubAgent{id: "agent-A", typ: models.AgentType("code")}
+	agentB := &stubAgent{id: "agent-B", typ: models.AgentType("code")}
+
+	// Pre-intervention: A is the high-confidence candidate (0.9 vs 0.1).
+	tracker.SetAgentConfidence("agent-A", 0.9)
+	tracker.SetAgentConfidence("agent-B", 0.1)
+
+	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{
+		"agent-A": agentA,
+		"agent-B": agentB,
+	}, tracker)
+	sched.PollInterval = 10 * time.Millisecond
+	go sched.Run(ctx)
+
+	runTask := func(id string) string {
+		task := &taskfabric.Task{
+			ID:          id,
+			Capability:  "code",
+			RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+		}
+		if err := f.Create(task); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			tk, err := f.Task(id)
+			if err == nil && tk.State == taskfabric.StateCompleted {
+				return tk.Owner
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("task %s did not complete", id)
+		return ""
+	}
+
+	before := runTask("f1-before")
+	if before != "agent-A" {
+		t.Fatalf("pre-intervention the high-confidence agent must win, got %q", before)
+	}
+	if agentA.executedCount() != 1 || agentB.executedCount() != 0 {
+		t.Fatalf("pre-intervention only agent-A must execute (A=%d B=%d)", agentA.executedCount(), agentB.executedCount())
+	}
+
+	// GA intervention: evolution flips the confidences (agent-A's history
+	// degraded, agent-B improved) — the SAME candidate set must now order
+	// differently.
+	tracker.SetAgentConfidence("agent-A", 0.1)
+	tracker.SetAgentConfidence("agent-B", 0.9)
+
+	after := runTask("f1-after")
+	if after != "agent-B" {
+		t.Fatalf("post-intervention the re-weighted candidate must win, got %q", after)
+	}
+	if agentA.executedCount() != 1 || agentB.executedCount() != 1 {
+		t.Fatalf("post-intervention only agent-B must execute (A=%d B=%d)", agentA.executedCount(), agentB.executedCount())
+	}
+}

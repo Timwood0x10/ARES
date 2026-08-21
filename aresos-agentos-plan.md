@@ -13,6 +13,58 @@
 
 ## 0. 目标架构（一句话）
 
+> **冻结规则（2026-08-21 评审后钉死，后续任何改动不得违反）**
+>
+> **Rule 1 — Agent decides, Kernel enforces.** Agent 是认知实体（怎么完成任务它自己决定）；Kernel 只提供机制（调度/生命周期/IPC/资源/策略/事件），不提供角色。Kernel 侧永远不出现 Planner / Leader / SubAgent / WorkerRole / "AgentManager decides task"。Planner/Reviewer/Coder 只能作为 Agent 的 capability 存在。
+>
+> **Rule 2 — Spawn establishes provenance, never hierarchy.** spawn/parent 只表达"谁创建了谁"（provenance/origin），不表达 owner/controller/priority/authority。在 Scheduler 眼中 A ≡ B ≡ C ≡ D，所有 Agent 同级。Task 的创建者字段语义上叫 `CreatedBy` / `OriginAgent`（不要用语义含混的 `parent` 表示 Task 归属）。
+>
+> **Rule 3 — 三张图永远分离，禁止合成一张。** ① Process/Provenance Graph（Lifecycle 用）② Task/Scheduling Graph（Scheduler 用，DAG 依赖）③ Communication Graph（IPC 用）。血缘 ≠ 调度依赖 ≠ 通信关系。
+>
+> **Rule 4 — Dual-Track 是迁移设施，不是最终架构。** 双轨 dispatcher 只允许存在于 migration boundary 内（用户/SDK → TaskFabric → Scheduler → Agent 之外不得出现）。Legacy Leader 只能以 `Adapter → TaskFabric` 形式存在，不得作为 Kernel 的永久 Dispatcher。
+>
+> **Rule 5 — 冻结 Agent 平权（2026-08-21 二轮评审）。** A ≡ B ≡ C ≡ D。spawn 只产生 provenance（谁创建了谁），**永不产生 authority**（owner/controller/priority 继承）。B 可以 spawn D、C 可以 acquire 与 B 相同的 Task X——只要 capability/lease/policy 允许。B 经 IPC 找 C 协作是 B 自己的决定，不代表任何调度依赖。
+>
+> **Rule 6 — 冻结 Agent 自主拆分（2026-08-21 二轮评审）。** 任何"任务拆分"必须来自 Agent cognition。Kernel **不分析任务、不规划任务、不决定拆几个、不决定找谁**；Kernel 只 validate / spawn / schedule / communicate / checkpoint / recover。禁止出现任何形式的隐形 Planner（含 Evolution 建议 spawn 的决策路径——见 F1 修正）。
+>
+> **Rule 7 — 冻结 Scheduler 语义（2026-08-21 二轮评审）。** Scheduler **schedules execution opportunities for Agents**，不是"调度 Agent/Task 的业务逻辑"。Scheduler 实际决定的是"现在让 A 跑一个 quantum / 让 B suspend / 让 C resume"，**不是** `scheduler: call A()`。第一版代码 `agent.ExecuteStep(...)` 可以，架构语义必须坚持。
+
+**ARES 是一个 Peer Agent 操作系统。** 所有 Agent 是同级认知进程，没有内在层级。Kernel 提供三件事：Scheduler（谁、什么时候执行）、Lifecycle（spawn/kill/suspend/resume/retire）、IPC（peer 协作通道）。Agent 自主产生 Task，Kernel 只调度。Kernel 的三张内部图——Process/Provenance Graph、Task/Scheduling Graph、Communication Graph——彼此独立，禁止合并（冻结规则 Rule 3）。
+
+核心语义（评审确认，后续实现必须保持）：
+- **Kernel 不决定 Agent 应该找谁帮忙；Kernel 只保证 Agent 有能力去找别人。** 这是 Agent OS 与 Orchestrator 的根本分界。
+- Agent = execution entity（认知实体：自己思考/规划/拆任务/spawn/找协作者）；`ExecuteStep` = quantum boundary；Scheduler = execution opportunity 的 owner。
+- Scheduler **schedules execution opportunities for Agents**（现在让 A 跑一个 quantum / 让 B suspend / 让 C resume），不是"调度 Agent/Task 的业务逻辑"，不是 `call A()`。第一版代码 `agent.ExecuteStep(...)` 可以直接这么写，但架构语义必须守住——否则未来会退化回 `leader.Process(agent)` 换个名字。
+- AgentFabric 管 Agent 生命周期；TaskFabric 管 durable task；EventStore 是事实/审计来源；CognitiveState 独立于 Runtime。
+- agentsyscall 是 Agent → Kernel 的受控入口；agentipc 是 Peer 协作通道。Chaos ≠ Recovery。
+- **Agent 是 disposable cognition，Task 是 durable intent。** Agent 死亡不杀死 Task；新 Agent 从 checkpoint 接管。
+- 一句话：**Kernel 不拥有"聪明"，Agent 才拥有"聪明"。Kernel 只是让认知进程能活着、运行、暂停、通信、创建新的认知进程、竞争资源、死亡、恢复。**
+
+Kernel 边界（冻结，不得越界）：
+
+```
+ ARES KERNEL
+ ┌──────────────────────────────────────────────┐
+ │  Scheduler        Lifecycle         IPC      │
+ │  Task/Lease       Spawn/Kill       Messages  │
+ │  Acquire          Suspend          Request   │
+ │  Yield            Resume           Reply     │
+ │  Preempt          Recover          Delegate  │
+ │  Checkpoint       Retire           Handoff   │
+ │                                             │
+ │  Resource / Policy / Event                 │
+ └───────────────┬──────────────────────────────┘
+                 │ syscall / IPC / execution
+   ┌─────────────┼─────────────┐
+   ▼             ▼             ▼
+ Agent A      Agent B       Agent C
+ cognition    cognition    cognition
+ private      private      private
+ context      context      context
+```
+
+Kernel 侧永不出现：Planner / Leader / SubAgent / WorkerRole / "AgentManager decides task"。Planner capability、Reviewer capability、Coder skill、Research skill 只作为 Agent 的能力/认知行为存在。
+
 ```
 一个 Agent 实体 = 认知(LLM) + 执行(quantum) + 生命周期(spawn/kill/recover) + 私有 CognitiveState
 Kernel = Scheduler(taskfabric) + Lifecycle(agentfabric) + IPC(agentipc)
@@ -49,7 +101,7 @@ go run ./examples/aresos-demo                                                   
 
 ```
 A 统一 Agent 实体（把执行能力注入 agentfabric.Agent）      ← 地基
-B 单一调度回路（scheduler 只认统一 Agent）
+B 单一调度回路（scheduler 只调度统一 Agent 的 execution opportunity——Rule 7）
 C 废弃 leader-sub（删第二套调度）
 D Agent 自主 spawn / 拆分（syscall）
 E 融合 Chaos（死亡→恢复走真实执行体）
@@ -126,7 +178,15 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 1. 删除/legacy 化 `leader.Agent.Process`、`TaskPlanner`、`TaskDispatcher`、`NewTeam`。任务入口改为“提交 Task 到 Kernel”，由统一 Agent 群体调度。
 2. `cmd/ares/agents.go` 的 `createLeaderAgent`/`createSubAgents` 替换为 `createAgents`（一组平等 capability agent 注册进 `agentfabric.Fabric`）。
 3. `ares.yaml` 配置从 `leader/sub` 改为平铺 `agents: [{id, capabilities, priority}]`。
-4. 破坏性变更走灰度：保留 `kernel.policy=legacy` 一个版本作为回滚开关，默认新路径。
+4. 破坏性变更走灰度：保留 `kernel.policy=legacy` 一个版本作为回滚开关，**默认新路径**。
+5. 灰度开关语义统一为"显式 opt-out"：`IsLeaderEnabled()` 默认 **false**（nil 即新路径），只有显式 `leader_enabled: true` 才走 legacy；`ares.yaml` 必须补 `leader_enabled: false` 注释示例。禁止默认回退到 leader（现状 `IsLeaderEnabled` nil→true 是违背本计划的偏差，必须修正）。
+6. **Rule 4 落地**：Legacy 只允许以 `Legacy Leader → Adapter → TaskFabric` 形式存在（迁移 boundary 内），不得作为 Kernel 的永久 Dispatcher。migration boundary 图：
+   ```
+   User / SDK ────────────┐
+                          ▼
+                     TaskFabric → Scheduler → Agent
+   Legacy Leader ──▶ Adapter ─┘   （仅迁移期）
+   ```
 
 改哪：`cmd/ares/agents.go`、`internal/agents/leader/*`、`ares.yaml`、相关配置结构。
 
@@ -145,6 +205,17 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 1. 给统一 Agent 的 Cognition 暴露受 Kernel 校验的 syscall（tool 形式）：内部调 `agentfabric.Spawn`（走 A1 factory）+ `taskfabric.Create`，做 capability/quota 校验。
 2. 子任务进 scheduler（ReadyTasks），不经任何 dispatcher。
 3. 父 Agent 经 IPC（`Request`/`Delegate`）收子结果并 synthesis。
+4. **Spawn 语义（Rule 2 + 评审修正）**：spawn_agent 的最终语义是"创建一个新的 Agent execution entity，并可选地产生一个 durable Task"，**不是"创建一个 executor"**。ExecutorFactory 是内部实现细节（Agent → Execution Binding → Scheduler），不是 Agent OS 的核心概念。执行序列：
+   ```
+   Agent A ── spawn_agent ──▶ Kernel Syscall
+                                ├─ validate capability
+                                ├─ validate quota
+                                ├─ create Agent B（A1 factory 注入执行体）
+                                └─ create Task（可选）
+                                          ▼
+                                        READY → Scheduler → B Acquire
+   ```
+5. **字段命名（Rule 2）**：Task 的创建者字段语义上叫 `CreatedBy` / `OriginAgent`（当前 `SpawnAgentArgs.ParentID` 保留给 provenance 场景，Task 侧不得出现含权力语义的 `parent`）。provenance = `B.origin = A`，不是 `A └── B` 的树。
 
 改哪：`internal/agentfabric`（syscall 接口）、`internal/agentipc`（协作）、tool 注册。
 
@@ -165,6 +236,8 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 
 改哪：`internal/aresrecovery/{recovery.go,chaos.go}`、`cmd/ares/kernel.go: runKernelRecoveryLoop`（删 phantom 分支）。
 
+> **E1 语义钉死（Rule 1）**：Scheduler → AgentFabric → Agent → Cognition 方向正确，但 Scheduler 调度的是 **execution opportunity**（dispatch execution quantum → Execution Context → Agent.ExecuteStep），不是"调用 Agent"。第一版代码直接 `agent.ExecuteStep(...)` 可以，架构语义必须保持。
+
 验收：
 - `-race` E2E：真实执行体跑到一半 → chaos kill → lease 过期 → 新执行体 acquire → 从 checkpoint 续跑（断言带旧轮次对话，非重头跑）→ COMPLETED。
 
@@ -177,7 +250,7 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 做什么：
 1. `EvolutionAdapter/PopulationAdapter` spawn 出的是 A1 的可执行 Agent（不再空壳）。
 2. 采集调度结果（成功率/失败率）按 capability/agent 归因，反馈进 scheduler 的 confidence/capability scoring。
-3. GA 可建议 spawn 特定 capability 的 reviewer agent。
+3. ~~GA 可建议 spawn 特定 capability 的 reviewer agent~~ → **已删除（2026-08-21 二轮评审）**：0.3 不允许 Evolution 参与 Agent 的认知决策路径——那会变成隐形 Planner。Reviewer 由 Agent 自己 spawn（`Agent: 我需要 reviewer → spawn_agent(capability=review)`，Kernel 只做 capability/quota/resource/policy 校验）。Evolution 最多修改 scheduling policy / capability confidence / population policy，**不产生 spawn 指令**。
 
 改哪：`internal/aresrecovery/{chaos.go,evolution_population.go}`、`cmd/ares/scheduler.go`（scoring 接反馈）。
 
@@ -194,6 +267,7 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 做什么：
 1. `Distiller.SubscribeAndDistill` 订阅统一 Agent 的 task 完成事件（已有 EventStore 通道），distill 结果回写为 Agent 可复用的经验/CognitiveState 先验。
 2. Agent 恢复/spawn 时可加载相关 distilled experience 作为初始 context（closing §11 feedback loop）。
+3. **边界（评审修正）**：蒸馏架构表达为 `Experience Store → Capability/Experience lookup → Agent Spawn / Task Scheduling`（Experience influences cognition），**不是** `Memory System → 修改 Agent cognition`（Kernel controls cognition）。Agent private cognition 产出 experience → 入 Experience Store → 检索 → 影响未来 Agent 决策。Mnemosyne/Experience 设计保持这个方向。
 
 改哪：`internal/ares_memory/distillation/*`、`agentfabric` spawn 时注入经验先验。
 
@@ -230,6 +304,14 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 2. synthesis 结果由子 Agent 真实输出组装，禁止写死。
 3. 覆盖附件 D Case 1-4 + 附件 E 大闭环，全走真实调度。
 4. 追加 “Leader OFF” 断言：全程无 leader 参与。
+5. **圣杯测试（ARES 0.3 验收，评审确认）**：完整跑通
+   ```
+   User → Agent A ──"任务太复杂"──▶ Spawn B / Spawn C
+                                     ▶ Task B / Task C → Scheduler → Agent B / Agent C
+                                     ▶ B ── IPC ── C ──▶ 结果回 A ── synthesis ──▶ Result
+   ```
+   然后故意杀 B：`B death → lease expiry → Task B READY → checkpoint recovery → Agent D acquire → continue → A 收到结果 → complete`。
+   该测试一次证明：Agent 是认知实体 / 自主拆任务 / 自主 Spawn / 无 Leader-Sub 等级 / Peer IPC / Kernel 调度 / Task durable / Agent disposable / 死亡不杀 Task / 新 Agent 从 checkpoint 接管 / 协作闭环。
 
 验收：
 - E2E `-race` 通过；改子 Agent 输出会改变最终结果；事件流含 `task.created/acquired/yielded/completed` 与 `agent.spawned/killed/recovered`。
@@ -249,6 +331,7 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 | D6 checkpoint 无 schema | 中 | A2 |
 | D7 GA 无反馈闭环 + 进化空壳 agent | 中 | F1 |
 | distill 未挂 agent 生命周期 | 中 | G1 |
+| D8 peer 模式 autopilot 无任务源（submitPeerTask 未接 serve，--autopilot 仅 leader 路径） | 中 | D1/H2 附带 |
 | 对外接口臃肿（leader/sub 泄漏）| 中 | H1 |
 
 ---
@@ -259,7 +342,8 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 里程碑 1（地基）：A1 + A2
   → 统一 Agent 可执行 + checkpoint schema 固化
 里程碑 2（单一调度）：B1 + C1
-  → scheduler 只认统一 Agent，leader-sub 退出默认路径
+  → scheduler 只调度统一 Agent 的 execution opportunity，leader-sub 退出默认路径
+  （2026-08-21 现状：B1 ✅ 落地；C1 ⚠️ 未完成——IsLeaderEnabled nil→true 默认仍走 leader，须修正为默认新路径）
 里程碑 3（自主 + 恢复）：D1 + E1
   → Agent 自主 spawn，死亡后真实续跑
 里程碑 4（横切融合）：F1 + G1
@@ -281,4 +365,4 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 | E1/F1 | 恢复/GA 接真实执行体改变运行时行为 | feature flag，先影子验证 |
 | H1 | SDK 收窄破坏外部调用方 | 标 Deprecated 过渡，不一次性删 |
 
-一句话：**先把执行能力注入 `agentfabric.Agent`（A1），让它成为唯一的可执行认知进程；然后 scheduler 只认它、删掉 leader-sub、chaos/GA/distill 全挂上来，最后用极简 SDK 收口。这是从“两套 agent + 一个空壳”到“单一完全体 Agent OS”的最短路径。**
+一句话：**先把执行能力注入 `agentfabric.Agent`（A1），让它成为唯一的可执行认知进程；然后 scheduler 只调度它的 execution opportunity、删掉 leader-sub、chaos/GA/distill 全挂上来（GA 只改策略不产生 spawn 指令），最后用极简 SDK 收口。这是从“两套 agent + 一个空壳”到“单一完全体 Agent OS”的最短路径。**

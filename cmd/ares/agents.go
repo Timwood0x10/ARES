@@ -33,6 +33,11 @@ import (
 // population (B1). This function is retained ONLY behind the
 // kernel.leader_enabled=true gray switch (legacy compat) and must not be
 // extended.
+//
+// TODO(tech-debt): remove in v0.4.0 together with createAndRegisterServeAgents,
+// the LeaderEnabled kernel config field, and the internal/agents/leader package.
+// The flat Peer Agent runtime (createPeerAgents) is the sole supported path; see
+// internal/agents/leader/doc.go for the full removal checklist.
 func createAgents(
 	cfg *ares_config.Config,
 	llmAdapter output.LLMAdapter,
@@ -201,8 +206,18 @@ func createSubAgents(
 // createPeerSubAgents builds the sub.Agent executors for the C1 flat peer
 // population (cfg.Agents.Peers). Each peer's first capability is its primary
 // Type; the full set is offered to the scheduler's candidate scorer via
-// subAgentCapability.Caps. Reuses the same executor + heartbeat + queue wiring
-// as the legacy sub path (buildSubAgents).
+// subAgentCapability.Caps.
+//
+// C1 convergence (review P1): in peer mode the sub.Agent is ONLY a static
+// CapabilityExecutor for the scheduler's executor pool — the real execution
+// body is the self-contained ChatCognition the fabric spawns (peer_mode.go:
+// SpawnSpec.CognitionFactory), so the legacy Process/Launch machinery
+// (heartbeat monitor + message queue) is NOT wired here. This mirrors
+// newPeerExecutor (which already passes nil heartbeat/queue for dynamically
+// spawned peers) and matches the review's demand to converge peer mode onto
+// the fabric executor: no partially-used sub.Agent lifecycle. The leader path
+// (createSubAgents → buildSubAgents) keeps the full wiring; it retires with
+// C1 (kernel.leader_enabled defaults to false).
 func createPeerSubAgents(
 	cfg *ares_config.Config,
 	peers []ares_config.PeerAgentConfig,
@@ -212,20 +227,39 @@ func createPeerSubAgents(
 	store ares_events.EventStore,
 	strategySrc agents.StrategySource,
 ) []sub.Agent {
-	subCfgs := make([]ares_config.SubAgentConfig, 0, len(peers))
+	agents := make([]sub.Agent, 0, len(peers))
 	for _, p := range peers {
 		typ := ""
 		if len(p.Capabilities) > 0 {
 			typ = p.Capabilities[0]
 		}
-		subCfgs = append(subCfgs, ares_config.SubAgentConfig{
+		subCfg := ares_config.SubAgentConfig{
 			ID:            p.ID,
 			Type:          typ,
 			Priority:      p.Priority,
 			MaxToolRounds: p.MaxToolRounds,
-		})
+		}
+		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
+		handler := sub.NewMessageHandler(p.ID)
+		agent := sub.New(
+			p.ID,
+			models.AgentType(typ),
+			executor,
+			handler,
+			nil, // message queue: the fabric owns scheduling; no AHP queue loop
+			nil, // heartbeat monitor: no Process/Launch lifecycle in peer mode
+			&sub.SubAgentConfig{
+				Config: base.Config{
+					ID:   p.ID,
+					Type: models.AgentType(typ),
+				},
+				EnableTools: true,
+			},
+			sub.WithEventStore(store),
+		)
+		agents = append(agents, agent)
 	}
-	return buildSubAgents(cfg, subCfgs, llmAdapter, chatClient, toolBinder, store, strategySrc)
+	return agents
 }
 
 // buildSubAgents constructs one sub.Agent per config entry with the full LLM +

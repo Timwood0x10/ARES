@@ -38,7 +38,8 @@ func createAndServeAgents(
 	comp *ares_bootstrap.Components,
 	mgr *ares_runtime.Manager,
 ) (leader.Agent, []sub.Agent, *kernelHandle, error) {
-	if cfg.Kernel.IsLeaderEnabled() {
+	//lint:ignore SA1019 legacy leader path retained as gray-scale rollback
+	if cfg.Kernel.IsLeaderEnabled() { //nolint:staticcheck
 		leaderAgent, subAgents, err := createAndRegisterServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
 		return leaderAgent, subAgents, nil, err
 	}

@@ -36,6 +36,7 @@ import (
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentloop"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
@@ -177,6 +178,15 @@ type Runtime struct {
 	schedOnce   sync.Once
 	schedCtx    context.Context
 	schedCancel context.CancelFunc
+	// agentsFabric is the runtime's Agent Fabric, backing spawn_agent syscalls
+	// (D1: SDK now wires the same kernel syscalls as peer mode). Created in
+	// ensureScheduler alongside sdkFabric; nil until the first Submit.
+	agentsFabric *agentfabric.Fabric
+	// syscallTools are the LLM-facing spawn_agent/create_task definitions
+	// appended to every agent's tool list so SDK users can autonomously
+	// decompose tasks. Populated by wireSyscalls; nil before the first
+	// Submit.
+	syscallTools []core.Tool
 }
 
 // ---- constructors ----

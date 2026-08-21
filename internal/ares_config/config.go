@@ -126,24 +126,26 @@ type KernelConfig struct {
 	// synthetic work; enable it for local demos / UI development instead of
 	// the dedicated `ares demo` console.
 	Autopilot bool `yaml:"autopilot"`
-	// LeaderEnabled controls whether the legacy Leader agent is assembled at
-	// startup (aresos-agentos-plan C1 gray switch). When false (Leader OFF,
-	// the DEFAULT), serve skips leader creation and runs purely on the Peer
-	// Agent runtime: the configured capability agents spawn into the Agent
-	// Fabric (the dynamic population), the kernel scheduler queries the
-	// fabric for candidates (B1), and agents decide decomposition via the
-	// spawn_agent / create_task syscalls. This is the Peer Agent model
-	// (aresos-plan.md §1.8: no privileged agent roles). The leader path is
-	// retained ONLY as legacy gray-scaling behind an explicit
-	// leader_enabled: true.
+	// Deprecated: LeaderEnabled enables the legacy Leader agent assembly. The
+	// default (nil → false) runs the flat Peer Agent runtime, which is the only
+	// supported production path (aresos-agentos-plan C1). Set only as a
+	// gray-scale rollback; do not extend the leader path.
+	//
+	// TODO(tech-debt): remove this field in v0.4.0 together with createAgents,
+	// createAndRegisterServeAgents, and internal/agents/leader.
 	LeaderEnabled *bool `yaml:"leader_enabled"`
 }
 
-// IsLeaderEnabled reports whether the legacy Leader agent should be
-// assembled. It defaults to FALSE — the Peer Agent runtime is the default
-// path (aresos-agentos-plan C1: 默认新路径; kernel.policy=legacy / explicit
-// leader_enabled: true remain as the gray-scale rollback). Pre-C1 configs
-// that rely on the leader must set leader_enabled: true explicitly.
+// IsLeaderEnabled reports whether the legacy Leader agent should be assembled.
+// It defaults to FALSE — the flat Peer Agent runtime is the only supported
+// production path (aresos-agentos-plan C1). The leader path remains solely as a
+// gray-scale rollback behind an explicit leader_enabled: true.
+//
+// Deprecated: the leader path is retained only for gray-scale rollback and must
+// not be extended.
+//
+// TODO(tech-debt): remove in v0.4.0 with the LeaderEnabled field, createAgents,
+// createAndRegisterServeAgents, and internal/agents/leader.
 func (k KernelConfig) IsLeaderEnabled() bool {
 	if k.LeaderEnabled == nil {
 		return false

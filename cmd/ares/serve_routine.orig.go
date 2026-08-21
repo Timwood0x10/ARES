@@ -1,3 +1,9 @@
+//go:build ignore
+
+// This file is a backup of the original serve_routine.go (HEAD version,
+// pre-refactor). It is excluded from builds via the ignore tag; keep it only
+// as a reference. Do not edit alongside the live serve_routine.go.
+
 package main
 
 import (
@@ -8,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +39,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -425,6 +433,123 @@ func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], c
 	}
 }
 
+// buildLeaderLiveDAG constructs the leader's real workflow DAG from the
+// configured sub-agents: input (leader) → one step per sub-agent → output
+// (leader). This replaces the bootstrap synthetic 3-step placeholder so
+// workflow/scheduler/recovery evolution patches hit the actual agent topology
+// (F04, Stage 8).
+//
+// Args:
+// cfg - fully resolved serve configuration; cfg.Agents.Sub is read.
+//
+// Returns:
+// dag - the live MutableDAG, nil on error.
+// err - error if a step ID is empty/duplicate or dependencies are invalid.
+func buildLeaderLiveDAG(cfg *ares_config.Config) (*engine.MutableDAG, error) {
+	steps := []*engine.Step{
+		{ID: "input", Name: "Input", AgentType: cfg.Agents.Leader.ID, Input: "parse input"},
+	}
+	subIDs := make([]string, 0, len(cfg.Agents.Sub))
+	for _, s := range cfg.Agents.Sub {
+		stepID := strings.TrimSpace(s.ID)
+		if stepID == "" {
+			stepID = strings.TrimSpace(s.Type)
+		}
+		if stepID == "" {
+			// Fail-loud instead of silently registering a broken DAG edge.
+			return nil, fmt.Errorf("sub-agent has empty ID and empty type")
+		}
+		steps = append(steps, &engine.Step{
+			ID:        stepID,
+			Name:      s.Type,
+			AgentType: s.Type,
+			Input:     stepID,
+			DependsOn: []string{"input"},
+		})
+		subIDs = append(subIDs, stepID)
+	}
+	// Output step depends on every sub-agent step (or just input when none).
+	outputDeps := append([]string{"input"}, subIDs...)
+	steps = append(steps, &engine.Step{
+		ID:        "output",
+		Name:      "Output",
+		AgentType: cfg.Agents.Leader.ID,
+		Input:     "format",
+		DependsOn: outputDeps,
+	})
+	return engine.NewMutableDAG(steps)
+}
+
+// wireEvolutionLiveDAGs injects the live agent DAGs into the evolution
+// system's executors, replacing the synthetic placeholder DAG created at
+// bootstrap time. This ensures workflow/scheduler/recovery patches hit real
+// runtime state. Extracted from runServe to keep its cyclomatic complexity
+// within lint limits.
+func wireEvolutionLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Manager, leaderID string) {
+	if comp.NewEvolution == nil {
+		return
+	}
+	for _, id := range []string{leaderID} {
+		dag, ok := mgr.GetAgentDAG(id)
+		if !ok || dag == nil {
+			// Fail-loud: no live DAG is registered for this agent (the live
+			// DAG supply chain is Track C, deferred), so workflow/scheduler/
+			// recovery patches still hit synthetic executors. The warning is
+			// expected on every startup until a live DAG is wired.
+			log.Printf("serve: live DAG not registered for agent %q before Start; "+
+				"workflow patches will hit synthetic executors (F04 gap, Track C deferred)", id)
+			continue
+		}
+		liveDAG, dagOk := dag.(*engine.MutableDAG)
+		if !dagOk {
+			continue
+		}
+		// Register a LiveDAGPatchExecutor that directly mutates the agent's
+		// live MutableDAG instead of a private noop graph.
+		liveExec := newLiveDAGPatchExecutor(mgr, id)
+		// Register as component AND as fallback so workflow structure patches
+		// (insert/remove nodes/edges) with dynamic node ID targets are routed
+		// to the live DAG executor.
+		if err := comp.NewEvolution.PatchReg.RegisterComponent(liveExec); err != nil {
+			log.Printf("serve: register live exec component: %v", err)
+		}
+		if err := comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec); err != nil {
+			log.Printf("serve: register live exec graph.scheduler: %v", err)
+		}
+		comp.NewEvolution.PatchReg.SetFallback(liveExec)
+
+		// Also update the existing graph executor for consistency.
+		if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
+			log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
+		}
+
+		// Update the WorkflowGenome's DAG reference so its evolution mutations
+		// are based on the agent's real workflow topology instead of the
+		// bootstrap 3-step placeholder. Without this, the genome generates
+		// patches against the toy structure, so the content being evolved is
+		// disconnected from reality.
+		wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow")
+		if gErr != nil {
+			continue
+		}
+		setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) })
+		if !ok {
+			continue
+		}
+		setter.SetDAG(liveDAG)
+		log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
+	}
+	// Replace the evolution system's isolated KnowledgeRuntime with the
+	// agent's live KnowledgeRuntime. This ensures knowledge genome patches
+	// (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual runtime
+	// used by the agent's knowledge tools, not the bootstrap placeholder.
+	comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
+}
+
+// loadServeConfig resolves the config path (falling back to the bundled
+// monitor-live config), loads it, applies environment overrides, and applies
+// the --port flag. Extracted from runServe to keep its cyclomatic complexity
+// within lint limits.
 func loadServeConfig() (*ares_config.Config, error) {
 	// Minimal setup: the user provides only the LLM endpoint (--llm-url) and
 	// optionally the API key / model. Everything else — agents, memory, tools,

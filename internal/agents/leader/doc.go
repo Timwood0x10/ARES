@@ -10,7 +10,7 @@
 // not be extended (cmd/ares createAgents / createAndRegisterServeAgents are
 // the only remaining callers).
 //
-// Removal milestone: scheduled for removal in v0.4.0 together with the leader
+// TODO(tech-debt): remove this package in v0.4.0 together with the leader
 // gray switches. The migration path is fully exercised: cmd/ares serves the
 // peer runtime by default, and the e2e suites (w2_peer_test,
 // e2e_grand_loop_real_test) cover Leader OFF. Before removal, delete
