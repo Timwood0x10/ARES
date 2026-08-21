@@ -7,22 +7,21 @@ import (
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
-// SubAgentCognition adapts a sub.Agent (the production quantum executor) to
-// the agentfabric.Cognition contract. This is the default Cognition
-// implementation in A1 — it delegates to the existing production executor so
-// a spawned agent is immediately executable with the same behavior as the
-// existing sub agents (StepOutcome semantics match by construction).
+// SubAgentCognition adapts a sub.Agent (the legacy quantum executor) to the
+// agentfabric.Cognition contract. It is the LEGACY-ONLY cognition: it is used
+// solely on the leader flip path (wireKernelLifecycle,
+// kernel.leader_enabled=true / kernel.policy=legacy), where the configured
+// sub-agents' own executor must remain the execution body.
 //
-// There is deliberately no second copy of the tool-loop logic here:
-// code_rules_v2 §5.1 ("同一语义只允许一条生产执行路径，禁止并存两套执行循环").
-// The tool-loop code (chatStep/decodeChatStepState/renderPrompt) lives in the
-// sub package and is THE production execution path. When sub's standalone-agent
-// positioning is retired (aresos-agentos-plan phase C), the tool-loop code
-// relocates into agentfabric and this adapter is removed.
+// The PEER production path (createPeerAgents, the default) does NOT use this
+// adapter: it spawns fabric agents with ChatCognition
+// (internal/agentfabric/chat_cognition.go), the tool-loop execution logic
+// MOVED DOWN from the sub package (aresos-agentos-plan A1.4: tool-loop 下沉到
+// agentfabric 作为默认实现). StepOutcome semantics match by construction —
+// both paths produce Done/Checkpoint/Result.
 //
-// TODO(tech-debt): before phase C, inline the sub executor's tool loop here
-// and delete the sub package's taskExecutor. Until then, keep a single
-// execution loop via this adapter.
+// When the legacy leader path is fully retired (createLeaderAgent removed),
+// this adapter and the sub executor retire together.
 type SubAgentCognition struct {
 	agent sub.Agent
 }

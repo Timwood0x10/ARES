@@ -1,4 +1,20 @@
-package main
+// Package kernelscheduler provides the "no leader" execution engine
+// (ares-runtime.md §13: Agents are not orchestrated. They are scheduled).
+//
+// The Scheduler repeatedly drains the Task Fabric's ReadyTasks — the work
+// source — and for each ready task runs:
+//
+//	Schedule (capability-aware) → Acquire (lease + fencing) → RunQuantum (one
+//	agent step) → finalize (COMPLETED / FAILED / SUSPENDED).
+//
+// It is shared by both entry points:
+//
+//   - cmd/ares (serve/kernel): the production kernel scheduler.
+//   - sdk.Runtime (Submit): the peer-runtime dispatch path — a submitted task
+//     is created in the fabric and driven through the same scheduler, so the
+//     SDK and the kernel do not maintain two divergent scheduling paths
+//     (aresos-agentos-plan H1/H2: 合并 SDK 和 kernel 两条路径).
+package kernelscheduler
 
 import (
 	"context"

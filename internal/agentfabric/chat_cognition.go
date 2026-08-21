@@ -1,0 +1,545 @@
+package agentfabric
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/agents"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
+)
+
+// This file is the A1.4 delivery (aresos-agentos-plan §3 A1.4): the sub-agent
+// tool-loop execution logic (chatStep / decodeChatStepState / renderPrompt)
+// is MOVED down into agentfabric as the DEFAULT Cognition implementation —
+// not re-written, ported and stripped of the leader dependency. A fabric
+// agent spawned with a ChatCognition is a fully self-contained cognitive
+// process: it holds its LLM client and tool binder directly, no sub.Agent
+// wrapper. (code_rules_v2 §5.1: in the peer mode this is the single
+// production execution path; the legacy leader path's sub executor exists
+// only behind kernel.leader_enabled=true and retires with C1.)
+
+// Event payload keys shared with the ares_events pipeline. They mirror the
+// sub executor's key names so both execution paths emit identical events.
+const (
+	KeyAgentID = "agent_id"
+	KeyError   = "error"
+	KeyStatus  = "status"
+)
+
+// defaultMaxToolRounds is the tool-loop round budget per execution when the
+// cognition is constructed without an explicit cap (matches the sub
+// executor's default).
+const defaultMaxToolRounds = 5
+
+// stepSchemaVersion is the chatStepState schema version (code_rules_v2 §6.1:
+// snapshot structs carry a version; decodeChatStepState rejects unknown ones).
+const stepSchemaVersion = 1
+
+// ChatClient sends chat messages with tool support to the LLM (interface at
+// the consumer, code_rules_v2 §5.2). It is the minimal surface the tool-loop
+// needs; *llm.FailoverClient and the sub executor's ChatClient both satisfy
+// it.
+type ChatClient interface {
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error)
+}
+
+// ToolBinder is the minimal tool execution surface the tool-loop needs
+// (interface at the consumer, code_rules_v2 §5.2). It mirrors the sub
+// executor's binding contract so the same binder wires both paths.
+type ToolBinder interface {
+	CallTool(ctx context.Context, name string, args map[string]any) (any, error)
+	ListTools() []string
+	IsToolIdempotent(name string) bool
+	GetToolSchemas() []resources.ToolSchema
+}
+
+// chatStepState is the resumable program-counter block (PCB) of one
+// tool-calling execution (plan P1.1 Execution Quantum: reason → tool call →
+// observation → checkpoint). A quantum (ExecuteStep) advances it by exactly
+// one ReAct round; when the LLM answers without tool calls it carries the
+// final answer to completion. It is JSON round-trippable so it can ride the
+// fabric's opaque checkpoint slot across a yield→resume cycle, and the resume
+// path always decodes into a fresh copy so a stored checkpoint is never
+// mutated in place across quanta (code_rules_v2 §6.3).
+//
+// TaskID is the resume identity check (§6.2): a checkpoint that does not
+// belong to the task being resumed is refused instead of executed.
+type chatStepState struct {
+	SchemaVersion int                `json:"schema_version"`
+	TaskID        string             `json:"task_id"`
+	Round         int                `json:"round"`
+	MaxRounds     int                `json:"max_rounds"`
+	Prompt        string             `json:"prompt"`
+	Params        map[string]any     `json:"params,omitempty"`
+	Messages      []*core.LLMMessage `json:"messages"`
+}
+
+// ChatCognitionDeps carries the tool-loop's dependencies. It is the
+// constructor argument so a SpawnSpec's CognitionFactory can capture the
+// runtime wiring (LLM client, tool binder, prompt template) exactly once.
+type ChatCognitionDeps struct {
+	// ChatClient enables native tool calling via the Chat API. When nil (and
+	// LLMAdapter is set) the cognition degrades to text-only generation.
+	ChatClient ChatClient
+	// LLMAdapter is the text-only generation path, used when the chat client
+	// is unavailable or the tool-loop budget is exhausted. When both are nil
+	// the cognition cannot execute (construction error, surfaced at
+	// ExecuteStep).
+	LLMAdapter output.LLMAdapter
+	// ToolBinder executes tool calls and advertises tool schemas to the LLM.
+	ToolBinder ToolBinder
+	// StrategySource is the optional live evolution strategy (prompt + LLM
+	// param overrides). Nil = no strategy.
+	StrategySource agents.StrategySource
+	// Template renders the worker prompt template.
+	Template *output.TemplateEngine
+	// PromptTemplate is the worker prompt template (e.g.
+	// cfg.Prompts.Recommendation).
+	PromptTemplate string
+	// MaxToolRounds caps the tool-loop rounds (0 = default 5).
+	MaxToolRounds int
+	// EventStore emits ares_events for tool/LLM calls (may be nil).
+	EventStore ares_events.EventStore
+	// Callbacks emits lifecycle callback events (may be nil).
+	Callbacks ares_callbacks.Emitter
+	// AgentID is the identity used for event emission.
+	AgentID string
+}
+
+// chatCognition is the A1.4 default Cognition: the tool-loop execution body
+// moved down from the sub executor. It is stateless between quanta — the
+// resumable chatStepState rides in the task's payload checkpoint, exactly as
+// the sub executor's quantum path — so one instance can drive many tasks
+// concurrently.
+type chatCognition struct {
+	chatClient     ChatClient
+	llmAdapter     output.LLMAdapter
+	toolBinder     ToolBinder
+	strategySource agents.StrategySource
+	template       *output.TemplateEngine
+	promptTpl      string
+	maxToolRounds  int
+	eventStore     ares_events.EventStore
+	callbacks      ares_callbacks.Emitter
+	agentID        string
+	logger         *slog.Logger
+}
+
+var _ Cognition = (*chatCognition)(nil)
+
+// NewChatCognition constructs the default tool-loop Cognition (A1.4).
+// A nil deps is rejected so a mis-wired spawn fails loudly instead of
+// producing a phantom execution body (code_rules_v2 §0.2: no silent no-op).
+func NewChatCognition(deps ChatCognitionDeps) (Cognition, error) {
+	if deps.ChatClient == nil && deps.LLMAdapter == nil {
+		return nil, fmt.Errorf("agentfabric: chat cognition requires ChatClient or LLMAdapter")
+	}
+	maxRounds := deps.MaxToolRounds
+	if maxRounds <= 0 {
+		maxRounds = defaultMaxToolRounds
+	}
+	if deps.Template == nil {
+		deps.Template = output.NewTemplateEngine()
+	}
+	return &chatCognition{
+		chatClient:     deps.ChatClient,
+		llmAdapter:     deps.LLMAdapter,
+		toolBinder:     deps.ToolBinder,
+		strategySource: deps.StrategySource,
+		template:       deps.Template,
+		promptTpl:      deps.PromptTemplate,
+		maxToolRounds:  maxRounds,
+		eventStore:     deps.EventStore,
+		callbacks:      deps.Callbacks,
+		agentID:        deps.AgentID,
+		logger:         slog.Default(),
+	}, nil
+}
+
+// ExecuteStep runs exactly one execution quantum (P1.1) of the tool-loop and
+// returns its outcome — the same semantics as the sub executor's quantum
+// path. The resumable state (chatStepState) rides in
+// task.Payload["checkpoint"]: the scheduler stores it in the fabric's opaque
+// checkpoint slot on yield and re-surfaces it here on resume.
+func (c *chatCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	if task == nil {
+		return nil, errors.ErrInvalidInput
+	}
+	result := models.NewTaskResult(task.TaskID, task.AgentType)
+	start := time.Now()
+
+	// Decode the resume checkpoint first: its presence marks a resumed
+	// quantum, and the tool-start lifecycle event must fire only on the first
+	// one (end/error fire on the final quantum — the same shape as Execute).
+	st, found, err := c.decodeChatStepState(task)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		c.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventToolStart,
+			AgentID: c.agentID,
+			Input:   task.TaskID,
+		})
+	}
+
+	chatAvailable := c.chatClient != nil && c.toolBinder != nil && len(c.toolBinder.GetToolSchemas()) > 0
+	if st == nil {
+		prompt, params, err := c.renderPromptAndParams(ctx, task)
+		if err != nil {
+			return nil, err
+		}
+		if !chatAvailable {
+			// Text-only: a single LLM call completes the task in one quantum.
+			items, err := c.executeWithLLMTextOnly(ctx, prompt, params)
+			if err != nil {
+				return nil, err
+			}
+			result.SetSuccess(items, "LLM recommendation completed")
+			result.Duration = time.Since(start)
+			c.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: c.agentID, Duration: time.Since(start)})
+			return &StepOutcome{Done: true, Result: result}, nil
+		}
+		st = &chatStepState{
+			SchemaVersion: stepSchemaVersion,
+			TaskID:        task.TaskID,
+			MaxRounds:     c.maxToolRounds,
+			Prompt:        prompt,
+			Params:        params,
+			Messages:      []*core.LLMMessage{{Role: "user", Content: prompt}},
+		}
+	} else if !chatAvailable {
+		// A resumed checkpoint needs the same executor shape that produced it.
+		// Missing chat/tools wiring mid-task is a config error, not a retryable
+		// LLM failure — surface it instead of silently restarting.
+		return nil, fmt.Errorf("agentfabric: resumed step requires chat executor (chat_client=%v tool_binder=%v)", c.chatClient != nil, c.toolBinder != nil)
+	}
+
+	// One ReAct round — or a text-only degradation when the round budget is
+	// already spent (the previous quantum ran the last tool round).
+	var items []*models.RecommendItem
+	var done bool
+	if st.Round >= st.MaxRounds {
+		c.logger.Warn("Chat API tool loop exceeded max rounds, degrading to text-only",
+			"max_rounds", st.MaxRounds,
+			"msg_count", len(st.Messages),
+		)
+		items, err = c.executeWithLLMTextOnly(ctx, st.Prompt, st.Params)
+		done = true
+	} else {
+		items, done, err = c.chatStep(ctx, st)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if !done {
+		// Yield (P1.1): progress was made but the task is not complete. The
+		// fabric SUSPENDEDs the task with this checkpoint preserved; a later
+		// quantum resumes from it.
+		return &StepOutcome{Checkpoint: st}, nil
+	}
+	result.SetSuccess(items, "LLM recommendation completed")
+	result.Duration = time.Since(start)
+	c.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: c.agentID, Duration: time.Since(start)})
+	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// decodeChatStepState restores a resumable chatStepState from a task's
+// payload["checkpoint"] entry. It always decodes into a fresh copy via JSON
+// so the fabric's stored checkpoint is never mutated across quanta
+// (code_rules_v2 §6.3). Resume is refused when the checkpoint belongs to
+// another task (§6.2) or carries an unknown schema version (§6.1).
+func (c *chatCognition) decodeChatStepState(task *models.Task) (*chatStepState, bool, error) {
+	if task == nil || task.Payload == nil {
+		return nil, false, nil
+	}
+	raw, ok := task.Payload["checkpoint"]
+	if !ok || raw == nil {
+		return nil, false, nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, errors.Wrap(err, "marshal step checkpoint")
+	}
+	var st chatStepState
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, false, errors.Wrap(err, "unmarshal step checkpoint")
+	}
+	if st.SchemaVersion != stepSchemaVersion {
+		return nil, false, fmt.Errorf("agentfabric: step checkpoint schema version %d unsupported (want %d)", st.SchemaVersion, stepSchemaVersion)
+	}
+	if st.TaskID != task.TaskID {
+		return nil, false, fmt.Errorf("agentfabric: step checkpoint for task %q does not match task %q, refusing resume", st.TaskID, task.TaskID)
+	}
+	return &st, true, nil
+}
+
+// chatStep advances a tool-calling execution by exactly one ReAct round: one
+// Chat API call, every requested tool call executed, and the resulting
+// messages appended to the state. It is the single loop body of the cognition
+// (code_rules_v2 §5.1).
+//
+// Contract: the caller has verified st.Round < st.MaxRounds.
+func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*models.RecommendItem, bool, error) {
+	schemas := c.toolBinder.GetToolSchemas()
+	llmTools := make([]core.Tool, 0, len(schemas))
+	for _, s := range schemas {
+		llmTools = append(llmTools, resources.ToolSchemaToLLMTool(s))
+	}
+
+	c.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
+		KeyAgentID:   c.agentID,
+		"round":      st.Round + 1,
+		"max_rounds": st.MaxRounds,
+		"tool_count": len(llmTools),
+		"msg_count":  len(st.Messages),
+	})
+
+	resp, err := c.chatClient.Chat(ctx, st.Messages, llmTools, st.Params)
+	if err != nil {
+		return nil, false, errors.Wrap(err, "chat API call failed")
+	}
+
+	// No tool calls: LLM gave a final text answer.
+	if len(resp.ToolCalls) == 0 {
+		c.logger.Debug("Chat API returned final text", "round", st.Round+1, "content_len", len(resp.Content))
+		items, err := c.parseRecommendResult(resp.Content)
+		return items, true, err
+	}
+
+	// Append the assistant message with its tool calls, then execute each call
+	// and append its observation as a tool message — the conversation grows
+	// exactly as the pre-quantum implementation did, so a resumed round sees
+	// the accumulated context.
+	c.logger.Debug("Chat API returned tool calls", "round", st.Round+1, "count", len(resp.ToolCalls))
+	st.Messages = append(st.Messages, &core.LLMMessage{
+		Role:      "assistant",
+		Content:   resp.Content,
+		ToolCalls: resp.ToolCalls,
+	})
+	for _, tc := range resp.ToolCalls {
+		c.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
+			KeyAgentID:     c.agentID,
+			"tool_name":    tc.Function.Name,
+			"tool_call_id": tc.ID,
+		})
+
+		result, err := c.executeToolCall(ctx, tc)
+		if err != nil {
+			c.logger.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
+			result = fmt.Sprintf("error: %s", err.Error())
+		}
+
+		c.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
+			KeyAgentID:     c.agentID,
+			"tool_name":    tc.Function.Name,
+			"tool_call_id": tc.ID,
+		})
+		st.Messages = append(st.Messages, &core.LLMMessage{
+			Role:       "tool",
+			Content:    result,
+			ToolCallID: tc.ID,
+		})
+	}
+	st.Round++
+	return nil, false, nil
+}
+
+// executeToolCall parses arguments and calls the tool via the binder.
+func (c *chatCognition) executeToolCall(ctx context.Context, tc core.ToolCall) (string, error) {
+	var args map[string]any
+	if tc.Function.Arguments != "" {
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return "", errors.Wrap(err, "parse tool arguments")
+		}
+	}
+
+	result, err := c.toolBinder.CallTool(ctx, tc.Function.Name, args)
+	if err != nil {
+		return "", err
+	}
+
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Sprintf("%v", result), nil
+	}
+	return string(resultJSON), nil
+}
+
+// renderPromptAndParams renders the worker prompt (with the active evolution
+// strategy's template/param overrides and the active role's instructions) and
+// the per-call LLM params.
+func (c *chatCognition) renderPromptAndParams(ctx context.Context, task *models.Task) (string, map[string]any, error) {
+	tpl := c.promptTpl
+	params := map[string]any{}
+	if st := c.activeStrategy(ctx); st != nil {
+		if st.Prompt != "" {
+			tpl = st.Prompt
+		}
+		for k, v := range st.Params {
+			params[k] = v
+		}
+	}
+
+	prompt, err := c.renderPrompt(tpl, task)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// P0-3: prepend the active role's system instructions when the execution
+	// was switched to a specialized role via Handoff (Ch.10 multi-stage role
+	// transition).
+	if instructions := activeRoleInstructions(ctx); instructions != "" {
+		prompt = instructions + "\n\n" + prompt
+	}
+	c.logger.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
+	return prompt, params, nil
+}
+
+// renderPrompt renders the worker prompt template with the task data. It
+// fails fast on an empty result: an empty user message is rejected by
+// OpenAI-compatible providers with a 400.
+func (c *chatCognition) renderPrompt(tpl string, task *models.Task) (string, error) {
+	promptData := map[string]any{
+		"Category": string(task.AgentType),
+	}
+
+	// Carry the original task input into the template as {{.input}}.
+	if task.Payload != nil {
+		if desc, ok := task.Payload["task_desc"].(string); ok && desc != "" {
+			promptData["input"] = desc
+		}
+	}
+	if _, ok := promptData["input"]; !ok {
+		promptData["input"] = string(task.AgentType)
+	}
+
+	// Generic profile fields (lowercase keys to match {{index . "key"}}).
+	if task.UserProfile != nil {
+		if len(task.UserProfile.Preferences) > 0 {
+			for k, v := range task.UserProfile.Preferences {
+				promptData[k] = v
+			}
+		}
+		if task.UserProfile.Budget != nil {
+			promptData["budget"] = formatBudget(task.UserProfile.Budget)
+		}
+		if len(task.UserProfile.Style) > 0 {
+			promptData["style"] = task.UserProfile.Style
+		}
+	}
+
+	prompt, err := c.template.Render(tpl, promptData)
+	if err != nil {
+		return "", errors.Wrap(err, "render prompt")
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return "", fmt.Errorf("render prompt: empty prompt (template=%q)", tpl)
+	}
+	return prompt, nil
+}
+
+// activeStrategy fetches the currently-deployed evolution strategy, if any.
+// Errors are logged and ignored so a missing store never breaks execution.
+func (c *chatCognition) activeStrategy(ctx context.Context) *agents.ActiveStrategy {
+	if c.strategySource == nil {
+		return nil
+	}
+	st, err := c.strategySource.GetActiveStrategy(ctx)
+	if err != nil {
+		c.logger.Warn("failed to read active strategy", "error", err)
+		return nil
+	}
+	return st
+}
+
+// executeWithLLMTextOnly performs a text-only LLM generation.
+func (c *chatCognition) executeWithLLMTextOnly(ctx context.Context, prompt string, params map[string]any) ([]*models.RecommendItem, error) {
+	if c.llmAdapter == nil {
+		return nil, fmt.Errorf("agentfabric: no text-only LLM adapter available")
+	}
+	c.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
+		KeyAgentID: c.agentID,
+		"prompt":   prompt[:min(200, len(prompt))],
+	})
+	response, err := c.llmAdapter.GenerateWithParams(ctx, prompt, params)
+	if err != nil {
+		c.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
+			KeyAgentID: c.agentID,
+			KeyError:   err.Error(),
+			KeyStatus:  "failed",
+		})
+		return nil, errors.Wrap(err, "LLM call failed")
+	}
+	c.logger.Debug("LLM response", "preview", response[:min(500, len(response))])
+	return c.parseRecommendResult(response)
+}
+
+// parseRecommendResult parses the LLM text response into RecommendItems,
+// wrapping prose answers in a single item (never a fake failure).
+func (c *chatCognition) parseRecommendResult(response string) ([]*models.RecommendItem, error) {
+	parser := output.NewParser()
+	result, err := parser.ParseRecommendResult(response)
+	if err == nil && result != nil && result.Items != nil {
+		c.logger.Info("Parsed result items", "count", len(result.Items))
+		return result.Items, nil
+	}
+	if trimmed := strings.TrimSpace(response); trimmed != "" {
+		c.logger.Debug("Strict parse failed, wrapping prose", "error", err)
+		item := &models.RecommendItem{
+			ItemID:      fmt.Sprintf("prose-%s-%d", c.agentID, time.Now().UnixNano()),
+			Category:    "general",
+			Name:        "Agent output",
+			Description: trimmed[:min(500, len(trimmed))],
+			Content:     trimmed,
+		}
+		return []*models.RecommendItem{item}, nil
+	}
+	return nil, errors.Wrap(err, "parse result")
+}
+
+// emitCallback emits a lifecycle callback event if the emitter is set.
+func (c *chatCognition) emitCallback(ctx *ares_callbacks.Context) {
+	if c.callbacks == nil {
+		return
+	}
+	c.callbacks.Emit(ctx)
+}
+
+// emitEvent appends a single event using the canonical ares_events.Emit
+// helper. No-op if eventStore is nil.
+func (c *chatCognition) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if !ares_events.Emit(ctx, c.eventStore, c.agentID, eventType, "agentfabric", payload) {
+		c.logger.Warn("failed to emit event", "event_type", eventType, "stream_id", c.agentID)
+	}
+}
+
+// formatBudget formats a PriceRange for the prompt template.
+func formatBudget(budget *models.PriceRange) string {
+	if budget == nil {
+		return "0 - 10000"
+	}
+	return fmt.Sprintf("%.0f - %.0f", budget.Min, budget.Max)
+}
+
+// activeRoleInstructions returns the system instructions of the role that the
+// leader switched to via Handoff (see agents.GetFromContext), or an empty
+// string when no role is active in the context.
+func activeRoleInstructions(ctx context.Context) string {
+	profile := agents.GetFromContext(ctx)
+	if profile == nil {
+		return ""
+	}
+	return profile.Instructions
+}

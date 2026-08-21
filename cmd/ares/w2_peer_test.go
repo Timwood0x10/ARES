@@ -69,7 +69,7 @@ func TestW2Case1IndependentCompletion(t *testing.T) {
 	executors := map[string]CapabilityExecutor{"agent-A": agent}
 	tracker := newLoadTracker()
 	sched := NewKernelScheduler(fabric, executors, tracker)
-	sched.pollInterval = 50 * time.Millisecond
+	sched.PollInterval = 50 * time.Millisecond
 	go sched.Run(ctx)
 
 	// Create a task directly in the fabric — no leader, no planner.
@@ -131,7 +131,7 @@ func TestW2Case2AutonomousDecomposition(t *testing.T) {
 	}
 	tracker := newLoadTracker()
 	sched := NewKernelScheduler(fabric, executors, tracker)
-	sched.pollInterval = 50 * time.Millisecond
+	sched.PollInterval = 50 * time.Millisecond
 	sched.WithMaxConcurrent(2)
 	go sched.Run(ctx)
 
@@ -227,7 +227,7 @@ func TestW2Case3ParentDeathChildContinues(t *testing.T) {
 	executors := map[string]CapabilityExecutor{"worker-B": worker}
 	tracker := newLoadTracker()
 	sched := NewKernelScheduler(fabric, executors, tracker)
-	sched.pollInterval = 50 * time.Millisecond
+	sched.PollInterval = 50 * time.Millisecond
 	go sched.Run(ctx)
 
 	// Kill the parent agent (simulate death).
@@ -318,7 +318,7 @@ func TestW2Case4TrueCollaboration(t *testing.T) {
 	}
 	tracker := newLoadTracker()
 	sched := NewKernelScheduler(fabric, executors, tracker)
-	sched.pollInterval = 50 * time.Millisecond
+	sched.PollInterval = 50 * time.Millisecond
 	go sched.Run(ctx)
 
 	// Create tasks for each capability — the scheduler assigns by capability,
@@ -395,7 +395,7 @@ func TestW2LongTaskStability(t *testing.T) {
 	}
 	tracker := newLoadTracker()
 	sched := NewKernelScheduler(fabric, executors, tracker)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 	sched.WithMaxConcurrent(4)
 	go sched.Run(ctx)
 
@@ -481,7 +481,7 @@ func TestW2LongTaskStability(t *testing.T) {
 	}
 
 	// Verify the scheduler is still alive (scheduled counter > 0).
-	if sched.scheduled.Load() == 0 {
+	if sched.Scheduled.Load() == 0 {
 		t.Fatal("scheduler must have executed at least 1 task")
 	}
 
@@ -491,16 +491,17 @@ func TestW2LongTaskStability(t *testing.T) {
 		totalExec += stub.executed.Load()
 	}
 	t.Logf("Long task stability PASS: %d tasks (%d completed, %d failed), %d total executions, scheduler scheduled=%d",
-		totalTasks, completed, failed, totalExec, sched.scheduled.Load())
+		totalTasks, completed, failed, totalExec, sched.Scheduled.Load())
 }
 
 // TestW2LeaderOffConfig verifies the KernelConfig.IsLeaderEnabled method
-// defaults to true (backward compatible) and respects explicit false.
+// defaults to FALSE — the Peer Agent runtime is the default path (C1 默认新
+// 路径) — and respects explicit true (legacy gray-scale rollback).
 func TestW2LeaderOffConfig(t *testing.T) {
-	// Default: leader enabled.
+	// Default: Leader OFF (Peer Agent runtime is the default path).
 	cfg := &ares_config.KernelConfig{}
-	if !cfg.IsLeaderEnabled() {
-		t.Fatal("default must be leader enabled (backward compatible)")
+	if cfg.IsLeaderEnabled() {
+		t.Fatal("default must be leader disabled (Peer Agent runtime is the default path)")
 	}
 
 	// Explicit false.

@@ -49,13 +49,13 @@ func TestW4EvolutionFeedbackChangesSchedulerBehavior(t *testing.T) {
 	// no override set). Score is equal → Schedule picks the first candidate
 	// (agent-A in the map iteration order, but Pick is deterministic: it
 	// picks the highest score; ties go to the first encountered).
-	tracker.begin("agent-A") // mark A as busy so B wins
+	tracker.Begin("agent-A") // mark A as busy so B wins
 	confA := tracker.Confidence("agent-A")
 	confB := tracker.Confidence("agent-B")
 	if confA != 1.0 || confB != 1.0 {
 		t.Fatalf("pre-feedback confidence must be 1.0 for both, got A=%f B=%f", confA, confB)
 	}
-	tracker.end("agent-A", true)
+	tracker.End("agent-A", true)
 
 	// Apply the feedback: read attribution → push confidence into tracker.
 	adapter := aresrecovery.NewEvolutionFeedbackAdapter(attribution, tracker)
@@ -92,7 +92,7 @@ func TestW4EvolutionFeedbackChangesSchedulerBehavior(t *testing.T) {
 		"agent-A": agentA,
 		"agent-B": agentB,
 	}, tracker)
-	sched.pollInterval = 10 * time.Millisecond
+	sched.PollInterval = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go sched.Run(ctx)

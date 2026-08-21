@@ -1,4 +1,4 @@
-package main
+package kernelscheduler
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
-// kernelScheduler is the "no leader" execution engine (ares-runtime.md
+// Scheduler is the "no leader" execution engine (ares-runtime.md
 // Agents are not orchestrated. They are scheduled). It repeatedly drains
 // the fabric's ReadyTasks — the work source — and for each ready task:
 //
@@ -33,7 +33,7 @@ import (
 // let the recovery loop inject a replacement agent at runtime so a recovered
 // task is executed by a real executor, not a phantom agent. execMu guards the
 // executor map for concurrent register/unregister/lookup from drain goroutines.
-type kernelScheduler struct {
+type Scheduler struct {
 	fabric    *taskfabric.Fabric
 	executors map[string]CapabilityExecutor
 	// execMu guards the executors map for dynamic register/unregister (W1).
@@ -41,9 +41,9 @@ type kernelScheduler struct {
 	execMu sync.RWMutex
 	// tracker supplies real per-agent Load/Confidence to Schedule
 	// (v0.3.0 GAP4: real load tracking instead of a static placeholder).
-	tracker *loadTracker
-	// pollInterval is how often ReadyTasks is drained (default 500ms).
-	pollInterval time.Duration
+	tracker *LoadTracker
+	// PollInterval is how often ReadyTasks is drained (default 500ms).
+	PollInterval time.Duration
 	// ttl is the lease granted to each winning agent.
 	ttl time.Duration
 	// eventStore is the shared EventStore the Task Fabric publishes lifecycle
@@ -59,7 +59,7 @@ type kernelScheduler struct {
 	maxConcurrent int
 	// scheduled counts successfully executed tasks (for observability).
 	// atomic: incremented from concurrent drain goroutines (work stealing).
-	scheduled atomic.Int64
+	Scheduled atomic.Int64
 	// noCandidateMu guards lastNoCandidateLog for throttling unschedulable-task
 	// logs.
 	noCandidateMu      sync.Mutex
@@ -100,7 +100,7 @@ const noCandidateLogInterval = 5 * time.Second
 // scheduler enforces nothing (backward compatible with tests and minimal
 // wiring). The provider is read-only here — the scheduler checks and consumes,
 // it never mutates budgets.
-func (s *kernelScheduler) WithGovernance(g *agentfabric.Fabric) *kernelScheduler {
+func (s *Scheduler) WithGovernance(g *agentfabric.Fabric) *Scheduler {
 	s.governance = g
 	return s
 }
@@ -110,7 +110,7 @@ func (s *kernelScheduler) WithGovernance(g *agentfabric.Fabric) *kernelScheduler
 // weight), then the tool budget for this quantum's expected 1 tool round. A
 // denial is a cooperative yield — the scheduler returns the task to READY
 // instead of burning a quantum the agent cannot afford.
-func (s *kernelScheduler) budgetOK(winner string) bool {
+func (s *Scheduler) budgetOK(winner string) bool {
 	if s.governance == nil {
 		return true
 	}
@@ -127,7 +127,7 @@ func (s *kernelScheduler) budgetOK(winner string) bool {
 // consumeBudget records the winning agent's quantum consumption (1 tool round)
 // after a completed quantum. Errors (budget exceeded mid-quantum) are logged,
 // not fatal — the task already ran; the next quantum's gate stops further work.
-func (s *kernelScheduler) consumeBudget(winner string) {
+func (s *Scheduler) consumeBudget(winner string) {
 	if s.governance == nil {
 		return
 	}
@@ -136,7 +136,7 @@ func (s *kernelScheduler) consumeBudget(winner string) {
 	}
 }
 
-// loadTracker records per-agent execution statistics so scheduling decisions
+// LoadTracker records per-agent execution statistics so scheduling decisions
 // use real load and confidence instead of static placeholders (v0.3.0 GAP4:
 // "线程"的负载真实跟踪). It is shared by the kernel scheduler and the fabric
 // dispatch path (executeFabricTask) so both see the same live numbers. mu
@@ -147,7 +147,7 @@ func (s *kernelScheduler) consumeBudget(winner string) {
 // When a confidenceOverride is set (> 0), Confidence returns it instead of
 // the raw success rate. This is the write path for the W4 feedback loop:
 // execution results → evolution → SetAgentConfidence → next Schedule.
-type loadTracker struct {
+type LoadTracker struct {
 	mu       sync.Mutex
 	inflight map[string]int // agentID → tasks currently acquired (not finalized)
 	done     map[string]int // agentID → tasks finalized
@@ -165,9 +165,9 @@ type loadTracker struct {
 	confidenceOverride map[string]float64
 }
 
-// newLoadTracker creates an empty tracker.
-func newLoadTracker() *loadTracker {
-	return &loadTracker{
+// NewLoadTracker creates an empty tracker.
+func NewLoadTracker() *LoadTracker {
+	return &LoadTracker{
 		inflight:           make(map[string]int),
 		done:               make(map[string]int),
 		ok:                 make(map[string]int),
@@ -178,28 +178,28 @@ func newLoadTracker() *loadTracker {
 
 // SetPriority records an agent's scheduling priority (B2: thread priority).
 // It is set once at wiring time from the agent fabric; 0/absent = normal.
-func (t *loadTracker) SetPriority(agentID string, priority float64) {
+func (t *LoadTracker) SetPriority(agentID string, priority float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.priorities[agentID] = priority
 }
 
 // Priority returns an agent's scheduling priority (0 = normal when unset).
-func (t *loadTracker) Priority(agentID string) float64 {
+func (t *LoadTracker) Priority(agentID string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.priorities[agentID]
 }
 
 // begin records that agentID acquired a task.
-func (t *loadTracker) begin(agentID string) {
+func (t *LoadTracker) Begin(agentID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.inflight[agentID]++
 }
 
 // end records a finalized task for agentID; success reports the outcome.
-func (t *loadTracker) end(agentID string, success bool) {
+func (t *LoadTracker) End(agentID string, success bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.inflight[agentID]--
@@ -212,7 +212,7 @@ func (t *loadTracker) end(agentID string, success bool) {
 // Load returns agentID's current utilization in [0,1]. Sub-agents are
 // single-slot executors (one quantum at a time), so load is the fraction of
 // the slot currently busy.
-func (t *loadTracker) Load(agentID string) float64 {
+func (t *LoadTracker) Load(agentID string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.inflight[agentID] > 0 {
@@ -226,7 +226,7 @@ func (t *loadTracker) Load(agentID string) float64 {
 // feedback adapter has set a confidence override (>= 0), that value is
 // returned instead — the evolution system's derived confidence takes
 // priority over the raw success rate.
-func (t *loadTracker) Confidence(agentID string) float64 {
+func (t *LoadTracker) Confidence(agentID string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if override, ok := t.confidenceOverride[agentID]; ok && override >= 0 {
@@ -244,7 +244,7 @@ func (t *loadTracker) Confidence(agentID string) float64 {
 // success rate). This method implements the aresrecovery.ConfidenceInjector
 // interface so the EvolutionFeedbackAdapter can push confidence updates
 // without importing the scheduler package.
-func (t *loadTracker) SetAgentConfidence(agentID string, confidence float64) {
+func (t *LoadTracker) SetAgentConfidence(agentID string, confidence float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if confidence < 0 {
@@ -254,7 +254,7 @@ func (t *loadTracker) SetAgentConfidence(agentID string, confidence float64) {
 	t.confidenceOverride[agentID] = confidence
 }
 
-// NewKernelScheduler creates a scheduler over a fabric with the given
+// New creates a scheduler over a fabric with the given
 // executors (agentID → CapabilityExecutor). A nil tracker allocates a private
 // one; pass a shared tracker to keep Load/Confidence consistent with the fabric
 // dispatch path (executeFabricTask).
@@ -265,17 +265,17 @@ func (t *loadTracker) SetAgentConfidence(agentID string, confidence float64) {
 //   - tracker: per-agent load/confidence source; nil creates a private one.
 //
 // Returns:
-//   - *kernelScheduler: ready to Run.
-func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tracker *loadTracker) *kernelScheduler {
+//   - *Scheduler: ready to Run.
+func New(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tracker *LoadTracker) *Scheduler {
 	if tracker == nil {
-		tracker = newLoadTracker()
+		tracker = NewLoadTracker()
 	}
-	return &kernelScheduler{
+	return &Scheduler{
 		fabric:         fabric,
 		executors:      executors,
 		boundExecutors: make(map[string]string),
 		tracker:        tracker,
-		pollInterval:   500 * time.Millisecond,
+		PollInterval:   500 * time.Millisecond,
 		ttl:            5 * time.Minute,
 	}
 }
@@ -283,7 +283,7 @@ func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]Capabili
 // WithAttribution attaches the W4 execution-outcome source (aresrecovery.
 // ExecutionAttribution). When set, execute() records every finalized outcome
 // after the quantum. Returns the scheduler for chaining.
-func (s *kernelScheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) *kernelScheduler {
+func (s *Scheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) *Scheduler {
 	s.attribution = a
 	return s
 }
@@ -293,7 +293,7 @@ func (s *kernelScheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) 
 // scheduler 只认统一 Agent). It is wired by the kernel lifecycle once the
 // fabric exists; nil keeps the static executor registry only. Returns the
 // scheduler for chaining.
-func (s *kernelScheduler) WithAgentFabric(f *agentfabric.Fabric) *kernelScheduler {
+func (s *Scheduler) WithAgentFabric(f *agentfabric.Fabric) *Scheduler {
 	s.agents = f
 	return s
 }
@@ -301,7 +301,7 @@ func (s *kernelScheduler) WithAgentFabric(f *agentfabric.Fabric) *kernelSchedule
 // WithMaxConcurrent caps how many ready tasks run in parallel per drain
 // (work stealing). <= 0 falls back to the executor count. Returns the
 // scheduler for chaining.
-func (s *kernelScheduler) WithMaxConcurrent(n int) *kernelScheduler {
+func (s *Scheduler) WithMaxConcurrent(n int) *Scheduler {
 	s.maxConcurrent = n
 	return s
 }
@@ -315,7 +315,7 @@ func (s *kernelScheduler) WithMaxConcurrent(n int) *kernelScheduler {
 // Args:
 //   - agentID: the replacement agent's identity.
 //   - executor: the CapabilityExecutor (must be non-nil).
-func (s *kernelScheduler) RegisterExecutor(agentID string, executor CapabilityExecutor) {
+func (s *Scheduler) RegisterExecutor(agentID string, executor CapabilityExecutor) {
 	if agentID == "" || executor == nil {
 		return
 	}
@@ -336,7 +336,7 @@ func (s *kernelScheduler) RegisterExecutor(agentID string, executor CapabilityEx
 //   - taskID: the recovered task the executor is bound to.
 //   - agentID: the replacement executor's identity.
 //   - executor: the CapabilityExecutor (must be non-nil).
-func (s *kernelScheduler) RegisterExecutorForTask(taskID, agentID string, executor CapabilityExecutor) {
+func (s *Scheduler) RegisterExecutorForTask(taskID, agentID string, executor CapabilityExecutor) {
 	if taskID == "" || agentID == "" || executor == nil {
 		return
 	}
@@ -349,7 +349,7 @@ func (s *kernelScheduler) RegisterExecutorForTask(taskID, agentID string, execut
 
 // boundFor returns the executor id bound to taskID, if any. Safe for
 // concurrent use.
-func (s *kernelScheduler) boundFor(taskID string) (string, bool) {
+func (s *Scheduler) boundFor(taskID string) (string, bool) {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	id, ok := s.boundExecutors[taskID]
@@ -359,7 +359,7 @@ func (s *kernelScheduler) boundFor(taskID string) (string, bool) {
 // unbindFor removes the executor binding for taskID and returns the bound
 // executor id ("" when none). Callers use it to unregister a recovery
 // executor once its task reaches a terminal state.
-func (s *kernelScheduler) unbindFor(taskID string) string {
+func (s *Scheduler) unbindFor(taskID string) string {
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
 	id := s.boundExecutors[taskID]
@@ -374,7 +374,7 @@ func (s *kernelScheduler) unbindFor(taskID string) string {
 //
 // Args:
 //   - agentID: the agent to remove.
-func (s *kernelScheduler) UnregisterExecutor(agentID string) {
+func (s *Scheduler) UnregisterExecutor(agentID string) {
 	if agentID == "" {
 		return
 	}
@@ -393,7 +393,7 @@ func (s *kernelScheduler) UnregisterExecutor(agentID string) {
 // each requeued task to decide whether a replacement executor is needed:
 // when an existing executor can already resume the task, no spawn is
 // required and the task simply returns to READY.
-func (s *kernelScheduler) HasCapableExecutor(taskID string) bool {
+func (s *Scheduler) HasCapableExecutor(taskID string) bool {
 	tk, err := s.fabric.Task(taskID)
 	if err != nil {
 		return false
@@ -443,7 +443,7 @@ func (s *kernelScheduler) HasCapableExecutor(taskID string) bool {
 
 // isBoundToOtherTask reports whether agentID is a recovery executor bound to
 // some task (so it must not be offered for any other task).
-func (s *kernelScheduler) isBoundToOtherTask(agentID string) bool {
+func (s *Scheduler) isBoundToOtherTask(agentID string) bool {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	for _, boundID := range s.boundExecutors {
@@ -459,7 +459,7 @@ func (s *kernelScheduler) isBoundToOtherTask(agentID string) bool {
 // s.agents != nil), unbound static registrations are managed as fabric agents
 // and must not be offered as candidates — only these reserved executors stay
 // in the static pool.
-func (s *kernelScheduler) isBoundToAnyTask(agentID string) bool {
+func (s *Scheduler) isBoundToAnyTask(agentID string) bool {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	for _, boundID := range s.boundExecutors {
@@ -472,14 +472,14 @@ func (s *kernelScheduler) isBoundToAnyTask(agentID string) bool {
 
 // executorCount returns the current number of registered executors under a
 // read lock. Used by drain to compute the concurrency limit.
-func (s *kernelScheduler) executorCount() int {
+func (s *Scheduler) ExecutorCount() int {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	return len(s.executors)
 }
 
 // lookupExecutor safely retrieves an executor under a read lock.
-func (s *kernelScheduler) lookupExecutor(agentID string) (CapabilityExecutor, bool) {
+func (s *Scheduler) LookupExecutor(agentID string) (CapabilityExecutor, bool) {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	e, ok := s.executors[agentID]
@@ -488,7 +488,7 @@ func (s *kernelScheduler) lookupExecutor(agentID string) (CapabilityExecutor, bo
 
 // allExecutors returns a snapshot of the executor map under a read lock. The
 // drain goroutines iterate this snapshot to build the candidate list.
-func (s *kernelScheduler) allExecutors() map[string]CapabilityExecutor {
+func (s *Scheduler) allExecutors() map[string]CapabilityExecutor {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
 	out := make(map[string]CapabilityExecutor, len(s.executors))
@@ -510,12 +510,12 @@ func (s *kernelScheduler) allExecutors() map[string]CapabilityExecutor {
 //
 // Args:
 //   - ctx: lifetime of the scheduling loop.
-func (s *kernelScheduler) Run(ctx context.Context) {
+func (s *Scheduler) Run(ctx context.Context) {
 	if s.fabric == nil {
 		log.Printf("kernel scheduler: fabric nil, scheduler disabled")
 		return
 	}
-	ticker := time.NewTicker(s.pollInterval)
+	ticker := time.NewTicker(s.PollInterval)
 	defer ticker.Stop()
 
 	// Subscribe to dependency-relevant task events when a store is wired.
@@ -560,7 +560,7 @@ func (s *kernelScheduler) Run(ctx context.Context) {
 // single bad drain (M2: kernel loops must not crash the process). Per-task
 // panics are already recovered inside drain; this guards the drain itself
 // (e.g. a panic inside ReadyTasks).
-func (s *kernelScheduler) safeDrain(ctx context.Context) {
+func (s *Scheduler) safeDrain(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("kernel scheduler: panic in drain, continuing: %v", r)
@@ -572,7 +572,7 @@ func (s *kernelScheduler) safeDrain(ctx context.Context) {
 // WithEventStore wires the shared EventStore so the scheduler drains on task
 // lifecycle events (GAP 6: event-driven DAG completion) instead of waiting
 // for the next poll tick. Returns the scheduler for chaining.
-func (s *kernelScheduler) WithEventStore(store ares_events.EventStore) *kernelScheduler {
+func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 	s.eventStore = store
 	return s
 }
@@ -587,7 +587,7 @@ func (s *kernelScheduler) WithEventStore(store ares_events.EventStore) *kernelSc
 // (v0.3.0 review P1: Steal 空转 — 要么接线要么删除); the shared ReadyTasks()
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.
-func (s *kernelScheduler) drain(ctx context.Context) {
+func (s *Scheduler) drain(ctx context.Context) {
 	// Work source: READY tasks (new work) plus SUSPENDED tasks (a yielded
 	// quantum the scheduler continues via re-acquire — the SUSPENDED
 	// semantics lock: "Continue is the Scheduler's decision via re-acquire").
@@ -603,10 +603,10 @@ func (s *kernelScheduler) drain(ctx context.Context) {
 	// fencing token guarantees only the current holder is affected. This runs
 	// BEFORE this drain spawns its own goroutines — between quanta — so a
 	// quantum is never interrupted mid-step.
-	s.preemptLowerPriority(tasks)
+	s.PreemptLowerPriority(tasks)
 	limit := s.maxConcurrent
 	if limit <= 0 {
-		limit = s.executorCount()
+		limit = s.ExecutorCount()
 	}
 	if limit <= 0 {
 		limit = 1
@@ -647,8 +647,8 @@ func (s *kernelScheduler) drain(ctx context.Context) {
 // priority information exists (all zeros) — the scheduler never churns a
 // running task on a tie or on unset priorities. The preempted task keeps its
 // checkpoint and returns to READY for a later quantum.
-func (s *kernelScheduler) preemptLowerPriority(ready []string) {
-	if s.executorCount() == 0 || len(ready) == 0 {
+func (s *Scheduler) PreemptLowerPriority(ready []string) {
+	if s.ExecutorCount() == 0 || len(ready) == 0 {
 		return
 	}
 	maxReady := 0
@@ -677,7 +677,7 @@ func (s *kernelScheduler) preemptLowerPriority(ready []string) {
 // unschedulable task is a legitimate "waiting for a capable agent" state that
 // the scheduler re-polls every interval, so it must not spam the log. Other
 // errors are logged every time (they are transient and need attention).
-func (s *kernelScheduler) logFailure(taskID string, err error) {
+func (s *Scheduler) logFailure(taskID string, err error) {
 	if err == taskfabric.ErrNoCapableCandidate {
 		now := time.Now()
 		s.noCandidateMu.Lock()
@@ -707,7 +707,7 @@ func (s *kernelScheduler) logFailure(taskID string, err error) {
 // RunQuantum (delegating the actual work to the winning sub-agent) →
 // finalize. Errors are returned to the caller for logging; the fabric
 // state machine (RetryPolicy) decides requeue vs. final failure.
-func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
+func (s *Scheduler) execute(ctx context.Context, taskID string) error {
 	// Build the candidate list from the registered executors so scheduling is
 	// always consistent with what can actually run. Each candidate declares its
 	// OWN capabilities (from the agent's Type), NOT the task's — the scorer
@@ -744,7 +744,7 @@ func (s *kernelScheduler) execute(ctx context.Context, taskID string) error {
 // executeUnbound runs the fabric path for a task with no recovery binding:
 // the candidate pool is every registered, unbound executor whose capability
 // overlaps the task, plus every live IDLE fabric agent (B1).
-func (s *kernelScheduler) executeUnbound(ctx context.Context, taskID string) error {
+func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 	execs := s.allExecutors()
 	cands := make([]taskfabric.Candidate, 0, len(execs))
 	for agentID, agent := range execs {
@@ -780,7 +780,7 @@ func (s *kernelScheduler) executeUnbound(ctx context.Context, taskID string) err
 // executeWithCandidates runs the shared Schedule → Acquire → RunQuantum →
 // finalize path for a prebuilt candidate list. The task capability is read
 // for W4 attribution at the outcome boundary.
-func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID string, cands []taskfabric.Candidate) error {
+func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, cands []taskfabric.Candidate) error {
 	tk, err := s.fabric.Task(taskID)
 	if err != nil {
 		return err
@@ -803,16 +803,19 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 		executor = s.fabricExecutor(winner)
 	}
 	if executor == nil {
-		executor, ok = s.lookupExecutor(winner)
+		executor, ok = s.LookupExecutor(winner)
 		if !ok || executor == nil {
-			// The candidate snapshot is stale (agent was killed between
-			// Schedule and now, or the winner is not executable): release so
-			// the task can be retried by another agent. A failed release
-			// leaves the task leased — surface it instead of dropping the
-			// error (code_rules_v2 §3.1).
-			if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-				log.Printf("kernel scheduler: release %q for missing executor %q failed: %v", taskID, winner, releaseErr)
-			}
+			// The candidate snapshot is stale: the winner died (or became
+			// non-executable) between candidate build and executor lookup.
+			// Deliberately DO NOT release the task: Release clears the lease
+			// and leaves the task READY-without-candidates, a state the
+			// recovery loop's lease path never visits — the dead agent's task
+			// would strand until another agent appears. Keeping the lease
+			// lets it expire (TTL) so the event-driven recovery requeues it
+			// and the W1 replacement executor resumes the preserved
+			// checkpoint (aresos-agentos-plan E1: 死亡 → lease 过期 → 新执行体
+			// 续跑). A task still held by other live agents is unaffected.
+			log.Printf("kernel scheduler: winner %q for task %q is no longer executable; task stays leased for recovery", winner, taskID)
 			return nil
 		}
 	}
@@ -838,9 +841,9 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 		}
 		return nil
 	}
-	s.tracker.begin(winner)
+	s.tracker.Begin(winner)
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
-		out, stepErr := executor.ExecuteStep(ctx, s.toModelTask(tk))
+		out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
 		if stepErr != nil {
 			// A step error flows to fabric.Fail, which requeues (retry budget)
 			// or finalizes FAILED — the fabric owns the retry policy.
@@ -893,7 +896,7 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 			StepCheckpoint:   outMap,
 		}), true, nil
 	})
-	s.tracker.end(winner, err == nil)
+	s.tracker.End(winner, err == nil)
 	// W4 evolution feedback: record the outcome for the feedback loop. The
 	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
 	// the tracker's confidence override (SetAgentConfidence) so the next
@@ -908,7 +911,7 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 		s.consumeBudget(winner)
 	}
 	if err == nil {
-		s.scheduled.Add(1)
+		s.Scheduled.Add(1)
 	}
 	// W1 recovery binding: when the task reaches a terminal state, unregister
 	// the bound recovery executor so the executor map does not grow unboundedly
@@ -933,7 +936,7 @@ func (s *kernelScheduler) executeWithCandidates(ctx context.Context, taskID stri
 // a resumed quantum can observe where the previous step left off. Decode goes
 // through the single shared protocol (taskfabric.DecodeCheckpoint) — the same
 // path recovery and every other consumer use.
-func (s *kernelScheduler) toModelTask(tk *taskfabric.Task) *models.Task {
+func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	t := models.NewTask(tk.ID, models.AgentType(tk.Capability), nil)
 	if tk.Checkpoint == nil {
 		return t

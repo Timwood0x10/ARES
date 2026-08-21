@@ -127,24 +127,26 @@ type KernelConfig struct {
 	// the dedicated `ares demo` console.
 	Autopilot bool `yaml:"autopilot"`
 	// LeaderEnabled controls whether the legacy Leader agent is assembled at
-	// startup (aresos-agentos-plan C1 gray switch). When false (Leader OFF),
-	// serve skips leader creation and runs purely on the Peer Agent runtime:
-	// the configured capability agents spawn into the Agent Fabric (the
-	// dynamic population), the kernel scheduler queries the fabric for
-	// candidates (B1), and agents decide decomposition via the spawn_agent /
-	// create_task syscalls. This is the Peer Agent model (aresos-plan.md
-	// §1.8: no privileged agent roles) and the forward-looking default; the
-	// leader path is retained ONLY as legacy gray-scaling.
+	// startup (aresos-agentos-plan C1 gray switch). When false (Leader OFF,
+	// the DEFAULT), serve skips leader creation and runs purely on the Peer
+	// Agent runtime: the configured capability agents spawn into the Agent
+	// Fabric (the dynamic population), the kernel scheduler queries the
+	// fabric for candidates (B1), and agents decide decomposition via the
+	// spawn_agent / create_task syscalls. This is the Peer Agent model
+	// (aresos-plan.md §1.8: no privileged agent roles). The leader path is
+	// retained ONLY as legacy gray-scaling behind an explicit
+	// leader_enabled: true.
 	LeaderEnabled *bool `yaml:"leader_enabled"`
 }
 
 // IsLeaderEnabled reports whether the legacy Leader agent should be
-// assembled. Defaults to true when LeaderEnabled is nil (backward
-// compatible with pre-C1 configs). New deployments should explicitly set
-// leader_enabled: false to run the Peer Agent runtime.
+// assembled. It defaults to FALSE — the Peer Agent runtime is the default
+// path (aresos-agentos-plan C1: 默认新路径; kernel.policy=legacy / explicit
+// leader_enabled: true remain as the gray-scale rollback). Pre-C1 configs
+// that rely on the leader must set leader_enabled: true explicitly.
 func (k KernelConfig) IsLeaderEnabled() bool {
 	if k.LeaderEnabled == nil {
-		return true
+		return false
 	}
 	return *k.LeaderEnabled
 }

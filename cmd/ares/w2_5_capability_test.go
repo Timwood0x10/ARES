@@ -48,7 +48,7 @@ func TestW2_5CapabilityExecutorDecoupling(t *testing.T) {
 	executors := map[string]CapabilityExecutor{"mini-1": executor}
 
 	sched := NewKernelScheduler(fabric, executors, nil)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 	go sched.Run(ctx)
 
 	// Create a task — the scheduler must schedule it to the minimal executor

@@ -68,7 +68,7 @@ func TestKernelSchedulerSchedulesFabricAgents(t *testing.T) {
 	// No static executors: the candidate pool is the fabric alone.
 	sched := NewKernelScheduler(f, nil, nil)
 	sched.WithAgentFabric(fab)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -139,7 +139,7 @@ func TestKernelSchedulerFabricKillBeatsStaticRegistration(t *testing.T) {
 	tracker := newLoadTracker()
 	sched := NewKernelScheduler(f, executors, tracker)
 	sched.WithAgentFabric(fab)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -198,7 +198,7 @@ func TestKernelSchedulerSkipsNonExecutableFabricAgents(t *testing.T) {
 	fab := agentfabric.NewFabric()
 	sched := NewKernelScheduler(f, nil, nil)
 	sched.WithAgentFabric(fab)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -232,7 +232,7 @@ func TestKernelSchedulerFabricAgentMatchesAnyCapability(t *testing.T) {
 	fab := agentfabric.NewFabric()
 	sched := NewKernelScheduler(f, nil, nil)
 	sched.WithAgentFabric(fab)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

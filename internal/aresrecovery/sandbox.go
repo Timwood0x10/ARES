@@ -184,15 +184,17 @@ func (s *Sandbox) Simulate(ctx context.Context, deadAgentID, taskID string) (*Si
 		return nil, fmt.Errorf("aresrecovery: sandbox simulate kill: %w", err)
 	}
 	// Expire the dead agent's lease (advance the clock) and run recovery.
+	// RecoverFromAgentDeath sweeps expired leases internally, so we call it
+	// directly — calling RequeueExpiredLeases first would drain the expired
+	// set, making the internal sweep see nothing (double-requeue bug).
 	s.tasks = s.tasks.WithClock(func() time.Time { return s.now().Add(10 * time.Minute) })
-	requeued := s.recovery.RequeueExpiredLeases()
 	recovered := s.recovery.RecoverFromAgentDeath(ctx)
 
 	return &SimulationResult{
 		Scenario:       "agent death → lease expiry → recovery chain",
 		DeadAgent:      deadAgentID,
 		FinalTaskState: s.taskState(taskID),
-		Recovered:      len(requeued) > 0 || recovered > 0,
+		Recovered:      recovered > 0,
 	}, nil
 }
 

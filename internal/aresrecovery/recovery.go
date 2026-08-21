@@ -244,9 +244,16 @@ func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 	// candidate and must not be grabbed by a replacement agent.
 	recovered := 0
 	for _, taskID := range requeued {
-		if _, _, err := r.RecoverTaskCheckpoint(ctx, taskID, ""); err == nil {
-			recovered++
+		if _, _, err := r.RecoverTaskCheckpoint(ctx, taskID, ""); err != nil {
+			// A failure here means the task was requeued to READY but the
+			// checkpoint resume failed (spawn/acquire/SetCognitiveState).
+			// The task is still READY and will be picked up by the scheduler
+			// on the next drain, but surface the failure instead of
+			// silently dropping it (code_rules_v2 §3.1).
+			log.Printf("aresrecovery: recover task %s: %v", taskID, err)
+			continue
 		}
+		recovered++
 	}
 	return recovered
 }

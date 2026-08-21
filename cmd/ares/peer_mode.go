@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
@@ -19,6 +20,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
+
+// peerTaskSeq is a monotonic sequence for peer-mode task IDs (the old tracker
+// counter hack is gone: the shared LoadTracker is scheduler-internal now).
+var peerTaskSeq atomic.Int64
 
 // createPeerAgents builds a set of peer agents WITHOUT a Leader. Each agent
 // registers directly with the Kernel scheduler via the Task Fabric. This is
@@ -130,8 +135,18 @@ func createPeerAgents(
 		if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
 			Identity:     sa.ID(),
 			Capabilities: []string{string(sa.Type())},
+			// A1.4: the default execution body is the tool-loop Cognition
+			// moved down into agentfabric — a fabric agent is fully
+			// self-contained (LLM + tools), no sub.Agent wrapper. The legacy
+			// SubAgentCognition adapter remains only on the leader flip path
+			// (wireKernelLifecycle, kernel.leader_enabled=true).
 			CognitionFactory: func([]string) agentfabric.Cognition {
-				return agentfabric.NewSubAgentCognition(sa)
+				cog, err := newPeerChatCognition(sa.ID(), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
+				if err != nil {
+					log.Printf("peer mode: chat cognition for %q failed: %v", sa.ID(), err)
+					return nil
+				}
+				return cog
 			},
 			ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),
 		}); err != nil {
@@ -199,6 +214,31 @@ func createPeerAgents(
 
 	log.Printf("peer mode: %d peer agents registered, Kernel scheduler started (no leader)", len(subAgents))
 	return subAgents, kernel, nil
+}
+
+// newPeerChatCognition constructs the A1.4 default tool-loop Cognition for a
+// peer agent. It carries the same LLM + tool stack as the configured agents
+// (the createExecutor wiring), but as a self-contained agentfabric execution
+// body — no sub.Agent wrapper. This is the production default execution body
+// of the peer runtime (aresos-agentos-plan A1.4: tool-loop 下沉到 agentfabric).
+func newPeerChatCognition(
+	agentID string,
+	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
+	toolBinder sub.ToolBinder,
+	cfg *ares_config.Config,
+	strategySrc agents.StrategySource,
+) (agentfabric.Cognition, error) {
+	return agentfabric.NewChatCognition(agentfabric.ChatCognitionDeps{
+		ChatClient:     chatClient, // sub.ChatClient satisfies agentfabric.ChatClient
+		LLMAdapter:     llmAdapter,
+		ToolBinder:     toolBinder, // sub.ToolBinder satisfies agentfabric.ToolBinder
+		StrategySource: strategySrc,
+		Template:       output.NewTemplateEngine(),
+		PromptTemplate: cfg.Prompts.Recommendation,
+		EventStore:     nil, // the fabric publishes via its own event store wiring
+		AgentID:        agentID,
+	})
 }
 
 // newPeerExecutor creates a full sub.Agent executor for a dynamically spawned
@@ -279,11 +319,7 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 	if kernel == nil || kernel.fabric == nil {
 		return "", fmt.Errorf("peer mode: kernel fabric not wired")
 	}
-	kernel.tracker.mu.Lock()
-	kernel.tracker.done["__seq"]++
-	seq := kernel.tracker.done["__seq"]
-	kernel.tracker.mu.Unlock()
-	taskID := fmt.Sprintf("peer-task-%s-%d", capability, seq)
+	taskID := fmt.Sprintf("peer-task-%s-%d", capability, peerTaskSeq.Add(1))
 
 	task := &taskfabric.Task{
 		ID:          taskID,

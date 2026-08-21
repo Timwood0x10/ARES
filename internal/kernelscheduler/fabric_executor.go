@@ -1,4 +1,4 @@
-package main
+package kernelscheduler
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 // or nil when the agent is unknown, not IDLE, or has no execution body (A1:
 // managed but not schedulable). Called when Schedule wins with a fabric agent
 // that is not in the static executor registry.
-func (s *kernelScheduler) fabricExecutor(agentID string) CapabilityExecutor {
+func (s *Scheduler) fabricExecutor(agentID string) CapabilityExecutor {
 	if s.agents == nil {
 		return nil
 	}
@@ -73,7 +73,7 @@ func (e *fabricAgentExecutor) ExecuteStep(ctx context.Context, task *models.Task
 // Capabilities use the agent's FULL declared set (not the single primary
 // Type()) so the capability scorer matches any overlap with the task's
 // required capability.
-func (s *kernelScheduler) appendFabricCandidates(cands []taskfabric.Candidate, registered map[string]CapabilityExecutor) []taskfabric.Candidate {
+func (s *Scheduler) appendFabricCandidates(cands []taskfabric.Candidate, registered map[string]CapabilityExecutor) []taskfabric.Candidate {
 	if s.agents == nil {
 		return cands
 	}

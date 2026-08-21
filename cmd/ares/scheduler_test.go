@@ -67,7 +67,7 @@ func TestKernelSchedulerRunsFullFabricPath(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": executor}, nil)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -110,7 +110,7 @@ func TestKernelSchedulerNoCapableCandidate(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": executor}, nil)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,7 +145,7 @@ func TestKernelSchedulerExecutionFailureRequeues(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code"), resultErr: "boom"}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": executor}, nil)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -286,7 +286,7 @@ func TestKernelSchedulerConcurrentDrainWorkStealing(t *testing.T) {
 		executors[ag.id] = ag
 	}
 	sched := NewKernelScheduler(f, executors, nil)
-	sched.pollInterval = 10 * time.Millisecond
+	sched.PollInterval = 10 * time.Millisecond
 	sched.WithMaxConcurrent(numAgents)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -412,7 +412,7 @@ func TestKernelSchedulerQuantumYieldResume(t *testing.T) {
 	f := taskfabric.NewFabric()
 	y := &yieldAgent{id: "code_01", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": y}, nil)
-	sched.pollInterval = 5 * time.Millisecond
+	sched.PollInterval = 5 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -470,7 +470,7 @@ func TestKernelSchedulerCapabilityPicksCorrectAgent(t *testing.T) {
 	codeAgent := &stubAgent{id: "code_01", typ: models.AgentType("code")}
 	docsAgent := &stubAgent{id: "docs_01", typ: models.AgentType("docs")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": codeAgent, "docs_01": docsAgent}, nil)
-	sched.pollInterval = 5 * time.Millisecond
+	sched.PollInterval = 5 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -515,13 +515,13 @@ func TestKernelSchedulerWorkStealingPicksIdleCapableAgent(t *testing.T) {
 	f := taskfabric.NewFabric()
 	tracker := newLoadTracker()
 	// busy_01 holds a (simulated) running task: Load=1, so Score(busy)=0.
-	tracker.begin("busy_01")
-	defer tracker.end("busy_01", true)
+	tracker.Begin("busy_01")
+	defer tracker.End("busy_01", true)
 
 	busy := &stubAgent{id: "busy_01", typ: models.AgentType("code")}
 	idle := &stubAgent{id: "idle_01", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"busy_01": busy, "idle_01": idle}, tracker)
-	sched.pollInterval = 5 * time.Millisecond
+	sched.PollInterval = 5 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -574,7 +574,7 @@ func TestKernelSchedulerIncapableAgentCannotSteal(t *testing.T) {
 	busy := &blockingAgent{id: "code_01", typ: models.AgentType("code"), execDelay: busyDelay, meter: &concurrencyMeter{}}
 	docs := &stubAgent{id: "docs_01", typ: models.AgentType("docs")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": busy, "docs_01": docs}, nil)
-	sched.pollInterval = 10 * time.Millisecond
+	sched.PollInterval = 10 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -648,7 +648,7 @@ func TestKernelSchedulerP3GovernanceYieldsOnBudgetExhausted(t *testing.T) {
 
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": executor}, nil)
-	sched.pollInterval = 5 * time.Millisecond
+	sched.PollInterval = 5 * time.Millisecond
 	sched.WithGovernance(agents)
 
 	sctx, cancel := context.WithCancel(context.Background())
@@ -715,7 +715,7 @@ func TestKernelSchedulerP3GovernanceDeadlineYields(t *testing.T) {
 
 	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"code_01": executor}, nil)
-	sched.pollInterval = 5 * time.Millisecond
+	sched.PollInterval = 5 * time.Millisecond
 	sched.WithGovernance(agents)
 
 	sctx, cancel := context.WithCancel(context.Background())

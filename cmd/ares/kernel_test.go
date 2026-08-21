@@ -211,7 +211,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 
 	// The scheduler drains READY tasks; the DAG gate means B waits for A.
 	sched := NewKernelScheduler(f, executors, tracker)
-	sched.pollInterval = 10 * time.Millisecond
+	sched.PollInterval = 10 * time.Millisecond
 	go sched.Run(ctx)
 
 	// Submit B (depends on A) first: it must NOT run before A completes.
@@ -302,7 +302,7 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 
 	// Now the kernelScheduler drains it to completion (single executor).
 	sched := NewKernelScheduler(f, executors, tracker)
-	sched.pollInterval = 10 * time.Millisecond
+	sched.PollInterval = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go sched.Run(ctx)
@@ -944,7 +944,7 @@ func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	s := NewKernelScheduler(taskfabric.NewFabric(), nil, nil)
 
 	tk := &taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: meta}
-	model := s.toModelTask(tk)
+	model := s.ToModelTask(tk)
 	if model.UserProfile == nil || model.UserProfile.UserID != "u1" {
 		t.Fatalf("resume must restore UserProfile, got %+v", model.UserProfile)
 	}
@@ -957,7 +957,7 @@ func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	}
 	// The initial (pre-quantum) envelope without StepCheckpoint must also still
 	// restore the profile, and must not invent a checkpoint key.
-	initModel := s.toModelTask(&taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: &taskfabric.CheckpointEnvelope{
+	initModel := s.ToModelTask(&taskfabric.Task{ID: "t1", Capability: "code", Checkpoint: &taskfabric.CheckpointEnvelope{
 		UserProfile: up, Payload: map[string]any{"task_desc": "pick"}, UsedExperienceID: "exp-1",
 	}})
 	if initModel.UserProfile == nil || initModel.UsedExperienceID != "exp-1" {
@@ -1055,7 +1055,7 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	}
 
 	s := NewKernelScheduler(f, map[string]CapabilityExecutor{"agent-a": &stubAgent{id: "agent-a", typ: models.AgentType("code")}}, nil)
-	s.preemptLowerPriority([]string{"high"})
+	s.PreemptLowerPriority([]string{"high"})
 
 	tk, err := f.Task("low")
 	if err != nil {
@@ -1078,7 +1078,7 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	if err := f.Start("tie", "agent-a", epoch); err != nil {
 		t.Fatalf("start tie: %v", err)
 	}
-	s.preemptLowerPriority([]string{"tie"})
+	s.PreemptLowerPriority([]string{"tie"})
 	tk, _ = f.Task("tie")
 	if tk.State != taskfabric.StateRunning {
 		t.Fatal("zero-priority preempt must not churn a running task")
@@ -1233,7 +1233,7 @@ func TestW1RecoveryClosureE2E(t *testing.T) {
 	// the only executor is gone). The recovery loop will register the
 	// replacement dynamically.
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{}, nil)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1314,7 +1314,7 @@ func TestW1RegisterExecutorDynamic(t *testing.T) {
 
 	// Scheduler with no executors — task is unschedulable.
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{}, nil)
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1354,18 +1354,18 @@ func TestW1UnregisterExecutor(t *testing.T) {
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"removable": executor}, nil)
 
 	// Verify it's registered.
-	if count := sched.executorCount(); count != 1 {
+	if count := sched.ExecutorCount(); count != 1 {
 		t.Fatalf("expected 1 executor, got %d", count)
 	}
 
 	// Unregister.
 	sched.UnregisterExecutor("removable")
-	if count := sched.executorCount(); count != 0 {
+	if count := sched.ExecutorCount(); count != 0 {
 		t.Fatalf("expected 0 executors after unregister, got %d", count)
 	}
 
 	// Lookup must return false.
-	if _, ok := sched.lookupExecutor("removable"); ok {
+	if _, ok := sched.LookupExecutor("removable"); ok {
 		t.Fatal("lookup must return false after unregister")
 	}
 }

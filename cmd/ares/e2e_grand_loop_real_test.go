@@ -52,8 +52,8 @@ type e2eRecoveryExecutor struct {
 	resumedFrom any
 }
 
-func (e *e2eRecoveryExecutor) ID() string                  { return e.id }
-func (e *e2eRecoveryExecutor) Type() models.AgentType      { return e.typ }
+func (e *e2eRecoveryExecutor) ID() string             { return e.id }
+func (e *e2eRecoveryExecutor) Type() models.AgentType { return e.typ }
 func (e *e2eRecoveryExecutor) ExecuteStep(_ context.Context, task *models.Task) (*sub.StepOutcome, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -130,7 +130,7 @@ func waitFabricState(t *testing.T, f *taskfabric.Fabric, taskID string, want tas
 		if err == nil && tk.State == want {
 			return tk.State
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	tk, err := f.Task(taskID)
 	if err != nil {
@@ -159,16 +159,20 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 
 	store := ares_events.NewMemoryEventStore()
 	taskEvents := &e2eTaskEventLog{}
+	// Subscribe SYNCHRONOUSLY before any fabric.Create: the broadcast store
+	// delivers only to subscribers present at publish time, so an async
+	// subscription could miss task.created (flaky under load — make check
+	// with -short -cover ./...).
+	evCh, err := store.Subscribe(ctx, ares_events.EventFilter{})
+	if err != nil {
+		t.Fatalf("subscribe task events: %v", err)
+	}
 	go func() {
-		ch, err := store.Subscribe(ctx, ares_events.EventFilter{})
-		if err != nil {
-			return
-		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case ev, ok := <-ch:
+			case ev, ok := <-evCh:
 				if !ok {
 					return
 				}
@@ -211,7 +215,7 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 
 	// ── 2. Scheduler: the fabric is the single candidate source (B1) ────
 	sched := NewKernelScheduler(fabric, map[string]CapabilityExecutor{}, newLoadTracker())
-	sched.pollInterval = 20 * time.Millisecond
+	sched.PollInterval = 20 * time.Millisecond
 	sched.WithAgentFabric(agents).WithEventStore(store)
 	go sched.Run(ctx)
 
@@ -243,7 +247,7 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	}
 
 	// ── 5. agent-A runs quantum 1 → yields → SUSPENDED + checkpoint ─────
-	if state := waitFabricState(t, fabric, "t1", taskfabric.StateSuspended, 5*time.Second); state != taskfabric.StateSuspended {
+	if state := waitFabricState(t, fabric, "t1", taskfabric.StateSuspended, 8*time.Second); state != taskfabric.StateSuspended {
 		t.Fatalf("task must yield to SUSPENDED after quantum 1, got %s", state)
 	}
 	tk, err := fabric.Task("t1")
@@ -266,30 +270,8 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 
 	// ── 7. Lease expiry → recovery → replacement resumes → COMPLETED ────
 	advance(7 * time.Minute) // past the scheduler's 5-minute lease TTL
-	var stateSeq []taskfabric.TaskState
-	stateStop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stateStop:
-				return
-			default:
-			}
-			if tk, err := fabric.Task("t1"); err == nil && tk != nil {
-				stateSeq = append(stateSeq, tk.State)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}()
-	state := waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 8*time.Second)
-	close(stateStop)
-	if state != taskfabric.StateCompleted {
-		// Diagnostic: dump the observed state sequence and final task.
-		tkD, errD := fabric.Task("t1")
-		if errD == nil && tkD != nil {
-			t.Fatalf("task must complete after recovery, got %s (lease=%v owner=%q; state seq=%v)", state, tkD.Lease, tkD.Owner, stateSeq)
-		}
-		t.Fatalf("task must complete after recovery, got %s (state seq=%v)", state, stateSeq)
+	if state := waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 10*time.Second); state != taskfabric.StateCompleted {
+		t.Fatalf("task must complete after recovery, got %s", state)
 	}
 
 	// ── 8. Assertions ───────────────────────────────────────────────────

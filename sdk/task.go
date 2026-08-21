@@ -44,38 +44,29 @@ func (r *Runtime) RegisterAgent(capability string, opts ...AgentOption) *Agent {
 	defer r.agentMu.Unlock()
 	if _, ok := r.agentByCapability[capability]; !ok {
 		r.agentByCapability[capability] = a
+		// H1/H2: also register the shared-scheduler executor so Submit drives
+		// the agent through the fabric, not a direct call.
+		r.sdkExecutors[capability] = &sdkAgentExecutor{agent: a}
 	}
 	return a
 }
 
 // Submit dispatches a task to the agent registered for its capability and
-// returns the execution result (H1: 极简 SDK 闭环). When no agent is
-// registered for the task's capability, a capability-named agent is created
-// on demand and run — a runtime never refuses a well-formed task just because
-// it was not pre-registered.
+// returns the execution result (H1: 极简 SDK 闭环). The task goes through the
+// SAME scheduling path as the kernel: fabric.Create → kernelscheduler
+// (Schedule → Acquire → RunQuantum via the registered agent) → COMPLETED →
+// result (H1/H2: 合并 SDK 和 kernel 两条路径 — the SDK and the kernel share
+// one scheduler; no divergent direct-run path). When no agent is registered
+// for the task's capability, a capability-named agent is created on demand —
+// a runtime never refuses a well-formed task just because it was not
+// pre-registered.
 //
-// Timeout, when > 0, bounds the execution via context deadline. The returned
-// error wraps the agent's execution error; context cancellation surfaces as
+// Timeout, when > 0, bounds the whole dispatch (and the execution — the
+// executor receives the same context). The returned error wraps the agent's
+// execution error; context cancellation surfaces as
 // context.Canceled/DeadlineExceeded (code_rules_v2 §3.1).
 func (r *Runtime) Submit(ctx context.Context, t Task) (*Result, error) {
-	a := r.lookupAgent(t.Capability)
-	if a == nil {
-		cap := t.Capability
-		if cap == "" {
-			cap = "agent"
-		}
-		a = r.NewAgent(cap)
-	}
-	if t.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, t.Timeout)
-		defer cancel()
-	}
-	res, err := a.Run(ctx, t.Input)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
+	return r.submitThroughScheduler(ctx, t)
 }
 
 // lookupAgent returns the agent registered for the capability, or nil. An
