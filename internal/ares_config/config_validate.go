@@ -86,16 +86,6 @@ func (c *Config) validateLLM() error {
 
 // validateAgents validates agents configuration
 func (c *Config) validateAgents() error {
-	if c.Agents.Leader.MaxSteps < 1 {
-		return fmt.Errorf("invalid leader max steps: %d, must be positive", c.Agents.Leader.MaxSteps)
-	}
-	if c.Agents.Leader.MaxParallelTasks < 1 {
-		return fmt.Errorf("invalid leader max parallel tasks: %d, must be positive", c.Agents.Leader.MaxParallelTasks)
-	}
-	if c.Agents.Leader.MaxValidationRetry < 0 {
-		return fmt.Errorf("invalid leader max validation retry: %d, must be non-negative", c.Agents.Leader.MaxValidationRetry)
-	}
-
 	for i, subAgent := range c.Agents.Sub {
 		if err := c.validateSubAgent(i, subAgent); err != nil {
 			return err

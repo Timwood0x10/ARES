@@ -3,7 +3,6 @@ package ares_integration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/agents/leader/state"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
@@ -272,107 +270,6 @@ func TestEmbeddingQueueMarkFailed(t *testing.T) {
 	).Scan(&dlqCount)
 	require.NoError(t, err)
 	assert.Equal(t, 1, dlqCount, "expected one task in dead letter queue after max retries")
-}
-
-// TestCheckpointRepositorySaveAndRetrieve verifies the full checkpoint lifecycle:
-// Save -> GetLatest -> UPSERT -> Delete.
-func TestCheckpointRepositorySaveAndRetrieve(t *testing.T) {
-	pool := getTestPool(t)
-	if pool == nil {
-		return
-	}
-	defer func() { _ = pool.Close() }()
-
-	runMigrations(t, pool)
-	t.Cleanup(func() {
-		cleanupTables(t, pool, "leader_checkpoints")
-	})
-
-	ctx := context.Background()
-	repo := state.NewCheckpointRepository(pool)
-	require.NotNil(t, repo, "expected non-nil checkpoint repository")
-
-	leaderID := fmt.Sprintf("test-leader-%d", time.Now().UnixNano())
-
-	// Save initial checkpoint.
-	metadata := json.RawMessage(`{"step": 1, "status": "running"}`)
-	cp := &state.LeaderCheckpoint{
-		LeaderID:  leaderID,
-		SessionID: "session-001",
-		Status:    "active",
-		Metadata:  metadata,
-	}
-	require.NoError(t, repo.Save(ctx, cp))
-
-	// GetLatest should return the saved checkpoint.
-	latest, err := repo.GetLatest(ctx, leaderID)
-	require.NoError(t, err)
-	require.NotNil(t, latest, "expected non-nil checkpoint")
-	assert.Equal(t, leaderID, latest.LeaderID)
-	assert.Equal(t, "session-001", latest.SessionID)
-	assert.Equal(t, "active", latest.Status)
-	assert.JSONEq(t, `{"step": 1, "status": "running"}`, string(latest.Metadata))
-
-	// UPSERT: save with updated session and metadata.
-	updatedMetadata := json.RawMessage(`{"step": 2, "status": "completed"}`)
-	cp2 := &state.LeaderCheckpoint{
-		LeaderID:  leaderID,
-		SessionID: "session-002",
-		Status:    "completed",
-		Metadata:  updatedMetadata,
-	}
-	require.NoError(t, repo.Save(ctx, cp2))
-
-	// GetLatest should return the updated checkpoint.
-	latest2, err := repo.GetLatest(ctx, leaderID)
-	require.NoError(t, err)
-	require.NotNil(t, latest2)
-	assert.Equal(t, "session-002", latest2.SessionID)
-	assert.Equal(t, "completed", latest2.Status)
-	assert.JSONEq(t, `{"step": 2, "status": "completed"}`, string(latest2.Metadata))
-
-	// Delete the checkpoint.
-	require.NoError(t, repo.Delete(ctx, leaderID))
-
-	// GetLatest should return nil after deletion.
-	latest3, err := repo.GetLatest(ctx, leaderID)
-	require.NoError(t, err)
-	assert.Nil(t, latest3, "expected nil checkpoint after deletion")
-}
-
-// TestCheckpointRepositoryValidation verifies error handling for invalid inputs.
-func TestCheckpointRepositoryValidation(t *testing.T) {
-	pool := getTestPool(t)
-	if pool == nil {
-		return
-	}
-	defer func() { _ = pool.Close() }()
-
-	runMigrations(t, pool)
-
-	ctx := context.Background()
-	repo := state.NewCheckpointRepository(pool)
-	require.NotNil(t, repo)
-
-	// Save with nil checkpoint should fail.
-	err := repo.Save(ctx, nil)
-	require.Error(t, err)
-
-	// Save with empty leader ID should fail.
-	err = repo.Save(ctx, &state.LeaderCheckpoint{
-		LeaderID:  "",
-		SessionID: "session-001",
-		Status:    "active",
-	})
-	require.Error(t, err)
-
-	// GetLatest with empty leader ID should fail.
-	_, err = repo.GetLatest(ctx, "")
-	require.Error(t, err)
-
-	// Delete with empty leader ID should fail.
-	err = repo.Delete(ctx, "")
-	require.Error(t, err)
 }
 
 // TestVectorSearcherCreateCollection verifies collection creation and basic operations.

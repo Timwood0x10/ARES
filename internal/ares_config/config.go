@@ -120,37 +120,6 @@ type KernelConfig struct {
 	// EvolutionApplyTimeout bounds each population policy application
 	// (default "30s"). A hung policy store must not stall the loop.
 	EvolutionApplyTimeout string `yaml:"evolution_apply_timeout"`
-	// Autopilot enables the built-in demo task injector (submitTasks), which
-	// periodically submits a fixed set of tasks to the leader agent. Off by
-	// default so a production `ares serve` does not burn LLM quota on
-	// synthetic work; enable it for local demos / UI development instead of
-	// the dedicated `ares demo` console.
-	Autopilot bool `yaml:"autopilot"`
-	// Deprecated: LeaderEnabled enables the legacy Leader agent assembly. The
-	// default (nil → false) runs the flat Peer Agent runtime, which is the only
-	// supported production path (aresos-agentos-plan C1). Set only as a
-	// gray-scale rollback; do not extend the leader path.
-	//
-	// TODO(tech-debt): remove this field in v0.4.0 together with createAgents,
-	// createAndRegisterServeAgents, and internal/agents/leader.
-	LeaderEnabled *bool `yaml:"leader_enabled"`
-}
-
-// IsLeaderEnabled reports whether the legacy Leader agent should be assembled.
-// It defaults to FALSE — the flat Peer Agent runtime is the only supported
-// production path (aresos-agentos-plan C1). The leader path remains solely as a
-// gray-scale rollback behind an explicit leader_enabled: true.
-//
-// Deprecated: the leader path is retained only for gray-scale rollback and must
-// not be extended.
-//
-// TODO(tech-debt): remove in v0.4.0 with the LeaderEnabled field, createAgents,
-// createAndRegisterServeAgents, and internal/agents/leader.
-func (k KernelConfig) IsLeaderEnabled() bool {
-	if k.LeaderEnabled == nil {
-		return false
-	}
-	return *k.LeaderEnabled
 }
 
 // DiscoveryConfig configures the optional service discovery engine that
@@ -220,18 +189,19 @@ type LLMConfig struct {
 
 // AgentsConfig holds agent configuration.
 type AgentsConfig struct {
-	// Leader + Sub are the LEGACY leader/sub structure (deprecated, retained
-	// for the kernel.leader_enabled=true gray switch). The DEFAULT is the
-	// flat Peers structure (C1: agents: [{id, capabilities, priority}]).
-	Leader LeaderConfig     `yaml:"leader"`
-	Sub    []SubAgentConfig `yaml:"sub"`
 	// Peers is the flat capability-agent population (aresos-agentos-plan C1:
 	// 平铺结构作为默认). Each entry is an equal peer spawned into the Agent
 	// Fabric with its execution body; the kernel scheduler selects among them
 	// by capability. When Peers is non-empty it is the authoritative agent
 	// source (createPeerAgents reads it); Sub remains as the legacy fallback
-	// so pre-C1 configs keep working.
+	// (each sub's single Type becomes its only capability) so pre-C1 configs
+	// keep working.
 	Peers []PeerAgentConfig `yaml:"peers"`
+	// Sub is the LEGACY leader/sub-era sub-agent list, normalized into peers
+	// when no peers are configured (see normalizedPeers). The leader side of
+	// the legacy structure was removed in v0.4.0; an ignored `leader:` key in
+	// an old config file is harmless.
+	Sub []SubAgentConfig `yaml:"sub"`
 }
 
 // PeerAgentConfig is one flat peer agent (C1 平铺结构).
@@ -251,15 +221,6 @@ type PeerAgentConfig struct {
 	// MaxToolRounds caps the tool-calling iterations per task execution
 	// (default 5 when 0/unset).
 	MaxToolRounds int `yaml:"max_tool_rounds"`
-}
-
-// LeaderConfig holds Leader Agent configuration.
-type LeaderConfig struct {
-	ID                 string `yaml:"id"`
-	MaxSteps           int    `yaml:"max_steps"`
-	MaxParallelTasks   int    `yaml:"max_parallel_tasks"`
-	MaxValidationRetry int    `yaml:"max_validation_retry"`
-	EnableCache        bool   `yaml:"enable_cache"`
 }
 
 // SubAgentConfig holds Sub Agent configuration.

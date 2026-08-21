@@ -46,21 +46,6 @@ query_priority:
   llm_rewrite_weight: 0.5   # LLM rewrite weight (weakest)
   max_queries: 3            # Maximum number of queries to use
 
-agents:
-  leader:
-    id: "leader-1"
-    max_steps: 10
-    max_parallel_tasks: 5
-    max_validation_retry: 3
-    enable_cache: true
-
-  sub:
-    - id: "sub-1"
-      type: "agent"
-      category: "general"
-      max_retries: 3
-      timeout: 30
-
 # Note: To enable LLM query rewriting:
 # 1. Set up OpenRouter (requires API key) or Ollama (local)
 # 2. Configure the LLM section above

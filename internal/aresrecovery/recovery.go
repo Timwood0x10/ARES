@@ -27,6 +27,14 @@ type Recovery struct {
 	// checkpoint recovery too — "Evolution decides; Kernel enforces". Nil
 	// keeps the plain fabric spawn.
 	spawner *EvolutionAwareSpawner
+	// cogFactory is the A1 execution-body factory injected into every
+	// replacement spawn (aresos-agentos-plan E1: replacement 走 A1 factory,
+	// 可执行 — 消除 phantom). When set, spawnAgent fills
+	// spec.CognitionFactory before spawning so the replacement agent is a
+	// REAL cognitive process that the scheduler can execute, not an empty
+	// shell. Nil keeps the caller's spec untouched (the production peer path
+	// passes its own factory through runKernelRecoveryLoop's executorFactory).
+	cogFactory agentfabric.CognitionFactory
 	// policy is the restart policy (max attempts, backoff).
 	policy RestartPolicy
 	// restarts tracks how many times each agent id has been restarted.
@@ -94,6 +102,15 @@ func (r *Recovery) WithSpawner(s *EvolutionAwareSpawner) *Recovery {
 	return r
 }
 
+// WithCognitionFactory injects the A1 execution-body factory (aresos-agentos-
+// plan E1). Every replacement spawn produced by RecoverTaskCheckpoint /
+// RestartAgent then carries the factory, so the replacement agent is
+// executable (non-phantom). Returns the Recovery for chaining.
+func (r *Recovery) WithCognitionFactory(f agentfabric.CognitionFactory) *Recovery {
+	r.cogFactory = f
+	return r
+}
+
 // spawnAgent creates a replacement agent, routing through the evolution
 // spawner when wired, otherwise spawning directly on the fabric. Recovery
 // spawns ALWAYS use the recovery path (SpawnForRecovery): they replace a
@@ -101,6 +118,11 @@ func (r *Recovery) WithSpawner(s *EvolutionAwareSpawner) *Recovery {
 // self-healing spawn rejected by MaxConcurrent would strand the task forever
 // (v0.3.0 M2-1; recovery bypasses quota, not the Enabled gate).
 func (r *Recovery) spawnAgent(ctx context.Context, spec agentfabric.SpawnSpec) (*agentfabric.Agent, error) {
+	// E1: inject the A1 execution body so a replacement is a REAL cognitive
+	// process (the scheduler can execute it), never a phantom shell.
+	if r.cogFactory != nil && spec.CognitionFactory == nil {
+		spec.CognitionFactory = r.cogFactory
+	}
 	if r.spawner != nil {
 		return r.spawner.SpawnForRecovery(ctx, spec)
 	}

@@ -105,8 +105,9 @@ evolution:
 # is no leader. Each entry is one agent; capabilities is the full declared
 # capability set (any matching task is schedulable to it); priority mirrors
 # OS-thread scheduling priority (0 = normal).
-# The legacy agents.sub structure (leader_enabled: true) remains as the
-# gray-scale fallback and is scheduled for removal in v0.4.0.
+# The legacy agents.sub list is still accepted as a fallback (each sub's
+# single `type` becomes its only capability) so pre-C1 configs keep working;
+# the legacy `agents.leader` structure was removed in v0.4.0.
 agents:
   peers:
     - id: coder

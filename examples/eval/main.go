@@ -17,7 +17,7 @@
 //     EvoImprovement.
 //
 // Core APIs (with package paths):
-//   - sdk.NewRuntime / NewAgent / NewTeam (github.com/Timwood0x10/ares/sdk)
+//   - sdk.NewRuntime / NewAgent (github.com/Timwood0x10/ares/sdk)
 //   - evaluation.New / Scenario / RunnerFunc / RunAll (evaluation/)
 //
 // Run:

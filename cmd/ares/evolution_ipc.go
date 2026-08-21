@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/agentipc"
-	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -68,7 +67,6 @@ type evolutionIPCBridge struct {
 // flagged it as library-only; this is its production write path).
 //
 // Args:
-//   - leaderAgent: the leader agent (registered under its ID).
 //   - subAgents: the sub agents (registered under their IDs).
 //   - store: the evolution strategy store (nil → plain json, no-op policy).
 //   - tracer: the shared GlobalTracer (nil → no message tracing).
@@ -76,7 +74,7 @@ type evolutionIPCBridge struct {
 // Returns:
 //   - *evolutionIPCBridge: the wired bridge (registry + ipc).
 //   - error: when a bus handler cannot be registered.
-func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evolution.StrategyStore, tracer *aresrecovery.GlobalTracer) (*evolutionIPCBridge, error) {
+func wireEvolutionIPC(subAgents []sub.Agent, store evolution.StrategyStore, tracer *aresrecovery.GlobalTracer) (*evolutionIPCBridge, error) {
 	bus := agentipc.NewBus()
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, ares_bootstrap.NewIPCProtocolPolicySource(store))
 	reg := peer.NewRegistry()
@@ -124,11 +122,6 @@ func wireEvolutionIPC(leaderAgent leader.Agent, subAgents []sub.Agent, store evo
 	// error. Sub-agents additionally expose Execute — the capability that
 	// lets collaboration topics (delegate/pipeline/orchestrate) run a task on
 	// them and return the result.
-	if sender, ok := leaderAgent.(interface {
-		SendMessage(context.Context, *ahp.AHPMessage) error
-	}); ok {
-		register(leaderAgent.ID(), sender.SendMessage, nil)
-	}
 	for _, sa := range subAgents {
 		if sender, ok := sa.(interface {
 			SendMessage(context.Context, *ahp.AHPMessage) error

@@ -25,9 +25,12 @@ const (
 // TaskEvent is one immutable lifecycle record. Replaying the log in order
 // rebuilds the full task state (Evidence-Driven Autonomous Runtime).
 type TaskEvent struct {
-	Type       EventType
-	TaskID     string
-	AgentID    string
+	Type    EventType
+	TaskID  string
+	AgentID string
+	// Origin is the creating agent's ID ("" = root task). Captured on
+	// task.created so provenance is auditable from the event log.
+	Origin     string
 	State      TaskState
 	Checkpoint any
 	At         time.Time

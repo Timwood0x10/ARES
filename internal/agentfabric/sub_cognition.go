@@ -8,20 +8,23 @@ import (
 )
 
 // SubAgentCognition adapts a sub.Agent (the legacy quantum executor) to the
-// agentfabric.Cognition contract. It is the LEGACY-ONLY cognition: it is used
-// solely on the leader flip path (wireKernelLifecycle,
-// kernel.leader_enabled=true / kernel.policy=legacy), where the configured
-// sub-agents' own executor must remain the execution body.
+// agentfabric.Cognition contract. It is the A1 migration/parity adapter: the
+// agentfabric default execution body is ChatCognition (the tool-loop logic
+// moved down from the sub package — aresos-agentos-plan A1.4), and this
+// adapter keeps the sub executor reachable so the migration parity test
+// (TestSubAgentCognitionSemanticsParity) can assert StepOutcome semantics
+// match by construction (Done/Checkpoint/Result).
 //
 // The PEER production path (createPeerAgents, the default) does NOT use this
 // adapter: it spawns fabric agents with ChatCognition
 // (internal/agentfabric/chat_cognition.go), the tool-loop execution logic
 // MOVED DOWN from the sub package (aresos-agentos-plan A1.4: tool-loop 下沉到
-// agentfabric 作为默认实现). StepOutcome semantics match by construction —
-// both paths produce Done/Checkpoint/Result.
+// agentfabric 作为默认实现).
 //
-// When the legacy leader path is fully retired (createLeaderAgent removed),
-// this adapter and the sub executor retire together.
+// The legacy leader runtime that drove the sub executor through
+// TaskPlanner/TaskDispatcher was removed in v0.4.0 (C1); this adapter now
+// survives only as the parity-test fixture and a library-level fallback for
+// callers that still construct a sub.Agent directly.
 type SubAgentCognition struct {
 	agent sub.Agent
 }

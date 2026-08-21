@@ -64,9 +64,6 @@ func TestStatusConfigToStatusMinimal(t *testing.T) {
 	if !out.Memory.Enabled {
 		t.Fatal("memory should default to enabled")
 	}
-	if out.Agents.Leader != "leader-1" {
-		t.Fatalf("leader = %q, want leader-1", out.Agents.Leader)
-	}
 	if len(out.Agents.Sub) != 3 {
 		t.Fatalf("sub agents = %d, want 3 (default team)", len(out.Agents.Sub))
 	}
@@ -80,7 +77,6 @@ func TestStatusConfigToStatusFromFile(t *testing.T) {
 	cfg.LLM.Provider = "openai"
 	cfg.LLM.Model = "gpt-4o-mini"
 	cfg.LLM.APIKey = "sk-test"
-	cfg.Agents.Leader.ID = "leader-9"
 	cfg.Agents.Sub = []ares_config.SubAgentConfig{{ID: "coder-a", Type: "coder"}}
 	cfg.Kernel.Policy = "taskfabric"
 	cfg.Storage.Enabled = true
@@ -92,9 +88,6 @@ func TestStatusConfigToStatusFromFile(t *testing.T) {
 	}
 	if !out.LLM.APIKeySet {
 		t.Fatal("api key should be reported set")
-	}
-	if out.Agents.Leader != "leader-9" {
-		t.Fatalf("leader = %q, want leader-9", out.Agents.Leader)
 	}
 	if out.Kernel.Policy != "taskfabric" {
 		t.Fatalf("kernel policy = %q, want taskfabric", out.Kernel.Policy)
@@ -127,13 +120,13 @@ func TestStatusConfigServerAddr(t *testing.T) {
 
 func TestStatusConfigWarnings(t *testing.T) {
 	t.Run("healthy config has no warnings", func(t *testing.T) {
-		cfg := statusConfig{Memory: statusMemory{Enabled: true}, Kernel: statusKernel{Policy: "legacy"}}
+		cfg := statusConfig{Memory: statusMemory{Enabled: true}, Kernel: statusKernel{Policy: "taskfabric"}}
 		if w := statusConfigWarnings(cfg); len(w) != 0 {
 			t.Fatalf("unexpected warnings: %v", w)
 		}
 	})
 	t.Run("memory off warns", func(t *testing.T) {
-		cfg := statusConfig{Memory: statusMemory{Enabled: false}, Kernel: statusKernel{Policy: "legacy"}}
+		cfg := statusConfig{Memory: statusMemory{Enabled: false}, Kernel: statusKernel{Policy: "taskfabric"}}
 		if w := statusConfigWarnings(cfg); len(w) != 1 {
 			t.Fatalf("want 1 warning, got %v", w)
 		}
@@ -154,7 +147,7 @@ func TestStatusProbeRuntime(t *testing.T) {
 	})
 	mux.HandleFunc(statusAgentsPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `[{"id": "leader-1", "role": "orchestrator", "status": "ready"}]`)
+		_, _ = fmt.Fprint(w, `[{"id": "coder-a", "role": "coder", "status": "ready"}]`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -166,8 +159,8 @@ func TestStatusProbeRuntime(t *testing.T) {
 	if rt.Health == nil || rt.Health.Level != "good" || rt.Health.Anomalies != 2 {
 		t.Fatalf("health = %+v, want level=good anomalies=2", rt.Health)
 	}
-	if len(rt.Agents) != 1 || rt.Agents[0].ID != "leader-1" {
-		t.Fatalf("agents = %+v, want 1 leader-1", rt.Agents)
+	if len(rt.Agents) != 1 || rt.Agents[0].ID != "coder-a" {
+		t.Fatalf("agents = %+v, want 1 coder-a", rt.Agents)
 	}
 }
 
@@ -306,7 +299,7 @@ func TestStatusReportJSONShape(t *testing.T) {
 			Source:  "test",
 			Minimal: true,
 			Memory:  statusMemory{Enabled: true},
-			Agents:  statusAgentConfig{Leader: "leader-1", Sub: []string{"coder-a"}},
+			Agents:  statusAgentConfig{Sub: []string{"coder-a"}},
 		},
 		Capabilities: statusCapabilities{},
 		Warnings:     []string{"w"},
@@ -320,7 +313,7 @@ func TestStatusReportJSONShape(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if back.Config.Agents.Leader != "leader-1" || len(back.Config.Agents.Sub) != 1 {
+	if len(back.Config.Agents.Sub) != 1 {
 		t.Fatalf("round-trip config = %+v", back.Config)
 	}
 	if !back.Runtime.Running || len(back.Warnings) != 1 {

@@ -7,7 +7,6 @@ import (
 	"github.com/Timwood0x10/ares/compat"
 	compatllm "github.com/Timwood0x10/ares/compat/llm"
 	"github.com/Timwood0x10/ares/compat/llm/openai"
-	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -62,12 +61,4 @@ func WireTaskExecutorCallbacks(reg *ares_callbacks.Registry) sub.TaskExecutorOpt
 		return nil
 	}
 	return sub.WithTaskExecutorCallbacks(reg)
-}
-
-// WireLeaderAgentCallbacks returns a LeaderOption that injects a callback emitter.
-func WireLeaderAgentCallbacks(reg *ares_callbacks.Registry) leader.LeaderOption {
-	if reg == nil {
-		return nil
-	}
-	return leader.WithCallbacks(reg)
 }

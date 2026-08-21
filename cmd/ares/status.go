@@ -144,8 +144,7 @@ type statusMemory struct {
 }
 
 type statusAgentConfig struct {
-	Leader string   `json:"leader"`
-	Sub    []string `json:"sub"`
+	Sub []string `json:"sub"`
 }
 
 type statusStorage struct {
@@ -276,11 +275,11 @@ func statusConfigWarnings(cfg statusConfig) []string {
 	var warnings []string
 	if !cfg.Memory.Enabled {
 		warnings = append(warnings,
-			"memory.enabled=false — 'ares serve' requires memory for the leader agent and will refuse to start")
+			"memory.enabled=false — 'ares serve' runs without memory; agents will lack persistent cognitive state")
 	}
-	if p := cfg.Kernel.Policy; p != "" && p != "legacy" && p != "taskfabric" {
+	if p := cfg.Kernel.Policy; p != "" && p != "taskfabric" {
 		warnings = append(warnings, fmt.Sprintf(
-			"kernel.policy=%q is unknown — supported: taskfabric (default), legacy", p))
+			"kernel.policy=%q is unknown — the only supported policy is \"taskfabric\"", p))
 	}
 	return warnings
 }
@@ -310,8 +309,7 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 		Kernel: statusKernel{Policy: policy},
 		Memory: statusMemory{Enabled: cfg.Memory.IsEnabled()},
 		Agents: statusAgentConfig{
-			Leader: cfg.Agents.Leader.ID,
-			Sub:    make([]string, 0, len(cfg.Agents.Sub)),
+			Sub: make([]string, 0, len(cfg.Agents.Sub)),
 		},
 		Storage: statusStorage{
 			Enabled: cfg.Storage.Enabled,
@@ -324,9 +322,6 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 		} else if s.Type != "" {
 			out.Agents.Sub = append(out.Agents.Sub, s.Type)
 		}
-	}
-	if out.Agents.Leader == "" {
-		out.Agents.Leader = ares_config.DefaultLeaderID()
 	}
 	return out
 }
@@ -497,9 +492,9 @@ func printStatusText(r statusReport) {
 	fmt.Printf("              api key: %s\n", keyState)
 	fmt.Printf("  kernel      %s\n", kernelPolicyLabel(c.Kernel.Policy))
 	fmt.Printf("  memory      %s\n", boolLabel(c.Memory.Enabled))
-	fmt.Printf("  agents      %s", c.Agents.Leader)
+	fmt.Printf("  agents      %d peer(s)", len(c.Agents.Sub))
 	if len(c.Agents.Sub) > 0 {
-		fmt.Printf(" + %d sub: %s", len(c.Agents.Sub), strings.Join(c.Agents.Sub, ", "))
+		fmt.Printf(": %s", strings.Join(c.Agents.Sub, ", "))
 	}
 	fmt.Println()
 	fmt.Printf("  storage     %s", boolLabel(c.Storage.Enabled))

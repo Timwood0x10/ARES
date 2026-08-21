@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/kernelctx"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -25,8 +26,8 @@ import (
 // agent spawned with a ChatCognition is a fully self-contained cognitive
 // process: it holds its LLM client and tool binder directly, no sub.Agent
 // wrapper. (code_rules_v2 §5.1: in the peer mode this is the single
-// production execution path; the legacy leader path's sub executor exists
-// only behind kernel.leader_enabled=true and retires with C1.)
+// production execution path; the legacy leader runtime was removed in
+// v0.4.0/C1.)
 
 // Event payload keys shared with the ares_events pipeline. They mirror the
 // sub executor's key names so both execution paths emit identical events.
@@ -365,7 +366,10 @@ func (c *chatCognition) executeToolCall(ctx context.Context, tc core.ToolCall) (
 		}
 	}
 
-	result, err := c.toolBinder.CallTool(ctx, tc.Function.Name, args)
+	// Stamp the caller identity into the tool context before invoking the
+	// tool so Kernel syscalls (agentsyscall) can enforce provenance
+	// (Task.Origin / ParentID) from the context, never from LLM args.
+	result, err := c.toolBinder.CallTool(kernelctx.WithCallerID(ctx, c.agentID), tc.Function.Name, args)
 	if err != nil {
 		return "", err
 	}

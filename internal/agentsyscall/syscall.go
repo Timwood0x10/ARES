@@ -8,6 +8,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/kernelctx"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -116,8 +117,11 @@ type SpawnAgentArgs struct {
 	TaskContext map[string]any `json:"task_context,omitempty"`
 	// Resources are optional resource hints for quota validation.
 	Resources map[string]any `json:"resources,omitempty"`
-	// ParentID is the spawning agent's ID (for provenance). When empty,
-	// the spawn is treated as a root agent.
+	// ParentID is the spawning agent's ID (for provenance). Kernel-enforced:
+	// when the tool context carries a caller (kernelctx.CallerID), that ID
+	// wins and this field is ignored, so an LLM can never forge parentage;
+	// the value is used only for direct/Kernel-internal calls without a
+	// context identity. Empty parent = root spawn.
 	ParentID string `json:"parent_id,omitempty"`
 }
 
@@ -163,10 +167,20 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 		executor = k.factory(agentID, args.Capability)
 	}
 
+	// Kernel-enforced provenance: the tool-context caller wins over any
+	// LLM-supplied ParentID, so parentage can never be forged by a spawned
+	// agent's arguments. The fallback keeps direct/Kernel-internal calls
+	// (bootstrap wiring, existing syscall tests) working with no context
+	// identity.
+	parentID := args.ParentID
+	if caller := kernelctx.CallerID(ctx); caller != "" {
+		parentID = caller
+	}
+
 	spec := agentfabric.SpawnSpec{
 		Identity:     agentID,
 		Capabilities: []string{args.Capability},
-		ParentID:     args.ParentID,
+		ParentID:     parentID,
 		TaskContext:  args.TaskContext,
 		Resources:    args.Resources,
 	}
@@ -212,6 +226,9 @@ type CreateTaskArgs struct {
 	Dependencies []string `json:"dependencies,omitempty"`
 	// Payload carries opaque task data (e.g. task_desc, profile).
 	Payload map[string]any `json:"payload,omitempty"`
+	// NOTE: there is deliberately no "creator" argument. The Kernel stamps
+	// Task.Origin from the tool context (kernelctx.CallerID) so provenance
+	// is enforced by the Kernel — an LLM cannot forge a creator via params.
 }
 
 // CreateTaskResult is the return value of the create_task tool.
@@ -239,6 +256,10 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		Priority:     args.Priority,
 		Dependencies: args.Dependencies,
 		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
+		// Origin is Kernel-enforced: stamped from the tool context caller
+		// (kernelctx.CallerID), never from LLM-supplied arguments. Empty =
+		// root call (no agent caller in context).
+		Origin: kernelctx.CallerID(ctx),
 		Checkpoint: &taskfabric.CheckpointEnvelope{
 			Payload: args.Payload,
 		},

@@ -91,18 +91,19 @@ func simulateWorkload(ctx context.Context, bus ares_runtime.EventBus) {
 		role  string
 		model string
 	}{
-		{"leader-1", "leader", "orchestrator", "llama3.2"},
 		{"coder-a", "coder-alpha", "coder", "openai/gpt-3.5-turbo"},
 		{"coder-b", "coder-beta", "coder", "openai/gpt-3.5-turbo"},
 		{"reviewer-1", "reviewer", "reviewer", "llama3.2"},
 		{"researcher-1", "researcher", "research", "openai/gpt-3.5-turbo"},
 	}
 
+	// Provenance only (Rule 2): spawn records who created whom, never
+	// authority. coder-b was spawned by peer coder-a; the others are
+	// origin agents.
 	parents := map[string]string{
-		"leader-1":     "",
-		"coder-a":      "leader-1",
-		"coder-b":      "leader-1",
-		"reviewer-1":   "leader-1",
+		"coder-a":      "",
+		"coder-b":      "coder-a",
+		"reviewer-1":   "",
 		"researcher-1": "",
 	}
 	for i, a := range agents {

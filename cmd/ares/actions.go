@@ -177,15 +177,15 @@ type submitTaskRequest struct {
 // handleSubmitTask submits a task to the peer runtime through the kernel
 // (submitPeerTask) and returns the assigned task id. The submission is
 // asynchronous: the scheduler drains the fabric and executes the task; the
-// response only confirms acceptance. The legacy leader path (no peer kernel)
-// reports 503 so callers can distinguish "not a peer runtime" from a real
-// submission failure.
+// response only confirms acceptance. A nil peer kernel reports 503 so
+// callers can distinguish "not a peer runtime" from a real submission
+// failure.
 func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.kernel == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error":  "peer runtime not active (kernel.leader_enabled=true)",
+			"error":  "peer runtime not active",
 			"status": "error",
 		})
 		return

@@ -25,26 +25,20 @@ func TestNewMinimalConfig_OpenAICompatible(t *testing.T) {
 		t.Fatal("model must fall back to a provider default, not stay empty")
 	}
 	if !cfg.Memory.IsEnabled() {
-		t.Fatal("memory must be enabled (leader agent requires a MemoryManager)")
+		t.Fatal("memory must be enabled (kernel scheduler requires a MemoryManager)")
 	}
 	if cfg.Server.Port != 8080 {
 		t.Fatalf("server port must default to 8080, got %d", cfg.Server.Port)
-	}
-	if cfg.Agents.Leader.MaxSteps != 10 {
-		t.Fatalf("leader max_steps must default to 10, got %d", cfg.Agents.Leader.MaxSteps)
 	}
 	// Storage defaults to postgres type but stays disabled → Bootstrap uses
 	// in-memory storage (no external DB required for a minimal run).
 	if cfg.Storage.Enabled {
 		t.Fatal("storage must stay disabled in minimal mode (in-memory fallback)")
 	}
-	// A default agent team is assembled so the runtime can divide tasks even
-	// with no config file.
+	// A default agent population is assembled so the runtime can divide tasks
+	// even with no config file.
 	if len(cfg.Agents.Sub) < 3 {
 		t.Fatalf("minimal config must assemble default sub agents, got %d", len(cfg.Agents.Sub))
-	}
-	if cfg.Agents.Leader.ID != "leader-1" {
-		t.Fatalf("leader id must default to leader-1, got %q", cfg.Agents.Leader.ID)
 	}
 }
 

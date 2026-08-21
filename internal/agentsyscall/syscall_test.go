@@ -8,6 +8,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/kernelctx"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -210,6 +211,36 @@ func TestCreateTaskCreatesTaskInFabric(t *testing.T) {
 	if task.State != taskfabric.StateReady {
 		t.Fatalf("state = %s, want READY", task.State)
 	}
+	// Root call (no caller in context): Origin must be empty — no agent
+	// creator to attribute.
+	if task.Origin != "" {
+		t.Fatalf("origin = %q, want \"\" for a root call without context caller", task.Origin)
+	}
+}
+
+// TestCreateTaskStampsCallerOrigin verifies the create_task syscall records
+// the CALLER from the tool context (kernelctx.CallerID) as Task.Origin — the
+// Kernel-enforced provenance, not an LLM-supplied argument.
+func TestCreateTaskStampsCallerOrigin(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+	kernel := NewKernel(nil, fabric, nil, nil)
+
+	ctx := kernelctx.WithCallerID(context.Background(), "agent-A")
+	result, err := kernel.CreateTask(ctx, CreateTaskArgs{
+		Capability: "coder",
+		Payload:    map[string]any{"task_desc": "write tests"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	task, err := fabric.Task(result.TaskID)
+	if err != nil {
+		t.Fatalf("Get task: %v", err)
+	}
+	if task.Origin != "agent-A" {
+		t.Fatalf("origin = %q, want agent-A (stamped from tool context)", task.Origin)
+	}
 }
 
 // TestCreateTaskRejectsEmptyCapability verifies the Kernel rejects a task
@@ -219,6 +250,37 @@ func TestCreateTaskRejectsEmptyCapability(t *testing.T) {
 	_, err := kernel.CreateTask(context.Background(), CreateTaskArgs{})
 	if err == nil {
 		t.Fatal("must reject empty capability")
+	}
+}
+
+// TestSpawnAgentEnforcesContextCaller verifies the Kernel overrides any
+// LLM-supplied ParentID with the tool-context caller — parentage can never be
+// forged by a spawned agent's arguments (plan D1-5: provenance is enforced by
+// the Kernel, not trusted from LLM params).
+func TestSpawnAgentEnforcesContextCaller(t *testing.T) {
+	agents := agentfabric.NewFabric()
+	kernel := NewKernel(agents, nil, nil, nil)
+
+	// LLM claims parent "spoofed-parent"; the context proves the real caller
+	// is agent-A. The Kernel must trust the context.
+	ctx := kernelctx.WithCallerID(context.Background(), "agent-A")
+	result, err := kernel.SpawnAgent(ctx, SpawnAgentArgs{
+		Capability: "coder",
+		ParentID:   "spoofed-parent",
+	})
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+
+	agent, err := agents.Get(result.AgentID)
+	if err != nil {
+		t.Fatalf("Get spawned agent: %v", err)
+	}
+	if agent.Parent != "agent-A" {
+		t.Fatalf("parent = %q, want agent-A (Kernel-enforced from context)", agent.Parent)
+	}
+	if kids := agents.Children("spoofed-parent"); len(kids) != 0 {
+		t.Fatalf("spoofed parent must have no children, got %v", kids)
 	}
 }
 
@@ -250,8 +312,10 @@ func TestBindToolsRegistersBothTools(t *testing.T) {
 		t.Fatalf("capability = %q, want coder", sr.Capability)
 	}
 
-	// create_task
-	taskResult, err := binder.call(ctx, CreateTaskTool, map[string]any{
+	// create_task — carry the caller in the context exactly as the tool
+	// execution bodies do (sub executor / chat cognition / agentloop
+	// engine), and verify the Kernel stamps it as Task.Origin.
+	taskResult, err := binder.call(kernelctx.WithCallerID(ctx, "agent-A"), CreateTaskTool, map[string]any{
 		"capability": "coder",
 		"payload":    map[string]any{"task_desc": "review code"},
 	})
@@ -264,6 +328,13 @@ func TestBindToolsRegistersBothTools(t *testing.T) {
 	}
 	if tr.TaskID == "" {
 		t.Fatal("task ID must not be empty")
+	}
+	tk, err := fabric.Task(tr.TaskID)
+	if err != nil {
+		t.Fatalf("Get task: %v", err)
+	}
+	if tk.Origin != "agent-A" {
+		t.Fatalf("origin = %q, want agent-A (context caller survives the tool path)", tk.Origin)
 	}
 }
 

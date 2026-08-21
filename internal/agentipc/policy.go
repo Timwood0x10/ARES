@@ -8,25 +8,26 @@ import (
 )
 
 // ExecutionPolicy is the strategy for dispatching a task to an agent (design
-// §2 + P4 D4: leader is no longer a role, just a policy). The Kernel picks
-// one policy per dispatch; the feature flag selects legacy leader dispatch
-// vs. the new Task Fabric → Scheduler → Agent path.
+// §2 + P4 D4). The Kernel picks one policy per dispatch; the feature flag
+// selects the active path. The legacy leader policy is retained only as a
+// library constant — the leader runtime is removed (aresos-agentos-plan C1),
+// so no production dispatcher registers a legacy track.
 type ExecutionPolicy int
 
 const (
-	// PolicyLegacyLeader is the old leader+sub dispatch path
-	// (agents/leader/dispatcher). Retained for gradual cutover.
+	// PolicyLegacyLeader is the old leader+sub dispatch path. Retained as a
+	// library constant for the dispatcher's dormant legacy branch; production
+	// wires a nil legacy track, so selecting it returns ErrDispatcherNotRegistered.
 	PolicyLegacyLeader ExecutionPolicy = iota
-	// PolicyTaskFabric is the new Kernel path: Task Fabric → Scheduler →
-	// Agent (capability-aware, no central leader).
+	// PolicyTaskFabric is the Kernel path: Task Fabric → Scheduler → Agent
+	// (capability-aware, no central leader). This is the only production policy.
 	PolicyTaskFabric
 )
 
 // PolicyFlag is the feature flag that selects which dispatch policy is
-// active (P4 D4: parallel + feature flag gradual cutover). It defaults to
-// LegacyLeader for safety; operators flip to TaskFabric once the new path is
-// verified equivalent. The flag is read atomically so a live flip takes
-// effect on the next dispatch without restart.
+// active (P4 D4: parallel + feature flag gradual cutover). Production starts
+// at PolicyTaskFabric; the flag is read atomically so a flip takes effect on
+// the next dispatch without restart.
 type PolicyFlag struct {
 	v atomic.Int64 // 0 = legacy, 1 = task fabric (int64 avoids int→int32 narrowing)
 }

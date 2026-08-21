@@ -117,12 +117,6 @@ func TestValidate_ClosedLoopMemoryAndKnowledge(t *testing.T) {
 				MaxTokens: 4096,
 			},
 			Agents: AgentsConfig{
-				Leader: LeaderConfig{
-					ID:                 "leader-1",
-					MaxSteps:           10,
-					MaxParallelTasks:   5,
-					MaxValidationRetry: 3,
-				},
 				Sub: []SubAgentConfig{},
 			},
 			Output:     OutputConfig{Format: "simple"},

@@ -112,6 +112,8 @@ func (s *Sandbox) Replay(ctx context.Context, events []SandboxEvent) ([]SandboxO
 		var err error
 		switch ev.Type {
 		case SandboxEventTaskCreate:
+			// Origin stays "" — sandbox scripted tasks are root tasks (no
+			// agent caller); the sandbox replays fabric state, not provenance.
 			err = s.tasks.Create(&taskfabric.Task{ID: ev.TaskID, Capability: sandboxCapability})
 		case SandboxEventTaskAcquire:
 			_, err = s.tasks.Acquire(ev.TaskID, ev.AgentID, time.Minute)

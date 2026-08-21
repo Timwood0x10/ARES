@@ -95,7 +95,7 @@ type llmService interface {
 //   - MCP server connections (stdio-based external tools)
 //   - Event-driven distillation (TaskCompleted → auto-distill pipeline)
 //
-// Create one with NewRuntime or New, then call NewAgent / NewTeam to build
+// Create one with NewRuntime or New, then call NewAgent to build
 // agents. Close must be called once when the Runtime is no longer needed to
 // release LLM connections, stop background goroutines, and close MCP clients.
 //

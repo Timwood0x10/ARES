@@ -12,9 +12,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/agentsyscall"
-	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/kernelctx"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -144,10 +144,12 @@ func TestW2Case2AutonomousDecomposition(t *testing.T) {
 	)
 
 	// Simulate the LLM's cognition: agent A decides to split.
-	// In production this is a tool call from the LLM; here we call the
-	// syscall directly to verify the Kernel path.
+	// In production this is a tool call from the LLM, executed with the
+	// caller stamped into the context by the execution body
+	// (kernelctx.WithCallerID); here we stamp it directly to verify the
+	// Kernel path stamps provenance ("B.origin = A").
 	subTaskPayload := map[string]any{"task_desc": "write unit tests for module X"}
-	taskResult, err := kernelSyscall.CreateTask(ctx, agentsyscall.CreateTaskArgs{
+	taskResult, err := kernelSyscall.CreateTask(kernelctx.WithCallerID(ctx, "agent-A"), agentsyscall.CreateTaskArgs{
 		Capability: "coder",
 		Payload:    subTaskPayload,
 	})
@@ -162,6 +164,11 @@ func TestW2Case2AutonomousDecomposition(t *testing.T) {
 	}
 	if subTask.State != taskfabric.StateReady {
 		t.Fatalf("sub-task state = %s, want READY", subTask.State)
+	}
+	// Provenance: the Kernel must attribute the sub-task to the caller
+	// (agent-A), not to anything the LLM could forge in arguments.
+	if subTask.Origin != "agent-A" {
+		t.Fatalf("sub-task origin = %q, want agent-A (caller stamped from tool context)", subTask.Origin)
 	}
 
 	// Poll until the sub-task completes.
@@ -212,14 +219,24 @@ func TestW2Case3ParentDeathChildContinues(t *testing.T) {
 		t.Fatalf("Spawn parent: %v", err)
 	}
 
-	// The parent creates a sub-task via the syscall.
+	// The parent creates a sub-task via the syscall. The parent's identity
+	// is stamped into the context (as the tool execution bodies do), so the
+	// Kernel attributes the sub-task to it.
 	kernelSyscall := agentsyscall.NewKernel(agentsFab, fabric, nil, nil)
-	taskResult, err := kernelSyscall.CreateTask(ctx, agentsyscall.CreateTaskArgs{
+	taskResult, err := kernelSyscall.CreateTask(kernelctx.WithCallerID(ctx, "parent-A"), agentsyscall.CreateTaskArgs{
 		Capability: "coder",
 		Payload:    map[string]any{"task_desc": "review code"},
 	})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// The sub-task carries its creator: parent death must not erase the
+	// audit trail of who spawned the work.
+	if created, err := fabric.Task(taskResult.TaskID); err != nil {
+		t.Fatalf("Get sub-task: %v", err)
+	} else if created.Origin != "parent-A" {
+		t.Fatalf("sub-task origin = %q, want parent-A", created.Origin)
 	}
 
 	// Register a worker agent that can execute the "coder" task.
@@ -492,34 +509,4 @@ func TestW2LongTaskStability(t *testing.T) {
 	}
 	t.Logf("Long task stability PASS: %d tasks (%d completed, %d failed), %d total executions, scheduler scheduled=%d",
 		totalTasks, completed, failed, totalExec, sched.Scheduled.Load())
-}
-
-// TestW2LeaderOffConfig verifies the KernelConfig.IsLeaderEnabled method
-// defaults to FALSE — the Peer Agent runtime is the default path (C1 默认新
-// 路径) — and respects explicit true (legacy gray-scale rollback).
-func TestW2LeaderOffConfig(t *testing.T) {
-	// Default: Leader OFF (Peer Agent runtime is the default path).
-	cfg := &ares_config.KernelConfig{}
-	//lint:ignore SA1019 test targets the deprecated method itself
-	if cfg.IsLeaderEnabled() { //nolint:staticcheck
-		t.Fatal("default must be leader disabled (Peer Agent runtime is the default path)")
-	}
-
-	// Explicit false.
-	off := false
-	//lint:ignore SA1019 test targets the deprecated field itself
-	cfg.LeaderEnabled = &off //nolint:staticcheck
-	//lint:ignore SA1019 test targets the deprecated method itself
-	if cfg.IsLeaderEnabled() { //nolint:staticcheck
-		t.Fatal("leader must be disabled when leader_enabled=false")
-	}
-
-	// Explicit true.
-	on := true
-	//lint:ignore SA1019 test targets the deprecated field itself
-	cfg.LeaderEnabled = &on //nolint:staticcheck
-	//lint:ignore SA1019 test targets the deprecated method itself
-	if !cfg.IsLeaderEnabled() { //nolint:staticcheck
-		t.Fatal("leader must be enabled when leader_enabled=true")
-	}
 }

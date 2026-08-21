@@ -57,8 +57,8 @@ func normalizedPeers(cfg *ares_config.Config) []ares_config.PeerAgentConfig {
 // The Kernel enforces quota/capability validation on every spawn.
 // createPeerAgents builds a set of peer agents WITHOUT a Leader (C1: 平铺
 // capability agent 注册进 agentfabric 动态群体). Each configured sub-agent is
-// spawned into the Agent Fabric WITH its execution body (SubAgentCognition)
-// and its distilled experience prior (G1), so the scheduler's candidate pool —
+// spawned into the Agent Fabric WITH its execution body (ChatCognition) and
+// its distilled experience prior (G1), so the scheduler's candidate pool —
 // queried live from the fabric (B1) — is exactly the set of real, executable
 // agents. There is no second registration table to keep in sync: spawn/kill
 // take effect on the next scheduler drain.
@@ -111,10 +111,9 @@ func createPeerAgents(
 		subCaps = append(subCaps, subAgentCapability{ID: p.ID, Type: typ, Caps: append([]string(nil), p.Capabilities...)})
 	}
 
-	// Assemble the dual-track kernel with the fabric path as the active
-	// path (no legacy leader dispatcher — a nil legacy dispatcher is fine
-	// because the flag starts at PolicyTaskFabric).
-	kernelDispatcher, kernelFlag := wireKernelDispatcher(nil, subCaps)
+	// Assemble the kernel dispatcher with the Task Fabric path as the active
+	// path (no legacy leader track: the flag starts at PolicyTaskFabric).
+	kernelDispatcher, kernelFlag := wireKernelDispatcher(subCaps)
 	kernel.dual = kernelDispatcher
 	kernel.flag = kernelFlag
 
@@ -122,9 +121,8 @@ func createPeerAgents(
 	tracker := newLoadTracker()
 	kernel.tracker = tracker
 
-	// Enable real Task Fabric execution (not shadow mode).
+	// Enable real Task Fabric execution (not scoring mode).
 	enableKernelExecution(kernel.dual, kernel.fabric)
-	kernelFlag.Set(0) // PolicyTaskFabric
 
 	// Start the scheduler.
 	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
@@ -151,7 +149,7 @@ func createPeerAgents(
 	kernel.agents = agents
 
 	// C1: configured sub-agents ARE the fabric's dynamic population — each is
-	// spawned WITH its execution body (SubAgentCognition) and its distilled
+	// spawned WITH its execution body (ChatCognition) and its distilled
 	// experience prior (G1), instead of living only in the static executor
 	// registry. The scheduler queries the fabric on every drain (B1), so this
 	// is the single registration point: a future kill/retire immediately
@@ -168,9 +166,7 @@ func createPeerAgents(
 			Capabilities: []string{string(sa.Type())},
 			// A1.4: the default execution body is the tool-loop Cognition
 			// moved down into agentfabric — a fabric agent is fully
-			// self-contained (LLM + tools), no sub.Agent wrapper. The legacy
-			// SubAgentCognition adapter remains only on the leader flip path
-			// (wireKernelLifecycle, kernel.leader_enabled=true).
+			// self-contained (LLM + tools), no sub.Agent wrapper.
 			CognitionFactory: func([]string) agentfabric.Cognition {
 				cog, err := newPeerChatCognition(sa.ID(), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
 				if err != nil {
@@ -351,8 +347,11 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 	taskID := fmt.Sprintf("peer-task-%s-%d", capability, peerTaskSeq.Add(1))
 
 	task := &taskfabric.Task{
-		ID:          taskID,
-		Capability:  capability,
+		ID:         taskID,
+		Capability: capability,
+		// Origin stays "" — this is a root task (user-submitted work), no
+		// agent caller. Agent-created tasks get their Origin from the
+		// create_task syscall's tool context (kernelctx.CallerID).
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
 		Checkpoint: &taskfabric.CheckpointEnvelope{
 			Payload: payload,

@@ -254,6 +254,11 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Task: %v", err)
 	}
+	// Root submission (fabric.Create directly, no agent caller): Origin must
+	// be empty — agent-created tasks are stamped by the create_task syscall.
+	if tk.Origin != "" {
+		t.Fatalf("root task origin = %q, want \"\" (no agent creator)", tk.Origin)
+	}
 	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
 	if err != nil {
 		t.Fatalf("decode checkpoint: %v", err)

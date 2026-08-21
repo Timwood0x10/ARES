@@ -69,6 +69,14 @@ func (t *LoadTracker) Begin(agentID string) {
 func (t *LoadTracker) End(agentID string, success bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Release the busy slot acquired by Begin: load is the CURRENT busy
+	// fraction, so an agent that finished a quantum must be schedulable again.
+	// Without the decrement, load climbs monotonically and Score's (1-load)
+	// factor zeroes out every agent that ever ran once (F1: later rounds get
+	// "no capable candidate" even with live, idle executors).
+	if t.load[agentID] > 0 {
+		t.load[agentID]--
+	}
 	t.done[agentID]++
 	if success {
 		t.ok[agentID]++
@@ -96,6 +104,15 @@ func (t *LoadTracker) Confidence(agentID string) float64 {
 func (t *LoadTracker) SetAgentConfidence(agentID string, confidence float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Negative values clear the override so Confidence falls back to the
+	// historical success rate or the neutral prior (ConfidenceInjector
+	// contract: "<= 0 resets to the neutral prior (1.0)"). 0.0 remains a
+	// VALID override (a 0% success rate must keep an agent at the bottom of
+	// the ranking — the F1 GA tests rely on it).
+	if confidence < 0 {
+		delete(t.agentConfidenceOverride, agentID)
+		return
+	}
 	t.agentConfidenceOverride[agentID] = confidence
 }
 
@@ -103,6 +120,13 @@ func (t *LoadTracker) SetCapabilityConfidence(agentID, capability string, confid
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	key := agentID + "|" + capability
+	// Negative values clear the capability override so ConfidenceFor falls
+	// back to the agent-level confidence / neutral prior (ConfidenceInjector
+	// contract: "a negative value (< 0) clears it").
+	if confidence < 0 {
+		delete(t.capabilityConfidenceOverride, key)
+		return
+	}
 	t.capabilityConfidenceOverride[key] = confidence
 }
 

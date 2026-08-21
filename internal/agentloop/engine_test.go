@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/kernelctx"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 
@@ -98,6 +99,44 @@ func (m *mockToolExecutor) lastToolName() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastName
+}
+
+// callerCaptureExecutor captures the caller ID stamped into the tool context
+// by the engine, so tests can assert the provenance propagation.
+type callerCaptureExecutor struct {
+	caller string
+}
+
+func (c *callerCaptureExecutor) Execute(ctx context.Context, _ string, _ map[string]any) (tools.Result, error) {
+	c.caller = kernelctx.CallerID(ctx)
+	return tools.Result{Success: true, Data: "ok"}, nil
+}
+
+// TestEngine_StampsCallerIDIntoToolContext verifies the engine stamps the
+// requesting agent's identity into the tool-execution context before invoking
+// a tool, so Kernel syscalls (agentsyscall) can enforce provenance
+// (Task.Origin / ParentID) from the context instead of trusting LLM args.
+func TestEngine_StampsCallerIDIntoToolContext(t *testing.T) {
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "", ToolCalls: []core.ToolCall{toolCall("tc1", "create_task", `{"capability":"coder"}`)}},
+		{Content: "done"},
+	}}
+	exec := &callerCaptureExecutor{}
+	eng := &Engine{LLM: llm, Tools: exec}
+	req := &Request{
+		Messages:  []*core.LLMMessage{{Role: "user", Content: "split"}},
+		Tools:     []core.Tool{{Type: "function", Function: core.FunctionDefinition{Name: "create_task"}}},
+		MaxIter:   3,
+		AgentName: "agent-A",
+		SessionID: "sess-1",
+		Input:     "split",
+	}
+	if _, err := eng.Run(context.Background(), req); err != nil {
+		t.Fatalf("Engine.Run: %v", err)
+	}
+	if exec.caller != "agent-A" {
+		t.Fatalf("tool context caller = %q, want agent-A (stamped by the engine)", exec.caller)
+	}
 }
 
 // fakeEventSink records every appended event without optimistic-concurrency

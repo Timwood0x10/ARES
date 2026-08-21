@@ -99,8 +99,10 @@ func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, 
 		taskID = t.ID
 	}
 	if err := r.sdkFabric.Create(&taskfabric.Task{
-		ID:          taskID,
-		Capability:  string(executor.Type()),
+		ID:         taskID,
+		Capability: string(executor.Type()),
+		// Origin stays "" — SDK submissions are root tasks (the caller is
+		// the SDK user, not an agent), so no agent creator is stamped.
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
 		Checkpoint: &taskfabric.CheckpointEnvelope{
 			Payload: map[string]any{"input": t.Input},

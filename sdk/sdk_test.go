@@ -240,29 +240,6 @@ func TestToOptionsUnknownProvider(t *testing.T) {
 	}
 }
 
-func TestNewTeam(t *testing.T) {
-	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
-	defer rt.Close()
-	leader := rt.NewAgent("lead", WithInstruction("lead"))
-	member := rt.NewAgent("mem", WithInstruction("work"))
-	team := rt.NewTeam("project", leader, []*Agent{member})
-	if team == nil || team.name != "project" || len(team.members) != 1 {
-		t.Fatal("team creation failed")
-	}
-}
-
-func TestTeamRunNoLLM(t *testing.T) {
-	rt := NewRuntime(WithOllama("nonexistent"), WithTrace(false))
-	defer rt.Close()
-	leader := rt.NewAgent("lead", WithInstruction("lead"))
-	member := rt.NewAgent("mem", WithInstruction("work"))
-	team := rt.NewTeam("project", leader, []*Agent{member})
-	_, err := team.Run(context.Background(), "test")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestEvolveNotEnabled(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()

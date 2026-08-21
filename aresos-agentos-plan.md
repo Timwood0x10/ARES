@@ -195,6 +195,15 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 - grep 确认生产路径无 `TaskPlanner.Plan` / `TaskDispatcher.Dispatch` 调用。
 - 旧 leader 包若保留则打 `// Deprecated:` 且不在默认路径。
 
+**✅ C1 落地状态（2026-08-21，代码侧关闭）**：
+
+- **leader 包整体删除**：`internal/agents/leader/` 已移除（`Process`/`TaskPlanner`/`TaskDispatcher`/`NewTeam` 全部消失）。生产路径 grep 确认无 `TaskPlanner.Plan` / `TaskDispatcher.Dispatch` 调用——仅存 3 处 `kernelTaskDispatcher.Dispatch` **注释**（`cmd/ares/kernel_loop.go`、`internal/ares_config/config.go`、`internal/taskfabric/quantum.go`），指 kernel 自身的事件驱动 dispatcher（`EventTaskCompleted/Failed` 订阅 + fabric 提交），不是 leader。
+- **配置扁平化**：`internal/ares_config` 删除 `LeaderConfig` 结构、`Agents.Leader` 字段、`defaultLeaderID`/`DefaultLeaderID`、`Autopilot` 字段及全部 leader 校验/默认值；`ares.yaml` 与 `configs/`、`examples/` 全部改为平铺 `agents.peers`（顶层 YAML 已无 `agents.leader` 残留）。
+- **CLI/状态输出**：`cmd/ares/status.go` JSON 输出去掉 `agents.leader`、`DefaultLeaderID()` 兜底删除、警告文案与 policy 提示改为 peer/taskfabric 口径；`serve`/`demo` 描述与模拟数据改 peer 模型（demo 的 `parents` 按 Rule 2 仅表达 provenance）。
+- **验收 #1 通过**：kernel 侧 `PolicyFlag` 固定 `PolicyTaskFabric`、`kernel_bridge.go` 不再注册 legacy track；peer 路径 E2E（`cmd/ares/w2_peer_test.go` 等）全绿。
+- **验证结果**：`gofmt`、`go vet ./...`、`go build ./cmd/... ./internal/...` 全绿；`go test ./...` **168 包全部通过**；`go test -race`（taskfabric、agentfabric、agentipc、ares_config、ares_bootstrap、cmd/ares）通过。
+- **保留的文档化休眠项（非本阶段范围）**：`agentipc.PolicyLegacyLeader` 库常量 + nil legacy track（注释已说明）；`ares_memory.GetLatestSessionForLeader` 方法名与 Postgres `leader_checkpoints` 存储表（通用 agent 认知恢复在用，重命名需 DB 迁移，留待后续）；`core/models.AgentTypeLeader` 常量（仅测试引用）；CHANGELOG/plan/archive 中的历史记录。
+
 ---
 
 ### 阶段 D — Agent 自主 spawn / 拆分
@@ -216,6 +225,14 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
                                         READY → Scheduler → B Acquire
    ```
 5. **字段命名（Rule 2）**：Task 的创建者字段语义上叫 `CreatedBy` / `OriginAgent`（当前 `SpawnAgentArgs.ParentID` 保留给 provenance 场景，Task 侧不得出现含权力语义的 `parent`）。provenance = `B.origin = A`，不是 `A └── B` 的树。
+
+   > **落地状态（D1 follow-up）**：`Task.Origin string` 已实现（`internal/taskfabric/task.go`），
+   > 语义 = OriginAgent/CreatedBy（"" = root 任务：用户/系统提交，无 agent 创建者）。
+   > create_task / spawn_agent syscall 从工具执行上下文读取调用者（`internal/kernelctx`，
+   > 由 sub executor / agentfabric chat cognition / agentloop engine 三个执行体在调工具前
+   > 强制注入 agentID），Kernel 以此为准，LLM 参数不可伪造（spawn 的 ParentID 亦然）。
+   > `task.created` 事件（`TaskEvent.Origin` + ares_events payload `origin`）随事件流携带创建者，
+   > 审计链闭环：`B.origin = A` 有数据源，按 origin 的 quota/审计成为可能。
 
 改哪：`internal/agentfabric`（syscall 接口）、`internal/agentipc`（协作）、tool 注册。
 
@@ -339,17 +356,20 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 ## 5. 执行顺序与里程碑
 
 ```
-里程碑 1（地基）：A1 + A2
+里程碑 1（地基）：A1 + A2 ✅
   → 统一 Agent 可执行 + checkpoint schema 固化
-里程碑 2（单一调度）：B1 + C1
+里程碑 2（单一调度）：B1 + C1 ✅
   → scheduler 只调度统一 Agent 的 execution opportunity，leader-sub 退出默认路径
-  （2026-08-21 现状：B1 ✅ 落地；C1 ⚠️ 未完成——IsLeaderEnabled nil→true 默认仍走 leader，须修正为默认新路径）
-里程碑 3（自主 + 恢复）：D1 + E1
+  （2026-08-21 现状：B1 ✅ 落地；C1 ✅ 代码侧关闭——`internal/agents/leader/` 已删除，配置扁平化为 `agents.peers`，YAML 无 `agents.leader` 残留，`go test ./...` 168 包全绿，`go test -race` 关键包通过）
+里程碑 3（自主 + 恢复）：D1 + E1 ✅
   → Agent 自主 spawn，死亡后真实续跑
-里程碑 4（横切融合）：F1 + G1
+  （2026-08-21 现状：D1 ✅ agentsyscall 落地；E1 ✅ e2e_grand_loop_real_test 落地）
+里程碑 4（横切融合）：F1 + G1 ✅
   → GA/Chaos/Distill 全挂统一 Agent
-里程碑 5（收口）：H1 + H2
+  （2026-08-21 现状：F1 ✅ EvolutionFeedbackAdapter 落地；G1 ✅ ExperiencePrior 注入落地）
+里程碑 5（收口）：H1 + H2 ✅
   → 极简 SDK + 真实大闭环验收
+  （2026-08-21 现状：H1 ✅ sdk.NewRuntime/RegisterAgent/Submit 落地；H2 ✅ e2e_grand_loop_real_test 落地）
 ```
 
 **关键路径是 A1**：执行能力注入 `agentfabric.Agent` 之后，B/C/D/E/F/G 全都从“操作空壳”变成“操作真实执行体”，三套系统自然合并成一套。建议第一个迭代只做 A1+A2，拿到“spawn 出的 agent 能直接跑一个 quantum”的测试后再推进。

@@ -12,26 +12,19 @@ import (
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
-	"github.com/Timwood0x10/ares/internal/agents"
-	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
-	"github.com/Timwood0x10/ares/internal/ares_skills"
-	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
-	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -105,15 +98,13 @@ func setupServeMonitoring(
 	plugin.SetEvolutionStore(evoStore)
 
 	// --- Bridge: EventStore → PluginBus ---
-	meta := map[string]agentMeta{
-		cfg.Agents.Leader.ID: {name: cfg.Agents.Leader.ID, role: "orchestrator", model: cfg.LLM.Model},
-	}
+	meta := make(map[string]agentMeta, len(cfg.Agents.Sub))
 	for _, s := range cfg.Agents.Sub {
 		meta[s.ID] = agentMeta{
 			name:     s.ID,
 			role:     s.Category,
 			model:    cfg.LLM.Model,
-			parentID: cfg.Agents.Leader.ID,
+			parentID: "",
 		}
 	}
 	g.Go(func() error {
@@ -121,182 +112,6 @@ func setupServeMonitoring(
 		return nil
 	})
 	return plugin, nil
-}
-
-// runAutopilotInjector starts the built-in demo task injector (submitTasks)
-// when autopilot is enabled. Off by default so a production `ares serve`
-// does not burn LLM quota on synthetic work; enable it for local demos / UI
-// development instead of the dedicated `ares demo` console.
-func runAutopilotInjector(ctx context.Context, g *errgroup.Group, cfg *ares_config.Config, leaderAgent leader.Agent) {
-	if !cfg.Kernel.Autopilot {
-		return
-	}
-	g.Go(func() error {
-		submitTasks(ctx, leaderAgent)
-		return nil
-	})
-}
-
-// createAndRegisterServeAgents builds the leader and sub agents, wires the
-// GA strategy source into them, and registers them (with resurrection
-// factories) on the runtime manager. Extracted from runServe to keep its
-// cyclomatic complexity within lint limits.
-//
-// Deprecated: this is the legacy Leader ON wiring (aresos-agentos-plan C1:
-// 废弃 leader-sub), reachable only via kernel.leader_enabled=true. The
-// production path is the Peer Agent runtime (createPeerAgents) — a flat set
-// of capability agents spawned into the Agent Fabric and scheduled from the
-// fabric's live population. This function is retained for gray-scaling and
-// must not be extended.
-func createAndRegisterServeAgents(
-	ctx context.Context,
-	cfg *ares_config.Config,
-	internalReg *core_tools.Registry,
-	llmAdapter output.LLMAdapter,
-	chatClient sub.ChatClient,
-	toolBinder sub.ToolBinder,
-	comp *ares_bootstrap.Components,
-	mgr *ares_runtime.Manager,
-) (leader.Agent, []sub.Agent, error) {
-	memMgr := comp.Memory
-	store := comp.EventStore
-
-	// Wire the Capability Fabric (SkillCatalog) into the memory manager's
-	// resident skill block and register its agent-facing tools. The catalog
-	// indexes only declared sources (project .ares/skills + user ~/.ares/skills);
-	// a failure is logged and serve continues without skills rather than
-	// failing startup.
-	skillCatalog := wireSkillCatalog(cfg, internalReg, toolBinder, memMgr, comp.MCP)
-	// The skill locator closes the design §11 feedback loop on the record side:
-	// it pre-fills task.UsedExperienceID with the best-matching skill for the
-	// task input, so a task outcome can be attributed to a skill later. nil
-	// when the catalog is unavailable (offline mode: tasks just carry no
-	// skill association).
-	var skillLocator leader.ExperienceLocator
-	if skillCatalog != nil {
-		skillLocator = func(inputText string) string {
-			if rec, ok := skillCatalog.Experience().BestMatch(inputText); ok {
-				return rec.Skill
-			}
-			return ""
-		}
-	}
-	// The outcome recorder closes the record side of the design §11 loop: it
-	// subscribes to EventSubTaskResult and persists {skill, task_pattern,
-	// success} outcomes into the catalog's Experience store. It is best-effort
-	// (failures are logged, never fatal) and decoupled from agent code — it
-	// only observes the existing event stream, so it cannot affect task
-	// execution or agent behavior.
-	if skillCatalog != nil {
-		recorder := ares_skills.NewSkillOutcomeRecorder(skillCatalog)
-		if startErr := recorder.Start(ctx, comp.EventStore); startErr != nil {
-			log.Printf("skill catalog: outcome recorder start failed: %v", startErr)
-		}
-	}
-
-	// Wire the GA's deployed strategy into live agents so the running agents
-	// read the active prompt/params at runtime. When evolution is disabled
-	// (comp.NewEvolution == nil) no strategy source is injected, so serve
-	// continues without GA strategy guidance.
-	var feedbackSvc *experience.FeedbackService
-	if comp.Evolution != nil {
-		feedbackSvc = comp.Evolution.FeedbackService
-	}
-	var strategySrc agents.StrategySource
-	if comp.NewEvolution != nil {
-		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
-	}
-
-	leaderAgent, subAgents, kernel, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create agents: %w", err)
-	}
-
-	// Configure the dual-track kernel per config: the Task Fabric path is the
-	// default and starts the scheduler unless kernel.policy == "legacy"
-	// (explicit opt-out keeps the leader path live with Task Fabric in shadow;
-	// ares-runtime.md P4 D4 gradual cutover). The shared EventStore is passed
-	// so the event-driven recovery loop (Kernel Lifecycle pillar) can subscribe
-	// to task lifecycle events.
-	if kernel != nil && kernel.dual != nil {
-		wireKernelPolicy(ctx, cfg, kernel, subAgents, store)
-	}
-
-	// Wire the evolution-aware spawn gate (v0.3.0 M2-1): the active evolution
-	// strategy's spawn params (spawn.enabled / max_concurrent / preferred
-	// capabilities) shape the recovery loop's replacement spawns through the
-	// Kernel's Recovery subsystem — "Evolution decides; Kernel enforces".
-	// Without an evolution store the gate is skipped and recovery spawns
-	// plain, preserving prior behavior.
-	if kernel != nil && kernel.recovery != nil && comp.NewEvolution != nil {
-		spawner := aresrecovery.NewEvolutionAwareSpawner(
-			kernel.agents,
-			ares_bootstrap.NewSpawnPolicySource(comp.NewEvolution.StrategyStore),
-		)
-		kernel.recovery.WithSpawner(spawner)
-		log.Printf("serve: evolution spawn gate wired (recovery spawns routed through evolution policy)")
-	}
-
-	// Wire the evolution-aware quota manager (v0.3.0 M2-2): the active
-	// evolution strategy's quota.budget param replaces the Agent Fabric's
-	// resource budget at runtime. A periodic loop pushes the latest policy so
-	// a deployed budget takes effect without restarting serve; a nil policy
-	// (or no quota param) falls back to the configured kernel resources.
-	if kernel != nil && kernel.agents != nil && comp.NewEvolution != nil {
-		quotaMgr := aresrecovery.NewEvolutionAwareQuotaManager(
-			kernel.agents,
-			ares_bootstrap.NewQuotaPolicySource(comp.NewEvolution.StrategyStore, cfg.Kernel.Resources),
-		)
-		go runKernelQuotaLoop(ctx, quotaMgr, parseKernelLoopConfig(cfg))
-		log.Printf("serve: evolution quota manager wired (resource budget follows evolution policy)")
-	}
-
-	// Wire the evolution population adapter (P6: Runtime Adaptation — agent
-	// population). The active evolution strategy's population.spawn /
-	// population.retire params drive the Kernel's spawn/retire primitives
-	// through a periodic loop — "Evolution decides; Kernel enforces". Without
-	// an evolution store the adapter is skipped and the population is managed
-	// manually (or by recovery spawns), preserving prior behavior.
-	if kernel != nil && kernel.agents != nil && comp.NewEvolution != nil {
-		popAdapter := aresrecovery.NewPopulationAdapter(
-			kernel.agents,
-			ares_bootstrap.NewPopulationPolicySource(comp.NewEvolution.StrategyStore),
-		)
-		loopCfg := parseKernelLoopConfig(cfg)
-		go runKernelEvolutionLoop(ctx, popAdapter, loopCfg)
-		log.Printf("serve: evolution population adapter wired (agent population follows evolution policy)")
-	}
-
-	// Feed the shared GlobalTracer from the Task Fabric's lifecycle events
-	// (v0.3.0 M4-1): this is the write side of /observability/spans. Without
-	// it the tracer stays empty and the dashboard span endpoint returns an
-	// empty list despite the wiring.
-	go runKernelTraceLoop(ctx, store, comp.Observability.GlobalTracer)
-
-	// Register agents with runtime manager (from Bootstrap)
-	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator, nil)
-		return a
-	}
-	mgr.RegisterAgent(leaderAgent, leaderFactory)
-
-	for _, sa := range subAgents {
-		subAgent := sa
-		subFactory := func() base.Agent {
-			_, subs, _, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, skillLocator)
-			for _, s := range subs {
-				if s.ID() == subAgent.ID() {
-					return s
-				}
-			}
-			log.Printf("ERROR: sub-agent factory: agent %q not found in live pool, resurrection impossible",
-				subAgent.ID())
-			return nil // returning nil prevents resurrection with a dead agent
-		}
-		mgr.RegisterAgent(subAgent, subFactory)
-	}
-
-	return leaderAgent, subAgents, nil
 }
 
 // startServeHTTPAndHooks builds the console HTTP server, starts it in the
@@ -374,8 +189,7 @@ func startServeHTTPAndHooks(
 		auth:   authMW,
 		audit:  auditLogger,
 		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
-		// (submitPeerTask). Nil on the legacy leader path (endpoint returns
-		// 503 "peer runtime not active").
+		// (submitPeerTask).
 		kernel: peerKernel,
 	}
 
@@ -473,16 +287,10 @@ func loadServeConfig() (*ares_config.Config, error) {
 }
 
 // validateServeConfig enforces the dependencies required by the full agent
-// serving entry point before Bootstrap starts any component. Memory is optional
-// for the library/bootstrap layer, but the current Leader contract requires a
-// MemoryManager, so disabling it here is a configuration error rather than a
-// late nil dereference or a no-op substitute.
+// serving entry point before Bootstrap starts any component.
 func validateServeConfig(cfg *ares_config.Config) error {
 	if cfg == nil {
 		return errors.New("serve: config is required")
-	}
-	if !cfg.Memory.IsEnabled() {
-		return errors.New("serve: memory.enabled must be true because the leader agent requires the Memory component")
 	}
 	return nil
 }

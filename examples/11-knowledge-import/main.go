@@ -18,10 +18,8 @@
 // Core APIs used:
 //   - github.com/Timwood0x10/ares/sdk.New
 //   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
-//   - github.com/Timwood0x10/ares/sdk.Runtime.NewTeam
 //   - github.com/Timwood0x10/ares/sdk.Runtime.Evolve
 //   - github.com/Timwood0x10/ares/sdk.Agent.Run
-//   - github.com/Timwood0x10/ares/sdk.Team.Run
 //   - github.com/Timwood0x10/ares/api/tools.ToolFunc
 //
 // Usage:
@@ -474,8 +472,8 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 	// ── Step 14: Register the importer capability (H1) ──
 	// RegisterAgent creates the importer agent (with the import tools) and
 	// registers it as the handler for its capability; Submit dispatches the
-	// task to it. The legacy NewTeam/team.Run leader path is deprecated — the
-	// peer flow has no privileged orchestrator. A supervisor tracks agent
+	// task to it. The legacy NewTeam/team.Run leader path has been removed —
+	// the peer flow has no privileged orchestrator. A supervisor tracks agent
 	// health for chaos-engineered runs (resurrection demo).
 	supervisor := NewAgentSupervisor(ChaosConfig{Enabled: true})
 

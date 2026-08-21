@@ -19,15 +19,7 @@ const (
 	providerOpenAI      = "openai"
 	providerOpenRouter  = "openrouter"
 	providerAnthropic   = "anthropic"
-	// defaultLeaderID is the leader agent ID assigned by the minimal config
-	// path (and shared across configs that reference the leader by ID).
-	defaultLeaderID = "leader-1"
 )
-
-// DefaultLeaderID returns the leader agent ID used by the minimal config
-// path. Exported so CLI tooling (e.g. `ares status`) can report the assembled
-// default team without duplicating the literal.
-func DefaultLeaderID() string { return defaultLeaderID }
 
 // DefaultArchiveDir is the default round-archive directory. Exported so the
 // minimal service path (api_impl) can reuse the exact same default without
@@ -41,9 +33,9 @@ const DefaultArchiveDir = ".context/rounds"
 //
 // Provider is inferred: a non-empty apiKey selects the OpenAI-compatible
 // provider (works for any OpenAI-compatible endpoint); otherwise ollama.
-// Memory is force-enabled because the leader agent contract requires a
-// MemoryManager (see validateServeConfig) — enabling it here is the only
-// non-default choice the minimal path must make.
+// Memory is force-enabled because the kernel scheduler contract requires a
+// MemoryManager for checkpoint/context wiring (see validateServeConfig) —
+// enabling it here is the only non-default choice the minimal path must make.
 //
 // Args:
 //   - baseURL: the LLM endpoint root, e.g. "https://api.openai.com/v1" or
@@ -63,7 +55,8 @@ func NewMinimalConfig(baseURL, apiKey, model string) *Config {
 	}
 	cfg.LLM.Model = model
 	// Memory defaults to enabled (nil Enabled field → IsEnabled() == true), so
-	// a minimal startup always satisfies the leader agent's Memory requirement.
+	// a minimal startup always satisfies the kernel scheduler's Memory
+	// requirement.
 	cfg.setDefaults()
 	if cfg.LLM.Model == "" {
 		if cfg.LLM.Provider == providerOpenAI {
@@ -72,10 +65,10 @@ func NewMinimalConfig(baseURL, apiKey, model string) *Config {
 			cfg.LLM.Model = defaultLLMModel
 		}
 	}
-	// Assemble a default agent team so the runtime is immediately capable of
-	// task division (coder / reviewer / researcher), even with no config file.
-	// A user who wants different agents supplies a config file instead.
-	cfg.Agents.Leader.ID = defaultLeaderID
+	// Assemble a default agent population so the runtime is immediately
+	// capable of task division (coder / reviewer / researcher), even with no
+	// config file. A user who wants different agents supplies a config file
+	// instead.
 	cfg.Agents.Sub = defaultSubAgents()
 	return cfg
 }
@@ -132,15 +125,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.LLM.ScorerAPIBurst == 0 {
 		c.LLM.ScorerAPIBurst = 20
-	}
-	if c.Agents.Leader.MaxSteps == 0 {
-		c.Agents.Leader.MaxSteps = 10
-	}
-	if c.Agents.Leader.MaxParallelTasks == 0 {
-		c.Agents.Leader.MaxParallelTasks = 5
-	}
-	if c.Agents.Leader.MaxValidationRetry == 0 {
-		c.Agents.Leader.MaxValidationRetry = 3
 	}
 	if c.Output.Format == "" {
 		c.Output.Format = defaultOutputFormat

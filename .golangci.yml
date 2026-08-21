@@ -189,10 +189,6 @@ linters:
       - path: internal/ares_memory/distillation/
         linters:
           - goconst
-      # Agent event payload field names.
-      - path: internal/agents/leader/
-        linters:
-          - goconst
       # Observability metric label names.
       - path: internal/ares_observability/
         linters:

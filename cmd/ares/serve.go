@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
+	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -24,7 +26,7 @@ import (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start full agent monitoring with LLM + MCP + dashboard",
-	Long: `Starts the full ARES runtime with leader/sub agents, LLM integration,
+	Long: `Starts the full ARES peer-agent runtime with LLM integration,
 MCP tools, and the monitoring dashboard.
 
 Flags:
@@ -41,7 +43,6 @@ var (
 	serveLLMURL     string
 	serveLLMKey     string
 	serveLLMModel   string
-	serveAutopilot  bool
 )
 
 func init() {
@@ -51,7 +52,6 @@ func init() {
 	serveCmd.Flags().StringVar(&serveLLMURL, "llm-url", "", "LLM endpoint URL — minimal setup, no config file needed")
 	serveCmd.Flags().StringVar(&serveLLMKey, "llm-api-key", "", "LLM API key (minimal setup)")
 	serveCmd.Flags().StringVar(&serveLLMModel, "llm-model", "", "LLM model name (optional, provider default when empty)")
-	serveCmd.Flags().BoolVar(&serveAutopilot, "autopilot", false, "Enable the built-in demo task injector (submitTasks); off by default")
 }
 
 func runServe() error {
@@ -62,10 +62,6 @@ func runServe() error {
 	}
 	if err := validateServeConfig(cfg); err != nil {
 		return err
-	}
-	// --autopilot flag opts into the demo task injector (off by default).
-	if serveAutopilot {
-		cfg.Kernel.Autopilot = true
 	}
 
 	// --- Context with signal handling ---
@@ -247,17 +243,15 @@ func runServe() error {
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
 	// --- Create + register agents with the runtime manager ---
-	leaderAgent, subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+	subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
 	if err != nil {
 		return err
 	}
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
-	// setupPeerRegistry builds the registry AND attaches it to the leader
-	// (SetPeerRegistry) when one exists; the registry itself is only needed
-	// by downstream wiring that currently does not use it, so discard the
-	// handle.
-	if _, err := setupPeerRegistry(leaderAgent, subAgents, comp); err != nil {
+	// setupPeerRegistry builds the registry; the handle is only needed by
+	// downstream wiring that currently does not use it, so discard it.
+	if _, err := setupPeerRegistry(subAgents, comp); err != nil {
 		return err
 	}
 
@@ -268,39 +262,16 @@ func runServe() error {
 		return err
 	}
 
-	// F04 (Stage 8): build the leader's real workflow DAG from the configured
-	// sub-agents and register it with the runtime manager BEFORE mgr.Start, so
-	// wireEvolutionLiveDAGs binds workflow/scheduler/recovery executors to the
-	// live DAG instead of the bootstrap synthetic placeholder.
-	if leaderAgent != nil {
-		liveDAG, dagErr := buildLeaderLiveDAG(cfg)
-		if dagErr != nil {
-			return fmt.Errorf("build leader live dag: %w", dagErr)
-		}
-		mgr.RegisterAgentDAG(leaderAgent.ID(), liveDAG)
-
-		// Inject the live agent DAGs into the evolution system's executors before
-		// mgr.Start, replacing the synthetic placeholder DAG created at bootstrap
-		// time. The leader's live DAG is now registered above, so the binding is
-		// real (F04 closed) rather than a no-op.
-		wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
-	}
-
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
 	// Sub-agents are execution units only (ares-runtime.md: agents are not
-	// orchestrated, they are scheduled). The Kernel owns dispatch: in the
-	// taskfabric policy the kernelScheduler drives each task through
-	// RunQuantum → sub.Agent.ExecuteStep; agents never subscribe to the event
-	// stream and self-dispatch (self-dispatch was removed in v0.3.0).
-
-	// --- Submit real tasks (opt-in demo injector; off unless autopilot) ---
-	if leaderAgent != nil {
-		runAutopilotInjector(ctx, g, cfg, leaderAgent)
-	}
+	// orchestrated, they are scheduled). The Kernel owns dispatch: the
+	// kernelScheduler drives each task through RunQuantum →
+	// sub.Agent.ExecuteStep; agents never subscribe to the event stream and
+	// self-dispatch (self-dispatch was removed in v0.3.0).
 
 	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
 	// cyclomatic complexity within lint limits) ---
@@ -323,4 +294,36 @@ func normalizeShutdownErr(err error) error {
 		return nil
 	}
 	return err
+}
+
+// akfToolAdapter adapts an AKF MCP tool (func(ctx, input string) -> string)
+// to the core_tools.Tool interface so it can be registered in the internal
+// tool registry and used by agents through the ToolBinder. This is the wiring
+// that makes knowledge genome patches affect the agent's knowledge tools —
+// because both share the same comp.KnowledgeRuntime instance.
+type akfToolAdapter struct {
+	name string
+	desc string
+	fn   func(ctx context.Context, input string) (string, error)
+}
+
+func (a *akfToolAdapter) Name() string                      { return a.name }
+func (a *akfToolAdapter) Description() string               { return a.desc }
+func (a *akfToolAdapter) Category() core_tools.ToolCategory { return core_tools.CategoryKnowledge }
+func (a *akfToolAdapter) Capabilities() []core_tools.Capability {
+	return []core_tools.Capability{core_tools.CapabilityKnowledge}
+}
+func (a *akfToolAdapter) Parameters() *core_tools.ParameterSchema { return nil }
+func (a *akfToolAdapter) Execute(ctx context.Context, params map[string]interface{}) (core_tools.Result, error) {
+	input, _ := params["input"].(string)
+	if input == "" {
+		// Serialize the whole params map as JSON input.
+		b, _ := json.Marshal(params)
+		input = string(b)
+	}
+	out, err := a.fn(ctx, input)
+	if err != nil {
+		return core_tools.NewErrorResult(err.Error()), nil
+	}
+	return core_tools.NewResult(true, map[string]interface{}{"output": out}), nil
 }

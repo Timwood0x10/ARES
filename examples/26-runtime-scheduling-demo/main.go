@@ -5,8 +5,8 @@
 //
 // ARES is a Peer Agent operating system (aresos-plan.md §1.1): all agents are
 // equal peers — no Leader/Worker hierarchy. The legacy Leader/Sub team path
-// (NewTeam/team.Run) is retained as kernel.policy=legacy for compatibility
-// and is Deprecated. This example demonstrates the current peer flow.
+// (NewTeam/team.Run) has been removed. This example demonstrates the current
+// peer flow.
 //
 // Purpose:
 //

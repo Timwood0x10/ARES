@@ -12,6 +12,7 @@ import (
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
+	"github.com/Timwood0x10/ares/internal/kernelctx"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -401,7 +402,10 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 		e.trace("[ares:trace] %s → tool call: %s(%s)",
 			req.AgentName, tc.Function.Name, tc.Function.Arguments)
 
-		result, err := e.Tools.Execute(ctx, tc.Function.Name, args)
+		// Stamp the caller identity into the context before executing the
+		// tool so Kernel syscalls (agentsyscall) can enforce provenance
+		// (Task.Origin / ParentID) from the context, never from LLM args.
+		result, err := e.Tools.Execute(kernelctx.WithCallerID(ctx, req.AgentName), tc.Function.Name, args)
 		resultContent := ""
 		if err != nil {
 			resultContent = fmt.Sprintf("Error: %v", err)

@@ -105,28 +105,8 @@ func TestWireTaskExecutorCallbacks(t *testing.T) {
 	}
 }
 
-// TestWireLeaderAgentCallbacks verifies that WireLeaderAgentCallbacks returns
-// a valid LeaderOption that can be passed to leader.New.
-func TestWireLeaderAgentCallbacks(t *testing.T) {
-	t.Run("non-nil registry returns option", func(t *testing.T) {
-		reg := NewCallbackRegistry()
-		opt := WireLeaderAgentCallbacks(reg)
-		if opt == nil {
-			t.Fatal("expected non-nil option for non-nil registry")
-		}
-	})
-
-	t.Run("nil registry returns nil option", func(t *testing.T) {
-		opt := WireLeaderAgentCallbacks(nil)
-		if opt != nil {
-			t.Fatal("expected nil option for nil registry")
-		}
-	})
-}
-
-// TestCallbackInjectionChain verifies that all three components (LLM Client,
-// TaskExecutor, Leader Agent) can share the same Registry instance and emit
-// events to it.
+// TestCallbackInjectionChain verifies that the LLM Client and TaskExecutor can
+// share the same Registry instance and emit events to it.
 func TestCallbackInjectionChain(t *testing.T) {
 	reg := NewCallbackRegistry()
 
@@ -222,13 +202,6 @@ func TestNilSafety(t *testing.T) {
 		}
 		if client == nil {
 			t.Fatal("expected non-nil client even with nil registry")
-		}
-	})
-
-	t.Run("WireLeaderAgentCallbacks with nil registry", func(t *testing.T) {
-		opt := WireLeaderAgentCallbacks(nil)
-		if opt != nil {
-			t.Error("expected nil option for nil registry")
 		}
 	})
 }

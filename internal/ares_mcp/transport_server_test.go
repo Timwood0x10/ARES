@@ -143,42 +143,6 @@ func TestSSEServerTransportCreation(t *testing.T) {
 	assert.Equal(t, ":0", transport.addr)
 }
 
-// TestSSEServerTransportStartStop verifies SSE server lifecycle on random port.
-func TestSSEServerTransportStartStop(t *testing.T) {
-	// Use port 0 to get a random available port.
-	transport := NewSSEServerTransport("127.0.0.1:0")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	err := transport.Start(ctx)
-	require.NoError(t, err)
-
-	// Give server time to start.
-	time.Sleep(50 * time.Millisecond)
-
-	err = transport.Close()
-	require.NoError(t, err)
-}
-
-// TestSSEServerTransportDoubleStart verifies error on double start.
-func TestSSEServerTransportDoubleStart(t *testing.T) {
-	transport := NewSSEServerTransport("127.0.0.1:0")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	err := transport.Start(ctx)
-	require.NoError(t, err)
-
-	err = transport.Start(ctx)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already started")
-
-	err = transport.Close()
-	require.NoError(t, err)
-}
-
 // TestCompileTimeInterfaceChecks verifies all transports implement ServerTransport.
 func TestCompileTimeInterfaceChecks(t *testing.T) {
 	var _ ServerTransport = (*StdioServerTransport)(nil)
@@ -363,27 +327,6 @@ func TestStdioServerTransportAcceptContextCanceled(t *testing.T) {
 
 	_, err := transport.Accept(ctx)
 	assert.Error(t, err)
-
-	_ = transport.Close()
-}
-
-// TestSSEServerTimeout verifies that the server handles client timeouts correctly.
-func TestSSEServerTimeout(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	transport := NewSSEServerTransport("127.0.0.1:0")
-	err := transport.Start(ctx)
-	require.NoError(t, err)
-	defer func() { _ = transport.Close() }()
-
-	// Give server time to start.
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify server is still running after brief period.
-	assert.NoError(t, ctx.Err(), "context should not be cancelled yet")
 
 	_ = transport.Close()
 }

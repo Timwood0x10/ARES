@@ -480,6 +480,7 @@ func (f *Fabric) record(t *Task, typ EventType) {
 		Type:       typ,
 		TaskID:     t.ID,
 		AgentID:    t.Owner,
+		Origin:     t.Origin,
 		State:      t.State,
 		Checkpoint: t.Checkpoint,
 		At:         f.now(),
@@ -504,6 +505,7 @@ func (f *Fabric) record(t *Task, typ EventType) {
 		Payload: map[string]any{
 			"task_id":  t.ID,
 			"agent_id": t.Owner,
+			"origin":   t.Origin,
 			"state":    string(t.State),
 		},
 		Timestamp: ev.At,

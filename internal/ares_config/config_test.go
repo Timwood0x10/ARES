@@ -24,12 +24,6 @@ llm:
   max_tokens: 4096
 
 agents:
-  leader:
-    id: "leader-1"
-    max_steps: 10
-    max_parallel_tasks: 5
-    max_validation_retry: 3
-    enable_cache: true
   sub: []
 
 prompts:
@@ -106,9 +100,6 @@ memory:
 	}
 	if cfg.LLM.Model != "llama3.2" {
 		t.Errorf("LLM.Model = %v, want llama3.2", cfg.LLM.Model)
-	}
-	if cfg.Agents.Leader.MaxSteps != 10 {
-		t.Errorf("Agents.Leader.MaxSteps = %v, want 10", cfg.Agents.Leader.MaxSteps)
 	}
 	if cfg.Output.Format != "simple" {
 		t.Errorf("Output.Format = %v, want simple", cfg.Output.Format)
@@ -393,15 +384,6 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.LLM.MaxTokens != 4096 {
 		t.Errorf("LLM.MaxTokens default = %v, want 4096", cfg.LLM.MaxTokens)
 	}
-	if cfg.Agents.Leader.MaxSteps != 10 {
-		t.Errorf("Agents.Leader.MaxSteps default = %v, want 10", cfg.Agents.Leader.MaxSteps)
-	}
-	if cfg.Agents.Leader.MaxParallelTasks != 5 {
-		t.Errorf("Agents.Leader.MaxParallelTasks default = %v, want 5", cfg.Agents.Leader.MaxParallelTasks)
-	}
-	if cfg.Agents.Leader.MaxValidationRetry != 3 {
-		t.Errorf("Agents.Leader.MaxValidationRetry default = %v, want 3", cfg.Agents.Leader.MaxValidationRetry)
-	}
 	if cfg.Output.Format != "simple" {
 		t.Errorf("Output.Format default = %v, want simple", cfg.Output.Format)
 	}
@@ -461,12 +443,6 @@ func TestValidate(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{
 				{
 					ID:         "sub-1",
@@ -517,12 +493,6 @@ func TestValidateInvalidServerPort(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{},
 		},
 		Output: OutputConfig{
@@ -557,12 +527,6 @@ func TestValidateInvalidLLMTimeout(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{},
 		},
 		Output: OutputConfig{
@@ -597,12 +561,6 @@ func TestValidateInvalidLLMProvider(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{},
 		},
 		Output: OutputConfig{
@@ -623,46 +581,6 @@ func TestValidateInvalidLLMProvider(t *testing.T) {
 	}
 }
 
-// TestValidateInvalidLeaderMaxSteps tests validation with invalid leader max steps.
-func TestValidateInvalidLeaderMaxSteps(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{
-			Host: "localhost",
-			Port: 8080,
-		},
-		LLM: LLMConfig{
-			Provider:  defaultLLMProvider,
-			Model:     "llama3",
-			Timeout:   60,
-			MaxTokens: 4096,
-		},
-		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           0, // Invalid
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
-			Sub: []SubAgentConfig{},
-		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
-		},
-		Memory: MemoryConfig{
-			SessionMemory: SessionConfig{
-				MaxHistory: 50,
-			},
-		},
-	}
-
-	if err := cfg.Validate(); err == nil {
-		t.Error("Validate() expected error for invalid leader max steps, got nil")
-	}
-}
-
 // TestValidateInvalidOutputFormat tests validation with invalid output format.
 func TestValidateInvalidOutputFormat(t *testing.T) {
 	cfg := &Config{
@@ -677,12 +595,6 @@ func TestValidateInvalidOutputFormat(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{},
 		},
 		Output: OutputConfig{
@@ -717,12 +629,6 @@ func TestValidateInvalidSubAgent(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{
 				{
 					ID:         "", // Invalid: empty ID
@@ -765,12 +671,6 @@ func TestValidateStorageEnabled(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{},
 		},
 		Output: OutputConfig{
@@ -812,12 +712,6 @@ func TestValidateInvalidSessionMaxHistory(t *testing.T) {
 			MaxTokens: 4096,
 		},
 		Agents: AgentsConfig{
-			Leader: LeaderConfig{
-				ID:                 "leader-1",
-				MaxSteps:           10,
-				MaxParallelTasks:   5,
-				MaxValidationRetry: 3,
-			},
 			Sub: []SubAgentConfig{},
 		},
 		Output: OutputConfig{
@@ -861,18 +755,6 @@ func TestConfigStructs(t *testing.T) {
 	}
 	if llmCfg.Provider != providerOpenAI || llmCfg.APIKey != "test-key" {
 		t.Error("LLMConfig initialization failed")
-	}
-
-	// Test LeaderConfig
-	leaderCfg := LeaderConfig{
-		ID:                 "leader-1",
-		MaxSteps:           20,
-		MaxParallelTasks:   10,
-		MaxValidationRetry: 5,
-		EnableCache:        true,
-	}
-	if leaderCfg.MaxSteps != 20 || leaderCfg.MaxParallelTasks != 10 {
-		t.Error("LeaderConfig initialization failed")
 	}
 
 	// Test SubAgentConfig
@@ -954,12 +836,6 @@ func TestValidLLMProviders(t *testing.T) {
 				MaxTokens: 4096,
 			},
 			Agents: AgentsConfig{
-				Leader: LeaderConfig{
-					ID:                 "leader-1",
-					MaxSteps:           10,
-					MaxParallelTasks:   5,
-					MaxValidationRetry: 3,
-				},
 				Sub: []SubAgentConfig{},
 			},
 			Output: OutputConfig{
@@ -999,12 +875,6 @@ func TestValidOutputFormats(t *testing.T) {
 				MaxTokens: 4096,
 			},
 			Agents: AgentsConfig{
-				Leader: LeaderConfig{
-					ID:                 "leader-1",
-					MaxSteps:           10,
-					MaxParallelTasks:   5,
-					MaxValidationRetry: 3,
-				},
 				Sub: []SubAgentConfig{},
 			},
 			Output: OutputConfig{
