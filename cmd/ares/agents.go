@@ -195,9 +195,54 @@ func createSubAgents(
 	store ares_events.EventStore,
 	strategySrc agents.StrategySource,
 ) []sub.Agent {
-	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
+	return buildSubAgents(cfg, cfg.Agents.Sub, llmAdapter, chatClient, toolBinder, store, strategySrc)
+}
 
-	for _, subCfg := range cfg.Agents.Sub {
+// createPeerSubAgents builds the sub.Agent executors for the C1 flat peer
+// population (cfg.Agents.Peers). Each peer's first capability is its primary
+// Type; the full set is offered to the scheduler's candidate scorer via
+// subAgentCapability.Caps. Reuses the same executor + heartbeat + queue wiring
+// as the legacy sub path (buildSubAgents).
+func createPeerSubAgents(
+	cfg *ares_config.Config,
+	peers []ares_config.PeerAgentConfig,
+	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
+	toolBinder sub.ToolBinder,
+	store ares_events.EventStore,
+	strategySrc agents.StrategySource,
+) []sub.Agent {
+	subCfgs := make([]ares_config.SubAgentConfig, 0, len(peers))
+	for _, p := range peers {
+		typ := ""
+		if len(p.Capabilities) > 0 {
+			typ = p.Capabilities[0]
+		}
+		subCfgs = append(subCfgs, ares_config.SubAgentConfig{
+			ID:            p.ID,
+			Type:          typ,
+			Priority:      p.Priority,
+			MaxToolRounds: p.MaxToolRounds,
+		})
+	}
+	return buildSubAgents(cfg, subCfgs, llmAdapter, chatClient, toolBinder, store, strategySrc)
+}
+
+// buildSubAgents constructs one sub.Agent per config entry with the full LLM +
+// tool stack. Shared by the legacy Sub path (createSubAgents) and the C1 flat
+// Peers path (createPeerSubAgents) so both populations get identical wiring.
+func buildSubAgents(
+	cfg *ares_config.Config,
+	subCfgs []ares_config.SubAgentConfig,
+	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
+	toolBinder sub.ToolBinder,
+	store ares_events.EventStore,
+	strategySrc agents.StrategySource,
+) []sub.Agent {
+	agents := make([]sub.Agent, 0, len(subCfgs))
+
+	for _, subCfg := range subCfgs {
 		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
 
 		hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())

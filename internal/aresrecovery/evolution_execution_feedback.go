@@ -2,6 +2,8 @@ package aresrecovery
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -53,7 +55,17 @@ func NewExecutionAttribution() *ExecutionAttribution {
 //   - capability: the task's required capability (the capability the agent
 //     was scored against).
 //   - success: true when the task completed, false when it failed.
+//
+// The attribution key is "agentID|capability", so agentID and capability must
+// not contain the '|' separator. Entries violating that invariant are
+// rejected with a log line instead of corrupting the key (BUG-5: the
+// invariant is enforced here, not only assumed by splitAttributionKey).
 func (a *ExecutionAttribution) Record(agentID, capability string, success bool) {
+	if strings.Contains(agentID, "|") || strings.Contains(capability, "|") {
+		slog.Warn("aresrecovery: reject attribution record: contains '|'",
+			slog.String("agent_id", agentID), slog.String("capability", capability))
+		return
+	}
 	key := agentID + "|" + capability
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -211,15 +223,23 @@ type ExecutionResultSource interface {
 var _ ExecutionResultSource = (*ExecutionAttribution)(nil)
 
 // ConfidenceInjector is the interface for feeding evolution-derived
-// confidence back into the scheduler's scoring (W4 §8.3.2: 回写 scheduler
-// scoring). The loadTracker implements this (SetAgentConfidence), so the
-// Evolution system can update the scheduler's confidence without importing
-// the scheduler package — the adapter is wired at the Kernel level.
+// confidence back into the scheduler's scoring (W4 §8.3.2). The loadTracker
+// implements this, so the Evolution system can update the scheduler's
+// confidence without importing the scheduler package — the adapter is wired
+// at the Kernel level.
 type ConfidenceInjector interface {
 	// SetAgentConfidence updates the confidence the scheduler uses for
 	// agentID. A value in [0,1] sets the historical success rate; <= 0
 	// resets to the neutral prior (1.0).
 	SetAgentConfidence(agentID string, confidence float64)
+
+	// SetCapabilityConfidence updates the per-capability confidence for
+	// (agentID, capability). The scheduler scores candidates against the
+	// task's exact capability with this more granular value when available
+	// (ConfidenceFor in LoadTracker), falling back to the agent-level
+	// confidence otherwise. A value in [0,1] sets the override; a negative
+	// value (< 0) clears it.
+	SetCapabilityConfidence(agentID, capability string, confidence float64)
 }
 
 // EvolutionFeedbackAdapter wires the ExecutionAttribution to the scheduler's
@@ -243,16 +263,20 @@ func NewEvolutionFeedbackAdapter(source ExecutionResultSource, injector Confiden
 	return &EvolutionFeedbackAdapter{source: source, injector: injector}
 }
 
-// Apply reads the current execution attribution and pushes the per-agent
-// confidence into the scheduler's scoring. After this call, the scheduler's
-// next Schedule sees the updated confidence — a failure-heavy agent is
-// downweighted, a success-heavy agent is preferred.
+// Apply reads the current execution attribution and pushes the confidence
+// into the scheduler's scoring — both per-agent and per-capability. After
+// this call, the scheduler's next Schedule sees the updated confidence: a
+// failure-heavy agent is downweighted, a success-heavy agent is preferred.
+// The per-capability pushes (SetCapabilityConfidence) let the scheduler score
+// an agent against the task's exact capability instead of a single aggregate
+// value (design-fix: per-capability attribution is consumed, not collected only).
 //
 // Args:
 //   - ctx: unused (kept for signature symmetry with other Apply methods).
 //
 // Returns:
-//   - int: the number of agents whose confidence was updated.
+//   - int: the number of agents whose confidence was updated (per-agent
+//     count; per-capability pushes are additional).
 func (a *EvolutionFeedbackAdapter) Apply(_ context.Context) int {
 	if a == nil || a.source == nil || a.injector == nil {
 		return 0
@@ -268,6 +292,12 @@ func (a *EvolutionFeedbackAdapter) Apply(_ context.Context) int {
 		}
 		a.injector.SetAgentConfidence(ar.AgentID, ar.Rate)
 		updated++
+	}
+	for _, cr := range snap.PerCapability {
+		if cr.Success+cr.Fail == 0 {
+			continue
+		}
+		a.injector.SetCapabilityConfidence(cr.AgentID, cr.Capability, cr.Rate)
 	}
 	return updated
 }

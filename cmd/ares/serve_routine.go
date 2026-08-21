@@ -324,6 +324,7 @@ func startServeHTTPAndHooks(
 	toolBinder sub.ToolBinder,
 	shutdownMgr *ares_shutdown.Manager,
 	comp *ares_bootstrap.Components,
+	peerKernel *kernelHandle,
 ) (*http.Server, error) {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Println("=== ARES Console — Live Runtime ===")
@@ -381,6 +382,10 @@ func startServeHTTPAndHooks(
 		apiKey: serveAPIKey,
 		auth:   authMW,
 		audit:  auditLogger,
+		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
+		// (submitPeerTask). Nil on the legacy leader path (endpoint returns
+		// 503 "peer runtime not active").
+		kernel: peerKernel,
 	}
 
 	httpSrv := &http.Server{

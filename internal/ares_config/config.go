@@ -218,8 +218,37 @@ type LLMConfig struct {
 
 // AgentsConfig holds agent configuration.
 type AgentsConfig struct {
+	// Leader + Sub are the LEGACY leader/sub structure (deprecated, retained
+	// for the kernel.leader_enabled=true gray switch). The DEFAULT is the
+	// flat Peers structure (C1: agents: [{id, capabilities, priority}]).
 	Leader LeaderConfig     `yaml:"leader"`
 	Sub    []SubAgentConfig `yaml:"sub"`
+	// Peers is the flat capability-agent population (aresos-agentos-plan C1:
+	// 平铺结构作为默认). Each entry is an equal peer spawned into the Agent
+	// Fabric with its execution body; the kernel scheduler selects among them
+	// by capability. When Peers is non-empty it is the authoritative agent
+	// source (createPeerAgents reads it); Sub remains as the legacy fallback
+	// so pre-C1 configs keep working.
+	Peers []PeerAgentConfig `yaml:"peers"`
+}
+
+// PeerAgentConfig is one flat peer agent (C1 平铺结构).
+type PeerAgentConfig struct {
+	// ID is the agent's unique identity (also its scheduler executor id and
+	// fabric agent id).
+	ID string `yaml:"id"`
+	// Capabilities is the agent's declared capability set. The first entry is
+	// the primary capability (used as the sub-executor Type); the full set is
+	// offered to the scheduler's candidate scorer so a task matching ANY
+	// capability can be scheduled to it.
+	Capabilities []string `yaml:"capabilities"`
+	// Priority is the scheduling priority (>= 0; 0 = normal). It mirrors
+	// OS-thread priority: the kernel scheduler boosts higher-priority agents
+	// when choosing among capable candidates (B2).
+	Priority float64 `yaml:"priority"`
+	// MaxToolRounds caps the tool-calling iterations per task execution
+	// (default 5 when 0/unset).
+	MaxToolRounds int `yaml:"max_tool_rounds"`
 }
 
 // LeaderConfig holds Leader Agent configuration.

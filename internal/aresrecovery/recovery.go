@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -128,6 +129,13 @@ func (r *Recovery) RequeueExpiredLeases() []string {
 //  3. The new agent resumes from the checkpoint (its cognitive state is
 //     installed from the task's preserved checkpoint).
 //
+// TEST/CHAOS-ONLY (design-fix: this entry point installs checkpoints via
+// agents.SetCognitiveState and acquires tasks itself, which is a separate
+// mechanism from the production scheduler path (scheduler.executeWith-
+// Candidates → taskfabric.DecodeCheckpoint → ToModelTask). Production
+// recovery uses runKernelRecoveryLoop in cmd/ares. Callers: chaos
+// simulations, sandbox tests, and recovery tests only.
+//
 // Args:
 //   - ctx: for event sinks.
 //   - taskID: the task to recover.
@@ -229,6 +237,14 @@ func (r *Recovery) RestartCount(agentID string) int {
 // checkpoint resume"). It sweeps expired leases, requeues tasks, and resumes
 // each requeued task's checkpoint with a fresh replacement agent.
 //
+// TEST/CHAOS-ONLY (design-fix: this entry point installs checkpoints via
+// agents.SetCognitiveState and acquires tasks itself, which is a separate
+// mechanism from the production path (runKernelRecoveryLoop → taskfabric
+// DecodeCheckpoint → scheduler Schedule/Acquire). It must not be wired into
+// the production serve path — production recovery uses runKernelRecoveryLoop
+// in cmd/ares. Callers: chaos simulations, sandbox tests, and recovery
+// tests only.
+//
 // Args:
 //   - ctx: for event sinks.
 //
@@ -250,7 +266,9 @@ func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 			// The task is still READY and will be picked up by the scheduler
 			// on the next drain, but surface the failure instead of
 			// silently dropping it (code_rules_v2 §3.1).
-			log.Printf("aresrecovery: recover task %s: %v", taskID, err)
+			slog.Error("aresrecovery: recover task failed",
+				slog.String("task_id", taskID),
+				slog.Any("error", err))
 			continue
 		}
 		recovered++

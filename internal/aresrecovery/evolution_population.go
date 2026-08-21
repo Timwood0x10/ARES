@@ -3,7 +3,7 @@ package aresrecovery
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
@@ -119,18 +119,21 @@ func RunKernelEvolutionLoop(ctx context.Context, adapter *PopulationAdapter, int
 	apply := func(phase string) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("kernel: evolution apply (%s) panic: %v", phase, r)
+				slog.Error("kernel: evolution apply panic",
+					slog.String("phase", phase), slog.Any("panic", r))
 			}
 		}()
 		applyCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		spawned, err := adapter.Apply(applyCtx)
 		if err != nil {
-			log.Printf("kernel: evolution apply (%s): %v", phase, err)
+			slog.Error("kernel: evolution apply failed",
+				slog.String("phase", phase), slog.Any("error", err))
 			return
 		}
 		if len(spawned) > 0 {
-			log.Printf("kernel: evolution apply (%s) spawned %d agent(s)", phase, len(spawned))
+			slog.Info("kernel: evolution apply spawned agents",
+				slog.String("phase", phase), slog.Int("count", len(spawned)))
 		}
 	}
 	apply("startup")

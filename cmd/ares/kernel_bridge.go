@@ -143,9 +143,12 @@ func submitFabricTask(
 }
 
 // subAgentCapability is the minimal capability surface the new-path scorer
-// needs for one agent (its type is the declared capability chain).
+// needs for one agent. Caps is the full declared capability set (C1 flat
+// peers); Type is the primary capability (first of Caps, or the legacy single
+// Type for sub-structure configs).
 type subAgentCapability struct {
 	ID   string
 	Type string
+	Caps []string
 	Load float64
 }

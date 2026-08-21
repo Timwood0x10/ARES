@@ -99,6 +99,24 @@ evolution:
   #   behaviour (tool selection, search depth, scheduler) over time
   enabled: false
 
+# ── Agents ───────────────────────────────────────────────────
+# C1 flat peer structure (DEFAULT): a flat set of equal capability agents
+# spawned into the Agent Fabric and scheduled by the kernel scheduler. There
+# is no leader. Each entry is one agent; capabilities is the full declared
+# capability set (any matching task is schedulable to it); priority mirrors
+# OS-thread scheduling priority (0 = normal).
+# The legacy agents.sub structure (leader_enabled: true) remains as the
+# gray-scale fallback and is scheduled for removal in v0.4.0.
+agents:
+  peers:
+    - id: coder
+      capabilities: ["code", "refactor"]
+      # priority: 1.0
+    - id: reviewer
+      capabilities: ["review", "audit"]
+    - id: researcher
+      capabilities: ["research"]
+
 # ── Tool system ──────────────────────────────────────────────
 tools:
   # builtin: load built-in tools (calculator, web_search, file, etc.)

@@ -34,6 +34,10 @@ type actionHandler struct {
 	apiKey string                        // legacy credential (nil/empty = disabled)
 	auth   *ares_security.AuthMiddleware // JWT credential (nil = disabled)
 	audit  *ares_security.AuditLogger    // modular audit sink (nil = disabled)
+	// kernel is the peer-runtime kernel handle (Leader OFF mode). It powers
+	// POST /api/tasks (submitPeerTask); nil on the legacy leader path makes
+	// that endpoint report 503 "peer runtime not active".
+	kernel *kernelHandle
 }
 
 // checkAuth enforces authentication on destructive endpoints: the legacy API
@@ -144,8 +148,73 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Peer task submission: POST /api/tasks — the user-facing entry of the
+	// peer runtime loop (submitPeerTask). A task is created in the Task
+	// Fabric and the kernel scheduler drives it to completion asynchronously.
+	if r.Method == "POST" && path == "/api/tasks" {
+		princ := h.checkAuth(w, r)
+		if princ == nil {
+			return
+		}
+		h.handleSubmitTask(w, r, princ)
+		return
+	}
+
 	// Pass through to monitoring server
 	h.inner.ServeHTTP(w, r)
+}
+
+// ── Peer Task Submission ─────────────────────────────────
+
+// submitTaskRequest is the POST /api/tasks payload. capability selects the
+// peer agent that can handle the task (matches its declared capabilities);
+// payload carries opaque user data (task_desc, profile fields, ...).
+type submitTaskRequest struct {
+	Capability string         `json:"capability"`
+	Payload    map[string]any `json:"payload"`
+}
+
+// handleSubmitTask submits a task to the peer runtime through the kernel
+// (submitPeerTask) and returns the assigned task id. The submission is
+// asynchronous: the scheduler drains the fabric and executes the task; the
+// response only confirms acceptance. The legacy leader path (no peer kernel)
+// reports 503 so callers can distinguish "not a peer runtime" from a real
+// submission failure.
+func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.kernel == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "peer runtime not active (kernel.leader_enabled=true)",
+			"status": "error",
+		})
+		return
+	}
+	var req submitTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	if req.Capability == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "capability is required"})
+		return
+	}
+	taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
+	if err != nil {
+		h.auditAction("submit_task", req.Capability, princ, false)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "status": "error"})
+		return
+	}
+	h.auditAction("submit_task", req.Capability, princ, true)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"task_id": taskID,
+		"status":  "submitted",
+		"message": "task accepted by the peer runtime",
+	})
 }
 
 // ── Agent Lifecycle ──────────────────────────────────────

@@ -271,12 +271,17 @@ func wireKernelLifecycle(ctx context.Context, cfg *ares_config.Config, kernel *k
 	// Yielded/Expired events instead of a command loop. The loop's interval
 	// and per-sweep timeout come from config (M3); absent knobs use defaults.
 	//
-	// The leader path is REQUeue-only: the configured sub-agents are already
-	// registered as scheduler executors, so an expired lease simply returns the
-	// task to READY and an existing capable executor resumes it from its
-	// preserved checkpoint (via toModelTask). No replacement executor is
-	// injected here — spawning a synthetic "recovery" executor that claims
-	// success without running the LLM would hijack the task (W1 review). The
-	// peer path (createPeerAgents) wires a real factory + bound registration.
+	// DEPRECATED (plan C1: leader path removed; peer mode is the default and
+	// production path — see createPeerAgents). The leader path is REQUeue-only:
+	// the configured sub-agents are already registered as scheduler executors,
+	// so an expired lease simply returns the task to READY and an existing
+	// capable executor resumes it from its preserved checkpoint (via
+	// toModelTask). No replacement executor is injected here — spawning a
+	// synthetic "recovery" executor that claims success without running the
+	// LLM would hijack the task (W1 review). This leaves a single-agent
+	// capability without recovery redundancy (design-fix); peer mode avoids it by
+	// wiring a real factory + bound registration. Retained only for
+	// gray-scaling behind kernel.leader_enabled=true.
+	log.Printf("kernel: DEPRECATED leader-path recovery wiring (requeue-only, no replacement executors); use peer mode")
 	go runKernelRecoveryLoop(ctx, store, kernel.recovery, parseKernelLoopConfig(cfg), nil, nil, nil)
 }

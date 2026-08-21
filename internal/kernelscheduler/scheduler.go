@@ -163,16 +163,23 @@ type LoadTracker struct {
 	// The map uses ok=false to mean "no override set"; a value of 0.0 is a
 	// valid confidence (total failure) and must not be treated as unset.
 	confidenceOverride map[string]float64
+	// capabilityConfidenceOverride maps "agentID|capability" → evolution-derived
+	// confidence [0,1]. Same contract as confidenceOverride, but keyed per
+	// capability so a capability-specific override takes precedence over the
+	// agent-level one in ConfidenceFor. Set by SetCapabilityConfidence (the W4
+	// per-capability feedback path).
+	capabilityConfidenceOverride map[string]float64
 }
 
 // NewLoadTracker creates an empty tracker.
 func NewLoadTracker() *LoadTracker {
 	return &LoadTracker{
-		inflight:           make(map[string]int),
-		done:               make(map[string]int),
-		ok:                 make(map[string]int),
-		priorities:         make(map[string]float64),
-		confidenceOverride: make(map[string]float64),
+		inflight:                     make(map[string]int),
+		done:                         make(map[string]int),
+		ok:                           make(map[string]int),
+		priorities:                   make(map[string]float64),
+		confidenceOverride:           make(map[string]float64),
+		capabilityConfidenceOverride: make(map[string]float64),
 	}
 }
 
@@ -252,6 +259,45 @@ func (t *LoadTracker) SetAgentConfidence(agentID string, confidence float64) {
 		return
 	}
 	t.confidenceOverride[agentID] = confidence
+}
+
+// SetCapabilityConfidence updates the evolution-derived confidence for the
+// (agentID, capability) pair (W4 per-capability feedback: an agent's success
+// rate is tracked per capability, so the scheduler can score it against the
+// exact task capability instead of a single aggregate value). A value in [0,1]
+// overrides the capability-specific success rate; a negative value (< 0)
+// clears the override. This method implements the aresrecovery.
+// ConfidenceInjector interface.
+func (t *LoadTracker) SetCapabilityConfidence(agentID, capability string, confidence float64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := agentID + "|" + capability
+	if confidence < 0 {
+		delete(t.capabilityConfidenceOverride, key)
+		return
+	}
+	t.capabilityConfidenceOverride[key] = confidence
+}
+
+// ConfidenceFor returns the effective confidence for agentID on capability:
+// the capability-specific override when present, otherwise the agent-level
+// override or raw success rate (same fallback as Confidence). The scheduler
+// scores candidates against the task's capability with this method so a
+// per-capability evolution history is actually consumed (design-fix: per-
+// capability data is no longer collected-but-unused).
+func (t *LoadTracker) ConfidenceFor(agentID, capability string) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if override, ok := t.capabilityConfidenceOverride[agentID+"|"+capability]; ok && override >= 0 {
+		return override
+	}
+	if override, ok := t.confidenceOverride[agentID]; ok && override >= 0 {
+		return override
+	}
+	if t.done[agentID] == 0 {
+		return 1.0
+	}
+	return float64(t.ok[agentID]) / float64(t.done[agentID])
 }
 
 // New creates a scheduler over a fabric with the given
@@ -406,7 +452,7 @@ func (s *Scheduler) HasCapableExecutor(taskID string) bool {
 		if agent == nil {
 			continue
 		}
-		if s.isBoundToOtherTask(agentID) {
+		if s.isBoundToAnyTask(agentID) {
 			continue
 		}
 		// C1: same single-source rule as executeUnbound — with the fabric
@@ -414,7 +460,11 @@ func (s *Scheduler) HasCapableExecutor(taskID string) bool {
 		if s.agents != nil && !s.isBoundToAnyTask(agentID) {
 			continue
 		}
-		cand := taskfabric.Candidate{Capabilities: []string{string(agent.Type())}}
+		cand := taskfabric.Candidate{
+			Capabilities: []string{string(agent.Type())},
+			Confidence:   s.tracker.ConfidenceFor(agentID, tk.Capability),
+			Load:         s.tracker.Load(agentID),
+		}
 		if taskfabric.Score(tk.Capability, cand) > 0 {
 			return true
 		}
@@ -441,24 +491,14 @@ func (s *Scheduler) HasCapableExecutor(taskID string) bool {
 	return false
 }
 
-// isBoundToOtherTask reports whether agentID is a recovery executor bound to
-// some task (so it must not be offered for any other task).
-func (s *Scheduler) isBoundToOtherTask(agentID string) bool {
-	s.execMu.RLock()
-	defer s.execMu.RUnlock()
-	for _, boundID := range s.boundExecutors {
-		if boundID == agentID {
-			return true
-		}
-	}
-	return false
-}
-
 // isBoundToAnyTask reports whether agentID is reserved as a recovery executor
 // for ANY task. When the fabric is the single candidate source (peer mode,
 // s.agents != nil), unbound static registrations are managed as fabric agents
 // and must not be offered as candidates — only these reserved executors stay
-// in the static pool.
+// in the static pool. It also serves the executeUnbound / HasCapableExecutor
+// exclusion: a recovery executor bound to any task must not be offered for a
+// different task (the bound branch already reserved it for its own task), so
+// the two callers share one predicate.
 func (s *Scheduler) isBoundToAnyTask(agentID string) bool {
 	s.execMu.RLock()
 	defer s.execMu.RUnlock()
@@ -751,7 +791,7 @@ func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 		if agent == nil {
 			continue
 		}
-		if s.isBoundToOtherTask(agentID) {
+		if s.isBoundToAnyTask(agentID) {
 			continue
 		}
 		// C1: when the fabric is wired (peer mode), the fabric's live
@@ -788,6 +828,14 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	if len(cands) == 0 {
 		return taskfabric.ErrNoCapableCandidate
 	}
+	// W4: capability-specific confidence. The candidate builders only know
+	// agentID; the task capability is available here, so re-resolve each
+	// candidate's confidence against (agentID, task capability) before
+	// Schedule scores them. Without a capability override this falls back to
+	// the agent-level value (design-fix: per-capability feedback is consumed).
+	for i := range cands {
+		cands[i].Confidence = s.tracker.ConfidenceFor(cands[i].AgentID, tk.Capability)
+	}
 	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.ttl)
 	if err != nil {
 		return err
@@ -807,15 +855,25 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		if !ok || executor == nil {
 			// The candidate snapshot is stale: the winner died (or became
 			// non-executable) between candidate build and executor lookup.
-			// Deliberately DO NOT release the task: Release clears the lease
-			// and leaves the task READY-without-candidates, a state the
-			// recovery loop's lease path never visits — the dead agent's task
-			// would strand until another agent appears. Keeping the lease
-			// lets it expire (TTL) so the event-driven recovery requeues it
-			// and the W1 replacement executor resumes the preserved
-			// checkpoint (aresos-agentos-plan E1: 死亡 → lease 过期 → 新执行体
-			// 续跑). A task still held by other live agents is unaffected.
-			log.Printf("kernel scheduler: winner %q for task %q is no longer executable; task stays leased for recovery", winner, taskID)
+			// When another capable executor exists, release the task so the
+			// next drain re-schedules it within one poll interval instead of
+			// stalling for the full lease TTL (BUG-4: 5-minute stall).
+			// Only when NO capable executor is left do we keep the lease:
+			// Release would leave the task READY-without-candidates, a state
+			// the recovery loop's lease path never visits — the dead agent's
+			// task would strand until another agent appears. Keeping the
+			// lease lets it expire (TTL) so the event-driven recovery
+			// requeues it and the W1 replacement executor resumes the
+			// preserved checkpoint (aresos-agentos-plan E1: death → lease
+			// expiry → replacement resumes). A task still held by other live
+			// agents is unaffected.
+			if s.HasCapableExecutor(taskID) {
+				if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+					log.Printf("kernel scheduler: release %q for stale winner %q failed: %v", taskID, winner, releaseErr)
+				}
+				return nil
+			}
+			log.Printf("kernel scheduler: winner %q for task %q is no longer executable and no capable replacement exists; task stays leased for recovery", winner, taskID)
 			return nil
 		}
 	}

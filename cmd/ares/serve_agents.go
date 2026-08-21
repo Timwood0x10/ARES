@@ -37,26 +37,27 @@ func createAndServeAgents(
 	toolBinder sub.ToolBinder,
 	comp *ares_bootstrap.Components,
 	mgr *ares_runtime.Manager,
-) (leader.Agent, []sub.Agent, error) {
+) (leader.Agent, []sub.Agent, *kernelHandle, error) {
 	if cfg.Kernel.IsLeaderEnabled() {
-		return createAndRegisterServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+		leaderAgent, subAgents, err := createAndRegisterServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+		return leaderAgent, subAgents, nil, err
 	}
 
 	// W2 Peer Agent mode: no leader, agents register directly to Kernel. The
 	// Bootstrap experience repo (nil when distillation is not wired) feeds the
-	// G1 spawn prior.
+	// G1 spawn prior. The peer kernel is returned so the serve HTTP layer can
+	// expose the task-submission endpoint (POST /api/tasks → submitPeerTask).
 	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, llmAdapter, chatClient, toolBinder, comp.EventStore, nil, comp.ExpRepo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create peer agents: %w", err)
+		return nil, nil, nil, fmt.Errorf("create peer agents: %w", err)
 	}
 	// Register agents with the runtime manager.
 	for _, sa := range subAgents {
 		factory := func() base.Agent { return sa }
 		mgr.RegisterAgent(sa, factory)
 	}
-	_ = peerKernel
 	log.Printf("serve: Leader OFF mode — %d peer agents registered directly to Kernel", len(subAgents))
-	return nil, subAgents, nil
+	return nil, subAgents, peerKernel, nil
 }
 
 // setupPeerRegistry builds the peer-to-peer messaging registry. When the

@@ -247,7 +247,7 @@ func runServe() error {
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
 	// --- Create + register agents with the runtime manager ---
-	leaderAgent, subAgents, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+	leaderAgent, subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
 	if err != nil {
 		return err
 	}
@@ -304,7 +304,7 @@ func runServe() error {
 
 	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
 	// cyclomatic complexity within lint limits) ---
-	if _, err := startServeHTTPAndHooks(ctx, g, cfg, cfgStore, plugin, mgr, registry, toolBinder, shutdownMgr, comp); err != nil {
+	if _, err := startServeHTTPAndHooks(ctx, g, cfg, cfgStore, plugin, mgr, registry, toolBinder, shutdownMgr, comp, peerKernel); err != nil {
 		return err
 	}
 

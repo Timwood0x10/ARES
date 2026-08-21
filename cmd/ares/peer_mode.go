@@ -25,6 +25,27 @@ import (
 // counter hack is gone: the shared LoadTracker is scheduler-internal now).
 var peerTaskSeq atomic.Int64
 
+// normalizedPeers resolves the C1 flat peer population from config. The
+// agents.peers structure is the DEFAULT; when it is empty (pre-C1 config),
+// the legacy agents.sub entries are normalized into peers (each sub's single
+// Type becomes its only capability). Returns an empty slice when neither is
+// configured (the caller reports it as an error).
+func normalizedPeers(cfg *ares_config.Config) []ares_config.PeerAgentConfig {
+	if len(cfg.Agents.Peers) > 0 {
+		return cfg.Agents.Peers
+	}
+	peers := make([]ares_config.PeerAgentConfig, 0, len(cfg.Agents.Sub))
+	for _, s := range cfg.Agents.Sub {
+		peers = append(peers, ares_config.PeerAgentConfig{
+			ID:            s.ID,
+			Capabilities:  []string{s.Type},
+			Priority:      s.Priority,
+			MaxToolRounds: s.MaxToolRounds,
+		})
+	}
+	return peers
+}
+
 // createPeerAgents builds a set of peer agents WITHOUT a Leader. Each agent
 // registers directly with the Kernel scheduler via the Task Fabric. This is
 // the W2 "Leader OFF" startup mode (aresos-plan.md §6.3.6): a group of
@@ -53,11 +74,15 @@ func createPeerAgents(
 ) ([]sub.Agent, *kernelHandle, error) {
 	kernel := &kernelHandle{}
 
-	// Build sub-agents from config (same as the leader path — each agent
-	// gets the full LLM + tool stack).
-	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store, strategySrc)
+	// C1: the flat Peers structure is the DEFAULT agent source; the legacy
+	// Sub structure remains as the fallback so pre-C1 configs keep working.
+	peers := normalizedPeers(cfg)
+
+	// Build sub-agents from the flat peer population (each agent gets the
+	// full LLM + tool stack).
+	subAgents := createPeerSubAgents(cfg, peers, llmAdapter, chatClient, toolBinder, store, strategySrc)
 	if len(subAgents) == 0 {
-		return nil, nil, fmt.Errorf("peer mode: no sub-agents configured")
+		return nil, nil, fmt.Errorf("peer mode: no peer agents configured (agents.peers or agents.sub)")
 	}
 
 	// Assemble the Kernel: Task Fabric + Agent Fabric + scheduler. This
@@ -74,10 +99,16 @@ func createPeerAgents(
 		}
 	}
 
-	// Build the candidate list for the fabric dispatcher.
-	subCaps := make([]subAgentCapability, 0, len(cfg.Agents.Sub))
-	for _, s := range cfg.Agents.Sub {
-		subCaps = append(subCaps, subAgentCapability{ID: s.ID, Type: s.Type})
+	// Build the candidate list for the fabric dispatcher. The full declared
+	// capability set (Caps) is offered to the scorer so a task matching ANY
+	// capability is schedulable to the peer.
+	subCaps := make([]subAgentCapability, 0, len(peers))
+	for _, p := range peers {
+		typ := ""
+		if len(p.Capabilities) > 0 {
+			typ = p.Capabilities[0]
+		}
+		subCaps = append(subCaps, subAgentCapability{ID: p.ID, Type: typ, Caps: append([]string(nil), p.Capabilities...)})
 	}
 
 	// Assemble the dual-track kernel with the fabric path as the active
@@ -188,10 +219,10 @@ func createPeerAgents(
 	agentsyscall.BindTools(toolBinder, kernelSyscall)
 	log.Printf("peer mode: spawn_agent / create_task syscalls wired into tool binder")
 
-	// Inject agent priorities into the tracker.
-	for _, sub := range cfg.Agents.Sub {
-		if sub.Priority > 0 {
-			tracker.SetPriority(sub.ID, sub.Priority)
+	// Inject agent priorities into the tracker (B2: thread priority).
+	for _, p := range peers {
+		if p.Priority > 0 {
+			tracker.SetPriority(p.ID, p.Priority)
 		}
 	}
 
@@ -310,11 +341,9 @@ func loadExperiencePrior(ctx context.Context, expRepo repositories.ExperienceRep
 // work in Leader OFF mode: the task enters READY and the Kernel scheduler
 // picks it up via the normal Schedule → Acquire → RunQuantum path.
 //
-// TODO(tech-debt): wire this to the HTTP serve endpoint so /api/tasks in
-// Leader OFF mode submits directly to the fabric instead of going through
-// the leader. Currently the leader path's submitTasks covers the autopilot
-// demo; the peer-mode HTTP endpoint will be added when the serve API is
-// extended for peer-agent mode.
+// It is exposed as POST /api/tasks on the serve HTTP layer (actionHandler),
+// closing the user-submission loop: a request reaches the fabric and the
+// scheduler executes it — no leader and no autopilot involved.
 func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string, payload map[string]any) (string, error) {
 	if kernel == nil || kernel.fabric == nil {
 		return "", fmt.Errorf("peer mode: kernel fabric not wired")

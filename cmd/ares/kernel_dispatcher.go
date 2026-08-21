@@ -61,9 +61,13 @@ func (d *kernelFabricDispatcher) D(ctx context.Context, agentID, taskID string, 
 	}
 	cands := make([]taskfabric.Candidate, 0, len(d.candidates))
 	for _, c := range d.candidates {
+		caps := c.Caps
+		if len(caps) == 0 {
+			caps = []string{c.Type}
+		}
 		cands = append(cands, taskfabric.Candidate{
 			AgentID:      c.ID,
-			Capabilities: []string{c.Type},
+			Capabilities: caps,
 			Load:         c.Load,
 			Confidence:   1.0, // shadow: no experience store wired here
 		})
