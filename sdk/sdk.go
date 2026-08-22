@@ -6,19 +6,21 @@
 //
 //	import (
 //	    "context"
-//	    "github.com/Timwood0x10/ares"
-//	    "github.com/Timwood0x10/ares/api/tools"
+//
+//	    "github.com/Timwood0x10/ares/sdk"
 //	)
 //
 //	func main() {
 //	    ctx := context.Background()
-//	    ares := sdk.NewRuntime(sdk.WithOpenAI("gpt-4o-mini"))
+//	    rt := sdk.NewRuntime(sdk.WithOpenAI("gpt-4o-mini"))
 //	    defer rt.Close()
 //
 //	    agent := rt.NewAgent("assistant",
-//	        ares.WithInstruction("You are a helpful assistant."),
+//	        sdk.WithInstruction("You are a helpful assistant."),
 //	    )
 //	    result, err := agent.Run(ctx, "Hello!")
+//	    _ = result
+//	    _ = err
 //	}
 package sdk
 

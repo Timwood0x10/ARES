@@ -5,9 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-22
 
-> Security & hardening (v0.3.0 review round): JWT auth + RBAC + modular audit, runtime config hot-reload, chaos-recovery e2e and agent-pool benchmarks, versioning, and quality-gate compliance.
+> **Agent OS (AgentOS) release**: the kernel becomes an agent operating system —
+> quantum execution, event-driven scheduling with work-stealing, a unified
+> checkpoint protocol, agent syscalls with execution attribution, flat peer
+> agents with HTTP task submission, DAG scheduling with resource enforcement,
+> lifecycle pillars with an event-driven recovery loop, and the F1 scheduling
+> feedback loop — plus the security & hardening round (JWT auth + RBAC +
+> modular audit, runtime config hot-reload, chaos-recovery e2e, agent-pool
+> benchmarks, versioning) and the Capability Fabric (SkillCatalog) release.
 
 ### Added
 
@@ -48,6 +55,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/design/versioning.md`.
 - **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md §6): security layer, config
   hot-reload, and fault-injection e2e all marked implemented.
+- **Quantum execution + scheduler resumption** (`cmd/ares/scheduler.go`,
+  `internal/agents/sub/executor.go`): the sub-agent executor is refactored into
+  cooperative quanta (reason → tool → observe → checkpoint → yield); a yielded
+  task is SUSPENDED with its PCB preserved and the scheduler re-acquires and
+  resumes it on the next drain. `internal/taskfabric/dag.go` gains readiness
+  helpers. Tests: `cmd/ares/scheduler_test.go` (292 new lines),
+  `internal/agents/sub/executor_step_test.go`.
+- **Event-driven scheduling + concurrent work-stealing** (`cmd/ares/scheduler.go`):
+  the kernel drain loop subscribes to task lifecycle events and drains
+  immediately on ready/completed/failed/yielded instead of waiting for the
+  poll tick; ready tasks run concurrently (semaphore-bounded, cap 32) so
+  multiple agents pick up work in one drain. Demo:
+  `examples/26-runtime-scheduling-demo`.
+- **Task lifecycle event types** (`internal/ares_events/types.go`,
+  `internal/taskfabric/`): `EventTaskCreated/Ready/Acquired/Started/Yielded/
+  Completed/Failed/Expired` published by the fabric state machine, with lease
+  expiry requeue and `CheckExpiredLeases`. Event-driven consumers can react to
+  task progress without polling (290d85cf).
+- **Unified checkpoint protocol (W3)** (`internal/taskfabric/checkpoint_schema.go`):
+  a versioned `CheckpointEnvelope` schema with `EncodeCheckpoint` /
+  `DecodeCheckpoint`, unifying the kernel, scheduler, peer-mode, and syscall
+  decode paths (91e1f5cd, decc781d). `w3_checkpoint_test.go` covers round-trip,
+  version skew, and corrupt-payload handling.
+- **Agent syscall layer** (`internal/agentsyscall/syscall.go`): `spawn_agent` /
+  `create_task` tools validated by the kernel (quota + capability), binding
+  spawned agents as executors into the scheduler; full doc comment + tests
+  (decc781d).
+- **Execution attribution + W4 feedback** (`internal/aresrecovery/
+  evolution_execution_feedback.go`, `evolution_attribution.go`): every quantum
+  outcome (agent, capability, success) is recorded; the evolution feedback loop
+  pushes derived confidence into the scheduler's `LoadTracker`
+  (`SetAgentConfidence` / `SetCapabilityConfidence`) so the next Schedule sees
+  evolution-informed rankings (719bdf58, decc781d).
+- **Flat peer agent + HTTP task submission** (`cmd/ares/actions.go`,
+  `cmd/ares/peer_mode.go`): flat (non-hierarchical) peer agents and an HTTP
+  task-submission endpoint, with stale-winner release so a died winner is
+  re-scheduled within one poll interval instead of stalling for the lease TTL
+  (`scheduler_stale_winner_test.go`).
+- **Dashboard: evolution trajectories + human feedback endpoints**
+  (`53eb301c`): `/dashboard`-family endpoints exposing evolution trajectories
+  and accepting human feedback (`HumanFeedback` + `CombinedFitness`), feeding
+  the evolution feedback store.
+- **Agent-loop budget limits** (`internal/agentloop/engine.go`,
+  `internal/agents/outputguard/guard.go`): `MaxTokens` and `Timeout` enforced
+  in the agent loop, plus an output guard; peer registry added
+  (`internal/agents/peer/registry.go`).
+- **Real-agent parallelism e2e** (`cmd/ares/real_agent_parallel_test.go`,
+  `84f7e89c`): end-to-end test of real agent parallelism and serving in a
+  production-like environment.
+- **Peer notifications, action logs, skill search, session leases**
+  (`bb21fb17`): agent peer registry with notifications, action logging, skill
+  search integration, and session-lease tracking in the leader/sub agents;
+  `envcap` tool capability checks added (`internal/tools/envcap`).
 
 ### Changed
 
@@ -79,6 +139,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`[{...},{...}]`) instead of truncating to the first object (bug fix).
 - **`cmd/ares/dev.go`**: `ares version` prefers the ldflags-injected version
   over the module pseudo-version.
+- **Leader-sub dispatcher removed, fabric executor integrated**
+  (`ed9f1203`): the kernel dispatcher no longer routes through the legacy
+  leader-sub pipeline; `sdk/agent.go` / `sdk/task.go` / `sdk/knowledge.go`
+  are rewritten on the fabric executor, and multi-agent examples
+  (`04-multi-agent`, `26-runtime-scheduling-demo`, `11-knowledge-import`)
+  are migrated to the new path.
+- **Agent OS parity architecture freeze** (`3aabb450`/`c3371b0c`): scheduler
+  executor registry and `LoadTracker` extracted into `internal/kernelscheduler/`;
+  `internal/kernelctx` context plumbing; `sdk/syscall.go` (agent syscalls over
+  the SDK); `serve_routine` split into `serve_dag.go` / `serve_skills.go`;
+  F1 scheduling feedback closed (per-capability confidence consumed at
+  Schedule time, stale-winner release, budget-yield before quantum).
+- **Task Fabric scheduling policy enabled by default** (`00663020`): the
+  kernel flips to Task Fabric scheduling unless explicitly disabled; the
+  legacy `cmd/arena` binary is removed as dead code.
+- **Lifecycle pillars + event-driven recovery loop wired into the kernel**
+  (`9786635d`): `agentfabric` lifecycle (spawn/kill/suspend/resume/retire) and
+  the recovery loop are integrated at kernel assembly time.
+- **DAG scheduling + resource enforcement in the production wiring layer**
+  (`8319406c`): the kernel schedules DAG tasks (dependency-gated `IsReady`)
+  and enforces agent resource quotas (`internal/agentfabric/resource.go`).
+- **Event-driven task distribution + memory decoupling** (`b7c26643`,
+  `4cf9a909`): leader task distribution refactored to an event-driven pattern;
+  event-driven memory consumption (`memory_consumer.go`) is decoupled from
+  task scheduling so memory reflux no longer blocks dispatch.
+- **Evolutionary perception-based scheduling + observability**
+  (`719bdf58`): `cmd/ares/evolution_ipc.go` wires evolution feedback into
+  scheduling; agentloop gains edge/observability instrumentation.
+- **Dependency upgrade + serve startup refactor** (`5cca294b`): dependencies
+  upgraded; monitoring/proxy setup removed from `runServe` (`d6a2f881`).
 
 ### Fixed
 
@@ -119,6 +209,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records every destructive action on the audit sink.
 - **Dead code removal** (code review): removed zero-caller `WithAuditLogger`,
   `WithClock`, `WithGinMode` options.
+- **Flaky E2E + subscription event synchronization** (`2594cfb2`): added
+  `f1_scheduling_test.go` / `g1_full_loop_test.go` regression suites and
+  synchronized subscription events across the kernel/peer/scheduler wiring so
+  tests no longer race the event store.
+- **LLM circuit breaker half-open re-open** (`4f6b97b3`): a failed probe in the
+  half-open state now re-opens the breaker instead of staying half-open
+  forever.
+- **Precise t-distribution p-values** (`80092690`): `ares_arena` regression
+  comparison switched from approximate normal-distribution p-values to a
+  precise t-distribution calculation.
+- **Eval missing dimension flags** (`05a75f21`): dimension flags were dropped
+  when none were failing; the eval path now preserves them so failing
+  dimensions are never lost.
+- **Live-DAG graph executor binding** (`9f6ac378`): the graph executor now
+  takes effect during live-DAG updates (`ares_bootstrap`).
+- **Dummy implementations + experience retrieval wiring** (`fc80bfd9`):
+  removed placeholder implementations and dead code; experience retrieval is
+  now wired to the real repository.
+- **Concurrency safety / data integrity / logic fixes** (`b1816c50`):
+  aggregate review fixes across scheduler state, event ordering, and
+  checkpoint handling.
+- **Kernel correctness + idle-loop fixes** (`8a08b143`): issues identified
+  during the v0.3.0 code review (idle-loop busy-spin, dispatch edge cases)
+  fixed and covered by tests.
+- **Release failure + checkpoint install error handling** (`5f4bc0d9`):
+  candidate release failures and checkpoint installation errors are surfaced
+  instead of being silently dropped (no silent promotion loss).
+- **Workflow contract tests** (`2b5ee29f`): scheduler failure propagation and
+  JoinAll join-policy contracts covered with regression tests.
 
 > Capability Fabric (SkillCatalog) release: declarative skill sources, zero-scan progressive disclosure, lazy MCP activation, and a closed agent loop from skill discovery to execution feedback.
 
@@ -143,17 +262,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ares serve --autopilot`** (`serve.go`): opt-in demo task injector (default off). Submits the autopilot demo tasks through the leader at startup so `serve` can be observed end-to-end without manual task submission; the E2E suite (`serve_e2e_test.go`) and the `26-runtime-scheduling-demo` logs run with it enabled.
 - `ares_config.DefaultLeaderID` exported so CLI tooling can report the assembled default agent team without duplicating the literal.
 
-### Fixed
+### Kernel Dispatch & DAG Fixes
 
 - **Kernel dispatch fake success** (`cmd/ares/kernel.go`): `kernelTaskDispatcher.Dispatch` unconditionally reported `SetSuccess(nil, "dispatched via kernel")` for every task, so the leader aggregated empty results (`items=0`) while the scheduler actually executed the work — the `EventSubTaskResult` reflux was bypassed and no producer existed in production. The dispatcher is now event-driven: it subscribes to `EventTaskCompleted/Failed` (broadcast), submits tasks through the fabric, waits for the real terminal event (with the same 300s timeout contract as the leader dispatcher), and rebuilds the `TaskResult` from the fabric checkpoint (`items`/`reason`/`metadata`) plus the original task's `UsedExperienceID`. Legacy sync path (no fabric) keeps immediate success; fabric present but no event store fails explicitly. `flipKernelToTaskFabric` injects the fabric reference and wires the event store so `fabric.record` emits externally. `user_profile` is now passed through to the executor (struct reference), so the LLM path no longer degrades to the empty `executeByType` fallback. Contract tests cover result reflux + `UserProfile` passthrough, timeout, worker failure, and the legacy/batch adapters.
 - **Kernel DAG wiring** (`cmd/ares/kernel.go`): `taskFromPayload` now accepts `dependencies` as both `[]string` (in-memory hop via `kernelTaskDispatcher.Dispatch`) and `[]any` (JSON round-trip). Previously the `[]any`-only assertion silently dropped every DAG edge on the Task Fabric path, defeating the `IsReady` gate (ares-runtime.md §9). Test extended to cover both shapes.
 - **Planner DAG truncation** (`internal/agents/leader/planner.go`): dependency resolution now runs *after* the `maxTasks` truncation. Previously a retained task could depend on a truncated task — a dangling reference that permanently blocked the Task Fabric's `IsReady` gate (deadlock). Regression test `TestPlan_DependenciesAfterTruncation` covers the truncation-dependency interplay.
 
-## [0.3.0] - 2026-08-11
+### Candidate Release Closed-Loop (evolution)
 
-> Candidate release closed-loop release: a stateful candidate pipeline with three-gate verification, a release-time LLM-driven regression gate, batch request merging, and multi-provider LLM support.
+> Candidate release closed-loop: a stateful candidate pipeline with three-gate verification, a release-time LLM-driven regression gate, batch request merging, and multi-provider LLM support.
 
-### Candidate Pipeline (`internal/evolution/`)
+#### Candidate Pipeline (`internal/evolution/`)
 
 Evolved strategies now ship through a layered, verifiable, releasable **candidate** lifecycle instead of a one-shot Arena pass:
 
@@ -163,25 +282,29 @@ Evolved strategies now ship through a layered, verifiable, releasable **candidat
 - **Release-time gate-3** (`WithReleaseRegressionCheck` + `NewCandidatePipelineWithOptions`): the regression check runs **before any patch is built/applied**; on failure the candidate is `Reject("release regression gate: ...")` and neither runtime nor stable is touched. Backward compatible when not wired.
 - **Dead-code removal**: removed the legacy `CandidateStore.promoteToStable`/`applyDiff` (superseded by `CandidatePipeline.Release`), eliminating the dual promotion path.
 
-### Gate-3 LLM Regression
+#### Gate-3 LLM Regression
 
 - **`CandidateRegressionChecker`** (`candidate_regression.go`): runs the `ares_arena.RegressionTester` over preserved cases comparing `stable.Instructions` vs `candidate.Diff`; rejects on a statistically significant drop (`Confident && NewAvg < OldAvg`). Configurable runs / min win rate / timeout.
 - **`LLMArenaScorer`** (`internal/ares_evolution/service/llm_arena_scorer.go`): implements `ares_arena.Scorer`, driving a real LLM in two steps (execute instructions×case → grade output on [0,1]). Scoring prompt stays open-ended (anchored rubrics measurably weaken significance).
 - **`BuildRegressionGate3` / `LoadRegressionGate3`** (`gate3_orchestrator.go`): top-level assembly — `LLMClient → LLMArenaScorer → CandidateRegressionChecker`; `LoadRegressionGate3` reads `llm.Client` from a YAML config and supports ollama (keyless) / openai (keyed). The same check is injectable into both verify and release.
 
-### Batch Request Merging
+#### Batch Request Merging
 
 - **`ares_arena.BatchScorer`** (`regression.go`): optional interface (`ScoreBatch(ctx, strategy, count, testCases)`); `RegressionTester.runStrategy` collapses all runs of a strategy into one batch call, falling back to per-run concurrent `Score` for non-batch scorers (backward compatible).
 - **`LLMArenaScorer.ScoreBatch`**: collapses count executions + gradings into exactly 2 LLM calls (one batch execute + one batch grade). One regression drops from `2×runs` calls to 2 — critical for low-rpm providers.
 
-### Reliability & Hardening
+#### Reliability & Hardening
 
 - **`CandidateStore` concurrency safety**: full `sync.RWMutex`; `TestCandidateStore_ConcurrentAccess` (32 goroutines × 50 submits, unique IDs) passes `go test -race`.
 - **Gate-2 evidence verification**: `replayFailureCases` queries the evidence store to distinguish missing vs wrong-kind evidence (no fabricated IDs).
 - **Verifier state machine**: `Verify()` advances the state — all gates pass → `StatusVerified`; any failure → `StatusRejected` + `RejectionReason`; nil-candidate guard.
 
-### Documentation & Examples
+#### Documentation & Examples
 
+- **Docs migration + index** (`f1c8acf7`): analysis reports migrated under
+  `docs/analysis-reports/` with an index; kernel/runtime design docs
+  (`ares-runtime.md`, `aresos-agentos-plan.md`) updated to reflect the Agent OS
+  parity architecture and multi-agent docs finalized (`7b044ca6`, `d370fcc8`).
 - **Articles (ZH/EN)**: `docs/articles/zh/11-autonomous-evolution-deep-dive.md` + `docs/articles/en/11-autonomous-evolution-deep-dive.md` gained "0.3.0: From Strategy Evolution to Candidate Release Closed-Loop"; `docs/articles/zh/24.7-autonomous-evolution-overview.md` gained a 0.3.0 section.
 - **README / README_CN**: added "Candidate Release Closed-Loop (0.3.0)" section and a feature-table row.
 - **Examples with full logs**: `examples/16-llm-regression-demo` (real regression comparison), `examples/17-gate3-e2e-demo` (verify e2e), `examples/18-release-closed-loop` (full release closed loop); each writes a timestamped transcript to its own `logs/run-<ts>.log`.

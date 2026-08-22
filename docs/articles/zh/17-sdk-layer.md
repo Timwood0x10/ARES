@@ -162,26 +162,21 @@ for chunk := range ch {
 
 ---
 
-## Team：多 Agent 编排
+## 多 Agent：Peer 能力平面
+
+旧版 `NewTeam`/`team.Run` 的 Leader-Sub 编排已移除。多 Agent 协作现在是
+一组平等的 peer capability:把每个专家注册到 Runtime,按 capability 提交
+任务——由共享内核调度器完成匹配。
 
 ```go
-team := rt.NewTeam("research-team",
-    ares.WithAutoSplit(),
-    ares.WithVerifier(2),
-    ares.WithMaxConcurrency(3),
-)
-result, err := team.Run(ctx, "Research the top 3 LLM frameworks")
+rt.RegisterAgent("researcher", sdk.WithInstruction("You research LLM frameworks."))
+rt.RegisterAgent("writer", sdk.WithInstruction("You write clear summaries."))
+result, err := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "Research the top 3 LLM frameworks"})
 ```
 
-Team 选项：
-
-| 选项 | 做什么 |
-|------|--------|
-| `WithTeamConfig(cfg)` | 应用完整 TeamConfig |
-| `WithAutoSplit()` | Leader 自动拆分任务（默认） |
-| `WithExplicitGroups(groups...)` | 手动分配模式 |
-| `WithVerifier(index)` | 按 member 索引设置验证 Agent |
-| `WithMaxConcurrency(n)` | 限制同时执行的 member 数 |
+需要拆分的 Agent 自主决定:每个 SDK Agent 的工具列表自带 `spawn_agent` /
+`create_task` 内核 syscall(见 `examples/27-peer-spawn-demo`),拆分是
+Agent 的认知决策,而不是框架预定义的团队名册。
 
 ---
 

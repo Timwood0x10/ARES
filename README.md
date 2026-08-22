@@ -207,7 +207,9 @@ rt.RegisterAgent("writer", sdk.WithInstruction("You write."))
 result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "Find sources on Go."})
 ```
 
-See [examples/README.md](examples/README.md) for 9 hands-on examples.
+See [examples/README.md](examples/README.md) for hands-on examples, including
+[27-peer-spawn-demo](examples/27-peer-spawn-demo/) — a real LLM autonomously
+decomposing a task via the kernel syscalls.
 
 ## Agent-OS Primitives (2026-08)
 

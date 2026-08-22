@@ -162,26 +162,23 @@ for chunk := range ch {
 
 ---
 
-## Teams: Multi-Agent Orchestration
+## Multi-Agent: Peer Capabilities
+
+The legacy `NewTeam`/`team.Run` leader-sub orchestration has been removed.
+Multi-agent work is now a flat set of peer capabilities: register each
+specialist on the Runtime, then submit tasks by capability — the shared
+kernel scheduler does the matching.
 
 ```go
-team := rt.NewTeam("research-team",
-    ares.WithAutoSplit(),
-    ares.WithVerifier(2),
-    ares.WithMaxConcurrency(3),
-)
-result, err := team.Run(ctx, "Research the top 3 LLM frameworks")
+rt.RegisterAgent("researcher", sdk.WithInstruction("You research LLM frameworks."))
+rt.RegisterAgent("writer", sdk.WithInstruction("You write clear summaries."))
+result, err := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "Research the top 3 LLM frameworks"})
 ```
 
-Team options:
-
-| Option | What it does |
-|--------|--------------|
-| `WithTeamConfig(cfg)` | Apply complete TeamConfig |
-| `WithAutoSplit()` | Leader auto-splits task (default) |
-| `WithExplicitGroups(groups...)` | Manual assignment mode |
-| `WithVerifier(index)` | Set verifier agent by member index |
-| `WithMaxConcurrency(n)` | Cap simultaneous member execution |
+An agent that needs help decomposes the task itself: every SDK agent carries
+the `spawn_agent` / `create_task` kernel syscalls in its tool list (see
+`examples/27-peer-spawn-demo`), so splitting is the agent's decision — not a
+framework-defined team roster.
 
 ---
 

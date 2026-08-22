@@ -5,8 +5,8 @@
 // cognitive processes with no inherent hierarchy (aresos-plan.md §1.1): a
 // flat set of capability agents registered on the Runtime, and tasks are
 // dispatched to the agent registered for their capability. The legacy
-// Leader/Sub team orchestration (NewTeam/team.Run) is retained only for
-// backward compatibility and is Deprecated.
+// Leader/Sub team orchestration (NewTeam/team.Run) has been removed; this
+// example shows the peer Runtime as the only multi-agent path.
 //
 // Purpose:
 //
