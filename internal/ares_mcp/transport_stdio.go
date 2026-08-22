@@ -228,7 +228,9 @@ func (t *StdioTransport) Close() error {
 	}
 
 	if t.cmd != nil && t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
+		if err := t.cmd.Process.Kill(); err != nil {
+			log.Warn("mcp: kill subprocess failed", "command", t.config.Command, "error", err)
+		}
 		_ = t.cmd.Wait()
 	}
 

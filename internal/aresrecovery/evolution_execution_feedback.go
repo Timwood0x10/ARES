@@ -58,7 +58,7 @@ func NewExecutionAttribution() *ExecutionAttribution {
 //
 // The attribution key is "agentID|capability", so agentID and capability must
 // not contain the '|' separator. Entries violating that invariant are
-// rejected with a log line instead of corrupting the key (BUG-5: the
+// rejected with a log line instead of corrupting the key (EDGE-5: the
 // invariant is enforced here, not only assumed by splitAttributionKey).
 func (a *ExecutionAttribution) Record(agentID, capability string, success bool) {
 	if strings.Contains(agentID, "|") || strings.Contains(capability, "|") {

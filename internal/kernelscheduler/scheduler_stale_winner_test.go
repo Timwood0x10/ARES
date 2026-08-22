@@ -25,7 +25,7 @@ func (e *stubExecutor) ExecuteStep(_ context.Context, _ *models.Task) (*sub.Step
 // TestStaleWinnerReleasedWhenReplacementExists verifies that when a stale
 // winner (selected by Schedule but no longer executable) has another capable
 // executor available, the scheduler releases the task so the next drain
-// re-schedules it within one poll interval (BUG-4: 5-minute stall).
+// re-schedules it within one poll interval (EDGE-4: 5-minute stall).
 //
 // Before the fix the task stays LEASED for the full TTL (5 min); after the
 // fix it is released to READY when another capable executor exists.

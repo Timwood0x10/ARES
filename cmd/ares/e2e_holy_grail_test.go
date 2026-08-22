@@ -86,7 +86,8 @@ type holyGrailParentExecutor struct {
 	bus         *agentipc.Bus
 	fabric      *taskfabric.Fabric
 	childIDs    []string
-	mu          sync.Mutex // guards phase and finalResult
+	mu          sync.Mutex // guards round, phase, and finalResult
+	round       int
 	phase       int
 	finalResult string
 }
@@ -103,9 +104,11 @@ func (e *holyGrailParentExecutor) ExecuteStep(ctx context.Context, task *models.
 	if phase == 1 {
 		// Phase 1: spawn child tasks into the fabric; the scheduler drives
 		// the children (executors were registered at construction time).
+		// Round 2+ uses fresh child task IDs so the children really
+		// re-execute with the new outputs.
 		for _, childID := range e.childIDs {
 			if err := e.fabric.Create(&taskfabric.Task{
-				ID:          childTaskPrefix + childID,
+				ID:          e.childTaskID(childID),
 				Capability:  capInvestigate,
 				RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
 			}); err != nil {
@@ -122,7 +125,7 @@ func (e *holyGrailParentExecutor) ExecuteStep(ctx context.Context, task *models.
 	// Phase 2+: wait for all children to complete, then IPC-synthesise.
 	allDone := true
 	for _, childID := range e.childIDs {
-		ct, err := e.fabric.Task(childTaskPrefix + childID)
+		ct, err := e.fabric.Task(e.childTaskID(childID))
 		if err != nil || ct.State != taskfabric.StateCompleted {
 			allDone = false
 			break
@@ -165,11 +168,25 @@ func (e *holyGrailParentExecutor) ExecuteStep(ctx context.Context, task *models.
 	return &sub.StepOutcome{Done: true, Result: res}, nil
 }
 
-// reset clears the phase counter and final result so the executor can
-// coordinate a fresh root task (second half of the test).
+// childTaskID returns the fabric task ID for the given child in the current
+// round. Round 1 uses "child-<id>"; later rounds append "-rN" so re-spawned
+// children are fresh tasks (round-1 children stay COMPLETED in the fabric,
+// and re-Create would fail with ErrTaskExists).
+func (e *holyGrailParentExecutor) childTaskID(childID string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.round == 0 {
+		return childTaskPrefix + childID
+	}
+	return fmt.Sprintf("%s%s-r%d", childTaskPrefix, childID, e.round+1)
+}
+
+// reset advances the round and clears the phase counter and final result so
+// the executor can coordinate a fresh root task (second half of the test).
 func (e *holyGrailParentExecutor) reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.round++
 	e.phase = 0
 	e.finalResult = ""
 }

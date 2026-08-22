@@ -125,9 +125,11 @@ func (r *Runtime) wireSyscalls() {
 		r.sdkFabric,
 		// factory: a spawned agent executes with the same ReAct engine as a
 		// registered sdk agent — one executor instance, reused for both the
-		// fabric cognition and the scheduler registration.
+		// fabric cognition and the scheduler registration. The executor's
+		// scheduler-facing Type is the DECLARED capability (not the generated
+		// agent id) so create_task sub-tasks can be matched to the peer.
 		func(agentID, capability string) agentsyscall.Executor {
-			exec := &sdkAgentExecutor{agent: r.NewAgent(agentID, WithTools())}
+			exec := &sdkAgentExecutor{agent: r.NewAgent(agentID, WithTools()), typ: models.AgentType(capability)}
 			return &sdkSyscallExecutor{inner: exec}
 		},
 		func(agentID string, executor agentsyscall.Executor) {

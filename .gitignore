@@ -32,6 +32,12 @@ configs/ares.local.yaml
 !examples/**/*.log
 **/logs/
 
+# aresos-demo run artifacts: local evidence only, never tracked (README
+# references representative traces from 16/17/18 demos instead).
+examples/aresos-demo/*.log
+examples/aresos-demo/logs/
+examples/aresos-demo/task_output.md
+
 examples/quant-trading/workflow/config.yml
 
 

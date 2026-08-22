@@ -3,6 +3,7 @@ package knowledge
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +19,8 @@ type Service struct {
 	rt     *runtime.KnowledgeRuntime
 	comp   compiler.Compiler
 	ret    *retriever.Retriever
-	apiKey string // optional API key for auth
+	mu     sync.RWMutex // guards apiKey (SetAPIKey may run concurrently with requests)
+	apiKey string       // optional API key for auth
 }
 
 const keyError = "error"
@@ -33,13 +35,17 @@ func New(rt *runtime.KnowledgeRuntime, comp compiler.Compiler, ret *retriever.Re
 }
 
 // SetAPIKey enables API key authentication on all routes.
-func (s *Service) SetAPIKey(key string) { s.apiKey = key }
+func (s *Service) SetAPIKey(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apiKey = key
+}
 
 // RegisterRoutes attaches AKF endpoints to a Gin router group.
 // All routes are mounted under /kg.
 func (s *Service) RegisterRoutes(rg *gin.RouterGroup) {
 	kg := rg.Group("/kg")
-	if s.apiKey != "" {
+	if s.apiKeyEnabled() {
 		kg.Use(s.authMiddleware())
 	}
 	kg.POST("/build", s.handleBuild)
@@ -48,14 +54,26 @@ func (s *Service) RegisterRoutes(rg *gin.RouterGroup) {
 	kg.POST("/distill", s.handleDistill)
 }
 
+func (s *Service) apiKeyEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.apiKey != ""
+}
+
 func (s *Service) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.GetHeader("Authorization") != "Bearer "+s.apiKey {
+		if c.GetHeader("Authorization") != "Bearer "+s.currentAPIKey() {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{keyError: "invalid or missing API key"})
 			return
 		}
 		c.Next()
 	}
+}
+
+func (s *Service) currentAPIKey() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.apiKey
 }
 
 // ── request / response types ──

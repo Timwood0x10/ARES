@@ -507,7 +507,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			// non-executable) between candidate build and executor lookup.
 			// When another capable executor exists, release the task so the
 			// next drain re-schedules it within one poll interval instead of
-			// stalling for the full lease TTL (BUG-4: 5-minute stall).
+			// stalling for the full lease TTL (EDGE-4: 5-minute stall).
 			// Only when NO capable executor is left do we keep the lease:
 			// Release would leave the task READY-without-candidates, a state
 			// the recovery loop's lease path never visits — the dead agent's

@@ -2,7 +2,6 @@ package agentfabric
 
 import (
 	"errors"
-	"sync"
 )
 
 // ErrCognitiveStateSchemaVersion is returned by DecodeCognitiveState when the
@@ -250,7 +249,3 @@ func cloneMap(m map[string]any) map[string]any {
 	}
 	return out
 }
-
-// Ensure sync is referenced (agent.go uses it, but this file may be compiled
-// standalone in tooling).
-var _ = sync.RWMutex{}

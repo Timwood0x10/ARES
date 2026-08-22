@@ -231,9 +231,9 @@ the "agent OS" building blocks distilled from the prime-agent comparison
 | Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
 | Task Fabric | `internal/taskfabric` | Durable Task state machine + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
 | Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
-| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + `PolicyFlag`/`DualTrackDispatcher` dual-track gradual switchover (shadow equivalence, observable) (0.3.0 Kernel IPC pillar) |
+| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + policy-gated dispatch (single-track taskfabric; legacy leader path removed) (0.3.0 Kernel IPC pillar) |
 | Runtime Recovery | `internal/aresrecovery` | lease-expiry requeue / checkpoint resume / agent restart / Chaos fault-injection validation (**Agent death ≠ Task death**) |
-| Kernel assembly | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`flipKernelToTaskFabric`/`kernelScheduler` — config `kernel.policy` (`legacy`/`taskfabric`) + `subagents[].dependencies` DAG wiring + live mid-run flip |
+| Kernel assembly | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`kernelScheduler` — config `kernel.policy` (`taskfabric`) + `subagents[].dependencies` DAG wiring |
 
 Wiring: output guard validates sub-agent results; native tools and the peer
 registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
@@ -365,7 +365,7 @@ graph TB
 
     subgraph Kernel ["Runtime Kernel (0.3.0)"]
         direction TB
-        POLICY["PolicyFlag + DualTrack<br/>legacy ⇄ taskfabric"]
+        POLICY["Kernel Policy<br/>taskfabric single-track"]
         FABRIC["Task Fabric<br/>Create / Schedule / Acquire<br/>RunQuantum · DAG ReadyTasks"]
         AFAB["Agent Fabric<br/>spawn / suspend / resume / retire<br/>kill / recover · Process Tree"]
         AIPC["Agent IPC<br/>Send / Request / Reply / Delegate<br/>Handoff / Subscribe"]
@@ -413,15 +413,15 @@ graph TB
 ARES evolved from an "Agent Orchestration Framework" into an
 **agent-oriented dynamic compute runtime**: **Agents are not orchestrated.
 They are scheduled.** The old leader/sub hierarchy is gone — scheduling is now
-unified under one Execution Strategy / Policy (`kernel.policy`: `legacy` default /
-`taskfabric` gradual cutover).
+unified under one Execution Strategy / Policy (`kernel.policy`: `taskfabric` —
+the legacy track has been removed).
 
 The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the work.`):
 
 | Pillar | Package | Responsibility |
 |--------|---------|----------------|
 | **Scheduler** | `internal/taskfabric` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
-| **IPC** | `internal/agentipc` | peer-level communication (Send/Request/Reply/Delegate/Handoff/Subscribe) + `PolicyFlag`/`DualTrackDispatcher` dual-track gradual switchover (shadow equivalence, `Mismatches()` observable) |
+| **IPC** | `internal/agentipc` | peer-level communication (Send/Request/Reply/Delegate/Handoff/Subscribe) + policy-gated dispatch (single-track taskfabric) |
 | **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
 
 - **DAG as scheduling source**: planner-produced `subagents[].dependencies`
@@ -430,10 +430,9 @@ The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the
   DAG edges — a task whose dependencies are not yet complete is registered
   but not executed; `kernelScheduler`'s `ReadyTasks` picks it up once they
   finish.
-- **live mid-run flip**: `flipKernelToTaskFabric` (idempotent) switches from
-  legacy to taskfabric at runtime — shadow off → swap in the real executor →
-  flip the flag → start the scheduler; it never orphans in-flight tasks and
-  never double-executes.
+- **single-track kernel dispatch**: `wireKernelDispatcher`/`wireKernelPolicy`
+  assemble the taskfabric dispatcher at startup — the legacy leader path and
+  its live mid-run flip have been removed.
 - **Recovery**: `internal/aresrecovery` — lease-expiry requeue / checkpoint
   resume / agent restart, proving **Agent death ≠ Task death**; Chaos
   fault-injection validates the Runtime recovers.

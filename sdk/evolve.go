@@ -54,7 +54,7 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 		CreatedAt: time.Now(),
 		Params: map[string]any{
 			paramToolSelector: "auto", // auto / manual / priority
-			paramSearchDepth:  3,      // 1-5: maps to maxIter (ReAct iterations)
+			paramSearchDepth:  3,      // 1-15: maps to maxIter (ReAct iterations)
 		},
 		PromptTemplate: agent.instruction,
 	}
@@ -149,7 +149,10 @@ func buildEvolvedInstruction(base string, s *mutation.Strategy) string {
 func evolvableParams() map[string]mutation.ParamRange {
 	return map[string]mutation.ParamRange{
 		paramToolSelector: {Values: []any{"auto", "manual", strategyPriority}},
-		paramSearchDepth:  {Values: []any{1, 2, 3, 4, 5}},
+		// Candidate depths span the default agent budget (defaultMaxIterations
+		// = 10): evolving only values below 10 would permanently shrink the
+		// budget below the default for every evolved agent.
+		paramSearchDepth: {Values: []any{1, 3, 5, 8, 10, 15}},
 	}
 }
 
@@ -236,10 +239,11 @@ func applyEvolvedParams(agent *Agent, params map[string]any) {
 	}
 }
 
-// applySearchDepth maps the search_depth evolution dimension (1-5) to
+// applySearchDepth maps the search_depth evolution dimension (1-15) to
 // agent.maxIter. When the agent already has an explicit maxIter (>0), the
 // evolved depth overrides it; when depth is absent or invalid, the original
-// maxIter is preserved.
+// maxIter is preserved. The candidate range includes the default budget (10)
+// so evolution can preserve or grow the budget instead of only shrinking it.
 func applySearchDepth(currentMaxIter int, params map[string]any) int {
 	v, ok := params[paramSearchDepth]
 	if !ok {

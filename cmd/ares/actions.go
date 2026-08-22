@@ -1,11 +1,12 @@
 package main
 
-//nolint: errcheck // ResponseWriter writes: errors are not actionable in HTTP handlers
+//nolint: errcheck // best-effort ResponseWriter writes (see writeJSON below)
 
 import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -14,6 +15,15 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 )
+
+// writeJSON encodes v to w. HTTP handlers cannot recover a failed response
+// write (the status line and headers are already sent), so the error is only
+// logged — the client sees a truncated body, the log is the trace.
+func writeJSON(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("actions: encode response failed", "error", err)
+	}
+}
 
 // actionHandler wraps the monitoring HTTP handler with:
 //   - Agent lifecycle (kill/resume/retry)
@@ -69,7 +79,7 @@ func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) *ares_
 	}
 	if h.apiKey == "" && h.auth == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "auth not configured"})
+		writeJSON(w, map[string]any{"error": "auth not configured"})
 		return nil
 	}
 	// A well-formed JWT was presented but the role lacks write permission.
@@ -77,11 +87,11 @@ func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) *ares_
 	// misleading Unauthorized the generic path would give.
 	if jwtForbidden {
 		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "insufficient role: token is valid but lacks write permission"})
+		writeJSON(w, map[string]any{"error": "insufficient role: token is valid but lacks write permission"})
 		return nil
 	}
 	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid credentials"})
+	writeJSON(w, map[string]any{"error": "invalid credentials"})
 	return nil
 }
 
@@ -184,7 +194,7 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", "application/json")
 	if h.kernel == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"error":  "peer runtime not active",
 			"status": "error",
 		})
@@ -193,24 +203,24 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 	var req submitTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		writeJSON(w, map[string]any{"error": err.Error()})
 		return
 	}
 	if req.Capability == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "capability is required"})
+		writeJSON(w, map[string]any{"error": "capability is required"})
 		return
 	}
 	taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
 	if err != nil {
 		h.auditAction("submit_task", req.Capability, princ, false)
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "status": "error"})
+		writeJSON(w, map[string]any{"error": err.Error(), "status": "error"})
 		return
 	}
 	h.auditAction("submit_task", req.Capability, princ, true)
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"task_id": taskID,
 		"status":  "submitted",
 		"message": "task accepted by the peer runtime",
@@ -224,13 +234,13 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 	if err := fn(r.Context(), agentID); err != nil {
 		h.auditAction(action, agentID, princ, false)
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"action": action, "agent": agentID, "error": err.Error(), "status": "error",
 		})
 		return
 	}
 	h.auditAction(action, agentID, princ, true)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"action": action, "agent": agentID, "success": true,
 		"message": action + " agent " + agentID + " succeeded",
 	})
@@ -245,18 +255,18 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		agents := h.mgr.ListAgents()
 		if len(agents) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "no agents"})
+			writeJSON(w, map[string]any{"error": "no agents"})
 			return
 		}
 		target := agents[rand.Intn(len(agents))]
 		if err := h.mgr.StopAgent(r.Context(), target.ID); err != nil {
 			h.auditAction("chaos-random-kill", target.ID, princ, false)
 			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+			writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
 		h.auditAction("chaos-random-kill", target.ID, princ, true)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"chaos": "random-kill", "target": target.ID, "success": true,
 			"message": "chaos: killed random agent " + target.ID,
 		})
@@ -269,7 +279,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 			}
 		}
 		h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, true)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"chaos": "kill-all", "killed": killed, "success": true,
 		})
 	case "recover":
@@ -283,12 +293,12 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 			}
 		}
 		h.auditAction("chaos-recover", strings.Join(recovered, ","), princ, true)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"chaos": "recover", "recovered": recovered, "success": true,
 		})
 	default:
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"error":     "unknown chaos type: " + chaosType,
 			"available": []string{"random-kill", "kill-all", "recover"},
 		})
@@ -307,12 +317,12 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, p
 	var req callToolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		writeJSON(w, map[string]any{"error": err.Error()})
 		return
 	}
 	if req.Name == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "name is required"})
+		writeJSON(w, map[string]any{"error": "name is required"})
 		return
 	}
 
@@ -324,12 +334,12 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, p
 			// callers get an accurate error instead of a blanket 404.
 			if _, ok := h.tools.Get(req.Name); ok {
 				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]any{
+				writeJSON(w, map[string]any{
 					"error": "tool execution failed: " + err.Error(),
 				})
 			} else {
 				w.WriteHeader(http.StatusNotFound)
-				_ = json.NewEncoder(w).Encode(map[string]any{
+				writeJSON(w, map[string]any{
 					"error": "tool not found: " + req.Name,
 					"tools": h.tools.List(),
 				})
@@ -337,25 +347,25 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, p
 			return
 		}
 		h.auditAction("call_tool", req.Name, princ, true)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, map[string]any{
 			"tool": req.Name, "success": result.Success, "data": result.Data,
 		})
 		return
 	}
 
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": "no tool registry"})
+	writeJSON(w, map[string]any{"error": "no tool registry"})
 }
 
 func (h *actionHandler) handleListTools(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.tools == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "no tool registry"})
+		writeJSON(w, map[string]any{"error": "no tool registry"})
 		return
 	}
 	names := h.tools.List()
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, map[string]any{
 		"tools": names,
 		"count": len(names),
 	})

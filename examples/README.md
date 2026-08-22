@@ -36,6 +36,7 @@ go run examples/01-quickstart/main.go
 | 22 | Evolution Blocks | `go run examples/22-evolution-blocks/main.go` | `api/evolution` building blocks: Mutator+Population+Promoter (no internal/ import) | ≤148 |
 | 25 | Dual Endpoint Fallback | `examples/25-dual-endpoint-fallback/ares.yaml` | Version-safe config template (primary + fallback LLM endpoints) | — |
 | 26 | Runtime Scheduling | `go run examples/26-runtime-scheduling-demo/main.go` | `RegisterAgent` + `Submit` through fabric scheduler; observe `serve --autopilot` dispatch (see `serve-prod.log`) | ≤330 |
+| 27 | Peer-Spawn (autonomous decomposition) | `go run examples/27-peer-spawn-demo/main.go` | REAL LLM decides to split: `spawn_agent` + `create_task` syscalls, kernel executes sub-tasks (see `examples/27-peer-spawn-demo/README.md` transcript) | ≤137 |
 | Eval | Evaluation | `go run examples/eval/main.go` | 5 scenarios: chat, tool, multi-agent, resilience, evolution | ≤264 |
 
 ## Evaluation Scenarios

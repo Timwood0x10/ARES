@@ -217,9 +217,17 @@ func (s *MemoryEventStore) Subscribe(ctx context.Context, filter EventFilter) (<
 	s.subscribers = append(s.subscribers, sub)
 
 	// Spawn a single goroutine per subscriber for cleanup when ctx is done.
+	// The goroutine also exits when the store closes (s.ctx cancelled by
+	// Close), so a subscriber with a never-cancelled caller context cannot
+	// leak after Close (CRIT-2 fix).
 	go func(id int64) {
-		<-ctx.Done()
-		s.unsubscribe(id)
+		select {
+		case <-ctx.Done():
+			s.unsubscribe(id)
+		case <-s.ctx.Done():
+			// Store closed: Close() already closed every subscriber channel,
+			// so there is nothing to clean up.
+		}
 	}(sub.id)
 
 	return ch, nil

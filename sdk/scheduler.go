@@ -31,13 +31,22 @@ import (
 // true; the fabric's retry policy still bounds failures.
 type sdkAgentExecutor struct {
 	agent *Agent
+	// typ overrides the scheduler-facing capability. Normally empty (Type
+	// falls back to the agent name); spawn_agent sets it to the declared
+	// capability so a spawned peer can match create_task sub-tasks.
+	typ models.AgentType
 }
 
 var _ kernelscheduler.CapabilityExecutor = (*sdkAgentExecutor)(nil)
 
 func (e *sdkAgentExecutor) ID() string { return e.agent.name }
 
-func (e *sdkAgentExecutor) Type() models.AgentType { return models.AgentType(e.agent.name) }
+func (e *sdkAgentExecutor) Type() models.AgentType {
+	if e.typ != "" {
+		return e.typ
+	}
+	return models.AgentType(e.agent.name)
+}
 
 func (e *sdkAgentExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
 	input, _ := task.Payload["input"].(string)
