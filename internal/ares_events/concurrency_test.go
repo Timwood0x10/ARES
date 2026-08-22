@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -217,5 +218,62 @@ func drainChannel(ch <-chan *Event) int {
 		default:
 			return total
 		}
+	}
+}
+
+// TestMemoryEventStore_CloseUnsubscribeRace guards CRIT-1 (double-close
+// panic): a subscriber context cancellation racing Close() must never close
+// the same channel twice. Both paths hold s.mu — Close() takes ownership of
+// the list (sets it nil before closing channels) and unsubscribe() removes
+// its entry under the same lock — so whichever wins, the other finds no
+// entry and skips the close. Run with -race.
+func TestMemoryEventStore_CloseUnsubscribeRace(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		store := NewMemoryEventStore()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		ch, err := store.Subscribe(ctx, EventFilter{})
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cancel() // wakes the subscriber goroutine → unsubscribe(id)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = store.Close() // closes all subscriber channels
+		}()
+		wg.Wait()
+
+		// Whichever path won, the channel must be closed exactly once.
+		select {
+		case _, ok := <-ch:
+			assert.False(t, ok, "channel must be closed after Close/cancel race")
+		case <-time.After(2 * time.Second):
+			t.Fatal("channel never closed after Close")
+		}
+	}
+}
+
+// TestMemoryEventStore_CancelAfterClose guards CRIT-1 ordering: the
+// subscriber goroutine waking up AFTER Close() must find an empty (nil)
+// subscriber list and must not close the already-closed channel again.
+func TestMemoryEventStore_CancelAfterClose(t *testing.T) {
+	store := NewMemoryEventStore()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch, err := store.Subscribe(ctx, EventFilter{})
+	require.NoError(t, err)
+
+	require.NoError(t, store.Close())
+	cancel() // unsubscribe goroutine now runs against a nil subscriber list
+
+	select {
+	case _, ok := <-ch:
+		assert.False(t, ok, "channel must be closed by Close")
+	case <-time.After(2 * time.Second):
+		t.Fatal("channel never closed after Close")
 	}
 }
