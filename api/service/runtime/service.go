@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Runtime is
+// superseded by sdk.NewRuntime / sdk.Runtime; this package is kept only for
+// migration.
 // Package ares_runtime provides a high-level API for agent lifecycle management.
 // It wraps internal/ares_runtime, internal/ares_events, and internal/plugins/resurrection
 // into a single entry point for external users.

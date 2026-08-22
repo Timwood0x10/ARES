@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. The Agent
+// interface is superseded by sdk.Agent; this package is kept only for
+// migration and will be removed in a future release.
 // Package agent exposes the Agent public API — the contract an AI assistant
 // uses to create, run, and stream from an agent without importing internal
 // packages.

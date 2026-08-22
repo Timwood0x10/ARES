@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. The client facade
+// is superseded by sdk.NewRuntime / sdk.NewAgent; this package is kept only
+// for migration and will be removed in a future release.
 // Package client provides a library-style entry point for embedding ARES
 // into other Go applications.
 //

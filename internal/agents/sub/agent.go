@@ -454,6 +454,13 @@ func (a *subAgent) recordAction(ctx context.Context, taskID string, success bool
 }
 
 // ProcessStream handles input and returns a stream of ares_events.
+//
+// The method owns only admission control (status gating, auto-start,
+// validation) and goroutine lifecycle (panic boundary, WaitGroup, channel
+// close); the per-task event sequence lives in runTaskAndEmit. Keeping the
+// two apart bounds each function's branching: the previous single-body form
+// mixed TOCTOU handling, recovery and five selects in one scope, which made
+// changes to either concern riskier than the content justified.
 func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	// Atomically check status under lock to avoid TOCTOU with auto-Start.
 	a.mu.Lock()
@@ -513,71 +520,85 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 			}
 		}()
 
-		a.setStatus(models.AgentStatusBusy)
-		defer a.setStatus(models.AgentStatusReady)
+		a.runTaskAndEmit(ctx, task, ch, stopCh)
+	}()
 
-		// Send task start event
-		select {
-		case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: a.id, Data: task}:
-		case <-ctx.Done():
-			return
-		case <-stopCh:
-			return
-		}
+	return ch, nil
+}
 
-		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
-			KeyTaskID:  task.TaskID,
-			KeyAgentID: a.id,
-		})
+// runTaskAndEmit executes one task inside the ProcessStream goroutine and
+// emits its full lifecycle: Busy→Ready around the executor call, TaskStart /
+// TaskCreated before it, then TaskFailed or TaskCompleted + completion events
+// after. Every channel send races ctx.Done() and stopCh so a cancelled
+// consumer never deadlocks the agent goroutine.
+func (a *subAgent) runTaskAndEmit(
+	ctx context.Context,
+	task *models.Task,
+	ch chan<- base.AgentEvent,
+	stopCh <-chan struct{},
+) {
+	a.setStatus(models.AgentStatusBusy)
+	defer a.setStatus(models.AgentStatusReady)
 
-		// Execute task
-		result, err := a.executor.Execute(ctx, task)
-		if err != nil {
-			a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
-				KeyTaskID:                            task.TaskID,
-				KeyAgentID:                           a.id,
-				KeyError:                             err.Error(),
-				ares_events.EventKeyTask:             taskEventText(task),
-				ares_events.EventKeyResult:           err.Error(),
-				ares_events.EventKeyTenantID:         distillTenantID(),
-				ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
-			})
+	// Send task start event
+	select {
+	case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: a.id, Data: task}:
+	case <-ctx.Done():
+		return
+	case <-stopCh:
+		return
+	}
 
-			select {
-			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
-			case <-ctx.Done():
-			case <-stopCh:
-			}
-			return
-		}
+	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
+		KeyTaskID:  task.TaskID,
+		KeyAgentID: a.id,
+	})
 
-		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
+	// Execute task
+	result, err := a.executor.Execute(ctx, task)
+	if err != nil {
+		a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
 			KeyTaskID:                            task.TaskID,
 			KeyAgentID:                           a.id,
+			KeyError:                             err.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
-			ares_events.EventKeyResult:           resultEventText(result),
+			ares_events.EventKeyResult:           err.Error(),
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
 
-		// Send task complete event
 		select {
-		case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: result}:
-		case <-ctx.Done():
-			return
-		case <-stopCh:
-			return
-		}
-
-		// Send final result
-		select {
-		case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Data: result}:
+		case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 		case <-ctx.Done():
 		case <-stopCh:
 		}
-	}()
+		return
+	}
 
-	return ch, nil
+	a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
+		KeyTaskID:                            task.TaskID,
+		KeyAgentID:                           a.id,
+		ares_events.EventKeyTask:             taskEventText(task),
+		ares_events.EventKeyResult:           resultEventText(result),
+		ares_events.EventKeyTenantID:         distillTenantID(),
+		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+	})
+
+	// Send task complete event
+	select {
+	case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: result}:
+	case <-ctx.Done():
+		return
+	case <-stopCh:
+		return
+	}
+
+	// Send final result
+	select {
+	case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Data: result}:
+	case <-ctx.Done():
+	case <-stopCh:
+	}
 }
 
 // RestoreState restores the sub-agent's state from persisted data.

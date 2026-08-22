@@ -28,6 +28,7 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -226,6 +227,13 @@ func New(opts ...Option) (*Runtime, error) {
 		if err := opt(cfg); err != nil {
 			return nil, fmt.Errorf("option: %w", err)
 		}
+	}
+	// Early misconfiguration signal: a hosted provider without a key only
+	// surfaced as a provider-side 401 on the first Run, far from the option
+	// call that caused it. Warn here so the gap is visible at construction;
+	// construction itself stays non-fatal (key-less gateways are legitimate).
+	if hint := providerKeyHint(cfg.llmCfg.Provider, cfg.llmCfg.APIKey); hint != "" {
+		slog.Warn(hint)
 	}
 
 	// ---- LLM ----

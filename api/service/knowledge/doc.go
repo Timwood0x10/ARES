@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Knowledge
+// management is superseded by the sdk KnowledgeStore entry points; this
+// package is kept only for migration.
 // Package knowledge provides the public HTTP API for AKF.
 //
 // Endpoints:

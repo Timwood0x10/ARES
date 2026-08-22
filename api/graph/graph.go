@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Graph
+// orchestration is superseded by the sdk workflow/task API; this package is
+// kept only for migration.
 // Package graph provides the public API for dynamic agent orchestration
 // with pluggable scheduling, and the unified Runner for DAG execution.
 //

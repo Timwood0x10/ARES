@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Workflow
+// orchestration is superseded by the sdk task/workflow API; this package is
+// kept only for migration.
 // Package workflow provides workflow orchestration service implementation.
 package workflow
 

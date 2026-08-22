@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. HTTP handlers
+// are superseded by the sdk/agent run/stream entry points; this package is
+// kept only for migration.
 // Package handler provides HTTP handlers for the ARES API.
 package handler
 

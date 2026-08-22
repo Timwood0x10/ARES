@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Experience
+// storage is superseded by the sdk KnowledgeStore/experience options; this
+// package is kept only for migration.
 // Package experience provides the public API for experience storage and
 // memory distillation DTOs.
 //

@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Evolution is
+// superseded by the sdk evolve entry points; this package is kept only for
+// migration.
 // Package evolution provides the public API for genetic algorithm evolution.
 package evolution
 

@@ -1,3 +1,6 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Memory management
+// is superseded by the sdk memory entry points; this package is kept only
+// for migration.
 // Package memory provides the public API for memory management.
 package memory
 

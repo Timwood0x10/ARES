@@ -271,6 +271,17 @@ linters:
       - path: internal/tools/resources/builtin/embedding/embedding.go
         linters:
           - goconst
+      # Legacy api/* consumers: the api/* layer is deprecated in favor of
+      # sdk/; these paths still reference the old packages during the
+      # migration window and are wired to migrate incrementally.
+      - path: api/(bootstrap|client|router|service/workflow)/
+        text: "SA1019"
+      - path: cmd/ares/(agent_cli|workflow_cli)\.go
+        text: "SA1019"
+      - path: internal/(api_impl|ares_eval/service|ares_memory/(context|distillation|experienceadapters)|knowledge/service)/
+        text: "SA1019"
+      - path: examples/
+        text: "SA1019"
     paths:
       - third_party$
 

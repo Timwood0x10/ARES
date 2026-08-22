@@ -1,3 +1,5 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Bootstrap wiring
+// is superseded by sdk.NewRuntime; this package is kept only for migration.
 // Package bootstrap provides factory functions for creating ARES modules.
 // It delegates component wiring to internal/ares_bootstrap and extends with
 // api/service/* wrappers to avoid direct internal imports.

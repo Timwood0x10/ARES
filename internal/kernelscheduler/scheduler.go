@@ -208,6 +208,34 @@ func (s *Scheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.PollInterval)
 	defer ticker.Stop()
 
+	// Cooperative-preemption watcher (BUG-KSCHED-001): drain() blocks on
+	// wg.Wait() until every dispatched quantum finishes, so preemption
+	// checked only at drain entry could never observe a RUNNING task — the
+	// branch was unreachable through the production loop. This managed worker
+	// (deterministic exit on ctx.Done, per-sweep recover per code_rules_v2
+	// §4.1/§4.2) scans independently of the blocking drain. Preemption stays
+	// cooperative: it only mutates durable state; the stale holder's late
+	// completion is rejected by the fencing token.
+	preemptTicker := time.NewTicker(s.preemptInterval())
+	defer preemptTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-preemptTicker.C:
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("kernel scheduler: panic in preemption sweep, continuing: %v", r)
+						}
+					}()
+					s.PreemptLowerPriority(s.fabric.ResumableTasks())
+				}()
+			}
+		}
+	}()
+
 	// Subscribe to dependency-relevant task events when a store is wired.
 	// The channel is nil (and the select case inert) when eventStore is nil,
 	// preserving the pure-polling path.
@@ -244,6 +272,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.safeDrain(ctx)
 		}
 	}
+}
+
+// preemptInterval returns the preemption sweep period, guarding against a
+// zero/negative PollInterval (time.NewTicker panics on a non-positive tick).
+func (s *Scheduler) preemptInterval() time.Duration {
+	if s.PollInterval > 0 {
+		return s.PollInterval
+	}
+	return 500 * time.Millisecond
 }
 
 // safeDrain recovers a panic from one drain so the scheduling loop survives a

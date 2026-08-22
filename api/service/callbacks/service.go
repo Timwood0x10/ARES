@@ -1,3 +1,5 @@
+// Deprecated: use github.com/Timwood0x10/ares/sdk instead. This package is
+// kept only for migration.
 // Package callbacks provides the public API for event callback registration.
 package callbacks
 
