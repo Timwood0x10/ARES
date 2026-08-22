@@ -19,7 +19,7 @@ go run examples/01-quickstart/main.go
 | 01 | Quickstart | `go run examples/01-quickstart/main.go` | Minimal agent: Runtime → Agent → Run | ≤20 |
 | 02 | Tool Calling | `go run examples/02-tool-calling/main.go` | Multi-tool registration, ReAct loop | ≤60 |
 | 03 | DAG Workflow | `go run examples/03-dag-workflow/main.go` | `NewGraph` + `FuncNode` + conditional `Edge` | ≤130 |
-| 04 | Multi-Agent | `go run examples/04-multi-agent/main.go` | `NewTeam` leader/member orchestration | ≤60 |
+| 04 | Multi-Agent | `go run examples/04-multi-agent/main.go` | `RegisterAgent` + `Submit` capability dispatch | ≤60 |
 | 05 | Evolution | `go run examples/05-evolution-demo/main.go` | `Evolve()` instruction evolution before/after | ≤96 |
 | 06 | Chaos | `go run examples/06-chaos-resilience/main.go` | 9 failure modes: file, timeout, network, MCP, LLM... | ≤179 |
 | 07 | Human-in-Loop | `go run examples/07-human-in-loop/main.go` | `WithHumanInput` human approval for tool calls | ≤150 |
@@ -35,7 +35,7 @@ go run examples/01-quickstart/main.go
 | 21 | AI Assistant | `go run examples/21-ai-assistant-integration/main.go` | `api/knowledge` KnowledgeService integration (no internal/ import) | ≤94 |
 | 22 | Evolution Blocks | `go run examples/22-evolution-blocks/main.go` | `api/evolution` building blocks: Mutator+Population+Promoter (no internal/ import) | ≤148 |
 | 25 | Dual Endpoint Fallback | `examples/25-dual-endpoint-fallback/ares.yaml` | Version-safe config template (primary + fallback LLM endpoints) | — |
-| 26 | Runtime Scheduling | `go run examples/26-runtime-scheduling-demo/main.go` | Leader plans → members execute → leader synthesises; observe `serve --autopilot` dispatch (see `serve-prod.log`) | ≤330 |
+| 26 | Runtime Scheduling | `go run examples/26-runtime-scheduling-demo/main.go` | `RegisterAgent` + `Submit` through fabric scheduler; observe `serve --autopilot` dispatch (see `serve-prod.log`) | ≤330 |
 | Eval | Evaluation | `go run examples/eval/main.go` | 5 scenarios: chat, tool, multi-agent, resilience, evolution | ≤264 |
 
 ## Evaluation Scenarios

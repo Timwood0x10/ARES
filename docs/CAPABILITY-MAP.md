@@ -11,7 +11,7 @@
 | 能力 | 入口模块 | 做什么 | CLI / SDK |
 |---|---|---|---|
 | **Agent 执行** | `internal/agents/base` | Run / Stream 单 Agent | `sdk.NewAgent` |
-| **多 Agent 编排** | `internal/agents/leader`, `internal/agents/sub` | Leader/Sub 调度、聚合、心跳、检查点恢复 | `rt.NewTeam` |
+| **多 Agent 分发** | `internal/agents/sub`, `internal/taskfabric`, `internal/agentipc` | 基于能力的 Agent 注册、任务分发、Peer IPC、检查点恢复 | `rt.RegisterAgent` + `rt.Submit` |
 | **运行时装配** | `internal/ares_bootstrap` | 依赖注入、配置加载、服务直连 | `ares serve` |
 | ★ **策略进化 GA** | `internal/ares_evolution` | 种群进化、交叉变异、评分晋升、梦周期 | `ares evolution run/status` |
 | ★ **运行时补丁引擎** | `internal/evolution` | 部署期对 DAG/调度器/恢复策略打热补丁 | `ares evolution deploy` |

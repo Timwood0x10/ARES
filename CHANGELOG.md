@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **F1 `LoadTracker.End()` load-release scheduling starvation**: the
+  `load--` in `End()` (prevents monotonic load climb) had no regression test.
+  Added `internal/kernelscheduler/load_tracker_test.go` with 7 assertions:
+  Begin→End releases load, multi-round no monotonic climb, End no underflow,
+  SetAgentConfidence clear (-1) vs valid 0.0, SetCapabilityConfidence fallback
+  order (capability > agent > historical > 1.0), concurrent -race safety, and
+  Score×Load integration (score stays > 0 after multiple rounds — the F1
+  "no capable candidate" scenario end-to-end).
 - **`available_tools=0` starvation** (found via run log
   `scheduler_trace_with_logs.log`): `executeWithLLMSingle` gated the
   Chat+tools path on `GetToolSchemas()` — the LLM-advertised subset narrowed

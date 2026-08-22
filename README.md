@@ -94,7 +94,7 @@ make examples          # build all 24 examples
 | **Memory** | Session context, task distillation, vector similarity search |
 | **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
-| **Multi-Agent** | Leader/sub orchestration with automatic failover |
+| **Multi-Agent** | Capability-based agent registration (`RegisterAgent`) + task dispatch (`Submit`) with peer IPC and recovery |
 | **Observability** | OpenTelemetry traces, structured logs, Prometheus metrics |
 
 ## AKG — Knowledge Graph Without LLMs (Experimental)
@@ -201,9 +201,10 @@ result, _ := agent.Run(ctx, "Calculate 15*23")
 ch, _ := agent.Stream(ctx, "Tell me a story")
 for chunk := range ch { fmt.Print(chunk.Content) }
 
-// Multi-agent team.
-team := rt.NewTeam("project", leaderAgent, []*Agent{memberAgent})
-teamResult, _ := team.Run(ctx, "Research and write")
+// Multi-agent: register capabilities and submit tasks.
+rt.RegisterAgent("researcher", sdk.WithInstruction("You research."))
+rt.RegisterAgent("writer", sdk.WithInstruction("You write."))
+result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "Find sources on Go."})
 ```
 
 See [examples/README.md](examples/README.md) for 9 hands-on examples.
@@ -364,7 +365,7 @@ graph TB
 
     subgraph Kernel ["Runtime Kernel (0.3.0)"]
         direction TB
-        POLICY["PolicyFlag + DualTrack<br/>legacy leader ⇄ taskfabric"]
+        POLICY["PolicyFlag + DualTrack<br/>legacy ⇄ taskfabric"]
         FABRIC["Task Fabric<br/>Create / Schedule / Acquire<br/>RunQuantum · DAG ReadyTasks"]
         AFAB["Agent Fabric<br/>spawn / suspend / resume / retire<br/>kill / recover · Process Tree"]
         AIPC["Agent IPC<br/>Send / Request / Reply / Delegate<br/>Handoff / Subscribe"]
@@ -409,11 +410,11 @@ graph TB
 
 ### Runtime Kernel (0.3.0)
 
-ARES evolved from an "Agent Orchestration Framework" (leader+sub) into an
+ARES evolved from an "Agent Orchestration Framework" into an
 **agent-oriented dynamic compute runtime**: **Agents are not orchestrated.
-They are scheduled.** The leader is no longer an architecture role — it is one
-Execution Strategy / Policy (`kernel.policy`: `legacy` default / `taskfabric`
-gradual cutover).
+They are scheduled.** The old leader/sub hierarchy is gone — scheduling is now
+unified under one Execution Strategy / Policy (`kernel.policy`: `legacy` default /
+`taskfabric` gradual cutover).
 
 The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the work.`):
 
@@ -424,7 +425,7 @@ The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the
 | **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
 
 - **DAG as scheduling source**: planner-produced `subagents[].dependencies`
-  are resolved into `models.Task.Context.Dependencies` by the leader planner,
+  are resolved into `models.Task.Context.Dependencies` by the planner,
   carried through the kernel dispatch, and submitted to the fabric with the
   DAG edges — a task whose dependencies are not yet complete is registered
   but not executed; `kernelScheduler`'s `ReadyTasks` picks it up once they
@@ -482,7 +483,7 @@ sequenceDiagram
 |---|---|
 | [Chat Agent](docs/cookbook/chat.md) | 20-line conversational agent |
 | [Tool Calling](docs/cookbook/tool.md) | Custom tools for LLM function calling |
-| [Multi-Agent](docs/cookbook/multi-agent.md) | Leader/member team orchestration |
+| [Multi-Agent](docs/cookbook/multi-agent.md) | Capability-based registration and task dispatch |
 | [Memory](docs/cookbook/memory.md) | Persistent conversation context |
 | [Coding Agent](docs/cookbook/coding.md) | Code generation with specialized instructions |
 | [Code Review](docs/cookbook/review.md) | Automated PR review |
@@ -506,7 +507,7 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 | **3 Executors** | Apply patches to live runtime | Graph, Knowledge, Recovery |
 | **LLM Adapter** | Converts natural-language suggestions into PatchProposals | parsed format → Coordinator |
 
-**Key design**: LLM is a **participant**, not the leader. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
+**Key design**: LLM is a **participant**, not a controller. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
 ### Benchmarks (Apple M3 Max, 2026-08-17)
 

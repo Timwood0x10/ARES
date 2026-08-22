@@ -12,14 +12,21 @@ import (
 )
 
 // Evolvable strategy parameter keys. Shared across base strategy creation,
-// mutator ranges, scoring, and application so the dimension names stay in
-// sync and the linter (goconst) stays quiet.
+// mutator ranges, scoring, and application so the dimension names stay
+// in sync and the linter (goconst) stays quiet.
+//
+// Only dimensions with a direct Agent backing field are evolved:
+//   - tool_selector → filters agent.tools
+//   - search_depth  → sets agent.maxIter (deeper search = more ReAct iterations)
+//
+// The former scheduler_strategy, memory_threshold, and recovery_strategy
+// dimensions were removed because they have no Agent-level backing field —
+// they are kernel/runtime concepts, not agent inference parameters. Evolving
+// dimensions that cannot be applied would be dishonest: the GA would search
+// a space that has no effect on execution.
 const (
-	paramToolSelector      = "tool_selector"
-	paramSearchDepth       = "search_depth"
-	paramSchedulerStrategy = "scheduler_strategy"
-	paramMemoryThreshold   = "memory_threshold"
-	paramRecoveryStrategy  = "recovery_strategy"
+	paramToolSelector = "tool_selector"
+	paramSearchDepth  = "search_depth"
 )
 
 // Evolve runs an evolution cycle to improve an agent's instruction. It uses the
@@ -37,19 +44,17 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 		log.Printf("[ares:evolve] evolving agent %q on task: %s", agent.name, task)
 	}
 
-	// Create base strategy with meaningful dimensions: tool selection,
-	// workflow topology, scheduler strategy, memory retrieval, recovery.
+	// Create base strategy with two actionable dimensions: tool selection
+	// and search depth (ReAct iterations). Both have direct Agent backing
+	// fields and are consumed during execution and application.
 	base := &mutation.Strategy{
 		ID:        fmt.Sprintf("sdk-%s", agent.name),
 		Version:   1,
 		Score:     -1,
 		CreatedAt: time.Now(),
 		Params: map[string]any{
-			paramToolSelector:      "auto",  // auto / manual / priority
-			paramSearchDepth:       3,       // 1-5: how deep to search
-			paramSchedulerStrategy: "fifo",  // fifo / priority / round_robin
-			paramMemoryThreshold:   0.7,     // 0.0-1.0: similarity threshold
-			paramRecoveryStrategy:  "retry", // retry / replace / fallback
+			paramToolSelector: "auto", // auto / manual / priority
+			paramSearchDepth:  3,      // 1-5: maps to maxIter (ReAct iterations)
 		},
 		PromptTemplate: agent.instruction,
 	}
@@ -130,9 +135,6 @@ func buildEvolvedInstruction(base string, s *mutation.Strategy) string {
 	}{
 		{paramToolSelector, s.Params[paramToolSelector]},
 		{paramSearchDepth, s.Params[paramSearchDepth]},
-		{paramSchedulerStrategy, s.Params[paramSchedulerStrategy]},
-		{paramMemoryThreshold, s.Params[paramMemoryThreshold]},
-		{paramRecoveryStrategy, s.Params[paramRecoveryStrategy]},
 	}
 	instruction := base + "\n\nEvolved strategy:"
 	for _, p := range params {
@@ -146,11 +148,8 @@ func buildEvolvedInstruction(base string, s *mutation.Strategy) string {
 // evolvableParams returns the parameter ranges for meaningful evolution dimensions.
 func evolvableParams() map[string]mutation.ParamRange {
 	return map[string]mutation.ParamRange{
-		paramToolSelector:      {Values: []any{"auto", "manual", strategyPriority}},
-		paramSearchDepth:       {Values: []any{1, 2, 3, 4, 5}},
-		paramSchedulerStrategy: {Values: []any{"fifo", strategyPriority, "round_robin"}},
-		paramMemoryThreshold:   {Values: []any{0.3, 0.5, 0.7, 0.9}},
-		paramRecoveryStrategy:  {Values: []any{"retry", "replace", "fallback"}},
+		paramToolSelector: {Values: []any{"auto", "manual", strategyPriority}},
+		paramSearchDepth:  {Values: []any{1, 2, 3, 4, 5}},
 	}
 }
 
@@ -164,7 +163,7 @@ func executeAndScore(ctx context.Context, r *Runtime, agent *Agent, task string,
 		tools:       applyToolSelector(agent.tools, s.Params),
 		runtime:     agent.runtime,
 		humanInput:  agent.humanInput,
-		maxIter:     agent.maxIter,
+		maxIter:     applySearchDepth(agent.maxIter, s.Params),
 		discovery:   agent.discovery,
 		toolSource:  agent.toolSource,
 		selector:    agent.selector,
@@ -220,11 +219,10 @@ func applyToolSelector(toolList []tools.Tool, params map[string]any) []tools.Too
 }
 
 // applyEvolvedParams applies the evolved strategy params to the agent.
-// tool_selector is the only dimension with a direct backing field on Agent
-// (the tool list), so it is applied by filtering agent.tools. The remaining
-// dimensions (search_depth, scheduler_strategy, memory_threshold,
-// recovery_strategy) have no corresponding Agent field yet; they are logged
-// and marked TODO so the wiring gap stays visible instead of being silent.
+// Both dimensions have direct Agent backing fields: tool_selector filters
+// agent.tools, and search_depth sets agent.maxIter (deeper search = more
+// ReAct iterations). There are no unwired dimensions — all evolved params are
+// consumed.
 func applyEvolvedParams(agent *Agent, params map[string]any) {
 	if v, ok := params[paramToolSelector]; ok {
 		if selector, isString := v.(string); isString {
@@ -232,13 +230,24 @@ func applyEvolvedParams(agent *Agent, params map[string]any) {
 			log.Printf("[ares:evolve] applied tool_selector=%v (%d tools after filtering)", v, len(agent.tools))
 		}
 	}
-	// TODO: wire search_depth/scheduler_strategy/memory_threshold/recovery_strategy
-	// into Agent fields (e.g. discovery depth, scheduler, RAG threshold, retry
-	// policy) and consume them inside Run; until then they cannot be applied
-	// (expected by 2026-12-31).
-	for _, key := range []string{paramSearchDepth, paramSchedulerStrategy, paramMemoryThreshold, paramRecoveryStrategy} {
-		if v, ok := params[key]; ok {
-			log.Printf("[ares:evolve] TODO: %s=%v not wired to Agent field yet", key, v)
-		}
+	agent.maxIter = applySearchDepth(agent.maxIter, params)
+	if v, ok := params[paramSearchDepth]; ok {
+		log.Printf("[ares:evolve] applied search_depth=%v (maxIter=%d)", v, agent.maxIter)
 	}
+}
+
+// applySearchDepth maps the search_depth evolution dimension (1-5) to
+// agent.maxIter. When the agent already has an explicit maxIter (>0), the
+// evolved depth overrides it; when depth is absent or invalid, the original
+// maxIter is preserved.
+func applySearchDepth(currentMaxIter int, params map[string]any) int {
+	v, ok := params[paramSearchDepth]
+	if !ok {
+		return currentMaxIter
+	}
+	depth, isInt := v.(int)
+	if !isInt || depth < 1 {
+		return currentMaxIter
+	}
+	return depth
 }

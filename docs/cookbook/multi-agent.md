@@ -1,6 +1,6 @@
 # Multi-Agent Cookbook
 
-Orchestrate a team with a leader and members.
+Register agents by capability and dispatch tasks through the kernel scheduler.
 
 ## Code
 
@@ -21,15 +21,19 @@ func main() {
 	rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
 	defer rt.Close()
 
-	leader := rt.NewAgent("coordinator",
-		sdk.WithInstruction("Plan tasks and synthesize results."),
-	)
-	researcher := rt.NewAgent("researcher",
+	// Register agents by capability. Each capability maps to one agent.
+	rt.RegisterAgent("researcher",
 		sdk.WithInstruction("Find facts and data."),
 	)
+	rt.RegisterAgent("writer",
+		sdk.WithInstruction("Write clear summaries."),
+	)
 
-	team := rt.NewTeam("team-alpha", leader, []*sdk.Agent{researcher})
-	result, err := team.Run(ctx, "Research Go 1.26 features")
+	// Submit a task — the kernel routes it to the matching agent.
+	result, err := rt.Submit(ctx, sdk.Task{
+		Capability: "researcher",
+		Input:      "Research Go 1.26 features",
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -40,7 +44,8 @@ func main() {
 
 ## Key Points
 
-- `NewTeam` creates a leader-member group.
-- Leader plans → members execute → leader synthesizes.
-- Team supports any number of members.
-- Each member has its own instruction for specialization.
+- `RegisterAgent` binds an agent to a capability string.
+- `Submit` dispatches a `Task` to the registered agent through the kernel scheduler.
+- Any number of capabilities can be registered; each maps to exactly one agent.
+- Agents can communicate peer-to-peer via the IPC bus (`agentipc`).
+- Task recovery is automatic: agent death does not lose the task (checkpoint + lease).

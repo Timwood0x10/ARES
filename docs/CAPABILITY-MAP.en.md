@@ -11,7 +11,7 @@ Conventions: Paths are relative to the repo root. `★` = the capability has a d
 | Capability | Entry module | What it does | CLI / SDK |
 |---|---|---|---|
 | **Agent execution** | `internal/agents/base` | Single-agent Run / Stream | `sdk.NewAgent` |
-| **Multi-agent orchestration** | `internal/agents/leader`, `internal/agents/sub` | Leader/Sub dispatch, aggregation, heartbeat, checkpoint recovery | `rt.NewTeam` |
+| **Multi-agent dispatch** | `internal/agents/sub`, `internal/taskfabric`, `internal/agentipc` | Capability-based agent registration, task dispatch, peer IPC, checkpoint recovery | `rt.RegisterAgent` + `rt.Submit` |
 | **Runtime wiring** | `internal/ares_bootstrap` | Dependency injection, config loading, service wiring | `ares serve` |
 | ★ **Strategy Evolution GA** | `internal/ares_evolution` | Population evolution, crossover/mutation, scoring/promotion, dream cycle | `ares evolution run/status` |
 | ★ **Runtime Patch Engine** | `internal/evolution` | Hot-patch DAG/scheduler/recovery strategies at deploy time | `ares evolution deploy` |

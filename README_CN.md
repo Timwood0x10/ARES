@@ -92,7 +92,7 @@ make examples          # 构建全部 24 个示例
 | **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
 | **候选发布闭环（0.3.0）** | `CandidatePipeline`：候选 → 三层验证（静态/证据/回归）→ Release 发布门禁 → SetStable；门3 用 `LLMArenaScorer` + `BatchScorer`（批量合并请求）做 LLM 驱动的保留案例回归，多 provider 支持（agnes/sensenova/ollama） |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
-| **多 Agent** | 领导/成员编排，支持自动故障切换 |
+| **多 Agent** | 基于能力的 Agent 注册（`RegisterAgent`）+ 任务分发（`Submit`），支持 Peer IPC 与恢复 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
 
 ## AKG —— 无需 LLM 的知识图谱（实验性）
@@ -182,9 +182,10 @@ result, _ := agent.Run(ctx, "计算 15*23")
 ch, _ := agent.Stream(ctx, "讲个故事")
 for chunk := range ch { fmt.Print(chunk.Content) }
 
-// 多 Agent 团队
-team := rt.NewTeam("project", leaderAgent, []*Agent{memberAgent})
-teamResult, _ := team.Run(ctx, "调研并撰写报告")
+// 多 Agent：注册能力并提交任务
+rt.RegisterAgent("researcher", sdk.WithInstruction("你负责调研。"))
+rt.RegisterAgent("writer", sdk.WithInstruction("你负责写作。"))
+result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "查找 Go 相关资料。"})
 ```
 
 完整示例见 [examples/README.md](examples/README.md)。
