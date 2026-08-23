@@ -8,7 +8,7 @@
 
 ```bash
 # 从仓库根目录运行（读取 ./ares.yaml 的真实 LLM 端点与 key）
-go run examples/27-peer-spawn-demo/main.go
+go run examples/27-peer-spawn-demo/main.go [optional task text]
 ```
 
 > 注意：LLM API 偶发波动时 Submit 可能失败（`task sdk-task-N failed`），
@@ -88,3 +88,11 @@ agentsyscall: created task "task-researcher-4" (researcher) → READY
   `agentsyscall: created task ... → READY` = LLM 确实自主调用了拆分工具。
 - `spawned-researcher-* → LLM call` = 子任务经调度器分派给 spawned peer，
   由真实 ReAct 引擎执行（非桩）。
+
+## Evidence
+
+A captured real-LLM run (2026-08-23, agnes-2.5-flash): the coordinator called
+`spawn_agent` ×3 and `create_task` ×3 autonomously; the kernel scheduler drove
+all three specialist tasks to completion; see
+[evidence/run-2026-08-23.md](evidence/run-2026-08-23.md) for the verbatim
+syscall log. Pass your own task via argv when the default needs repo context.

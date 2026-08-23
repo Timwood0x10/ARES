@@ -1,25 +1,25 @@
 // Runtime Evolution Demo (basic) — the shallowest of the three runtime
-// evolution examples: a single WorkflowGenome + SchedulerGenome evolve through
+// evolution example: a WorkflowGenome evolves through
 // mutate → fitness → diff → coordinator, showing the minimal closed loop.
 //
 // Purpose:
 //
 //	This example teaches the CORE evolution loop with only two genomes:
-//	workflow (the DAG) and scheduler. It mutates candidates, picks the
+//	the DAG topology. It mutates candidates, picks the
 //	fittest, diffs old vs new snapshots into patches, and submits them to the
 //	evolution coordinator for evaluation — the same loop the full example
 //	generalizes to four subsystems.
 //
 // Learning objectives:
-//   - How a Genome (workflow/scheduler) exposes Mutate + Snapshot and how a
+//   - How a Genome exposes Mutate + Snapshot and how a
 //     FitnessGenome scores candidates.
 //   - How the Diff Engine turns snapshot pairs into patch.RuntimePatch.
 //   - How the coordinator evaluates and applies patches (SourceGA).
 //
 // Core APIs (with package paths):
-//   - genome.NewWorkflowGenome / NewSchedulerGenome / Registry
+//   - genome.NewWorkflowGenome / Registry
 //     (internal/evolution/genome)
-//   - diff.NewWorkflowDiffer / NewSchedulerDiffer / Registry / DiffAll
+//   - diff.NewWorkflowDiffer / Registry / DiffAll
 //     (internal/evolution/diff)
 //   - patch.NewRegistry / RuntimePatch (internal/evolution/patch)
 //   - coordinator.NewEvolutionCoordinator / Submit / Evaluate / PatchHistory /
@@ -34,7 +34,7 @@
 // Expected output:
 //
 //  1. Initial DAG: 3 nodes, order=[A B C]
-//  2. Registered genomes: [workflow scheduler] → 3. differs → ...
+//  2. Registered genomes: [workflow] → 3. differs → ...
 //  6. Generated N candidate workflow genomes ... → 7. patches → 8-10.
 //
 // Place in the progression: this is the SHALLOWEST step (basic); see full/
@@ -94,13 +94,15 @@ func buildDAG() *engine.MutableDAG {
 	return dag
 }
 
-// registerComponents registers the genomes (workflow + scheduler), the differs
+// registerComponents registers the genomes (workflow), the differs
 // that turn snapshot pairs into patches, and the patch executors that apply
 // them to a live graph.
 func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registry, *patch.Registry) {
 	// ── Register genomes ──
 	// A genome knows how to mutate its subsystem and snapshot its state;
-	// the workflow genome mutates the DAG topology, the scheduler genome the
+	// TODO(evolution-dim): the scheduler dimension was retired (fusion §B1);
+	// a future concurrency genome may evolve sdk.Graph.MaxRoundConcurrency.
+	// The workflow genome mutates the DAG topology;
 	// node scheduling.
 	genomeReg := genome.NewRegistry()
 	wfGenome := genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig())

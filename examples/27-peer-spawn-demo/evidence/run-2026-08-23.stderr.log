@@ -1,0 +1,54 @@
+2026/08/23 17:00:19 INFO bootstrap: evolution disabled (cfg.Evolution.Enabled=false), skipping NewEvolution and background tickers module=ares_bootstrap
+2026/08/23 17:00:19 INFO flight recorder started module=flight
+2026/08/23 17:00:19 INFO bootstrap: knowledge retriever wired (AKG runtime → RAG) module=ares_bootstrap min_score=0
+2026/08/23 17:00:19 INFO bootstrap: RAG retrievers injected into memory manager module=ares_bootstrap count=1
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=eventstore state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=mcp state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=llm state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=evidence state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=knowledge state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=runtime state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=memory state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=dashboard state=started
+2026/08/23 17:00:19 INFO system_runtime: component ready module=system_runtime component=flight state=started
+2026/08/23 17:00:19 INFO system_runtime: all components started module=system_runtime count=9
+2026/08/23 17:00:19 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/23 17:00:19 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:00:19 [ares:trace] coordinator → LLM call (iter 0, 3 msgs, 2 tools)
+2026/08/23 17:01:00 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:00 [ares:trace] coordinator → tool call: spawn_agent({"capability": "mechanics", "task_context": {"goal": "cache-eviction strategies report", "focus": "pseudocode for LRU, LFU, ARC"}})
+2026/08/23 17:01:00 kernel scheduler: registered replacement executor "spawned-mechanics-1"
+2026/08/23 17:01:00 agentsyscall: spawned agent "spawned-mechanics-1" (mechanics) registered as executor
+2026/08/23 17:01:00 [ares:trace] coordinator → tool call: spawn_agent({"capability": "complexity", "task_context": {"goal": "cache-eviction strategies report", "focus": "complexity and failure modes"}})
+2026/08/23 17:01:00 kernel scheduler: registered replacement executor "spawned-complexity-2"
+2026/08/23 17:01:00 agentsyscall: spawned agent "spawned-complexity-2" (complexity) registered as executor
+2026/08/23 17:01:00 [ares:trace] coordinator → tool call: spawn_agent({"capability": "workload", "task_context": {"goal": "cache-eviction strategies report", "focus": "workload fit"}})
+2026/08/23 17:01:00 kernel scheduler: registered replacement executor "spawned-workload-3"
+2026/08/23 17:01:00 agentsyscall: spawned agent "spawned-workload-3" (workload) registered as executor
+2026/08/23 17:01:00 [ares:trace] coordinator → LLM call (iter 1, 7 msgs, 2 tools)
+2026/08/23 17:01:03 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:03 [ares:trace] coordinator → tool call: create_task({"capability": "mechanics", "payload": {"input": "Write pseudocode for LRU, LFU, and ARC cache eviction algorithms. Include: data structures used, get/put operations, and how the eviction policy is enforced. Make it clear enough for implementation reference."}})
+2026/08/23 17:01:03 agentsyscall: created task "task-mechanics-4" (mechanics) → READY
+2026/08/23 17:01:03 [ares:trace] coordinator → tool call: create_task({"capability": "complexity", "payload": {"input": "Analyze time and space complexity for LRU, LFU, and ARC. Identify failure modes: e.g., LRU scan-line effect, LFU stale hot items, ARC adaptivity limits. Discuss practical tradeoffs."}})
+2026/08/23 17:01:03 agentsyscall: created task "task-complexity-5" (complexity) → READY
+2026/08/23 17:01:03 [ares:trace] coordinator → tool call: create_task({"capability": "workload", "payload": {"input": "Evaluate LRU, LFU, and ARC against different workload patterns: sequential scans, hot-cold distribution, temporal locality, skewed frequency distributions. Recommend which strategy fits which scenario with reasoning."}})
+2026/08/23 17:01:03 agentsyscall: created task "task-workload-6" (workload) → READY
+2026/08/23 17:01:03 [ares:trace] coordinator → LLM call (iter 2, 11 msgs, 2 tools)
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:20 [ares:trace] coordinator ✓ done (6 tools, 0 total tokens, 1m0.764s)
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:20 [ares:trace] spawned-complexity-2 → LLM call (iter 0, 2 msgs, 2 tools)
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=session.created stream_id=""
+2026/08/23 17:01:20 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:20 [ares:trace] spawned-mechanics-1 → LLM call (iter 0, 2 msgs, 2 tools)
+2026/08/23 17:01:20 [ares:trace] spawned-workload-3 → LLM call (iter 0, 2 msgs, 2 tools)
+2026/08/23 17:01:39 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:39 [ares:trace] spawned-mechanics-1 ✓ done (0 tools, 0 total tokens, 18.845s)
+2026/08/23 17:01:42 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:42 [ares:trace] spawned-complexity-2 ✓ done (0 tools, 0 total tokens, 21.952s)
+2026/08/23 17:01:50 WARN failed to emit event module=memory event_type=message.added stream_id=""
+2026/08/23 17:01:50 [ares:trace] spawned-workload-3 ✓ done (0 tools, 0 total tokens, 29.849s)
+2026/08/23 17:02:05 INFO Memory manager stopped module=memory

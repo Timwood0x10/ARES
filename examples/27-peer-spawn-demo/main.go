@@ -107,6 +107,12 @@ final answer from the parts. When it does not, just answer directly.`),
 		"(3) internal/agentipc — the peer message bus. For each subsystem " +
 		"describe its responsibilities, its key public types, and how it " +
 		"interacts with the other two. Then compare the three side by side."
+	// Override the task via argv when your model lacks repo context: ANY
+	// genuinely multi-part task works, because the decomposition DECISION
+	// belongs to the LLM — that is the whole point of this demo.
+	if len(os.Args) > 1 {
+		task = strings.Join(os.Args[1:], " ")
+	}
 
 	fmt.Printf("📋 Task: %s\n\n", task)
 	fmt.Println("🕸️  agent \"coordinator\" carries spawn_agent + create_task in its LLM tool list (auto-wired by the runtime)")

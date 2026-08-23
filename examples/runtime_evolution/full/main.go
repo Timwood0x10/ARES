@@ -1,5 +1,6 @@
-// Runtime Evolution Demo (full) — the complete runtime evolution chain with
-// ALL four genomes (workflow, scheduler, knowledge, recovery), real executors,
+// Runtime Evolution Demo (full) — the runtime evolution chain over three
+// genomes (workflow, knowledge, recovery; the scheduler dimension is retired
+// per fusion plan §B1), real executors,
 // and a full evolution cycle per subsystem.
 //
 // Purpose:
