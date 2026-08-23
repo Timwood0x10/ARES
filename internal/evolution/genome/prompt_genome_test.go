@@ -107,7 +107,7 @@ func TestPromptGenome_Crossover_IncompatibleType(t *testing.T) {
 	s := newTestPromptStrategy(t)
 	g := NewPromptGenome(s, PromptGenomeConfig{})
 
-	other := &SchedulerGenome{}
+	other := &RecoveryGenome{}
 	_, err := g.Crossover(context.Background(), other)
 	assert.Error(t, err)
 }

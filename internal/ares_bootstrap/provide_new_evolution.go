@@ -103,13 +103,10 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 			return nil, fmt.Errorf("register workflow genome: %w", err)
 		}
 
-		schedGenome := genome.NewSchedulerGenome(
-			wfgraph.NewDefaultScheduler(),
-			genome.SchedulerGenomeConfig{EvidenceStore: evStore},
-		)
-		if err := genomeReg.Register(schedGenome); err != nil {
-			return nil, fmt.Errorf("register scheduler genome: %w", err)
-		}
+		// TODO(tech-debt): the scheduler genome dimension was retired
+		// (fusion plan §B1, 2026-08-22): sdk.Graph runs fully-parallel ready
+		// batches, so ordering schedulers have no execution decision left.
+		// Legacy PatchChangeScheduler appliers remain for persisted patches.
 
 		recoveryGenome := genome.NewRecoveryGenome(
 			&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},
@@ -147,7 +144,6 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	diffReg := diff.NewRegistry()
 	for _, d := range []diff.Differ{
 		diff.NewWorkflowDiffer(),
-		diff.NewSchedulerDiffer(),
 		diff.NewKnowledgeDiffer(),
 		diff.NewRecoveryDiffer(),
 		diff.NewMemoryDiffer(),
@@ -196,7 +192,6 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 
 		graphExec = wfgraph.NewGraphPatchExecutor(g)
 		_ = patchReg.RegisterComponent(graphExec)
-		_ = patchReg.Register("graph.scheduler", graphExec)
 
 		// Recovery executor.
 		recoveryExec = engine.NewRecoveryPatchExecutor(dag)
@@ -361,7 +356,6 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 		// Fallback: create a new executor if no existing one was stored.
 		graphExec := wfgraph.NewGraphPatchExecutor(g)
 		_ = c.PatchReg.RegisterComponent(graphExec)
-		_ = c.PatchReg.Register("graph.scheduler", graphExec)
 	}
 
 	// Rebuild recovery executor with the live DAG.

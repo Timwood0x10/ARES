@@ -18,6 +18,9 @@ var wfLog = logger.Module("genome.workflow")
 const (
 	WorkflowGenomeName  = "workflow"
 	KnowledgeGenomeName = "knowledge"
+	// SchedulerGenomeName is RETIRED (fusion plan §B1, 2026-08-22): the
+	// scheduler dimension no longer participates in genome mutation/diff.
+	// Kept only as a historical identifier for legacy persisted patches.
 	SchedulerGenomeName = "scheduler"
 	RecoveryGenomeName  = "recovery"
 	defaultAgent        = "default"

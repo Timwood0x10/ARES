@@ -33,6 +33,13 @@ type Graph struct {
 	// MaxIterations bounds how many times ONE node may execute (router loops).
 	// <= 0 means the default (defaultGraphMaxIterations).
 	MaxIterations int
+	// MaxRoundConcurrency caps how many ready nodes launch in parallel within
+	// one round (errgroup limit; 0 = unbounded). It carries the concurrency-
+	// throttling value of the retired workflow schedulers (fusion plan §B1):
+	// ordering policies died with workflow.Runner because a fully-parallel
+	// ready batch has no "who runs first" decision left to make, but capping
+	// simultaneous LLM calls remains operationally meaningful.
+	MaxRoundConcurrency int
 	// Timeout caps the total wall-clock duration of RunGraph (<= 0 = no
 	// limit). When set, RunGraph derives a child context with this deadline;
 	// expiry returns context.DeadlineExceeded and cancels in-flight nodes.
@@ -221,14 +228,15 @@ func (g *Graph) SetRouter(fn func(ctx context.Context, currentNodeID string, sta
 // graphSnapshot is an immutable view the engine works against so concurrent
 // mutation never tears a round.
 type graphSnapshot struct {
-	nodes    map[string]graphNode
-	order    []string
-	out      map[string][]string // from → to list, insertion order
-	in       map[string][]string // to → from list
-	router   func(ctx context.Context, currentNodeID string, state map[string]any) string
-	conds    map[[2]string]func(map[string]any) bool
-	buildErr error
-	timeout  time.Duration
+	maxConcurrency int
+	nodes          map[string]graphNode
+	order          []string
+	out            map[string][]string // from → to list, insertion order
+	in             map[string][]string // to → from list
+	router         func(ctx context.Context, currentNodeID string, state map[string]any) string
+	conds          map[[2]string]func(map[string]any) bool
+	buildErr       error
+	timeout        time.Duration
 }
 
 // snapshot copies the current structure under RLock.
@@ -236,14 +244,15 @@ func (g *Graph) snapshot() graphSnapshot {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	snap := graphSnapshot{
-		nodes:    make(map[string]graphNode, len(g.nodes)),
-		order:    append([]string(nil), g.order...),
-		out:      make(map[string][]string),
-		in:       make(map[string][]string),
-		router:   g.router,
-		conds:    make(map[[2]string]func(map[string]any) bool),
-		buildErr: g.buildErr,
-		timeout:  g.Timeout,
+		maxConcurrency: g.MaxRoundConcurrency,
+		nodes:          make(map[string]graphNode, len(g.nodes)),
+		order:          append([]string(nil), g.order...),
+		out:            make(map[string][]string),
+		in:             make(map[string][]string),
+		router:         g.router,
+		conds:          make(map[[2]string]func(map[string]any) bool),
+		buildErr:       g.buildErr,
+		timeout:        g.Timeout,
 	}
 	for id, n := range g.nodes {
 		snap.nodes[id] = n

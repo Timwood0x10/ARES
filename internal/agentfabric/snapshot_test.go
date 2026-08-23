@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestKillCapturesLastCognitiveSnapshot is the A1 acceptance: an agent that
@@ -181,5 +182,46 @@ func TestConcurrentKillAndSnapshotRead(t *testing.T) {
 		if _, ok := f.LastSnapshot(id); !ok {
 			t.Fatalf("snapshot missing for %s after concurrent kill storm", id)
 		}
+	}
+}
+
+// TestFindRevivableSnapshotPicksMostRecentDeath locks the A2 review fix: when
+// several dead agents share the requested capability, recovery must seed
+// revival from the MOST RECENT death (freshest cognition), never from Go's
+// random map iteration order.
+func TestFindRevivableSnapshotPicksMostRecentDeath(t *testing.T) {
+	ctx := context.Background()
+	f := NewFabric()
+
+	for _, id := range []string{"old-victim", "new-victim"} {
+		if _, err := f.Spawn(ctx, SpawnSpec{
+			Identity:     id,
+			Capabilities: []string{"audit"},
+		}); err != nil {
+			t.Fatalf("spawn %s: %v", id, err)
+		}
+	}
+	// Distinct cognition so the assertion can tell them apart.
+	_ = f.SetCognitiveState("old-victim", CognitiveState{Observation: "stale"})
+	_ = f.SetCognitiveState("new-victim", CognitiveState{Observation: "fresh"})
+
+	if err := f.Kill(ctx, "old-victim"); err != nil {
+		t.Fatalf("kill old: %v", err)
+	}
+	// Ensure DiedAt strictly increases despite coarse clock resolution.
+	time.Sleep(2 * time.Millisecond)
+	if err := f.Kill(ctx, "new-victim"); err != nil {
+		t.Fatalf("kill new: %v", err)
+	}
+
+	id, snap, ok := f.FindRevivableSnapshot("audit")
+	if !ok {
+		t.Fatal("revivable snapshot must be found")
+	}
+	if id != "new-victim" {
+		t.Fatalf("revival must pick the most recent death, got %q (cognition %q)", id, snap.Cognitive.Observation)
+	}
+	if snap.Cognitive.Observation != "fresh" {
+		t.Fatalf("snapshot cognition = %q, want the freshest one", snap.Cognitive.Observation)
 	}
 }

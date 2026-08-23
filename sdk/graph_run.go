@@ -178,6 +178,9 @@ func (r *Runtime) runGraphRounds(ctx context.Context, snap graphSnapshot, st *gr
 // runRound executes every ready node concurrently and waits for the barrier.
 func (r *Runtime) runRound(ctx context.Context, snap graphSnapshot, st *graphRun, ready []string) (completions []string, firstErr error) {
 	group, gctx := errgroup.WithContext(ctx)
+	if snap.maxConcurrency > 0 {
+		group.SetLimit(snap.maxConcurrency)
+	}
 	var mu sync.Mutex // serializes completion-order appends
 	for _, id := range ready {
 		id := id

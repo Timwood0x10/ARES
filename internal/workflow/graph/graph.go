@@ -11,7 +11,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
-	workflowcore "github.com/Timwood0x10/ares/internal/workflow"
 )
 
 // Edge represents a connection between two nodes with optional condition.
@@ -460,21 +459,6 @@ func (g *Graph) Edges() []EdgeInfo {
 			From:    edge.From,
 			To:      edge.To,
 			HasCond: edge.Condition != nil,
-		})
-	}
-	return edges
-}
-
-// CompileEdges returns serializable topology for the unified compiler.
-func (g *Graph) CompileEdges() []workflowcore.GraphCompileEdge {
-	runtimeEdges := g.RuntimeEdges()
-	edges := make([]workflowcore.GraphCompileEdge, 0, len(runtimeEdges))
-	for _, edge := range runtimeEdges {
-		edges = append(edges, workflowcore.GraphCompileEdge{
-			From:       edge.From,
-			To:         edge.To,
-			HasCond:    edge.Condition != nil,
-			BindingRef: graphConditionBindingID(edge.From, edge.To),
 		})
 	}
 	return edges

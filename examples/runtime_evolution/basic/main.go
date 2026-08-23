@@ -107,10 +107,6 @@ func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registr
 	if err := genomeReg.Register(wfGenome); err != nil {
 		log.Fatalf("register workflow genome: %v", err)
 	}
-	schedGenome := genome.NewSchedulerGenome(graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig())
-	if err := genomeReg.Register(schedGenome); err != nil {
-		log.Fatalf("register scheduler genome: %v", err)
-	}
 	fmt.Printf("2. Registered genomes: %v\n", genomeReg.List())
 
 	// ── Register differs ──
@@ -119,9 +115,6 @@ func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registr
 	diffReg := diff.NewRegistry()
 	if err := diffReg.Register(diff.NewWorkflowDiffer()); err != nil {
 		log.Fatalf("register workflow differ: %v", err)
-	}
-	if err := diffReg.Register(diff.NewSchedulerDiffer()); err != nil {
-		log.Fatalf("register scheduler differ: %v", err)
 	}
 	fmt.Printf("3. Registered differ: %v\n", diffReg.List())
 

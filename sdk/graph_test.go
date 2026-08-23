@@ -973,3 +973,51 @@ func TestGraphNodeNoExecutableKind(t *testing.T) {
 		t.Fatal("expected error for node with no executable kind")
 	}
 }
+
+// TestRunGraphMaxRoundConcurrency locks the fusion-plan §B1 field: with
+// MaxRoundConcurrency=N and N+ ready nodes in one round, at most N execute
+// simultaneously (observed via a barrier that counts concurrent entrants).
+func TestRunGraphMaxRoundConcurrency(t *testing.T) {
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
+	defer rt.Close()
+
+	var mu sync.Mutex
+	inside, peak := 0, 0
+	release := make(chan struct{})
+	node := func() func(context.Context, map[string]any) error {
+		return func(_ context.Context, _ map[string]any) error {
+			mu.Lock()
+			inside++
+			if inside > peak {
+				peak = inside
+			}
+			mu.Unlock()
+			<-release
+			mu.Lock()
+			inside--
+			mu.Unlock()
+			return nil
+		}
+	}
+
+	g := NewGraph("throttled").
+		AddNode("n1", node()).
+		AddNode("n2", node()).
+		AddNode("n3", node()).
+		AddNode("n4", node()).
+		AddEdge("n1", "n2", nil).
+		AddEdge("n1", "n3", nil).
+		AddEdge("n1", "n4", nil)
+	g.MaxRoundConcurrency = 2
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+	}()
+	if _, err := rt.RunGraph(context.Background(), g); err != nil {
+		t.Fatalf("RunGraph: %v", err)
+	}
+	if peak > 2 {
+		t.Fatalf("concurrent peak = %d, want <= MaxRoundConcurrency(2)", peak)
+	}
+}

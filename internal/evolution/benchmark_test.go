@@ -9,7 +9,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
-	"github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // ── Benchmarks for the new evolution system ──
@@ -25,23 +24,6 @@ func BenchmarkWorkflowGenome_Mutate(b *testing.B) {
 		b.Fatal(err)
 	}
 	g := genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig())
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		children, err := g.Mutate(ctx, 10)
-		if err != nil {
-			b.Fatal(err)
-		}
-		_ = children
-	}
-}
-
-func BenchmarkSchedulerGenome_Mutate(b *testing.B) {
-	g := genome.NewSchedulerGenome(
-		graph.NewDefaultScheduler(),
-		genome.DefaultSchedulerGenomeConfig(),
-	)
 	ctx := context.Background()
 
 	b.ResetTimer()
@@ -146,17 +128,16 @@ func BenchmarkFullEvolutionCycle(b *testing.B) {
 
 	// Build genomes.
 	wfGenome := genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig())
-	schedGenome := genome.NewSchedulerGenome(graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig())
 	knowledgeGenome := genome.NewKnowledgeGenome(nil, genome.DefaultKnowledgeGenomeConfig())
 	recoveryGenome := genome.NewRecoveryGenome(
 		&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},
 		genome.DefaultRecoveryGenomeConfig(),
 	)
 
-	genomes := []genome.Genome{wfGenome, schedGenome, knowledgeGenome, recoveryGenome}
+	genomes := []genome.Genome{wfGenome, knowledgeGenome, recoveryGenome}
 	diffReg := diff.NewRegistry()
 	for _, d := range []diff.Differ{
-		diff.NewWorkflowDiffer(), diff.NewSchedulerDiffer(),
+		diff.NewWorkflowDiffer(),
 		diff.NewKnowledgeDiffer(), diff.NewRecoveryDiffer(),
 	} {
 		diffReg.Register(d) //nolint:errcheck

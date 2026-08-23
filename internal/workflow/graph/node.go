@@ -16,7 +16,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/Timwood0x10/ares/internal/truncate"
-	workflowcore "github.com/Timwood0x10/ares/internal/workflow"
 )
 
 // Node represents an executable unit in the graph.
@@ -343,32 +342,10 @@ func (n *SubGraphNode) Execute(ctx context.Context, state *State) error {
 		}
 	}
 
-	compiled, err := CompileBound(n.graph)
-	if err != nil {
-		return fmt.Errorf("compile sub-graph %s: %w", n.id, err)
-	}
-	options := append(
-		[]workflowcore.RunnerOption{workflowcore.WithInitialState(subState.ToParams())},
-		compiled.Options...,
-	)
-	result, err := workflowcore.NewRunner(compiled.Executor, options...).ExecuteBound(ctx, compiled.Bound)
-	if err != nil {
-		return fmt.Errorf("execute sub-graph %s: %w", n.id, err)
-	}
-	mergeUnifiedResultState(subState, result)
-
-	// Merge sub-graph outputs back into the parent state.
-	if result != nil {
-		for key, value := range result.State {
-			if key != "input" {
-				state.Set(key, value)
-			}
-		}
-	}
-
-	// Also propagate any values the sub-graph set on its state.
-	state.Set("node."+n.id, subState.ToParams())
-	return nil
+	// Sub-graph EXECUTION retired with internal/workflow Runner
+	// (fusion plan Phase B): structure remains for genome patching;
+	// runtime composition belongs to sdk.Graph.
+	return fmt.Errorf("sub-graph %s: execution retired; use sdk.Graph", n.id)
 }
 
 // ID returns the sub-graph node identifier.

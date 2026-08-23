@@ -6,7 +6,6 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
-	"github.com/Timwood0x10/ares/internal/workflow/graph"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,10 +21,6 @@ func buildGenome(t *testing.T, name string, store evidence.Store) Genome {
 		cfg := DefaultWorkflowGenomeConfig()
 		cfg.EvidenceStore = store
 		return NewWorkflowGenome(dag, cfg)
-	case SchedulerGenomeName:
-		cfg := DefaultSchedulerGenomeConfig()
-		cfg.EvidenceStore = store
-		return NewSchedulerGenome(graph.NewDefaultScheduler(), cfg)
 	case RecoveryGenomeName:
 		cfg := DefaultRecoveryGenomeConfig()
 		cfg.EvidenceStore = store
@@ -56,7 +51,7 @@ func sourceFor(name string) string {
 
 func TestGenomeFitness_NoEvidence_Neutral(t *testing.T) {
 	for _, name := range []string{
-		WorkflowGenomeName, SchedulerGenomeName, RecoveryGenomeName,
+		WorkflowGenomeName, RecoveryGenomeName,
 		KnowledgeGenomeName, MemoryGenomeName,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -70,7 +65,7 @@ func TestGenomeFitness_NoEvidence_Neutral(t *testing.T) {
 
 func TestGenomeFitness_NilStore_Neutral(t *testing.T) {
 	for _, name := range []string{
-		WorkflowGenomeName, SchedulerGenomeName, RecoveryGenomeName,
+		WorkflowGenomeName, RecoveryGenomeName,
 		KnowledgeGenomeName, MemoryGenomeName,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -84,7 +79,7 @@ func TestGenomeFitness_NilStore_Neutral(t *testing.T) {
 
 func TestGenomeFitness_AggregatesEvidence(t *testing.T) {
 	for _, name := range []string{
-		WorkflowGenomeName, SchedulerGenomeName, RecoveryGenomeName,
+		WorkflowGenomeName, RecoveryGenomeName,
 		KnowledgeGenomeName, MemoryGenomeName,
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -22,7 +22,7 @@
 // Core APIs (with package paths):
 //   - genome.NewWorkflowGenome / NewSchedulerGenome / NewKnowledgeGenome /
 //     NewRecoveryGenome (internal/evolution/genome)
-//   - diff.NewWorkflowDiffer / NewSchedulerDiffer / NewKnowledgeDiffer /
+//   - diff.NewWorkflowDiffer / NewKnowledgeDiffer /
 //     NewRecoveryDiffer (internal/evolution/diff)
 //   - patch.Registry with GraphPatchExecutor / RecoveryPatchExecutor /
 //     KnowledgePatchExecutor (internal/evolution/patch + workflow/graph +
@@ -104,14 +104,11 @@ func main() {
 	_, _ = g.Start("A")
 
 	// ── Step 3: Register ALL genomes ──
-	// Workflow mutates the DAG topology, scheduler the node scheduling,
-	// knowledge the knowledge-retrieval parameters, recovery the failure
-	// handling policy.
+	// Workflow mutates the DAG topology, knowledge the knowledge-retrieval
+	// parameters, recovery the failure handling policy. (The scheduler
+	// dimension is retired — fusion plan §B1.)
 	genomeReg := genome.NewRegistry()
 	mustRegisterGenome(genomeReg, genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig()))
-	mustRegisterGenome(genomeReg, genome.NewSchedulerGenome(
-		graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig(),
-	))
 	mustRegisterGenome(genomeReg, genome.NewKnowledgeGenome(nil, genome.DefaultKnowledgeGenomeConfig()))
 	mustRegisterGenome(genomeReg, genome.NewRecoveryGenome(
 		&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},
@@ -124,7 +121,6 @@ func main() {
 	// into concrete runtime patches.
 	diffReg := diff.NewRegistry()
 	mustRegisterDiffer(diffReg, diff.NewWorkflowDiffer())
-	mustRegisterDiffer(diffReg, diff.NewSchedulerDiffer())
 	mustRegisterDiffer(diffReg, diff.NewKnowledgeDiffer())
 	mustRegisterDiffer(diffReg, diff.NewRecoveryDiffer())
 	fmt.Printf("3. Registered differs: %v\n", diffReg.List())

@@ -1,6 +1,9 @@
 package agentfabric
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // AgentSnapshot is the revival record captured when an agent dies with live
 // cognition (fusion plan Phase A1). It carries everything the recovery
@@ -17,6 +20,11 @@ type AgentSnapshot struct {
 	Cognitive    CognitiveState
 	Capabilities []string
 	Parent       string
+	// DiedAt is the fabric-clock instant the death was captured. When several
+	// dead agents share a capability, recovery picks the MOST RECENT death —
+	// the freshest cognition is the safest revival seed (A2 review fix:
+	// map-iteration order must not choose arbitrarily).
+	DiedAt time.Time
 }
 
 // snapshotStore keeps the LAST snapshot per agent identity. Entries are
@@ -61,14 +69,27 @@ func (s *snapshotStore) clear(id string) {
 func (s *snapshotStore) findByCapability(capability string) (string, AgentSnapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	bestID := ""
+	var best AgentSnapshot
 	for id, snap := range s.byID {
+		matches := false
 		for _, c := range snap.Capabilities {
 			if c == capability {
-				return id, snap, true
+				matches = true
+				break
 			}
 		}
+		if !matches {
+			continue
+		}
+		if bestID == "" || snap.DiedAt.After(best.DiedAt) {
+			bestID, best = id, snap
+		}
 	}
-	return "", AgentSnapshot{}, false
+	if bestID == "" {
+		return "", AgentSnapshot{}, false
+	}
+	return bestID, best, true
 }
 
 // captureFromAgent copies the revivable facts off an agent about to be
@@ -76,7 +97,7 @@ func (s *snapshotStore) findByCapability(capability string) (string, AgentSnapsh
 // additionally guarded by the agent's own lock, so we take it briefly to get
 // a consistent copy (code_rules_v2 §4.3: shared-state ownership documented at
 // the field).
-func captureFromAgent(a *Agent) AgentSnapshot {
+func captureFromAgent(a *Agent, diedAt time.Time) AgentSnapshot {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	cog := a.cognitive
@@ -84,7 +105,7 @@ func captureFromAgent(a *Agent) AgentSnapshot {
 		cog.SchemaVersion = CognitiveStateSchemaVersion
 	}
 	caps := append([]string(nil), a.Capabilities...)
-	return AgentSnapshot{Cognitive: cog, Capabilities: caps, Parent: a.Parent}
+	return AgentSnapshot{Cognitive: cog, Capabilities: caps, Parent: a.Parent, DiedAt: diedAt}
 }
 
 // LastSnapshot returns the snapshot captured when agentID died, if any.

@@ -280,7 +280,7 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 	// A1: capture the revival record BEFORE the registry entry disappears —
 	// after this delete the agent is unreadable, so the recovery subsystem's
 	// in-place-revival decision depends on this snapshot existing.
-	snap := captureFromAgent(a)
+	snap := captureFromAgent(a, f.now())
 	delete(f.agents, agentID)
 	f.releaseLocked(a.resources)
 	a.resources = nil

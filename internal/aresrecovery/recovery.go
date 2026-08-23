@@ -37,7 +37,11 @@ type Recovery struct {
 	cogFactory agentfabric.CognitionFactory
 	// policy is the restart policy (max attempts, backoff).
 	policy RestartPolicy
-	// restarts tracks how many times each agent id has been restarted.
+	// restarts tracks how many times each agent id has been restarted. The
+	// count is LIFETIME-CUMULATIVE per identity and is intentionally NEVER
+	// reset by a successful revival: the budget exists to stop a broken agent
+	// from cycling forever, so total deaths — not consecutive ones — consume
+	// it. A2 review clarification (2026-08-22).
 	mu       sync.Mutex
 	restarts map[string]int
 	now      func() time.Time
@@ -226,6 +230,8 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 //   - error: ErrRecoveryExhausted.
 func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cognitive agentfabric.CognitiveState, capabilities []string) (*agentfabric.Agent, error) {
 	r.mu.Lock()
+	// Lifetime-cumulative budget (see the restarts field note): successful
+	// revivals do NOT reset the counter — only total deaths consume it.
 	attempts := r.restarts[deadAgentID]
 	if attempts >= r.policy.MaxRestarts {
 		r.mu.Unlock()

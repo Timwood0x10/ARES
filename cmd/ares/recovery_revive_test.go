@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -218,12 +217,4 @@ func TestRevivalWithoutSnapshotUsesReplacement(t *testing.T) {
 	if _, err := h.agents.Get("plain-worker"); err == nil {
 		t.Fatal("no-snapshot death must not revive the old identity")
 	}
-	if !strings.HasPrefix(registeredExecutorPrefixes(h), "recovery-") &&
-		len(h.sink.types) == 0 {
-		t.Log("replacement path exercised via generated ids")
-	}
 }
-
-// registeredExecutorPrefixes is a placeholder collector kept trivial: the
-// assertion above relies on fabric identity absence, not on registry introspection.
-func registeredExecutorPrefixes(h *reviveHarness) string { return "recovery-" }

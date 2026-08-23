@@ -191,6 +191,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Second graph-execution engine retired; sdk.Graph is the only DAG engine**
+  (fusion plan Phase B): deleted the `internal/workflow` root execution stack
+  (Runner/compiler/scheduler/scope/binding, ~3.6k lines) whose production
+  callers were already zero — only three deprecated API islands referenced it
+  (`api/graph`, `api/service/workflow`, `api/client`, ~5k lines, also deleted,
+  plus the non-functional `ares workflow run` CLI). `internal/workflow/graph`
+  survives as STRUCTURE + patcher for the evolution genome; its execution-side
+  shims (`CompileBound`/`Execute`/`CompileEdges`) were removed after verifying
+  zero callers. The scheduler genome DIMENSION is retired generation-side
+  (scheduler genome/differ/registrations deleted; applier retained for legacy
+  persisted patches); `sdk.Graph.MaxRoundConcurrency` carries the one live
+  semantic (concurrency throttling). Example 03 rewritten against sdk.Graph
+  covering conditional edge / linear chain / fan-out+join / router-bounded
+  loop.
+
 - **Unified recovery: stateful cognitive revival** (fusion plan Phase A):
   `agentfabric` now captures a death snapshot (`AgentSnapshot`: versioned
   CognitiveState + declared capabilities + provenance Parent) the moment an
