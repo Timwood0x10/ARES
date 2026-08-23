@@ -191,6 +191,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Unified recovery: stateful cognitive revival** (fusion plan Phase A):
+  `agentfabric` now captures a death snapshot (`AgentSnapshot`: versioned
+  CognitiveState + declared capabilities + provenance Parent) the moment an
+  agent is Killed — after which the registry entry is unreadable. The
+  arbitration rule in the kernel recovery loop: when a dead agent with
+  matching capability has a snapshot AND restart budget remains,
+  `RestartAgent` revives it IN PLACE under the SAME identity (provenance and
+  audit continuity), restores the verbatim cognition, and consumes the
+  snapshot; otherwise the pre-existing W1 replacement path takes over.
+  Retire is terminal and clears any stale snapshot. This deletes the parallel
+  `internal/plugins/resurrection` supervisor whose heartbeat→rebuild strategy
+  is now covered by the single kernel recovery loop.
+  Tests: `internal/agentfabric/snapshot_test.go`,
+  `cmd/ares/recovery_revive_test.go`.
 - **Chaos endpoints retargeted at the kernel lifecycle** (P1 unified-lifecycle
   integration): with the peer runtime active, `POST /api/chaos/random-kill` /
   `kill-all` kill Agent-Fabric agents (emitting `agent.killed`) instead of

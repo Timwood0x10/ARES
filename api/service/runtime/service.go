@@ -2,7 +2,7 @@
 // superseded by sdk.NewRuntime / sdk.Runtime; this package is kept only for
 // migration.
 // Package ares_runtime provides a high-level API for agent lifecycle management.
-// It wraps internal/ares_runtime, internal/ares_events, and internal/plugins/resurrection
+// It wraps internal/ares_runtime, internal/ares_events, and the kernel recovery subsystem
 // into a single entry point for external users.
 //
 // Usage:
@@ -23,7 +23,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
 )
 
 // Config holds configuration for the ares_runtime service.
@@ -64,7 +63,6 @@ func DefaultConfig() Config {
 type Service struct {
 	config     Config
 	rt         *ares_runtime.Manager
-	supervisor *resurrection.Supervisor
 	eventStore ares_events.EventStore
 	hbMon      *ahp.HeartbeatMonitor
 }
@@ -115,18 +113,6 @@ func NewService(config Config, eventStore ares_events.EventStore) (*Service, err
 		MaxMissed: config.MaxMissedHeartbeats,
 	})
 
-	// Create resurrection plugin.
-	health := resurrection.NewHeartbeatAdapter(hbMon)
-	sup, err := resurrection.New(health, resurrection.Config{
-		CheckInterval:     config.HeartbeatInterval,
-		ResurrectTimeout:  config.ResurrectTimeout,
-		MaxAttempts:       config.MaxRestartsPerAgent,
-		HeartbeatInterval: config.HeartbeatInterval,
-	}, eventStore)
-	if err != nil {
-		return nil, fmt.Errorf("ares_runtime: create resurrection supervisor: %w", err)
-	}
-
 	// Create ares_runtime manager.
 	rtConfig := &ares_runtime.Config{
 		HealthCheckInterval: config.HeartbeatInterval,
@@ -141,7 +127,6 @@ func NewService(config Config, eventStore ares_events.EventStore) (*Service, err
 	return &Service{
 		config:     config,
 		rt:         rt,
-		supervisor: sup,
 		eventStore: eventStore,
 		hbMon:      hbMon,
 	}, nil
@@ -153,13 +138,15 @@ func NewService(config Config, eventStore ares_events.EventStore) (*Service, err
 // Args:
 //
 //	agent - the agent to monitor.
-//	factory - creates a fresh agent instance on resurrection.
+//	factory - creates a fresh agent instance for lifecycle restarts.
 func (s *Service) RegisterAgent(agent base.Agent, factory func() base.Agent) {
 	if agent == nil || factory == nil {
 		return
 	}
 	s.rt.RegisterAgent(agent, factory)
-	s.supervisor.Watch(agent, factory)
+	// Supervision moved to the kernel recovery subsystem (aresrecovery +
+	// agentfabric cognitive snapshots); this deprecated facade no longer
+	// duplicates it (fusion plan Phase A3).
 	log.Info("ares_runtime: agent registered", "agent_id", agent.ID(), "type", agent.Type())
 }
 
@@ -168,18 +155,12 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.rt.Start(ctx); err != nil {
 		return fmt.Errorf("ares_runtime: start manager: %w", err)
 	}
-	if err := s.supervisor.Start(ctx); err != nil {
-		return fmt.Errorf("ares_runtime: start supervisor: %w", err)
-	}
 	log.Info("ares_runtime: service started")
 	return nil
 }
 
 // Stop gracefully shuts down all agents and monitoring.
 func (s *Service) Stop() error {
-	if err := s.supervisor.Stop(); err != nil {
-		log.Warn("ares_runtime: supervisor stop error", "error", err)
-	}
 	if err := s.rt.Stop(); err != nil {
 		return fmt.Errorf("ares_runtime: stop manager: %w", err)
 	}

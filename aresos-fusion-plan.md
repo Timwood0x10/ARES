@@ -19,6 +19,8 @@
 
 // 代码里：只有两个动词
 rt := sdk.NewRuntime(sdk.FromConfig("ares.yaml"))  // 起运行时（读配置）
+// 注：FromConfig 是 LoadConfigFile+ToOptions 的薄糖，新增公共符号需计入
+// v040 设计的 ≤10 符号预算，实现时不得夹带其他面。
 agent := rt.NewAgent(...)                          // 造 agent
 // 完。之后不需要在代码里接线任何子系统。
 ```
@@ -61,6 +63,7 @@ agent := rt.NewAgent(...)                          // 造 agent
    `Recover`+`CognitiveState`），不得降级为纯任务重排；编排必须覆盖
    委托/流水线/编排三模式；DAG 必须支持条件边+路由+循环。
 5. **每步可独立编译、独立测试、独立提交**；每步都有客观验收（编译/vet/race/引用扫描）。
+6. **提交纪律**：每次 commit 由用户当次确认（code_rules_v2 铁律 #1），AI 不自行提交。
 
 ---
 
@@ -68,7 +71,7 @@ agent := rt.NewAgent(...)                          // 造 agent
 
 | 能力 | 现状 | 证据 | 裁定 |
 |------|------|------|------|
-| 任务级恢复 | 已接线 | `peer_mode.go:190,234`、`kernel_loop.go:282` `RequeueExpiredLeases` | **保留为恢复主干** |
+| 任务级恢复 | 已接线 | `createPeerAgents` 恢复循环、`runKernelRecoveryLoop` 的 `RequeueExpiredLeases` | **保留为恢复主干** |
 | agent 级复活（策略） | 未接线 | `internal/plugins/resurrection`，仅 `api/service/runtime` 引用，`cmd/ares` 不走 | **策略并入恢复主干，删插件** |
 | agent 复活（原语） | 已存在 | `agentfabric` `Recover`/`CognitiveState`/`SetCognitiveState` | **直接复用，不新造** |
 | 编排三 API | 未接线 | `agentipc/collaboration.go:48/87/152`，仅测试引用 | **语义并入 sdk.Graph，删 API** |
@@ -94,8 +97,10 @@ agent := rt.NewAgent(...)                          // 造 agent
 
 ### A1. 认知快照贯通（1.5 天）
 **做什么**：确认 fabric `CognitiveState()` 快照在 agent 被 `Kill`/租约过期时可读取并持久化到
-恢复子系统可访问处（内存表或 checkpoint store 二选一，优先复用现有 SnapshotStore，
-若无则最小新增一个内存 `map[agentID]CognitiveState`，写在 fabric 事件回调里）。
+恢复子系统可访问处。**存储裁定（2026-08-22 评审修订）**：禁止裸 `map[agentID]CognitiveState`
+——按 code_rules_v2 §6.1，快照必须走带 SchemaVersion 的信封封装（复用 agentfabric 既有的
+认知 schema 版本机制，与 `DecodeCognitiveState` 同源）；每 agent 仅保留最后一份快照，
+`Recover` 消费后清除、Agent 进入 Retired 终态时清除，防止长期运行内存无界。
 **验收**：
 - [ ] 单测：agent 运行→写入认知→`Kill`→恢复子系统能取到该 agent 的最后认知快照（字段完整、SchemaVersion 正确）。
 - [ ] `go test -race ./internal/aresrecovery/ ./internal/agentfabric/` 全绿。
@@ -106,6 +111,17 @@ agent := rt.NewAgent(...)                          // 造 agent
 `RecoverDeadAgents(ctx)`：检测 fabric 中处于 dead/失联且带存活认知快照的 agent →
 调用 `fabric.Recover(agentID, snapshot)` 原地复活（或 spawn 替身承接快照，取 fabric 语义）。
 把这条挂进 `runKernelRecoveryLoop` 同一 tick，**不新增第二个后台循环**。
+
+**双路仲裁规则（2026-08-22 评审修订，必须实现并在测试断言）**：
+同一死亡事件只允许一条路径处理，优先级固定：
+1. 存在认知快照 **且** 重启计数 < `maxRestarts` → **原地复活**（继承原 agentID 与
+   provenance，审计连续；这是 Kernel mechanism，不是 cognition，不违反 Rule ①）；
+2. 无快照或超限 → 走既有 W1 replacement 路径（新 ID，从 checkpoint 续跑任务）；
+3. 二者在同一 tick 内互斥，禁止"既复活又派替身"双重处理。
+
+**哲学边界（写入注释防翻案）**：§12 "Agent 是 disposable" 的含义是 *不必为救 agent 而救*
+（任务永远优先）；带状态原地复活是降低重学成本的机制优化——任务仍由 durable intent 驱动，
+复活与否由 Kernel 依策略裁决，Agent 认知不参与该决策。
 **验收**：
 - [ ] 集成测试：spawn agent→写认知→模拟死亡→一个 tick 后 agent 状态回 Idle 且认知快照被还原（断言 `CognitiveState()` 等于死前）。
 - [ ] "任务不丢"回归：原 `RequeueExpiredLeases` 行为不变，既有恢复测试全绿。
@@ -114,11 +130,11 @@ agent := rt.NewAgent(...)                          // 造 agent
 
 ### A3. 删除 resurrection 插件（0.5 天）
 **做什么**：确认 `internal/plugins/resurrection` 的能力已被 A2 完全覆盖后，删除该包；
-清理 `api/service/runtime/service.go:120` 的 `resurrection.New` 引用（改走统一恢复子系统或直接移除）。
+清理 `api/service/runtime/service.go` 内 `resurrection.New` 引用（改走统一恢复子系统或直接移除）。
 **验收**：
 - [ ] 全仓引用扫描：`resurrection` 包零生产引用、零测试引用后删除。
 - [ ] `go build ./... && go test ./...` 全绿。
-- [ ] `actions.go:258` 关于 resurrection 的注释更新为指向统一恢复子系统。
+- [ ] `handleChaos` 内关于恢复路径的注释更新为指向统一恢复子系统。
 
 **阶段 A 出口**：恢复只剩 `aresrecovery` 一套，一个循环覆盖任务重排 + agent 认知复活，
 resurrection 插件消失。agent 复活**无折扣**（有状态认知还原）。
@@ -136,6 +152,18 @@ resurrection 插件消失。agent 复活**无折扣**（有状态认知还原）
 **做什么**：新增 `internal/workflow/graph` → `sdk.Graph` 的编译函数
 （节点映射为 agent/func 节点，边映射为 sdk.Graph 边+条件）。**不改 genome 的结构定义**，
 只把它的"执行"入口从 `workflow.Runner` 换成"编译成 sdk.Graph 再 `RunGraph`"。
+
+**调度维度裁定（2026-08-22 评审修订，防铁律 4 打折扣）**：
+实测 `workflow/graph` 携带可插拔调度器（FIFO/Priority/SJF/RR/WeightedFair），且 genome 把
+scheduler 作为可进化维度（`SchedulerGenomeName`）、存在 `PatchChangeScheduler` 能力。
+`sdk.Graph` 按 v040 设计不做调度器（就绪即全并行批次）。处置：
+1. `sdk.Graph` 新增可选字段 `MaxRoundConcurrency int`（errgroup SetLimit，0=不限），
+   承载旧调度器的核心价值——并发节流；
+2. 四种排序型策略（FIFO/Priority/SJF/RR/Fair 中除节流外的排序语义)**明示退役**：
+   全并行批次下不存在"挑选谁先跑"的决策点，保留即空转；
+3. genome 的 `scheduler` 维度同步退役，代码留 `TODO(tech-debt): retired with workflow.Runner,
+   see aresos-fusion-plan §B1` 痕迹（规范 §0.3）；
+4. 以上三点作为 B1 验收新增项：退役后有引用扫描零残留断言。
 **验收**：
 - [ ] 单测：一个含条件分支+并行分支的 workflow graph 编译为 sdk.Graph 后，`RunGraph` 结果与旧 `Runner` 语义等价（同输入同输出，且并行分支真并行）。
 - [ ] 进化路径回归：`provide_new_evolution.go` 消费的 WorkflowGenome 经新路径执行，进化相关测试全绿。
@@ -197,6 +225,8 @@ resurrection 插件消失。agent 复活**无折扣**（有状态认知还原）
 **验收**：
 - [ ] 端点集成测试：提交一个多节点 DAG（含并行+条件），内核执行，返回各节点结果。
 - [ ] 复用鉴权：端点走既有 `checkAuth`+审计，无旁路（安全回归）。
+- [ ] 输入防御（code_rules_v2 §9）：payload 大小上限、节点/边数复用 Graph builder
+      硬帽（1024/4096）、携带 `schema_version` 字段并做版本校验；非法输入 400 带原因。
 - [ ] `go test -race ./cmd/ares/` 全绿。
 
 **阶段 C 出口**：编排只剩 sdk.Graph 一套 API；三模式无折扣；topic 协议兼容；
@@ -212,7 +242,8 @@ resurrection 插件消失。agent 复活**无折扣**（有状态认知还原）
 - [ ] 引用矩阵：resurrection 插件、workflow.Runner、collaboration 三 API、api/graph **全部为 0 引用且已删除**。
 - [ ] 单引擎自证：全仓搜索节点执行入口，唯一路径为 `Runtime.Submit`（内核量子调度）。
 - [ ] 全接入自证：阶段 A/B/C 每个能力都能从 `cmd/ares` 生产路径追踪到调用链（文件:行号）。
-- [ ] 全量门禁：`gofmt -l`（空）、`go vet ./...`、`go build ./...`、`go test -race ./...` 全绿；`staticcheck ./...` 无死代码/空转告警。
+- [ ] 全量门禁：`gofmt -l`（空）、`go vet ./...`、`go build ./...`、`go test -race ./...` 全绿；
+      `staticcheck ./...` 无死代码/空转告警；`golangci-lint run ./...` 0 issues（= make check 全绿）。
 - [ ] CHANGELOG 记录本次融合；设计文档 §7/§9 更新收敛边界与删除清单。
 
 ---

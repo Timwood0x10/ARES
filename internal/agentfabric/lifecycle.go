@@ -249,6 +249,9 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	a.mu.Lock()
 	a.State = StateRetired
 	a.mu.Unlock()
+	// A1: Retire is terminal — any death snapshot from an earlier kill/revive
+	// cycle of this identity must not resurrect later.
+	f.snapshots.clear(agentID)
 	f.mu.Unlock()
 	f.record(ctx, a, EventAgentRetired, nil)
 	return nil
@@ -274,6 +277,10 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 		f.mu.Unlock()
 		return ErrAgentNotFound
 	}
+	// A1: capture the revival record BEFORE the registry entry disappears —
+	// after this delete the agent is unreadable, so the recovery subsystem's
+	// in-place-revival decision depends on this snapshot existing.
+	snap := captureFromAgent(a)
 	delete(f.agents, agentID)
 	f.releaseLocked(a.resources)
 	a.resources = nil
@@ -282,6 +289,7 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 	// in f.children so the parent's causal descendants are still discoverable
 	// even after the parent is gone (§13 invariant #1 + #7).
 	f.mu.Unlock()
+	f.snapshots.save(agentID, snap)
 	f.record(ctx, a, EventAgentKilled, nil)
 	return nil
 }

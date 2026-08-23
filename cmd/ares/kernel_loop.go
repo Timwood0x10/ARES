@@ -296,6 +296,27 @@ func runKernelRecoveryLoop(
 					continue
 				}
 				rt := tasks[0]
+
+				// Fusion-plan A2 arbitration (priority 1): if a dead agent
+				// with matching capability left a cognitive snapshot, revive
+				// THAT identity in place — same id, restored cognition,
+				// continuous provenance — instead of spawning a generic
+				// replacement. RestartAgent enforces the maxRestarts budget
+				// and returns ErrRecoveryExhausted past it, in which case we
+				// fall through to the generic replacement below.
+				if snapID, snap, found := recovery.RevivableSnapshot(rt.Capability); found {
+					if revived, err := recovery.RestartAgent(ctx, snapID, snap.Cognitive, snap.Capabilities); err == nil {
+						exec := executorFactory(revived.Identity, rt.Capability)
+						if exec != nil {
+							registerExecutor(taskID, revived.Identity, exec)
+							log.Printf("kernel recovery loop: revived %q in place (cognition restored) for task %q", revived.Identity, taskID)
+							continue
+						}
+					} else {
+						log.Printf("kernel recovery loop: in-place revival of %q unavailable (%v); using replacement", snapID, err)
+					}
+				}
+
 				replacementID := fmt.Sprintf("recovery-%s-%d", taskID, time.Now().UnixNano())
 				executor := executorFactory(replacementID, rt.Capability)
 				if executor == nil {

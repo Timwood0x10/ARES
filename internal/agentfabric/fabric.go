@@ -28,6 +28,12 @@ type Fabric struct {
 	// currently claimed amounts. Both are guarded by mu.
 	resourceBudget map[string]float64
 	allocated      map[string]float64
+
+	// snapshots keeps the last cognitive snapshot of agents that died via
+	// Kill, captured BEFORE the registry entry is removed (after which the
+	// agent is unreadable). Guarded by its own lock inside snapshotStore.
+	// Fusion plan Phase A1: agent-level cognitive resurrection.
+	snapshots *snapshotStore
 }
 
 // EventSink receives lifecycle events. Implementations may persist them
@@ -68,6 +74,7 @@ func NewFabric() *Fabric {
 		now:            time.Now,
 		resourceBudget: make(map[string]float64),
 		allocated:      make(map[string]float64),
+		snapshots:      newSnapshotStore(),
 	}
 }
 

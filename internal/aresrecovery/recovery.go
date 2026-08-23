@@ -233,10 +233,15 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	}
 	r.restarts[deadAgentID] = attempts + 1
 	r.mu.Unlock()
-	// Spawn the replacement with the dead agent's capabilities.
-	a, err := r.spawnAgent(ctx, agentfabric.SpawnSpec{
-		Capabilities: capabilities,
-	})
+	// Fusion-plan A2 arbitration: when a death snapshot exists for THIS
+	// identity, revive IN PLACE under the same id — provenance and the audit
+	// trail stay continuous ("有状态认知复活"). Without a snapshot, fall back
+	// to a freshly generated identity (pure W1 replacement).
+	spec := agentfabric.SpawnSpec{Capabilities: capabilities}
+	if _, ok := r.agents.LastSnapshot(deadAgentID); ok {
+		spec.Identity = deadAgentID
+	}
+	a, err := r.spawnAgent(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("aresrecovery: restart spawn for %s: %w", deadAgentID, err)
 	}
@@ -244,6 +249,9 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	if err := r.agents.Recover(ctx, a.Identity, cognitive); err != nil {
 		return nil, fmt.Errorf("aresrecovery: restart recover for %s: %w", deadAgentID, err)
 	}
+	// The snapshot is now CONSUMED by this revival; keeping it would let a
+	// much later death of the revived body restore stale cognition.
+	r.agents.ClearSnapshot(deadAgentID)
 	return a, nil
 }
 
@@ -252,6 +260,13 @@ func (r *Recovery) RestartCount(agentID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.restarts[agentID]
+}
+
+// RevivableSnapshot exposes the agent fabric's death-snapshot matching the
+// given capability (fusion-plan A2 arbitration input). Found does not imply
+// allowed — RestartAgent still enforces the restart budget.
+func (r *Recovery) RevivableSnapshot(capability string) (string, agentfabric.AgentSnapshot, bool) {
+	return r.agents.FindRevivableSnapshot(capability)
 }
 
 // RecoverFromAgentDeath is the full recovery chain (design P5 acceptance:
