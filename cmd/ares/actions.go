@@ -252,6 +252,25 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 	w.Header().Set("Content-Type", "application/json")
 	switch chaosType {
 	case "random-kill":
+		// P1 unified lifecycle: when the peer kernel exists, kill a fabric
+		// agent so the death flows through the REAL kernel recovery chain
+		// (agent.killed → lease expiry → requeue → replacement) instead of
+		// the legacy runtime's resurrection.
+		if h.kernel != nil {
+			target, err := chaosKillRandomFabric(r.Context(), h.kernel)
+			if err != nil {
+				h.auditAction("chaos-random-kill", "unknown", princ, false)
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			h.auditAction("chaos-random-kill", target, princ, true)
+			writeJSON(w, map[string]any{
+				"chaos": "random-kill", "target": target, "success": true,
+				"message": "chaos: killed fabric agent " + target + " (kernel recovery will resume its tasks)",
+			})
+			return
+		}
 		agents := h.mgr.ListAgents()
 		if len(agents) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
@@ -271,6 +290,20 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 			"message": "chaos: killed random agent " + target.ID,
 		})
 	case "kill-all":
+		if h.kernel != nil {
+			killed, failed, err := chaosKillAllFabric(r.Context(), h.kernel)
+			if err != nil {
+				h.auditAction("chaos-kill-all", "unknown", princ, false)
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, true)
+			writeJSON(w, map[string]any{
+				"chaos": "kill-all", "killed": killed, "failed": failed, "success": true,
+			})
+			return
+		}
 		agents := h.mgr.ListAgents()
 		killed := make([]string, 0, len(agents))
 		for _, a := range agents {
@@ -283,6 +316,25 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 			"chaos": "kill-all", "killed": killed, "success": true,
 		})
 	case "recover":
+		// Kernel semantics: what recovers is the TASK (durable intent), not
+		// the agent (disposable cognition). Force one recovery sweep that
+		// requeues every expired-lease task; the recovery loop spawns a
+		// replacement executor on demand and resumes from checkpoint.
+		if h.kernel != nil {
+			requeued, err := chaosRecoverSweep(h.kernel)
+			if err != nil {
+				h.auditAction("chaos-recover", "unknown", princ, false)
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			h.auditAction("chaos-recover", strings.Join(requeued, ","), princ, true)
+			writeJSON(w, map[string]any{
+				"chaos": "recover", "recovered_tasks": requeued, "success": true,
+				"message": "requeued expired-lease tasks; replacement executors resume from checkpoint",
+			})
+			return
+		}
 		agents := h.mgr.ListAgents()
 		recovered := make([]string, 0, len(agents))
 		for _, a := range agents {

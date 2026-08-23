@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -55,8 +56,9 @@ func normalizedPeers(cfg *ares_config.Config) []ares_config.PeerAgentConfig {
 // The spawn_agent / create_task syscalls are wired into the shared ToolBinder
 // so every agent can autonomously decide to decompose work and spawn peers.
 // The Kernel enforces quota/capability validation on every spawn.
-// createPeerAgents builds a set of peer agents WITHOUT a Leader (C1: 平铺
-// capability agent 注册进 agentfabric 动态群体). Each configured sub-agent is
+// createPeerAgents builds a set of peer agents WITHOUT a Leader (C1 flat
+// capability agents registered into the agentfabric dynamic population).
+// Each configured sub-agent is
 // spawned into the Agent Fabric WITH its execution body (ChatCognition) and
 // its distilled experience prior (G1), so the scheduler's candidate pool —
 // queried live from the fabric (B1) — is exactly the set of real, executable
@@ -247,7 +249,7 @@ func createPeerAgents(
 // peer agent. It carries the same LLM + tool stack as the configured agents
 // (the createExecutor wiring), but as a self-contained agentfabric execution
 // body — no sub.Agent wrapper. This is the production default execution body
-// of the peer runtime (aresos-agentos-plan A1.4: tool-loop 下沉到 agentfabric).
+// of the peer runtime (aresos-agentos-plan A1.4: tool-loop sunk into agentfabric).
 func newPeerChatCognition(
 	agentID string,
 	llmAdapter output.LLMAdapter,
@@ -309,7 +311,8 @@ func newPeerExecutor(
 
 // loadExperiencePrior loads the most recent distilled experience for the
 // agent and returns it as the G1 spawn prior (aresos-agentos-plan G1: Memory
-// Distill 挂到 agent 生命周期 — 蒸馏异步产出 → 经验仓库查询 → spawn 注入).
+// Distill onto the agent lifecycle — async distillation feeds an experience
+// store queried at spawn time and injected as a prior).
 // The prior is injected as SpawnSpec.ExperiencePrior so the agent starts with
 // reusable distilled experience as its cognitive context instead of a blank
 // slate. Returns nil when the repo is unavailable, the agent has no distilled
@@ -367,6 +370,90 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 // _ ensures submitPeerTask is retained as the peer-mode task submission API
 // even before its HTTP endpoint is wired (staticcheck U1000).
 var _ = submitPeerTask
+
+// ── Kernel-path chaos (P1: unified lifecycle) ───────────────────────────
+//
+// The /api/chaos/* endpoints previously killed agents through the legacy
+// ares_runtime manager pool, which has its own resurrection semantics — a
+// SECOND lifecycle next to the kernel's agentfabric + aresrecovery pair.
+// These helpers retarget chaos at the kernel fabric so an injected death
+// exercises the REAL recovery chain: agent.killed → lease expiry → requeue →
+// replacement executor resumes from checkpoint. The legacy mgr path remains
+// only as a fallback for non-peer deployments.
+
+// chaosKillRandomFabric kills one uniformly-chosen LIVE agent in the kernel's
+// Agent Fabric and returns its id. Agents already dead (killed earlier) are
+// skipped; killing an empty fabric is a caller-visible error.
+func chaosKillRandomFabric(ctx context.Context, k *kernelHandle) (string, error) {
+	if k == nil || k.agents == nil {
+		return "", fmt.Errorf("peer mode: kernel agent fabric not wired")
+	}
+	live := liveFabricAgents(k.agents)
+	if len(live) == 0 {
+		return "", fmt.Errorf("peer mode: no live agents in the fabric")
+	}
+	target := live[rand.Intn(len(live))]
+	if err := k.agents.Kill(ctx, target); err != nil {
+		return "", fmt.Errorf("peer mode: kill %s: %w", target, err)
+	}
+	log.Printf("peer mode: chaos killed agent %q — lease expiry + replacement recovery will follow", target)
+	return target, nil
+}
+
+// chaosKillAllFabric kills every LIVE agent in the kernel's Agent Fabric.
+// It returns separate killed/failed lists because chaos engineering cares
+// precisely about what did NOT die: a per-agent Kill error is logged AND
+// surfaced instead of being silently skipped. err != nil is reserved for
+// "the fabric itself is not wired", mirroring chaosKillRandomFabric.
+func chaosKillAllFabric(ctx context.Context, k *kernelHandle) (killed, failed []string, err error) {
+	if k == nil || k.agents == nil {
+		return nil, nil, fmt.Errorf("peer mode: kernel agent fabric not wired")
+	}
+	killed = make([]string, 0)
+	failed = make([]string, 0)
+	for _, id := range liveFabricAgents(k.agents) {
+		if kerr := k.agents.Kill(ctx, id); kerr != nil {
+			log.Printf("peer mode: chaos kill-all failed for %q: %v", id, kerr)
+			failed = append(failed, id)
+			continue
+		}
+		killed = append(killed, id)
+	}
+	return killed, failed, nil
+}
+
+// chaosRecoverSweep forces one recovery sweep over the kernel's task fabric:
+// every expired-lease task is requeued to READY so the scheduler (and, when
+// no capable executor remains, the replacement factory) can pick it up.
+//
+// The two outcomes are deliberately distinct: an unwired recovery subsystem
+// is an ERROR (operators must never see success with zero work done when the
+// sweeper does not exist), while an empty result is a NORMAL response
+// meaning nothing had expired. Returns the requeued task ids — the kernel
+// recovers TASKS, not agents, because agents are disposable cognition and
+// tasks are durable intent.
+func chaosRecoverSweep(k *kernelHandle) ([]string, error) {
+	if k == nil || k.recovery == nil {
+		return nil, fmt.Errorf("peer mode: kernel recovery not wired")
+	}
+	requeued := k.recovery.RequeueExpiredLeases()
+	if len(requeued) > 0 {
+		log.Printf("peer mode: chaos recover sweep requeued %d expired task(s)", len(requeued))
+	}
+	return requeued, nil
+}
+
+// liveFabricAgents lists fabric ids that still resolve to a live agent
+// (Get errors after Kill).
+func liveFabricAgents(agents *agentfabric.Fabric) []string {
+	live := make([]string, 0)
+	for _, id := range agents.Agents() {
+		if _, err := agents.Get(id); err == nil {
+			live = append(live, id)
+		}
+	}
+	return live
+}
 
 // peerExecutorAdapter wraps a sub.Agent to satisfy the agentsyscall.Executor
 // interface. The adapter translates sub.StepOutcome to agentsyscall.StepOutcome

@@ -84,8 +84,8 @@ type Scheduler struct {
 	// confidence into the tracker. Nil skips recording (backward compatible).
 	attribution *aresrecovery.ExecutionAttribution
 	// agents is the optional agentfabric.Fabric whose live IDLE agents are
-	// schedulable candidates (aresos-agentos-plan B1: scheduler 候选来自
-	// agentfabric 动态群体). Every drain re-queries the fabric, so a spawned
+	// schedulable candidates (aresos-agentos-plan B1: the scheduler's candidate
+	// pool comes from the agentfabric dynamic population). Every drain re-queries the fabric, so a spawned
 	// agent becomes schedulable immediately and a killed one disappears — no
 	// explicit registry sync. Nil keeps the static executor registry only
 	// (backward compatible with tests and minimal wiring).
@@ -172,8 +172,8 @@ func (s *Scheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) *Sched
 }
 
 // WithAgentFabric attaches the agent lifecycle fabric so every live, IDLE,
-// executable fabric agent is a schedulable candidate (B1: 单一调度回路 —
-// scheduler 只认统一 Agent). It is wired by the kernel lifecycle once the
+// executable fabric agent is a schedulable candidate (B1: single scheduling
+// loop — the scheduler recognizes only the unified Agent). It is wired by the kernel lifecycle once the
 // fabric exists; nil keeps the static executor registry only. Returns the
 // scheduler for chaining.
 func (s *Scheduler) WithAgentFabric(f *agentfabric.Fabric) *Scheduler {
@@ -312,7 +312,7 @@ func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 // execution are recovered so a single bad step cannot kill the loop.
 // TODO(tech-debt): the per-agent local ready-queue design
 // (taskfabric.AgentQueue/Steal, ares-runtime.md §5) was removed as unused
-// (v0.3.0 review P1: Steal 空转 — 要么接线要么删除); the shared ReadyTasks()
+// (v0.3.0 review P1: Steal idled unused — wire it or delete it); the shared ReadyTasks()
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.
 func (s *Scheduler) drain(ctx context.Context) {
@@ -500,7 +500,7 @@ func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 	}
 	// B1: live fabric agents are candidates too. Every drain re-queries the
 	// fabric, so a freshly spawned IDLE agent becomes schedulable immediately
-	// and a killed one disappears (spawn/kill 即时反映到候选集).
+	// and a killed one disappears (spawn/kill reflected in the candidate set immediately).
 	cands = s.appendFabricCandidates(cands, execs)
 	return s.executeWithCandidates(ctx, taskID, cands)
 }

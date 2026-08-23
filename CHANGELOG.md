@@ -189,6 +189,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dependency upgrade + serve startup refactor** (`5cca294b`): dependencies
   upgraded; monitoring/proxy setup removed from `runServe` (`d6a2f881`).
 
+### Changed
+
+- **Chaos endpoints retargeted at the kernel lifecycle** (P1 unified-lifecycle
+  integration): with the peer runtime active, `POST /api/chaos/random-kill` /
+  `kill-all` kill Agent-Fabric agents (emitting `agent.killed`) instead of
+  legacy manager-pool entries, so injected deaths flow through the REAL kernel
+  recovery chain — lease expiry → requeue → replacement executor resumes from
+  checkpoint. `POST /api/chaos/recover` now forces one recovery sweep and
+  reports the REQUEUED TASKS (`recovered_tasks`; tasks are durable intent,
+  agents are disposable cognition). The legacy manager path remains only as a
+  non-peer fallback. Tests: `cmd/ares/actions_chaos_test.go` (HTTP → kernel →
+  recovery contract, `-race` stable).
+
 ### Fixed
 
 - **Cooperative preemption was unreachable through the scheduler loop**
