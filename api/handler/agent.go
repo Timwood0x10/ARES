@@ -1,6 +1,5 @@
-// Deprecated: use github.com/Timwood0x10/ares/sdk instead. HTTP handlers
-// are superseded by the sdk/agent run/stream entry points; this package is
-// kept only for migration.
+// Migration note: scheduled to fold into github.com/Timwood0x10/ares/sdk
+// (removal targeted for v0.5.0); internal callers remain during the window.
 // Package handler provides HTTP handlers for the ARES API.
 package handler
 

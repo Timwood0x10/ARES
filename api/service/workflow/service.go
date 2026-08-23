@@ -1,6 +1,3 @@
-// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Workflow
-// orchestration is superseded by the sdk task/workflow API; this package is
-// kept only for migration.
 // Package workflow provides workflow orchestration service implementation.
 package workflow
 
@@ -13,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	apiworkflow "github.com/Timwood0x10/ares/api/workflow"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow"
@@ -440,8 +438,6 @@ func (s *Service) buildEngineSteps(def *core.WorkflowDefinition) ([]*engine.Step
 }
 
 // mapEngineStatus maps engine.WorkflowStatus or engine.StepStatus to core.WorkflowStatus.
-//
-// Deprecated: use mapRunnerStatus for the unified Runner path.
 func mapEngineStatus(status interface{}) core.WorkflowStatus {
 	switch v := status.(type) {
 	case engine.WorkflowStatus:

@@ -1,6 +1,4 @@
-// Deprecated: use github.com/Timwood0x10/ares/sdk instead. Agent lifecycle
-// management is superseded by sdk.NewAgent / sdk.Agent; this package is kept
-// only for migration.
+// Migration note: superseded by github.com/Timwood0x10/ares/sdk
 // Package agent provides the public API for agent lifecycle management.
 // It wraps the internal agent implementation for use by client packages.
 package agent

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	arenasvc "github.com/Timwood0x10/ares/api/service/arena"
 )
 

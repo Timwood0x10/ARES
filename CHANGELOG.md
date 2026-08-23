@@ -18,6 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **sdk.Graph — dynamic graph orchestration returns to the SDK**
+  (`docs/design/sdk-graph-v040.md`, v0.4.0 M1): `NewGraph/AddNode/AddEdge/
+  RemoveNode/RemoveEdge/SetRouter` + `(*Runtime).RunGraph` (≤10 new symbols).
+  LLM (`*Agent`) nodes execute through the SAME kernel scheduling path as
+  `Submit` (fabric quantum engine); function and subgraph nodes run inline
+  against the shared state. Conditional edges evaluate after the source
+  settles (false → dead edge; all-dead target skipped, cascading); an optional
+  router forces a sole next hop after each completion — enabling jumps and
+  bounded loops via per-node `MaxIterations` (default 100). Caps: ≤1024 nodes,
+  ≤4096 edges; concurrent mutation is safe (engine reads a snapshot per round,
+  RWMutex). Covers M1 delegation / pipeline / orchestration as graph shapes.
+  Tests: `sdk/graph_test.go` (24 contract tests incl. timeout, panic recovery,
+  runtime mutation mid-run, router deadloop bounding).
+- **Construction-time provider-key warning** (`sdk/provider_hint.go`):
+  declaring OpenAI/Anthropic/OpenRouter without an API key now warns at
+  `New(...)` with the env var AND `WithAPIKey` remediation — previously the
+  misconfiguration surfaced only as a provider-side 401 on the first Run.
+  Ollama stays silent (local, key-less is legitimate).
+
 - **P3 governance wired into the scheduler** (`cmd/ares/scheduler.go`): the
   kernel scheduler enforces agent budgets at each quantum boundary —
   pre-quantum `CheckResource`/deadline gate (yields the task back via Release
@@ -172,6 +191,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cooperative preemption was unreachable through the scheduler loop**
+  (BUG-KSCHED-001, `internal/kernelscheduler`): `PreemptLowerPriority` ran
+  only at drain entry, but `drain()` blocks on `wg.Wait()` until every
+  dispatched quantum finishes — so no RUNNING task could ever exist at the
+  check, and the P2.2 branch never fired in production. Fix: a managed
+  watcher goroutine sweeps preemption each poll tick (ctx-bounded, recover-
+  guarded), independent of the blocking drain; semantics stay cooperative
+  (durable state flip only; the stale holder's late completion is rejected by
+  the fencing token). Follow-up: fencing rejections now end the quantum
+  NEUTRAL (`LoadTracker.EndNeutral`) instead of counting a failure — otherwise
+  the rejection poisons the agent's success rate to 0 and the preempted task
+  becomes permanently unschedulable ("no capable candidate"). Regression:
+  `TestPreemptLowerPriorityHandsBackRunningTask`; full write-up in
+  `docs/bug@ques/{zh,en}/kernel-scheduler-preemption-unreachable.md`.
 - **F1 `LoadTracker.End()` load-release scheduling starvation**: the
   `load--` in `End()` (prevents monotonic load climb) had no regression test.
   Added `internal/kernelscheduler/load_tracker_test.go` with 7 assertions:

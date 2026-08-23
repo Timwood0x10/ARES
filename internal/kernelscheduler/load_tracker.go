@@ -83,6 +83,23 @@ func (t *LoadTracker) End(agentID string, success bool) {
 	}
 }
 
+// EndNeutral releases the busy slot acquired by Begin WITHOUT recording an
+// outcome: neither a success nor a failure enters the agent's history.
+//
+// Why it exists: cooperative preemption hands a RUNNING task back to READY,
+// so the stale holder's completion is rejected by the fencing token
+// (ErrNotOwner / ErrEpochMismatch). That rejection is a benign race the
+// executor did not cause — counting it as a failure would poison the agent's
+// historical success rate toward 0, and Score's confidence factor would make
+// the preempted task permanently unschedulable (BUG-KSCHED-001 follow-up).
+func (t *LoadTracker) EndNeutral(agentID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.load[agentID] > 0 {
+		t.load[agentID]--
+	}
+}
+
 func (t *LoadTracker) Load(agentID string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -35,8 +35,9 @@ func (c *countingCognition) count() int {
 	return c.executed
 }
 
-// waitForTaskState polls the fabric until the task reaches want or the
-// deadline elapses; it returns the last observed state.
+// waitForTaskState polls the fabric until the task reaches want or fails the
+// test when the deadline elapses (a silent return would mask the real final
+// state and shift the failure to a later, less precise assertion).
 func waitForTaskState(t *testing.T, f *taskfabric.Fabric, id string, want taskfabric.TaskState, timeout time.Duration) taskfabric.TaskState {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -50,6 +51,7 @@ func waitForTaskState(t *testing.T, f *taskfabric.Fabric, id string, want taskfa
 	if err != nil {
 		t.Fatalf("Task(%q): %v", id, err)
 	}
+	t.Fatalf("task %q state = %s, want %s (timeout %s)", id, tk.State, want, timeout)
 	return tk.State
 }
 
@@ -78,9 +80,12 @@ func TestRegisterExecutorMakesAgentSchedulable(t *testing.T) {
 	}
 
 	// No executor yet: the task must stay READY, never FAILED-by-no-candidate.
-	time.Sleep(50 * time.Millisecond)
-	if st := waitForTaskState(t, fabric, "late-task", taskfabric.StateReady, 0); st != taskfabric.StateReady {
-		t.Fatalf("task without candidates must stay READY, got %s", st)
+	tk0, err := fabric.Task("late-task")
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if tk0.State != taskfabric.StateReady {
+		t.Fatalf("task without candidates must stay READY, got %s", tk0.State)
 	}
 
 	late := &smokeExecutor{id: "rescuer", typ: models.AgentType("rescue")}

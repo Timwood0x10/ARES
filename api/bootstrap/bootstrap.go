@@ -15,10 +15,15 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	arenasvc "github.com/Timwood0x10/ares/api/service/arena"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	dashsvc "github.com/Timwood0x10/ares/api/service/dashboard"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	evosvc "github.com/Timwood0x10/ares/api/service/evolution"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	flightsvc "github.com/Timwood0x10/ares/api/service/flight"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"

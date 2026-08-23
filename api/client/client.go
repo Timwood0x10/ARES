@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
+	//lint:ignore SA1019 migration boundary: bootstrap/client wire legacy services until v0.5.0 removal
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
 )

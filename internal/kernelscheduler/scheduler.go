@@ -3,6 +3,7 @@ package kernelscheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -641,14 +642,8 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			StepCheckpoint:   outMap,
 		}), true, nil
 	})
-	s.tracker.End(winner, err == nil)
-	// W4 evolution feedback: record the outcome for the feedback loop. The
-	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
-	// the tracker's confidence override (SetAgentConfidence) so the next
-	// Schedule sees the evolution-derived confidence.
-	if s.attribution != nil {
-		s.attribution.Record(winner, tk.Capability, err == nil)
-	}
+	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
+	s.endQuantumOutcome(winner, tk.Capability, taskID, err)
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
 	// round) so the next gate sees the new balance. Runs even on step errors —
 	// the quantum did execute (or partially execute) and spent budget.
@@ -669,6 +664,31 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		}
 	}
 	return err
+}
+
+// endQuantumOutcome releases the winner's busy slot and attributes the
+// quantum outcome to W4 feedback.
+//
+// A benign fencing rejection (cooperative preemption handed the task back
+// while the stale holder was still mid-step) is NOT the executor's failure:
+// recording it as one would poison the agent's success rate toward 0, and
+// Score's confidence factor would make the preempted task permanently
+// unschedulable. Such rejections end NEUTRAL — load is released but no
+// success/failure enters the history, and W4 attribution is skipped.
+func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err error) {
+	if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
+		s.tracker.EndNeutral(winner)
+		log.Printf("kernel scheduler: quantum for task %q ended by preemption fencing (benign); outcome not attributed", taskID)
+		return
+	}
+	s.tracker.End(winner, err == nil)
+	// W4 evolution feedback: record the outcome for the feedback loop. The
+	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
+	// the tracker's confidence override (SetAgentConfidence) so the next
+	// Schedule sees the evolution-derived confidence.
+	if s.attribution != nil {
+		s.attribution.Record(winner, capability, err == nil)
+	}
 }
 
 // toModelTask maps a fabric Task back to the models.Task shape the sub-agent

@@ -67,3 +67,4 @@ examples/*/ares.yaml
 
 # Compiled ares serve/demo binary (60MB+; build on demand via go build)
 /ares
+/graph_demo
