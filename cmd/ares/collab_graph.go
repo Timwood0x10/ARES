@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -37,6 +38,12 @@ type graphEdgeSpec struct {
 // deadline (LLM-backed peers make an unbounded wait dangerous).
 const collabTimeout = 10 * time.Minute
 
+// ErrGraphInvalid marks SUBMISSION-TIME validation failures (malformed
+// nodes/edges, unknown references, dependency cycles) that map to HTTP 4xx.
+// Execution failures after task creation keep 500 — they are runtime faults,
+// not caller mistakes.
+var ErrGraphInvalid = errors.New("collab graph invalid")
+
 // runCollabGraph creates every node task in the kernel fabric and waits for
 // the whole graph to settle. It returns nodeID → textual output extracted
 // from each task's completion checkpoint.
@@ -44,32 +51,44 @@ const collabTimeout = 10 * time.Minute
 // Failure semantics: the first FAILED node aborts the wait and is returned as
 // an error naming the node; sibling branches that already completed are still
 // reported in the outputs map (partial results survive).
-func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []graphNodeSpec, edges []graphEdgeSpec) (map[string]string, error) {
+func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []graphNodeSpec, edges []graphEdgeSpec) (outputs map[string]string, taskIDs map[string]string, err error) {
 	if k == nil || k.fabric == nil {
-		return nil, fmt.Errorf("collab graph: kernel fabric not wired")
+		return nil, nil, fmt.Errorf("collab graph: kernel fabric not wired")
 	}
 	ids := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
 		if n.ID == "" || n.Capability == "" {
-			return nil, fmt.Errorf("collab graph %s: node requires id and capability", runID)
+			return nil, nil, fmt.Errorf("%w: node requires id and capability", ErrGraphInvalid)
 		}
 		if ids[n.ID] {
-			return nil, fmt.Errorf("collab graph %s: duplicate node id %q", runID, n.ID)
+			return nil, nil, fmt.Errorf("%w: duplicate node id %q", ErrGraphInvalid, n.ID)
 		}
 		ids[n.ID] = true
 	}
 	deps := make(map[string][]string, len(nodes))
 	for _, e := range edges {
 		if !ids[e.From] || !ids[e.To] {
-			return nil, fmt.Errorf("collab graph %s: edge %q→%q references an unknown node", runID, e.From, e.To)
+			return nil, nil, fmt.Errorf("%w: edge %q→%q references an unknown node", ErrGraphInvalid, e.From, e.To)
 		}
 		deps[e.To] = append(deps[e.To], e.From)
 	}
 	if cyc := findCycle(ids, deps); cyc != "" {
-		return nil, fmt.Errorf("collab graph %s: dependency cycle involving %q", runID, cyc)
+		return nil, nil, fmt.Errorf("%w: dependency cycle involving %q", ErrGraphInvalid, cyc)
 	}
 
-	taskIDs := make(map[string]string, len(nodes)) // nodeID → taskID
+	taskIDs = make(map[string]string, len(nodes)) // nodeID → taskID
+	created := make([]string, 0, len(nodes))      // every task we Create, for cleanup
+	defer func() {
+		// Ephemeral lifecycle (C4 review #2): submitted graphs must not leave
+		// zombie entries in the long-lived fabric. Delete is best-effort —
+		// in-flight (LEASED/RUNNING/SUSPENDED) tasks are refused by the guard
+		// and finish naturally; their ids are unique so nothing collides.
+		for _, tid := range created {
+			if derr := k.fabric.Delete(tid); derr != nil && derr != taskfabric.ErrTaskNotFound {
+				log.Printf("peer mode: cleanup %s: %v", tid, derr)
+			}
+		}
+	}()
 	for _, n := range nodes {
 		tid := "collab-" + runID + "-" + n.ID
 		taskIDs[n.ID] = tid
@@ -88,8 +107,9 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 				Payload: map[string]any{"input": n.Input},
 			},
 		}); err != nil {
-			return nil, fmt.Errorf("collab graph %s: create node %q: %w", runID, n.ID, err)
+			return nil, taskIDs, fmt.Errorf("collab graph %s: create node %q: %w", runID, n.ID, err)
 		}
+		created = append(created, tid)
 	}
 	log.Printf("peer mode: collaboration graph %s submitted (%d nodes)", runID, len(nodes))
 
@@ -100,36 +120,57 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 		defer cancel()
 	}
 
-	outputs := make(map[string]string, len(nodes))
+	outputs = make(map[string]string, len(nodes))
+	pending := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		pending = append(pending, n.ID)
+	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	settled := 0
-	for settled < len(nodes) {
-		select {
-		case <-waitCtx.Done():
-			return outputs, fmt.Errorf("collab graph %s: timed out with %d/%d nodes settled",
-				runID, settled, len(nodes))
-		case <-ticker.C:
-			for _, n := range nodes {
-				if _, done := outputs[n.ID]; done {
-					continue
-				}
-				tk, err := k.fabric.Task(taskIDs[n.ID])
-				if err != nil {
-					return outputs, fmt.Errorf("collab graph %s: read node %q: %w", runID, n.ID, err)
-				}
-				switch tk.State {
-				case taskfabric.StateCompleted:
-					outputs[n.ID] = collabNodeOutput(tk)
-					settled++
-				case taskfabric.StateFailed:
-					outputs[n.ID] = collabNodeOutput(tk)
-					return outputs, fmt.Errorf("collab graph %s: node %q failed", runID, n.ID)
-				}
+	for len(pending) > 0 {
+		progressed := false
+		var failErr error
+		still := pending[:0]
+		for _, nid := range pending {
+			tk, err := k.fabric.Task(taskIDs[nid])
+			if err != nil {
+				return outputs, taskIDs, fmt.Errorf("collab graph %s: read node %q: %w", runID, nid, err)
+			}
+			switch tk.State {
+			case taskfabric.StateCompleted:
+				outputs[nid] = collabNodeOutput(tk)
+				progressed = true
+			case taskfabric.StateFailed:
+				outputs[nid] = collabNodeOutput(tk)
+				failErr = fmt.Errorf("collab graph %s: node %q failed", runID, nid)
+			default:
+				still = append(still, nid)
 			}
 		}
+		pending = still
+		if failErr != nil {
+			// Fail-fast (#4): the deferred cleanup deletes every not-yet-
+			// started READY sibling so it never runs. Quanta already RUNNING
+			// finish naturally (cooperative model — no hard cancel exists);
+			// their results go unread and their unique ids keep the fabric
+			// collision-free.
+			return outputs, taskIDs, failErr
+		}
+		if progressed {
+			continue // re-scan immediately; more may have settled this instant
+		}
+		select {
+		case <-waitCtx.Done():
+			if errors.Is(waitCtx.Err(), context.Canceled) {
+				return outputs, taskIDs, fmt.Errorf("collab graph %s: canceled: %w (%d/%d settled)",
+					runID, waitCtx.Err(), len(outputs), len(nodes))
+			}
+			return outputs, taskIDs, fmt.Errorf("collab graph %s: timed out with %d/%d nodes settled",
+				runID, len(outputs), len(nodes))
+		case <-ticker.C:
+		}
 	}
-	return outputs, nil
+	return outputs, taskIDs, nil
 }
 
 // findCycle runs Kahn's topological sort over the dependency graph; any node

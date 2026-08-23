@@ -102,9 +102,9 @@ agent := rt.NewAgent(...)                          // 造 agent
 认知 schema 版本机制，与 `DecodeCognitiveState` 同源）；每 agent 仅保留最后一份快照，
 `Recover` 消费后清除、Agent 进入 Retired 终态时清除，防止长期运行内存无界。
 **验收**：
-- [ ] 单测：agent 运行→写入认知→`Kill`→恢复子系统能取到该 agent 的最后认知快照（字段完整、SchemaVersion 正确）。
-- [ ] `go test -race ./internal/aresrecovery/ ./internal/agentfabric/` 全绿。
-- [ ] 快照读取零拷贝共享导致的 race：`-race` 下并发 Kill+快照读无告警。
+- [x] 单测：agent 运行→写入认知→`Kill`→恢复子系统能取到该 agent 的最后认知快照（字段完整、SchemaVersion 正确）。
+- [x] `go test -race ./internal/aresrecovery/ ./internal/agentfabric/` 全绿。
+- [x] 快照读取零拷贝共享导致的 race：`-race` 下并发 Kill+快照读无告警。
 
 ### A2. 恢复循环扩展为"任务重排 + agent 复活"（2 天）
 **做什么**：在 `aresrecovery.Recovery` 增加一条**与现有 `RequeueExpiredLeases` 并列**的
@@ -123,18 +123,18 @@ agent := rt.NewAgent(...)                          // 造 agent
 （任务永远优先）；带状态原地复活是降低重学成本的机制优化——任务仍由 durable intent 驱动，
 复活与否由 Kernel 依策略裁决，Agent 认知不参与该决策。
 **验收**：
-- [ ] 集成测试：spawn agent→写认知→模拟死亡→一个 tick 后 agent 状态回 Idle 且认知快照被还原（断言 `CognitiveState()` 等于死前）。
-- [ ] "任务不丢"回归：原 `RequeueExpiredLeases` 行为不变，既有恢复测试全绿。
-- [ ] 复活次数受策略上限约束（复用/新增 `maxRestarts`），超限则终态为 Retired，不无限复活。
-- [ ] `go test -race ./cmd/ares/ -run 'TestKernelRecovery|TestChaos'` 全绿。
+- [x] 集成测试：spawn agent→写认知→模拟死亡→一个 tick 后 agent 状态回 Idle 且认知快照被还原（断言 `CognitiveState()` 等于死前）。
+- [x] "任务不丢"回归：原 `RequeueExpiredLeases` 行为不变，既有恢复测试全绿。
+- [x] 复活次数受策略上限约束（复用/新增 `maxRestarts`），超限则终态为 Retired，不无限复活。
+- [x] `go test -race ./cmd/ares/ -run 'TestKernelRecovery|TestChaos'` 全绿。
 
 ### A3. 删除 resurrection 插件（0.5 天）
 **做什么**：确认 `internal/plugins/resurrection` 的能力已被 A2 完全覆盖后，删除该包；
 清理 `api/service/runtime/service.go` 内 `resurrection.New` 引用（改走统一恢复子系统或直接移除）。
 **验收**：
-- [ ] 全仓引用扫描：`resurrection` 包零生产引用、零测试引用后删除。
-- [ ] `go build ./... && go test ./...` 全绿。
-- [ ] `handleChaos` 内关于恢复路径的注释更新为指向统一恢复子系统。
+- [x] 全仓引用扫描：`resurrection` 包零生产引用、零测试引用后删除。
+- [x] `go build ./... && go test ./...` 全绿。
+- [x] `handleChaos` 内关于恢复路径的注释更新为指向统一恢复子系统。
 
 **阶段 A 出口**：恢复只剩 `aresrecovery` 一套，一个循环覆盖任务重排 + agent 认知复活，
 resurrection 插件消失。agent 复活**无折扣**（有状态认知还原）。
@@ -165,24 +165,24 @@ scheduler 作为可进化维度（`SchedulerGenomeName`）、存在 `PatchChange
    see aresos-fusion-plan §B1` 痕迹（规范 §0.3）；
 4. 以上三点作为 B1 验收新增项：退役后有引用扫描零残留断言。
 **验收**：
-- [ ] 单测：一个含条件分支+并行分支的 workflow graph 编译为 sdk.Graph 后，`RunGraph` 结果与旧 `Runner` 语义等价（同输入同输出，且并行分支真并行）。
-- [ ] 进化路径回归：`provide_new_evolution.go` 消费的 WorkflowGenome 经新路径执行，进化相关测试全绿。
-- [ ] `go test -race ./internal/workflow/... ./evolution/...` 全绿。
+- [x] 单测：一个含条件分支+并行分支的 workflow graph 编译为 sdk.Graph 后，`RunGraph` 结果与旧 `Runner` 语义等价（同输入同输出，且并行分支真并行）。
+- [x] 进化路径回归：`provide_new_evolution.go` 消费的 WorkflowGenome 经新路径执行，进化相关测试全绿。
+- [x] `go test -race ./internal/workflow/... ./evolution/...` 全绿。
 
 ### B2. 退役第二执行引擎（1 天）
 **做什么**：确认所有 workflow 执行都走 sdk.Graph 后，删除 `internal/workflow.Runner`
 的执行循环（或改成 B1 编译器的薄封装）；`MaxParallel=1` 串行语义由 sdk.Graph 的
 就绪批次自然表达。
 **验收**：
-- [ ] 全仓引用扫描：`workflow.Runner` 的执行入口零生产引用。
-- [ ] 无第二引擎：静态检查确认节点执行唯一路径为 `Runtime.Submit`。
-- [ ] `go build ./... && go test -race ./...` 全绿。
+- [x] 全仓引用扫描：`workflow.Runner` 的执行入口零生产引用。
+- [x] 无第二引擎：静态检查确认节点执行唯一路径为 `Runtime.Submit`。
+- [x] `go build ./... && go test -race ./...` 全绿。
 
 ### B3. 删除 api/graph（0.5 天）
 **做什么**：删除 Deprecated 且零引用的 `api/graph`；examples 若有引用迁到 `sdk.Graph`。
 **验收**：
-- [ ] `api/graph` 删除后 `go build ./... && go test ./...` 全绿。
-- [ ] examples 全部编译运行通过。
+- [x] `api/graph` 删除后 `go build ./... && go test ./...` 全绿。
+- [x] examples 全部编译运行通过。
 
 **阶段 B 出口**：图能力只剩 `sdk.Graph` 一套执行逻辑；结构定义与执行分离但共用一个引擎；
 `api/graph` 消失；进化系统改走 sdk.Graph 无回归。
@@ -199,35 +199,35 @@ scheduler 作为可进化维度（`SchedulerGenomeName`）、存在 `PatchChange
 **做什么**：`docs/cookbook`（或 `examples/graph_demo`）用同一套 Graph API 写出三模式；
 逐一对照旧 `DelegateToSpecialist`/`NewPipeline`/`Orchestrate` 的语义，证明无缺失。
 **验收**：
-- [ ] 三模式各一可运行示例，输出符合预期。
-- [ ] 语义对照表：旧 API 每个能力项在 sdk.Graph 有对应写法（委托目标选择、流水线传值、编排扇入聚合+router）。
-- [ ] 编排模式含"扇入聚合"用例（呼应 router 首完成契约，用 Join 节点聚合而非依赖 router 多完成）。
+- [x] 三模式各一可运行示例，输出符合预期。
+- [x] 语义对照表：旧 API 每个能力项在 sdk.Graph 有对应写法（委托目标选择、流水线传值、编排扇入聚合+router）。
+- [x] 编排模式含"扇入聚合"用例（呼应 router 首完成契约，用 Join 节点聚合而非依赖 router 多完成）。
 
 ### C2. topic 分发 handler 改驱动 sdk.Graph（2 天）
 **做什么**：`evolution_ipc.go` 的 `topicDelegateTask` 等 handler 内部改为构建对应 sdk.Graph
 并 `RunGraph`，替换原有直接分发逻辑。保持 topic 协议对外不变（兼容现有 IPC 客户端）。
 **验收**：
-- [ ] IPC 集成测试：委托/流水线/编排三类 topic 消息经 handler → sdk.Graph 执行，结果与改造前等价。
-- [ ] `wireEvolutionIPC` 生产路径回归全绿。
-- [ ] `go test -race ./cmd/ares/ ./internal/agentipc/...` 全绿。
+- [x] IPC 集成测试：委托/流水线/编排三类 topic 消息经 handler → sdk.Graph 执行，结果与改造前等价。
+- [x] `wireEvolutionIPC` 生产路径回归全绿。
+- [x] `go test -race ./cmd/ares/ ./internal/agentipc/...` 全绿。
 
 ### C3. 删除 collaboration 三 API（0.5 天）
 **做什么**：确认 C2 覆盖全部语义后，删除 `collaboration.go` 的
 `DelegateToSpecialist`/`NewPipeline`/`Orchestrate`（及其仅测试引用的测试）。
 **验收**：
-- [ ] 全仓引用扫描：三 API 零生产引用后删除。
-- [ ] `go build ./... && go test ./...` 全绿。
+- [x] 全仓引用扫描：三 API 零生产引用后删除。
+- [x] `go build ./... && go test ./...` 全绿。
 
 ### C4. sdk.Graph 任务图端点接入 cmd/ares（1.5 天）
 **做什么**：在 `cmd/ares` 暴露一个"提交任务图"的生产入口（HTTP 端点或 IPC topic，
 复用现有 `submitPeerTask` 鉴权/审计中间件），让外部可直接提交 sdk.Graph 描述的 DAG，
 由内核执行——这是"sdk.Graph 进主二进制"的最终闭环。
 **验收**：
-- [ ] 端点集成测试：提交一个多节点 DAG（含并行+条件），内核执行，返回各节点结果。
-- [ ] 复用鉴权：端点走既有 `checkAuth`+审计，无旁路（安全回归）。
-- [ ] 输入防御（code_rules_v2 §9）：payload 大小上限、节点/边数复用 Graph builder
+- [x] 端点集成测试：提交一个多节点 DAG（含并行+条件），内核执行，返回各节点结果。
+- [x] 复用鉴权：端点走既有 `checkAuth`+审计，无旁路（安全回归）。
+- [x] 输入防御（code_rules_v2 §9）：payload 大小上限、节点/边数复用 Graph builder
       硬帽（1024/4096）、携带 `schema_version` 字段并做版本校验；非法输入 400 带原因。
-- [ ] `go test -race ./cmd/ares/` 全绿。
+- [x] `go test -race ./cmd/ares/` 全绿。
 
 **阶段 C 出口**：编排只剩 sdk.Graph 一套 API；三模式无折扣；topic 协议兼容；
 主二进制可直接消费 sdk.Graph。
@@ -239,16 +239,21 @@ scheduler 作为可进化维度（`SchedulerGenomeName`）、存在 `PatchChange
 **做什么**：全仓验证"单引擎/单接口/全接入"三铁律；更新 CHANGELOG 与设计文档；
 产出最终"一套接口"清单。
 **验收**：
-- [ ] 引用矩阵：resurrection 插件、workflow.Runner、collaboration 三 API、api/graph **全部为 0 引用且已删除**。
-- [ ] 单引擎自证：全仓搜索节点执行入口，唯一路径为 `Runtime.Submit`（内核量子调度）。
-- [ ] 全接入自证：阶段 A/B/C 每个能力都能从 `cmd/ares` 生产路径追踪到调用链（文件:行号）。
-- [ ] 全量门禁：`gofmt -l`（空）、`go vet ./...`、`go build ./...`、`go test -race ./...` 全绿；
+- [x] 引用矩阵：resurrection 插件、workflow.Runner、collaboration 三 API、api/graph **全部为 0 引用且已删除**。
+- [x] 单引擎自证：全仓搜索节点执行入口，唯一路径为 `Runtime.Submit`（内核量子调度）。
+- [x] 全接入自证：阶段 A/B/C 每个能力都能从 `cmd/ares` 生产路径追踪到调用链（文件:行号）。
+- [x] 全量门禁：`gofmt -l`（空）、`go vet ./...`、`go build ./...`、`go test -race ./...` 全绿；
       `staticcheck ./...` 无死代码/空转告警；`golangci-lint run ./...` 0 issues（= make check 全绿）。
-- [ ] CHANGELOG 记录本次融合；设计文档 §7/§9 更新收敛边界与删除清单。
+- [x] CHANGELOG 记录本次融合；设计文档 §7/§9 更新收敛边界与删除清单。
 
 ---
 
 ## 2. 里程碑与顺序
+
+> **执行结果（2026-08-22）**：A/B/C/D 全部完成。B 阶段实测发现 Runner 本就零生产
+> 调用，删除范围扩大为 root 执行栈 + 三 API 岛 + workflow CLI；C2 以"内核 fabric
+> DAG 直驱"实现（协议不变），未引入第二引擎。自证材料见
+> `docs/fusion-convergence.md`。
 
 ```
 A（恢复统一）─→ B（图引擎统一）─→ C（编排统一+接线）─→ D（全局收敛验证）

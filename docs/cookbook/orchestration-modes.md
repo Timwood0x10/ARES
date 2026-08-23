@@ -26,6 +26,15 @@ Executable proofs:
   (`TestGraphConditionBranch`, `TestGraphRouterLoop`,
   `TestGraphNodeSubgraphNode`).
 
+## Behavioral note vs the legacy APIs
+
+Topic-addressed delegation (`delegate-task`) now executes as a CAPABILITY
+task: any peer whose declared type matches may run it — the scheduler decides
+(Rule ①), not the addressed identity. Legacy direct-execution pinned the work
+to that exact agent. With one peer per primary capability (the standard
+config) behavior is identical; with duplicates, work may land on a sibling.
+Pin-by-identity is intentionally not offered.
+
 ## What was NOT carried over (intentional)
 
 - Ordering schedulers (FIFO/Priority/SJF/RR/WeightedFair): a fully-parallel

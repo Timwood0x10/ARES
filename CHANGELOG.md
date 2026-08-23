@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > modular audit, runtime config hot-reload, chaos-recovery e2e, agent-pool
 > benchmarks, versioning) and the Capability Fabric (SkillCatalog) release.
 
+### Changed (fusion Phase C/D)
+
+- **Submission-time validation & ephemeral lifecycle for /api/graphs**
+  (review hardening): Kahn cycle detection rejects cyclic DAGs with 400 at
+  submission (previously parked at READY until timeout); JSON tags on wire
+  structs; edge cap aligned with sdk.Graph (4096); server ALWAYS generates
+  run ids (caller-supplied ids colliding with live fabric tasks surfaced as
+  500s for caller mistakes); new `taskfabric.Fabric.Delete` (guarded to
+  non-in-flight states) plus deferred cleanup make submitted graphs EPHEMERAL
+  — failed/timed-out graphs no longer leak zombie tasks; pending-set polling
+  replaces full-scan busy waits. IPC collaboration topics
+  (`delegate-task`/`pipeline-stage`/`orchestrate-worker`) now execute through
+  the kernel fabric DAG when wired (`wireEvolutionIPC` gained the kernel
+  handle; reply shape unchanged). Convergence self-verification:
+  `docs/fusion-convergence.md`.
+
 ### Breaking changes
 
 - **Removed legacy public API packages and CLI** (fusion plan Phases A/B):

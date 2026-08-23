@@ -14,7 +14,8 @@ var (
 	// ErrTaskNotFound: the task id is unknown.
 	ErrTaskNotFound = errors.New("taskfabric: task not found")
 	// ErrNotOwner: the agent does not hold this task's lease.
-	ErrNotOwner = errors.New("taskfabric: agent does not own this task")
+	ErrNotOwner        = errors.New("taskfabric: agent does not own this task")
+	ErrTaskUndeletable = errors.New("taskfabric: task is not deletable in its current state")
 	// ErrEpochMismatch: the operation carried a stale fencing token (lease
 	// epoch) — the task is now owned by a newer lease holder. This is the
 	// guard against "A lease expired → B acquire → A late release" killing
@@ -567,5 +568,35 @@ func taskEventType(typ EventType) ares_events.EventType {
 		return ares_events.EventTaskStolen
 	default:
 		return ""
+	}
+}
+
+// Delete removes a task from the fabric entirely (fusion plan C4 review #2:
+// submitted collaboration graphs are EPHEMERAL — results are harvested by the
+// caller before deletion, so long-running kernels must not accumulate zombie
+// entries from failed/timed-out graphs).
+//
+// Allowed only from states with no in-flight or resumable execution: READY,
+// COMPLETED, FAILED. LEASED/RUNNING/SUSPENDED are refused with
+// ErrTaskUndeletable — their quanta must finish or expire through the normal
+// paths; callers retry deletion afterwards if needed.
+//
+// Deletion emits NO event on purpose: it is housekeeping for graphs whose
+// results were already harvested, not a durable-state transition. The memory
+// store therefore cannot replay these tasks after a restart — accepted,
+// because replay value of harvested ephemeral work is nil.
+func (f *Fabric) Delete(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	switch t.State {
+	case StateReady, StateCompleted, StateFailed:
+		delete(f.tasks, id)
+		return nil
+	default:
+		return ErrTaskUndeletable
 	}
 }

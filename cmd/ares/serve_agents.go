@@ -72,11 +72,12 @@ func buildPeerRegistry(subAgents []sub.Agent) *peer.Registry {
 func setupPeerRegistry(
 	subAgents []sub.Agent,
 	comp *ares_bootstrap.Components,
+	kernel *kernelHandle,
 ) (*peer.Registry, error) {
 	var reg *peer.Registry
 	switch {
 	case comp.NewEvolution != nil:
-		bridge, err := wireEvolutionIPC(subAgents, comp.NewEvolution.StrategyStore, comp.Observability.GlobalTracer)
+		bridge, err := wireEvolutionIPC(subAgents, comp.NewEvolution.StrategyStore, comp.Observability.GlobalTracer, kernel)
 		if err != nil {
 			return nil, fmt.Errorf("wire evolution IPC: %w", err)
 		}

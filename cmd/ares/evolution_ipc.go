@@ -74,7 +74,16 @@ type evolutionIPCBridge struct {
 // Returns:
 //   - *evolutionIPCBridge: the wired bridge (registry + ipc).
 //   - error: when a bus handler cannot be registered.
-func wireEvolutionIPC(subAgents []sub.Agent, store evolution.StrategyStore, tracer *aresrecovery.GlobalTracer) (*evolutionIPCBridge, error) {
+func wireEvolutionIPC(subAgents []sub.Agent, store evolution.StrategyStore, tracer *aresrecovery.GlobalTracer, kernel *kernelHandle) (*evolutionIPCBridge, error) {
+	// Capability lookup for kernel-routed collaboration: a topic addressed to
+	// agent X executes as a fabric task whose capability is X's declared type
+	// — the SAME matching rule the scheduler uses for every other task.
+	capByAgent := make(map[string]string, len(subAgents))
+	for _, sa := range subAgents {
+		if sa != nil {
+			capByAgent[sa.ID()] = string(sa.Type())
+		}
+	}
 	bus := agentipc.NewBus()
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, ares_bootstrap.NewIPCProtocolPolicySource(store))
 	reg := peer.NewRegistry()
@@ -93,6 +102,12 @@ func wireEvolutionIPC(subAgents []sub.Agent, store evolution.StrategyStore, trac
 		_ = bus.Register(targetID, func(ctx context.Context, msg *agentipc.Message) (*agentipc.Message, error) {
 			switch msg.Topic {
 			case topicDelegateTask, topicPipelineStage, topicOrchestrateWrk:
+				// Fusion plan C2: collaboration requests execute through the
+				// KERNEL fabric DAG (single engine). The direct-execute path
+				// remains only as the fallback when no fabric is wired.
+				if kernel != nil && kernel.fabric != nil && capByAgent[targetID] != "" {
+					return executeCollabViaKernel(ctx, kernel, targetID, capByAgent[targetID], msg)
+				}
 				if execute == nil {
 					return nil, fmt.Errorf("agentipc: agent %s cannot execute collaboration task", targetID)
 				}
@@ -189,6 +204,42 @@ func executeCollaboration(ctx context.Context, targetID string, msg *agentipc.Me
 	if err != nil {
 		return nil, fmt.Errorf("agentipc: execute collaboration task %s on %s: %w", taskID, targetID, err)
 	}
+	return &agentipc.Message{
+		ID:            "collab-" + taskID,
+		From:          targetID,
+		To:            msg.From,
+		Topic:         msg.Topic + "-reply",
+		CorrelationID: msg.CorrelationID,
+		Payload:       result,
+		At:            msg.At,
+	}, nil
+}
+
+// executeCollabViaKernel routes one M1 collaboration request through the
+// kernel fabric DAG: the addressed agent's capability becomes a durable task,
+// the kernelscheduler drives it via Schedule→Acquire→RunQuantum, and the
+// reply carries a TaskResult reconstructed from the completion checkpoint —
+// byte-compatible with the legacy direct-execution reply shape.
+func executeCollabViaKernel(ctx context.Context, k *kernelHandle, targetID, capability string, msg *agentipc.Message) (*agentipc.Message, error) {
+	body, ok := msg.Payload.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("agentipc: collaboration payload must be a map, got %T", msg.Payload)
+	}
+	taskID, _ := body[taskIDKey].(string)
+	if taskID == "" {
+		return nil, fmt.Errorf("agentipc: collaboration task missing %q", taskIDKey)
+	}
+	taskPayload := body
+	if p, ok := body["payload"].(map[string]any); ok {
+		taskPayload = p
+	}
+	outputs, _, err := runCollabGraph(ctx, k, "ipc-"+taskID,
+		[]graphNodeSpec{{ID: "exec", Capability: capability, Input: taskPayload}}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("agentipc: kernel execution of %s on %s: %w", taskID, targetID, err)
+	}
+	result := models.NewTaskResult(taskID, models.AgentType(targetID))
+	result.SetSuccess(nil, outputs["exec"])
 	return &agentipc.Message{
 		ID:            "collab-" + taskID,
 		From:          targetID,

@@ -249,9 +249,9 @@ func runServe() error {
 	}
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
-	// setupPeerRegistry builds the registry; the handle is only needed by
-	// downstream wiring that currently does not use it, so discard it.
-	if _, err := setupPeerRegistry(subAgents, comp); err != nil {
+	// setupPeerRegistry builds the registry; the kernel handle powers
+	// collaboration-topic execution through the fabric DAG (fusion C2).
+	if _, err := setupPeerRegistry(subAgents, comp, peerKernel); err != nil {
 		return err
 	}
 

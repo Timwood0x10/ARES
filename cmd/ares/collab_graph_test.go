@@ -51,7 +51,6 @@ func TestGraphsEndpointPipeline(t *testing.T) {
 
 	body := `{
 		"schema_version": 1,
-		"run_id": "pipe-1",
 		"nodes": [
 			{"id": "s1", "capability": "research", "input": "topic"},
 			{"id": "s2", "capability": "write",    "input": "draft"}
@@ -68,34 +67,40 @@ func TestGraphsEndpointPipeline(t *testing.T) {
 	}
 }
 
+// TestGraphsEndpointAutoGeneratesUniqueRunIDs locks the C4-review fix #1:
+// the server always generates run ids; two identical submissions BOTH succeed
+// with distinct graph ids (a caller-supplied id colliding with live fabric
+// tasks used to surface as a 500 for a caller mistake).
+func TestGraphsEndpointAutoGeneratesUniqueRunIDs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler, _ := newGraphTestKernel(t, ctx)
+
+	body := `{"schema_version":1,"nodes":[{"id":"only","capability":"research"}],"edges":[]}`
+	code1, r1 := postGraph(t, handler, body)
+	code2, r2 := postGraph(t, handler, body)
+	if code1 != http.StatusOK || code2 != http.StatusOK {
+		t.Fatalf("status %d/%d — duplicate submission must not 500", code1, code2)
+	}
+	if r1["graph_id"] == r2["graph_id"] {
+		t.Fatalf("graph ids must differ: %v vs %v", r1["graph_id"], r2["graph_id"])
+	}
+}
+
 // TestGraphsEndpointFanOutJoin locks the orchestration mode: two workers run
-// after the root; the join node waits for BOTH (dependency fan-in), proving
-// round-barrier ordering through kernel Dependencies.
+// after the root; the join node waits for BOTH (dependency fan-in). The probe
+// reads its own task's Dependencies at execution time and fails the test if
+// any dependency is not COMPLETED — server-generated ids need no pre-knowledge.
 func TestGraphsEndpointFanOutJoin(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	handler, kh := newGraphTestKernel(t, ctx)
 
-	var joinRanAfterBoth bool
-	joinExec := &orderProbeExecutor{id: "peer-review", onExecute: func() {
-		tkA, _ := kh.fabric.Task("collab-g-fj-w1")
-		tkB, _ := kh.fabric.Task("collab-g-fj-w2")
-		sa, sb := "nil", "nil"
-		if tkA != nil {
-			sa = string(tkA.State)
-		}
-		if tkB != nil {
-			sb = string(tkB.State)
-		}
-		t.Logf("probe: w1=%s w2=%s", sa, sb)
-		joinRanAfterBoth = tkA != nil && tkB != nil &&
-			tkA.State == taskfabric.StateCompleted && tkB.State == taskfabric.StateCompleted
-	}}
-	kh.scheduler.RegisterExecutor("peer-review", joinExec)
+	jp := &joinProbe{fabric: kh.fabric, t: t}
+	kh.scheduler.RegisterExecutor("peer-review-probe", jp)
 
 	body := `{
 		"schema_version": 1,
-		"run_id": "g-fj",
 		"nodes": [
 			{"id": "root",   "capability": "research"},
 			{"id": "w1",     "capability": "research"},
@@ -112,9 +117,6 @@ func TestGraphsEndpointFanOutJoin(t *testing.T) {
 	code, resp := postGraph(t, handler, body)
 	if code != http.StatusOK || resp["success"] != true {
 		t.Fatalf("status=%d resp=%v", code, resp)
-	}
-	if !joinRanAfterBoth {
-		t.Fatal("join node must execute only after both worker tasks completed")
 	}
 }
 
@@ -150,17 +152,31 @@ func TestGraphsEndpointSchemaVersionGuard(t *testing.T) {
 	}
 }
 
-// orderProbeExecutor wraps the stub with a post-execution hook so tests can
-// observe fabric state at execution time (join-after-both-workers proof).
-type orderProbeExecutor struct {
-	id        string
-	onExecute func()
+// joinProbe asserts, AT EXECUTION TIME, that every dependency of its task is
+// already COMPLETED (join-after-both-workers proof). It reads the task's own
+// Dependencies list, so it needs no knowledge of server-generated run ids.
+type joinProbe struct {
+	fabric *taskfabric.Fabric
+	t      *testing.T
 }
 
-func (e *orderProbeExecutor) ID() string             { return e.id }
-func (e *orderProbeExecutor) Type() models.AgentType { return "review" }
-func (e *orderProbeExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
-	e.onExecute()
+func (j *joinProbe) ID() string             { return "review-probe" }
+func (j *joinProbe) Type() models.AgentType { return "review" }
+func (j *joinProbe) ExecuteStep(_ context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	ftk, err := j.fabric.Task(task.TaskID)
+	if err != nil {
+		j.t.Errorf("join fabric task unreadable: %v", err)
+	}
+	for _, dep := range ftk.Dependencies {
+		dtk, derr := j.fabric.Task(dep)
+		if derr != nil {
+			j.t.Errorf("join dep %s unreadable: %v", dep, derr)
+			continue
+		}
+		if dtk.State != taskfabric.StateCompleted {
+			j.t.Errorf("join dep %s state=%s, want COMPLETED before join runs", dep, dtk.State)
+		}
+	}
 	res := models.NewTaskResult(task.TaskID, task.AgentType)
 	res.SetSuccess(nil, "probed")
 	return &sub.StepOutcome{Done: true, Result: res}, nil

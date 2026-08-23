@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -500,20 +501,27 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	runID := req.RunID
-	if runID == "" {
-		runID = fmt.Sprintf("g%d", time.Now().UnixNano())
-	}
-	outputs, err := runCollabGraph(r.Context(), h.kernel, runID, req.Nodes, req.Edges)
+	// The server ALWAYS generates the run id: caller-supplied ids colliding
+	// with live/completed fabric tasks would surface as 500s (ErrTaskExists)
+	// for what is a caller mistake — and across callers they have no
+	// isolation. Callers correlate via the returned graph_id / task_ids.
+	runID := fmt.Sprintf("g%d", time.Now().UnixNano())
+	outputs, taskIDs, err := runCollabGraph(r.Context(), h.kernel, runID, req.Nodes, req.Edges)
 	status := http.StatusOK
 	ok := err == nil
 	if !ok {
+		// Validation failures are caller mistakes (4xx); runtime failures of
+		// already-created tasks are server faults (5xx).
 		status = http.StatusInternalServerError
+		if errors.Is(err, ErrGraphInvalid) {
+			status = http.StatusBadRequest
+		}
 	}
 	h.auditAction("submit_graph", runID, princ, ok)
 	w.WriteHeader(status)
 	resp := map[string]any{
 		"graph_id": runID,
+		"task_ids": taskIDs,
 		"outputs":  outputs,
 		"success":  ok,
 	}

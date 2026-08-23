@@ -169,3 +169,7 @@ func gunzipBytes(data []byte) ([]byte, error) {
 	defer func() { _ = zr.Close() }()
 	return io.ReadAll(zr)
 }
+
+// Bus exposes the underlying agentipc bus (used by ops tooling and tests to
+// submit collaboration requests exactly as remote peers do).
+func (e *EvolutionAwareIPC) Bus() *agentipc.Bus { return e.bus }
