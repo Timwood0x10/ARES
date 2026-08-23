@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > modular audit, runtime config hot-reload, chaos-recovery e2e, agent-pool
 > benchmarks, versioning) and the Capability Fabric (SkillCatalog) release.
 
+### Breaking changes
+
+- **Removed legacy public API packages and CLI** (fusion plan Phases A/B):
+  `api/graph`, `api/service/workflow`, `api/client` (13 files), and the
+  `internal/plugins/resurrection` supervisor are deleted; the
+  `ares workflow run` CLI subcommand is removed (it executed against an empty
+  in-process registry and could never resolve a real workflow). External
+  consumers of these packages must migrate to `sdk`
+  (`NewRuntime/RegisterAgent/Submit/RunGraph`) — graph capabilities are fully
+  covered by `sdk.Graph` (conditional edges, router loops, fan-out+join,
+  subgraphs, `MaxRoundConcurrency` throttling). Internal `SubGraphNode` was
+  deleted entirely rather than left as an execute-time error stub (review fix:
+  construction-time availability beats runtime landmines).
+
 ### Added
 
 - **sdk.Graph — dynamic graph orchestration returns to the SDK**

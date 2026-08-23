@@ -107,6 +107,9 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		// (fusion plan §B1, 2026-08-22): sdk.Graph runs fully-parallel ready
 		// batches, so ordering schedulers have no execution decision left.
 		// Legacy PatchChangeScheduler appliers remain for persisted patches.
+		// TODO(evolution-dim): candidate successor dimension — a concurrency
+		// genome evolving sdk.Graph.MaxRoundConcurrency (the one scheduling
+		// semantic that survived the retirement). Not scheduled for 0.3.x.
 
 		recoveryGenome := genome.NewRecoveryGenome(
 			&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},

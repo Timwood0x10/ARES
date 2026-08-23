@@ -68,7 +68,7 @@ func newChaosTestKernel(t *testing.T, ctx context.Context, withRecoveryLoop bool
 		fabric:    fabric,
 		agents:    agents,
 		recovery:  rec,
-		scheduler: (*kernelScheduler)(nil), // not needed by the chaos helpers
+		scheduler: sched,
 		tracker:   tracker,
 		flipped:   true,
 	}

@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/http"
 	"strings"
+	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
@@ -167,6 +169,17 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.handleSubmitTask(w, r, princ)
+		return
+	}
+
+	// Collaboration graph submission (fusion plan Phase C4): a caller posts
+	// a DAG description; the kernel fabric executes it node-by-node.
+	if r.Method == "POST" && path == "/api/graphs" {
+		princ := h.checkAuth(w, r)
+		if princ == nil {
+			return
+		}
+		h.handleSubmitGraph(w, r, princ)
 		return
 	}
 
@@ -421,4 +434,91 @@ func (h *actionHandler) handleListTools(w http.ResponseWriter) {
 		"tools": names,
 		"count": len(names),
 	})
+}
+
+// ── Collaboration Graph API ─────────────────────────────
+
+// graphSubmissionRequest is the POST /api/graphs payload: an explicit DAG of
+// capability nodes with dependency edges. schema_version guards future wire
+// evolution (code_rules_v2 §6.1); only version 1 is accepted today.
+type graphSubmissionRequest struct {
+	SchemaVersion int             `json:"schema_version"`
+	RunID         string          `json:"run_id,omitempty"`
+	Nodes         []graphNodeSpec `json:"nodes"`
+	Edges         []graphEdgeSpec `json:"edges"`
+}
+
+// handleSubmitGraph executes a submitted collaboration graph through the
+// kernel fabric and returns each node's output. Validation happens BEFORE any
+// task is created: unknown capabilities are rejected up front so callers get
+// a precise error instead of a half-executed graph stuck on
+// no-capable-candidate.
+func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.kernel == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "peer runtime not active"})
+		return
+	}
+	var req graphSubmissionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.SchemaVersion != 1 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": fmt.Sprintf("unsupported schema_version %d (want 1)", req.SchemaVersion)})
+		return
+	}
+	if len(req.Nodes) == 0 || len(req.Nodes) > 1024 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "nodes must be between 1 and 1024"})
+		return
+	}
+	// Aligned with the sdk.Graph builder cap so both submission paths share
+	// one semantic boundary (fusion plan: 一套语义).
+	const maxSubmissionEdges = 4096
+	if len(req.Edges) > maxSubmissionEdges {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": fmt.Sprintf("edges must not exceed %d", maxSubmissionEdges)})
+		return
+	}
+	caps := map[string]bool{}
+	for _, c := range h.kernel.scheduler.Capabilities() {
+		caps[c] = true
+	}
+	for _, n := range req.Nodes {
+		if !caps[n.Capability] {
+			h.auditAction("submit_graph", n.Capability, princ, false)
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{
+				"error":                  "no peer executor declares capability " + n.Capability,
+				"available_capabilities": h.kernel.scheduler.Capabilities(),
+			})
+			return
+		}
+	}
+
+	runID := req.RunID
+	if runID == "" {
+		runID = fmt.Sprintf("g%d", time.Now().UnixNano())
+	}
+	outputs, err := runCollabGraph(r.Context(), h.kernel, runID, req.Nodes, req.Edges)
+	status := http.StatusOK
+	ok := err == nil
+	if !ok {
+		status = http.StatusInternalServerError
+	}
+	h.auditAction("submit_graph", runID, princ, ok)
+	w.WriteHeader(status)
+	resp := map[string]any{
+		"graph_id": runID,
+		"outputs":  outputs,
+		"success":  ok,
+	}
+	if !ok {
+		resp["error"] = err.Error()
+	}
+	writeJSON(w, resp)
 }

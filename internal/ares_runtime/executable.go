@@ -1,7 +1,7 @@
 // Package ares_runtime — shared runtime infrastructure for workflow execution.
 //
 // This file defines the Executable interface that unifies all node execution
-// types (Agent, Tool, FuncNode, SubGraphNode) under a single contract.
+// types (Agent, Tool, FuncNode) under a single contract.
 //
 // Phase: P0 — interface extraction.
 // Existing types implement this interface via adapters. The single Runner
@@ -30,7 +30,7 @@ type ExecutionContext struct {
 }
 
 // Executable is the common execution interface for all workflow node types.
-// Every node type — Agent, Tool, FuncNode, SubGraphNode — implements this
+// Every node type — Agent, Tool, FuncNode — implements this
 // interface, allowing the future single Runner (§6) to execute any node
 // without type-switching on the binding.
 type Executable interface {

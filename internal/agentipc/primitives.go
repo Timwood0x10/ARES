@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// taskIDKey is the canonical payload key carrying a task identifier across
+// collaboration/handoff messages. cmd/ares mirrors this value on the receive
+// side (its own constant) — change both together.
+const taskIDKey = "task_id"
+
 // Send is the fire-and-forget primitive: deliver a message to a target agent
 // without waiting for a reply. The target's handler is invoked synchronously
 // in the caller's goroutine; a failed handler returns the error but does not

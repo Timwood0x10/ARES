@@ -191,3 +191,23 @@ func (s *Scheduler) allExecutors() map[string]CapabilityExecutor {
 	}
 	return out
 }
+
+// Capabilities lists the distinct executor types across the registry. The
+// graph-submission endpoint uses it to reject requests no peer can serve.
+func (s *Scheduler) Capabilities() []string {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	set := make(map[string]bool, len(s.executors))
+	out := make([]string, 0, len(s.executors))
+	for _, ex := range s.executors {
+		if ex == nil {
+			continue
+		}
+		c := string(ex.Type())
+		if !set[c] {
+			set[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
