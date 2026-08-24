@@ -600,3 +600,16 @@ func (f *Fabric) Delete(id string) error {
 		return ErrTaskUndeletable
 	}
 }
+
+// IDs returns a snapshot of every task id in the fabric (any state). Used by
+// housekeeping sweeps — e.g. the collaboration-graph janitor that deletes
+// stale terminal tasks from previous submissions.
+func (f *Fabric) IDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.tasks))
+	for id := range f.tasks {
+		out = append(out, id)
+	}
+	return out
+}

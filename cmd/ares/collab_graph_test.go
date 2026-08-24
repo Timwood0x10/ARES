@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
@@ -87,6 +89,43 @@ func TestGraphsEndpointAutoGeneratesUniqueRunIDs(t *testing.T) {
 	}
 }
 
+// TestGraphsEndpointConcurrentRunIDsAreUnique locks the C4-review fix #1
+// hardening: run ids must stay collision-free even under concurrent
+// submissions landing in the same nanosecond tick (UnixNano alone is not
+// unique — a collision would make the loser's first fabric.Create hit
+// ErrTaskExists → a spurious 500). Many parallel identical submissions must
+// all succeed with pairwise-distinct graph ids.
+func TestGraphsEndpointConcurrentRunIDsAreUnique(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler, _ := newGraphTestKernel(t, ctx)
+
+	const n = 32
+	body := `{"schema_version":1,"nodes":[{"id":"only","capability":"research"}],"edges":[]}`
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ids := make(map[string]struct{}, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			code, r := postGraph(t, handler, body)
+			if code != http.StatusOK {
+				t.Errorf("concurrent submission got status %d (want 200)", code)
+				return
+			}
+			gid, _ := r["graph_id"].(string)
+			mu.Lock()
+			ids[gid] = struct{}{}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(ids) != n {
+		t.Fatalf("expected %d unique graph ids, got %d (collision → 500 risk)", n, len(ids))
+	}
+}
+
 // TestGraphsEndpointFanOutJoin locks the orchestration mode: two workers run
 // after the root; the join node waits for BOTH (dependency fan-in). The probe
 // reads its own task's Dependencies at execution time and fails the test if
@@ -135,9 +174,14 @@ func TestGraphsEndpointRejectsUnknownCapability(t *testing.T) {
 	if !strings.Contains(resp["error"].(string), "no peer executor") {
 		t.Fatalf("error = %v", resp["error"])
 	}
-	// Nothing leaked into the fabric.
-	if _, err := kh.fabric.Task("collab-x"); err == nil {
-		t.Fatal("rejected graph must not create tasks")
+	// Nothing leaked into the fabric: capability validation happens BEFORE
+	// runCollabGraph, so no collab- task must exist. (Checking a fixed id
+	// like "collab-x" would be a no-op — server-generated run ids never match
+	// it, so the assertion would pass regardless of a real leak.)
+	for _, id := range kh.fabric.IDs() {
+		if strings.HasPrefix(id, "collab-") {
+			t.Fatalf("rejected graph leaked task %q", id)
+		}
 	}
 }
 
@@ -151,6 +195,45 @@ func TestGraphsEndpointSchemaVersionGuard(t *testing.T) {
 		t.Fatalf("status=%d resp=%v", code, resp)
 	}
 }
+
+// TestGraphsEndpointNodeFailureReturns422 locks the error taxonomy (C4-review
+// #2): when the DAG is well-formed and runs but a node's work fails after
+// exhausting retries, the endpoint returns 422 (Unprocessable) — NOT 500. The
+// graph was accepted and executed; only the payload failed, so callers must
+// not treat it as a server hiccup to blindly retry.
+func TestGraphsEndpointNodeFailureReturns422(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler, kh := newGraphTestKernel(t, ctx)
+	kh.scheduler.RegisterExecutor("peer-flaky", &failingExecutor{id: "peer-flaky", typ: "flaky"})
+
+	body := `{"schema_version":1,"nodes":[{"id":"bad","capability":"flaky"}],"edges":[]}`
+	code, resp := postGraph(t, handler, body)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d want 422, resp=%v", code, resp)
+	}
+	if resp["success"] != false {
+		t.Fatalf("success must be false on node failure: %v", resp)
+	}
+	if !strings.Contains(resp["error"].(string), "node") {
+		t.Fatalf("error should name the failure: %v", resp["error"])
+	}
+}
+
+// failingExecutor always returns a step error; the fabric requeues it per the
+// retry budget and finalizes FAILED once exhausted.
+type failingExecutor struct {
+	id  string
+	typ models.AgentType
+}
+
+func (e *failingExecutor) ID() string             { return e.id }
+func (e *failingExecutor) Type() models.AgentType { return e.typ }
+func (e *failingExecutor) ExecuteStep(_ context.Context, _ *models.Task) (*sub.StepOutcome, error) {
+	return nil, errFlakyNode
+}
+
+var errFlakyNode = errors.New("flaky node always fails")
 
 // joinProbe asserts, AT EXECUTION TIME, that every dependency of its task is
 // already COMPLETED (join-after-both-workers proof). It reads the task's own

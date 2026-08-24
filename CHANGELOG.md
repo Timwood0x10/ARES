@@ -250,6 +250,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now covered by the single kernel recovery loop.
   Tests: `internal/agentfabric/snapshot_test.go`,
   `cmd/ares/recovery_revive_test.go`.
+- **Stale collaboration-task janitor** (C4 review follow-up): every graph
+  submission sweeps leftover terminal `collab-*` tasks (COMPLETED / FAILED /
+  never-started READY) from previous runs before creating its own; tasks of
+  ACTIVE runs are protected via an in-process registry so overlapping
+  submissions never harvest each other. New `taskfabric.Fabric.IDs()` backs
+  the prefix scan. Test: `TestSweepStaleCollabTasks` (garbage/in-flight/
+  unrelated/live-protection/unregister-then-harvest).
+- **ares_memory test coverage round 1+2**: package coverage 37.2% → ~44%.
+  New contract tests for `convertRawToToolCalls` (skip-non-map, partial
+  shape), structured message round-trip, session deletion idempotency,
+  concrete-only surface (`SetLeaseManager` exclusivity + owner-only release,
+  `SetDefaultTenantID`, lock guard serialization), task-tracking pair
+  (`CreateTaskWithID` branches + `UpdateTaskOutput`), MaxHistory truncation,
+  and unknown-session delete semantics.
+- **Operator docs**: permission tiers now cover `/api/tasks` and
+  `/api/graphs` (write; audit names `submit_task` / `submit_graph`) vs
+  admin-only chaos/kill — both operator READMEs (zh/en). `ares.yaml` header
+  flags that BOTH shipped LLM keys return 401 and points at the live
+  credentials in `configs/ares.local.yaml`.
+
 - **Chaos endpoints retargeted at the kernel lifecycle** (P1 unified-lifecycle
   integration): with the peer runtime active, `POST /api/chaos/random-kill` /
   `kill-all` kill Agent-Fabric agents (emitting `agent.killed`) instead of

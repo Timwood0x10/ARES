@@ -71,8 +71,11 @@ curl -s localhost:8080/evolution/feedback | jq
 ```
 
 > All destructive endpoints (`/api/agents/:id/kill|resume|retry`,
-> `/api/chaos/*`, `/api/tools/call`) are **deny-by-default**: they return 401
-> until credentials are configured.
+> `/api/chaos/*`, `/api/tools/call`, `/api/tasks`, `/api/graphs`) are
+> **deny-by-default**: they return 401 until credentials are configured.
+> Permission tiers: `/api/tasks` and `/api/graphs` require **write**
+> (operator and above; audit action names `submit_task` / `submit_graph`);
+> `/api/chaos/*` and agent kill require **admin**.
 
 ### Logs
 

@@ -143,6 +143,11 @@ func createPeerAgents(
 	feedback := aresrecovery.NewEvolutionFeedbackAdapter(attribution, tracker)
 	go aresrecovery.RunEvolutionFeedbackLoop(ctx, feedback, 10*time.Second)
 
+	// Collaboration-graph janitor: reclaim terminal residue left by fail-fast
+	// / timeout submissions off the hot path (per-submission cleanup handles
+	// the common case; this catches siblings that were in-flight then).
+	go runCollabGCLoop(ctx, kernel.fabric, 60*time.Second)
+
 	// Assemble the Lifecycle pillar (agentfabric + aresrecovery).
 	agents := agentfabric.NewFabric()
 	if len(cfg.Kernel.Resources) > 0 {

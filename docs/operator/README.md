@@ -68,7 +68,10 @@ curl -s localhost:8080/evolution/feedback | jq
 ```
 
 > 所有破坏性端点（`/api/agents/:id/kill|resume|retry`、`/api/chaos/*`、
-> `/api/tools/call`）默认 **deny-by-default**：未配置凭证时一律 401。
+> `/api/tools/call`、`/api/tasks`、`/api/graphs`）默认 **deny-by-default**：
+> 未配置凭证时一律 401。权限分级：`/api/tasks` 与 `/api/graphs` 需要
+> **write**（operator 及以上；审计动作名 `submit_task` / `submit_graph`）；
+> `/api/chaos/*` 与 agent kill 需 **admin**。
 
 ### 日志
 

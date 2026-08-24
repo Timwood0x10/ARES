@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
@@ -443,11 +444,18 @@ func (h *actionHandler) handleListTools(w http.ResponseWriter) {
 // capability nodes with dependency edges. schema_version guards future wire
 // evolution (code_rules_v2 §6.1); only version 1 is accepted today.
 type graphSubmissionRequest struct {
-	SchemaVersion int             `json:"schema_version"`
-	RunID         string          `json:"run_id,omitempty"`
-	Nodes         []graphNodeSpec `json:"nodes"`
-	Edges         []graphEdgeSpec `json:"edges"`
+	SchemaVersion int `json:"schema_version"`
+	// RunID is accepted for wire back-compat but IGNORED — the server always
+	// generates the run id (see handleSubmitGraph) to guarantee task-id
+	// uniqueness and cross-caller isolation.
+	RunID string          `json:"run_id,omitempty"`
+	Nodes []graphNodeSpec `json:"nodes"`
+	Edges []graphEdgeSpec `json:"edges"`
 }
+
+// collabRunSeq makes server-generated run ids unique even within a single
+// nanosecond tick (UnixNano is not collision-free under concurrency).
+var collabRunSeq uint64
 
 // handleSubmitGraph executes a submitted collaboration graph through the
 // kernel fabric and returns each node's output. Validation happens BEFORE any
@@ -505,16 +513,33 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 	// with live/completed fabric tasks would surface as 500s (ErrTaskExists)
 	// for what is a caller mistake — and across callers they have no
 	// isolation. Callers correlate via the returned graph_id / task_ids.
-	runID := fmt.Sprintf("g%d", time.Now().UnixNano())
+	//
+	// UnixNano alone is NOT unique — two submissions in the same nanosecond
+	// (high concurrency, or coarse clock platforms) would collide and the
+	// second's first Create would hit ErrTaskExists → a spurious 500. A
+	// process-wide atomic sequence closes that window deterministically.
+	runID := fmt.Sprintf("g%d-%d", time.Now().UnixNano(), atomic.AddUint64(&collabRunSeq, 1))
 	outputs, taskIDs, err := runCollabGraph(r.Context(), h.kernel, runID, req.Nodes, req.Edges)
 	status := http.StatusOK
 	ok := err == nil
 	if !ok {
-		// Validation failures are caller mistakes (4xx); runtime failures of
-		// already-created tasks are server faults (5xx).
-		status = http.StatusInternalServerError
-		if errors.Is(err, ErrGraphInvalid) {
+		// Error taxonomy (see collab_graph.go) — each class is a distinct HTTP
+		// status so callers can distinguish a mistake from a partial result
+		// from a fault, and drive retry logic accordingly:
+		//   ErrGraphInvalid    → 400  caller's DAG is malformed
+		//   ErrGraphNodeFailed → 422  DAG ran, a node's work failed (don't
+		//                             blindly retry — the graph was accepted)
+		//   ErrGraphTimeout    → 504  DAG did not settle within the bound
+		//   (default)          → 500  genuine infrastructure fault
+		switch {
+		case errors.Is(err, ErrGraphInvalid):
 			status = http.StatusBadRequest
+		case errors.Is(err, ErrGraphNodeFailed):
+			status = http.StatusUnprocessableEntity
+		case errors.Is(err, ErrGraphTimeout):
+			status = http.StatusGatewayTimeout
+		default:
+			status = http.StatusInternalServerError
 		}
 	}
 	h.auditAction("submit_graph", runID, princ, ok)

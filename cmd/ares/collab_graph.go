@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/taskfabric"
@@ -38,15 +40,103 @@ type graphEdgeSpec struct {
 // deadline (LLM-backed peers make an unbounded wait dangerous).
 const collabTimeout = 10 * time.Minute
 
-// ErrGraphInvalid marks SUBMISSION-TIME validation failures (malformed
-// nodes/edges, unknown references, dependency cycles) that map to HTTP 4xx.
-// Execution failures after task creation keep 500 — they are runtime faults,
-// not caller mistakes.
-var ErrGraphInvalid = errors.New("collab graph invalid")
+// Error taxonomy — the handler maps each class to a distinct HTTP status so
+// callers can tell a mistake from a fault from a partial result:
+//
+//	ErrGraphInvalid    submission-time validation (bad DAG)      → 400
+//	ErrGraphNodeFailed the DAG ran but a node's work failed      → 422
+//	ErrGraphTimeout    the DAG did not settle within the bound   → 504
+//	(anything else)    genuine infrastructure fault              → 500
+//
+// The distinction matters for caller retry logic: a 422 (a peer executor's
+// work failed after exhausting retries) is NOT a server hiccup to blindly
+// retry — the graph was accepted and executed; only the payload failed.
+var (
+	ErrGraphInvalid    = errors.New("collab graph invalid")
+	ErrGraphNodeFailed = errors.New("collab graph node failed")
+	ErrGraphTimeout    = errors.New("collab graph timed out")
+)
+
+// activeCollabRuns tracks run ids whose tasks are LIVE in this process, so the
+// background janitor (runCollabGCLoop) can never harvest a run that is still
+// executing. The invariant that makes this safe: a run reads its outputs and
+// runs its own defer cleanup BEFORE it calls unmarkActiveRun (defer LIFO —
+// unmark is registered first, cleanup second, so cleanup fires first). By the
+// time a run unregisters, everything it still needed is already read; whatever
+// terminal residue remains (in-flight siblings that finished after fail-fast/
+// timeout) is exactly what the janitor should reclaim.
+var activeCollabRuns sync.Map // runID → struct{}
+
+func markActiveRun(id string)   { activeCollabRuns.Store(id, struct{}{}) }
+func unmarkActiveRun(id string) { activeCollabRuns.Delete(id) }
+
+// isProtectedByActiveRun reports whether id belongs to a run that is still
+// executing in this process.
+func isProtectedByActiveRun(id string) bool {
+	protected := false
+	activeCollabRuns.Range(func(rid, _ any) bool {
+		if strings.HasPrefix(id, "collab-"+rid.(string)+"-") {
+			protected = true
+			return false
+		}
+		return true
+	})
+	return protected
+}
+
+// sweepStaleCollabTasks deletes leftover terminal tasks ("collab-" prefix):
+// COMPLETED/FAILED/READY entries whose owning run already returned are pure
+// garbage in a long-lived fabric. These residues arise only on fail-fast /
+// timeout paths, where a run's in-flight siblings were undeletable at cleanup
+// time and turned terminal afterwards. In-flight states (LEASED/RUNNING/
+// SUSPENDED) are refused by Delete's guard and skipped; tasks of ACTIVE runs
+// are skipped via activeCollabRuns so the janitor never races a live run.
+//
+// This runs on the BACKGROUND janitor (runCollabGCLoop), NOT on the submission
+// hot path — a full IDs() scan must not tax every graph submission.
+func sweepStaleCollabTasks(f *taskfabric.Fabric) int {
+	removed := 0
+	for _, id := range f.IDs() {
+		if !strings.HasPrefix(id, "collab-") || isProtectedByActiveRun(id) {
+			continue
+		}
+		tk, err := f.Task(id)
+		if err != nil {
+			continue
+		}
+		switch tk.State {
+		case taskfabric.StateReady, taskfabric.StateCompleted, taskfabric.StateFailed:
+			if derr := f.Delete(id); derr == nil {
+				removed++
+			}
+		}
+	}
+	if removed > 0 {
+		log.Printf("peer mode: harvested %d stale collaboration task(s)", removed)
+	}
+	return removed
+}
+
+// runCollabGCLoop periodically harvests stale collaboration residue off the
+// submission hot path. Submissions only clean up their OWN tasks (the defer in
+// runCollabGraph); this loop reclaims the terminal siblings that a fail-fast /
+// timeout left undeletable at that moment. It exits when ctx is cancelled.
+func runCollabGCLoop(ctx context.Context, f *taskfabric.Fabric, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweepStaleCollabTasks(f)
+		}
+	}
+}
 
 // runCollabGraph creates every node task in the kernel fabric and waits for
-// the whole graph to settle. It returns nodeID → textual output extracted
-// from each task's completion checkpoint.
+// the whole graph to settle, returning nodeID → textual output extracted from
+// each task's completion checkpoint.
 //
 // Failure semantics: the first FAILED node aborts the wait and is returned as
 // an error naming the node; sibling branches that already completed are still
@@ -55,6 +145,9 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 	if k == nil || k.fabric == nil {
 		return nil, nil, fmt.Errorf("collab graph: kernel fabric not wired")
 	}
+	markActiveRun(runID)
+	defer unmarkActiveRun(runID)
+
 	ids := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
 		if n.ID == "" || n.Capability == "" {
@@ -142,7 +235,7 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 				progressed = true
 			case taskfabric.StateFailed:
 				outputs[nid] = collabNodeOutput(tk)
-				failErr = fmt.Errorf("collab graph %s: node %q failed", runID, nid)
+				failErr = fmt.Errorf("%w: %s node %q", ErrGraphNodeFailed, runID, nid)
 			default:
 				still = append(still, nid)
 			}
@@ -165,8 +258,8 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 				return outputs, taskIDs, fmt.Errorf("collab graph %s: canceled: %w (%d/%d settled)",
 					runID, waitCtx.Err(), len(outputs), len(nodes))
 			}
-			return outputs, taskIDs, fmt.Errorf("collab graph %s: timed out with %d/%d nodes settled",
-				runID, len(outputs), len(nodes))
+			return outputs, taskIDs, fmt.Errorf("%w: %s (%d/%d nodes settled)",
+				ErrGraphTimeout, runID, len(outputs), len(nodes))
 		case <-ticker.C:
 		}
 	}
@@ -235,8 +328,6 @@ func collabNodeOutput(tk *taskfabric.Task) string {
 	if !ok {
 		return ""
 	}
-	if reason, _ := step["reason"].(string); reason != "" {
-		return reason
-	}
-	return ""
+	reason, _ := step["reason"].(string)
+	return reason
 }
