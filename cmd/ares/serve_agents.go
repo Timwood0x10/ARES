@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
@@ -34,8 +35,19 @@ func createAndServeAgents(
 	mgr *ares_runtime.Manager,
 ) ([]sub.Agent, *kernelHandle, error) {
 	// The Bootstrap experience repo (nil when distillation is not wired) feeds
-	// the G1 spawn prior.
-	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, llmAdapter, chatClient, toolBinder, comp.EventStore, nil, comp.ExpRepo)
+	// the G1 spawn prior. The StrategySource closes the GA strategy loop: the
+	// evolution system deploys the best-evolved strategy into
+	// NewEvolution.StrategyStore, and every agent executor reads it via
+	// sub.WithStrategySource — without this bridge the deployed strategies
+	// were consumed by nothing.
+	var strategySrc agents.StrategySource
+	if comp.NewEvolution != nil {
+		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+		if strategySrc != nil {
+			log.Printf("serve: evolution strategy source wired into agents (GA deploy → runtime read)")
+		}
+	}
+	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, llmAdapter, chatClient, toolBinder, comp.EventStore, strategySrc, comp.ExpRepo)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create peer agents: %w", err)
 	}

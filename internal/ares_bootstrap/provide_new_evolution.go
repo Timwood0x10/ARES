@@ -202,6 +202,10 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		_ = patchReg.Register("recovery.max_attempts", recoveryExec)
 		_ = patchReg.Register("recovery.replacement_agent", recoveryExec)
 		_ = patchReg.Register("recovery.max_retries", recoveryExec)
+		// recovery.strategy is the target the RecoveryDiffer (and the LLM
+		// adapter) emit for PatchChangeRecoveryStrategy. Without it every
+		// recovery-strategy patch failed apply with "no executor registered".
+		_ = patchReg.Register("recovery.strategy", recoveryExec)
 	}
 
 	// Knowledge executor — works with or without a real runtime.
@@ -373,6 +377,7 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 		_ = c.PatchReg.Register("recovery.max_attempts", recoveryExec)
 		_ = c.PatchReg.Register("recovery.replacement_agent", recoveryExec)
 		_ = c.PatchReg.Register("recovery.max_retries", recoveryExec)
+		_ = c.PatchReg.Register("recovery.strategy", recoveryExec)
 	}
 
 	log.Info("new evolution: live DAG injected into executors",

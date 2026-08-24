@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,10 +125,15 @@ func TestDeleteSessionRemovesMessages(t *testing.T) {
 
 	require.NoError(t, mgr.DeleteSession(ctx, sessionID))
 
+	// Reading a deleted session must fail with the SENTINEL
+	// ErrSessionNotFound — never with an arbitrary error, and never with a
+	// silent success masking stale data. The previous
+	// `if err == nil { assert.Empty }` shape passed even when deletion broke
+	// so badly that GetMessages errored arbitrarily — a swallowed failure mode.
 	msgs, err := mgr.GetMessages(ctx, sessionID)
-	if err == nil {
-		assert.Empty(t, msgs, "deleted session must not return messages")
-	}
+	require.ErrorIs(t, err, memctx.ErrSessionNotFound,
+		"reading a deleted session must return the session-not-found sentinel")
+	assert.Empty(t, msgs)
 }
 
 // TestCreateTaskWithIDAndUpdateOutput covers the task-tracking pair that the
@@ -144,4 +150,15 @@ func TestCreateTaskWithIDAndUpdateOutput(t *testing.T) {
 
 	require.NoError(t, mgr.CreateTaskWithID(ctx, "task-e2e-1", sessionID, "user-x", "analyse logs"))
 	require.NoError(t, mgr.UpdateTaskOutput(ctx, "task-e2e-1", "analysis complete: 3 findings"))
+
+	// Round-trip the output through DistillTask (the manager's task read
+	// path) so the test actually verifies persistence — an UpdateTaskOutput
+	// that silently wrote "" would have passed the old assertions.
+	distilled, err := mgr.DistillTask(ctx, "task-e2e-1")
+	require.NoError(t, err)
+	require.NotNil(t, distilled.Payload)
+	assert.Equal(t, "analysis complete: 3 findings", distilled.Payload["output"],
+		"UpdateTaskOutput must persist the output string")
+	assert.Equal(t, "analyse logs", distilled.Payload["input"],
+		"CreateTaskWithID must persist the input string")
 }

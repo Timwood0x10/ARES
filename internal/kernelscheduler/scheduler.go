@@ -588,6 +588,27 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		return nil
 	}
 	s.tracker.Begin(winner)
+	// Panic guard: a panic inside the executor unwinds through RunQuantum and
+	// would skip endQuantumOutcome, leaking the winner's LoadTracker slot
+	// forever (load never decrements → Score multiplies by (1-clamp01(load))
+	// = 0 → the agent is permanently unschedulable). The deferred release only
+	// fires on the panic path: the normal path clears the flag right after
+	// endQuantumOutcome, so there is no double-release.
+	slotReleased := false
+	defer func() {
+		if !slotReleased {
+			if r := recover(); r == nil {
+				return
+			} else {
+				// Log BEFORE releasing: the stack trace is the only forensic
+				// trail for an executor panic, and the load slot is released
+				// so the agent stays schedulable (the fabric's expired-lease
+				// requeue reclaims the stuck task separately).
+				log.Printf("kernel scheduler: panic in executor for task %q on agent %q, releasing load slot: %v", taskID, winner, r)
+				s.tracker.EndNeutral(winner)
+			}
+		}
+	}()
 	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
 		out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
 		if stepErr != nil {
@@ -644,6 +665,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	})
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err)
+	slotReleased = true
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
 	// round) so the next gate sees the new balance. Runs even on step errors —
 	// the quantum did execute (or partially execute) and spent budget.
@@ -653,17 +675,27 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	if err == nil {
 		s.Scheduled.Add(1)
 	}
-	// W1 recovery binding: when the task reaches a terminal state, unregister
-	// the bound recovery executor so the executor map does not grow unboundedly
-	// and the executor is not offered as a candidate for other tasks.
-	tk2, tkErr := s.fabric.Task(taskID)
-	if tkErr == nil && (tk2.State == taskfabric.StateCompleted || tk2.State == taskfabric.StateFailed) {
-		if boundID := s.unbindFor(taskID); boundID != "" {
-			s.UnregisterExecutor(boundID)
-			log.Printf("kernel scheduler: unregistered recovery executor %q after task %q reached %s", boundID, taskID, tk2.State)
-		}
-	}
+	s.unbindRecoveryExecutorAfterTerminal(taskID)
 	return err
+}
+
+// unbindRecoveryExecutorAfterTerminal unregisters the recovery executor bound
+// to taskID once the task reaches a terminal state, so the executor map does
+// not grow unboundedly and the replacement is not offered as a candidate for
+// other tasks. No-op while the task can still run again (READY/RUNNING/
+// SUSPENDED).
+func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
+	tk2, tkErr := s.fabric.Task(taskID)
+	if tkErr != nil {
+		return
+	}
+	if tk2.State != taskfabric.StateCompleted && tk2.State != taskfabric.StateFailed {
+		return
+	}
+	if boundID := s.unbindFor(taskID); boundID != "" {
+		s.UnregisterExecutor(boundID)
+		log.Printf("kernel scheduler: unregistered recovery executor %q after task %q reached %s", boundID, taskID, tk2.State)
+	}
 }
 
 // endQuantumOutcome releases the winner's busy slot and attributes the

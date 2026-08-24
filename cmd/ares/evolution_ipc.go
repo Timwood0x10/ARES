@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
@@ -233,7 +234,15 @@ func executeCollabViaKernel(ctx context.Context, k *kernelHandle, targetID, capa
 	if p, ok := body["payload"].(map[string]any); ok {
 		taskPayload = p
 	}
-	outputs, _, err := runCollabGraph(ctx, k, "ipc-"+taskID,
+	// The fabric run id must be unique per invocation, NOT derived solely from
+	// the caller-supplied taskID: two concurrent collaboration requests sharing
+	// a taskID (a retry, or two leaders delegating the same logical task) would
+	// otherwise generate identical fabric task ids and the loser's Create would
+	// hit ErrTaskExists — the very collision class the HTTP handler was fixed to
+	// avoid. A process-wide atomic sequence closes that window. taskID is kept
+	// in the id purely for traceability.
+	runID := fmt.Sprintf("ipc-%s-%d", taskID, atomic.AddUint64(&collabRunSeq, 1))
+	outputs, _, err := runCollabGraph(ctx, k, runID,
 		[]graphNodeSpec{{ID: "exec", Capability: capability, Input: taskPayload}}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("agentipc: kernel execution of %s on %s: %w", taskID, targetID, err)

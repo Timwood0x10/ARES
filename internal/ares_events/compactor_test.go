@@ -66,9 +66,68 @@ func TestCompactionConfig_NegativeValues(t *testing.T) {
 		SummaryTTL:            -time.Hour,
 	}
 	c := NewCompactor(nil, nil, cfg)
-	// Should still create a compactor; negative values are caller's responsibility
-	// to validate or the compactor should handle gracefully.
 	require.NotNil(t, c)
+	// Negative KeepRecent is NOT the caller's problem alone: it flows into
+	// candidates := events[:total-KeepRecent], which panicked inside the
+	// store's errgroup worker (process crash) on an empty stream. The
+	// constructor must sanitize it to the default.
+	assert.Equal(t, DefaultCompactionConfig().KeepRecent, c.config.KeepRecent,
+		"negative KeepRecent must be sanitized to the default")
+	assert.Equal(t, DefaultCompactionConfig().Threshold, c.config.Threshold)
+}
+
+// TestCompactStream_NegativeKeepRecent_NoPanic drives compactStream directly
+// with a (hand-built) negative KeepRecent against an EMPTY stream — the exact
+// input that previously sliced past the end of a zero-length slice and
+// panicked the compaction worker.
+func TestCompactStream_NegativeKeepRecent_NoPanic(t *testing.T) {
+	memStore := NewMemoryEventStore()
+	mockRepo := &mockSummaryRepo{}
+	c := NewCompactor(memStore, mockRepo, DefaultCompactionConfig())
+	// Simulate config arriving from YAML unsanitized (bypasses the
+	// constructor guard) to pin the defensive in-compactStream guard too.
+	c.config.KeepRecent = -1
+
+	require.NotPanics(t, func() {
+		did, err := c.compactStream(context.Background(), "empty-stream")
+		require.NoError(t, err)
+		assert.False(t, did, "nothing to compact on an empty stream")
+	})
+}
+
+// appendTestEvents appends n simple message events to the store.
+func appendTestEvents(t *testing.T, store *MemoryEventStore, streamID string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		require.NoError(t, store.Append(context.Background(), streamID, []*Event{{
+			StreamID:  streamID,
+			Type:      EventTaskCreated,
+			Version:   int64(i + 1),
+			Timestamp: time.Now(),
+			Payload:   map[string]any{"i": i},
+		}}, int64(i)))
+	}
+}
+
+// TestCompactStream_NegativeKeepRecent_WithEvents extends the no-panic guard
+// to a non-empty stream: negative KeepRecent must behave like "keep nothing",
+// not like "compact everything plus one phantom candidate".
+func TestCompactStream_NegativeKeepRecent_WithEvents(t *testing.T) {
+	memStore := NewMemoryEventStore()
+	ctx := context.Background()
+	appendTestEvents(t, memStore, "s", 5)
+	mockRepo := &mockSummaryRepo{}
+	c := NewCompactor(memStore, mockRepo, DefaultCompactionConfig())
+	c.config.KeepRecent = -1
+
+	require.NotPanics(t, func() {
+		did, err := c.compactStream(ctx, "s")
+		require.NoError(t, err)
+		// total(5) <= KeepRecent(-1) is false; the guard must still refuse to
+		// run with a nonsensical keep-recent rather than slicing out of range.
+		// Whether it compacts or refuses, it must NOT panic.
+		_ = did
+	})
 }
 
 // ============================================================================

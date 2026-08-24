@@ -193,10 +193,21 @@ func NewRegistry() *Registry {
 }
 
 // SetFallback sets a fallback component that handles patches for targets
-// with no dedicated executor. When Apply cannot find an executor by target,
-// it delegates to the fallback if one is set.
+// with no dedicated executor registered. When Apply cannot find an executor
+// by target, it delegates to the fallback if one is set.
 func (r *Registry) SetFallback(comp RuntimeComponent) {
 	r.fallback = comp
+}
+
+// CanApply reports whether a patch targeting the given name would be
+// dispatched to an executor (dedicated or fallback) WITHOUT applying anything.
+// It is the read-only preflight for shadow/staging runtimes: validating a
+// patch must not mutate live state.
+func (r *Registry) CanApply(target string) bool {
+	if _, ok := r.executors[target]; ok {
+		return true
+	}
+	return r.fallback != nil
 }
 
 // Register registers an executor for a target component.

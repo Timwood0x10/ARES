@@ -2,6 +2,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
@@ -9,22 +10,28 @@ import (
 )
 
 // deploymentStagingRuntime is a shadow runtime used by the DeploymentPipeline.
-// It does NOT mutate live state — Apply records the patch on a private
-// registry copy — and Evaluate returns the recent real fitness mean from the
-// shared EvidenceStore (Stage 7): promotion only proceeds when observed
-// workflow/scheduler fitness supports the threshold, instead of the previous
-// constant 1.0 that let every patch through.
+// It NEVER mutates live state — Apply is a read-only preflight (the patch must
+// have a registered executor) and Evaluate returns the recent real fitness
+// mean from the shared EvidenceStore (Stage 7): promotion only proceeds when
+// observed workflow/scheduler fitness supports the threshold.
+//
+// History: this struct previously called r.reg.Apply on the SAME *patch.Registry
+// the live runtime uses. Staging therefore mutated production state (memory
+// config, knowledge runtime, DAG recovery policies) for patches that were then
+// REJECTED, and its "rollback" re-applied the identical patch instead of an
+// inverse. For ID-bearing patches the staging apply also poisoned the shared
+// idempotency map, so the later live promotion silently no-op'd.
 type deploymentStagingRuntime struct {
 	reg           *patch.Registry
 	evidenceStore evidence.Store
 	applyCount    int
 }
 
-func (r *deploymentStagingRuntime) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
-	// Shadow apply: do not touch live state, but record the patch so the
-	// staging runtime's evaluation reflects what was proposed.
-	if err := r.reg.Apply(ctx, p); err != nil {
-		return nil, err
+func (r *deploymentStagingRuntime) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	// Preflight only: reject patches no executor can handle (same rejection
+	// class as before), but do NOT touch any registry state.
+	if !r.reg.CanApply(p.Target) {
+		return nil, fmt.Errorf("staging preflight: no executor registered for target %q", p.Target)
 	}
 	r.applyCount++
 	return &p, nil
@@ -46,14 +53,12 @@ func (r *deploymentStagingRuntime) Evaluate(ctx context.Context) (float64, error
 	return mean, nil
 }
 
-func (r *deploymentStagingRuntime) Rollback(ctx context.Context, rollback *patch.RuntimePatch) error {
-	if rollback == nil || r.applyCount == 0 {
-		return nil
+func (r *deploymentStagingRuntime) Rollback(_ context.Context, _ *patch.RuntimePatch) error {
+	// Nothing was applied to any registry during staging, so there is nothing
+	// to roll back. The counter keeps the pipeline's bookkeeping honest.
+	if r.applyCount > 0 {
+		r.applyCount--
 	}
-	if err := r.reg.Apply(ctx, *rollback); err != nil {
-		return err
-	}
-	r.applyCount--
 	return nil
 }
 
@@ -91,6 +96,13 @@ func (a *deploymentAdapter) Deploy(ctx context.Context, p patch.RuntimePatch) er
 	if err != nil {
 		return err
 	}
-	_ = rec // outcome (promoted/rejected/rolled_back) is recorded inside Deploy.
+	// A pipeline REJECTION (shadow score below threshold) or ROLLBACK is a
+	// normal, non-error return of Deploy — but the Coordinator treats a nil
+	// error as "applied successfully" and records PatchResult{Error: nil} in
+	// its decision history. Translate the outcome so the operator-facing
+	// history reflects reality: only DeploymentPromoted counts as success.
+	if rec != nil && rec.Status != deployment.DeploymentPromoted {
+		return fmt.Errorf("deployment not applied (status %s): %s", rec.Status, rec.Reason)
+	}
 	return nil
 }

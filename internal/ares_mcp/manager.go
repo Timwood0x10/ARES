@@ -115,16 +115,25 @@ func (m *MCPManager) Start(ctx context.Context) error {
 }
 
 // Stop disconnects all servers and unregisters their tools.
+//
+// Locking: clients are CLOSED outside m.mu. MCPClient.Close waits for the
+// receive loop's notification goroutines, whose onChange callback re-enters
+// RefreshTools → m.mu.Lock(); closing under the lock deadlocks shutdown
+// whenever a tools/listChanged notification is in flight.
 func (m *MCPManager) Stop(_ context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	closing := make([]*managedClient, 0, len(m.clients))
 	for name, mc := range m.clients {
 		m.unregisterTools(mc)
-		if err := mc.client.Close(); err != nil {
-			log.Warn("mcp: failed to close client", "server", name, "error", err)
-		}
+		closing = append(closing, mc)
 		delete(m.clients, name)
+	}
+	m.mu.Unlock()
+
+	for _, mc := range closing {
+		if err := mc.client.Close(); err != nil {
+			log.Warn("mcp: failed to close client", "server", mc.config.Name, "error", err)
+		}
 	}
 
 	return nil
@@ -154,6 +163,19 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 		return fmt.Errorf("create transport: %w", err)
 	}
 
+	return m.connectWithTransport(ctx, name, sc, transport)
+}
+
+// connectWithTransport finishes a server connect with an ALREADY-CREATED
+// transport. It is the injection seam for tests (mock transports) and keeps
+// the config→transport construction separate from registration/lifecycle.
+//
+// Args:
+//   - ctx: connection + tool-listing context.
+//   - name: server name as defined in configuration.
+//   - sc: the resolved server config (must be non-nil).
+//   - transport: the transport to bind the new client to.
+func (m *MCPManager) connectWithTransport(ctx context.Context, name string, sc *MCPServerConfig, transport Transport) error {
 	onChange := func() {
 		// Use a fresh background-derived context instead of the caller's ctx,
 		// which may be a short-lived request context that gets cancelled before
@@ -196,32 +218,53 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 	mc.tools = toolNames
 
 	m.mu.Lock()
+	stale := m.clients[name]
 	m.clients[name] = mc
 	m.mu.Unlock()
+
+	// Close the PREVIOUS connection (if any) outside the manager lock. Without
+	// this, an overlapping Start/ApplyConfig re-connect orphans the old
+	// managedClient: its stdio subprocess is never killed and its receive
+	// loop leaks. Closing after the swap keeps concurrent readers on a live
+	// client for the whole window.
+	if stale != nil {
+		if err := stale.client.Close(); err != nil {
+			log.Warn("mcp: failed to close replaced client", "server", name, "error", err)
+		}
+	}
 
 	return nil
 }
 
-// DisconnectServer disconnects from a named MCP server.
+// DisconnectServer disconnects from a named server.
+//
+// Locking: the client is CLOSED outside m.mu for the same reason as Stop —
+// Close waits on notification goroutines that may be blocked acquiring m.mu
+// inside RefreshTools.
 func (m *MCPManager) DisconnectServer(_ context.Context, name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	mc, ok := m.clients[name]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("server %q not connected", name)
 	}
-
 	m.unregisterTools(mc)
+	delete(m.clients, name)
+	m.mu.Unlock()
+
 	if err := mc.client.Close(); err != nil {
 		log.Warn("mcp: failed to close client", "server", name, "error", err)
 	}
-	delete(m.clients, name)
 
 	return nil
 }
 
 // RefreshTools re-discovers and re-registers tools for a server.
+//
+// Failure atomicity: if re-discovery fails after the old tools were
+// unregistered, the previous tool set is re-registered (best effort) so a
+// transient ListTools blip during a hot-reload does not leave the server with
+// zero tools in the LLM-facing registry.
 func (m *MCPManager) RefreshTools(ctx context.Context, serverName string) error {
 	m.mu.Lock()
 	mc, ok := m.clients[serverName]
@@ -236,6 +279,14 @@ func (m *MCPManager) RefreshTools(ctx context.Context, serverName string) error 
 
 	// Re-discover tools.
 	if _, err := mc.client.ListTools(ctx); err != nil {
+		// Restore the previous registration from the client's (still valid)
+		// cached tool definitions so the registry keeps serving the old set.
+		m.mu.Lock()
+		if _, rerr := m.registerTools(mc); rerr != nil {
+			log.Warn("mcp: failed to restore previous tools after failed refresh",
+				"server", serverName, "refresh_error", err, "restore_error", rerr)
+		}
+		m.mu.Unlock()
 		return fmt.Errorf("list tools: %w", err)
 	}
 

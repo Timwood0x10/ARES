@@ -292,3 +292,78 @@ func TestClient_GenerateStream_WhitespaceOnlyPrompt(t *testing.T) {
 		t.Errorf("expected ErrInvalidArgument for whitespace prompt, got %v", err)
 	}
 }
+
+// TestClient_GenerateStream_SlowConsumerNoTruncation pins the no-silent-loss
+// contract: a consumer that reads slower than the provider produces must see
+// EVERY chunk and the final Done — never a channel closed early by a
+// buffer-full drop. Regression: the wrapper used a non-blocking send with a
+// `default: return`, silently truncating responses for slow readers.
+func TestClient_GenerateStream_SlowConsumerNoTruncation(t *testing.T) {
+	const totalChunks = 200
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		for i := 0; i < totalChunks; i++ {
+			chunk := struct {
+				Response string `json:"response"`
+			}{Response: "y"}
+			data, _ := json.Marshal(chunk)
+			if _, err := w.Write(data); err != nil {
+				return
+			}
+			if _, err := w.Write([]byte("\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	})
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client, err := NewClient(&Config{
+		Provider: "ollama",
+		BaseURL:  server.URL,
+		Model:    "llama3.2",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	ch, err := client.GenerateStream(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("GenerateStream failed: %v", err)
+	}
+
+	// Read far slower than production (1ms per chunk vs ~0 write latency) so
+	// the 64-slot buffer fills and the old drop path would trigger.
+	var content strings.Builder
+	sawDone := false
+	timeout := time.After(30 * time.Second)
+	for !sawDone {
+		select {
+		case chunk, ok := <-ch:
+			if !ok && !sawDone {
+				t.Fatalf("channel closed after %d/%d chunks without Done — stream truncated",
+					strings.Count(content.String(), "y"), totalChunks)
+			}
+			if chunk.Content != "" {
+				content.WriteString(chunk.Content)
+			}
+			if chunk.Done {
+				sawDone = true
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for stream completion")
+		}
+		time.Sleep(500 * time.Microsecond)
+	}
+
+	if got := strings.Count(content.String(), "y"); got != totalChunks {
+		t.Fatalf("slow consumer lost chunks: got %d/%d", got, totalChunks)
+	}
+}

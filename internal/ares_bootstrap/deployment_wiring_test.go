@@ -9,6 +9,7 @@ import (
 	"context"
 	"testing"
 
+	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/stretchr/testify/assert"
@@ -57,4 +58,46 @@ func seedFitnessEvidence(t *testing.T, store *evidence.MemoryStore, value float6
 	t.Helper()
 	collector := evidence.NewCollector(store, "workflow")
 	return collector.Emit(context.Background(), evidence.KindFitness, map[string]any{"value": value})
+}
+
+// TestDeploymentStaging_DoesNotMutateLiveRegistry pins the staging-isolation
+// contract: a shadow Apply must not change the state the live registry's
+// executors point at. Regression: staging previously called reg.Apply on the
+// SAME registry the live runtime uses, so REJECTED patches had already
+// mutated live memory config — and ID-bearing patches poisoned the shared
+// idempotency map so the later promotion silently no-op'd.
+func TestDeploymentStaging_DoesNotMutateLiveRegistry(t *testing.T) {
+	ctx := context.Background()
+
+	// The shared registry holds a REAL executor writing to a real config store.
+	memStore := buildMemoryManager()
+	reg := patch.NewRegistry()
+	require.NoError(t, reg.RegisterComponent(aresmemory.NewMemoryPatchExecutor(memStore)))
+	require.True(t, reg.CanApply("memory"), "memory patch component must be registered")
+
+	r := &deploymentStagingRuntime{reg: reg, evidenceStore: evidence.NewMemoryStore()}
+
+	p := patch.RuntimePatch{
+		Type:   patch.PatchChangePlanner,
+		Target: "memory",
+		Value:  map[string]any{"max_history": 99},
+		Reason: "test: must never reach live state from staging",
+	}
+	_, err := r.Apply(ctx, p)
+	require.NoError(t, err)
+
+	cfg := memStore.GetConfig()
+	require.NotNil(t, cfg)
+	assert.NotEqual(t, 99, cfg.MaxHistory,
+		"staging apply must NOT mutate live memory config")
+	assert.Equal(t, 1, r.applyCount, "staging bookkeeping records the shadow apply")
+
+	// Rollback is a no-op (nothing was applied) and must not error.
+	require.NoError(t, r.Rollback(ctx, &p))
+
+	// A target with no registered executor is rejected by the preflight,
+	// preserving the old "staging apply failed" rejection class.
+	orphan := &deploymentStagingRuntime{reg: patch.NewRegistry(), evidenceStore: evidence.NewMemoryStore()}
+	_, err = orphan.Apply(ctx, patch.RuntimePatch{Type: patch.PatchChangePlanner, Target: "nope"})
+	require.Error(t, err)
 }

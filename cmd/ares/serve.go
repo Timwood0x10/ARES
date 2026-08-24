@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync/atomic"
@@ -273,6 +274,11 @@ func runServe() error {
 	// sub.Agent.ExecuteStep; agents never subscribe to the event stream and
 	// self-dispatch (self-dispatch was removed in v0.3.0).
 
+	// --- Dashboard APIv2 server (M3/M4 observability read side) ---
+	if err := startDashboardServer(ctx, g, cfg, comp, shutdownMgr); err != nil {
+		return err
+	}
+
 	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
 	// cyclomatic complexity within lint limits) ---
 	if _, err := startServeHTTPAndHooks(ctx, g, cfg, cfgStore, plugin, mgr, registry, toolBinder, shutdownMgr, comp, peerKernel); err != nil {
@@ -284,6 +290,37 @@ func runServe() error {
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
 	// normalized to nil so `ares serve` exits 0 on Ctrl-C (code_rules_v2 §3.1).
 	return normalizeShutdownErr(g.Wait())
+}
+
+// startDashboardServer starts the Bootstrap-assembled dashboard HTTP server
+// and registers its shutdown hook. The server carries the SHARED M3/M4
+// observability adapters (evolution trajectory, human feedback, cross-Fabric
+// spans); historically nothing ever called Start, so those endpoints fed a
+// server no one could reach. It listens on cfg.Dashboard.Addr (default :8090,
+// distinct from the console on cfg.Server.Port).
+func startDashboardServer(
+	ctx context.Context,
+	g *errgroup.Group,
+	cfg *ares_config.Config,
+	comp *ares_bootstrap.Components,
+	shutdownMgr *ares_shutdown.Manager,
+) error {
+	if comp == nil || comp.Dashboard == nil || comp.Dashboard.Start == nil {
+		return nil
+	}
+	g.Go(func() error {
+		if err := comp.Dashboard.Start(ctx); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("dashboard server error: %w", err)
+		}
+		return nil
+	})
+	log.Printf("dashboard APIv2 listening on %s", cfg.Dashboard.Addr)
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
+		return comp.Dashboard.Stop(ctx)
+	}); err != nil {
+		return fmt.Errorf("register dashboard shutdown hook: %w", err)
+	}
+	return nil
 }
 
 // normalizeShutdownErr treats context cancellation (graceful shutdown) as a

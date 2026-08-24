@@ -1,5 +1,7 @@
 package taskfabric
 
+import "errors"
+
 // QuantumStep is one Agent Step executed inside a quantum (design §5 of
 // ares-runtime.md): reasoning → tool call → observation. It returns the
 // durable checkpoint (progress so far) and whether the task is complete.
@@ -33,15 +35,26 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 //   - step: the agent step to run inside this quantum.
 //
 // Returns:
-//   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState, or the
-//     outcome of the quantum transition.
+//   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState, the step's own
+//     error (after the FAIL transition was applied), or the outcome of the
+//     quantum transition.
+//
+// Error propagation contract: when step returns an error, RunQuantum applies
+// f.Fail (retry budget requeue or final FAILED) and then RETURNS the step
+// error instead of swallowing it. Callers (kernelscheduler outcome
+// attribution, dispatch logging) must observe failures as failures — a
+// swallowed error made the scheduler record failed quanta as successes,
+// inflating agent confidence and hiding every task failure from logs.
 func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
 	if err := f.Start(taskID, agentID, epoch); err != nil {
 		return err
 	}
 	checkpoint, done, stepErr := step()
 	if stepErr != nil {
-		return f.Fail(taskID, agentID, epoch)
+		if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
+			return errors.Join(stepErr, failErr)
+		}
+		return stepErr
 	}
 	if done {
 		// Preserve the step's output in the task so the kernel dispatch

@@ -414,15 +414,26 @@ func (t *jsonTool) Execute(_ context.Context, params map[string]any) (Result, er
 // webSearchTool searches the web using SearXNG meta search engine.
 // Requires a running SearXNG instance (default: http://localhost:5605).
 type webSearchTool struct {
-	client  *http.Client
+	// trustedClient dials the OPERATOR-configured base URL (constructor
+	// default or t.baseURL). No SSRF filtering: the default endpoint is
+	// localhost:5605 (the documented Docker deployment), which an SSRF guard
+	// would block, making the tool dead in its default configuration.
+	trustedClient *http.Client
+	// ssrfClient dials caller-SUPPLIED override URLs (the searxng_base_url
+	// request param, controllable by the LLM). Private/loopback targets are
+	// refused — that param is the actual SSRF surface.
+	ssrfClient *http.Client
+	// baseURL is the operator-configured SearXNG endpoint; empty means the
+	// http://localhost:5605 default.
 	baseURL string
 }
 
-// newWebSearchTool creates a web search tool with a default HTTP client and
-// SSRF-safe dialer that blocks requests to private/loopback networks.
+// newWebSearchTool creates a web search tool with a plain client for its own
+// configured endpoint and an SSRF-safe dialer for request-supplied overrides.
 func newWebSearchTool() *webSearchTool {
 	return &webSearchTool{
-		client: &http.Client{
+		trustedClient: &http.Client{Timeout: 10 * time.Second},
+		ssrfClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
 				DialContext: ssrfSafeDialContext,
@@ -497,8 +508,13 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 	if baseURL == "" {
 		baseURL = "http://localhost:5605"
 	}
+	// The client is chosen by WHO chose the URL: the operator-configured base
+	// URL is trusted; a request-supplied override is LLM-controlled and goes
+	// through the SSRF-guarded dialer.
+	client := t.trustedClient
 	if override, ok := params["searxng_base_url"].(string); ok && override != "" {
 		baseURL = override
+		client = t.ssrfClient
 	}
 
 	// Validate the SearXNG base URL to mitigate SSRF.
@@ -524,7 +540,7 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := t.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return Result{Success: false, Data: fmt.Sprintf("searxng request failed: %v", err)}, nil
 	}

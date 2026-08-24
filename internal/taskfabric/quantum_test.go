@@ -72,7 +72,9 @@ func TestFabricRunQuantumYields(t *testing.T) {
 }
 
 // TestFabricRunQuantumFails verifies a step error fails the task (requeued to
-// READY when the retry policy allows).
+// READY when the retry policy allows) AND is propagated to the caller: the
+// scheduler attributes outcomes from RunQuantum's return value, so a swallowed
+// error would record failed quanta as successes.
 func TestFabricRunQuantumFails(t *testing.T) {
 	f := NewFabric()
 	tk := newTask("t1")
@@ -84,15 +86,42 @@ func TestFabricRunQuantumFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
+	stepErr := errors.New("step blew up")
 	err = f.RunQuantum("t1", "agent-a", epoch, func() (any, bool, error) {
-		return nil, false, errors.New("step blew up")
+		return nil, false, stepErr
 	})
-	if err != nil {
-		t.Fatalf("RunQuantum must swallow step error into FAIL: %v", err)
+	if !errors.Is(err, stepErr) {
+		t.Fatalf("RunQuantum must propagate the step error (state transition already applied), got %v", err)
 	}
 	task, _ := f.Task("t1")
 	if task.State != StateReady {
 		t.Fatalf("want requeue to READY (retry allowed), got %s", task.State)
+	}
+}
+
+// TestFabricRunQuantumFailsExhausted verifies the exhausted-retry path: the
+// step error is still propagated while the task finalizes FAILED.
+func TestFabricRunQuantumFailsExhausted(t *testing.T) {
+	f := NewFabric()
+	tk := newTask("t1")
+	tk.RetryPolicy = RetryPolicy{MaxRetries: 1} // single attempt: first failure is terminal
+	if err := f.Create(tk); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := f.Acquire("t1", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	stepErr := errors.New("terminal step failure")
+	err = f.RunQuantum("t1", "agent-a", epoch, func() (any, bool, error) {
+		return nil, false, stepErr
+	})
+	if !errors.Is(err, stepErr) {
+		t.Fatalf("want propagated step error on exhausted retries, got %v", err)
+	}
+	task, _ := f.Task("t1")
+	if task.State != StateFailed {
+		t.Fatalf("want FAILED after retry budget exhausted, got %s", task.State)
 	}
 }
 

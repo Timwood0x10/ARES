@@ -104,7 +104,16 @@ const maxLazyForGraph = 2000
 
 // Execute runs the full AKF pipeline: Plan → Load → Link → Reduce → Graph.
 func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget knowledge.TokenBudget, cfg *Config) (*knowledge.WorkingGraph, error) {
-	if r == nil || r.planner == nil {
+	if r == nil {
+		return nil, fmt.Errorf("runtime: planner is not configured")
+	}
+	// Snapshot the planner under planMu: SetPlanConfig swaps the interface
+	// field at runtime (KnowledgePatchExecutor.Apply), and a bare read here
+	// raced with that write whenever an evolution patch landed mid-query.
+	r.planMu.RLock()
+	planner := r.planner
+	r.planMu.RUnlock()
+	if planner == nil {
 		return nil, fmt.Errorf("runtime: planner is not configured")
 	}
 	if cfg == nil {
@@ -115,7 +124,7 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 	}
 
 	// 1. Plan: generate knowledge requirements.
-	plan, err := r.planner.Plan(ctx, goal, budget)
+	plan, err := planner.Plan(ctx, goal, budget)
 	if err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
 	}

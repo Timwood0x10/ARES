@@ -234,6 +234,18 @@ func (m *ProductionMemoryManager) Unlock() {
 // Ensure ProductionMemoryManager implements MemoryConfigStore.
 var _ MemoryConfigStore = (*ProductionMemoryManager)(nil)
 
+// snapshotTuning reads the config fields consumed by hot paths (session TTL
+// for expiry stamps, max history for query bounds) under RLock, so concurrent
+// MemoryPatchExecutor Apply calls — which mutate the same fields under the
+// write lock — do not race with these reads.
+func (m *ProductionMemoryManager) snapshotTuning() (sessionTTL time.Duration, maxHistory int) {
+	m.mu.RLock()
+	sessionTTL = m.config.SessionTTL
+	maxHistory = m.config.MaxHistory
+	m.mu.RUnlock()
+	return sessionTTL, maxHistory
+}
+
 // SetTenantID sets the current tenant ID for multi-tenant operations.
 // Args:
 // tenantID - tenant identifier.
@@ -437,6 +449,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		userID = "anonymous"
 	}
 
+	sessionTTL, _ := m.snapshotTuning()
 	conv := &storage_models.Conversation{
 		SessionID: sessionID,
 		TenantID:  tenantID,
@@ -444,7 +457,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		AgentID:   "style-agent",
 		Role:      role,
 		Content:   content,
-		ExpiresAt: time.Now().Add(m.config.SessionTTL),
+		ExpiresAt: time.Now().Add(sessionTTL),
 	}
 
 	if err := m.conversationRepository.Create(ctx, conv); err != nil {
@@ -486,7 +499,8 @@ func (m *ProductionMemoryManager) GetMessages(ctx context.Context, sessionID str
 	}
 
 	// Retrieve conversations from database
-	conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, m.config.MaxHistory)
+	_, maxHist := m.snapshotTuning()
+	conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, maxHist)
 	if err != nil {
 		return nil, errors.Wrap(err, "get conversations")
 	}
@@ -559,6 +573,7 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		msgTime = time.Now()
 	}
 
+	structTTL, _ := m.snapshotTuning()
 	conv := &storage_models.Conversation{
 		SessionID: sessionID,
 		TenantID:  tenantID,
@@ -567,7 +582,7 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		Role:      msg.Role,
 		Content:   msg.Content,
 		Metadata:  metadata,
-		ExpiresAt: time.Now().Add(m.config.SessionTTL),
+		ExpiresAt: time.Now().Add(structTTL),
 		CreatedAt: msgTime,
 	}
 
@@ -607,7 +622,8 @@ func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessi
 	}
 
 	// Retrieve conversations with metadata
-	conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, m.config.MaxHistory)
+	_, maxHist := m.snapshotTuning()
+	conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, maxHist)
 	if err != nil {
 		return nil, errors.Wrap(err, "get conversations")
 	}
@@ -639,17 +655,21 @@ func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessi
 		messages = append(messages, msg)
 	}
 
-	// Apply max-history limit
-	maxHistory := m.config.MaxHistory
+	// Apply max-history limit. Snapshot under RLock (see snapshotTuning) so
+	// concurrent config patches do not race with these reads.
+	_, maxHistory := m.snapshotTuning()
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
 	}
 
 	// Apply context cleaning with turn-aware mode and configured options
 	var opts []memctx.CleanOptions
+	m.mu.RLock()
 	if m.config.CleanOptions != nil {
-		opts = []memctx.CleanOptions{*m.config.CleanOptions}
+		snap := *m.config.CleanOptions
+		opts = []memctx.CleanOptions{snap}
 	}
+	m.mu.RUnlock()
 	cleaned := m.ctxCleaner.CleanWithTurns(messages, opts...)
 
 	stats := m.ctxCleaner.Stats()
@@ -714,8 +734,8 @@ func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string
 		return "", errors.Wrap(err, "get messages")
 	}
 
-	// Keep only last N messages to avoid long context
-	maxHistory := m.config.MaxHistory
+	// Keep only last N messages to avoid long context (snapshot under RLock)
+	_, maxHistory := m.snapshotTuning()
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
 	}

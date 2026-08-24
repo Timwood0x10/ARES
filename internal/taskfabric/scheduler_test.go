@@ -100,3 +100,41 @@ func TestCapabilityOverlapProportional(t *testing.T) {
 		t.Fatalf("unconstrained must be open, got %v", o)
 	}
 }
+
+// TestPick_LastResortKeepsAllFailureCandidateReachable pins the retry
+// reachability contract: a candidate whose history is all failures has
+// Confidence 0 ⇒ Score 0, but when it is among the capability-overlapping
+// candidates and nothing else scores positive, Pick must still return it —
+// otherwise a single recorded failure permanently stranded tasks whose only
+// capable executor had failed once (bounded retries could never run).
+func TestPick_LastResortKeepsAllFailureCandidateReachable(t *testing.T) {
+	failed := Candidate{AgentID: "flaky", Capabilities: []string{"code"}, Confidence: 0}
+	if got := Pick("code", []Candidate{failed}); got == nil {
+		t.Fatal("all-failure candidate must remain reachable as last resort, got nil")
+	} else if got.AgentID != "flaky" {
+		t.Fatalf("want flaky, got %s", got.AgentID)
+	}
+}
+
+// TestPick_HealthyBeatsFailed pins the ranking half of the last-resort
+// contract: a healthy candidate still wins; the fallback only fires when NO
+// candidate scores positive.
+func TestPick_HealthyBeatsFailed(t *testing.T) {
+	cands := []Candidate{
+		{AgentID: "flaky", Capabilities: []string{"code"}, Confidence: 0},
+		{AgentID: "solid", Capabilities: []string{"code"}, Confidence: 1.0},
+	}
+	got := Pick("code", cands)
+	if got == nil || got.AgentID != "solid" {
+		t.Fatalf("healthy candidate must win, got %v", got)
+	}
+}
+
+// TestPick_NoOverlapStillNil pins the capability gate: the fallback tier must
+// NOT resuscitate candidates that cannot do the work at all.
+func TestPick_NoOverlapStillNil(t *testing.T) {
+	writer := Candidate{AgentID: "writer", Capabilities: []string{"write"}, Confidence: 1.0}
+	if got := Pick("code", []Candidate{writer}); got != nil {
+		t.Fatalf("non-overlapping candidate must never be picked, got %v", got.AgentID)
+	}
+}

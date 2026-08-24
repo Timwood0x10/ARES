@@ -372,10 +372,6 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 	return taskID, nil
 }
 
-// _ ensures submitPeerTask is retained as the peer-mode task submission API
-// even before its HTTP endpoint is wired (staticcheck U1000).
-var _ = submitPeerTask
-
 // ── Kernel-path chaos (P1: unified lifecycle) ───────────────────────────
 //
 // The /api/chaos/* endpoints previously killed agents through the legacy

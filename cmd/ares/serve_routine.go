@@ -98,17 +98,26 @@ func setupServeMonitoring(
 	plugin.SetEvolutionStore(evoStore)
 
 	// --- Bridge: EventStore → PluginBus ---
-	meta := make(map[string]agentMeta, len(cfg.Agents.Sub))
-	for _, s := range cfg.Agents.Sub {
-		meta[s.ID] = agentMeta{
+	// Agent metadata must cover BOTH config shapes: the C1 flat peers list is
+	// the default and the legacy agents.sub entries are the fallback — the
+	// same normalization createPeerAgents applies (normalizedPeers). Keying
+	// off agents.sub alone left peers-config deployments with an empty meta
+	// map, so bridged events carried no name/role/model enrichment.
+	agentMetaByID := make(map[string]agentMeta, len(cfg.Agents.Sub))
+	for _, s := range normalizedPeers(cfg) {
+		role := ""
+		if len(s.Capabilities) > 0 {
+			role = s.Capabilities[0]
+		}
+		agentMetaByID[s.ID] = agentMeta{
 			name:     s.ID,
-			role:     s.Category,
+			role:     role,
 			model:    cfg.LLM.Model,
 			parentID: "",
 		}
 	}
 	g.Go(func() error {
-		bridgeEvents(ctx, store, bus, meta)
+		bridgeEvents(ctx, store, bus, agentMetaByID)
 		return nil
 	})
 	return plugin, nil

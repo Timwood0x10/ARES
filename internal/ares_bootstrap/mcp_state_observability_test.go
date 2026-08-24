@@ -53,9 +53,16 @@ func TestMCPStatus_DisconnectedServer_ReportsError(t *testing.T) {
 		"disconnected server must report Connected=false (Degraded, not silent)")
 }
 
-// TestMCPConfig_ServersEmpty verifies the config type used by Bootstrap builds
-// cleanly with an empty server list (default minimal config path).
+// TestMCPConfig_ServersEmpty verifies the DEFAULT minimal config path: the
+// zero-value MCPConfig must carry no servers AND Bootstrap's ProvideMCP must
+// accept it (start a manager that connects nothing) — not merely re-assert a
+// field against itself.
 func TestMCPConfig_ServersEmpty(t *testing.T) {
-	cfg := ares_config.MCPConfig{Servers: []ares_config.MCPServerEntry{}}
-	assert.Empty(t, cfg.Servers)
+	cfg := ares_config.MCPConfig{}
+	require.Empty(t, cfg.Servers, "zero-value config has no servers")
+
+	mgr, err := ProvideMCP(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, mgr)
+	assert.Empty(t, mgr.ListServers(), "no configured servers → no server statuses")
 }

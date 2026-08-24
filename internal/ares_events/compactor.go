@@ -30,8 +30,15 @@ type Compactor struct {
 type EventSummarizer func(events []*Event) string
 
 // NewCompactor creates a new Compactor with the given dependencies.
+//
+// Config sanitization: a non-positive Threshold OR a negative KeepRecent is
+// replaced by the defaults. KeepRecent flows straight into slice arithmetic
+// (candidates := events[:total-KeepRecent]); a negative value turns
+// `total <= KeepRecent` false on an empty stream and slices past the end —
+// panicking inside the store's errgroup worker, which kills the whole
+// process, not just the request.
 func NewCompactor(store EventStore, repo SummaryRepository, config CompactionConfig) *Compactor {
-	if config.Threshold <= 0 {
+	if config.Threshold <= 0 || config.KeepRecent < 0 {
 		config = DefaultCompactionConfig()
 	}
 	return &Compactor{
@@ -110,7 +117,7 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 	}
 
 	totalEvents := len(allEvents)
-	if totalEvents <= c.config.KeepRecent {
+	if c.config.KeepRecent < 0 || totalEvents <= c.config.KeepRecent {
 		return false, nil
 	}
 

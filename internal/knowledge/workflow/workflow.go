@@ -159,16 +159,23 @@ func (a *KnowledgeAgent) ProcessStream(ctx context.Context, input any) (<-chan b
 // current DAG surface (sdk.Graph pure-function nodes) without routing through
 // the kernel scheduling path — AKF is pure compute, nothing to schedule.
 //
-// The returned function is safe for concurrent use only if the receiver is
-// not shared across runs; create one adapter per graph node via NewKnowledgeAgent.
+// Input contract: state["input"] is an OPTIONAL per-run override (JSON StepConfig).
+// When absent, the step runs with the agent's configured StepConfig.Goal — a
+// configuration-driven AKF step is legitimate and needs no upstream input. If
+// BOTH are absent (no input override AND an empty configured Goal), Process
+// returns "akf: goal is required" rather than silently producing an empty
+// result — a missing upstream output surfaces as a node error, never as quiet
+// degradation.
+//
+// Concurrency: each graph node should own its own KnowledgeAgent (via
+// NewKnowledgeAgent). If one instance is shared by multiple concurrently
+// executing nodes, Process must be safe for concurrent use itself — the
+// returned adapter adds no synchronization.
 //
 // Beta: the graph-node adapter API is BETA and may change between releases.
 func (a *KnowledgeAgent) AsGraphNode() func(ctx context.Context, state map[string]any) error {
 	return func(ctx context.Context, state map[string]any) error {
-		var input any
-		if v, ok := state["input"]; ok {
-			input = v
-		}
+		input := state["input"]
 		out, err := a.Process(ctx, input)
 		if err != nil {
 			return err

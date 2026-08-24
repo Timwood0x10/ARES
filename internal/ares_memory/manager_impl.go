@@ -400,16 +400,27 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 		return nil, errors.Wrap(err, "build prompt messages")
 	}
 
-	// Apply max-history limit
+	// Snapshot config fields under RLock so concurrent MemoryPatchExecutor
+	// Apply calls (which mutate the config under the write lock) do not race
+	// with these reads (runRetrieval does the same for its fields).
+	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
+	var cleanOpts *memctx.CleanOptions
+	if m.config.CleanOptions != nil {
+		snap := *m.config.CleanOptions
+		cleanOpts = &snap
+	}
+	m.mu.RUnlock()
+
+	// Apply max-history limit
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
 	}
 
 	// Apply intelligent context cleaning with configured options
 	var opts []memctx.CleanOptions
-	if m.config.CleanOptions != nil {
-		opts = []memctx.CleanOptions{*m.config.CleanOptions}
+	if cleanOpts != nil {
+		opts = []memctx.CleanOptions{*cleanOpts}
 	}
 	cleaned := m.ctxCleaner.CleanWithTurns(messages, opts...)
 
@@ -454,8 +465,11 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 		return "", errors.Wrap(err, "get messages")
 	}
 
-	// Keep only last N messages to avoid long context.
+	// Keep only last N messages to avoid long context. Snapshot under RLock
+	// (see BuildPromptMessages) so config patches do not race with the read.
+	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
+	m.mu.RUnlock()
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
 	}
@@ -840,11 +854,13 @@ func (m *memoryManager) buildCleanedDistillationMessages(ctx context.Context, ta
 	}
 
 	// Clean the session messages for meaningful distillation.
-	cleanOpts := core.DefaultCleanOptions()
+	m.mu.RLock()
+	distillCleanOpts := core.DefaultCleanOptions()
 	if m.config.CleanOptions != nil {
-		cleanOpts = *m.config.CleanOptions
+		distillCleanOpts = *m.config.CleanOptions
 	}
-	cleaned := m.ctxCleaner.CleanWithTurns(rawMessages, cleanOpts)
+	m.mu.RUnlock()
+	cleaned := m.ctxCleaner.CleanWithTurns(rawMessages, distillCleanOpts)
 	log.Debug("[Memory Distillation] Built cleaned distillation messages",
 		"task_id", taskID,
 		"raw_count", len(rawMessages),

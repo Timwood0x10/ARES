@@ -80,6 +80,15 @@ func NewPlanner(
 //
 //	plan - the execution plan (single-step or DAG).
 //	err - error if any stage fails.
+
+// EvidenceStore returns the planner's evidence store — the SAME store the
+// EvidenceScorer reads. Callers that record execution outcomes (the tool
+// bridge) must write here, not to a fresh store: a split-brain store means
+// evidence never reaches scoring and tool selection never adapts.
+func (p *Planner) EvidenceStore() EvidenceStore {
+	return p.evidence
+}
+
 func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, error) {
 	// Step 1: Analyze
 	intent, err := p.analyzer.Analyze(ctx, request)

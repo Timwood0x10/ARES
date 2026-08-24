@@ -125,6 +125,113 @@ func (p *kernelFabricProbe) ExecuteStep(ctx context.Context, task *models.Task) 
 	return p.inner.ExecuteStep(ctx, task)
 }
 
+// recordingExecutor captures the fabric task id it is handed on every quantum,
+// then delegates to an inner executor. It lets a test observe the concrete
+// fabric task id a collaboration run generated (the ephemeral lifecycle
+// deletes the task on return, so the id must be captured DURING execution).
+type recordingExecutor struct {
+	inner CapabilityExecutor
+	mu    sync.Mutex
+	ids   []string
+}
+
+func (e *recordingExecutor) ID() string             { return "peer-research" }
+func (e *recordingExecutor) Type() models.AgentType { return "research" }
+func (e *recordingExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	e.mu.Lock()
+	e.ids = append(e.ids, task.TaskID)
+	e.mu.Unlock()
+	return e.inner.ExecuteStep(ctx, task)
+}
+
+func (e *recordingExecutor) seenIDs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.ids))
+	copy(out, e.ids)
+	return out
+}
+
+// TestCollabTopicRunIDsUniquePerInvocation locks the IPC-path runID fix
+// (v0.4.0 review): executeCollabViaKernel must NOT derive the fabric run id
+// solely from the caller-supplied task id. Two collaboration requests sharing
+// a task id (a retry, or two leaders delegating the same logical task) must
+// still produce DISTINCT fabric task ids — otherwise the second request's
+// fabric.Create would hit ErrTaskExists, the exact collision class the HTTP
+// handler was fixed to avoid. Prior to the fix both invocations generated the
+// identical id "collab-ipc-<taskID>-exec"; the process-wide atomic sequence
+// makes them differ. Sequential invocations with the SAME task id are enough
+// to catch the regression: a deterministic id would repeat, a unique id does
+// not. If someone reverts the id to "ipc-"+taskID, this test fails loudly.
+func TestCollabTopicRunIDsUniquePerInvocation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, kh := newGraphTestKernel(t, ctx)
+	rec := &recordingExecutor{inner: &chaosStubExecutor{id: "probe-inner", typ: models.AgentType("research")}}
+	kh.scheduler.RegisterExecutor("peer-research", rec)
+
+	bridge, err := wireEvolutionIPC(
+		[]sub.Agent{&collabStubAgent{id: "peer-research", typ: "research"}},
+		nil, nil, kh,
+	)
+	if err != nil {
+		t.Fatalf("wireEvolutionIPC: %v", err)
+	}
+
+	// Two sequential requests carrying the SAME task id.
+	const sharedTaskID = "tk-dup"
+	for i := 0; i < 2; i++ {
+		reply, rerr := bridge.ipc.Bus().Request(ctx, "coordinator", "peer-research",
+			topicDelegateTask,
+			map[string]any{taskIDKey: sharedTaskID, "payload": map[string]any{"input": "do it"}},
+			5*time.Second)
+		if rerr != nil {
+			t.Fatalf("request %d with shared task id must succeed (a collision would surface here): %v", i, rerr)
+		}
+		if reply == nil {
+			t.Fatalf("request %d: nil reply", i)
+		}
+	}
+
+	ids := rec.seenIDs()
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 fabric executions, got %d: %v", len(ids), ids)
+	}
+	if ids[0] == ids[1] {
+		t.Fatalf("fabric run ids must differ across invocations (collision class regressed): both %q", ids[0])
+	}
+}
+
+// TestCollabTopicNodeFailurePropagatesError locks the IPC error path that the
+// happy-path routing test does not cover: when the delegated node's work fails
+// after exhausting retries, executeCollabViaKernel must return an ERROR that
+// the bus surfaces to the caller — not a silent nil reply that would let a
+// leader treat a failed delegation as success.
+func TestCollabTopicNodeFailurePropagatesError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, kh := newGraphTestKernel(t, ctx)
+	kh.scheduler.RegisterExecutor("peer-flaky", &failingExecutor{id: "peer-flaky", typ: "flaky"})
+
+	bridge, err := wireEvolutionIPC(
+		[]sub.Agent{&collabStubAgent{id: "peer-flaky", typ: "flaky"}},
+		nil, nil, kh,
+	)
+	if err != nil {
+		t.Fatalf("wireEvolutionIPC: %v", err)
+	}
+
+	_, rerr := bridge.ipc.Bus().Request(ctx, "coordinator", "peer-flaky",
+		topicDelegateTask,
+		map[string]any{taskIDKey: "tk-fail", "payload": map[string]any{"input": "x"}},
+		5*time.Second)
+	if rerr == nil {
+		t.Fatal("a failed delegation must propagate as an error, not a silent reply")
+	}
+}
+
 // Interface-conformance guards for the stub used by wireEvolutionIPC.
 var (
 	_ base.Agent = (*collabStubAgent)(nil)

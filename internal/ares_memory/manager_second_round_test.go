@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/internal/agents/lease"
+	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 )
 
 // castConcrete exposes the concrete *memoryManager so second-round tests can
@@ -159,7 +160,7 @@ func TestDeleteSessionUnknownIsIdempotent(t *testing.T) {
 
 	assert.NoError(t, mgr.DeleteSession(ctx, "no-such-session"))
 	msgs, err := mgr.GetMessages(ctx, "no-such-session")
-	if err == nil {
-		assert.Empty(t, msgs)
-	}
+	require.ErrorIs(t, err, memctx.ErrSessionNotFound,
+		"reading an unknown session must return the sentinel, not an arbitrary error")
+	assert.Empty(t, msgs)
 }

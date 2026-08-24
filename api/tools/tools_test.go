@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -675,7 +676,7 @@ func TestWebSearchToolSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	wst := &webSearchTool{client: srv.Client()}
+	wst := &webSearchTool{trustedClient: srv.Client(), ssrfClient: srv.Client()}
 	result, err := wst.Execute(context.Background(), map[string]any{
 		"query":            "hello",
 		"searxng_base_url": srv.URL,
@@ -696,13 +697,60 @@ func TestWebSearchToolSuccess(t *testing.T) {
 	}
 }
 
+// TestWebSearchToolDefaultLoopbackReachable pins the default-endpoint
+// contract: the operator-configured default (http://localhost:5605) is dialed
+// by the TRUSTED client, so a SearXNG instance on loopback is reachable.
+// Regression: the tool previously routed every request through the SSRF-safe
+// dialer, which refuses loopback — the flagship tool failed on every default
+// call while tests injected their own client and never noticed.
+func TestWebSearchToolDefaultLoopbackReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"query": "q", "results": [{"title": "t", "url": "https://example.com", "content": "c", "engine": "google"}]}`))
+	}))
+	defer srv.Close()
+
+	wst := newWebSearchTool()
+	// Point the OPERATOR base URL at the test server's loopback address — the
+	// same shape as the production default localhost:5605.
+	wst.baseURL = srv.URL
+	result, err := wst.Execute(context.Background(), map[string]any{"query": "q"})
+	if err != nil {
+		t.Fatalf("default loopback must be reachable: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success, got: %v", result.Data)
+	}
+}
+
+// TestWebSearchToolOverrideBlocksPrivateTarget executes the REAL ssrf guard:
+// a caller-supplied searxng_base_url pointing at a private address is refused
+// by the dialer. The old tests replaced the transport wholesale, so this —
+// the guard's only interesting behavior — never ran.
+func TestWebSearchToolOverrideBlocksPrivateTarget(t *testing.T) {
+	wst := newWebSearchTool()
+	result, err := wst.Execute(context.Background(), map[string]any{
+		"query":            "q",
+		"searxng_base_url": "http://127.0.0.1:9200",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Fatalf("SSRF override to loopback must fail, got success: %v", result.Data)
+	}
+	if !strings.Contains(fmt.Sprint(result.Data), "ssrf") {
+		t.Fatalf("want ssrf refusal in data, got: %v", result.Data)
+	}
+}
+
 func TestWebSearchToolSearXNGFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	wst := &webSearchTool{client: srv.Client()}
+	wst := &webSearchTool{trustedClient: srv.Client(), ssrfClient: srv.Client()}
 	result, err := wst.Execute(context.Background(), map[string]any{
 		"query":            "test",
 		"searxng_base_url": srv.URL,
@@ -731,7 +779,7 @@ func TestWebSearchToolMaxResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	wst := &webSearchTool{client: srv.Client()}
+	wst := &webSearchTool{trustedClient: srv.Client(), ssrfClient: srv.Client()}
 	result, err := wst.Execute(context.Background(), map[string]any{
 		"query":            "test",
 		"max_results":      float64(3),
@@ -757,7 +805,7 @@ func TestWebSearchToolCustomBaseURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	wst := &webSearchTool{client: srv.Client(), baseURL: srv.URL}
+	wst := &webSearchTool{trustedClient: srv.Client(), ssrfClient: srv.Client(), baseURL: srv.URL}
 	result, err := wst.Execute(context.Background(), map[string]any{
 		"query": "x",
 	})

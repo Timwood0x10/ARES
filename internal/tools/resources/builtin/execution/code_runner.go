@@ -182,9 +182,16 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 
 	timeout := time.Duration(timeoutSeconds) * time.Second
 
-	maxOutputSize := getInt(params, "max_output_size", t.maxOutputSize)
+	// The schema declares "max_output_bytes"; read THAT key (the previous
+	// code read "max_output_size", so an LLM following the schema had its
+	// value silently ignored). Accept the legacy key too for back-compat.
+	maxOutputSize := getInt(params, "max_output_bytes", getInt(params, "max_output_size", t.maxOutputSize))
 	if maxOutputSize < 1024 {
 		maxOutputSize = 1024
+	}
+	const maxOutputCeiling = 1 << 20 // 1 MiB: bound hostile caller requests
+	if maxOutputSize > maxOutputCeiling {
+		maxOutputSize = maxOutputCeiling
 	}
 
 	// Create context with timeout.

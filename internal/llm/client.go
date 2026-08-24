@@ -426,6 +426,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 		defer cancelStream()
 		var builder strings.Builder
 		var streamErr error
+		sawDone := false
 		for chunk := range rawCh {
 			if chunk.Content != "" {
 				builder.WriteString(chunk.Content)
@@ -433,20 +434,37 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 			if chunk.Err != nil {
 				streamErr = chunk.Err
 			}
-			if chunk.Content != "" || chunk.Done {
+			if chunk.Done {
+				sawDone = true
+			}
+			// Forward every content/done/err chunk with a BLOCKING send that
+			// escapes on ctx cancellation. The previous non-blocking send with
+			// a `default: return` silently discarded chunks once the consumer
+			// fell behind, closing ch without Done or Err — truncated answers
+			// were indistinguishable from complete ones. A caller that stops
+			// reading MUST cancel ctx (standard streaming contract); ctx is
+			// derived from the caller's request, so cancellation unwinds this
+			// goroutine and releases the underlying HTTP connection.
+			if chunk.Content != "" || chunk.Done || chunk.Err != nil {
 				select {
 				case ch <- chunk:
 				case <-ctx.Done():
-					return
-				default:
-					// Caller is not reading (buffer full): stop the stream
-					// instead of blocking forever and leaking the goroutine
-					// and the underlying HTTP connection (M6).
 					return
 				}
 			}
 			if chunk.Done {
 				break
+			}
+		}
+		// Guarantee the terminal marker: the provider goroutines close their
+		// channel on normal completion WITHOUT emitting {Done: true}, so a
+		// consumer watching for Done (instead of channel close) would hang
+		// forever waiting for an end that never came.
+		if !sawDone {
+			select {
+			case ch <- StreamChunk{Done: true, Err: streamErr}:
+			case <-ctx.Done():
+				return
 			}
 		}
 		fullResponse := builder.String()

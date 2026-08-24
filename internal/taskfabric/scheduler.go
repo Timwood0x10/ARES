@@ -55,22 +55,55 @@ func Score(taskCapability string, c Candidate) float64 {
 	return overlap * (1 - load) * conf * boost
 }
 
-// Pick returns the best candidate (highest Score) for a task, or nil when no
-// candidate is capable.
+// Pick returns the best candidate (highest Score) for the task, or nil when
+// no candidate overlaps the required capability at all.
+//
+// Last-resort guarantee: among capability-overlapping candidates, a candidate
+// whose recorded history is all failures has Confidence 0 ⇒ Score 0. If such
+// zero-score filtering left NOTHING, Pick falls back to the best
+// capability-overlapping candidate ranked WITHOUT the confidence factor.
+// Without this, a single recorded failure permanently stranded any task whose
+// only capable executor had failed once — bounded retry budgets could never
+// spend their attempts and collab graphs hung until timeout. The healthy
+// path is unchanged: any candidate with positive score still beats the
+// fallback (bottom of the ranking, never excluded).
 func Pick(taskCapability string, candidates []Candidate) *Candidate {
 	var best *Candidate
+	var lastResort *Candidate
 	bestScore := 0.0
+	resortScore := 0.0
 	for i := range candidates {
-		s := Score(taskCapability, candidates[i])
-		if s <= 0 {
-			continue
-		}
-		if best == nil || s > bestScore {
-			best = &candidates[i]
+		c := &candidates[i]
+		s := Score(taskCapability, *c)
+		if s > 0 && (best == nil || s > bestScore) {
+			best = c
 			bestScore = s
 		}
+		overlap := capabilityOverlap(taskCapability, c.Capabilities)
+		if overlap <= 0 {
+			continue
+		}
+		// Confidence-free ranking for the fallback tier: capability gate,
+		// load discount and priority boost still apply. Only strictly
+		// positive fallback scores qualify — an agent at full load (or
+		// otherwise zero-capacity) must stay unreachable exactly as it is
+		// under normal scoring.
+		fb := overlap * (1 - clamp01(c.Load))
+		if c.Priority > 0 {
+			fb *= 1 + c.Priority
+		}
+		if fb <= 0 {
+			continue
+		}
+		if lastResort == nil || fb > resortScore {
+			lastResort = c
+			resortScore = fb
+		}
 	}
-	return best
+	if best != nil {
+		return best
+	}
+	return lastResort
 }
 
 // capabilityOverlap is the fraction of the required capability segments (a

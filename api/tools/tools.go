@@ -292,6 +292,11 @@ func NewPlanner(r *Registry) (*Planner, error) {
 //   - Named tool not found → planner resolves intent, auto-selects tool
 //   - Every execution saves evidence for future scoring
 //
+// Evidence wiring: the bridge records outcomes into the PLANNER'S evidence
+// store (p.EvidenceStore()), the same store the EvidenceScorer queries — a
+// second store here would silently split the feedback loop so tool selection
+// never adapted to real failures/latency.
+//
 // Usage:
 //
 //	reg := tools.NewRegistry()
@@ -299,11 +304,11 @@ func NewPlanner(r *Registry) (*Planner, error) {
 //	bridge, _ := tools.NewBridge(reg, p)
 //	result, err := bridge.Execute(ctx, "", nil, "calculate 1+1")
 func NewBridge(r *Registry, p *Planner) (*Bridge, error) {
-	store := planner.NewMemoryEvidenceStore()
 	coreReg, err := r.CoreRegistry()
 	if err != nil {
 		return nil, fmt.Errorf("core registry: %w", err)
 	}
+	store := p.EvidenceStore()
 	bridge, err := planner.NewToolExecutionBridge(coreReg, p, store)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: %w", err)

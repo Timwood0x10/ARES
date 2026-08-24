@@ -76,9 +76,12 @@ func main() {
 		fmt.Printf("❌ RunGraph: %v\n", err)
 		return
 	}
-	_, hasOut := res.NodeResults["akf"]
-	_, hasReport := res.NodeResults["report"]
-	fmt.Printf("✅ AKF graph node executed: akf=%v report=%v\n", hasOut, hasReport)
+	// The meaningful signal is whether AKF actually wrote state["output"], not
+	// that the akf node "ran" (every completed fn node is recorded in
+	// NodeResults regardless of what it produced).
+	_, akfProduced := res.State["output"]
+	_, reportRan := res.NodeResults["report"]
+	fmt.Printf("✅ AKF graph node executed: akf_output=%v report=%v\n", akfProduced, reportRan)
 }
 
 // stubProvider streams canned knowledge objects so Execute has something to
