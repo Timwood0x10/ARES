@@ -63,12 +63,12 @@ type MemoryManager interface {
 	// SearchSimilarTasks searches for similar tasks using local cosine similarity.
 	SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error)
 
-	// GetLatestSessionForLeader retrieves the most recent session ID for a leader from checkpoint.
-	// Returns ("", nil) if no checkpoint exists for the leader.
-	// Implementations that do not persist leader checkpoints return
-	// ErrLeaderCheckpointNotSupported so callers can distinguish "no session"
+	// GetLatestSessionForAgent retrieves the most recent session ID for an
+	// agent from checkpoint. Returns ("", nil) if no checkpoint exists for the
+	// agent. Implementations that do not persist agent checkpoints return
+	// ErrAgentCheckpointNotSupported so callers can distinguish "no session"
 	// (empty string, nil error) from "unsupported backend" (non-nil error).
-	GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error)
+	GetLatestSessionForAgent(ctx context.Context, agentID string) (string, error)
 
 	// Start starts the memory manager and background workers.
 	Start(ctx context.Context) error
@@ -161,12 +161,12 @@ const (
 // RAGTopK or RAGMinScore are set to invalid values.
 var ErrInvalidRAGConfig = errors.New("invalid RAG configuration")
 
-// ErrLeaderCheckpointNotSupported is returned by GetLatestSessionForLeader when
-// the memory backend does not persist leader checkpoints (e.g. the in-memory
+// ErrAgentCheckpointNotSupported is returned by GetLatestSessionForAgent when
+// the memory backend does not persist agent checkpoints (e.g. the in-memory
 // memoryManager). Callers can use errors.Is to distinguish "no session for this
-// leader" (("", nil)) from "backend cannot answer this question" (this error).
-var ErrLeaderCheckpointNotSupported = errors.New(
-	"leader checkpoint lookup not supported by this memory backend")
+// agent" (("", nil)) from "backend cannot answer this question" (this error).
+var ErrAgentCheckpointNotSupported = errors.New(
+	"agent checkpoint lookup not supported by this memory backend")
 
 // Role constants re-exported for convenience.
 const (

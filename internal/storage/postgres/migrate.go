@@ -74,16 +74,37 @@ var coreMigrationStatements = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_embeddings_table_name ON embeddings(table_name)`,
 
-	`CREATE TABLE IF NOT EXISTS leader_checkpoints (
-			leader_id VARCHAR(255) NOT NULL,
+	// agent_checkpoints - session checkpoints for agent recovery. Renamed from
+	// leader_checkpoints (aresos-hardening-plan H3.3). The DO block migrates
+	// existing databases without data loss; on fresh databases all IF EXISTS
+	// checks are no-ops. Rename only when the target table is absent — if
+	// agent_checkpoints already exists (idempotent re-run), the old table's
+	// data was already migrated and a rename would collide.
+	`DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'leader_checkpoints')
+			AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'agent_checkpoints') THEN
+			ALTER TABLE leader_checkpoints RENAME TO agent_checkpoints;
+		END IF;
+		IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'agent_checkpoints') THEN
+			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'agent_checkpoints' AND column_name = 'leader_id') THEN
+				ALTER TABLE agent_checkpoints RENAME COLUMN leader_id TO agent_id;
+			END IF;
+			IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_leader_checkpoints_status') THEN
+				ALTER INDEX idx_leader_checkpoints_status RENAME TO idx_agent_checkpoints_status;
+			END IF;
+		END IF;
+	END $$;`,
+
+	`CREATE TABLE IF NOT EXISTS agent_checkpoints (
+			agent_id VARCHAR(255) NOT NULL,
 			session_id VARCHAR(255) NOT NULL,
 			status VARCHAR(50) NOT NULL DEFAULT 'active',
 			metadata JSONB DEFAULT '{}'::jsonb,
 			updated_at TIMESTAMP DEFAULT NOW(),
-			PRIMARY KEY (leader_id)
+			PRIMARY KEY (agent_id)
 		)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_leader_checkpoints_status ON leader_checkpoints(status)`,
+	`CREATE INDEX IF NOT EXISTS idx_agent_checkpoints_status ON agent_checkpoints(status)`,
 
 	// events - Event sourcing store with optimistic concurrency control.
 	`CREATE TABLE IF NOT EXISTS events (

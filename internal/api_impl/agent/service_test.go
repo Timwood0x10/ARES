@@ -89,7 +89,7 @@ func (m *mockMemoryManager) SearchSimilarTasks(ctx context.Context, query string
 	return nil, nil
 }
 
-func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+func (m *mockMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
 

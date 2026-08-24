@@ -173,7 +173,7 @@ sequenceDiagram
     ES-->>RT: event stream
 
     RT->>RT: buildStateFromEvents -> extract session_id
-    RT->>MM: GetLatestSessionForLeader + GetMessages
+    RT->>MM: GetLatestSessionForAgent + GetMessages
     MM-->>RT: session + conversation history
 
     RT->>New: RestoreState(state)
@@ -227,7 +227,7 @@ The `replayEvents` method reads the agent's event stream from the `EventStore`, 
 Two sub-steps:
 
 - `buildStateFromEvents` extracts `session_id` from `EventSessionCreated` events.
-- `buildCognitiveState` loads conversation history from the `MemoryManager`. It first tries the session_id from events, then falls back to `GetLatestSessionForLeader` (5s timeout). Messages are loaded via `GetMessages` (5s timeout).
+- `buildCognitiveState` loads conversation history from the `MemoryManager`. It first tries the session_id from events, then falls back to `GetLatestSessionForAgent` (5s timeout). Messages are loaded via `GetMessages` (5s timeout).
 
 If the agent implements `StatefulAgent`, both `RestoreState` and `ReplayEvents` are called.
 

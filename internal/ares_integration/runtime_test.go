@@ -117,11 +117,11 @@ func TestRuntime_FullFailoverCycle(t *testing.T) {
 	defer cancel()
 
 	// Step 1: Create and register the agent.
-	leader := newIntegrationStatefulAgent("leader-1", models.AgentTypeLeader)
+	leader := newIntegrationStatefulAgent("leader-1", models.AgentTypeTop)
 	var factoryCallCount atomic.Int32
 	factory := func() base.Agent {
 		factoryCallCount.Add(1)
-		return newIntegrationStatefulAgent("leader-1", models.AgentTypeLeader)
+		return newIntegrationStatefulAgent("leader-1", models.AgentTypeTop)
 	}
 	m.RegisterAgent(leader, factory)
 
@@ -183,13 +183,13 @@ func TestRuntime_MultipleAgentTypes(t *testing.T) {
 	defer cancel()
 
 	// Create leader and sub-agent.
-	leader := newIntegrationStatefulAgent("leader-1", models.AgentTypeLeader)
+	leader := newIntegrationStatefulAgent("leader-1", models.AgentTypeTop)
 	sub := newIntegrationStatefulAgent("sub-1", models.AgentTypeTop)
 
 	var leaderFactoryCalls, subFactoryCalls atomic.Int32
 	leaderFactory := func() base.Agent {
 		leaderFactoryCalls.Add(1)
-		return newIntegrationStatefulAgent("leader-1", models.AgentTypeLeader)
+		return newIntegrationStatefulAgent("leader-1", models.AgentTypeTop)
 	}
 	subFactory := func() base.Agent {
 		subFactoryCalls.Add(1)

@@ -35,7 +35,7 @@ type mockAgent struct {
 func newMockAgent(id string) *mockAgent {
 	return &mockAgent{
 		id:       id,
-		agentTyp: models.AgentTypeLeader,
+		agentTyp: models.AgentTypeTop,
 		status:   models.AgentStatusOffline,
 	}
 }
@@ -211,7 +211,7 @@ func (m *mockMemoryManager) SearchSimilarTasks(_ context.Context, _ string, _ in
 	return nil, nil
 }
 
-func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+func (m *mockMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
 	m.getLatestSessionCalls++
 	return "sess-mem", nil
 }
@@ -306,7 +306,7 @@ func (m *errMemoryManager) SearchSimilarTasks(_ context.Context, _ string, _ int
 	return nil, nil
 }
 
-func (m *errMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+func (m *errMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
 	return "", m.sessionErr
 }
 

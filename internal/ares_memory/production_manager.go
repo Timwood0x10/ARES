@@ -776,20 +776,20 @@ func (m *ProductionMemoryManager) getCurrentTenantID() string {
 	return "default" // Fallback to default tenant
 }
 
-// GetLatestSessionForLeader retrieves the most recent session ID for a leader from checkpoint.
-// Returns ("", nil) if no checkpoint exists.
-func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error) {
-	if leaderID == "" {
+// GetLatestSessionForAgent retrieves the most recent session ID for an agent
+// from checkpoint. Returns ("", nil) if no checkpoint exists.
+func (m *ProductionMemoryManager) GetLatestSessionForAgent(ctx context.Context, agentID string) (string, error) {
+	if agentID == "" {
 		return "", nil
 	}
 
 	tenantID := m.getCurrentTenantID()
 	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return "", errors.Wrap(err, "get latest session for leader: set tenant context")
+		return "", errors.Wrap(err, "get latest session for agent: set tenant context")
 	}
 
-	query := `SELECT session_id FROM leader_checkpoints WHERE leader_id = $1 ORDER BY updated_at DESC LIMIT 1`
-	row := m.dbPool.QueryRow(ctx, query, leaderID)
+	query := `SELECT session_id FROM agent_checkpoints WHERE agent_id = $1 ORDER BY updated_at DESC LIMIT 1`
+	row := m.dbPool.QueryRow(ctx, query, agentID)
 
 	var sessionID string
 	if err := row.Scan(&sessionID); err != nil {
@@ -798,7 +798,7 @@ func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context,
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
-		return "", errors.Wrap(err, "get latest session for leader")
+		return "", errors.Wrap(err, "get latest session for agent")
 	}
 
 	return sessionID, nil

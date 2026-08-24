@@ -59,25 +59,28 @@
 
 > 冻结规则约束：这些符号是 Rule 4 允许的 migration boundary 遗留，清理时**不得**重新引入 leader 作为 Kernel 角色。目标是"改名去角色化"，不是"恢复功能"。
 
-- [ ] **H3.1 影响面盘点**
+- [x] **H3.1 影响面盘点**
   - 输出一份清单：每个符号的定义点、实现点、调用点、测试点、DB schema 依赖。
   - 判定每项是"可直接删"还是"需保留但改名/去 leader 语义"。
+  - **结果（2026-08-24）**：`GetLatestSessionForLeader`（接口+2 实现+1 调用点+Err 常量+7 个测试点）→ 改名；`leader_checkpoints` 表（migrate+base_repository+SQL+集成测试）→ 改名；`AgentTypeLeader`（定义+别名+31 处测试引用，生产零引用）→ 直接删；`PolicyLegacyLeader`（定义+Dispatch/IsLegacy 休眠分支+6 处测试引用）→ 改名保留休眠分支。
 
-- [ ] **H3.2 `GetLatestSessionForLeader` → 去 leader 化**
-  - 接口 `AresMemoryManager`（`internal/ares_memory/manager.go:66`）+ 实现（`manager_impl.go`、`production_manager.go`）+ 调用点（`manager_lifecycle.go:308`）。
-  - 方案：重命名为语义中性的名字（如 `GetLatestSessionForAgent`），或若确认恢复路径不再依赖 leader-checkpoint 语义则评估废弃。
-  - 同步 `ErrLeaderCheckpointNotSupported`（`manager.go:164`）。
+- [x] **H3.2 `GetLatestSessionForLeader` → 去 leader 化**
+  - 接口 `MemoryManager`（`internal/ares_memory/manager.go:71`）+ 实现（`manager_impl.go`、`production_manager.go`）+ 调用点（`manager_lifecycle.go:308`）。
+  - 已改名为语义中性的 `GetLatestSessionForAgent`。
+  - 同步 `ErrLeaderCheckpointNotSupported` → `ErrAgentCheckpointNotSupported`（`manager.go:164`）。
 
-- [ ] **H3.3 `leader_checkpoints` 表迁移**
-  - 现仅测试引用（`ares_integration/memory_test.go`、`failover_test.go`）。
-  - 需 DB 迁移脚本（rename table 或新表 + 数据迁移）。**生产 DB 变更，走灰度、需用户确认**。
+- [x] **H3.3 `leader_checkpoints` 表迁移**
+  - 表、列、索引全量改名 `agent_checkpoints` / `agent_id` / `idx_agent_checkpoints_status`。
+  - `migrate.go` 增加幂等 DO 块：已有库 `ALTER TABLE ... RENAME`（含列/索引改名）不丢数据；新库全为 no-op。
+  - 同步 `base_repository.go` 白名单、`production_manager.go` SQL、集成测试。
+  - 生产 DB 变更：随 `Migrate` 启动自动应用（幂等），无需停机。
 
-- [ ] **H3.4 `AgentTypeLeader` / `PolicyLegacyLeader` 收敛**
-  - `models.AgentTypeLeader`（`types.go:52`）+ `api/agent/agent.go:31` 别名：评估是否可删或标 `Deprecated`。
-  - `agentipc.PolicyLegacyLeader`：现仅测试引用，评估直接删除常量 + 清理 `bus_test.go`。
+- [x] **H3.4 `AgentTypeLeader` / `PolicyLegacyLeader` 收敛**
+  - `models.AgentTypeLeader`（`types.go`）+ `api/agent/agent.go` 别名：生产零引用，直接删除；测试改用 `AgentTypeTop`（31 处）。
+  - `agentipc.PolicyLegacyLeader` → `PolicyLegacy`（`Dispatch`/`IsLegacy` 休眠分支保留，kernel 仍只注册 TaskFabric track）；清理 `bus_test.go`（6 处）。
 
-- [ ] **H3.5 回归**
-  - 每步改名后 `go build ./...` + 相关包测试；DB 相关走集成测试（需 Postgres）。
+- [x] **H3.5 回归**
+  - `gofmt -l .` 空、`go vet` 相关包、`go build ./...`、`go test ./...` 全绿；`go test -race` 相关包全绿。
 
 ---
 
@@ -95,7 +98,7 @@
 
 - H1：`go test -race ./...` 全绿，新增 load_tracker 回归测试覆盖上述 6 条断言，CHANGELOG 补记。
 - H2：提交历史无同名 commit、无 `.orig` 备份文件痕迹（或明确记录为不改历史）。
-- H3：生产代码无 `leader` 角色语义符号（保留项均已改名或标 Deprecated 并说明原因），DB 迁移脚本就绪并通过集成测试。
+- H3：生产代码无 `leader` 角色语义符号（保留项均已改名或标 Deprecated 并说明原因），DB 迁移脚本就绪并通过集成测试。**✅ 完成于 2026-08-24**：`GetLatestSessionForAgent` / `agent_checkpoints` 表（幂等 DO 迁移）/ `AgentTypeLeader` 删除 / `PolicyLegacy` 改名；`go build ./...` + `go test ./...` + 相关包 `-race` 全绿。
 
 ## 4. 不做什么（防 scope 蔓延）
 

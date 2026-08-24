@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Leader residual symbols de-leaderized** (aresos-hardening-plan H3): the
+  `AresMemoryManager` checkpoint lookup is renamed
+  `GetLatestSessionForLeader` → `GetLatestSessionForAgent` (interface,
+  both implementations, the `manager_lifecycle.go` recovery caller, and
+  `ErrLeaderCheckpointNotSupported` → `ErrAgentCheckpointNotSupported`);
+  the Postgres `leader_checkpoints` table is migrated to `agent_checkpoints`
+  (table, `leader_id` column, and index renamed via an idempotent `Migrate`
+  DO block that preserves existing data); the dormant `models.AgentTypeLeader`
+  constant and its `api/agent` alias are removed (tests now use
+  `AgentTypeTop`); and `agentipc.PolicyLegacyLeader` is renamed to
+  `PolicyLegacy` while the dormant legacy dispatch branch is retained. No
+  leader role is reintroduced as a Kernel role.
+
 ## [0.3.0] - 2026-08-22
 
 > **Agent OS (AgentOS) release**: the kernel becomes an agent operating system —

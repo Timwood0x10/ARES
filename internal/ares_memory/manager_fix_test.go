@@ -43,18 +43,18 @@ func (r *failingExpRepo) Create(_ context.Context, _ *distillation.Experience) e
 
 var _ distillation.ExperienceRepository = (*failingExpRepo)(nil)
 
-// TestMemoryManager_GetLatestSessionForLeader_Unsupported verifies that the
-// in-memory memoryManager returns ErrLeaderCheckpointNotSupported rather than
+// TestMemoryManager_GetLatestSessionForAgent_Unsupported verifies that the
+// in-memory memoryManager returns ErrAgentCheckpointNotSupported rather than
 // a silent ("", nil).
 //
-// The in-memory backend has no leader->session mapping (sessions are keyed by
-// session ID and carry a UserID, not a leader/agent ID), so it cannot answer
+// The in-memory backend has no agent->session mapping (sessions are keyed by
+// session ID and carry a UserID, not an agent ID), so it cannot answer
 // the question. Returning a distinct error lets the caller
 // (ares_runtime/manager_lifecycle.go buildCognitiveState) distinguish
-// "no session for this leader" from "backend cannot answer" and log
+// "no session for this agent" from "backend cannot answer" and log
 // accordingly, instead of silently treating it as "no session" and losing
-// leader recovery.
-func TestMemoryManager_GetLatestSessionForLeader_Unsupported(t *testing.T) {
+// agent recovery.
+func TestMemoryManager_GetLatestSessionForAgent_Unsupported(t *testing.T) {
 	ctx := context.Background()
 	config := DefaultMemoryConfig()
 	mgr, err := NewMemoryManager(config)
@@ -63,30 +63,30 @@ func TestMemoryManager_GetLatestSessionForLeader_Unsupported(t *testing.T) {
 
 	// Seed a session so we can prove the empty result is NOT just because no
 	// sessions exist: even with a live session, the in-memory backend cannot
-	// map a leader ID to a session.
+	// map an agent ID to a session.
 	_, err = mgr.CreateSession(ctx, "some-user")
 	require.NoError(t, err)
 
-	sessionID, err := mgr.GetLatestSessionForLeader(ctx, "any-leader-id")
+	sessionID, err := mgr.GetLatestSessionForAgent(ctx, "any-agent-id")
 
-	// The error must be ErrLeaderCheckpointNotSupported so callers can branch on it.
-	require.ErrorIs(t, err, ErrLeaderCheckpointNotSupported,
-		"in-memory backend must return ErrLeaderCheckpointNotSupported, not a silent empty result")
+	// The error must be ErrAgentCheckpointNotSupported so callers can branch on it.
+	require.ErrorIs(t, err, ErrAgentCheckpointNotSupported,
+		"in-memory backend must return ErrAgentCheckpointNotSupported, not a silent empty result")
 	require.Empty(t, sessionID, "no session ID should be returned when the backend is unsupported")
 }
 
-// TestMemoryManager_GetLatestSessionForLeader_EmptyLeaderID verifies the
-// unsupported error is returned regardless of the leader ID value, since the
+// TestMemoryManager_GetLatestSessionForAgent_EmptyAgentID verifies the
+// unsupported error is returned regardless of the agent ID value, since the
 // backend cannot answer the lookup at all (not because of input validation).
-func TestMemoryManager_GetLatestSessionForLeader_EmptyLeaderID(t *testing.T) {
+func TestMemoryManager_GetLatestSessionForAgent_EmptyAgentID(t *testing.T) {
 	ctx := context.Background()
 	config := DefaultMemoryConfig()
 	mgr, err := NewMemoryManager(config)
 	require.NoError(t, err)
 	defer func() { _ = mgr.Stop(ctx) }()
 
-	_, err = mgr.GetLatestSessionForLeader(ctx, "")
-	require.ErrorIs(t, err, ErrLeaderCheckpointNotSupported)
+	_, err = mgr.GetLatestSessionForAgent(ctx, "")
+	require.ErrorIs(t, err, ErrAgentCheckpointNotSupported)
 }
 
 // TestMemoryManager_StoreDistilledTask_RepositoryError verifies that when the

@@ -55,6 +55,7 @@ func runDbMigrate() error {
 		User:            parsed.User.Username(),
 		Password:        passwordFromURL(parsed),
 		Database:        dbname,
+		SSLMode:         getEnv("DB_SSL_MODE", "disable"),
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 0,
@@ -78,6 +79,11 @@ func runDbMigrate() error {
 		return fmt.Errorf("enable pgvector: %w", err)
 	}
 	fmt.Println("pgvector extension enabled")
+
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		return fmt.Errorf("core migration: %w", err)
+	}
+	fmt.Println("Core application tables migrated (sessions, agent_checkpoints, events, ...)")
 
 	if err := postgres.MigrateStorage(ctx, pool); err != nil {
 		return fmt.Errorf("migration: %w", err)

@@ -16,30 +16,30 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
-// createTestLeaderCheckpoint upserts a row into the leader_checkpoints table
+// createTestAgentCheckpoint upserts a row into the agent_checkpoints table
 // via raw SQL. The leader state package (state.CheckpointRepository) was
 // removed with the leader runtime (aresos-agentos-plan C1); the table remains
-// because the memory manager's GetLatestSessionForLeader reads it directly.
-func createTestLeaderCheckpoint(
+// because the memory manager's GetLatestSessionForAgent reads it directly.
+func createTestAgentCheckpoint(
 	ctx context.Context,
 	pool *postgres.Pool,
-	leaderID, sessionID, status string,
+	agentID, sessionID, status string,
 ) error {
 	metadata := json.RawMessage(fmt.Sprintf(`{"created_at": "%s"}`, time.Now().Format(time.RFC3339)))
 	query := `
-		INSERT INTO leader_checkpoints (leader_id, session_id, status, metadata, updated_at)
+		INSERT INTO agent_checkpoints (agent_id, session_id, status, metadata, updated_at)
 		VALUES ($1, $2, $3, $4, NOW())
-		ON CONFLICT (leader_id) DO UPDATE
+		ON CONFLICT (agent_id) DO UPDATE
 		SET session_id = EXCLUDED.session_id, status = EXCLUDED.status,
 			metadata = EXCLUDED.metadata, updated_at = NOW()
 	`
-	_, err := pool.Exec(ctx, query, leaderID, sessionID, status, metadata)
+	_, err := pool.Exec(ctx, query, agentID, sessionID, status, metadata)
 	return err
 }
 
-// TestProductionMemoryManagerGetLatestSessionForLeaderWithFailover verifies
-// that GetLatestSessionForLeader works correctly after a simulated failover.
-func TestProductionMemoryManagerGetLatestSessionForLeaderWithFailover(t *testing.T) {
+// TestProductionMemoryManagerGetLatestSessionForAgentWithFailover verifies
+// that GetLatestSessionForAgent works correctly after a simulated failover.
+func TestProductionMemoryManagerGetLatestSessionForAgentWithFailover(t *testing.T) {
 	pool := getTestPool(t)
 	if pool == nil {
 		return
@@ -48,12 +48,12 @@ func TestProductionMemoryManagerGetLatestSessionForLeaderWithFailover(t *testing
 
 	runMigrations(t, pool)
 	t.Cleanup(func() {
-		cleanupTables(t, pool, "leader_checkpoints", "conversations")
+		cleanupTables(t, pool, "agent_checkpoints", "conversations")
 	})
 
 	ctx := context.Background()
 
-	// Create a ProductionMemoryManager for testing GetLatestSessionForLeader.
+	// Create a ProductionMemoryManager for testing GetLatestSessionForAgent.
 	embeddingClient := embedding.NewEmbeddingClient(
 		"http://localhost:9999",
 		"intfloat/e5-large",
@@ -83,26 +83,26 @@ func TestProductionMemoryManagerGetLatestSessionForLeaderWithFailover(t *testing
 
 	require.NoError(t, mgr.SetTenantID("test-tenant"))
 
-	leaderID := fmt.Sprintf("leader-mgr-%d", time.Now().UnixNano())
+	agentID := fmt.Sprintf("agent-mgr-%d", time.Now().UnixNano())
 
 	// Before any checkpoint, should return empty.
-	sessionID, err := mgr.GetLatestSessionForLeader(ctx, leaderID)
+	sessionID, err := mgr.GetLatestSessionForAgent(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, sessionID)
 
 	// Insert a checkpoint.
-	require.NoError(t, createTestLeaderCheckpoint(ctx, pool, leaderID, "session-old", "active"))
+	require.NoError(t, createTestAgentCheckpoint(ctx, pool, agentID, "session-old", "active"))
 
 	// Should return the old session.
-	sessionID, err = mgr.GetLatestSessionForLeader(ctx, leaderID)
+	sessionID, err = mgr.GetLatestSessionForAgent(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, "session-old", sessionID)
 
 	// Simulate failover: update checkpoint with new session.
-	require.NoError(t, createTestLeaderCheckpoint(ctx, pool, leaderID, "session-new", "active"))
+	require.NoError(t, createTestAgentCheckpoint(ctx, pool, agentID, "session-new", "active"))
 
 	// Should return the new session.
-	sessionID, err = mgr.GetLatestSessionForLeader(ctx, leaderID)
+	sessionID, err = mgr.GetLatestSessionForAgent(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, "session-new", sessionID)
 }

@@ -9,16 +9,16 @@ import (
 
 // ExecutionPolicy is the strategy for dispatching a task to an agent (design
 // §2 + P4 D4). The Kernel picks one policy per dispatch; the feature flag
-// selects the active path. The legacy leader policy is retained only as a
+// selects the active path. The legacy policy is retained only as a
 // library constant — the leader runtime is removed (aresos-agentos-plan C1),
 // so no production dispatcher registers a legacy track.
 type ExecutionPolicy int
 
 const (
-	// PolicyLegacyLeader is the old leader+sub dispatch path. Retained as a
+	// PolicyLegacy is the old leader+sub dispatch path. Retained as a
 	// library constant for the dispatcher's dormant legacy branch; production
 	// wires a nil legacy track, so selecting it returns ErrDispatcherNotRegistered.
-	PolicyLegacyLeader ExecutionPolicy = iota
+	PolicyLegacy ExecutionPolicy = iota
 	// PolicyTaskFabric is the Kernel path: Task Fabric → Scheduler → Agent
 	// (capability-aware, no central leader). This is the only production policy.
 	PolicyTaskFabric
@@ -50,9 +50,9 @@ func (p *PolicyFlag) Active() ExecutionPolicy {
 	return ExecutionPolicy(p.v.Load())
 }
 
-// IsLegacy reports whether the legacy leader policy is active.
+// IsLegacy reports whether the legacy policy is active.
 func (p *PolicyFlag) IsLegacy() bool {
-	return p.Active() == PolicyLegacyLeader
+	return p.Active() == PolicyLegacy
 }
 
 // IsTaskFabric reports whether the new Task Fabric policy is active.

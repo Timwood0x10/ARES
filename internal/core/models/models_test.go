@@ -80,7 +80,6 @@ func TestAgentType(t *testing.T) {
 		agentType AgentType
 		expected  string
 	}{
-		{"leader", AgentTypeLeader, "leader"},
 		{"top", AgentTypeTop, "agent_top"},
 		{"bottom", AgentTypeBottom, "agent_bottom"},
 		{"shoes", AgentType("agent_shoes"), "agent_shoes"},
@@ -346,13 +345,13 @@ func TestUserFeedback(t *testing.T) {
 func TestTask(t *testing.T) {
 	t.Run("create task", func(t *testing.T) {
 		profile := &UserProfile{UserID: "user1"}
-		task := NewTask("task123", AgentTypeLeader, profile)
+		task := NewTask("task123", AgentTypeTop, profile)
 
 		if task.TaskID != "task123" {
 			t.Errorf("expected task123, got %s", task.TaskID)
 		}
-		if task.AgentType != AgentTypeLeader {
-			t.Errorf("expected leader agent, got %s", task.AgentType)
+		if task.AgentType != AgentTypeTop {
+			t.Errorf("expected top agent, got %s", task.AgentType)
 		}
 		if task.UserProfile != profile {
 			t.Errorf("expected user profile")
@@ -382,13 +381,13 @@ func TestTask(t *testing.T) {
 
 func TestTaskResult(t *testing.T) {
 	t.Run("create task result", func(t *testing.T) {
-		result := NewTaskResult("task123", AgentTypeLeader)
+		result := NewTaskResult("task123", AgentTypeTop)
 
 		if result.TaskID != "task123" {
 			t.Errorf("expected task123, got %s", result.TaskID)
 		}
-		if result.AgentType != AgentTypeLeader {
-			t.Errorf("expected leader agent, got %s", result.AgentType)
+		if result.AgentType != AgentTypeTop {
+			t.Errorf("expected top agent, got %s", result.AgentType)
 		}
 	})
 

@@ -108,7 +108,7 @@ func TestSomething(t *testing.T) {
 
     runMigrations(t, pool)
     t.Cleanup(func() {
-        cleanupTables(t, pool, "leader_checkpoints", "task_results_1024")
+        cleanupTables(t, pool, "agent_checkpoints", "task_results_1024")
     })
 
     // test logic

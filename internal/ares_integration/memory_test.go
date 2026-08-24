@@ -275,9 +275,9 @@ func TestProductionMemoryTaskValidation(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestGetLatestSessionForLeader verifies that the checkpoint-based session
+// TestGetLatestSessionForAgent verifies that the checkpoint-based session
 // lookup works correctly with the ProductionMemoryManager.
-func TestGetLatestSessionForLeader(t *testing.T) {
+func TestGetLatestSessionForAgent(t *testing.T) {
 	pool := getTestPool(t)
 	if pool == nil {
 		return
@@ -286,7 +286,7 @@ func TestGetLatestSessionForLeader(t *testing.T) {
 
 	runMigrations(t, pool)
 	t.Cleanup(func() {
-		cleanupTables(t, pool, "leader_checkpoints")
+		cleanupTables(t, pool, "agent_checkpoints")
 	})
 
 	ctx := context.Background()
@@ -302,39 +302,39 @@ func TestGetLatestSessionForLeader(t *testing.T) {
 
 	require.NoError(t, mgr.SetTenantID("test-tenant"))
 
-	leaderID := fmt.Sprintf("test-leader-%d", time.Now().UnixNano())
+	agentID := fmt.Sprintf("test-agent-%d", time.Now().UnixNano())
 
 	// Before any checkpoint exists, should return empty string.
-	sessionID, err := mgr.GetLatestSessionForLeader(ctx, leaderID)
+	sessionID, err := mgr.GetLatestSessionForAgent(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, sessionID, "expected empty session ID when no checkpoint exists")
 
 	// Insert a checkpoint directly.
 	_, err = pool.Exec(ctx,
-		"INSERT INTO leader_checkpoints (leader_id, session_id, status, updated_at) VALUES ($1, $2, $3, NOW())",
-		leaderID, "session-abc", "active",
+		"INSERT INTO agent_checkpoints (agent_id, session_id, status, updated_at) VALUES ($1, $2, $3, NOW())",
+		agentID, "session-abc", "active",
 	)
 	require.NoError(t, err)
 
 	// Now should return the session ID.
-	sessionID, err = mgr.GetLatestSessionForLeader(ctx, leaderID)
+	sessionID, err = mgr.GetLatestSessionForAgent(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, "session-abc", sessionID)
 
-	// Insert a newer checkpoint for the same leader.
+	// Insert a newer checkpoint for the same agent.
 	_, err = pool.Exec(ctx,
-		"INSERT INTO leader_checkpoints (leader_id, session_id, status, updated_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT (leader_id) DO UPDATE SET session_id = EXCLUDED.session_id, updated_at = NOW()",
-		leaderID, "session-xyz", "active",
+		"INSERT INTO agent_checkpoints (agent_id, session_id, status, updated_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT (agent_id) DO UPDATE SET session_id = EXCLUDED.session_id, updated_at = NOW()",
+		agentID, "session-xyz", "active",
 	)
 	require.NoError(t, err)
 
 	// Should return the newest session ID.
-	sessionID, err = mgr.GetLatestSessionForLeader(ctx, leaderID)
+	sessionID, err = mgr.GetLatestSessionForAgent(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, "session-xyz", sessionID)
 
-	// Empty leader ID should return empty string.
-	sessionID, err = mgr.GetLatestSessionForLeader(ctx, "")
+	// Empty agent ID should return empty string.
+	sessionID, err = mgr.GetLatestSessionForAgent(ctx, "")
 	require.NoError(t, err)
 	assert.Empty(t, sessionID)
 }

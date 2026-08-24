@@ -305,7 +305,7 @@ func (m *Manager) buildCognitiveState(ctx context.Context, agentID string, opera
 		// No session from ares_events; try the memory manager checkpoint.
 		// Use a bounded timeout to prevent hanging on slow DB.
 		sessionCtx, sessionCancel := context.WithTimeout(ctx, 5*time.Second)
-		sid, err := m.memManager.GetLatestSessionForLeader(sessionCtx, agentID)
+		sid, err := m.memManager.GetLatestSessionForAgent(sessionCtx, agentID)
 		sessionCancel()
 		if err != nil {
 			log.Warn("runtime: cognitive recovery: failed to get latest session",

@@ -212,7 +212,7 @@ func TestDelegateForwards(t *testing.T) {
 
 // TestPolicyFlagDefaults verifies the flag defaults and flips correctly.
 func TestPolicyFlagDefaults(t *testing.T) {
-	f := NewPolicyFlag(PolicyLegacyLeader)
+	f := NewPolicyFlag(PolicyLegacy)
 	if !f.IsLegacy() {
 		t.Fatal("default must be legacy")
 	}
@@ -247,7 +247,7 @@ func (s *stubDispatcher) count() int {
 func TestDualTrackDispatcherRoutesByFlag(t *testing.T) {
 	legacy := &stubDispatcher{}
 	newPath := &stubDispatcher{}
-	flag := NewPolicyFlag(PolicyLegacyLeader)
+	flag := NewPolicyFlag(PolicyLegacy)
 	d := NewDualTrackDispatcher(flag, legacy, newPath, false)
 	_ = d.Dispatch(context.Background(), "a", "t", nil)
 	if legacy.count() != 1 || newPath.count() != 0 {
@@ -265,7 +265,7 @@ func TestDualTrackDispatcherRoutesByFlag(t *testing.T) {
 func TestDualTrackDispatcherShadowEquivalence(t *testing.T) {
 	legacy := &stubDispatcher{}
 	newPath := &stubDispatcher{}
-	flag := NewPolicyFlag(PolicyLegacyLeader)
+	flag := NewPolicyFlag(PolicyLegacy)
 	d := NewDualTrackDispatcher(flag, legacy, newPath, true)
 	_ = d.Dispatch(context.Background(), "a", "t", nil)
 	if d.Mismatches() != 0 {
@@ -278,7 +278,7 @@ func TestDualTrackDispatcherShadowEquivalence(t *testing.T) {
 func TestDualTrackDispatcherShadowMismatch(t *testing.T) {
 	legacy := &stubDispatcher{err: errors.New("legacy failed")}
 	newPath := &stubDispatcher{}
-	flag := NewPolicyFlag(PolicyLegacyLeader)
+	flag := NewPolicyFlag(PolicyLegacy)
 	d := NewDualTrackDispatcher(flag, legacy, newPath, true)
 	_ = d.Dispatch(context.Background(), "a", "t", nil)
 	if d.Mismatches() != 1 {
@@ -293,7 +293,7 @@ func TestDualTrackDispatcherShadowMismatch(t *testing.T) {
 func TestDualTrackConcurrentShadowFlip(t *testing.T) {
 	legacy := &stubDispatcher{}
 	newPath := &stubDispatcher{}
-	flag := NewPolicyFlag(PolicyLegacyLeader)
+	flag := NewPolicyFlag(PolicyLegacy)
 	d := NewDualTrackDispatcher(flag, legacy, newPath, true)
 
 	var wg sync.WaitGroup
@@ -313,7 +313,7 @@ func TestDualTrackConcurrentShadowFlip(t *testing.T) {
 				flag.Set(PolicyTaskFabric)
 				d.SetNewPath(&stubDispatcher{})
 				d.SetShadow(false)
-				flag.Set(PolicyLegacyLeader)
+				flag.Set(PolicyLegacy)
 			}
 		}()
 	}

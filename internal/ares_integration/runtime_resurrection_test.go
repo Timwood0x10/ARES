@@ -117,13 +117,13 @@ func TestRuntimeResurrection_FullCycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agent := newResurrectionAgent("res-agent-1", models.AgentTypeLeader)
+	agent := newResurrectionAgent("res-agent-1", models.AgentTypeTop)
 
 	// Track factory calls to verify resurrection happened.
 	var factoryCalls atomic.Int32
 	factory := func() base.Agent {
 		factoryCalls.Add(1)
-		return newResurrectionAgent("res-agent-1", models.AgentTypeLeader)
+		return newResurrectionAgent("res-agent-1", models.AgentTypeTop)
 	}
 
 	mgr.RegisterAgent(agent, factory)
@@ -211,11 +211,11 @@ func TestRuntimeResurrection_MultipleAgents(t *testing.T) {
 	var factoryCalls [3]atomic.Int32
 
 	for i := 0; i < 3; i++ {
-		agents[i] = newResurrectionAgent(agentIDs[i], models.AgentTypeLeader)
+		agents[i] = newResurrectionAgent(agentIDs[i], models.AgentTypeTop)
 		idx := i
 		factory := func() base.Agent {
 			factoryCalls[idx].Add(1)
-			return newResurrectionAgent(agentIDs[idx], models.AgentTypeLeader)
+			return newResurrectionAgent(agentIDs[idx], models.AgentTypeTop)
 		}
 		mgr.RegisterAgent(agents[i], factory)
 	}
@@ -284,17 +284,17 @@ func TestRuntimeResurrection_ConcurrentKillAndResurrect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agentA := newResurrectionAgent("concurrent-a", models.AgentTypeLeader)
-	agentB := newResurrectionAgent("concurrent-b", models.AgentTypeLeader)
+	agentA := newResurrectionAgent("concurrent-a", models.AgentTypeTop)
+	agentB := newResurrectionAgent("concurrent-b", models.AgentTypeTop)
 
 	var factoryA, factoryB atomic.Int32
 	mgr.RegisterAgent(agentA, func() base.Agent {
 		factoryA.Add(1)
-		return newResurrectionAgent("concurrent-a", models.AgentTypeLeader)
+		return newResurrectionAgent("concurrent-a", models.AgentTypeTop)
 	})
 	mgr.RegisterAgent(agentB, func() base.Agent {
 		factoryB.Add(1)
-		return newResurrectionAgent("concurrent-b", models.AgentTypeLeader)
+		return newResurrectionAgent("concurrent-b", models.AgentTypeTop)
 	})
 
 	require.NoError(t, mgr.Start(ctx))
@@ -350,11 +350,11 @@ func TestRuntimeResurrection_EventStoreUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agent := newResurrectionAgent("no-store-agent", models.AgentTypeLeader)
+	agent := newResurrectionAgent("no-store-agent", models.AgentTypeTop)
 	var factoryCalls atomic.Int32
 	factory := func() base.Agent {
 		factoryCalls.Add(1)
-		return newResurrectionAgent("no-store-agent", models.AgentTypeLeader)
+		return newResurrectionAgent("no-store-agent", models.AgentTypeTop)
 	}
 	mgr.RegisterAgent(agent, factory)
 
@@ -409,11 +409,11 @@ func TestRuntimeResurrection_MaxRestartsExceeded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agent := newResurrectionAgent("max-restart-agent", models.AgentTypeLeader)
+	agent := newResurrectionAgent("max-restart-agent", models.AgentTypeTop)
 	var factoryCalls atomic.Int32
 	factory := func() base.Agent {
 		factoryCalls.Add(1)
-		return newResurrectionAgent("max-restart-agent", models.AgentTypeLeader)
+		return newResurrectionAgent("max-restart-agent", models.AgentTypeTop)
 	}
 	mgr.RegisterAgent(agent, factory)
 

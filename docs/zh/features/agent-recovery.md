@@ -173,7 +173,7 @@ sequenceDiagram
     ES-->>RT: 事件流
 
     RT->>RT: buildStateFromEvents -> 提取 session_id
-    RT->>MM: GetLatestSessionForLeader + GetMessages
+    RT->>MM: GetLatestSessionForAgent + GetMessages
     MM-->>RT: 会话 + 对话历史
 
     RT->>New: RestoreState(state)
@@ -227,7 +227,7 @@ if newAgent == nil {
 两个子步骤：
 
 - `buildStateFromEvents` 从 `EventSessionCreated` 事件中提取 `session_id`。
-- `buildCognitiveState` 从 `MemoryManager` 加载对话历史。先尝试事件中的 session_id，再回退到 `GetLatestSessionForLeader`（5s 超时）。消息通过 `GetMessages` 加载（5s 超时）。
+- `buildCognitiveState` 从 `MemoryManager` 加载对话历史。先尝试事件中的 session_id，再回退到 `GetLatestSessionForAgent`（5s 超时）。消息通过 `GetMessages` 加载（5s 超时）。
 
 如果 Agent 实现了 `StatefulAgent`，会调用 `RestoreState` 和 `ReplayEvents`。
 

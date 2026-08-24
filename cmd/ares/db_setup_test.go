@@ -59,6 +59,7 @@ func runDbSetupTest() error {
 		User:            parsed.User.Username(),
 		Password:        passwordFromURL(parsed),
 		Database:        dbname,
+		SSLMode:         getEnv("DB_SSL_MODE", "disable"),
 		MaxOpenConns:    5,
 		MaxIdleConns:    2,
 		ConnMaxLifetime: 0,
@@ -78,6 +79,10 @@ func runDbSetupTest() error {
 		return fmt.Errorf("enable pgvector: %w", err)
 	}
 	fmt.Println("pgvector extension enabled")
+
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		return fmt.Errorf("core migration: %w", err)
+	}
 
 	if err := postgres.MigrateStorage(ctx, pool); err != nil {
 		return fmt.Errorf("migration: %w", err)

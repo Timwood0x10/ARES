@@ -41,7 +41,7 @@ var allowedTables = map[string]struct{}{
 	"strategies":                    {},
 	"distilled_memories":            {},
 	"conversations":                 {},
-	"leader_checkpoints":            {},
+	"agent_checkpoints":             {},
 }
 
 // quoteIdentifier quotes a SQL identifier (table/column name) for safe

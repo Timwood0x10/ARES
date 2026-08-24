@@ -43,7 +43,6 @@ const (
 type AgentType string
 
 const (
-    AgentTypeLeader AgentType = "leader"
     AgentTypeTop    AgentType = "agent_top"
     AgentTypeBottom AgentType = "agent_bottom"
     AgentTypeShoes  AgentType = "agent_shoes"

@@ -71,7 +71,7 @@ func (m *MockMemoryManager) StoreDistilledTask(ctx context.Context, taskID strin
 	return nil
 }
 
-func (m *MockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+func (m *MockMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
 

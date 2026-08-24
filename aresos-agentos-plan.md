@@ -202,7 +202,7 @@ H 极简 SDK 对外面 + 真实 runtime 大闭环验收
 - **CLI/状态输出**：`cmd/ares/status.go` JSON 输出去掉 `agents.leader`、`DefaultLeaderID()` 兜底删除、警告文案与 policy 提示改为 peer/taskfabric 口径；`serve`/`demo` 描述与模拟数据改 peer 模型（demo 的 `parents` 按 Rule 2 仅表达 provenance）。
 - **验收 #1 通过**：kernel 侧 `PolicyFlag` 固定 `PolicyTaskFabric`、`kernel_bridge.go` 不再注册 legacy track；peer 路径 E2E（`cmd/ares/w2_peer_test.go` 等）全绿。
 - **验证结果**：`gofmt`、`go vet ./...`、`go build ./cmd/... ./internal/...` 全绿；`go test ./...` **168 包全部通过**；`go test -race`（taskfabric、agentfabric、agentipc、ares_config、ares_bootstrap、cmd/ares）通过。
-- **保留的文档化休眠项（非本阶段范围）**：`agentipc.PolicyLegacyLeader` 库常量 + nil legacy track（注释已说明）；`ares_memory.GetLatestSessionForLeader` 方法名与 Postgres `leader_checkpoints` 存储表（通用 agent 认知恢复在用，重命名需 DB 迁移，留待后续）；`core/models.AgentTypeLeader` 常量（仅测试引用）；CHANGELOG/plan/archive 中的历史记录。
+- **保留的文档化休眠项（非本阶段范围）**：`agentipc.PolicyLegacy` 库常量 + nil legacy track（注释已说明）。**后续已清债（aresos-hardening-plan H3，2026-08-24）**：`GetLatestSessionForLeader` → `GetLatestSessionForAgent`；Postgres `leader_checkpoints` → `agent_checkpoints`（幂等 DO 迁移）；`core/models.AgentTypeLeader` 已删除；`PolicyLegacyLeader` → `PolicyLegacy`。仅剩 CHANGELOG/plan/archive 中的历史记录。
 
 ---
 

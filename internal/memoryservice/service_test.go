@@ -128,8 +128,8 @@ func (m *mockMemoryMgr) SearchSimilarTasks(ctx context.Context, query string, li
 	return args.Get(0).([]*models.Task), args.Error(1)
 }
 
-func (m *mockMemoryMgr) GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error) {
-	args := m.Called(ctx, leaderID)
+func (m *mockMemoryMgr) GetLatestSessionForAgent(ctx context.Context, agentID string) (string, error) {
+	args := m.Called(ctx, agentID)
 	return args.String(0), args.Error(1)
 }
 
@@ -337,7 +337,7 @@ func TestService_DistillTask(t *testing.T) {
 		repo := new(mockMemoryRepo)
 		mgr := new(mockMemoryMgr)
 		payload := map[string]any{"input": "in", "output": "out", "context": "ctx"}
-		taskModel := &models.Task{TaskID: "t1", TaskType: models.AgentTypeLeader, Payload: payload}
+		taskModel := &models.Task{TaskID: "t1", TaskType: models.AgentTypeTop, Payload: payload}
 		mgr.On("DistillTask", ctx, "t1").Return(taskModel, nil)
 		var stored *core.DistilledTask
 		repo.On("StoreDistilledTask", ctx, mock.AnythingOfType("*core.DistilledTask")).Run(func(args mock.Arguments) {
@@ -352,7 +352,7 @@ func TestService_DistillTask(t *testing.T) {
 		require.Equal(t, "out", task.Output)
 		require.Equal(t, "ctx", task.Context)
 		require.NotEmpty(t, task.Summary)
-		require.Contains(t, task.Tags, "leader")
+		require.Contains(t, task.Tags, "agent_top")
 		require.NotNil(t, stored)
 	})
 	t.Run("without memory manager", func(t *testing.T) {

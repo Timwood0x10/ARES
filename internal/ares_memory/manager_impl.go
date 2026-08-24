@@ -755,22 +755,22 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 	return tasks, nil
 }
 
-// GetLatestSessionForLeader returns the most recent session ID for a leader.
+// GetLatestSessionForAgent returns the most recent session ID for an agent.
 //
-// The in-memory memoryManager does not persist leader checkpoints: sessions are
-// keyed by session ID (each carrying a UserID, not a leader/agent ID), and there
-// is no leader->session mapping. Without that mapping any "lookup" would either
+// The in-memory memoryManager does not persist agent checkpoints: sessions are
+// keyed by session ID (each carrying a UserID, not an agent ID), and there
+// is no agent->session mapping. Without that mapping any "lookup" would either
 // silently return empty (the previous behavior, which hid the limitation and
-// broke leader recovery in manager_lifecycle.go) or conflate the session's
-// UserID with the leader ID and return wrong results.
+// broke agent recovery in manager_lifecycle.go) or conflate the session's
+// UserID with the agent ID and return wrong results.
 //
 // Per rule 0.2 we do not fake an implementation. Instead we return
-// ErrLeaderCheckpointNotSupported so the caller (ares_runtime cognitive
+// ErrAgentCheckpointNotSupported so the caller (ares_runtime cognitive
 // recovery) can distinguish "no session" from "backend cannot answer" and log
 // accordingly. The production path uses ProductionMemoryManager, which queries
-// the leader_checkpoints table.
-func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
-	return "", ErrLeaderCheckpointNotSupported
+// the agent_checkpoints table.
+func (m *memoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
+	return "", ErrAgentCheckpointNotSupported
 }
 
 // SetDefaultTenantID overrides the default tenant ID used for search operations.

@@ -31,7 +31,6 @@ type AgentStatus = models.AgentStatus
 
 // Built-in agent type constants.
 const (
-	AgentTypeLeader      = models.AgentTypeLeader
 	AgentTypeTop         = models.AgentTypeTop
 	AgentTypeBottom      = models.AgentTypeBottom
 	AgentTypeDestination = models.AgentTypeDestination

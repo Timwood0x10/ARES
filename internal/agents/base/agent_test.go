@@ -138,9 +138,9 @@ func TestDefaultConfig(t *testing.T) {
 	}{
 		{
 			name:      "default config for leader agent",
-			agentType: models.AgentTypeLeader,
+			agentType: models.AgentTypeTop,
 			want: &Config{
-				Type:              models.AgentTypeLeader,
+				Type:              models.AgentTypeTop,
 				HeartbeatInterval: 30 * time.Second,
 				MaxRetries:        3,
 				Timeout:           5 * time.Minute,
@@ -191,7 +191,7 @@ func TestDefaultConfig(t *testing.T) {
 // TestAgentInterface tests the Agent interface implementation.
 func TestAgentInterface(t *testing.T) {
 	ctx := context.Background()
-	agent := newMockAgent("test-agent", models.AgentTypeLeader)
+	agent := newMockAgent("test-agent", models.AgentTypeTop)
 
 	// Test ID
 	if got := agent.ID(); got != "test-agent" {
@@ -199,8 +199,8 @@ func TestAgentInterface(t *testing.T) {
 	}
 
 	// Test Type
-	if got := agent.Type(); got != models.AgentTypeLeader {
-		t.Errorf("Agent.Type() = %v, want %v", got, models.AgentTypeLeader)
+	if got := agent.Type(); got != models.AgentTypeTop {
+		t.Errorf("Agent.Type() = %v, want %v", got, models.AgentTypeTop)
 	}
 
 	// Test initial status
@@ -355,7 +355,7 @@ func TestHeartbeaterInterfaceErrorHandling(t *testing.T) {
 // TestAgentStatusTransitions tests agent status transitions.
 func TestAgentStatusTransitions(t *testing.T) {
 	ctx := context.Background()
-	agent := newMockAgent("test-agent", models.AgentTypeLeader)
+	agent := newMockAgent("test-agent", models.AgentTypeTop)
 
 	// Verify initial status
 	if agent.Status() != models.AgentStatusOffline {
@@ -384,7 +384,7 @@ func TestAgentStatusTransitions(t *testing.T) {
 // TestAgentConcurrentOperations tests concurrent agent operations.
 func TestAgentConcurrentOperations(t *testing.T) {
 	ctx := context.Background()
-	agent := newMockAgent("test-agent", models.AgentTypeLeader)
+	agent := newMockAgent("test-agent", models.AgentTypeTop)
 
 	// Start the agent
 	if err := agent.Start(ctx); err != nil {
@@ -426,7 +426,7 @@ func TestConfigValidation(t *testing.T) {
 			name: "valid config",
 			config: &Config{
 				ID:                "test-agent",
-				Type:              models.AgentTypeLeader,
+				Type:              models.AgentTypeTop,
 				HeartbeatInterval: 30 * time.Second,
 				MaxRetries:        3,
 				Timeout:           5 * time.Minute,
