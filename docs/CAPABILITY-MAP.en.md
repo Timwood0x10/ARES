@@ -17,8 +17,6 @@ Conventions: Paths are relative to the repo root. `★` = the capability has a d
 | ★ **Runtime Patch Engine** | `internal/evolution` | Hot-patch DAG/scheduler/recovery strategies at deploy time | `ares evolution deploy` |
 | ★ **DAG Workflow** | `internal/workflow` | Directed acyclic graph orchestration, conditional branching, auto-recovery | `ares workflow run` |
 | **Memory & Distillation** | `internal/ares_memory` | Session context, task distillation, vector embedding | `sdk.WithDefaultMemory` |
-| **Long-term memory store** | `internal/memoryservice` | Memory persistence read/write service | — |
-| **Vector retrieval** | `internal/retrievalservice` | Unified retrieval interface (vector + knowledge) | — |
 | **Event storage** | `internal/ares_events` | Event persistence, compaction, trimming | — |
 | ★ **Knowledge Graph** | `internal/knowledge` | Knowledge planning, compilation, linking, retrieval, storage | `ares knowledge build` |
 | **LLM clients** | `internal/llm` | OpenAI / Ollama / Anthropic adapters | `sdk.WithOpenAI` etc. |
@@ -32,8 +30,7 @@ Conventions: Paths are relative to the repo root. `★` = the capability has a d
 | ★ **Evaluation framework** | `internal/ares_eval` | Evaluation runner, LLM judge, dimension scoring, comparison, reports | `ares bench` |
 | **Observability** | `internal/ares_observability`, `internal/monitoring` | Traces / Metrics / Logs | — |
 | **Callback injection** | `internal/ares_callbacks` | Callback bridging | — |
-| ★ **HTTP API service** | `api/handler`, `api/router`, `api/service` | External REST interface | `ares serve` |
-| **API client** | `api/client` | Unified client, config, health check | `ares` CLI |
+| ★ **HTTP API service** | `cmd/ares/actions.go` | External REST: `GET /api/tools`, `POST /api/tools/call`, `POST /api/tasks`, `POST /api/graphs` | `ares serve` |
 | **SDK entry** | `sdk/` | `sdk.MustNew` — one-stop initialization | `sdk.MustNew` |
 | **Quantitative trading** | `internal/ares_quant` | Market making, indicators, portfolio management, research | — |
 | ★ **CLI entry** | `cmd/ares/` | Entry point for all subcommands | `ares …` |

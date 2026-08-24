@@ -75,7 +75,7 @@ type Components struct {
 	// fitness evidence into the shared evidence store). It is created and
 	// started by Bootstrap independently of ProvideEvolution so the fitness
 	// write loop works even when the legacy evolution deps (ExpRepo) are
-	// absent; ProvideEvolution and the api_impl launcher reuse it instead of
+	// absent; ProvideEvolution and the serve launcher reuse it instead of
 	// building their own. Nil when the event store is unavailable.
 	FlightRecorder *flight.FlightRecorder
 	// ExpRepo is the experience repository used by distillation writes
@@ -87,7 +87,7 @@ type Components struct {
 	ExpRepo repositories.ExperienceRepositoryInterface
 	// EvidenceStore is the shared evidence store used by the flight recorder
 	// and (when enabled) the GA genomes. Always set, even when evolution is
-	// disabled, so downstream consumers (api/bootstrap, integration) can
+	// disabled, so downstream consumers (cmd/ares serve, tests) can
 	// reference it without nil guards.
 	EvidenceStore evidence.Store
 	// SystemRuntime is the system-level control plane (Stage 1): an
@@ -188,7 +188,7 @@ type BootstrapDeps struct {
 }
 
 // Bootstrap assembles all components from config and optional dependencies.
-// It is the single wiring hub — used by api/bootstrap, cmd/ares serve, and tests.
+// It is the single wiring hub — used by cmd/ares serve, and tests.
 // On partial failure, already-created components are cleaned up in reverse
 // order before returning the error.
 // extracted for each major component group (wireMemory, wireNewEvolution, etc.)
@@ -399,7 +399,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// into the shared evidence store (the same store the GA genomes read when
 	// evolution is enabled), so the fitness write loop works on every
 	// production path (ares serve / ares start) even when ProvideEvolution is
-	// skipped. ProvideEvolution and the api_impl launcher reuse this instance.
+	// skipped. ProvideEvolution and the serve launcher reuse this instance.
 	if comp.EventStore != nil {
 		comp.FlightRecorder = flight.NewFlightRecorder(flight.FlightRecorderConfig{
 			EventStore:    comp.EventStore,

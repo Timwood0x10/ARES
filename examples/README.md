@@ -35,6 +35,7 @@ Legend: ★ flagship · LLM = needs a configured provider · dry = runs without 
 |---|---|---|
 | [03-dag-workflow](03-dag-workflow/) | sdk.Graph core shapes + the three collaboration modes (delegate / pipeline / orchestrate) | dry |
 | [28-collab-graphs](28-collab-graphs/) | Submit explicit DAGs over HTTP (`POST /api/graphs`); ops surface of C4 | yes (serve) |
+| [29-akf-graph-node](29-akf-graph-node/) | AKF knowledge-fabric step as a `sdk.Graph` node (BETA adapter) | no |
 | [09-full-app](09-full-app/) | Composing tools + memory + agents into a small app | yes |
 | [21-ai-assistant-integration](21-ai-assistant-integration/) | Embedding ARES into an existing assistant stack | yes |
 

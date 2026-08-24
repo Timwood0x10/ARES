@@ -25,7 +25,7 @@ var (
 // This is the bridge between ares_events (which defines ArchiveSink) and
 // ares_archive (which implements ArchiveWriter). It breaks the import cycle:
 // ares_events owns the func type, ares_archive provides the implementation,
-// and the wiring layer (internal/api_impl) connects them.
+// and the serve wiring connects them.
 //
 // Failures are returned so the caller can log them; they never block
 // compaction (best effort, §4 of the strategy doc). The sink infers the

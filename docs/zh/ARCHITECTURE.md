@@ -1,5 +1,7 @@
 # ARES 架构全景图
 
+> ⚠️ **过时声明（2026-08-24）**：本文生成于 2026-07-12，描述的 `api/service` / `api/handler` / `api/router` 六层架构、Leader/Sub agent 角色、`workflow engine` 均已在 Agent OS 融合中移除。当前架构以 `ares serve`（单一内核 + taskfabric 调度）为准，见 [`docs/zh/architecture/ares-architecture.md`](architecture/ares-architecture.md)。对外 HTTP 接口仅剩四端点：`GET /api/tools`、`POST /api/tools/call`、`POST /api/tasks`、`POST /api/graphs`。
+
 > 生成时间: 2026-07-12
 > 22,825 个节点, 124,690 条边, 1,260 个 Go 文件, 41 个 internal 包
 

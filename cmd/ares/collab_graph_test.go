@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -34,7 +35,15 @@ func newGraphTestKernel(t *testing.T, ctx context.Context) (*actionHandler, *ker
 // postGraph submits a graph JSON payload to the endpoint.
 func postGraph(t *testing.T, h *actionHandler, body string) (int, map[string]any) {
 	t.Helper()
+	return postGraphCtx(t, h, context.Background(), body)
+}
+
+// postGraphCtx is postGraph with an explicit request context, so tests that
+// exercise deadline-driven paths (e.g. the 504 timeout) can bound the request.
+func postGraphCtx(t *testing.T, h *actionHandler, ctx context.Context, body string) (int, map[string]any) {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/graphs", bytes.NewReader([]byte(body)))
+	req = req.WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -262,5 +271,121 @@ func (j *joinProbe) ExecuteStep(_ context.Context, task *models.Task) (*sub.Step
 	}
 	res := models.NewTaskResult(task.TaskID, task.AgentType)
 	res.SetSuccess(nil, "probed")
+	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
+
+// TestGraphsEndpointNodeFailureReportsAllFailedNodes locks the deterministic
+// error contract (review #1): when MULTIPLE nodes fail in the same scan tick,
+// the 422 error must name every failed node — not an arbitrary one whose
+// identity depends on scan order. Two INDEPENDENT root nodes (no dependencies
+// between them, so no fail-fast cascade kills the second before it runs) both
+// fail; the error must name BOTH.
+func TestGraphsEndpointNodeFailureReportsAllFailedNodes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler, kh := newGraphTestKernel(t, ctx)
+	kh.scheduler.RegisterExecutor("peer-flaky", &failingExecutor{id: "peer-flaky", typ: "flaky"})
+
+	// Two roots, both flaky, no dependency between them — both run and fail in
+	// the same or adjacent scan ticks.
+	body := `{
+		"schema_version": 1,
+		"nodes": [
+			{"id": "w1", "capability": "flaky"},
+			{"id": "w2", "capability": "flaky"}
+		],
+		"edges": []
+	}`
+	code, resp := postGraph(t, handler, body)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d want 422, resp=%v", code, resp)
+	}
+	msg, _ := resp["error"].(string)
+	if !strings.Contains(msg, "w1") || !strings.Contains(msg, "w2") {
+		t.Fatalf("error must name all failed nodes, got: %v", msg)
+	}
+}
+
+// TestGraphsEndpointNodeFailureDeterministicSingleNode locks the single-node
+// failure case so the "nodes ... failed" plural form is still precise when
+// exactly one node is lost: it names that node alone.
+func TestGraphsEndpointNodeFailureDeterministicSingleNode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler, kh := newGraphTestKernel(t, ctx)
+	kh.scheduler.RegisterExecutor("peer-flaky", &failingExecutor{id: "peer-flaky", typ: "flaky"})
+
+	body := `{"schema_version":1,"nodes":[{"id":"solo","capability":"flaky"}],"edges":[]}`
+	code, resp := postGraph(t, handler, body)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d want 422, resp=%v", code, resp)
+	}
+	msg, _ := resp["error"].(string)
+	if !strings.Contains(msg, "[solo]") {
+		t.Fatalf("error must name the failed node, got: %v", msg)
+	}
+}
+
+// TestGraphsEndpointTimeoutReturns504 locks the ErrGraphTimeout → 504 mapping
+// (review #2): a node that never settles (its executor blocks until ctx is
+// cancelled) drives the wait loop past the deadline, and the endpoint reports
+// 504 Gateway Timeout — not a 500 — with a "timed out" error.
+func TestGraphsEndpointTimeoutReturns504(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	handler, kh := newGraphTestKernel(t, ctx)
+	kh.scheduler.RegisterExecutor("peer-hang", &blockingExecutor{id: "peer-hang", typ: "hang"})
+
+	body := `{"schema_version":1,"nodes":[{"id":"stuck","capability":"hang"}],"edges":[]}`
+	code, resp := postGraphCtx(t, handler, ctx, body)
+	if code != http.StatusGatewayTimeout {
+		t.Fatalf("status=%d want 504, resp=%v", code, resp)
+	}
+	if resp["success"] != false {
+		t.Fatalf("success must be false on timeout: %v", resp)
+	}
+	if !strings.Contains(resp["error"].(string), "timed out") {
+		t.Fatalf("error should mention timeout: %v", resp["error"])
+	}
+}
+
+// TestGraphsEndpointIgnoresCallerRunID locks the wire contract (review #2):
+// graphSubmissionRequest.RunID is accepted for back-compat but the server
+// ALWAYS generates the run id (C4-review fix #1). A caller-supplied run_id
+// must NOT leak into the returned graph_id — the graph id is server-generated
+// (prefix "g" + timestamp). If someone later "helpfully" reconnects the field,
+// this test fails loudly instead of silently changing the contract.
+func TestGraphsEndpointIgnoresCallerRunID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler, _ := newGraphTestKernel(t, ctx)
+
+	body := `{"schema_version":1,"run_id":"caller-xyz","nodes":[{"id":"only","capability":"research"}],"edges":[]}`
+	code, resp := postGraph(t, handler, body)
+	if code != http.StatusOK {
+		t.Fatalf("status=%d want 200, resp=%v", code, resp)
+	}
+	gid, _ := resp["graph_id"].(string)
+	if gid == "" || strings.HasPrefix(gid, "caller-") {
+		t.Fatalf("graph_id must be server-generated, not the caller-supplied run_id: got %q", gid)
+	}
+	if !strings.HasPrefix(gid, "g") {
+		t.Fatalf("graph_id should follow the server-generated pattern (g<ts>-<seq>): got %q", gid)
+	}
+}
+
+// blockingExecutor never returns until its context is cancelled — a node that
+// stays in-flight past any deadline, used to exercise the 504 timeout path.
+type blockingExecutor struct {
+	id  string
+	typ models.AgentType
+}
+
+func (e *blockingExecutor) ID() string             { return e.id }
+func (e *blockingExecutor) Type() models.AgentType { return e.typ }
+func (e *blockingExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
+	<-ctx.Done()
+	res := models.NewTaskResult(task.TaskID, task.AgentType)
+	res.SetError("blocked until cancel")
 	return &sub.StepOutcome{Done: true, Result: res}, nil
 }

@@ -152,3 +152,28 @@ func (a *KnowledgeAgent) ProcessStream(ctx context.Context, input any) (<-chan b
 	close(ch)
 	return ch, nil
 }
+
+// AsGraphNode adapts the AKF agent to a sdk.Graph node: a
+// func(ctx, state) error that reads its input from state["input"] and writes
+// the step result to state["output"]. This lets AKF steps run inside the
+// current DAG surface (sdk.Graph pure-function nodes) without routing through
+// the kernel scheduling path — AKF is pure compute, nothing to schedule.
+//
+// The returned function is safe for concurrent use only if the receiver is
+// not shared across runs; create one adapter per graph node via NewKnowledgeAgent.
+//
+// Beta: the graph-node adapter API is BETA and may change between releases.
+func (a *KnowledgeAgent) AsGraphNode() func(ctx context.Context, state map[string]any) error {
+	return func(ctx context.Context, state map[string]any) error {
+		var input any
+		if v, ok := state["input"]; ok {
+			input = v
+		}
+		out, err := a.Process(ctx, input)
+		if err != nil {
+			return err
+		}
+		state["output"] = out
+		return nil
+	}
+}

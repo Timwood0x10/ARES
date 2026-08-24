@@ -17,8 +17,6 @@
 | ★ **运行时补丁引擎** | `internal/evolution` | 部署期对 DAG/调度器/恢复策略打热补丁 | `ares evolution deploy` |
 | ★ **DAG 工作流** | `internal/workflow` | 有向无环图编排、条件分支、自动恢复 | `ares workflow run` |
 | **记忆 & 蒸馏** | `internal/ares_memory` | 会话上下文、任务蒸馏、向量嵌入 | `sdk.WithDefaultMemory` |
-| **长期记忆存储** | `internal/memoryservice` | 记忆持久化读写服务 | — |
-| **向量检索** | `internal/retrievalservice` | 统一检索接口（向量 + 知识） | — |
 | **事件存储** | `internal/ares_events` | 事件持久化、压缩、剪裁 | — |
 | ★ **知识图谱** | `internal/knowledge` | 知识规划、编译、链接、检索、存储 | `ares knowledge build` |
 | **LLM 客户端** | `internal/llm` | OpenAI / Ollama / Anthropic 适配 | `sdk.WithOpenAI` 等 |
@@ -32,8 +30,7 @@
 | ★ **评估框架** | `internal/ares_eval` | 评测运行器、LLM 裁判、维度评分、对比、报告 | `ares bench` |
 | **可观测性** | `internal/ares_observability`, `internal/monitoring` | Trace / Metric / Log | — |
 | **回调注入** | `internal/ares_callbacks` | 回调桥接 | — |
-| ★ **HTTP API 服务** | `api/handler`, `api/router`, `api/service` | 对外 REST 接口 | `ares serve` |
-| **API 客户端** | `api/client` | 统一客户端、配置、健康检查 | `ares` CLI |
+| ★ **HTTP API 服务** | `cmd/ares/actions.go` | 对外 REST：`GET /api/tools`、`POST /api/tools/call`、`POST /api/tasks`、`POST /api/graphs` | `ares serve` |
 | **SDK 入口** | `sdk/` | `sdk.MustNew` 一站式初始化 | `sdk.MustNew` |
 | **量化交易** | `internal/ares_quant` | 做市、指标、组合管理、研究 | — |
 | ★ **CLI 总入口** | `cmd/ares/` | 所有子命令的起点 | `ares …` |
@@ -53,20 +50,19 @@
 | `internal/ares_evolution` | **策略进化 GA**——种群、交叉、变异、评分、晋升 | `evolution` |
 | `internal/evolution` | **运行时补丁引擎**——部署期对 DAG/调度器/恢复策略打热补丁 | `coordinator`/`diff`/`patch`/`genome` |
 
-**Q：`internal/ares_memory`、`internal/memoryservice`、`api/memory` 有什么区别？**
+**Q：`internal/ares_memory` 与 `api/core.Message` 有什么区别？**
 
 | 路径 | 职责 |
 |---|---|
 | `internal/ares_memory` | 记忆主模块：会话上下文、蒸馏、向量 push |
-| `internal/memoryservice` | 长期记忆的数据库读写服务 |
-| `api/memory` | HTTP 层记忆接口 |
+| `api/core.Message` | 对外消息类型定义（LLM 层消息） |
 
 ### 定位三步法
 
 1. 在上表找到你要的能力，记住 **入口模块** 路径
-2. 若入口在 `internal/` → 具体实现在那里；若入口在 `api/` → 接口定义在那里
-3. 需要从接口到实现的桥接 → `internal/api_impl/`
+2. 若入口在 `internal/` → 具体实现在那里；若入口在 `sdk/`/`api/` → 对外接口定义在那里
+3. 对外 HTTP 服务统一由 `ares serve` 暴露（`/api/tools`、`/api/tasks`、`/api/graphs`）
 
 ---
 
-**代码快照**：`dev` 分支，1295 个 `.go` 文件，`internal/` 下 41 个顶层包，`api/` 下 19 个子包。
+**代码快照**：`dev` 分支，对外接口统一为 `sdk` + `ares serve` 四端点（`/api/tools`、`/api/tasks`、`/api/graphs`）。

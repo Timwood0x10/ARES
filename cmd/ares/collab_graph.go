@@ -195,7 +195,14 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 			ID:           tid,
 			Capability:   n.Capability,
 			Dependencies: nodeDeps,
-			RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
+			// RetryPolicy.MaxRetries counts TOTAL attempts (taskfabric.CanRetry:
+			// Attempts < MaxRetries), so 2 = first attempt + one retry. This is
+			// the graph-submission default budget: cheap idempotent nodes absorb
+			// one transient failure; per-node tuning (0 for expensive /
+			// non-retryable capabilities, higher for jitter-sensitive ones) is a
+			// future wire evolution and must ride the schema_version guard rather
+			// than a silent magic number — see graphNodeSpec.
+			RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
 			Checkpoint: &taskfabric.CheckpointEnvelope{
 				Payload: map[string]any{"input": n.Input},
 			},
@@ -222,7 +229,7 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 	defer ticker.Stop()
 	for len(pending) > 0 {
 		progressed := false
-		var failErr error
+		var failedNodes []string
 		still := pending[:0]
 		for _, nid := range pending {
 			tk, err := k.fabric.Task(taskIDs[nid])
@@ -235,19 +242,25 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 				progressed = true
 			case taskfabric.StateFailed:
 				outputs[nid] = collabNodeOutput(tk)
-				failErr = fmt.Errorf("%w: %s node %q", ErrGraphNodeFailed, runID, nid)
+				failedNodes = append(failedNodes, nid)
 			default:
 				still = append(still, nid)
 			}
 		}
 		pending = still
-		if failErr != nil {
+		if len(failedNodes) > 0 {
 			// Fail-fast (#4): the deferred cleanup deletes every not-yet-
 			// started READY sibling so it never runs. Quanta already RUNNING
 			// finish naturally (cooperative model — no hard cancel exists);
 			// their results go unread and their unique ids keep the fabric
 			// collision-free.
-			return outputs, taskIDs, failErr
+			//
+			// All nodes that FAILED in this scan are reported — a fan-out can
+			// lose several workers in the same 20ms tick, and listing them all
+			// (instead of whichever the scan happened to see last) keeps the
+			// 422's error deterministic and actionable.
+			names := strings.Join(failedNodes, ", ")
+			return outputs, taskIDs, fmt.Errorf("%w: %s nodes [%s] failed", ErrGraphNodeFailed, runID, names)
 		}
 		if progressed {
 			continue // re-scan immediately; more may have settled this instant
