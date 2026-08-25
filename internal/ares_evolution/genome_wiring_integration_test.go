@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/stretchr/testify/assert"
@@ -307,13 +307,13 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 8
 	cfg.EliteCount = 1
 	cfg.EnableScheduler = true
 	cfg.EnableDreamCycle = false
-	cfg.Callbacks = reg
+	cfg.EventStore = reg
 	cfg.SchedulerTrigger = TriggerOnIdle
 
 	system, err := NewWiredEvolutionSystem(base, cfg)
@@ -333,9 +333,10 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 		t.Fatalf("RegisterScheduler failed: %v", err)
 	}
 
-	// Verify handler was registered.
-	if reg.Count(ares_callbacks.EventAgentEnd) != 1 {
-		t.Errorf("expected 1 handler registered for EventAgentEnd, got %d", reg.Count(ares_callbacks.EventAgentEnd))
+	// Verify the scheduler subscribed to the EventStore for agent stopped events.
+	filters := reg.subscriptionFilters()
+	if len(filters) != 1 || len(filters[0].Types) != 1 || filters[0].Types[0] != ares_events.EventAgentStopped {
+		t.Errorf("expected subscription for EventAgentStopped, got %+v", filters)
 	}
 
 	genBefore := system.Population.Generation
@@ -384,7 +385,7 @@ func TestWiredSystem_WithDreamCycleAndScheduler(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 
 	// Create system with scheduler but NOT dream cycle via config (since
 	// NewWiredEvolutionSystem passes nil tester which fails DreamCycle creation).
@@ -393,7 +394,7 @@ func TestWiredSystem_WithDreamCycleAndScheduler(t *testing.T) {
 	cfg.PopulationSize = 6
 	cfg.EnableScheduler = true
 	cfg.EnableDreamCycle = false
-	cfg.Callbacks = reg
+	cfg.EventStore = reg
 
 	system, err := NewWiredEvolutionSystem(base, cfg)
 	if err != nil {
@@ -470,13 +471,13 @@ func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 6
 	cfg.EliteCount = 1
 	cfg.EnableScheduler = true
 	cfg.EnableDreamCycle = false
-	cfg.Callbacks = reg
+	cfg.EventStore = reg
 	cfg.SchedulerTrigger = TriggerOnIdle
 
 	system, err := NewWiredEvolutionSystem(base, cfg)
@@ -536,7 +537,7 @@ func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 8
 	cfg.EliteCount = 1
@@ -544,7 +545,7 @@ func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 	cfg.SurvivalRate = 0.6
 	cfg.EnableScheduler = true
 	cfg.EnableDreamCycle = false
-	cfg.Callbacks = reg
+	cfg.EventStore = reg
 	cfg.SchedulerTrigger = TriggerOnIdle
 
 	system, err := NewWiredEvolutionSystem(base, cfg)
@@ -825,12 +826,12 @@ func TestWiredSystem_WithRegressionTester(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 6
 	cfg.EnableScheduler = true
 	cfg.EnableDreamCycle = true
-	cfg.Callbacks = reg
+	cfg.EventStore = reg
 	cfg.Scorer = func(s *mutation.Strategy) float64 { return 75.0 }
 
 	system, err := NewWiredEvolutionSystem(base, cfg)

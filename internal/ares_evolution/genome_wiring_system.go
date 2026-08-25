@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
@@ -101,12 +100,12 @@ type GenomeConfig struct {
 
 // SchedulerConfig groups scheduler and dream cycle settings.
 type SchedulerConfig struct {
-	EnableScheduler      bool                             `json:"enable_scheduler"`
-	EnableDreamCycle     bool                             `json:"enable_dream_cycle"`
-	SchedulerTrigger     EvolutionTrigger                 `json:"scheduler_trigger"`
-	MinTasksBeforeEvolve int                              `json:"min_tasks_before_evolve"`
-	MaxMutations         int                              `json:"max_mutations"`
-	Callbacks            ares_callbacks.CallbackRegistrar `json:"-"`
+	EnableScheduler      bool                 `json:"enable_scheduler"`
+	EnableDreamCycle     bool                 `json:"enable_dream_cycle"`
+	SchedulerTrigger     EvolutionTrigger     `json:"scheduler_trigger"`
+	MinTasksBeforeEvolve int                  `json:"min_tasks_before_evolve"`
+	MaxMutations         int                  `json:"max_mutations"`
+	EventStore           EventStoreSubscriber `json:"-"`
 }
 
 // DependencyConfig groups externally injected dependencies.
@@ -437,7 +436,7 @@ func buildScheduler(cfg SystemConfig, popAdapter *GenomePopulationAdapter, dream
 		schedulerOpts = append(schedulerOpts, WithSchedulerGuardrails(cfg.Guardrails))
 	}
 
-	scheduler := NewEvolutionScheduler(cfg.Callbacks, popAdapter, schedulerOpts...)
+	scheduler := NewEvolutionScheduler(cfg.EventStore, popAdapter, schedulerOpts...)
 	scheduler.SetDreamCycle(dreamCycle)
 	return scheduler
 }
@@ -521,7 +520,7 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		}
 	}
 
-	if cfg.EnableScheduler && cfg.Callbacks != nil {
+	if cfg.EnableScheduler && cfg.EventStore != nil {
 		system.Scheduler = buildScheduler(cfg, popAdapter, dreamCycle)
 		system.Scheduler.SetEnabled(true)
 		if dreamCycle != nil {
@@ -645,8 +644,9 @@ func wrapGuidanceProvider(provider GuidanceProvider, raw *mutation.Mutator) geno
 	return guided
 }
 
-// RegisterScheduler attaches the system's scheduler OnAgentEnd handler to its
-// callback registrar. Returns nil if no scheduler is configured.
+// RegisterScheduler attaches the system's scheduler to its EventStore by
+// subscribing for agent lifecycle events. Returns nil if no scheduler is
+// configured.
 func RegisterScheduler(system *WiredEvolutionSystem) error {
 	if system == nil || system.Scheduler == nil {
 		return nil

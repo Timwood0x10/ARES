@@ -153,7 +153,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	gaCfg := evolution.DefaultSystemConfig()
 	gaCfg.EnableDreamCycle = false
 	gaCfg.EnableScheduler = comp.Evolution == nil
-	gaCfg.Callbacks = comp.LLM.CallbackReg
+	gaCfg.EventStore = comp.EventStore
 	gaCfg.StrategyStore = memStore
 	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
 	// Track A closure: feed distilled experiences back into the GA's

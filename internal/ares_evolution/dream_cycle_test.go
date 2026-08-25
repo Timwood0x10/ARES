@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // --- Mock implementations for DreamCycle tests ---
@@ -677,11 +678,19 @@ func TestTaskCount(t *testing.T) {
 
 type mockCallbackRegistrarForTest struct {
 	handlers map[ares_callbacks.Event][]ares_callbacks.Handler
+
+	// Subscription bookkeeping (the scheduler now subscribes to an
+	// EventStoreSubscriber; the mock satisfies both interfaces).
+	mu        sync.Mutex
+	filters   []ares_events.EventFilter
+	ch        chan *ares_events.Event
+	closeOnce sync.Once
 }
 
 func newMockCallbackRegistrarForTest() *mockCallbackRegistrarForTest {
 	return &mockCallbackRegistrarForTest{
 		handlers: make(map[ares_callbacks.Event][]ares_callbacks.Handler),
+		ch:       make(chan *ares_events.Event, 8),
 	}
 }
 
@@ -691,4 +700,29 @@ func (r *mockCallbackRegistrarForTest) On(event ares_callbacks.Event, handler ar
 
 func (r *mockCallbackRegistrarForTest) Count(event ares_callbacks.Event) int {
 	return len(r.handlers[event])
+}
+
+// Subscribe implements EventStoreSubscriber. It records the filter and
+// returns a channel that is closed when ctx is cancelled, mirroring the
+// EventStore contract so the scheduler's subscription loop can unwind.
+func (r *mockCallbackRegistrarForTest) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	r.mu.Lock()
+	r.filters = append(r.filters, filter)
+	r.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		r.closeCh()
+	}()
+	return r.ch, nil
+}
+
+func (r *mockCallbackRegistrarForTest) closeCh() {
+	r.closeOnce.Do(func() { close(r.ch) })
+}
+
+// subscriptionFilters returns the filters recorded by Subscribe calls.
+func (r *mockCallbackRegistrarForTest) subscriptionFilters() []ares_events.EventFilter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]ares_events.EventFilter(nil), r.filters...)
 }

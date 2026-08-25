@@ -11,7 +11,7 @@
 
 **ARES — Agent Runtime & Evolution System**（Go，Apache-2.0，`github.com/Timwood0x10/ares`）。版本：**v0.2.9**。
 
-- 统一 SDK：`sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))` 一份 YAML 装配 LLM / 工具 / 记忆 / 蒸馏 / 进化 / 知识（`config.yaml` 指南：`docs/articles/zh/25-config-yaml-guide.zh.md`）。
+- 统一 SDK：`sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` 一份 YAML 装配 LLM / 工具 / 记忆 / 蒸馏 / 进化 / 知识（`config.yaml` 指南：`docs/articles/zh/25-config-yaml-guide.zh.md`）。
 - **System Runtime 生命周期内核**（v0.2.9）：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / start / SDK 三入口共用同一内核（组件图等价有契约测试锁定）。
 - **证据持久化**（v0.2.9）：`evidence.PostgresStore` 支持 GA 反馈跨重启累积（原内存版重启清零），serve/SDK 双接入口 opt-in + fail-loud。
 - **AKF 知识编织**（核心差异化，`AKG.md`）：把任意数据源实时编织成"针对当前任务的认知图"——`KnowledgeObject`(Raw/Normalized/Summary) → 流式 `GraphProvider` → `Pipeline`(Normalizer/Resolver/Summarizer) → `Planner` → `Graph Runtime`(Loader/Linker/Reducer) → `Context Compiler`(多格式)，可选 `KnowledgeStore`，全程 `Evidence` 血缘追踪。

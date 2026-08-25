@@ -455,7 +455,7 @@ Evolved strategies now ship through a layered, verifiable, releasable **candidat
 ## [0.2.9] - 2026-08-05
 
 > Runtime closure & persistence release: System Runtime lifecycle kernel, PostgreSQL evidence persistence, SDK/Bootstrap unification, closed-loop GA feedback, and config-driven assembly.
-> This release closes the Runtime Component Closure plan (stages 0–9): one lifecycle kernel (Orchestrator) shared by serve/start/SDK, real feedback loops (Event → Evidence → GA → Strategy → Agent → experience), persistent evidence across restarts, and a single config-driven entry path (`sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))`).
+> This release closes the Runtime Component Closure plan (stages 0–9): one lifecycle kernel (Orchestrator) shared by serve/start/SDK, real feedback loops (Event → Evidence → GA → Strategy → Agent → experience), persistent evidence across restarts, and a single config-driven entry path (`sdk.NewRuntime(sdk.WithConfig("ares.yaml"))`).
 
 ### System Runtime Lifecycle Kernel
 

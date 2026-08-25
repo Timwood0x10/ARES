@@ -19,12 +19,12 @@ llm:
 **启动方式**（三选一）：
 
 ```go
-rt := sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))   // 从文件装配（推荐）
+rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml"))    // 从文件装配（推荐）
 // 或
 cfg, _ := sdk.LoadConfigFile("ares.yaml")             // 读配置
 opts, _ := cfg.ToOptions()                            // 配置 → Options
 rt := sdk.NewRuntime(opts...)
-// 或纯代码：sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithMemory(...))
+// 或纯代码：sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithDefaultMemory())
 ```
 
 ---

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // mockAdapterForScheduler implements FlightToExperienceAdapter for testing scheduler.
@@ -38,7 +38,7 @@ func (m *mockAdapterForScheduler) Run(ctx context.Context) error {
 
 // TestNewEvolutionScheduler tests constructor with default values.
 func TestNewEvolutionScheduler(t *testing.T) {
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter)
@@ -58,7 +58,7 @@ func TestNewEvolutionScheduler(t *testing.T) {
 
 // TestNewEvolutionScheduler_WithOptions tests constructor with custom options.
 func TestNewEvolutionScheduler_WithOptions(t *testing.T) {
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter,
@@ -80,7 +80,7 @@ func TestNewEvolutionScheduler_WithOptions(t *testing.T) {
 
 // TestOnAgentEnd_Disabled tests that OnAgentEnd is a no-op when disabled.
 func TestOnAgentEnd_Disabled(t *testing.T) {
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter,
@@ -97,7 +97,7 @@ func TestOnAgentEnd_Disabled(t *testing.T) {
 // TestOnAgentEnd_NilAdapter tests that OnAgentEnd handles nil adapter gracefully.
 func TestOnAgentEnd_NilAdapter(t *testing.T) {
 	defer discardLogs()()
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 
 	scheduler := NewEvolutionScheduler(reg, nil,
 		WithEnabled(true),
@@ -110,7 +110,7 @@ func TestOnAgentEnd_NilAdapter(t *testing.T) {
 // TestOnAgentEnd_Enabled tests that OnAgentEnd triggers adapter when enabled.
 func TestOnAgentEnd_Enabled(t *testing.T) {
 	defer discardLogs()()
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter,
@@ -144,7 +144,7 @@ func TestOnAgentEnd_Enabled(t *testing.T) {
 // TestOnAgentEnd_MinIntervalProtection tests that minimum interval is respected.
 func TestOnAgentEnd_MinIntervalProtection(t *testing.T) {
 	defer discardLogs()()
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter,
@@ -173,23 +173,30 @@ func TestOnAgentEnd_MinIntervalProtection(t *testing.T) {
 	}
 }
 
-// TestRegister_RegistersHandler tests that Register subscribes to agent end events.
-func TestRegister_RegistersHandler(t *testing.T) {
-	reg := ares_callbacks.NewRegistry()
+// TestRegister_SubscribesToAgentStopped tests that Register subscribes to the
+// EventStore for agent stopped events.
+func TestRegister_SubscribesToAgentStopped(t *testing.T) {
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter)
+	defer scheduler.Shutdown()
 
 	scheduler.Register()
 
-	count := reg.Count(ares_callbacks.EventAgentEnd)
-	if count != 1 {
-		t.Errorf("expected 1 handler registered for EventAgentEnd, got %d", count)
+	filters := reg.subscriptionFilters()
+	if len(filters) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(filters))
+	}
+	want := []ares_events.EventType{ares_events.EventAgentStopped}
+	got := filters[0].Types
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("expected subscription types %v, got %v", want, got)
 	}
 }
 
-// TestRegister_NilRegistry tests that Register handles nil registry gracefully.
-func TestRegister_NilRegistry(t *testing.T) {
+// TestRegister_NilSubscriber tests that Register handles a nil subscriber gracefully.
+func TestRegister_NilSubscriber(t *testing.T) {
 	defer discardLogs()()
 	adapter := newMockAdapterForScheduler()
 	scheduler := NewEvolutionScheduler(nil, adapter)
@@ -225,7 +232,7 @@ func TestShouldEvolve_Defaults(t *testing.T) {
 
 // TestSetEnabled_IsEnabled tests enable/disable functionality.
 func TestSetEnabled_IsEnabled(t *testing.T) {
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	scheduler := NewEvolutionScheduler(reg, nil)
 
 	if scheduler.IsEnabled() {
@@ -246,7 +253,7 @@ func TestSetEnabled_IsEnabled(t *testing.T) {
 // TestLastRunTime tests last run time tracking.
 func TestLastRunTime(t *testing.T) {
 	defer discardLogs()()
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 	scheduler := NewEvolutionScheduler(reg, adapter,
 		WithEnabled(true),
@@ -294,7 +301,7 @@ func TestEvolutionTrigger_Constants(t *testing.T) {
 
 // TestWithMinInterval_ZeroValue tests that zero min interval is rejected.
 func TestWithMinInterval_ZeroValue(t *testing.T) {
-	reg := ares_callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	scheduler := NewEvolutionScheduler(reg, nil,
 		WithMinInterval(0), // Zero value should be ignored
 	)

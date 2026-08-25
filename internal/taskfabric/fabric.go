@@ -107,7 +107,9 @@ func (f *Fabric) WithEventStore(store ares_events.EventStore) *Fabric {
 // Returns:
 //   - error: ErrTaskExists, or an error for an empty id.
 func (f *Fabric) Create(t *Task) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	if t.ID == "" {
 		return errors.New("taskfabric: task id required")
@@ -119,7 +121,7 @@ func (f *Fabric) Create(t *Task) error {
 	t.Owner = ""
 	t.Lease = nil
 	f.tasks[t.ID] = t
-	f.record(t, EventTaskCreated)
+	pending = append(pending, f.recordLocked(t, EventTaskCreated))
 	return nil
 }
 
@@ -138,7 +140,9 @@ func (f *Fabric) Create(t *Task) error {
 //     subsequent ownership-carrying operation.
 //   - error: ErrTaskNotFound / ErrTaskNotReady.
 func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, ok := f.tasks[id]
 	if !ok {
@@ -165,13 +169,15 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	}
 	t.Owner = agentID
 	t.Lease = &lease
-	f.record(t, EventTaskAcquired)
+	pending = append(pending, f.recordLocked(t, EventTaskAcquired))
 	return lease.Epoch, nil
 }
 
 // Start moves a LEASED task owned by agentID (at the fenced epoch) to RUNNING.
 func (f *Fabric) Start(id, agentID string, epoch uint64) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -180,7 +186,7 @@ func (f *Fabric) Start(id, agentID string, epoch uint64) error {
 	if err := t.transition(StateRunning); err != nil {
 		return err
 	}
-	f.record(t, EventTaskStarted)
+	pending = append(pending, f.recordLocked(t, EventTaskStarted))
 	return nil
 }
 
@@ -189,7 +195,9 @@ func (f *Fabric) Start(id, agentID string, epoch uint64) error {
 // is decided by the Scheduler (continue/suspend/preempt/handoff/complete);
 // P0's default transition is SUSPENDED with the checkpoint preserved.
 func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -199,9 +207,9 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 		return err
 	}
 	t.Checkpoint = checkpoint
-	f.record(t, EventTaskYielded)
+	pending = append(pending, f.recordLocked(t, EventTaskYielded))
 	if checkpoint != nil {
-		f.record(t, EventTaskCheckpointed)
+		pending = append(pending, f.recordLocked(t, EventTaskCheckpointed))
 	}
 	return nil
 }
@@ -210,7 +218,9 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 // COMPLETED. The task's Checkpoint is preserved as-is: a quantum may have
 // written progress (or a worker result) into it before completing.
 func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -219,7 +229,7 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}
-	f.record(t, EventTaskCompleted)
+	pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 	return nil
 }
 
@@ -231,7 +241,9 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 // result-reflux fix). The scheduler calls this instead of Complete when the
 // step's quantum produced a real result.
 func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -241,14 +253,16 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}
-	f.record(t, EventTaskCompleted)
+	pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 	return nil
 }
 
 // Fail marks a RUNNING task FAILED, or requeues it to READY when the retry
 // policy allows another attempt (Agent 死亡 ≠ Task 死亡).
 func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -261,14 +275,14 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
 		}
 		t.Owner = ""
 		t.Lease = nil
-		f.record(t, EventTaskFailed)
-		f.record(t, EventTaskReady)
+		pending = append(pending, f.recordLocked(t, EventTaskFailed))
+		pending = append(pending, f.recordLocked(t, EventTaskReady))
 		return nil
 	}
 	if err := t.transition(StateFailed); err != nil {
 		return err
 	}
-	f.record(t, EventTaskFailed)
+	pending = append(pending, f.recordLocked(t, EventTaskFailed))
 	return nil
 }
 
@@ -303,7 +317,9 @@ func (f *Fabric) Renew(id, agentID string, epoch uint64, ttl time.Duration) erro
 // stale holder (whose lease expired and was re-acquired by another agent)
 // cannot release the task out from under the new owner.
 func (f *Fabric) Release(id, agentID string, epoch uint64) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -314,7 +330,7 @@ func (f *Fabric) Release(id, agentID string, epoch uint64) error {
 	}
 	t.Owner = ""
 	t.Lease = nil
-	f.record(t, EventTaskReleased)
+	pending = append(pending, f.recordLocked(t, EventTaskReleased))
 	return nil
 }
 
@@ -325,7 +341,9 @@ func (f *Fabric) Release(id, agentID string, epoch uint64) error {
 // tasks (a task that is READY for the first time, or was released/steal-
 // requeued, is not a recovery candidate and must not be treated as one).
 func (f *Fabric) CheckExpiredLeases() []string {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	now := f.now()
 	var requeued []string
@@ -345,7 +363,7 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		}
 		t.Owner = ""
 		t.Lease = nil
-		f.record(t, EventTaskExpired)
+		pending = append(pending, f.recordLocked(t, EventTaskExpired))
 		requeued = append(requeued, t.ID)
 	}
 	return requeued
@@ -416,7 +434,9 @@ func (f *Fabric) Schedule(taskID string, candidates []Candidate, ttl time.Durati
 // Returns:
 //   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState.
 func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) error {
+	var pending []*pendingAppend
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(taskID, agentID, epoch)
 	if err != nil {
@@ -427,7 +447,7 @@ func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) er
 	}
 	t.Owner = ""
 	t.Lease = nil
-	f.record(t, EventTaskPreempted)
+	pending = append(pending, f.recordLocked(t, EventTaskPreempted))
 	return nil
 }
 
@@ -509,8 +529,24 @@ func (f *Fabric) ownerLocked(id, agentID string, epoch uint64) (*Task, error) {
 	return t, nil
 }
 
-// record appends one lifecycle event.
-func (f *Fabric) record(t *Task, typ EventType) {
+// pendingAppend is one durable-store write deferred until after f.mu is
+// released. recordLocked builds it under the lock (cheap, in-memory only);
+// flushAppends performs the actual store.Append I/O off-lock so a slow or
+// blocking event store never stalls the fabric's CAS/state-machine mutex.
+type pendingAppend struct {
+	store  ares_events.EventStore // captured under lock — never read via f.store off-lock
+	typ    EventType
+	taskID string
+	event  *ares_events.Event
+}
+
+// recordLocked appends one lifecycle event to the in-memory log (the only
+// part that needs f.mu) and, when a store is attached, returns the durable
+// write to be flushed AFTER the lock is released. It never performs I/O.
+// Callers MUST be holding f.mu and MUST flush the returned value (via a
+// deferred flushAppends) once unlocked. Returns nil when there is nothing to
+// persist (no store, or an unmapped event type).
+func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 	ev := TaskEvent{
 		Type:       typ,
 		TaskID:     t.ID,
@@ -522,38 +558,56 @@ func (f *Fabric) record(t *Task, typ EventType) {
 	}
 	f.events = append(f.events, ev)
 	if f.store == nil {
-		return
+		return nil
 	}
-	// W3 Durability: must-persist events (TaskCreated, TaskCheckpointed,
-	// TaskCompleted, TaskFailed, TaskExpired) carry state the runtime relies
-	// on for recovery and replay. A failed append for these events is no
-	// longer silently swallowed — it is logged so a durable-state divergence
-	// (in-memory vs event log) is detectable. The in-memory state machine
-	// still stays authoritative within a process (the append failure does not
-	// roll back the transition), so the state machine is never broken by a
-	// store fault. Observability events (Trace, Ready, etc.) remain
-	// best-effort and silent on failure.
-	if err := f.store.Append(context.Background(), t.ID, []*ares_events.Event{{
-		Type:       taskEventType(typ),
-		StreamID:   t.ID,
-		ModuleName: "taskfabric",
-		Payload: map[string]any{
-			"task_id":  t.ID,
-			"agent_id": t.Owner,
-			"origin":   t.Origin,
-			"state":    string(t.State),
+	et := taskEventType(typ)
+	if et == "" {
+		return nil
+	}
+	return &pendingAppend{
+		store:  f.store,
+		typ:    typ,
+		taskID: t.ID,
+		event: &ares_events.Event{
+			Type:       et,
+			StreamID:   t.ID,
+			ModuleName: "taskfabric",
+			Payload: map[string]any{
+				"task_id":  t.ID,
+				"agent_id": t.Owner,
+				"origin":   t.Origin,
+				"state":    string(t.State),
+			},
+			Timestamp: ev.At,
 		},
-		Timestamp: ev.At,
-	}}, 0); err != nil {
-		if isMustPersistEvent(typ) {
-			// W3: log the divergence so it is detectable. A must-persist event
-			// that fails to append means the event log is out of sync with the
-			// in-memory state — a recovery replay from the event log would miss
-			// this transition. The runtime continues (in-memory is
-			// authoritative), but the operator can see the gap.
-			log.Printf("taskfabric: must-persist event %s for task %s append failed (durable log diverges from memory): %v", typ, t.ID, err)
+	}
+}
+
+// flushAppends performs the deferred durable writes off-lock. It is registered
+// with `defer f.flushAppends(&pending)` BEFORE `defer f.mu.Unlock()` so, by
+// LIFO defer order, the unlock runs first and this flush runs immediately
+// after — still within the same call (so W3 divergence logging stays
+// synchronous with the mutating method) but with f.mu already released (so the
+// store I/O never blocks other fabric operations). Takes a pointer so it reads
+// the slice's final value populated during the method body.
+//
+// W3 Durability: must-persist events (TaskCreated, TaskCheckpointed,
+// TaskCompleted, TaskFailed, TaskExpired) carry state the runtime relies on
+// for recovery and replay. A failed append for these events is not silently
+// swallowed — it is logged so a durable-state divergence (in-memory vs event
+// log) is detectable. The in-memory state machine stays authoritative within a
+// process (the append failure does not roll back the transition). Observability
+// events remain best-effort and silent on failure.
+func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
+	for _, p := range *pending {
+		if p == nil || p.store == nil {
+			continue
 		}
-		// Observability events: silent best-effort (unchanged).
+		if err := p.store.Append(context.Background(), p.taskID, []*ares_events.Event{p.event}, 0); err != nil {
+			if isMustPersistEvent(p.typ) {
+				log.Printf("taskfabric: must-persist event %s for task %s append failed (durable log diverges from memory): %v", p.typ, p.taskID, err)
+			}
+		}
 	}
 }
 

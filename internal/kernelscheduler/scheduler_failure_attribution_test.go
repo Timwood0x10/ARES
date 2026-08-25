@@ -75,15 +75,17 @@ func TestSchedulerAttributesFailureAsFailure(t *testing.T) {
 
 	waitForTaskState(t, fabric, "t-fail", taskfabric.StateFailed, 3*time.Second)
 
-	// One attributed outcome exists for ("coder","code") and it is a failure:
-	// the capability confidence drops from the neutral prior (1.0) to 0.
-	if got := attribution.CapabilityConfidence("coder", "code"); got != 0 {
-		t.Fatalf("failed quantum must be attributed as failure (confidence 0), got %v", got)
-	}
-	// The load tracker must agree: one finished quantum, zero successes.
-	if got := tracker.Confidence("coder"); got != 0 {
-		t.Fatalf("load tracker recorded a success for a failing executor (confidence %v)", got)
-	}
+	// The fabric task reaches FAILED *inside* RunQuantum (fabric.Fail), but the
+	// scheduler records the outcome into attribution/tracker in
+	// endQuantumOutcome, which runs *after* RunQuantum returns. Synchronizing on
+	// StateFailed alone therefore races that recording: the assertion can read
+	// the neutral prior (1.0) before the failure is attributed. Poll for the
+	// recorded outcome so the test pins the contract (failed quantum → failure
+	// attribution) without depending on that intra-scheduler ordering window.
+	waitFor(t, 2*time.Second, func() bool {
+		return attribution.CapabilityConfidence("coder", "code") == 0 &&
+			tracker.Confidence("coder") == 0
+	}, "failed quantum must be attributed as failure (confidence 0)")
 	if got := tracker.Load("coder"); got != 0 {
 		t.Fatalf("busy slot must be released after the failed quantum, load=%v", got)
 	}

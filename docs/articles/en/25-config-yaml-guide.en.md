@@ -19,12 +19,12 @@ llm:
 **Bootstrap options** (pick one):
 
 ```go
-rt := sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))   // assemble from file (recommended)
+rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml"))    // assemble from file (recommended)
 // or
 cfg, _ := sdk.LoadConfigFile("ares.yaml")             // load config
 opts, _ := cfg.ToOptions()                            // config → Options
 rt := sdk.NewRuntime(opts...)
-// or pure code: sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithMemory(...))
+// or pure code: sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithDefaultMemory())
 ```
 
 ---

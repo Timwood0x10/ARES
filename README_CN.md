@@ -53,8 +53,10 @@ func main() {
 或从 YAML 配置装配（推荐，一份配置驱动 LLM / 记忆 / 蒸馏 / 进化 / 工具）：
 
 ```go
-rt := sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml")) // 详见 config.yaml 配置指南
+rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml")) // 详见 config.yaml 配置指南
 defer rt.Close()
+// 或读取 ARES_YAML 环境变量（未设置时回退到 ./ares.yaml）：
+// rt := sdk.NewRuntime(sdk.WithConfigFromEnv())
 ```
 
 > 📖 **配置指南**：[config.yaml 配置指南（中文）](docs/articles/zh/25-config-yaml-guide.zh.md) / [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) —— LLM、蒸馏、GA 进化、知识、工具与混沌相关开关的完整参考。
@@ -73,14 +75,14 @@ ares run -c ares.yaml "什么是 Go？"
 git clone https://github.com/Timwood0x10/ares
 cd ares
 make quickstart        # 运行快速开始示例
-make examples          # 构建全部 24 个示例
+make examples          # 构建全部示例
 ```
 
 ## 核心特性
 
 | 特性 | 说明 |
 |---|---|
-| **统一 SDK** | 单一 `sdk.MustNew()` API，统一管理 LLM、工具、记忆、进化；支持 `sdk.NewRuntime(sdk.WithYAMLFile("ares.yaml"))` 配置驱动装配 |
+| **统一 SDK** | 单一 `sdk.MustNew()` API，统一管理 LLM、工具、记忆、进化；支持 `sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` 配置驱动装配 |
 | **System Runtime 生命周期内核** | Orchestrator 逆拓扑启停 + 组件快照可观测 + 缺依赖报 Degraded；serve / start / SDK 三入口共用同一内核 |
 | **证据持久化** | `evidence.PostgresStore` 支持 GA 反馈跨重启累积（内存版重启清零），serve/SDK 双接入口 opt-in + fail-loud |
 | **运行时进化** | Genome + Diff Engine + Coordinator 持续进化 DAG、调度器、规划器、恢复策略 |
@@ -90,7 +92,7 @@ make examples          # 构建全部 24 个示例
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
 | **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
-| **候选发布闭环（0.3.0）** | `CandidatePipeline`：候选 → 三层验证（静态/证据/回归）→ Release 发布门禁 → SetStable；门3 用 `LLMArenaScorer` + `BatchScorer`（批量合并请求）做 LLM 驱动的保留案例回归，多 provider 支持（agnes/sensenova/ollama） |
+| **候选发布闭环（0.3.0）** | `CandidatePipeline`：候选 → 三层验证（静态/证据/回归）→ Release 发布门禁 → SetStable；门3 用 `LLMArenaScorer` + `BatchScorer`（批量合并请求）做 LLM 驱动的保留案例回归，支持 FailoverClient 多 provider 链路（openai / openrouter / anthropic / ollama）自动切换 |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
 | **多 Agent** | 基于能力的 Agent 注册（`RegisterAgent`）+ 任务分发（`Submit`），支持 Peer IPC 与恢复 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
@@ -146,12 +148,19 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 ```bash
 ares init        # 创建新项目脚手架（main.go + ares.yaml）
 ares run         # 从配置文件运行 agent
+ares serve       # 启动完整运行时（LLM + MCP + Console :8080 + Dashboard :8090）
 ares bench       # 快速性能基准测试
 ares doctor      # 诊断环境（LLM key、Ollama、Git）
+ares status      # 查看运行时状态（配置 / agents / kernel policy）
 ares version     # 显示版本
-ares arena       # 混沌工程场景
-ares flight      # 检查与回放任务记录
+ares arena       # 混沌工程场景：run / validate / list / serve / survival / inspect
+ares flight      # 检查与回放任务记录：inspect / replay
 ares evolution   # 运行时进化：status / run
+ares knowledge   # 构建知识图谱：build <goal>（经 HTTP API）
+ares recall      # 查询回放已记录的任务记忆：query / round
+ares db          # 数据库管理：migrate / setup-test / create-table / check-rls
+ares auth        # 签发 / 查看 JWT token
+ares mcp-null    # 启动最小 MCP null 服务器（stdio）：serve
 ```
 
 ## SDK 用法
@@ -192,115 +201,140 @@ result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "查找 Go
 
 ## 架构
 
+### 闭环运行时架构（终极视图）
+
+两个视图：**组件地图**（正向接线，按 bootstrap 装配顺序自上而下）与**六条反馈闭环**（回馈运行时的边）。每条环都有回归测试锁定（见下表）。
+
+**组件地图**
+
 ```mermaid
-graph TB
-    User["用户 / CLI"] --> SDK
+flowchart TB
+    USER(["User - CLI - HTTP"])
 
-    subgraph SDK ["SDK 层 (sdk/)"]
-        RT["Runtime<br/>MustNew / New"]
-        A["Agent<br/>Run / Stream"]
-        T["Team<br/>多 Agent"]
-        CFG["配置<br/>YAML + Options"]
-        EV["Evolve()<br/>GA 策略进化"]
+    USER --> SDK["SDK sdk/ - NewAgent, Team, Evolve (wraps the same bootstrap)"]
+    USER --> CLI["CLI cmd/ares - serve, arena, evolution"]
+    CLI -- "ares serve" --> BOOT
+
+    BOOT["Bootstrap wiring hub - internal/ares_bootstrap<br/>assembles every Component exactly once<br/>reverse-order cleanup on failure"]
+
+    BOOT --> HTTPG
+
+    subgraph HTTPG["HTTP surfaces"]
+        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>JWT/API-key, deny-by-default, audit"]
+        DASH["Dashboard :8090<br/>trajectory, feedback, spans"]
     end
 
-    SDK --> LLM
-    SDK --> Tools
-    SDK --> Memory
-    SDK --> Evo
+    HTTPG ~~~ KERNELG
 
-    subgraph LLM ["LLM 提供商"]
-        OAI["OpenAI"]
-        OLL["Ollama"]
-        ANTH["Anthropic"]
-        OR["OpenRouter"]
+    subgraph KERNELG["Kernel - Agents decide, Kernel enforces"]
+        POLICY["PolicyFlag<br/>taskfabric single-track"]
+        FABRIC["Task Fabric<br/>Create-Schedule-Acquire-RunQuantum<br/>lease + epoch fencing + Renew heartbeat"]
+        SCHED["KernelScheduler<br/>quantum drain, outcome attribution<br/>zombie reconcile per drain"]
+        AFAB["Agent Fabric<br/>spawn, kill, quota"]
+        REC["Recovery<br/>requeue, W1 rebind, revival"]
+        IPC["Agent IPC bus"]
+        POLICY --> FABRIC
+        AFAB --> FABRIC
+        REC --> FABRIC
+        IPC --> FABRIC
+        FABRIC --> SCHED
     end
 
-    subgraph Tools ["工具系统"]
-        BT["内置工具<br/>计算器、搜索..."]
-        MCP["MCP 服务器<br/>Stdio / SSE"]
-        CT["自定义工具<br/>ToolFunc"]
+    KERNELG -- "run quantum" --> AGENTSG
+
+    subgraph AGENTSG["Agents and tools"]
+        AG["Flat C1 peer agents<br/>ChatCognition tool-loop"]
+        BIND["ToolBinder<br/>built-in, MCP, AKF tools, native allowlist"]
+        AG --> BIND
     end
 
-    subgraph Memory ["记忆系统"]
-        SES["会话上下文"]
-        DIST["任务蒸馏"]
-        VEC["向量检索"]
-        CONF["配置<br/>max_history, session_ttl..."]
-        MP["记忆补丁执行器<br/>运行时进化"]
+    AGENTSG ~~~ EVOG
+
+    subgraph EVOG["GA evolution pipeline"]
+        GAD["Genomes - Diff - Coordinator"]
+        DEP["Deployment pipeline<br/>staging preflight to live promote"]
+        STRAT["StrategyStore"]
+        GAD --> DEP
+        DEP --> STRAT
     end
 
-    subgraph Evo ["GA 进化引擎"]
-        direction TB
-        POP["种群<br/>N 个个体"]
-        SEL["7 种选择算子<br/>tournament/rank/nsga2..."]
-        CROSS["3 种交叉类型<br/>uniform/two_point/segment"]
-        MUT["6 种变异类型<br/>param/swap/inversion/scramble..."]
-        SCORE["经验引导评分<br/>多目标"]
-        SS["稳态 GA<br/>在线学习模式"]
-        SHARE["适应度共享<br/>SelectionScore 保护"]
+    EVOG ~~~ MEMKG
+
+    subgraph MEMKG["Memory and knowledge"]
+        DIS["Distillation - ExpRepo<br/>spawn prior, RAG context"]
+        KR["KnowledgeRuntime<br/>AKG store, AKF tools"]
     end
 
-    POP --> SEL --> CROSS --> MUT --> SCORE
-    SCORE --> POP
-    SS -.-> POP
+    MEMKG ~~~ OBSG
 
-    subgraph RuntimeEvo ["运行时进化管线"]
-        direction TB
-        TICKER["后台定时器<br/>5 分钟间隔"]
-        SCHED["调度器<br/>OnAgentEnd 回调"]
-        ADAPTER["GenomePopulationAdapter<br/>Run()"]
-        GENOME["基因组<br/>Workflow / Scheduler / Knowledge<br/>Recovery / Planner / Memory"]
-        DIFF["差异引擎<br/>4 个 Differ"]
-        COORD["协调器<br/>Apply / Reject / Delay"]
-        EXEC["执行器<br/>Graph / Recovery / Knowledge / Memory"]
-        STORE["策略存储<br/>活跃策略"]
-        AGENT["运行中 Agent<br/>消费进化后的参数"]
+    subgraph OBSG["Observability and storage"]
+        FLY["FlightRecorder - EvidenceStore"]
+        TRC["EvolutionTracer, FeedbackStore, GlobalTracer"]
+        PG[("PostgreSQL optional")]
+        FLY -.-> PG
     end
 
-    TICKER --> ADAPTER
-    SCHED --> ADAPTER
-    ADAPTER --> GENOME
-    GENOME --> DIFF
-    DIFF --> COORD
-    COORD --> EXEC
-    ADAPTER --> STORE
-    STORE --> AGENT
-
-    Evo --> ADAPTER
-    AGENT --> LLM
-    AGENT --> Tools
-    AGENT --> Memory
-
-    subgraph CLI ["CLI 命令 (cmd/ares/)"]
-        INIT["ares init"]
-        RUN["ares run"]
-        BENCH["ares bench"]
-        DOCTOR["ares doctor"]
-        EVO["ares evolution"]
-        ARENA["ares arena"]
-    end
-
-    subgraph EX ["示例"]
-        QS["01 快速开始"]
-        TC["02 工具调用"]
-        DAG["03 DAG 工作流"]
-        MA["04 多 Agent"]
-        EVO_DEMO["05 进化演示"]
-        CHAOS["06 混沌测试"]
-        HIL["07 人工审批"]
-        GA_FULL["10 GA 完整进化"]
-    end
-
-    style SDK fill:#1e3a5f,stroke:#3b82f6,color:#fff
-    style LLM fill:#1a2332,stroke:#64748b
-    style Tools fill:#1a2332,stroke:#64748b
-    style Memory fill:#1a2332,stroke:#64748b
-    style Evo fill:#1a2332,stroke:#64748b
-    style RuntimeEvo fill:#2d1b69,stroke:#8b5cf6,color:#fff
-    style CLI fill:#2d1b69,stroke:#8b5cf6,color:#fff
-    style EX fill:#1a3a2a,stroke:#22c55e
+    style KERNELG fill:#3b2f2f,stroke:#f59e0b,color:#fff
+    style AGENTSG fill:#0f2f44,stroke:#38bdf8,color:#fff
+    style EVOG fill:#2d1b69,stroke:#8b5cf6,color:#fff
+    style MEMKG fill:#1a2332,stroke:#94a3b8,color:#fff
+    style OBSG fill:#1a3a2a,stroke:#22c55e,color:#fff
+    style HTTPG fill:#3a1e1e,stroke:#ef4444,color:#fff
 ```
+
+**六条闭环**（虚线 = 回馈运行时的反馈边）
+
+```mermaid
+flowchart LR
+    subgraph LOOPS["Six closed loops (feedback edges only)"]
+        direction TB
+        API["Console<br/>:8080"]
+        FABRIC["Task Fabric<br/>+ lease Renew"]
+        SCHED["KernelScheduler"]
+        AG["Peer agents"]
+        STRAT["StrategyStore"]
+        DIS["Distillation<br/>ExpRepo"]
+        KR["KnowledgeRuntime<br/>AKG store"]
+        REC["Recovery"]
+        DASH["Dashboard<br/>:8090"]
+    end
+
+    API -- "L1 submit / result reflux" --> FABRIC
+    FABRIC --> SCHED -- "run quantum" --> AG
+
+    SCHED -. "L2 fitness" .-> STRAT
+    STRAT -. "L2 strategy → executors" .-> AG
+
+    SCHED -. "L3 finalize events" .-> DIS
+    DIS -. "L3 spawn prior + RAG context" .-> AG
+
+    DIS -. "L4 facts" .-> KR
+    KR -. "L4 AKF tools" .-> AG
+
+    AFABK["agent kill"] -. "L5 expiry → requeue → W1 rebind" .-> SCHED
+    SCHED -. "L5 renew heartbeat" .-> FABRIC
+
+    SCHED -. "L6 traces · feedback · spans" .-> DASH
+
+    style STRAT fill:#2d1b69,stroke:#8b5cf6,color:#fff
+    style DIS fill:#1a2332,stroke:#64748b,color:#fff
+    style KR fill:#1a2332,stroke:#64748b,color:#fff
+    style REC fill:#3b2f2f,stroke:#f59e0b,color:#fff
+    style DASH fill:#1a3a2a,stroke:#22c55e,color:#fff
+```
+
+六条环路的闭合点与回归锁定：
+
+| 环路 | 闭合路径 | 回归锁定 |
+|------|----------|----------|
+| **L1** 任务 | `POST /api/tasks` → Fabric → 调度 quantum（运行期间租约心跳续期）→ 经 checkpoint 结果回流 | `TestGraphsEndpoint*`、`TestSchedulerRenewsLeaseDuringLongQuantum` |
+| **L2** 进化 | flight fitness → evidence → GA 基因组 → diff → coordinator → 部署流水线（**staging 绝不改写 live 状态**）→ StrategyStore → **StrategySource 注入每个执行器** | `TestDeploymentStaging_DoesNotMutateLiveRegistry`、`TestUpdateLiveDAG_WiredFromServeShape` |
+| **L3** 蒸馏 | 任务终结事件 → 蒸馏 → 经验仓库 → spawn prior (G1) + RAG 检索注入 | bootstrap closure 套件 |
+| **L4** 知识 | DistillBridge → AKG store → 共享 KnowledgeRuntime ↔ AKF 工具；知识补丁作用于同一实例（`recovery.strategy` target 已注册） | `TestUpdateLiveDAG_*`、patch-registry 测试 |
+| **L5** 恢复 | kill → 租约过期（心跳感知）→ 重排队 → W1 替换绑定 → checkpoint 续跑；僵尸注册每 drain 清扫 | `TestReconcileFabricDeaths_*`、`TestSchedulerAttributesFailureAsFailure` |
+| **L6** 可观测 | 运行时钩子写入 tracer/feedback/spans → Dashboard APIv2（**现已真正监听 :8090**）实时读取 | bootstrap dashboard 测试 |
+
+
 
 ## 数据流
 
@@ -418,17 +452,31 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
 
-### 基准测试（Apple M3 Max，2026-07-31）
+### 基准测试（Apple M3 Max，darwin/arm64，2026-08-25）
 
 ```
 === 运行时进化（internal/evolution） ===
-BenchmarkWorkflowGenome_Mutate     245k   7.28µs  11.7KB  157 allocs
-BenchmarkSchedulerGenome_Mutate    3.07M  386ns    720B    16 allocs
-BenchmarkKnowledgeGenome_Mutate    2.78M  434ns    960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.13M  561ns    1.1KB   21 allocs
-BenchmarkDiffEngine_Workflow       2.83M  425ns    304B     3 allocs
-BenchmarkCoordinator_Evaluate      221M   5.4ns      0B      0 allocs
-BenchmarkFullEvolutionCycle        355k   3.27µs  6.3KB    82 allocs
+BenchmarkWorkflowGenome_Mutate     152k   7.92µs  11.9KB  157 allocs
+BenchmarkKnowledgeGenome_Mutate    2.67M  440ns    960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.35M  521ns    1.28KB  21 allocs
+BenchmarkDiffEngine_Workflow       2.68M  448ns    304B     3 allocs
+BenchmarkCoordinator_Evaluate      188M   6.33ns     0B      0 allocs
+BenchmarkFullEvolutionCycle        277k   4.26µs   7.3KB    90 allocs
+
+=== 事件系统（internal/ares_events） ===
+BenchmarkMemoryStore_Append           2.24M  519ns    618B    7 allocs
+BenchmarkMemoryStore_AppendBatch      300k   3.74µs   8.9KB    1 alloc
+BenchmarkMemoryStore_Read             231k   5.40µs  17.5KB   11 allocs
+BenchmarkMemoryStore_ConcurrentAppend 1.67M  704ns    625B    6 allocs
+
+=== 内核（internal/taskfabric · agentfabric · agentipc） ===
+Fabric_Create             2.59M   389ns   931B     3 allocs
+Fabric_Schedule           1.54M   800ns   1.85KB   18 allocs
+Fabric_RunQuantum         796k   1.60µs   3.7KB    23 allocs
+Fabric_Spawn              3.11M   385ns   936B    10 allocs
+Bus_Send                  8.28M   143ns   280B     4 allocs
+Bus_RequestReply          1.00M   1.10µs   912B    14 allocs
+DualTrackDispatch         121M    9.9ns     0B      0 allocs
 ```
 
 ### CLI
@@ -472,19 +520,19 @@ go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Exe
 | **世代历史** | 每代快照及元数据 |
 | **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### 基准测试（Apple M3 Max，2026-07-31）
+### 基准测试（Apple M3 Max，darwin/arm64，2026-08-25）
 
 ```
 === GA Genome（internal/ares_evolution/genome） ===
-CrossoverUniform (10 params)        496k   2.40µs   3.1KB   31 allocs
-CrossoverUniform (100 params)       69.6k  24.5µs   21.2KB  38 allocs
-TruncationSelection (pop=100)       205k   5.76µs       —    —
-TournamentSelection (pop=50,k=2)    282k   4.41µs       —    —
-RouletteWheelSelection (pop=100)    398k   2.98µs       —    —
-Evolve_OneGeneration (pop=10)       4.15M    303ns   344B     6 allocs
-Evolve_MultipleGenerations (100)    43.9k   28.4µs   34.4KB 600 allocs
-ApplyFitnessSharing (pop=100)         892   1.35ms    540KB 106 allocs
-RealWorldEvolution (100 gen)          100   10.1ms    4.6MB 62395 allocs
+CrossoverUniform (10 params)        500k   2.46µs   3.1KB   31 allocs
+CrossoverUniform (100 params)       61.5k  17.8µs   21.2KB  38 allocs
+TruncationSelection (pop=100)       209k   5.82µs   952B     3 allocs
+TournamentSelection (pop=50,k=2)    287k   4.45µs  14.4KB  101 allocs
+RouletteWheelSelection (pop=100)    422k   2.84µs   3.4KB    7 allocs
+Evolve_OneGeneration (pop=100)      4.60M   263ns   344B     6 allocs
+Evolve_MultipleGenerations (100)    45.3k  25.9µs  29.6KB  600 allocs
+ApplyFitnessSharing (pop=100)         896   1.34ms   540KB 106 allocs
+RealWorldEvolution (100 gen)          100  10.05ms   4.4MB 61871 allocs
 ```
 
 ### 示例
@@ -505,9 +553,9 @@ NewCandidate → Verify（门1 静态 + 门2 证据 + 门3 回归）→ Verified
 
 - **门3 回归检查**：`CandidateVerifier` 与 `CandidatePipeline.Release` 共用同一个 `CandidateRegressionChecker`（注入 `WithRegressionCheck` / `WithReleaseRegressionCheck`），用 **`LLMArenaScorer`**（`internal/ares_evolution/service/llm_arena_scorer.go`）调真实 LLM 对比 stable 指令 vs 候选 diff 在保留案例上的表现，统计显著变差则拒绝。
 - **`BatchScorer` 批量合并**：`ares_arena.BatchScorer` + `LLMArenaScorer.ScoreBatch` 把一次回归的所有 runs 合并成 2 次 LLM 调用（应对低 rpm 限流）。
-- **顶层编排器**：`internal/evolution/gate3_orchestrator.go` 的 `BuildRegressionGate3` / `LoadRegressionGate3` 从 YAML 装配 `llm.Client`（支持 ollama / openai）。
+- **顶层编排器**：`internal/evolution/gate3_orchestrator.go` 的 `BuildRegressionGate3` / `LoadRegressionGate3` 从 YAML 装配 `llm.Client`（支持 openai / openrouter / anthropic / ollama），并可组成 FailoverClient 主备链路在限流时自动切换。
 
-真实运行示例与完整日志：`examples/16-llm-regression-demo`、`examples/17-gate3-e2e-demo`、`examples/18-release-closed-loop`（各自 `logs/run-<ts>.log`）。
+真实运行示例与完整日志：`examples/15-llm-evolution-suite`（真实 LLM 的 `scorer` / `regression` / `gate3` / `release` 四个场景，各自写入 `logs/run-<ts>.log`）；离线可复现的 GA 候选进化见 `examples/19-ga-candidate-e2e`。
 
 ## 许可证
 

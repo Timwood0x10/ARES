@@ -22,5 +22,5 @@ keywords:
   - dag-workflow
   - chaos-engineering
 license: Apache-2.0
-version: "0.2.8"
-date-released: "2026-07-16"
+version: "0.3.0"
+date-released: "2026-08-22"

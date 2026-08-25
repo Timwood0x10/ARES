@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -44,11 +43,10 @@ func ProvideEvolution(
 	cfg *ares_config.EvolutionConfig,
 	eventStore ares_events.EventStore,
 	expRepo repositories.ExperienceRepositoryInterface,
-	callbackReg *ares_callbacks.Registry,
 	llmClient ares_eval.LLMClient,
 	fr *flight.FlightRecorder,
 ) (*EvolutionComponents, error) {
-	if eventStore == nil || expRepo == nil || callbackReg == nil {
+	if eventStore == nil || expRepo == nil {
 		return nil, fmt.Errorf("bootstrap: evolution skipped (missing dependencies)")
 	}
 
@@ -77,7 +75,7 @@ func ProvideEvolution(
 	} else {
 		opts = append(opts, evolution.WithMinInterval(5*time.Minute))
 	}
-	scheduler := evolution.NewEvolutionScheduler(callbackReg, adapter, opts...)
+	scheduler := evolution.NewEvolutionScheduler(eventStore, adapter, opts...)
 	scheduler.Register()
 
 	// 3. Evaluators (optional — requires LLM client).

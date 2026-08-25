@@ -55,6 +55,23 @@ func waitForTaskState(t *testing.T, f *taskfabric.Fabric, id string, want taskfa
 	return tk.State
 }
 
+// waitFor polls cond until it returns true or the deadline elapses, then fails
+// the test with msg. It exists so a test can synchronize on a scheduler-side
+// side effect (e.g. attribution/tracker recording that happens *after* the
+// fabric task reaches a terminal state) instead of racing an intermediate
+// observable like the task state.
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %s: %s", timeout, msg)
+}
+
 // TestRegisterExecutorMakesAgentSchedulable locks the W1 dynamic-registration
 // contract: an executor registered AFTER task creation becomes a candidate on
 // the next drain.

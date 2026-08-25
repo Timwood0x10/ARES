@@ -317,8 +317,7 @@ Task 的 durable intent 尚未完成**——不是"Agent 被暂停了"。
 ## 十二、v0.3.0 高级特性主线（2026-08-17 拍板）
 
 > 核心 Runtime（P0-P5 + 生产接线）已完成。v0.3.0 聚焦高级特性，围绕既有三支柱
-> （Scheduler / IPC / Lifecycle）扩展，不改变核心不变量（§11）。完整路线图与
-> 落地计划见 `docs/analysis-reports/v0.3.0-feature-suggestions-corrected.md`。
+> （Scheduler / IPC / Lifecycle）扩展，不改变核心不变量（§11）。
 
 ### 优先级矩阵
 

@@ -99,7 +99,6 @@
 - Primitive implementations: `internal/agents/{peer,actionlog,lease,outputguard}/`, `internal/ares_runtime/state_snapshot.go`, `internal/ares_evolution/refine/`
 - Capability implementations: `internal/ares_skills/` (Catalog / SourceManager / Indexer / Discovery / Loader / Resolver / Experience / FTS5 / git-http sources / changes)
 - Memory wiring: `internal/ares_memory/manager_impl.go` (resident skills block + lease + ContextCleaner)
-- Design document: `docs/analysis-reports/ares-capability-fabric-design.md`
 
 ---
 

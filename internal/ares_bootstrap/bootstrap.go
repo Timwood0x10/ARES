@@ -597,7 +597,6 @@ func wireLegacyEvolution(ctx context.Context, cfg *ares_config.Config, deps *Boo
 	}
 	return ProvideEvolution(ctx, &cfg.Evolution,
 		comp.EventStore, deps.ExpRepo,
-		comp.LLM.CallbackReg,
 		deps.LLMClient,
 		comp.FlightRecorder,
 	)

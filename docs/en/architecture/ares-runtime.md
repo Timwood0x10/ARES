@@ -350,8 +350,7 @@ Three concepts do not mix:
 
 > The core Runtime (P0-P5 + production wiring) is complete. v0.3.0 focuses on
 > advanced features built on the three pillars (Scheduler / IPC / Lifecycle)
-> without changing the core invariants (§11). The full roadmap and landing
-> plan live in `docs/analysis-reports/v0.3.0-feature-suggestions-corrected.md`.
+> without changing the core invariants (§11).
 
 ### Priority matrix
 

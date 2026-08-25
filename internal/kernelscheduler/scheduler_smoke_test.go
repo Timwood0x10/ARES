@@ -57,9 +57,14 @@ func TestSchedulerExecutesReadyTask(t *testing.T) {
 			if exec.executed != 1 {
 				t.Fatalf("executor must run exactly once, got %d", exec.executed)
 			}
-			if sched.Scheduled.Load() != 1 {
-				t.Fatalf("scheduler must count one scheduled task, got %d", sched.Scheduled.Load())
-			}
+			// Scheduled is incremented in executeWithCandidates *after*
+			// RunQuantum returns COMPLETED, so it lags the task state by a
+			// scheduler hop. Poll for it instead of reading it at the instant
+			// the task turns COMPLETED (otherwise the assertion races the
+			// counter increment and flakes as 0).
+			waitFor(t, 2*time.Second, func() bool {
+				return sched.Scheduled.Load() == 1
+			}, "scheduler must count exactly one scheduled task")
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

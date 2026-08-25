@@ -839,6 +839,13 @@ func (s *Service) recordGenealogy(prevBest *mutation.Strategy) {
 		ScoreDelta:   scoreDelta,
 		Timestamp:    time.Now().UnixMilli(),
 	})
+	// Cap total lineage entries (same bound as recordLineages): this path
+	// appends at most one entry per generation, but a long-running evolution
+	// session would still grow s.lineages without bound. Trim oldest first.
+	if len(s.lineages) > maxLineages {
+		excess := len(s.lineages) - maxLineages
+		s.lineages = append(s.lineages[:0], s.lineages[excess:]...)
+	}
 }
 
 // resolveEvidenceAggregator unwraps cfg.EvidenceAggregator, which can be

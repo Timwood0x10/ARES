@@ -96,7 +96,6 @@
 - 原语实现：`internal/agents/{peer,actionlog,lease,outputguard}/`、`internal/ares_runtime/state_snapshot.go`、`internal/ares_evolution/refine/`
 - 能力实现：`internal/ares_skills/`（Catalog / SourceManager / Indexer / Discovery / Loader / Resolver / Experience / FTS5 / git/http 源 / changes）
 - 内存接线：`internal/ares_memory/manager_impl.go`（skills 常驻块 + lease + ContextCleaner）
-- 设计文档：`docs/analysis-reports/ares-capability-fabric-design.md`
 
 ---
 

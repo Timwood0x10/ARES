@@ -6,13 +6,20 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 
 	"golang.org/x/sync/errgroup"
 )
 
 // contextKey is a custom type for context value keys to avoid collisions.
 type contextKey string
+
+// Context keys propagated from EventStore payloads into the evolution context.
+const (
+	contextKeyNameAgentID  = "agent_id"
+	contextKeyNameTenantID = "tenant_id"
+	contextKeyNameTraceID  = "trace_id"
+)
 
 // CallbackData holds data passed to callback handlers during evolution triggers.
 type CallbackData struct {
@@ -134,24 +141,34 @@ const minScoreCountForReliability = 20
 // periodic exploration evolution even without detected degradation.
 const periodicEvolutionScoreThreshold = 100
 
-// EvolutionScheduler triggers evolution cycles based on callback events.
-// It registers handlers with the callback registry and decides when to run
-// the adapter based on configurable trigger conditions.
+// EvolutionScheduler triggers evolution cycles based on agent lifecycle
+// events. It subscribes to the shared EventStore (filtering on
+// EventAgentStopped) and decides when to run the adapter based on
+// configurable trigger conditions.
 type EvolutionScheduler struct {
-	ares_callbacks ares_callbacks.CallbackRegistrar
-	adapter        AdapterRunner
-	minInterval    time.Duration
-	mu             sync.Mutex
-	lastRun        time.Time
-	trigger        EvolutionTrigger
-	enabled        atomic.Bool
-	evolveMu       sync.Mutex
-	evolveCancel   context.CancelFunc
-	evolveEg       *errgroup.Group // stored for Shutdown to wait on
-	dreamCycle     *DreamCycle
-	scores         []float64
-	scoreMu        sync.Mutex
-	guardrails     *EvolutionGuardrails
+	// subscriber is the event store subscription source. Agent lifecycle
+	// events (agent.started / agent.stopped) are emitted to the EventStore,
+	// NOT to the ares_callbacks registry, so the scheduler must listen here.
+	subscriber   EventStoreSubscriber
+	adapter      AdapterRunner
+	minInterval  time.Duration
+	mu           sync.Mutex
+	lastRun      time.Time
+	trigger      EvolutionTrigger
+	enabled      atomic.Bool
+	evolveMu     sync.Mutex
+	evolveCancel context.CancelFunc
+	evolveEg     *errgroup.Group // stored for Shutdown to wait on
+
+	// subMu guards subCancel and subEg for the subscription loop.
+	subMu     sync.Mutex
+	subCancel context.CancelFunc
+	subEg     *errgroup.Group // stored for Shutdown to wait on
+
+	dreamCycle *DreamCycle
+	scores     []float64
+	scoreMu    sync.Mutex
+	guardrails *EvolutionGuardrails
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -163,20 +180,21 @@ type EvolutionScheduler struct {
 //
 // Args:
 //
-//	ares_callbacks - the callback registrar for registering event handlers (implements CallbackRegistrar).
+//	subscriber - the event store subscriber for listening to agent lifecycle
+//	   events (implements EventStoreSubscriber; typically an ares_events.EventStore).
 //	adapter - the adapter runner to execute on evolution cycles (implements AdapterRunner).
 //	opts - optional configuration functions.
 //
 // Returns:
 //
 //	*EvolutionScheduler - the configured scheduler instance.
-func NewEvolutionScheduler(ares_callbacks ares_callbacks.CallbackRegistrar, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
+func NewEvolutionScheduler(subscriber EventStoreSubscriber, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
 	s := &EvolutionScheduler{
-		ares_callbacks: ares_callbacks,
-		adapter:        adapter,
-		minInterval:    5 * time.Minute,
-		lastRun:        time.Time{},
-		trigger:        TriggerOnIdle,
+		subscriber:  subscriber,
+		adapter:     adapter,
+		minInterval: 5 * time.Minute,
+		lastRun:     time.Time{},
+		trigger:     TriggerOnIdle,
 	}
 	// enabled defaults to false (atomic.Bool zero value).
 
@@ -292,31 +310,69 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 	// error via eg.Wait().
 }
 
-// Register registers the scheduler's handlers to the callback registry.
-// It subscribes to EventAgentEnd events for triggering evolution cycles.
+// Register subscribes the scheduler to the EventStore for agent lifecycle
+// events. It listens for EventAgentStopped (the event that agents actually
+// emit when they finish) so evolution cycles fire on real agent completion.
+// The subscription runs in a managed goroutine until Shutdown cancels its
+// context; the EventStore closes the channel on cancellation.
 func (s *EvolutionScheduler) Register() {
-	if s.ares_callbacks == nil {
-		log.Warn("[Evolution] Callback registry is nil, cannot register")
+	if s.subscriber == nil {
+		log.Warn("[Evolution] Event store subscriber is nil, cannot register")
 		return
 	}
 
-	s.ares_callbacks.On(ares_callbacks.EventAgentEnd, func(ctx *ares_callbacks.Context) {
-		data := CallbackData{
-			AgentID: ctx.AgentID,
-		}
-		// Propagate callback context values (e.g., trace_id, tenant_id from Extra)
-		// into a new context instead of discarding them with context.Background().
-		callbackCtx := context.Background()
-		if ctx.Extra != nil {
-			for k, v := range ctx.Extra {
-				callbackCtx = context.WithValue(callbackCtx, contextKey(k), v)
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := s.subscriber.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{ares_events.EventAgentStopped},
+	})
+	if err != nil {
+		log.Warn("[Evolution] Failed to subscribe to agent stopped events", "error", err)
+		cancel()
+		return
+	}
+
+	s.subMu.Lock()
+	s.subCancel = cancel
+	s.subEg = new(errgroup.Group)
+	s.subMu.Unlock()
+
+	s.subEg.Go(func() error {
+		defer log.Info("[Evolution] Scheduler subscription loop stopped")
+		for evt := range ch {
+			if evt == nil {
+				continue
 			}
+			s.OnAgentEnd(contextFromEvent(evt), CallbackData{AgentID: evt.StreamID})
 		}
-		callbackCtx = context.WithValue(callbackCtx, contextKey("agent_id"), ctx.AgentID)
-		s.OnAgentEnd(callbackCtx, data)
+		return nil
 	})
 
-	log.Info("[Evolution] Scheduler registered for agent end events")
+	log.Info("[Evolution] Scheduler registered for agent stopped events")
+}
+
+// contextFromEvent derives a context from an EventStore event, propagating
+// any well-known metadata keys (agent_id, tenant_id, trace_id) so the
+// evolution path keeps the request's correlation context instead of dropping
+// it with context.Background().
+//
+// Args:
+//
+//	evt - the event to extract context from.
+//
+// Returns:
+//
+//	context.Context - a derived context carrying the event's metadata.
+func contextFromEvent(evt *ares_events.Event) context.Context {
+	ctx := context.Background()
+	if evt == nil || evt.Payload == nil {
+		return ctx
+	}
+	for _, k := range []string{contextKeyNameAgentID, contextKeyNameTenantID, contextKeyNameTraceID} {
+		if v, ok := evt.Payload[k]; ok {
+			ctx = context.WithValue(ctx, contextKey(k), v)
+		}
+	}
+	return ctx
 }
 
 // shouldEvolve determines if an evolution cycle should be triggered.
@@ -514,9 +570,21 @@ func (s *EvolutionScheduler) DreamCycle() *DreamCycle {
 	return s.dreamCycle
 }
 
-// Shutdown gracefully stops the scheduler and cancels all pending evolution goroutines.
-// It should be called when the scheduler is no longer needed to prevent goroutine leaks.
+// Shutdown gracefully stops the scheduler and cancels all pending evolution goroutines
+// and the event subscription loop. It should be called when the scheduler is no
+// longer needed to prevent goroutine leaks.
 func (s *EvolutionScheduler) Shutdown() {
+	s.subMu.Lock()
+	subCancel := s.subCancel
+	subEg := s.subEg
+	s.subMu.Unlock()
+	if subCancel != nil {
+		subCancel()
+	}
+	if subEg != nil {
+		_ = subEg.Wait()
+	}
+
 	s.evolveMu.Lock()
 	cancel := s.evolveCancel
 	eg := s.evolveEg
