@@ -87,13 +87,16 @@ make examples          # build all examples
 
 | Feature | Description |
 |---|---|
-| **Unified SDK** | Single `sdk.MustNew()` API for LLM, tools, memory, evolution |
+| **Unified SDK** | Single `sdk.MustNew()` API for LLM, tools, memory, evolution; `sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` for config-driven assembly |
+| **System Runtime lifecycle kernel** | Orchestrator reverse-topological start/stop + component snapshot observability + Degraded on missing deps; serve / start / SDK share one kernel |
+| **Evidence persistence** | `evidence.PostgresStore` accumulates GA feedback across restarts (the in-memory store resets on restart); opt-in + fail-loud via both serve and SDK |
 | **Runtime Evolution** | Genome + Diff Engine + Coordinator evolve DAG, scheduler, planner, recovery in production |
 | **Strategy GA** | Population-based strategy optimization — NSGA-II multi-objective, steady-state, uniform/two-point/segment crossover, 6 mutation types |
 | **Evidence-Driven** | Every runtime event (flight, chaos, fitness) feeds into evolution decisions |
 | **DAG Workflow** | Dynamic graphs with conditional branching and recovery |
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
 | **Memory** | Session context, task distillation, vector similarity search |
+| **Durable archive & retention** | Per-stream event-round archive (concurrent streams never overwrite each other's rounds) + scheduled TTL purge across sessions / knowledge / conversations / secrets |
 | **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Capability-based agent registration (`RegisterAgent`) + task dispatch (`Submit`) with peer IPC and recovery |

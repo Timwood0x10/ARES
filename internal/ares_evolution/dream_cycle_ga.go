@@ -62,6 +62,12 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 		return nil
 	}
 
+	// Capture the best-ever score BEFORE scoring + evolving this cycle. The
+	// improvement this cycle is (new best-ever) − (prior best-ever); computing
+	// it after evolve against the post-evolve best-ever would always yield 0
+	// because BestStrategy() and BestEverScore() both read the same bestEver.
+	prevBestEverScore := dc.population.BestEverScore()
+
 	// Step 1: Score all agents using the tester.
 	scorer := dc.buildGAScorer(ctx)
 	dc.population.ScoreAgents(scorer)
@@ -85,12 +91,14 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 		return nil
 	}
 
-	// Step 4: Deploy the best strategy.
+	// Step 4: Deploy the best strategy. The improvement is measured against the
+	// best-ever score captured before this cycle, so a cycle that raises the
+	// best-ever score registers a positive gain (previously always 0).
 	winnerStrategy := mutationToEvolutionStrategy(best)
 	winner := &candidateResult{
 		strategy:         winnerStrategy,
 		winRate:          best.Score,
-		scoreImprovement: best.Score - dc.population.BestEverScore(),
+		scoreImprovement: best.Score - prevBestEverScore,
 	}
 
 	// Record lineage.
@@ -109,12 +117,12 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 	}
 
 	// parent for deployWinner is the baseline the candidate is compared
-	// against. Use the historical best score (not the current best itself):
-	// comparing a candidate to its own score would always look like an
-	// "improvement" and break the shadow-evaluation baseline semantics.
+	// against. Use the pre-cycle best-ever score (not the post-evolve best
+	// itself): comparing a candidate to its own score would always look like
+	// an "improvement" and break the shadow-evaluation baseline semantics.
 	parent := mutation.Strategy{
 		ID:    best.ID,
-		Score: dc.population.BestEverScore(),
+		Score: prevBestEverScore,
 	}
 	return dc.deployWinner(ctx, cycleCtx, data, winner, parent)
 }

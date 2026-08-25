@@ -149,14 +149,22 @@
 |---|------|------|------|
 | 49 | `ares_evolution/genome/selection.go:867` NSGA-II crowding-distance 排序错乱：`sort.SliceStable(front,...)` 原地置换 `front`，但 less-func 索引未置换的并行数组 `frontCD` → 首次交换后配对全乱（经典"并行数组 sort.Slice" bug），多目标选择的 partial-front 退化成任意子集，静默破坏多样性保持。**已接线**（`nsga2`/`nondominated` 选择策略，`population.go:552`） | 中（正确性，接线） | ✅ **已修**：改为排序索引置换 `order`，再按序 materialize，`frontCD` 配对不再错乱。 |
 
-**本轮揭出（未修，含正在丢数据的 HIGH）：**
+**第八轮补修（2026-08-25，两个 P0，`go build`+`go test`+`-race`+`go vet`+gofmt 全绿）：**
 
 | # | 缺陷 | 严重 | 状态 |
 |---|------|------|------|
-| 50 | **ares_archive 跨流 round 文件互相覆盖 — 生产正在丢数据**：归档文件名全局 `round_%d.json`（`writer.go:104`）但 `roundCounter` per-stream（`compactable_store.go:488/510`），`RoundRecord` 无 stream 字段。serve 里每个 session（`uuid.NewString()`）与每个 sub-agent（`a.id` 流）的终态事件各自从 round 1 起 → 所有流的 `round_1.json`/`round_2.json` 原子 rename **互相覆盖**。archive 默认开（`ArchiveConfig.IsEnabled()` 无 Enabled 时返 true），已由 `cmd/ares/serve.go:129` `NewCompactableStoreWithArchive` 接线 | **高**（生产数据丢失） | ⚠️ 已记录，未修（修法：文件名/record 加 stream 归属，如 `round_<streamID>_<n>.json` + reader/rotate/recall 同步） |
+| 50 | ares_archive 跨流 round 文件互相覆盖 — 生产正在丢数据 | **高（CRITICAL）** | ✅ **已修**：`RoundRecord` 加 `StreamID` 字段（record.go）；sink 打流归属（sink.go）；writer 新增 `streamDir()`+`sanitizeStreamID()`（allowlist `[A-Za-z0-9._-]` 防路径穿越），每流写独立子目录、rotate 也 scoped 到流子目录（一个流的轮转不再驱逐别流）；reader `Read`/`List`/`Search` 扫 flat root + 各流子目录并跨流去重；顺带修"单损坏 round 文件使 Search 全失败"（改 skip+log）。空 StreamID 走 flat 布局向后兼容。store_test 断言更新到 `dir/streamID/round_1.json`。 |
+| 53 | GA `scoreImprovement` 恒为 0（`dream_cycle_ga.go:93`）：`best.Score - BestEverScore()` 两值同源恒 0 → GA shadow 评估永远记平局/负，核心反馈失效 | 高（GA 失效） | ✅ **已修**：在 scoring+evolve **之前**捕获 `prevBestEverScore`，改进量算 `best.Score - prevBestEverScore`（本轮新 best-ever − 上轮），`parent.Score` 亦用捕获值。 |
+
+**本轮揭出（未修，含正在丢数据的 HIGH）：**
+
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 50 | **ares_archive 跨流 round 文件互相覆盖 — 生产正在丢数据**：归档文件名全局 `round_%d.json`（`writer.go:104`）但 `roundCounter` per-stream（`compactable_store.go:488/510`），`RoundRecord` 无 stream 字段。serve 里每个 session（`uuid.NewString()`）与每个 sub-agent（`a.id` 流）的终态事件各自从 round 1 起 → 所有流的 `round_1.json`/`round_2.json` 原子 rename **互相覆盖**。archive 默认开（`ArchiveConfig.IsEnabled()` 无 Enabled 时返 true），已由 `cmd/ares/serve.go:129` `NewCompactableStoreWithArchive` 接线 | **高**（生产数据丢失） | ✅ **已修（第八轮，见上）**：StreamID + 每流子目录 + reader 跨流扫描。 |
 | 51 | `ares_evolution/service/service_bridge.go:112` `toAPILineage` 是**空桩**（`return StrategyLineage{}`）：`Service.Lineages()`（service.go:589）/`collectLineages()`（:720）把每条真实 lineage 转成零值 → 服务层谱系 API 返回 N 条空记录，genealogy 上报链静默失效 | 中（正确性） | ⚠️ 已记录，未修 |
 | 52 | `ares_evolution/service/service_bridge.go:30` `apiGuidanceBridge.RecordStrategyOutcome` 是 **no-op**（`return nil`）：API 层 GuidanceProvider 接入时每个 strategy outcome 被丢弃 → 经验学习反馈回路（outcome→未来变异偏置）在此路径死掉，而 `HintsForTask` 已实现 → hints 被读但从不被强化 | 中（正确性） | ⚠️ 已记录，未修 |
-| 53 | `ares_evolution/dream_cycle_ga.go:93` GA `scoreImprovement` **恒为 0**：`best:=population.BestStrategy()`（返回 bestEver 克隆）`- population.BestEverScore()`（bestEver.Score）→ 同值相减恒 0，传导到 lineage ChildScore + shadow eval `RecordResult(parent,winner+parent)` → GA 路径 shadow 评估永远记为平局/负 | 高（GA 失效） | ⚠️ 已记录，未修 |
+| 53 | `ares_evolution/dream_cycle_ga.go:93` GA `scoreImprovement` **恒为 0**：`best:=population.BestStrategy()`（返回 bestEver 克隆）`- population.BestEverScore()`（bestEver.Score）→ 同值相减恒 0，传导到 lineage ChildScore + shadow eval `RecordResult(parent,winner+parent)` → GA 路径 shadow 评估永远记为平局/负 | 高（GA 失效） | ✅ **已修（第八轮，见上）**：cycle 前捕获 `prevBestEverScore` 作基线。 |
 | 54 | `ares_evolution/service/service.go:466/491` lineage 二次方重复增长：`collectLineages()` 每代返回**全量**累积谱系，循环里每代 `append` → G 代后 `result.Lineages` 为 O(G×total) 重复膨胀 | 中（无界增长） | ⚠️ 已记录，未修 |
 | 55 | `ares_evolution/genome_wiring.go:342`（+dream_cycle.go:384、dream_cycle_ga.go:49）data race on `Population.Agents`：`PopulationSize()` 无锁读 `len(a.pop.Agents)`，而 `Evolve`/`EvolveAfterScoring` 持锁重赋值 `p.Agents`。`PopulationSize()` 经 `scheduler.checkGuardrails`（`OnAgentEnd`）可与 `adapter.Run` 并发 | 中-高（data race，`-race` 可验） | ⚠️ 已记录，未修（改用 `pop.Snapshot()`/`Stats().Size`） |
 | 56 | `ares_evolution/genome/promotion/promoter.go:44/559` `DefaultPromoter` 无界增长：`history` append-only 无 prune、`strategies` 从不移除退休策略（仅 `ScoreHistory` cap 20）→ 长跑 GA 每代新 strategyID 时两 map 无界增长 | 中（无界增长） | ⚠️ 已记录，未修 |
@@ -401,3 +409,24 @@
 - `internal/taskfabric/fabric.go` — record() 持锁调 Append（潜在持锁 I/O）。
 - `internal/ares_evolution/service/service.go` — RunIdleEvolution L414、Evolve L434、EvolveOnIdle 分支 L468、recordGenealogy L484、recordLineages L487。
 - `internal/ares_evolution/genome_wiring_run.go:678`、`genome_wiring_system.go:697`、`service.go:460` — 独立演化触发需核对。
+
+---
+
+## 第八轮收口（2026-08-25）：累计状态 + 0.3.0 合并就绪
+
+**累计 65 项 = 21 已修 + 2 部分修（#7、#12）+ 42 待处理。**
+
+**已修（21）**：#1-#6（首轮）、#8-#11（二次核实确认已接线）、#19-#23（第五轮热路径）、#33-#35（第六轮 evidence）、#49（NSGA-II）、#50 + #53（第八轮两个 P0）。
+
+**部分修（2）**：#7（experiences 已接，余 4 表待接，与 #13 绑定）、#12（quota/spawn/population 已接，chaos 走 Shadow 方案）。
+
+**待处理（42）**：全部落入 `plan/0.3.1plan/outstanding_tasks.md`，按 P0/P1/P2/P3 排期。0.3.1 的 P0 剩 **#36 多租户隔离**（方案 `tenant_isolation.md` 已议定 B+C，Phase 3 改 DB 角色需签字）。
+
+**0.3.0 合并说明**：本轮所有已修项均 `go build ./...` 0 / 改动包 `go test` + `-race` + `go vet` 0 / gofmt 干净。已修的 #50（archive 丢数据）与 #53（GA 反馈失效）是当前 serve 路径的实际缺陷，已闭合。剩余待处理项以**开放回路**（实现+测试但未接生产，不影响当前运行）与**需设计决策的接线/迁移**（#36 等）为主，不阻塞 0.3.0 合并——它们是 0.3.1 的工作面，已完整记录在 `plan/0.3.1plan/`。
+
+**0.3.1 plan 文档清单**（`plan/0.3.1plan/`）：
+- `outstanding_tasks.md` — 全部待办总表（P0-P3 + 开放回路清单 + 缺陷类型总结）
+- `tenant_isolation.md` — #36 多租户隔离 B+C 方案（Phase 3 需签字）
+- `monitoring.md` — 运行时检测面板重设计（含 #14）
+- `chaos_isolation.md` — #12 chaos Shadow-first 隔离方案
+- `async_embedding_pipeline.md` — #13 异步 embedding 队列决策

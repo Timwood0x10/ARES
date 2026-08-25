@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Archive round files scoped per stream** (REVIEW #50, data loss): the event
+  archive is enabled by default and wired into `serve`
+  (`NewCompactableStoreWithArchive`), but round files used a global
+  `round_%d.json` name while `roundCounter` is per-stream — so concurrent
+  sessions / sub-agents each writing `round_1.json` via atomic rename silently
+  overwrote one another and lost archived rounds. Each stream's rounds now live
+  in a sanitised per-stream subdirectory (`streamDir`), rotation is scoped per
+  stream (one stream's round count no longer evicts another's), and the reader
+  searches the flat root (legacy) then stream subdirs. An empty `StreamID`
+  preserves the legacy flat layout for backward compatibility.
+- **GA cycle score improvement no longer always 0** (REVIEW #53): `DreamCycle`
+  computed `scoreImprovement` as `best.Score − population.BestEverScore()`
+  *after* evolving, where `BestEverScore()` already reflected the post-evolve
+  best — yielding 0 every cycle and breaking the shadow-evaluation baseline.
+  The pre-cycle best-ever score is now captured before scoring/evolving and
+  used both for the improvement delta and the deploy baseline.
+- **Evidence storage, selection sorting & evidence collection defects**
+  (commit `871bb004`): multiple correctness fixes across the evidence
+  persistence, candidate selection ordering, and evidence-collection paths.
+
+### Added
+
+- **Storage expiry cleanup wired for all TTL tables** (REVIEW #7): the
+  maintenance worker's hourly purge previously registered only
+  `experiences_1024`; the remaining `CleanupExpired` implementations (session,
+  knowledge, conversation, secret) are now wired into the expiry cleaner set so
+  every TTL-bearing table is actually purged in the `serve` path.
+
 ### Changed
 
 - **Leader residual symbols de-leaderized** (aresos-hardening-plan H3): the

@@ -91,6 +91,7 @@ make examples          # 构建全部示例
 | **DAG 工作流** | 动态图编排，支持条件分支和自动恢复 |
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
+| **持久归档与保留** | 按流隔离的事件轮次归档（并发流互不覆盖对方的 round 文件）+ 定时 TTL 清理，覆盖会话 / 知识 / 对话 / 密钥四类表 |
 | **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
 | **候选发布闭环（0.3.0）** | `CandidatePipeline`：候选 → 三层验证（静态/证据/回归）→ Release 发布门禁 → SetStable；门3 用 `LLMArenaScorer` + `BatchScorer`（批量合并请求）做 LLM 驱动的保留案例回归，支持 FailoverClient 多 provider 链路（openai / openrouter / anthropic / ollama）自动切换 |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
