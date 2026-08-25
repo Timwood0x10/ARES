@@ -333,10 +333,23 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 		t.Fatalf("RegisterScheduler failed: %v", err)
 	}
 
-	// Verify the scheduler subscribed to the EventStore for agent stopped events.
+	// Verify the scheduler subscribed to the EventStore for agent stopped
+	// events plus task outcome events (the production score feed).
 	filters := reg.subscriptionFilters()
-	if len(filters) != 1 || len(filters[0].Types) != 1 || filters[0].Types[0] != ares_events.EventAgentStopped {
-		t.Errorf("expected subscription for EventAgentStopped, got %+v", filters)
+	wantTypes := []ares_events.EventType{
+		ares_events.EventAgentStopped,
+		ares_events.EventTaskCompleted,
+		ares_events.EventTaskFailed,
+	}
+	if len(filters) != 1 || len(filters[0].Types) != len(wantTypes) {
+		t.Errorf("expected subscription for %v, got %+v", wantTypes, filters)
+		return
+	}
+	for i, wt := range wantTypes {
+		if filters[0].Types[i] != wt {
+			t.Errorf("expected subscription types %v, got %v", wantTypes, filters[0].Types)
+			break
+		}
 	}
 
 	genBefore := system.Population.Generation

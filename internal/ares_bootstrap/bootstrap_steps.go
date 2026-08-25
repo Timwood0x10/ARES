@@ -15,6 +15,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
+	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	_ "github.com/lib/pq"
@@ -42,6 +44,14 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// Feed the experience repo into the old evolution system if present.
 			if deps.ExpRepo == nil {
 				deps.ExpRepo = expRepo
+			}
+			// REVIEW #7: register the repo's decay purge with the maintenance
+			// worker so decayed experience rows are deleted, not just filtered
+			// on read. The concrete *ExperienceRepository implements
+			// CleanupExpired; the fat interface intentionally stays untouched.
+			if cleaner, ok := expRepo.(ExpiryCleaner); ok {
+				comp.ExpiryCleaners = append(comp.ExpiryCleaners,
+					NamedExpiryCleaner{Name: "experiences_1024", Cleaner: cleaner})
 			}
 			// Back the knowledge runtime's VectorProvider with the same PG
 			// pool, so AKF vector search reads the same embedded corpus the
@@ -145,6 +155,13 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		memStore = evolution.NewMemoryStrategyStore(0)
 	}
 	newEvol.StrategyStore = memStore
+
+	// Close the "evolution context in the knowledge graph" loop (#9): stream
+	// active/historical strategies as decision-type knowledge objects so
+	// server-side evolution queries can retrieve strategy decisions. The
+	// StrategyStore only exists from this point on (the knowledge runtime is
+	// built earlier, in BuildKnowledgeRuntime), hence the late registration.
+	attachEvolutionKnowledgeProvider(ctx, comp.KnowledgeRuntime, memStore)
 
 	base := &mutation.Strategy{
 		ID:     "bootstrap-root",
@@ -323,6 +340,23 @@ func wireLLMScorer(cfg *ares_config.Config, comp *Components) (genome.ScorerFunc
 		"max_calls_per_generation", cfg.Evolution.LLMScoring.MaxCallsPerGeneration)
 
 	return scorer, heuristic, cfg.Evolution.LLMScoring.MaxCallsPerGeneration
+}
+
+// attachEvolutionKnowledgeProvider registers the evolution StrategyStore as a
+// knowledge graph provider on rt (best-effort: nil rt or a registration
+// failure degrades to a warn log, never blocks bootstrap). Kept as its own
+// function so the closure contract is directly testable without the full
+// wireGAEvolution fixture.
+func attachEvolutionKnowledgeProvider(ctx context.Context, rt *knowledgeruntime.KnowledgeRuntime, store evolution.StrategyStore) {
+	if rt == nil || store == nil {
+		return
+	}
+	evoProv := evoprovider.New("evolution", store)
+	if err := rt.RegisterProvider(evoProv); err != nil {
+		log.WarnContext(ctx, "bootstrap: register evolution provider for knowledge runtime", "error", err)
+		return
+	}
+	log.InfoContext(ctx, "bootstrap: evolution provider wired for knowledge runtime")
 }
 
 // newPGStrategyStore creates a PostgreSQL-backed strategy store from config.

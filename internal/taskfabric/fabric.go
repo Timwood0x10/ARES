@@ -107,7 +107,7 @@ func (f *Fabric) WithEventStore(store ares_events.EventStore) *Fabric {
 // Returns:
 //   - error: ErrTaskExists, or an error for an empty id.
 func (f *Fabric) Create(t *Task) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -140,7 +140,7 @@ func (f *Fabric) Create(t *Task) error {
 //     subsequent ownership-carrying operation.
 //   - error: ErrTaskNotFound / ErrTaskNotReady.
 func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -175,7 +175,7 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 
 // Start moves a LEASED task owned by agentID (at the fenced epoch) to RUNNING.
 func (f *Fabric) Start(id, agentID string, epoch uint64) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -195,7 +195,7 @@ func (f *Fabric) Start(id, agentID string, epoch uint64) error {
 // is decided by the Scheduler (continue/suspend/preempt/handoff/complete);
 // P0's default transition is SUSPENDED with the checkpoint preserved.
 func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -218,7 +218,7 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 // COMPLETED. The task's Checkpoint is preserved as-is: a quantum may have
 // written progress (or a worker result) into it before completing.
 func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -241,7 +241,7 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 // result-reflux fix). The scheduler calls this instead of Complete when the
 // step's quantum produced a real result.
 func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -260,7 +260,7 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 // Fail marks a RUNNING task FAILED, or requeues it to READY when the retry
 // policy allows another attempt (Agent 死亡 ≠ Task 死亡).
 func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -317,7 +317,7 @@ func (f *Fabric) Renew(id, agentID string, epoch uint64, ttl time.Duration) erro
 // stale holder (whose lease expired and was re-acquired by another agent)
 // cannot release the task out from under the new owner.
 func (f *Fabric) Release(id, agentID string, epoch uint64) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -341,7 +341,7 @@ func (f *Fabric) Release(id, agentID string, epoch uint64) error {
 // tasks (a task that is READY for the first time, or was released/steal-
 // requeued, is not a recovery candidate and must not be treated as one).
 func (f *Fabric) CheckExpiredLeases() []string {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
@@ -434,7 +434,7 @@ func (f *Fabric) Schedule(taskID string, candidates []Candidate, ttl time.Durati
 // Returns:
 //   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState.
 func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) error {
-	var pending []*pendingAppend
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()

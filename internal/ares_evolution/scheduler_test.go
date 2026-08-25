@@ -188,10 +188,21 @@ func TestRegister_SubscribesToAgentStopped(t *testing.T) {
 	if len(filters) != 1 {
 		t.Fatalf("expected 1 subscription, got %d", len(filters))
 	}
-	want := []ares_events.EventType{ares_events.EventAgentStopped}
+	want := []ares_events.EventType{
+		ares_events.EventAgentStopped,
+		ares_events.EventTaskCompleted,
+		ares_events.EventTaskFailed,
+	}
 	got := filters[0].Types
-	if len(got) != len(want) || got[0] != want[0] {
+	if len(got) != len(want) {
 		t.Errorf("expected subscription types %v, got %v", want, got)
+		return
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("expected subscription types %v, got %v", want, got)
+			break
+		}
 	}
 }
 

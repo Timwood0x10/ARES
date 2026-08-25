@@ -106,6 +106,11 @@ type Components struct {
 	// dashboard endpoints show live data. Non-nil whenever Bootstrap
 	// completed; nil only when wiring never ran.
 	Observability *ObservabilityComponents
+	// ExpiryCleaners lists repositories that own TTL/decay purges (REVIEW #7).
+	// Subsystems append entries when they construct a repo with retention
+	// columns; startExpiryCleanupWorker purges them hourly on bgGroup. Empty
+	// by default (no cleaners wired = no worker goroutine).
+	ExpiryCleaners []NamedExpiryCleaner
 	// bgGroup manages all Bootstrap background goroutines (distillation
 	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
 	// (F06: no bare goroutines). WaitBackground blocks on it during shutdown.
@@ -251,6 +256,21 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		}
 	})
 
+	// 4b. SKILLS progressive disclosure (REVIEW #11 closure): assemble the
+	// skill catalog once and seed it into the memory manager so the resident
+	// "Available skills" block is populated in serve (previously only the
+	// `ares status` CLI constructed the catalog). Best-effort: skipped when
+	// memory is disabled or the manager does not expose SetSkillsRegistry.
+	if comp.Memory != nil {
+		if catalog := wireSkills(ctx, comp.Memory, mcp); catalog != nil {
+			cleanups = append(cleanups, func() {
+				if err := catalog.Close(); err != nil {
+					log.Warn("bootstrap: cleanup skills catalog close error", "error", err)
+				}
+			})
+		}
+	}
+
 	// 5. LLM — from config (for backward compat) or from deps
 	if deps.LLMClient != nil {
 		comp.LLM = &LLMComponents{Client: deps.LLMClient}
@@ -285,6 +305,11 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	comp.AKGBridge = akgBridge
 
 	subscribeDistillationEvents(ctx, &comp)
+
+	// REVIEW #7 closure: purge expired/decayed rows on a schedule instead of
+	// letting retention-managed tables grow unboundedly. No-op when no
+	// cleaners were wired (e.g. storage disabled).
+	startExpiryCleanupWorker(ctx, &comp)
 
 	// 6. Dashboard
 	// The v0.3.0 M3/M4 observability components (trajectory tracer, feedback
@@ -475,7 +500,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 10. Optional service discovery (opt-in via config.Discovery.Enabled).
 	// When disabled, ProvideDiscovery returns ErrDiscoveryDisabled and the
 	// discovery packages remain unused, preserving prior behavior.
-	discoveryComp, err := ProvideDiscovery(ctx, &cfg.Discovery)
+	discoveryComp, err := ProvideDiscovery(ctx, &cfg.Discovery, comp.EventStore)
 	switch {
 	case errors.Is(err, ErrDiscoveryDisabled):
 		// Discovery is disabled — not an error, just no-op.

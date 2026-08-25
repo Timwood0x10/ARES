@@ -89,6 +89,22 @@ func (r *KnowledgeRuntime) WithEvidenceStore(store evidence.Store) *KnowledgeRun
 	return r
 }
 
+// RegisterProvider adds a graph provider to the runtime's registry after
+// construction. Providers whose backing components are created later in the
+// bootstrap sequence (e.g. the evolution StrategyStore, which only exists
+// once wireGAEvolution has run) attach here instead of forcing a reorder of
+// bootstrap steps. Safe to call before Execute; not safe concurrently with
+// Execute (same contract as ProviderRegistry.Register).
+func (r *KnowledgeRuntime) RegisterProvider(p provider.GraphProvider) error {
+	return r.registry.Register(p)
+}
+
+// ProviderNames lists the names of all registered graph providers. Read-only
+// view for wiring assertions and observability dashboards.
+func (r *KnowledgeRuntime) ProviderNames() []string {
+	return r.registry.List()
+}
+
 // Config holds optional runtime configuration.
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)

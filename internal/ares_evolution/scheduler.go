@@ -130,6 +130,17 @@ func WithEnabled(enabled bool) SchedulerOption {
 // scoreWindowSize is the number of recent task scores to track for trend detection.
 const scoreWindowSize = 50
 
+// Task-outcome scores fed into the sliding window. The scheduler derives them
+// directly from EventStore task events (completed → success, failed →
+// failure), so degradation detection works on real production outcomes
+// instead of requiring an external score feeder.
+const (
+	// taskScoreSuccess is the score recorded when a task completes successfully.
+	taskScoreSuccess = 100.0
+	// taskScoreFailure is the score recorded when a task fails.
+	taskScoreFailure = 0.0
+)
+
 // degradationThreshold is the fraction of score drop that triggers evolution (15%).
 const degradationThreshold = 0.15
 
@@ -143,11 +154,14 @@ const periodicEvolutionScoreThreshold = 100
 
 // EvolutionScheduler triggers evolution cycles based on agent lifecycle
 // events. It subscribes to the shared EventStore (filtering on
-// EventAgentStopped) and decides when to run the adapter based on
-// configurable trigger conditions.
+// EventAgentStopped plus task outcome events) and decides when to run the
+// adapter based on configurable trigger conditions. Task completed/failed
+// events feed the score window via RecordScore, giving TriggerOnThreshold /
+// TriggerOnIdle degradation detection a real production score source.
 type EvolutionScheduler struct {
 	// subscriber is the event store subscription source. Agent lifecycle
-	// events (agent.started / agent.stopped) are emitted to the EventStore,
+	// events (agent.started / agent.stopped) and task outcome events
+	// (task.completed / task.failed) are emitted to the EventStore,
 	// NOT to the ares_callbacks registry, so the scheduler must listen here.
 	subscriber   EventStoreSubscriber
 	adapter      AdapterRunner
@@ -323,7 +337,11 @@ func (s *EvolutionScheduler) Register() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch, err := s.subscriber.Subscribe(ctx, ares_events.EventFilter{
-		Types: []ares_events.EventType{ares_events.EventAgentStopped},
+		Types: []ares_events.EventType{
+			ares_events.EventAgentStopped,
+			ares_events.EventTaskCompleted,
+			ares_events.EventTaskFailed,
+		},
 	})
 	if err != nil {
 		log.Warn("[Evolution] Failed to subscribe to agent stopped events", "error", err)
@@ -342,7 +360,14 @@ func (s *EvolutionScheduler) Register() {
 			if evt == nil {
 				continue
 			}
-			s.OnAgentEnd(contextFromEvent(evt), CallbackData{AgentID: evt.StreamID})
+			switch evt.Type {
+			case ares_events.EventAgentStopped:
+				s.OnAgentEnd(contextFromEvent(evt), CallbackData{AgentID: evt.StreamID})
+			case ares_events.EventTaskCompleted:
+				s.RecordScore(taskScoreSuccess)
+			case ares_events.EventTaskFailed:
+				s.RecordScore(taskScoreFailure)
+			}
 		}
 		return nil
 	})

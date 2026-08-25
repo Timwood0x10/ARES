@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -79,6 +80,57 @@ func createAndServeAgents(
 			log.Printf("serve: no peers configured; evolution keeps placeholder DAG")
 		default:
 			log.Printf("serve: live agent DAG build failed (evolution keeps placeholder): %v", dagErr)
+		}
+	}
+
+	// Evolution-aware quota loop (REVIEW #12 stage-1 closure, v0.3.0 M2-2):
+	// "Evolution decides; Kernel enforces". The GA strategy store publishes a
+	// quota.budget param; the quota manager pushes it into the Agent Fabric's
+	// P5 resource admission budget on a fixed cadence. Without this the
+	// deployed budget was consumed by nothing — the fabric kept its startup
+	// config budget forever. The loop is best-effort: a nil evolution store
+	// yields a nil policy source, so Apply is a no-op that leaves the
+	// configured cfg.Kernel.Resources budget untouched (backward compatible).
+	if peerKernel != nil && peerKernel.agents != nil && comp.NewEvolution != nil {
+		quotaSrc := ares_bootstrap.NewQuotaPolicySource(comp.NewEvolution.StrategyStore, cfg.Kernel.Resources)
+		if quotaSrc != nil {
+			quotaMgr := aresrecovery.NewEvolutionAwareQuotaManager(peerKernel.agents, quotaSrc)
+			go runKernelQuotaLoop(ctx, quotaMgr, parseKernelLoopConfig(cfg))
+			log.Printf("serve: evolution quota loop wired (GA budget → fabric P5 admission)")
+		}
+
+		// Evolution-aware spawn gate (REVIEW #12 stage-2 closure, v0.3.0 M2-1):
+		// "Evolution decides; Kernel enforces". The GA strategy store publishes
+		// spawn.{enabled,max_concurrent,preferred_capabilities}; the spawner
+		// enforces them so every RECOVERY replacement spawn honors the evolved
+		// timing gate and capability preference (the population cap is bypassed
+		// for recovery — a self-healing spawn must not be stranded by quota).
+		// Without this, the deployed spawn policy was consumed by nothing and
+		// recovery always used the plain fabric spawn. Best-effort: a nil store
+		// yields a nil source, so WithSpawner is skipped (plain spawn).
+		if peerKernel.recovery != nil {
+			spawnSrc := ares_bootstrap.NewSpawnPolicySource(comp.NewEvolution.StrategyStore)
+			if spawnSrc != nil {
+				spawner := aresrecovery.NewEvolutionAwareSpawner(peerKernel.agents, spawnSrc)
+				peerKernel.recovery.WithSpawner(spawner)
+				log.Printf("serve: evolution spawn gate wired (GA policy → recovery spawn enforcement)")
+			}
+		}
+
+		// Evolution-aware population loop (REVIEW #12 stage-3 closure, P6:
+		// Runtime Adaptation). "Evolution decides; Kernel enforces": the GA
+		// strategy store publishes population.{spawn,retire}; the adapter
+		// applies the desired delta through the Agent Fabric's spawn/retire
+		// primitives on a fixed cadence (idempotent — an empty policy is a
+		// no-op). This is the missing top-level growth/shrink path: the spawn
+		// gate (stage-2) only shapes RECOVERY replacements, whereas this loop
+		// grows or shrinks the live population per the evolved topology.
+		// Best-effort: a nil store yields a nil source, so the loop is skipped.
+		popSrc := ares_bootstrap.NewPopulationPolicySource(comp.NewEvolution.StrategyStore)
+		if popSrc != nil {
+			popAdapter := aresrecovery.NewPopulationAdapter(peerKernel.agents, popSrc)
+			go aresrecovery.RunKernelEvolutionLoop(ctx, popAdapter, 0, 0)
+			log.Printf("serve: evolution population loop wired (GA topology → fabric spawn/retire)")
 		}
 	}
 

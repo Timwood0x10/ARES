@@ -72,6 +72,17 @@ const (
 	// results; consumed by a dedicated memory worker so the leader loop does not
 	// perform memory writes itself (leader/sub decoupling, C phase).
 	EventMemoryFinalize EventType = "memory.finalize"
+
+	// Service discovery events (REVIEW #10 closure): forwarded by the
+	// bootstrap discovery bridge from the discovery Engine so detected MCP
+	// servers / agent runtimes are visible on the shared event bus (flight
+	// recorder, monitoring) instead of being trapped in the engine's memory
+	// store. Stream ID is always "discovery".
+	EventDiscoveryServiceAdded   EventType = "discovery.service.added"
+	EventDiscoveryServiceRemoved EventType = "discovery.service.removed"
+	EventDiscoveryServiceUpdated EventType = "discovery.service.updated"
+	EventDiscoveryHealthChanged  EventType = "discovery.health.changed"
+	EventDiscoveryCycleCompleted EventType = "discovery.cycle.complete"
 )
 
 // Event payload keys for enriched task-lifecycle events.
