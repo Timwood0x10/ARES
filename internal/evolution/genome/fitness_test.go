@@ -119,8 +119,8 @@ func TestAvgFitnessValue_WindowFiltersOldRecords(t *testing.T) {
 
 func TestAvgFitnessValue_RespectsLimit(t *testing.T) {
 	s := evidence.NewMemoryStore()
-	appendFitness(t, s, "recovery", 1.0)
 	appendFitness(t, s, "recovery", 0.0)
+	appendFitness(t, s, "recovery", 1.0)
 
 	// Limit 1 keeps only the newest record (1.0).
 	score, err := avgFitnessValue(context.Background(), s, "recovery", 0, 1)
