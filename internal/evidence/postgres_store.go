@@ -47,7 +47,7 @@ func NewPostgresStore(pool *postgres.Pool) (*PostgresStore, error) {
 func (s *PostgresStore) ensureTable(ctx context.Context) error {
 	const createTable = `
 		CREATE TABLE IF NOT EXISTS evidence_records (
-			id         uuid PRIMARY KEY,
+			id         text PRIMARY KEY,
 			source     text NOT NULL,
 			kind       text NOT NULL,
 			payload    jsonb NOT NULL,

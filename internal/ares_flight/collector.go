@@ -148,14 +148,16 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 
 	// Emit evidence to the unified Evidence Store.
 	if c.evidenceCollector != nil {
-		_ = c.evidenceCollector.EmitWithMeta(ctx, evidence.KindExecutionTrace,
+		if err := c.evidenceCollector.EmitWithMeta(ctx, evidence.KindExecutionTrace,
 			map[string]any{
 				"event_type": evt.Type,
 				"stream_id":  evt.StreamID,
 				"version":    evt.Version,
 			},
 			"event_type", string(evt.Type),
-		)
+		); err != nil {
+			log.Warn("flight: emit execution-trace evidence failed", "error", err, "event_type", evt.Type)
+		}
 	}
 
 	switch evt.Type {
@@ -176,18 +178,22 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 			successValue = 0.0
 		}
 		if c.workflowCollector != nil {
-			_ = c.workflowCollector.Emit(ctx, evidence.KindFitness,
+			if err := c.workflowCollector.Emit(ctx, evidence.KindFitness,
 				map[string]any{keyFitnessValue: successValue},
-			)
+			); err != nil {
+				log.Warn("flight: emit workflow fitness evidence failed", "error", err)
+			}
 		}
 		// Scheduler fitness evidence: the GA SchedulerGenome consumes the mean
 		// scheduling-outcome value to score the scheduler policy selected by
 		// evolution. A completed task is a scheduling win (1.0); a failed task
 		// is a loss (0.0).
 		if c.schedulerCollector != nil {
-			_ = c.schedulerCollector.Emit(ctx, evidence.KindFitness,
+			if err := c.schedulerCollector.Emit(ctx, evidence.KindFitness,
 				map[string]any{keyFitnessValue: successValue},
-			)
+			); err != nil {
+				log.Warn("flight: emit scheduler fitness evidence failed", "error", err)
+			}
 		}
 	case ares_events.EventFailoverTriggered, ares_events.EventFailoverCompleted:
 		c.handleFailover(evt)
@@ -199,9 +205,11 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 			recoveryValue = 1.0
 		}
 		if c.recoveryCollector != nil {
-			_ = c.recoveryCollector.Emit(ctx, evidence.KindFitness,
+			if err := c.recoveryCollector.Emit(ctx, evidence.KindFitness,
 				map[string]any{keyFitnessValue: recoveryValue},
-			)
+			); err != nil {
+				log.Warn("flight: emit recovery fitness evidence failed", "error", err)
+			}
 		}
 	case ares_events.EventMemoryDistilled:
 		c.handleMemoryDistilled(evt)

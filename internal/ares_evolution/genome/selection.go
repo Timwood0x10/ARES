@@ -864,10 +864,21 @@ func (s *NondominatedSortingSelection) Select(ctx context.Context, population []
 		// normalized against other fronts' ranges.
 		remaining := n - len(result)
 		frontCD := CrowdingDistance(front)
-		sort.SliceStable(front, func(i, j int) bool {
-			return frontCD[i] > frontCD[j]
+		// Sort an index permutation, not `front` directly: sorting `front` in
+		// place while the less-func indexes the parallel `frontCD` slice
+		// scrambles the pairing after the first swap (classic parallel-array
+		// sort bug). Order indices by descending crowding distance, then
+		// materialize the top `remaining` in that order.
+		order := make([]int, len(front))
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(a, b int) bool {
+			return frontCD[order[a]] > frontCD[order[b]]
 		})
-		result = append(result, front[:remaining]...)
+		for _, idx := range order[:remaining] {
+			result = append(result, front[idx])
+		}
 		break
 	}
 

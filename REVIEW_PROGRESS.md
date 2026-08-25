@@ -96,6 +96,102 @@
 
 **第五轮贯穿性结论**：累计 **32 项 = 15 已修（+#19-#23）+ 2 部分修（#7、#12）+ 15 待处理**。本轮验证了此前判断：真 bug 集中在**少数被实际接线的热路径**（evolution LLM adapter、llm failover、ares_runtime manager），而绝大多数模块的问题是**开放回路（实现+测试但未接生产）**。`ares_mcp` 的 #26/#28（连接被 defer cancel 杀死、Send 无 ctx）代码危险但因工厂/热重载未接线暂不可达；一旦 0.3.1 接线需先修。安全项 #30（pdf 沙箱未启用）建议随 0.3.1 修。
 
+---
+
+## 第六轮（2026-08-25）：并行深读 ares_security/ares_callbacks/storage-repositories/knowledge-剩余/evidence/eval/小包
+
+**本轮修复 3 个真 bug（含 1 个 CRITICAL 生产数据丢失）+ 揭出 1 个 CRITICAL 多租户隔离问题（需设计决策）。**
+
+**本轮已修（3 个，`go build`+`go test` 绿）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 33 | `evidence/postgres_store.go:50` DDL `id uuid` 与生产 ID 格式冲突：`Collector.Emit`(collector.go:93) 强制 `WithID("")` → 生成 `ev_%x`（非 UUID），`Append` fallback 生成 `%d-%s`（非 UUID）→ **每条 evidence INSERT 都被 Postgres 以 `22P02 invalid input syntax for type uuid` 拒绝**。serve 开 Storage 时 evidence 持久化 100% 失效，GA fitness 读取链随之空转 | **CRITICAL** | ✅ **已修**：DDL 改 `id text PRIMARY KEY`（ID 本就是应用侧生成的字符串）。 |
+| 34 | `ares_flight/collector.go:151/181/190/204`：4 处 evidence `Emit`/`EmitWithMeta` 结果 `_ =` 吞掉 → 配合 #33，Postgres evidence 写入全失败却无任何日志/指标（这也是 #33 长期没被发现的原因） | 高 | ✅ **已修**：4 处改为检查 err 并 `log.Warn`。 |
+| 35 | `evidence/evidence.go:110` `MemoryStore.Query` 不排序且 `Limit` 截断取**最旧 N** 条：`Store` 契约要求"按时间倒序"，PostgresStore 遵守（`ORDER BY ts DESC`）而 MemoryStore 违反。GA fitness（`genome/fitness.go` 传 Limit:50/100 期望最近证据）在默认 MemoryStore 下拿到最旧证据 → dev/prod 行为分叉 | 中 | ✅ **已修**：`sort.Slice` 按 Timestamp 倒序后再 `Limit` 截断。 |
+
+**本轮揭出的 CRITICAL（需设计决策，未擅自改）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 36 | **多租户隔离实际未生效**（storage）：三重问题叠加——(a) 所有表 `ENABLE ROW LEVEL SECURITY`+policy 但**无 `FORCE ROW LEVEL SECURITY`**，而 `config.go:103` 以表 owner `postgres` 连接 → PG 对 owner 跳过 RLS，policy 全成死规则；(b) `SetTenantContext`（`tenant_guard.go:42`）用 `set_config(...,is_local=true)` 且经 `Pool.Exec` 单条 autocommit 执行 → SET LOCAL 出事务即失效，且落在与 repo 查询**不同的池化连接**上；(c) 多个 id-only mutator（`KnowledgeRepository.GetByID/Update/UpdateEmbedding`、`ExperienceRepository.GetByID/Update/UpdateScore`、`ToolRepository`、`TaskResultRepository` 等）**无 `tenant_id` 谓词**，完全依赖上述失效的 RLS → **任何知道 id 的租户可跨租户读写**。tenant-safe 的 `Pool.ExecWithTenant`/`QueryWithTenant`（pool.go:177/228）已实现但**零生产调用**（开放回路），生产走的是失效路径。`DistilledMemoryRepository`（`withTenantTx`）是唯一做对的 repo | **CRITICAL** | ⚠️ 已记录，未修（需设计决策：全量走 ExecWithTenant/QueryWithTenant，或给每个 id-scoped 查询加 `AND tenant_id=$n`，并加 `FORCE ROW LEVEL SECURITY` + 非 owner 运行角色做纵深防御） |
+
+**本轮新记录（未修，多为开放回路/低危）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 37 | `ares_security/sanitizer.go:66` `SanitizeOptions` 被完全忽略：`Sanitize`/`maskXxx` 从不读 `s.options`，`MaskChar` 硬编码 `'*'`、`KeepLength`/`PreserveLengthFor` 无效 → `NewSanitizerWithOptions` 的自定义配置静默失效 | 中 | ⚠️ 已记录，未修 |
+| 38 | `ares_security/sanitizer.go:174` `sanitizeValue` 仅处理 string，JSON 数字型机密（`{"card":4111...}`）原样透出不脱敏 | 低-中 | ⚠️ 已记录，未修 |
+| 39 | `ares_callbacks/callback_bridge.go` `NewBridge`/`BridgeEventStore` 整体零调用（含测试）；`mapEventType` 把 error 事件坍缩成 success 事件（LLMError→LLMCall 等）、`EventLLMToken` 丢弃 → 若启用则审计失真 | 中（开放回路） | ⚠️ 已记录，未修 |
+| 40 | `knowledge/runtime/lazy_graph.go` 整个 LazyGraph/LazyNode 子系统零生产调用（`NewLazyGraph`/`ExpandNode` 等仅测试）；runtime.go 注释自承 "Future direction"，`cfg.LazyLoading` 只是 clamp budget 而非真惰性加载 | 中（开放回路） | ⚠️ 已记录，未修 |
+| 41 | `knowledge/provider/mysql/provider.go` `NewMySQLProvider` 零生产调用（对比 postgres/vector 已接线）——死 provider | 中（开放回路） | ⚠️ 已记录，未修 |
+| 42 | `knowledge` 各 provider `Stream` 用 `errgroup.WithContext` 却从不 `Wait()` → 派生 ctx 的 cancel 从不调用（轻微 ctx 资源滞留，goroutine 仍经 defer 退出，非泄漏） | 低 | ⚠️ 已记录，未修 |
+| 43 | `knowledge/linker/architecture.go:26` `ObjectDecision`/`ObjectDocument` 被双重分类进 codeObjs+archObjs → 同标签两对象产生双向/重复 `depends_on` 边，下游无 dedup | 低 | ⚠️ 已记录，未修 |
+| 44 | `knowledge/pipeline/normalizer.go:112`（及 memory/code provider）按字节截断可切裂 UTF-8 rune，CJK 摘要（默认中文）易产出非法 UTF-8 | 低 | ⚠️ 已记录，未修 |
+| 45 | `eval`（区别于 ares_eval）整包生产死路：唯一生产构造 `setupEvaluators`(provide_evolution.go:103) 不传 `WithDimensionAveraging`/`WithEvidenceStore` → dimension/evidence 路径永不触发。另 `evidence.go:139` dimension pass 用整数截断 `>=max*2/3` 而 item status 用浮点 `<max*2/3.0` → `max=2,score=1` 时 Pass=true 但 item="failed" 自相矛盾 | 低（死路） | ⚠️ 已记录，未修 |
+| 46 | `errors/wrap.go:215` `FormatError` 含 `%w` 时把 err append 到末尾但 `%w` 常非末位 → 参数错位产出 `%!s/%!d` 垃圾。但 `internal/errors.FormatError` 零调用（死码） | 低（死码） | ⚠️ 已记录，未修 |
+| 47 | `ares_ctxutil/ctxutil.go:48` `trackBackground` 三处生产递增但 `DoneBackground` 零生产调用 → `BackgroundStats` 计数器单调增长永不回落（`runtime:notify-agent-dead` 每次 agent 死亡 +1），label 永不移除 | 低 | ⚠️ 已记录，未修 |
+| 48 | `storage/secret_repository.go:583` `Import` 对非 `ErrNoRows` 的查错吞掉后继续 insert；`:632` 全为已存在 key 时 `importedCount==0` → 整个 tx 回滚失败（应为幂等 no-op） | 低 | ⚠️ 已记录，未修 |
+
+**本轮确认干净（生产用到、无 bug）**：`ares_security` JWT（HS256 constant-time `hmac.Equal`、无 alg confusion、exp/iat 校验）、RBAC（default-deny）、middleware/audit（token 不入日志、API-key `subtle.ConstantTimeCompare`）；`scoreutil`（`ClampUnit` NaN/边界正确，4 处生产用）；`truncate`（rune 数学各边界正确，18 处生产用）；`logger`（57 处用，无状态无竞争）；`errors`（100+ 处用，`Wrap`/`Wrapf`/`WrapError` 的 `Unwrap []error` 正确，仅死码 `FormatError` 有 bug）；`ares_callbacks` 的 `Emit`（RLock 快照 handler 后调用、panic 隔离，正确——仅 bridge 是死码）；storage `circuit_breaker`（CAS+atomics 无竞争）、`pool` `ManagedRow/Rows`（连接释放+ctx 取消正确）、`base_repository`（表白名单+`quoteIdentifier`+全参数化）、`vector`/`CreateBatch`/`RotateKey`（参数化+FOR UPDATE+committed 回滚旗标）。
+
+**第六轮贯穿性结论**：累计 **48 项 = 18 已修（+#33/#34/#35）+ 2 部分修（#7、#12）+ 28 待处理**。本轮首次揭出**两个 CRITICAL**：#33（evidence Postgres 写入 100% 失败，已修）与 #36（多租户隔离实际未生效，需设计决策）。#36 是迄今最严重的生产问题——它不是"未接线"而是"接了但整条隔离链失效"，且 tenant-safe 原语已存在却没被用。建议 #36 优先级最高。#36 专项方案见 `plan/0.3.1plan/tenant_isolation.md`。
+
+---
+
+## 第七轮（2026-08-25）：深读 agents 内部 / ares_archive / ares_observability / ares_evolution（top+service+genome+mutation）
+
+用并行子 agent 覆盖最后 4 个生产模块（含全仓库最大的 ares_evolution ~22k 行）。**本轮修 1 个真 bug（NSGA-II 选择核心）+ 揭出 1 个正在丢数据的 HIGH（ares_archive）+ 一批 service 层桩函数缺陷。**
+
+**本轮已修（1 个，`go build`+`go test` 绿）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 49 | `ares_evolution/genome/selection.go:867` NSGA-II crowding-distance 排序错乱：`sort.SliceStable(front,...)` 原地置换 `front`，但 less-func 索引未置换的并行数组 `frontCD` → 首次交换后配对全乱（经典"并行数组 sort.Slice" bug），多目标选择的 partial-front 退化成任意子集，静默破坏多样性保持。**已接线**（`nsga2`/`nondominated` 选择策略，`population.go:552`） | 中（正确性，接线） | ✅ **已修**：改为排序索引置换 `order`，再按序 materialize，`frontCD` 配对不再错乱。 |
+
+**本轮揭出（未修，含正在丢数据的 HIGH）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 50 | **ares_archive 跨流 round 文件互相覆盖 — 生产正在丢数据**：归档文件名全局 `round_%d.json`（`writer.go:104`）但 `roundCounter` per-stream（`compactable_store.go:488/510`），`RoundRecord` 无 stream 字段。serve 里每个 session（`uuid.NewString()`）与每个 sub-agent（`a.id` 流）的终态事件各自从 round 1 起 → 所有流的 `round_1.json`/`round_2.json` 原子 rename **互相覆盖**。archive 默认开（`ArchiveConfig.IsEnabled()` 无 Enabled 时返 true），已由 `cmd/ares/serve.go:129` `NewCompactableStoreWithArchive` 接线 | **高**（生产数据丢失） | ⚠️ 已记录，未修（修法：文件名/record 加 stream 归属，如 `round_<streamID>_<n>.json` + reader/rotate/recall 同步） |
+| 51 | `ares_evolution/service/service_bridge.go:112` `toAPILineage` 是**空桩**（`return StrategyLineage{}`）：`Service.Lineages()`（service.go:589）/`collectLineages()`（:720）把每条真实 lineage 转成零值 → 服务层谱系 API 返回 N 条空记录，genealogy 上报链静默失效 | 中（正确性） | ⚠️ 已记录，未修 |
+| 52 | `ares_evolution/service/service_bridge.go:30` `apiGuidanceBridge.RecordStrategyOutcome` 是 **no-op**（`return nil`）：API 层 GuidanceProvider 接入时每个 strategy outcome 被丢弃 → 经验学习反馈回路（outcome→未来变异偏置）在此路径死掉，而 `HintsForTask` 已实现 → hints 被读但从不被强化 | 中（正确性） | ⚠️ 已记录，未修 |
+| 53 | `ares_evolution/dream_cycle_ga.go:93` GA `scoreImprovement` **恒为 0**：`best:=population.BestStrategy()`（返回 bestEver 克隆）`- population.BestEverScore()`（bestEver.Score）→ 同值相减恒 0，传导到 lineage ChildScore + shadow eval `RecordResult(parent,winner+parent)` → GA 路径 shadow 评估永远记为平局/负 | 高（GA 失效） | ⚠️ 已记录，未修 |
+| 54 | `ares_evolution/service/service.go:466/491` lineage 二次方重复增长：`collectLineages()` 每代返回**全量**累积谱系，循环里每代 `append` → G 代后 `result.Lineages` 为 O(G×total) 重复膨胀 | 中（无界增长） | ⚠️ 已记录，未修 |
+| 55 | `ares_evolution/genome_wiring.go:342`（+dream_cycle.go:384、dream_cycle_ga.go:49）data race on `Population.Agents`：`PopulationSize()` 无锁读 `len(a.pop.Agents)`，而 `Evolve`/`EvolveAfterScoring` 持锁重赋值 `p.Agents`。`PopulationSize()` 经 `scheduler.checkGuardrails`（`OnAgentEnd`）可与 `adapter.Run` 并发 | 中-高（data race，`-race` 可验） | ⚠️ 已记录，未修（改用 `pop.Snapshot()`/`Stats().Size`） |
+| 56 | `ares_evolution/genome/promotion/promoter.go:44/559` `DefaultPromoter` 无界增长：`history` append-only 无 prune、`strategies` 从不移除退休策略（仅 `ScoreHistory` cap 20）→ 长跑 GA 每代新 strategyID 时两 map 无界增长 | 中（无界增长） | ⚠️ 已记录，未修 |
+| 57 | `ares_evolution/genome/adaptive.go:608` `rng.Intn(max(iVal,1)+iVal)` 在 `iVal<=-1` 时参数 `<=0` → **panic**；负 int 参数经 `injectFreshMutantsLocked`（population_guard.go:105）可达，stagnation reset 克隆时崩（在持 `p.mu` 的 `doEvolve` 内无 recover） | 中（panic 风险） | ⚠️ 已记录，未修 |
+| 58 | `ares_evolution/genome/population.go:588` `ScoreAgents` 并发下静默丢分：snapshot 后写回按 `agent.ID==agents[i].ID` 校验，并发 `Evolve` 改了 `p.Agents` 则校验失败 → 分数被静默丢弃无错无警 | 低-中 | ⚠️ 已记录，未修 |
+
+**本轮 agents 内部结论（大量开放回路 + 2 个潜伏正确性缺陷）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 59 | `agents/lease/lease.go:41` `leases` map 永不 prune 过期项（`Get` 视过期为不存在但不删）；`Count`(:132) 计入过期项虚高 → 大量短命 sessionID 场景无界增长 | 中（无界增长） | ⚠️ 已记录，未修 |
+| 60 | `agents/actionlog/actionlog.go:35/53` `entries` append-only 无 cap + 每次 `Append` 全量线性扫描去重 → O(N²) + 内存泄漏（当前因 actionlog 未接线暂无害，见下） | 中（潜伏） | ⚠️ 已记录，未修 |
+| 61 | `agents/sub/agent.go:441` `recordAction` 写 actionlog 时 `SessionID` 恒空（`models.Task` 无 session 字段）→ `List`/`Replay` 按 session 过滤永远匹配不到；即使 actionlog 接线，审计/回放对任何非空 session 返回空 | 中（潜伏正确性） | ⚠️ 已记录，未修 |
+| 62 | `agents/lease/lease.go:79` `Renew` 不查 `ExpiresAt` → 可复活已过期租约（另一 worker 已有权 Acquire 时）；`Release`(:99) 同样不查过期 | 低（Renew 无生产调用） | ⚠️ 已记录，未修 |
+| 63 | `agents/profile.go:53` `Register(nil)` 会 nil-deref panic（无 nil 守卫，对比 peer/actionlog 都校验输入） | 低 | ⚠️ 已记录，未修 |
+
+**agents 层开放回路（不单列编号，归入 register-but-never-wired）**：
+- `cmd/ares/serve.go:264` 构建 peer.Registry 后**丢弃返回值** → `peer.Registry.Send`/`Lookup`/`Unregister` 全零生产调用，"peer-to-peer 消息"表面不可达（registry 仅用于打印计数）。
+- `agents/sub/agent.go:105` `WithActionLog` 零调用（含测试）→ actionlog 整包生产死码（`Store.List`/`Replay` 也零非测试调用）。
+- `agents/handoff.go` 整文件死码（`NewHandoff`/`WithContext`/`WithArtifact` 等零非测试调用；IPC 层 `Bus.Handoff` 是无关类型）。
+- `agents/profile.go:153` `ApplyToContext` 零生产调用 → `GetFromContext` 恒返 nil，`activeRoleInstructions` 恒空，role 切换是 no-op；`NewProfileRegistry`/`DefaultProfiles` 亦零生产调用。
+- `agents/lease/lease.go:79` `Manager.Renew` 零生产调用（kernelscheduler/taskfabric 的 `Renew` 是不同类型）。
+- **确认真正接线且工作正常**：`outputguard/guard.go`（`sub/agent.go:407` 每次 finalize 调用，无绕过）；`base/agent.go`（`StatefulAgent`/`SnapshotStore`/`Config` 有真实消费者）。
+
+**ares_evolution 其他开放回路（归入既有结论）**：
+- `service`：`NewMutationAdapter`/`WithAdapterAdaptiveDistribution`/`WithAdapterFeedbackRecorder`/`WithActiveStrategyManager`/`WithAdapterMetrics` 零生产调用（对应字段走直接赋值）；`ActiveStrategyManager.Rollback`/`RollbackPolicy.Evaluate`（趋势降级检测）零生产调用——deploy-time 自动 rollback（guardrails）已接，但趋势 rollback 是开放回路。
+- `genome/mutation`：`NewKnowledgeDistiller`/`KnowledgeAdapter.SuggestMutation`/`refine.NewRefiner` 整包/`experience.NewDefaultEvidenceAggregator` 零生产调用；`Reflector`→`HypothesisGen` 已接但 `ApplyHypothesis` 零生产调用 → 反思→假设→变异是半接回路（假设被产出计数却从不应用）。
+- 低危：`genome/adaptive.go:608` 外的 `context.Background()` 多为 logging；`mutation/guided_mutator.go:395` child 复制 parent `CreatedAt`（时间戳陈旧）；`meta_evolution.go:227` `DecisionHistory` append-only；`experience/store.go:166` `RetentionDays` 定义但零读取（保留策略 no-op）。
+
+**ares_observability 复核（确认前轮结论 + 补 4 个潜伏 bug）**：`PrometheusMetrics`/`CostDashboard`/`OTelTracer`/`LogTracer` 仍全零生产构造（仅 `NoopTracer` 接线；`RegisterMetricsRouter` 接了但 `/metrics` 只暴露 Go runtime 默认，无 `ARES_*` 指标）。潜伏 bug（接线前需修）：`prometheus.go:158` `cachedMetrics` 无锁 data race；`prometheus.go:97` `CostUSDTotal` 按 session 打 label → 无界 cardinality 爆炸；`cost.go:264` `CostDashboard.sessions/order` 无界增长；`cost.go:219` `Reset` 保留底层数组。
+
+**ares_archive 复核**：除 #50（HIGH，正在丢数据）外——`reader.go:137` 单个损坏 round 文件使整个 `Search`/`Recall` 失败（应跳过）；`writer.go:97` `writeAtomic` rename 不 fsync，硬崩溃下"归档先于压缩丢弃"的持久性保证不成立。其余（`w.mu` 保护、临时文件清理、identifier regex 不可变、`ProtectIdentifiers` 拷贝）干净。
+
+**第七轮贯穿性结论**：累计 **63 项 = 19 已修（+#49）+ 2 部分修（#7、#12）+ 42 待处理**。本轮把全部主要生产模块深读完毕（含最大的 ares_evolution）。新揭 **#50 是继 #33/#36 后第三个 CRITICAL 级实际影响**——archive 默认开启且正在**静默丢失归档数据**（跨流 round 覆盖），建议紧随 #36 修复。ares_evolution 的 service 层暴露一组**桩函数/恒零缺陷**（#51/#52/#53），说明 API service 层与内部 wired 系统之间的 bridge 未真正实现——这是"接了但桩空"的新型缺陷，比开放回路更隐蔽。至此规律完整：**真 bug 分三类——(a) 热路径逻辑错（NSGA-II/failover/llm_adapter/RestartAgent，已修）、(b) 桩空/恒零 bridge（evidence UUID、service lineage/outcome、GA improvement）、(c) 跨流/跨租户的共享资源冲突（archive round 覆盖、tenant 隔离失效）**；其余绝大多数是开放回路。
+
 **贯穿性结论**：全部 14 项 = **10 已修（#1-#6、#8、#9、#10、#11）+ 2 部分修（#7、#12）+ 2 未修（#13、#14）**。仍开放/部分开放的项清一色是"装配/注册层"问题——组件被实现、被测、甚至被引用，但缺少一个逻辑上的生产消费/构造方。代码库在生命周期/循环/goroutine/事件消费层**极其规整**（errgroup/WaitGroup/ctx.Done/ticker.Stop/panic-recover 全覆盖），在纯数据流与纯类型层也干净（compiler/pipeline/provider/knowledge/eval/protocol 等）。真正残留的缺陷集中在: register-but-never-consume / start-but-never-read / adapter-never-constructed。
 
 **注（轻微，未单列）**：legacy `comp.Evolution.EvaluatorRegistry`(llm_judge) 在 provide_evolution.go 创建但无下游 `Get/Evaluate` 消费（仅 NEW `Coordinator.Evaluate` 生效）；ares_memory `BuildPromptMessages` 重复调 `snapshotTuning()`(L625/L660) 无害；knowledge store 构造器的 `context.Background()` 仅用于迁移 `initTables` 无泄漏。**收尾轮补充的轻微项**：`retrieval_embedding.go` `getEmbeddingCached`(L66-70) 命中不刷新 access list → 实际 FIFO 非真 LRU（bounded 1000，非泄漏）；`ahp/queue.go` `IsFull`(L190) 不计 backupBuffer 而 `Available`(L199) 计（无害，`SendMessage` 刻意不用 `IsFull` 避免 TOCTOU）；`retrieval_search.go:790` `var _ = strings.ToLower` 抑制未用 import 的 dummy（风格）；heartbeat（`ahp.NewProtocol`/`NewHeartbeatMonitor`/`NewHeartbeatSender` + `sub.heartbeatSender`）零生产构造，属 peer-mode 刻意未接线（`peer_agents.go:52`/`peer_mode.go:299` 显式传 nil），归 register-but-never-wired 同族，非缺陷。

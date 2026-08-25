@@ -16,6 +16,7 @@ package evidence
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 )
@@ -107,6 +108,9 @@ func (s *MemoryStore) Append(_ context.Context, e Evidence) error {
 }
 
 // Query returns evidence matching the filter from the in-memory store.
+// Results are ordered by timestamp descending (newest first) to match the
+// Store contract; Limit is applied AFTER sorting so callers asking for the
+// top N receive the most recent N, not the oldest N.
 func (s *MemoryStore) Query(_ context.Context, filter Filter) ([]Evidence, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -126,9 +130,13 @@ func (s *MemoryStore) Query(_ context.Context, filter Filter) ([]Evidence, error
 			continue
 		}
 		result = append(result, e)
-		if filter.Limit > 0 && len(result) >= filter.Limit {
-			break
-		}
+	}
+	// Order by timestamp descending (newest first) per the Store contract.
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Timestamp.After(result[j].Timestamp)
+	})
+	if filter.Limit > 0 && len(result) > filter.Limit {
+		result = result[:filter.Limit]
 	}
 	return result, nil
 }
