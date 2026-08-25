@@ -321,6 +321,11 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	// Mark as intentionally stopped to prevent NotifyAgentDead race.
 	ma.stopped = true
 	prevRestarts := ma.restarts
+	// Capture the cancel func and agent handle UNDER the lock: ma.cancel /
+	// ma.agent are written by ResumeAgent/PauseAgent under m.mu, so reading
+	// them after Unlock would race a concurrent lifecycle transition.
+	prevCancel := ma.cancel
+	prevAgent := ma.agent
 	m.mu.Unlock()
 
 	m.emitEvent(ctx, agentID, ares_events.EventAgentStopped, map[string]any{
@@ -329,12 +334,12 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	})
 
 	// Stop the old agent.
-	if ma.cancel != nil {
-		ma.cancel()
+	if prevCancel != nil {
+		prevCancel()
 	}
-	if ma.agent != nil {
+	if prevAgent != nil {
 		stopCtx, stopCancel := context.WithTimeout(ctx, m.config.AgentStopTimeout)
-		if err := ma.agent.Stop(stopCtx); err != nil {
+		if err := prevAgent.Stop(stopCtx); err != nil {
 			log.Warn("runtime: restart stop failed", "agent_id", agentID, "error", err)
 		}
 		stopCancel()
@@ -528,7 +533,7 @@ func (m *Manager) launchAgentGoroutine(ctx context.Context, agentID string, agen
 // NotifyAgentDead is called when an agent dies. It triggers asynchronous restoration
 // via errgroup if a factory is registered for the agent.
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
-	factory, shouldRestore := func() (AgentFactory, bool) {
+	shouldRestore := func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
@@ -536,33 +541,38 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		ma, hasAgent := m.agents[agentID]
 
 		if m.isStopped || (hasAgent && (ma.stopped || ma.paused || ma.resurrecting)) {
-			return nil, false
+			return false
 		}
 		if !hasFactory {
 			log.Warn("runtime: agent dead but no factory registered, skipping restore",
 				"agent_id", agentID, "reason", reason,
 			)
-			return nil, false
+			return false
 		}
 		if hasAgent && m.config.MaxRestartsPerAgent > 0 && ma.restarts >= m.config.MaxRestartsPerAgent {
 			log.Error("runtime: max restarts exceeded, not restoring",
 				"agent_id", agentID, "restarts", ma.restarts,
 				"max", m.config.MaxRestartsPerAgent, "reason", reason,
 			)
-			return nil, false
+			return false
 		}
 		if hasAgent {
 			ma.restarts++
 			ma.resurrecting = true
 		}
 		m.totalRestarts++
-		return factory, true
+		// Schedule the resurrection goroutine WHILE STILL HOLDING m.mu so the
+		// errgroup Add is atomic with the isStopped check above. Stop() sets
+		// isStopped under this same mutex before it calls m.g.Wait(), so once
+		// Stop has transitioned no NotifyAgentDead can reach this m.g.Go —
+		// eliminating the "WaitGroup reused before Wait returned" panic that a
+		// post-unlock schedule would allow.
+		m.scheduleResurrectionLocked(agentID, factory)
+		return true
 	}()
 	if !shouldRestore {
 		return
 	}
-
-	m.scheduleResurrection(agentID, factory)
 
 	log.Warn("runtime: agent dead, scheduling restore",
 		"agent_id", agentID, "reason", reason,
@@ -573,6 +583,13 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"reason":       reason,
 		"auto_restore": true,
 	})
+}
+
+// scheduleResurrectionLocked launches the resurrection goroutine. The caller
+// MUST hold m.mu: the errgroup Add (m.g.Go) must be serialized with Stop()'s
+// isStopped transition to avoid a WaitGroup reuse panic.
+func (m *Manager) scheduleResurrectionLocked(agentID string, factory AgentFactory) {
+	m.scheduleResurrection(agentID, factory)
 }
 
 func (m *Manager) scheduleResurrection(agentID string, factory AgentFactory) {

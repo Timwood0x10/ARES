@@ -174,7 +174,7 @@ func (a *LLMAdapter) parseReplaceNode(text string) ([]ParseResult, error) {
 func (a *LLMAdapter) parseAddEdge(text string) ([]ParseResult, error) {
 	// "add edge <from> -> <to>"
 	parts := strings.Fields(text)
-	if len(parts) < 4 || parts[3] != "->" {
+	if len(parts) < 5 || parts[3] != "->" {
 		return nil, fmt.Errorf("llm: add edge format: 'add edge <from> -> <to>'")
 	}
 	from := parts[2]
@@ -200,7 +200,7 @@ func (a *LLMAdapter) parseAddEdge(text string) ([]ParseResult, error) {
 func (a *LLMAdapter) parseRemoveEdge(text string) ([]ParseResult, error) {
 	// "remove edge <from> -> <to>"
 	parts := strings.Fields(text)
-	if len(parts) < 4 || parts[3] != "->" {
+	if len(parts) < 5 || parts[3] != "->" {
 		return nil, fmt.Errorf("llm: remove edge format: 'remove edge <from> -> <to>'")
 	}
 	from := parts[2]

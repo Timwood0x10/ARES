@@ -53,6 +53,12 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 				comp.ExpiryCleaners = append(comp.ExpiryCleaners,
 					NamedExpiryCleaner{Name: "experiences_1024", Cleaner: cleaner})
 			}
+			// REVIEW #7 (remainder): register the other retention-managed
+			// tables (sessions, conversations, secrets, knowledge_chunks) so
+			// their expired/decayed rows are purged too, not just experiences.
+			// They share the distillation pool (already open for the process
+			// lifetime) instead of opening a second pool — minimal wiring.
+			wireExpiryCleaners(comp, pool.GetDB(), cfg)
 			// Back the knowledge runtime's VectorProvider with the same PG
 			// pool, so AKF vector search reads the same embedded corpus the
 			// distillation path writes. Best-effort: nil embedding config uses

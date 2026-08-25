@@ -227,6 +227,15 @@ func runServe() error {
 	if err := registerNativeTools(ctx, internalReg); err != nil {
 		return fmt.Errorf("register native tools: %w", err)
 	}
+
+	// REVIEW #11 (second half): expose the environment-capability searcher as
+	// the `search_capabilities` tool so agents can actively discover tools,
+	// skills, and native commands. Registered before the binder is built so it
+	// flows into the agent tool set naturally. comp.SkillsRegistry may be nil
+	// (skills disabled) — the searcher skips that source.
+	if err := registerCapabilitySearch(internalReg, comp.SkillsRegistry); err != nil {
+		return fmt.Errorf("register capability search: %w", err)
+	}
 	toolBinder := newToolBinder(internalReg)
 	log.Printf("tools registered: %d", len(toolBinder.ListTools()))
 

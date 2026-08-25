@@ -241,6 +241,9 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		}
 	}
 
+	if lastErr == nil {
+		return "", fmt.Errorf("FailoverClient: no provider available (all %d cooled down)", len(fc.clients))
+	}
 	return "", fmt.Errorf("FailoverClient: all %d clients failed; last error: %w",
 		len(fc.clients), lastErr)
 }
@@ -331,6 +334,9 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		return wrappedCh, nil
 	}
 
+	if lastErr == nil {
+		return nil, fmt.Errorf("FailoverClient: no provider available (all %d cooled down)", len(fc.clients))
+	}
 	return nil, fmt.Errorf("FailoverClient: all %d stream clients failed; last error: %w",
 		len(fc.clients), lastErr)
 }

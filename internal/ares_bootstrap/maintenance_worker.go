@@ -7,9 +7,14 @@ package ares_bootstrap
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/logger"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 var logMaintenance = logger.Module("ares_bootstrap.maintenance")
@@ -31,6 +36,84 @@ type NamedExpiryCleaner struct {
 	Name string
 	// Cleaner performs the purge.
 	Cleaner ExpiryCleaner
+}
+
+// knowledgeRetention is the age threshold for pruning low-value knowledge
+// chunks (updated_at older than this AND access_count < 10). 90 days keeps
+// rarely-touched chunks from accumulating forever while preserving anything
+// recently read or written.
+const knowledgeRetention = 90 * 24 * time.Hour
+
+// knowledgeCleanerAdapter bridges *KnowledgeRepository (whose CleanupExpired
+// takes an explicit cutoff) to the parameterless ExpiryCleaner interface by
+// supplying a rolling now-knowledgeRetention cutoff on each pass.
+type knowledgeCleanerAdapter struct {
+	repo *repositories.KnowledgeRepository
+}
+
+// CleanupExpired deletes knowledge chunks older than knowledgeRetention that
+// are below the access-count floor. Satisfies ExpiryCleaner.
+func (a knowledgeCleanerAdapter) CleanupExpired(ctx context.Context) (int64, error) {
+	return a.repo.CleanupExpired(ctx, time.Now().Add(-knowledgeRetention))
+}
+
+// wireExpiryCleaners registers the remaining retention-managed repositories
+// (sessions, conversations, secrets, knowledge_chunks) with the maintenance
+// worker, reusing the already-open distillation pool's *sql.DB. Best-effort:
+// each repo is registered independently and a construction failure for one
+// (e.g. the secret cipher) skips only that table, never the others.
+//
+// This closes the remainder of REVIEW #7: previously only experiences_1024
+// was purged on schedule; the other four CleanupExpired implementations had
+// no production caller and their dead rows grew unbounded.
+func wireExpiryCleaners(comp *Components, db *sql.DB, cfg *ares_config.Config) {
+	if comp == nil || db == nil {
+		return
+	}
+
+	// Sessions: DELETE WHERE expired_at < now.
+	sessionRepo := postgres.NewSessionRepositoryWithDB(db)
+	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
+		NamedExpiryCleaner{Name: "sessions", Cleaner: sessionRepo})
+
+	// Conversations: DELETE WHERE expires_at < now.
+	convRepo := repositories.NewConversationRepository(db)
+	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
+		NamedExpiryCleaner{Name: "conversations", Cleaner: convRepo})
+
+	// Knowledge chunks: prune stale, low-access rows via the age adapter.
+	knowRepo := repositories.NewKnowledgeRepository(db, db)
+	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
+		NamedExpiryCleaner{Name: "knowledge_chunks_1024",
+			Cleaner: knowledgeCleanerAdapter{repo: knowRepo}})
+
+	// Secrets: DELETE WHERE expires_at < now. NewSecretRepository requires a
+	// 32-byte AES key at construction even though CleanupExpired never
+	// encrypts/decrypts. Derive a stable 32-byte key from the JWT secret (or
+	// a fixed label when unset) purely to satisfy the constructor; no secret
+	// value is read on the cleanup path, so this key is never used to expose
+	// data.
+	secretKey := deriveSecretCleanupKey(cfg)
+	if secretRepo, err := repositories.NewSecretRepository(db, secretKey); err != nil {
+		logMaintenance.Warn("bootstrap: secret expiry cleaner not wired", "error", err)
+	} else {
+		comp.ExpiryCleaners = append(comp.ExpiryCleaners,
+			NamedExpiryCleaner{Name: "secrets", Cleaner: secretRepo})
+	}
+}
+
+// deriveSecretCleanupKey returns a deterministic 32-byte key for constructing
+// the SecretRepository on the cleanup path. It hashes the configured JWT
+// secret (or a fixed label if none is set) so NewSecretRepository's AES-256
+// length check passes; the key is used only for construction, never to
+// decrypt stored secrets during CleanupExpired.
+func deriveSecretCleanupKey(cfg *ares_config.Config) []byte {
+	seed := "ares-secret-cleanup"
+	if cfg != nil && cfg.Security.JWTSecret != "" {
+		seed = cfg.Security.JWTSecret
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return sum[:]
 }
 
 // expiryCleanupInterval is how often the maintenance worker purges expired

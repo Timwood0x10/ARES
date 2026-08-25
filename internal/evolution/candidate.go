@@ -318,7 +318,10 @@ func (v *CandidateVerifier) checkRegression(c *Candidate) error {
 
 // containsDangerousPattern checks for potentially harmful instructions.
 func containsDangerousPattern(text string) bool {
-	// Simple heuristic — production should use more robust checks
+	// Simple heuristic — production should use more robust checks.
+	// Match case-insensitively so capitalized variants ("IGNORE ALL SAFETY")
+	// are not trivially able to bypass the gate.
+	lower := strings.ToLower(text)
 	dangerousPatterns := []string{
 		"ignore all safety",
 		"bypass authentication",
@@ -326,7 +329,7 @@ func containsDangerousPattern(text string) bool {
 		"don't verify",
 	}
 	for _, p := range dangerousPatterns {
-		if strings.Contains(text, p) {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}

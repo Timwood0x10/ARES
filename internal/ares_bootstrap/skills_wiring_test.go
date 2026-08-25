@@ -46,11 +46,13 @@ func TestWireSkills_SeedsRegistryFromProjectDir(t *testing.T) {
 	writeSkill(t, filepath.Join(tmp, ".ares", "skills"), "shell", "Run shell commands")
 
 	mem := &stubSkillsSetter{}
-	catalog := wireSkills(context.Background(), mem, nil)
+	catalog, reg := wireSkills(context.Background(), mem, nil)
 	require.NotNil(t, catalog, "catalog should be wired when a skill source exists")
+	require.NotNil(t, reg, "registry should be returned for envcap wiring")
 	t.Cleanup(func() { _ = catalog.Close() })
 
 	require.NotNil(t, mem.reg, "registry must be attached to the memory manager")
+	require.Same(t, reg, mem.reg, "returned registry and attached registry must be the same instance")
 	require.True(t, mem.reg.Has("shell"), "indexed skill should be registered")
 
 	body, ok := mem.reg.LoadDetail("shell")
@@ -62,8 +64,9 @@ func TestWireSkills_SeedsRegistryFromProjectDir(t *testing.T) {
 // memory manager that does not expose SetSkillsRegistry yields no catalog and
 // no panic (retrieval-only managers still work).
 func TestWireSkills_SkippedWhenNoSetter(t *testing.T) {
-	catalog := wireSkills(context.Background(), struct{}{}, nil)
+	catalog, reg := wireSkills(context.Background(), struct{}{}, nil)
 	require.Nil(t, catalog)
+	require.Nil(t, reg)
 }
 
 // TestWireSkills_RealMemoryManagerSatisfiesSetter guards the type assertion:

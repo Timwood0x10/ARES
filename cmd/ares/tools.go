@@ -8,7 +8,9 @@ import (
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 	"github.com/Timwood0x10/ares/internal/tools/discovery"
+	"github.com/Timwood0x10/ares/internal/tools/envcap"
 	"github.com/Timwood0x10/ares/internal/tools/planner"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -18,11 +20,11 @@ import (
 // Empty disables discovery so hosts without the commands degrade gracefully.
 const nativeToolsEnvVar = "ARES_NATIVE_TOOLS"
 
-// registerNativeTools probes the allowlisted host commands via `command -v` +
-// `--help` and registers the ones present into the internal registry. Only
-// commands explicitly listed in ARES_NATIVE_TOOLS are ever probed or executed
-// (allowlist security boundary); non-existent commands are skipped.
-func registerNativeTools(ctx context.Context, internalReg *core.Registry) error {
+// nativeToolsAllowlist parses the ARES_NATIVE_TOOLS env var into a cleaned
+// allowlist of host command names. Returns an empty slice when unset/blank so
+// callers disable native discovery gracefully. This is the single security
+// boundary: only listed commands are ever probed or executed.
+func nativeToolsAllowlist() []string {
 	raw := strings.TrimSpace(os.Getenv(nativeToolsEnvVar))
 	if raw == "" {
 		return nil
@@ -33,6 +35,15 @@ func registerNativeTools(ctx context.Context, internalReg *core.Registry) error 
 			allowlist = append(allowlist, name)
 		}
 	}
+	return allowlist
+}
+
+// registerNativeTools probes the allowlisted host commands via `command -v` +
+// `--help` and registers the ones present into the internal registry. Only
+// commands explicitly listed in ARES_NATIVE_TOOLS are ever probed or executed
+// (allowlist security boundary); non-existent commands are skipped.
+func registerNativeTools(ctx context.Context, internalReg *core.Registry) error {
+	allowlist := nativeToolsAllowlist()
 	if len(allowlist) == 0 {
 		return nil
 	}
@@ -74,6 +85,32 @@ func newToolBinder(internalReg *core.Registry) sub.ToolBinder {
 	binder := sub.NewToolBinder()
 	binder.BridgeFromRegistry(internalReg)
 	return binder
+}
+
+// registerCapabilitySearch wires the environment-capability searcher (envcap)
+// as the `search_capabilities` tool and registers it into the internal
+// registry (REVIEW #11: envcap.NewSearcher was constructed nowhere in serve).
+// This completes the SKILLS progressive-disclosure story: the memory manager
+// surfaces a resident skill block, and this tool lets the agent actively search
+// across the environment's capabilities, returning name + one-line description
+// with details loaded on demand.
+//
+// Two sources are wired: registered tools (the registry itself) and skills (the
+// bootstrap-seeded registry). Native commands are deliberately NOT wired as a
+// separate discovery source here because registerNativeTools has already
+// registered each allowlisted command as a CommandTool in the same registry —
+// so they surface through the registry (KindTool). Wiring a second Discoverer
+// would double-list every command and re-probe the host (command -v + --help)
+// on every search call.
+//
+// skillReg may be nil (skills disabled) — the searcher simply skips that source.
+func registerCapabilitySearch(internalReg *core.Registry, skillReg *skills.Registry) error {
+	searcher := envcap.NewSearcher(envcap.NewRegistryLister(internalReg), skillReg, nil)
+	tool := envcap.NewSearchTool(searcher)
+	if err := internalReg.Register(tool); err != nil {
+		return fmt.Errorf("register capability search tool: %w", err)
+	}
+	return nil
 }
 
 // newPlannerBridge wires the capability planner into a ToolExecutionBridge.

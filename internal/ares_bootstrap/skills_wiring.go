@@ -52,17 +52,21 @@ type skillsRegistrySetter interface {
 // Returns:
 //   - *ares_skills.Catalog: the wired catalog (nil when skipped) so the caller
 //     can register a Close cleanup for the FTS5 backing store.
-func wireSkills(ctx context.Context, mem any, mcp mcpConnector) *ares_skills.Catalog {
+//   - *skills.Registry: the seeded registry (nil when skipped) so the caller
+//     can also feed it to the environment-capability searcher (envcap), which
+//     completes the SKILLS-as-searchable-capability half of progressive
+//     disclosure alongside the memory-resident block.
+func wireSkills(ctx context.Context, mem any, mcp mcpConnector) (*ares_skills.Catalog, *skills.Registry) {
 	setter, ok := mem.(skillsRegistrySetter)
 	if !ok {
 		log.Info("bootstrap: skills disabled (memory manager does not expose SetSkillsRegistry), skipping")
-		return nil
+		return nil, nil
 	}
 
 	extraDirs, gitSources, httpSources, err := ares_skills.LoadSkillSources("")
 	if err != nil {
 		log.Warn("bootstrap: skills config load failed; wiring skipped", "error", err)
-		return nil
+		return nil, nil
 	}
 
 	projectDir := filepath.Join(".", ".ares", "skills")
@@ -94,14 +98,14 @@ func wireSkills(ctx context.Context, mem any, mcp mcpConnector) *ares_skills.Cat
 	if buildErr := catalog.Build(); buildErr != nil {
 		log.Warn("bootstrap: skills index build failed; skill block skipped", "error", buildErr)
 		_ = catalog.Close()
-		return nil
+		return nil, nil
 	}
 
 	reg := skills.NewRegistry()
 	if seedErr := catalog.SeedRegistry(reg); seedErr != nil {
 		log.Warn("bootstrap: skills registry seed failed; skill block skipped", "error", seedErr)
 		_ = catalog.Close()
-		return nil
+		return nil, nil
 	}
 	setter.SetSkillsRegistry(reg)
 
@@ -113,7 +117,7 @@ func wireSkills(ctx context.Context, mem any, mcp mcpConnector) *ares_skills.Cat
 		"git_sources", len(gitSources),
 		"http_sources", len(httpSources),
 	)
-	return catalog
+	return catalog, reg
 }
 
 // mcpConnector is the wiring-local view of the MCP manager needed by the

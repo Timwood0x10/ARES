@@ -271,6 +271,10 @@ linters:
       - path: internal/tools/resources/builtin/embedding/embedding.go
         linters:
           - goconst
+      # envcap capability-search tool schema/parameter/result field names.
+      - path: internal/tools/envcap/
+        linters:
+          - goconst
       # Legacy api/* consumers: the api/* layer is deprecated in favor of
       # sdk/; these paths still reference the old packages during the
       # migration window and are wired to migrate incrementally.

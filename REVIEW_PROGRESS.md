@@ -6,7 +6,8 @@
 
 ## 收口结论（2026-08-25，2026-08-25 二次核实已更新状态）
 
-> **二次核实（本轮）**：逐条 grep 复核了 #7-#14 的生产接线现状，发现 **#8、#9 代码里其实已经修复**（先前记录过期），**#7 为部分修复**。下表已同步为最新真实状态。
+> **二次核实（本轮）**：逐条 grep 复核了 #7-#14 的生产接线现状，发现 **#8、#9 代码里其实已经修复**（先前记录过期），**#7 为部分修复**。
+> **第三轮（2026-08-25）**：补齐 **#11 的第二半（envcap 工具能力搜索）** → #11 现为**完全修复**。下表已同步为最新真实状态。
 
 **已修复缺陷（含二次核实新确认的接线）：**
 
@@ -21,23 +22,81 @@
 | 8 | `EvolutionScheduler.RecordScore` 生产无调用方 | 低 | ✅ **已修（二次核实确认）**：`scheduler.go:366-369` 订阅 `EventTaskCompleted/Failed` → `RecordScore(taskScoreSuccess/Failure)`；`scheduler.Register()` 在 `provide_evolution.go:79`（生产）与 `genome_wiring_system.go:654` 调用。生产已有分数来源。 |
 | 9 | `EvolutionProvider` 仅 SDK 注册，服务端知识图缺演化上下文 | 中 | ✅ **已修（二次核实确认）**：`attachEvolutionKnowledgeProvider`（`bootstrap_steps.go:164`）在 `wireGAEvolution`（`bootstrap.go:479`，serve 路径）里把 `evoprovider.New("evolution", store)` 注册进 `comp.KnowledgeRuntime`。 |
 | 10 | 服务发现引擎被启动但零消费 | 低 | ✅ **已修（二次核实确认，commit a4e4c147）**：`provide_discovery.go:66-70` `forwardDiscoveryEvent` 把 discovery 事件（added/removed/updated/health）转发进共享 `EventStore`（注释 "REVIEW #10: previously the engine ran with zero consumers"），不再是写入无人读取的内存 store。**注**：`EventDiscovery*` 目前只进 EventStore 供 timeline/审计消费，尚无业务侧订阅者做"发现→MCP 自动注册"（若需该闭环仍待接）。 |
+| 11 | SKILLS 渐进披露 + 工具能力搜索 | 中 | ✅ **已修（第三轮补齐两半）**：**上半**（渐进披露）`skills_wiring.go` 的 `wireSkills`（`bootstrap.go:265`）已构造 catalog + `SeedRegistry` + `SetSkillsRegistry`，并把 seed 出的 registry 存入 `comp.SkillsRegistry`。**下半**（工具能力搜索）`registerCapabilitySearch`（`tools.go:107`）用 `envcap.NewSearcher(NewRegistryLister(internalReg), comp.SkillsRegistry, nil)` 构造并注册 `search_capabilities` 工具（`serve.go:236`，binder 之前）。两源：registry 工具（含 registerNativeTools 预注册的原生命令，KindTool）+ 技能。envcap 零生产调用问题已消除。 |
 
 **部分修复：**
 
 | # | 缺陷 | 严重 | 状态 |
 |---|------|------|------|
 | 7 | 存储过期/衰减清理未接线 | 中 | 🟡 **部分已修**：`maintenance_worker.go` 的 `startExpiryCleanupWorker`（`bootstrap.go:297`）已接线，每小时 purge。**但只注册了 `experiences_1024`**（`bootstrap_steps.go:53`）；`ConversationRepository`/`KnowledgeRepository`/`SecretRepository`/`SessionRepository` 的 `CleanupExpired` + distilled_memories 仍**零注册**（各表 `expires_at`/`decay_at` 仍不清理）。 |
-| 11 | SKILLS 渐进披露 + 工具能力搜索 | 中 | 🟡 **部分已修（commit a4e4c147）**：`skills_wiring.go` 的 `wireSkills`（`bootstrap.go:265`，serve 路径）已构造 `ares_skills.NewCatalog` + `SeedRegistry` + `SetSkillsRegistry`（注释 "REVIEW #11 closure"），memory manager 的 "Available skills" 渐进披露块在 serve 已生效。**但 `envcap.NewSearcher`（工具能力搜索，`internal/tools/envcap`）仍零生产调用**——tool capability search 那半仍未接。 |
 
 **仍开放（未修，装配/注册层）：**
 
 | # | 缺陷 | 严重 | 状态 |
 |---|------|------|------|
-| 12 | "演化内核"适配器未接入 serve 装配（`EvolutionAwareSpawner`、`NewChaos`、`NewPopulationAdapter`+`RunKernelEvolutionLoop`、`NewEvolutionAwareQuotaManager` 零生产构造；`NewSpawnPolicySource`/`evolutionSpawnPolicySource` 已定义但无消费方——因唯一消费者 `EvolutionAwareSpawner` 从不构造） | 中 | ⚠️ 已记录，未修 |
+| 12 | "演化内核"适配器 serve 装配 | 中 | 🟡 **部分已修（二次核实纠正）**：quota/spawn-gate/population **三阶段均已接线**（`serve_agents.go:97/114/131`，注释 "REVIEW #12 stage-N closure"）。**仅 `Chaos`（+`Sandbox`）未接线**——而 `Chaos.InjectFailure` 会真实 `Kill`/`Suspend` 活跃 agent，属危险项。规划走 Shadow Sandbox 默认（生产零影响）+ Live Chaos 可选，见 `plan/0.3.1plan/chaos_isolation.md`。 |
 | 13 | 异步 embedding 队列子系统全链路无消费者（`EmbeddingQueue.FetchPendingTasks`/`MarkCompleted`/`MarkFailed`/`Reconcile` 零生产调用，无 backfill worker；且唯一生产者 `ProductionMemoryManager`+`WriteBuffer` 仅测试构造，serve 走 `memoryManager` 同步 `expRepo.Create`） | 中 | ⚠️ 已记录，未修 |
-| 14 | 监控 DAG 节点图在 serve 下无界增长（`Pruner` 仅在 `WithPruneConfig` 时启动，serve/demo 均不传；`dag.Engine.nodes` map 每 agent/task 一节点、`AddNode` 无 cap、仅 Pruner 会 RemoveNode） | 中 | ⚠️ 已记录，未修（**规划并入 0.3.1 runtime 检测面板重设计，见 `plan/0.3.1_monitoring.md`**） |
+| 14 | 监控 DAG 节点图在 serve 下无界增长（`Pruner` 仅在 `WithPruneConfig` 时启动，serve/demo 均不传；`dag.Engine.nodes` map 每 agent/task 一节点、`AddNode` 无 cap、仅 Pruner 会 RemoveNode） | 中 | ⚠️ 已记录，未修（**规划并入 0.3.1 runtime 检测面板重设计，见 `plan/0.3.1plan/monitoring.md`**） |
+> **第四轮（2026-08-25）**：全量复核 #7-#14 生产接线 + 补读剩余高复杂度模块，确认如下。
 
-**贯穿性结论**：全部 14 项 = **9 已修（#1-#6、#8、#9、#10）+ 2 部分修（#7、#11）+ 3 未修（#12、#13、#14）**。仍开放/部分开放的项清一色是"装配/注册层"问题——组件被实现、被测、甚至被引用，但缺少一个逻辑上的生产消费/构造方。代码库在生命周期/循环/goroutine/事件消费层**极其规整**（errgroup/WaitGroup/ctx.Done/ticker.Stop/panic-recover 全覆盖），在纯数据流与纯类型层也干净（compiler/pipeline/provider/knowledge/eval/protocol 等）。真正残留的缺陷集中在: register-but-never-consume / start-but-never-read / adapter-never-constructed。
+**第四轮新增缺陷（#15-#18）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 15 | Planner 证据反馈回路断裂 + 内存证据无界增长：直接路径保存证据缺 `CapabilityName`（`bridge.go:84-89`），查询按能力名（`planner.go:118`）+ 评分键 `Tool:Capability`（`evidence.go:166`）→ 最常见路径证据永不反馈评分器；`memoryEvidenceStore.Save`（`executor.go:137-145`）仅追加无 cap → 长期运行内存泄漏 | 中 | ⚠️ 已记录，未修（P0） |
+| 16 | `stringutils.parseInt`（`stringutils.go:177-186`）无整数溢出保护 | 低 | ⚠️ 已记录，未修（P2） |
+| 17 | `KnowledgeUpdate`/`KnowledgeCreate` 标签数组含非 string 元素时静默置 `""`（`knowledge_base.go:244-251`、`347-354`） | 低 | ⚠️ 已记录，未修（P1） |
+| 18 | `KnowledgeUpdate` 未 nil 检查 `GetKnowledge` 返回（`knowledge_base.go:231`）——生产 `StoreAdapter` 返回 `errObjectNotFound` 无 panic，属接口契约防御建议 | 低 | ⚠️ 已记录，防御性建议（P2） |
+
+
+**第四轮核实更新：**
+- **#7**：确认 worker 接线行号为 `bootstrap.go:325`（原记录 297），`experiences_1024` 仍为唯一注册 Cleaner；其余 4 个 `CleanupExpired`（Conversation/Knowledge/Secret/Session）仍未注册。
+- **#12**：确认 quota/spawn-gate/population 三阶段接线存在（`serve_agents.go:97/114/131`），仅 Chaos/Sandbox 未接。
+- **#13**：**确认仍未修**——`FetchPendingTasks`/`MarkCompleted`/`MarkFailed`/`Reconcile` 零生产调用，`ProductionMemoryManager` 仅测试构造。
+- **#14**：**确认仍未修**——`NewConsole`（`serve_routine.go:78-84`）未传 `WithPruneConfig`，`Pruner`（`plugin.go:202-205`）从未创建。
+
+**第四轮贯穿性结论**：累计 **18 项 = 10 已修 + 2 部分修（#7、#12）+ 6 待处理（#13、#14、#15、#16、#17、#18）**。新增 **#15 是唯一"纯数据流"型缺陷**（非装配层）——单测全部通过（测试直接构造证据时总是设置 CapabilityName），生产链路却丢失该字段；此类缺陷比装配层问题更难被单测发现。完整报告见 `REVIEW_SUMMARY.md`。
+
+---
+
+## 第五轮（2026-08-25）：并行子 agent 深读 workflow/core/evolution/tools/llm/ares_runtime/ares_mcp
+
+用并行子 agent 对 7 个尚未深读或需复核的模块逐文件 bug-hunt。**本轮修复 5 个真 bug + 新记录若干开放回路/缺陷。**
+
+**本轮已修（5 个，均已 `go build`+`go test`+改动包 `-race` 绿）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 19 | `evolution/llm_adapter.go` `parseAddEdge`(L177)/`parseRemoveEdge`(L203)：`len(parts) < 4` 守卫后却读 `parts[4]` → 输入 `"add edge A ->"`（4 字段）**索引越界 panic**。该解析器跑在 bootstrap LLM 建议 goroutine（15min ticker），**无 recover** → LLM 输出截断的 edge 指令会崩进程 | 高 | ✅ **已修**：守卫改 `len(parts) < 5`（两处）。 |
+| 20 | `llm/failover.go` `Generate`(L244)/`GenerateStream`(L337)：所有 provider 冷却时 `lastErr==nil`，却 `fmt.Errorf("...%w", nil)` → 产出 `%!w(<nil>)` 且非 nil 包空错误。`Chat`(L388) 已有 nil 守卫，另两个漏了 | 高 | ✅ **已修**：补 `if lastErr == nil` 返回"all N cooled down"明确错误。 |
+| 21 | `ares_runtime/manager.go` `RestartAgent`(L332-337)：释放 `m.mu` 后读 `ma.cancel`/`ma.agent`，与 `ResumeAgent`/`PauseAgent` 锁内写同字段 **data race**（`StopAgent` 已正确锁内捕获，此处漏） | 高 | ✅ **已修**：锁内捕获 `prevCancel`/`prevAgent` 再于锁外使用。 |
+| 22 | `ares_runtime/manager.go` `NotifyAgentDead`(L536)→`scheduleResurrection`(L579)：`isStopped` 守卫检查与 `m.g.Go` 不在同一临界区，Stop 若在二者间插入 → `WaitGroup reused before Wait returned` panic | 中 | ✅ **已修**：`scheduleResurrectionLocked` 移进持锁闭包，errgroup Add 与 isStopped 检查原子化。 |
+| 23 | `evolution/candidate.go` `containsDangerousPattern`(L320)：对原文 `strings.Contains` 匹配小写模式串 → `"IGNORE ALL SAFETY"` 大写变体**绕过危险指令闸门** | 中 | ✅ **已修**：先 `strings.ToLower` 再匹配。 |
+
+**本轮新记录（未修，多为开放回路/低危）：**
+
+| # | 缺陷 | 严重 | 状态 |
+|---|------|------|------|
+| 24 | `evolution/coordinator/coordinator.go` `Evaluate`(L400/425)：`patchHistory`/`decisions` append-only 无 cap，**在 live path 上**（bootstrap LLM ticker 每 15min `Evaluate`）→ 进程生命周期内单调增长 | 中 | ⚠️ 已记录，未修（唯一"live path 无界增长"，比装配层 #13/#14 更实） |
+| 25 | `evolution/candidate_pipeline.go` `Release`(L197)：`registry.Register("profile:"+role,...)` 对已注册 target 报错 → 同一 role 第二次 release 必失败（应用 `Replace`） | 中 | ⚠️ 已记录，未修（pipeline 属开放回路，仅 examples/tests 可达） |
+| 26 | `ares_mcp/factory.go` `Create`(L105-108)：`connectCtx` `defer cancel()` 会级联取消 `client.ctx`（`client.go:78` 从传入 ctx 派生）→ 工厂返回的 tool **连接已死**，注释"lifecycle extends beyond"是错的 | 高（但开放回路） | ⚠️ 已记录，未修（`NewMCPToolFactory` 仅测试构造，生产未接） |
+| 27 | `ares_mcp/client.go` `receiveLoop`(L310)：每条 `tools/listChanged` 通知 `eg.Go` + `ListTools`，无限流 → 恶意/故障 server 洪泛通知致 goroutine 无界增长 | 中 | ⚠️ 已记录，未修 |
+| 28 | `ares_mcp/transport_stdio.go` `Send`(L121)：忽略 ctx，持 `t.mu` 调 `stdin.Write` 无 deadline → 子进程停读则永久阻塞并卡死 `Close` | 中 | ⚠️ 已记录，未修 |
+| 29 | `ares_mcp/config_watcher.go`(L104)：debounce 内层阻塞 select 使快速保存不合并、且 200ms 内停止 drain fsnotify 事件；ctx.Done 路径 timer 未 Stop | 中（开放回路） | ⚠️ 已记录，未修（`NewMCPConfigWatcher` 仅测试构造，热重载生产未接） |
+| 30 | `tools/resources/builtin/pdf/pdf.go`：`WithAllowedDir` 从未被生产调用（`builtin.go:184`/`api/tools/builtin.go:72` 都 `NewPDFTool()` 无选项）→ `allowedDir==""`，沙箱检查跳过，`pdf_tool` 可读任意路径（`/etc/passwd`），与已沙箱的 FileTools 不一致 | 中（安全） | ⚠️ 已记录，未修（建议 0.3.1 补 sandbox） |
+| 31 | `workflow/engine/mutable_dag.go` `ReplaceNode` same-ID 分支(L732)：只加新依赖边不删旧边 → `recalculateDegrees` InDegree 错、拓扑序错 | 中（开放回路） | ⚠️ 已记录，未修（`graph.Graph` 仅作演化 patch target，无生产 Execute） |
+| 32 | `core/errors/*` 整包零 importer（含测试）——完整 DLQ/retry/alert 子系统 + ~1500 行测试但无任何生产/测试消费方 | 低 | ⚠️ 已记录（纯 dead package） |
+
+**本轮开放回路补充（不单列编号，归入既有 register-but-never-wired 结论）**：
+- `ares_runtime`：约 20 个 plugin 构造器（`NewObserverPlugin`/`NewArenaPlugin`/`NewCheckpointPlugin`/各 router/collector 等）零生产调用——但 `serve_routine.go:49-61` 已注释说明为**刻意的"capability reserve"**，非误删。`CheckpointPlugin.Cleanup` 未接是 checkpoint map 无界增长的潜在诱因（插件本身未接线，暂无害）。
+- `tools`：整个 plugin-factory 子系统（`NewPluginRegistry`）、`CapabilitySelector`/`NewToolScorer`/`TagSelector` 选择层、`code_runner.SetTimeout`（dead-write 空设）均实现+测试但零生产接线。
+- `llm`：整个 streaming 路径（`Client.GenerateStream`/`FailoverClient.GenerateStream`）+ output adapter 的 tool-calling API（`GenerateWithTools`）+ `parser.go` 多数 Parse* + `timeout.go` 多数 With* 助手——生产仅用 `Chat`/`GenerateWithParams`/`ParseRecommendResult`，其余仅测试可达。故 #26/#28 类 streaming leak 目前**不可达生产**。
+- `workflow`：scheduler 族（`NewPriorityScheduler` 等）/`NewToolNode`/`NewAgentNode`/HITL plugin/`NewWorkflowReloader`/`NewOutputStore` 全部零生产调用——`graph.Graph` 无 `Execute` 方法，仅作演化 patch 的目标结构。
+- `evolution`（旧包）：除 `LLMAdapter`（bootstrap 15min ticker 用）外，整个 Candidate→Verify→Promote pipeline（`NewCandidatePipeline`/`NewGAGenerator`/`NewDiagnoser` 等）仅 examples/tests 可达，已被 `internal/ares_evolution` 取代。
+
+**第五轮贯穿性结论**：累计 **32 项 = 15 已修（+#19-#23）+ 2 部分修（#7、#12）+ 15 待处理**。本轮验证了此前判断：真 bug 集中在**少数被实际接线的热路径**（evolution LLM adapter、llm failover、ares_runtime manager），而绝大多数模块的问题是**开放回路（实现+测试但未接生产）**。`ares_mcp` 的 #26/#28（连接被 defer cancel 杀死、Send 无 ctx）代码危险但因工厂/热重载未接线暂不可达；一旦 0.3.1 接线需先修。安全项 #30（pdf 沙箱未启用）建议随 0.3.1 修。
+
+**贯穿性结论**：全部 14 项 = **10 已修（#1-#6、#8、#9、#10、#11）+ 2 部分修（#7、#12）+ 2 未修（#13、#14）**。仍开放/部分开放的项清一色是"装配/注册层"问题——组件被实现、被测、甚至被引用，但缺少一个逻辑上的生产消费/构造方。代码库在生命周期/循环/goroutine/事件消费层**极其规整**（errgroup/WaitGroup/ctx.Done/ticker.Stop/panic-recover 全覆盖），在纯数据流与纯类型层也干净（compiler/pipeline/provider/knowledge/eval/protocol 等）。真正残留的缺陷集中在: register-but-never-consume / start-but-never-read / adapter-never-constructed。
 
 **注（轻微，未单列）**：legacy `comp.Evolution.EvaluatorRegistry`(llm_judge) 在 provide_evolution.go 创建但无下游 `Get/Evaluate` 消费（仅 NEW `Coordinator.Evaluate` 生效）；ares_memory `BuildPromptMessages` 重复调 `snapshotTuning()`(L625/L660) 无害；knowledge store 构造器的 `context.Background()` 仅用于迁移 `initTables` 无泄漏。**收尾轮补充的轻微项**：`retrieval_embedding.go` `getEmbeddingCached`(L66-70) 命中不刷新 access list → 实际 FIFO 非真 LRU（bounded 1000，非泄漏）；`ahp/queue.go` `IsFull`(L190) 不计 backupBuffer 而 `Available`(L199) 计（无害，`SendMessage` 刻意不用 `IsFull` 避免 TOCTOU）；`retrieval_search.go:790` `var _ = strings.ToLower` 抑制未用 import 的 dummy（风格）；heartbeat（`ahp.NewProtocol`/`NewHeartbeatMonitor`/`NewHeartbeatSender` + `sub.heartbeatSender`）零生产构造，属 peer-mode 刻意未接线（`peer_agents.go:52`/`peer_mode.go:299` 显式传 nil），归 register-but-never-wired 同族，非缺陷。
 
@@ -117,19 +176,14 @@
 - **残留（轻微，非阻断）**：`EventDiscovery*` 目前只进 EventStore 供 timeline/审计通道消费，**尚无业务侧订阅者**做"发现→MCP 自动注册"的闭环动作。若产品需要自动注册发现的 MCP server，仍需接一个订阅消费者。默认 `cfg.Discovery.Enabled=false`。
 - **结论**：核心 open loop（发现即丢弃）已闭合；"自动注册"是可选增强，非缺陷。
 
-### 🟡 #11 SKILLS 渐进披露 + 工具能力搜索 — 部分已修（2026-08-25 二次核实，commit a4e4c147）
-- **已修部分**：`skills_wiring.go` 的 `wireSkills`（`bootstrap.go:265`，serve 路径）构造 `ares_skills.NewCatalog(...)` + `catalog.Build()` + `skills.NewRegistry()` + `catalog.SeedRegistry(reg)` + `setter.SetSkillsRegistry(reg)`（type-assert `skillsRegistrySetter`）。memory manager 的 "Available skills" 渐进披露块在 serve 已被填充。git blame commit a4e4c147，注释 "REVIEW #11 closure"。Catalog Close 已挂 cleanup。
-- **仍缺**：`internal/tools/envcap`（`NewSearcher(tools, skills.Registry, cmds *discovery.Discoverer)`，工具能力检索）**全仓库零生产调用**——SKILLS 的"tool capability search"那半仍未接线。
-- **待办**：若需要 agent 侧工具能力搜索，在 serve 装配构造 `envcap.NewSearcher(...)` 并接入工具选择路径。
-- **状态**：部分修复（progressive disclosure 已生效；envcap 工具能力搜索仍空转）。
-
-### ★★ #12 "演化内核"适配器未接入 serve 装配 — M2 策略不生效（已记录，未修）
-- **现象**：`internal/aresrecovery` 实现了一组"演化内核"适配器，把活跃演化策略（`StrategyStore`）强制施加到运行时：`EvolutionAwareSpawner`（M2-1 孵化策略：`spawn.enabled`/`spawn.max_concurrent`/`spawn.preferred_capabilities`）、`PopulationAdapter`+`RunKernelEvolutionLoop`（周期性执行群体策略）、`NewChaos`（混沌/恢复）、`NewEvolutionAwareQuotaManager`。**全仓库非测试代码零构造这些适配器**（二次核实 grep 确认：`NewEvolutionAwareSpawner/NewChaos/NewPopulationAdapter/RunKernelEvolutionLoop/NewEvolutionAwareQuotaManager` 均 0 生产引用）。
-- **佐证**：`ares_bootstrap/spawn_policy_source.go` 的 `NewSpawnPolicySource`/`evolutionSpawnPolicySource`（把 `StrategyStore`→`SpawnPolicySource`）已定义，但唯一消费者 `EvolutionAwareSpawner.source`（evolution_spawner.go:55/68/113）从不被构造 → 该适配器在 serve 下是死代码。二次核实：`NewSpawnPolicySource` 也无任何非测试调用方。
-- **对照**：aresrecovery 在 `cmd/ares` 里真正被接的只有——观测面（`EvolutionTracer`/`FeedbackStore`/`GlobalTracer`，bootstrap.go:296-298）、W4 反馈回路（`peer_mode.go:144` `RunEvolutionFeedbackLoop`）、IPCDM 策略（`evolution_ipc.go:89` `NewEvolutionAwareIPC`）、dashboard 变更归因（`dashboard_observability.go:57` `NewChangeAttributor`，只读展示）。列表**缺**孵化器/群体/混沌/配额四个执行侧适配器。
-- **后果**：标准 `ares serve` 路径下，演化策略里 `spawn.max_concurrent`、`preferred_capabilities`、群体上限、混沌/恢复策略**不生效**（孵化政策退回普通 spawn；群体/混沌/配额循环不跑）。仅 W4 反馈回路与 IPC 策略活着。
-- **待办**：在 serve（bootstrap）装配中构造 `EvolutionAwareSpawner`+`NewSpawnPolicySource(store)`、`PopulationAdapter`+`RunKernelEvolutionLoop(ctx,...,interval,timeout)`（挂 bgGroup）、暴露 `NewChaos`/配额管理器；确认 M2 是否已进入 serve 阶段。
-- **状态**：未修。
+### ✅ #11 SKILLS 渐进披露 + 工具能力搜索 — 已修（第三轮补齐两半，2026-08-25）
+- **上半（渐进披露，已生效）**：`skills_wiring.go` 的 `wireSkills`（`bootstrap.go:265`，serve 路径）构造 `ares_skills.NewCatalog(...)` + `catalog.Build()` + `skills.NewRegistry()` + `catalog.SeedRegistry(reg)` + `setter.SetSkillsRegistry(reg)`（type-assert `skillsRegistrySetter`）。memory manager 的 "Available skills" 渐进披露块在 serve 已被填充。Catalog Close 已挂 cleanup。`wireSkills` 现返回 `(*Catalog, *skills.Registry)`，seed 出的 registry 存入 `comp.SkillsRegistry` 供下半复用。
+- **下半（工具能力搜索，本轮补齐）**：
+  - `internal/tools/envcap` 新增 `RegistryLister`（把 `*core.Registry` 的 `List()`+`Get()` 适配成 `ToolLister`，每次取快照，Get 竞态返回 false 时跳过）与 `SearchTool`（`search_tool.go`，包装 `Searcher` 为 `core.Tool`，名 `search_capabilities`，参数 `query`+可选 `limit`，默认上限 20；错误走 `Result.Success=false` 而非 transport error）。
+  - `registerCapabilitySearch`（`tools.go:107`）用 `envcap.NewSearcher(NewRegistryLister(internalReg), comp.SkillsRegistry, nil)` 构造并 `internalReg.Register(tool)`；在 `serve.go:236` 于 `newToolBinder` **之前**调用，使工具自然流入 agent 工具集。
+  - **两源而非三源（关键修正）**：native command 源传 `nil`。因为 `registerNativeTools`（`serve.go:227`）已先把每个白名单命令作为 `CommandTool` 注册进同一 registry，经 `RegistryLister` 以 `KindTool` 呈现；若再给 envcap 传一个 `discovery.NewDiscoverer` 会导致**双重列举** + **每次搜索重探主机**（`command -v`/`--help`）。envcap 包注释已同步说明该设计。
+  - `comp.SkillsRegistry` 为 nil（技能禁用）时 Searcher 跳过该源，无 panic。
+- **状态**：完全修复。渐进披露块 + `search_capabilities` 工具两半齐活；envcap 零生产调用问题消除。测试：`search_tool_test.go`（含 RegistryLister/limit/nil-skill/require-query）+ `skills_wiring_test.go`（registry 回传断言）。
 
 ### 🟡 #7 存储过期/衰减清理 — 部分已修（2026-08-25 二次核实）
 - **已修部分**：`maintenance_worker.go` 的 `startExpiryCleanupWorker`（`bootstrap.go:297`，serve 路径）每小时 purge 已注册的 cleaner；`experiences_1024` 已通过 `bootstrap_steps.go:53` 注册（`ExperienceRepository` 实现 `ExpiryCleaner`）。best-effort、panic-recover、ctx 受管，闭环正确。
@@ -161,6 +215,15 @@
 - **现象**：`sub.New` 两个生产调用点（`cmd/ares/peer_agents.go:52`、`cmd/ares/peer_mode.go:299`）均显式传 `nil` 给 message queue 与 heartbeat monitor，注释明确 "fabric owns scheduling; no AHP queue loop" / "no Process/Launch lifecycle in peer mode"。
 - **确认**：`ahp.NewProtocol`、`ahp.NewHeartbeatMonitor`、`ahp.NewHeartbeatSender`、`sub.heartbeatSender` 均零生产构造/调用（grep 空）。
 - **结论**：属**刻意未接线的 peer-mode 设计**，与 #7-#12（register/define but never-wired）同族，**不单列为新缺陷**。
+
+### 🟡 #12 "演化内核"适配器 serve 装配 — 部分已修（2026-08-25 二次核实纠正）
+- **纠正**：先前记录"四个适配器全零构造"已过期。核实 `cmd/ares/serve_agents.go`，GA 执行侧**已分三阶段接线**：
+  - **stage-1 quota**（`serve_agents.go:97-99`）：`NewEvolutionAwareQuotaManager` + `runKernelQuotaLoop`，GA budget → fabric P5 admission。无害（`UpdateResourceBudget` 原地替换）。
+  - **stage-2 spawn gate**（`serve_agents.go:112-116`）：`NewEvolutionAwareSpawner` + `recovery.WithSpawner`。**刻意只作用于 recovery 替换 spawn**（`SpawnForRecovery` 跳过 MaxConcurrent，避免自愈被配额卡死），不杀 agent。
+  - **stage-3 population**（`serve_agents.go:129-133`）：`NewPopulationAdapter` + `RunKernelEvolutionLoop`，GA 拓扑 → fabric spawn/retire。retire 是优雅退休非强杀。
+- **仍缺（危险项）**：`Chaos`（`chaos.go`）+ `Sandbox`（`sandbox.go`）零生产构造。`Chaos.InjectFailure`（`chaos.go:60`）会 `agents.Kill`（真实从 registry 删 agent）/`Suspend` **活跃 agent** → 干扰生产。
+- **方案**：走 Shadow Sandbox 默认（`NewSandbox` 独立 scratch fabric，生产零影响）+ Live Chaos 可选（默认关 + 多重护栏 + GA 静默窗口 + 急停）。详见 `plan/0.3.1plan/chaos_isolation.md`。
+- **状态**：部分修复（quota/spawn/population 已接且无害；chaos/sandbox 待 0.3.1 按 shadow-first 方案接线）。
 
 ### ★★ #13 异步 embedding 队列子系统全链路无消费者（已记录，未修）
 - **现象**：`internal/storage/postgres` 设计了完整的异步 embedding 回填链路——`WriteBuffer`（批量写 `knowledge_chunks_1024`/`experiences_1024`，向量列先占位 `make([]float64,1024)`，`embedding_status='pending'`）→ `EmbeddingQueue.EnqueueTx`（同事务入队）。但**队列的消费侧全链路零生产调用**：
@@ -196,8 +259,8 @@
 | ares_arena | ✅ 干净 | injector 仅转发到 ares_runtime（无阻塞 sleep）；survival 用 ticker.Stop+ctx.Done+深拷贝读；regression.go:481 semaphore+WaitGroup；http.go:450 长任务带 timeout |
 | ares_shutdown | ✅ 干净 | callbacks/manager ExecuteParallel 用 WaitGroup+done channel+ctx.Done drain，无泄漏 |
 | ares_mcp | ✅ 干净 | transport_stdio 读写泵 ctx 受管；config_watcher debounce 定时器；transport_server/SSE 泵 ctx.Done+msgCh close |
-| are_skills | ⚠️ 特性层空转 | outcome_recorder.go 订阅→consume→Record panic 恢复（✓）；但 `ares_skills`/`skills.Registry` 未接入 serve 运行时（见 #11） |
-| aresrecovery | ⚠️ 执行侧未接 | 两个 ticker loop（pop:140 / exec_feedback:332）ticker.Stop+ctx.Done+panic-recover（✓）；但 spawner/chaos/population/quota 零生产构造（见 #12）；观测面(bootstrap)与 W4(peer_mode) 已接 |
+| are_skills | ✅ 已接入 serve | outcome_recorder.go 订阅→consume→Record panic 恢复（✓）；`ares_skills`/`skills.Registry` 现经 `wireSkills`(#11 上半) 接入 serve 运行时，并经 `envcap.Searcher`(#11 下半) 供 `search_capabilities` 工具检索 |
+| aresrecovery | ⚠️ chaos/sandbox 待接 | 两个 ticker loop（pop:140 / exec_feedback:332）ticker.Stop+ctx.Done+panic-recover（✓）；quota/spawn/population 三阶段已接（#12），仅 chaos/sandbox 待 0.3.1；观测面(bootstrap)与 W4(peer_mode) 已接 |
 | ares_eval / ares_experience / ares_archive / ares_observability / ares_protocol | ✅ 干净 | 五包非测试零 goroutine/ticker；ares_eval 经 provide_evolution(wiring) 注册，`AgentTestRunner` 消费；ares_experience 经 provide_distillation 闭环(写入 experiences_1024→读取) 供 Track A guidance；观测面 M3-1/M3-2/M4-1 读写两侧均be接；ares_protocol 为纯 AHP 数据类型。轻微：legacy `comp.Evolution.EvaluatorRegistry`(llm_judge) 被创建但无 `Get/Evaluate` 消费（仅 NEW `Coordinator.Evaluate` 生效，见注） |
 | agentfabric / agents (lease) | ✅ 干净 | agentfabric 非测试零 goroutine/ticker；agents/lease 过期由 kernel_loop.go W1 循环 `RequeueExpiredLeases`(recovery.go:145→fabric.CheckExpiredLeases) 驱动，sem-guarded+panic-recover+timeout 已接，无泄漏 |
 | cmd/ares serve wiring | ✅ 干净 | serve.go:118 `WaitBackground()` 收口 bgGroup；:267 `mgr.Start`；:312/319 Dashboard Start/Stop；serve_routine.go:246 `SystemRuntime.Shutdown`；:86 plugin.Start；AKF service 复用共享 `comp.KnowledgeRuntime`(serve.go:208-209) 闭合 AKG 读回路 |
@@ -219,7 +282,7 @@
 | llmservice | ✅ 干净。`Service.Generate`（tool 消息路由 Chat API vs 普通 Generate）、`GenerateEmbedding`（类型断言 embedder 接口）、`GenerateSimple` 均正确；repo 日志 best-effort warn。**非死包**：经 `api/service/llm` 公开包被 `sdk/sdk.go:245`（`llm.NewService`）与 `agentloop/engine.go` 消费。先前"死包"猜测已否定。 |
 | storage/postgres (embedding_queue/write_buffer) | ✅ 代码本身干净（idempotency/lost-update/DLQ/Reconcile 正确），但整套子系统生产未接线 → 见 #13。 |
 | storage/postgres repositories | ✅ CleanupExpired 5 处实现均正确（DELETE + RowsAffected）；仅 experiences 接进 maintenance worker → 见 #7。 |
-| monitoring/dashboard | ✅ 逻辑干净（tabs 自封顶、publisher/collector ctx 受管），但 DAG 节点无界增长 #14 + 两套子系统臃肿 → 规划 0.3.1 重设计（`plan/0.3.1_monitoring.md`）。 |
+| monitoring/dashboard | ✅ 逻辑干净（tabs 自封顶、publisher/collector ctx 受管），但 DAG 节点无界增长 #14 + 两套子系统臃肿 → 规划 0.3.1 重设计（`plan/0.3.1plan/monitoring.md`）。 |
 | detector | ✅ 干净。`environment.go` `Detect` 只读探测（Ollama/API keys/PG/MCP），ctx + per-call timeout，never-panic 契约；经 `sdk/quickstart.go:15` 消费。 |
 
 ### 重点排查类型

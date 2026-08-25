@@ -70,7 +70,7 @@ func TestAttachEvolutionKnowledgeProvider(t *testing.T) {
 func TestKnowledgeRuntime_EvolutionProviderStreamsStrategies(t *testing.T) {
 	store := ares_evolution.NewMemoryStrategyStore(0)
 	strategy := &ares_evolution.Strategy{
-		ID:      "strat-1",
+		ID:      "strategy-1",
 		Version: 1,
 		Params:  map[string]any{paramTemperature: 0.8},
 	}

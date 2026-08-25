@@ -22,6 +22,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -45,6 +46,13 @@ type Components struct {
 	Memory       ares_memory.MemoryManager
 	EventStore   ares_events.EventStore
 	Distillation *aresexp.DistillationService
+	// SkillsRegistry is the progressive-disclosure skill index seeded by
+	// wireSkills (REVIEW #11 closure). It powers two readers: the memory
+	// manager's resident "Available skills" block (attached via
+	// SetSkillsRegistry) and the environment-capability searcher (envcap) in
+	// serve, which exposes skills as searchable tool capabilities. Nil when
+	// memory is disabled or skill wiring was skipped.
+	SkillsRegistry *skills.Registry
 	// Discovery holds the optional service discovery engine. It is nil when
 	// cfg.Discovery.Enabled is false (the default), preserving prior behavior.
 	Discovery *DiscoveryComponents
@@ -259,10 +267,15 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 4b. SKILLS progressive disclosure (REVIEW #11 closure): assemble the
 	// skill catalog once and seed it into the memory manager so the resident
 	// "Available skills" block is populated in serve (previously only the
-	// `ares status` CLI constructed the catalog). Best-effort: skipped when
-	// memory is disabled or the manager does not expose SetSkillsRegistry.
+	// `ares status` CLI constructed the catalog). The seeded registry is also
+	// stored on comp.SkillsRegistry so the serve launcher can feed it to the
+	// environment-capability searcher (envcap), completing the second half of
+	// progressive disclosure: skills become searchable tool capabilities, not
+	// just a resident prompt block. Best-effort: skipped when memory is
+	// disabled or the manager does not expose SetSkillsRegistry.
 	if comp.Memory != nil {
-		if catalog := wireSkills(ctx, comp.Memory, mcp); catalog != nil {
+		if catalog, reg := wireSkills(ctx, comp.Memory, mcp); catalog != nil {
+			comp.SkillsRegistry = reg
 			cleanups = append(cleanups, func() {
 				if err := catalog.Close(); err != nil {
 					log.Warn("bootstrap: cleanup skills catalog close error", "error", err)
