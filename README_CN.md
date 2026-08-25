@@ -202,6 +202,36 @@ result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "查找 Go
 
 ## 架构
 
+### 核心心智模型：Agent 即进程，Task 即工作线程
+
+ARES 借用操作系统的调度模型作为**设计视角**——这是一个塑造 API 的类比，
+而非"我们是真正的操作系统"的声明。这层映射在代码里是字面落地的：
+
+| 操作系统概念 | ARES | 位置 |
+|---|---|---|
+| 进程 / PCB | **Task** —— 可持久化，独立于执行者存活，有显式状态机（READY→RUNNING→SUSPENDED→…） | `internal/taskfabric` |
+| 所有权 / fencing token | **Lease + epoch** —— 被恢复的任务会拒绝旧属主的迟到写入 | `taskfabric.Fabric.Acquire/Preempt` |
+| 被调度的执行单元 | **Agent** —— 获取任务、执行、让出 | `internal/agentfabric` + `internal/kernelscheduler` |
+| 时间片 | **Quantum（量子）** —— **一轮** ReAct（reason → tool → observe → checkpoint），然后让出 | `agentfabric/chat_cognition.go`、`taskfabric.Yield` |
+| 上下文保存/恢复 | **Checkpoint + 事件溯源重放** —— 崩溃 Agent 的任务被重新入队、在别处恢复 | `internal/aresrecovery` |
+| 调度策略 | 能力匹配 × 负载 × 置信度、优先级、工作窃取 | `kernelscheduler.Scheduler` |
+
+**必须实事求是地说清楚它是什么、不是什么：**
+
+- 调度是**协作式的，不是 token 级抢占**。Agent 只在**语义边界**（一轮
+  ReAct 结束）让出，绝不会在一次 LLM 调用中途被打断。`PreemptLowerPriority`
+  只是在下一个 quantum 边界把低优先级任务标回 READY，并不中断正在执行的步骤。
+  单次失控的 LLM 调用靠超时兜底，而非被切片。
+- 一个"quantum"是一轮工具调用，不是一条 CPU 指令。粒度**刻意粗**——调度单位
+  是一个认知步骤。
+- 默认 fabric 是**内存内、单进程**的。任务跨重启的持久性依赖 Postgres 事件
+  存储；这个类比**不意味着**分布式调度器。
+- 这是**实验性**的。模型已实现并测试（可持久任务状态机、lease/epoch fencing、
+  quantum 让出/恢复、恢复链），但它是一个活跃演进中的运行时设计，而非已加固的内核。
+
+支撑整个模型的一条不变式：**Agent 崩溃是执行失败，不是任务失败**——任务的
+lease 过期、回到 READY、其 checkpoint 在另一个执行者上恢复。
+
 ### 闭环运行时架构（终极视图）
 
 两个视图：**组件地图**（正向接线，按 bootstrap 装配顺序自上而下）与**六条反馈闭环**（回馈运行时的边）。每条环都有回归测试锁定（见下表）。
@@ -406,32 +436,6 @@ go run examples/06-chaos-resilience/main.go
 | English | [Architecture](docs/articles/en/01-architecture-overview-deep-dive.md), [Agent Harmony](docs/articles/en/02-agent-harmony-protocol.md), [Memory & Distillation](docs/articles/en/03-memory-distillation-deep-dive.md), [Workflow Engine](docs/articles/en/04-workflow-engine-deep-dive.md), [Tool System](docs/articles/en/05-tool-system-deep-dive.md), [Security & Observability](docs/articles/en/06-security-observability-deep-dive.md), [Runtime Lifecycle](docs/articles/en/07-runtime-lifecycle-deep-dive.md), [Event System](docs/articles/en/08-event-system-deep-dive.md), [Chaos Arena](docs/articles/en/09-arena-fault-injection-deep-dive.md), [Retrieval System](docs/articles/en/10-retrieval-system-deep-dive.md), [Autonomous Evolution](docs/articles/en/11-autonomous-evolution-deep-dive.md), [Security Hardening](docs/articles/en/12-security-hardening-deep-dive.md), [Bootstrap & API](docs/articles/en/13-bootstrap-api-deep-dive.md), [Plugin System](docs/articles/en/14-plugin-system-deep-dive.md), [MCP Integration](docs/articles/en/15-mcp-integration-deep-dive.md), [Flight Recorder](docs/articles/en/16-flight-recorder-deep-dive.md), [SDK Layer](docs/articles/en/17-sdk-layer.md), [Knowledge Graph Build](docs/articles/en/18-knowledge-graph-build.md), [Storage Layer](docs/articles/en/19-storage-layer.md), [LLM Client Layer](docs/articles/en/20-llm-client-layer.md), [Evaluation Framework](docs/articles/en/21-evaluation-framework.md), [Config System](docs/articles/en/22-config-system.md), [Quant Trading Module](docs/articles/en/23-quant-trading.md), [GA Deep Dive](docs/articles/en/24.1-ga-deep-dive.md), [GA Tiered Scorer](docs/articles/en/24.2-ga-tiered-scorer.md), [GA Selection Benchmark](docs/articles/en/24.3-ga-selection-benchmark.md), [GA Promoter](docs/articles/en/24.4-ga-promoter.md), [GA Genealogy](docs/articles/en/24.5-ga-genealogy.md), [GA in the Trenches](docs/articles/en/24.6-ga-in-the-trenches.md), [config.yaml Guide](docs/articles/en/25-config-yaml-guide.en.md) |
 | 中文 | [架构](docs/articles/zh/01-architecture-overview-deep-dive.md), [Agent 通信协议](docs/articles/zh/02-agent-harmony-protocol.md), [记忆与蒸馏](docs/articles/zh/03-memory-distillation-deep-dive.md), [工作流引擎](docs/articles/zh/04-workflow-engine-deep-dive.md), [工具系统](docs/articles/zh/05-tool-system-deep-dive.md), [安全与可观测性](docs/articles/zh/06-security-observability-deep-dive.md), [运行时生命周期](docs/articles/zh/07-runtime-lifecycle-deep-dive.md), [事件系统](docs/articles/zh/08-event-system-deep-dive.md), [混沌测试](docs/articles/zh/09-arena-fault-injection-deep-dive.md), [检索系统](docs/articles/zh/10-retrieval-system-deep-dive.md), [自主进化](docs/articles/zh/11-autonomous-evolution-deep-dive.md), [安全加固](docs/articles/zh/12-security-hardening-deep-dive.md), [Bootstrap 与 API](docs/articles/zh/13-bootstrap-api-deep-dive.md), [插件系统](docs/articles/zh/14-plugin-system-deep-dive.md), [MCP 集成](docs/articles/zh/15-mcp-integration-deep-dive.md), [Flight Recorder](docs/articles/zh/16-flight-recorder-deep-dive.md), [SDK 层](docs/articles/zh/17-sdk-layer.md), [知识图谱构建](docs/articles/zh/18-knowledge-graph-build.md), [存储层](docs/articles/zh/19-storage-layer.md), [LLM 客户端层](docs/articles/zh/20-llm-client-layer.md), [评估框架](docs/articles/zh/21-evaluation-framework.md), [配置系统](docs/articles/zh/22-config-system.md), [量化交易模块](docs/articles/zh/23-quant-trading.md), [GA 深度解析](docs/articles/zh/24.1-ga-deep-dive.md), [GA 分层评分](docs/articles/zh/24.2-ga-tiered-scorer.md), [GA 选择算子对比](docs/articles/zh/24.3-ga-selection-benchmark.md), [GA 晋升系统](docs/articles/zh/24.4-ga-promoter.md), [GA 谱系记录](docs/articles/zh/24.5-ga-genealogy.md), [GA 实战经验](docs/articles/zh/24.6-ga-in-the-trenches.md), [config.yaml 配置指南](docs/articles/zh/25-config-yaml-guide.zh.md) |
 
-## 项目结构
-
-```
-├── sdk/           # 统一 SDK（package sdk）
-├── cmd/ares/      # CLI 入口（evolution status/run）
-├── evaluation/    # 评估框架
-├── examples/      # 24+ 个可运行示例
-│   └── runtime_evolution/  # 进化演示（basic / knowledge / full）
-├── docs/          # 文档和文章
-├── api/           # 公开 API 接口
-└── internal/
-    ├── evolution/         # 运行时进化系统
-    │   ├── genome/        # 5 个 Genome 实现（Workflow/Scheduler/Knowledge/Recovery/Prompt）
-    │   ├── diff/          # Diff Engine（4 个 Differ 实现）
-    │   ├── coordinator/   # Evolution Coordinator（7 个 PatchSource、PolicyGenome）
-    │   ├── patch/         # RuntimePatch 类型 + Registry + Apply/ApplySet
-    │   └── llm_adapter.go # LLM 参与者适配器
-    ├── ares_evolution/    # 策略级 GA（种群、NSGA-II、交叉、变异、经验系统）
-    ├── evidence/          # Evidence 数据原语 + MemoryStore
-    ├── workflow/
-    │   ├── graph/         # GraphPatchExecutor（7 种 Patch 类型）
-    │   └── engine/        # RecoveryPatchExecutor
-    ├── knowledge/
-    │   └── runtime/       # KnowledgePatchExecutor
-    └── ares_bootstrap/    # 装配中心（ProvideNewEvolution）
-```
 
 ## 运行时进化
 
@@ -542,21 +546,6 @@ RealWorldEvolution (100 gen)          100  10.05ms   4.4MB 61871 allocs
 go run examples/10-ga-full-evolution/main.go   # 完整 GA 进化演示
 go run examples/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
 ```
-
-## 候选发布闭环（0.3.0）
-
-进化产出的策略通过 **`CandidatePipeline`** 形成从生成到发布的**分层门禁**：
-
-```
-NewCandidate → Verify（门1 静态 + 门2 证据 + 门3 回归）→ Verified
-             → Release（coordinator 决策 + canary）→ 发布前门3再确认 → SetStable → Promoted
-```
-
-- **门3 回归检查**：`CandidateVerifier` 与 `CandidatePipeline.Release` 共用同一个 `CandidateRegressionChecker`（注入 `WithRegressionCheck` / `WithReleaseRegressionCheck`），用 **`LLMArenaScorer`**（`internal/ares_evolution/service/llm_arena_scorer.go`）调真实 LLM 对比 stable 指令 vs 候选 diff 在保留案例上的表现，统计显著变差则拒绝。
-- **`BatchScorer` 批量合并**：`ares_arena.BatchScorer` + `LLMArenaScorer.ScoreBatch` 把一次回归的所有 runs 合并成 2 次 LLM 调用（应对低 rpm 限流）。
-- **顶层编排器**：`internal/evolution/gate3_orchestrator.go` 的 `BuildRegressionGate3` / `LoadRegressionGate3` 从 YAML 装配 `llm.Client`（支持 openai / openrouter / anthropic / ollama），并可组成 FailoverClient 主备链路在限流时自动切换。
-
-真实运行示例与完整日志：`examples/15-llm-evolution-suite`（真实 LLM 的 `scorer` / `regression` / `gate3` / `release` 四个场景，各自写入 `logs/run-<ts>.log`）；离线可复现的 GA 候选进化见 `examples/19-ga-candidate-e2e`。
 
 ## 许可证
 

@@ -98,6 +98,7 @@ make examples          # build all examples
 | **Memory** | Session context, task distillation, vector similarity search |
 | **Durable archive & retention** | Per-stream event-round archive (concurrent streams never overwrite each other's rounds) + scheduled TTL purge across sessions / knowledge / conversations / secrets |
 | **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
+| **Candidate release pipeline (0.3.0)** | `CandidatePipeline`: candidate → 3-gate validation (static / evidence / regression) → release gate → `SetStable`; gate 3 uses `LLMArenaScorer` + `BatchScorer` (batched/merged requests) for LLM-driven retained-case regression, with `FailoverClient` multi-provider chains (openai / openrouter / anthropic / ollama) auto-switching |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Capability-based agent registration (`RegisterAgent`) + task dispatch (`Submit`) with peer IPC and recovery |
 | **Observability** | OpenTelemetry traces, structured logs, Prometheus metrics |
@@ -450,6 +451,41 @@ The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the
 
 Full design: [ARES Runtime 设计文档](docs/zh/architecture/ares-runtime.md) / [ARES Runtime Design](docs/en/architecture/ares-runtime.md) (authoritative model, bilingual).
 
+### The mental model: agent-as-process, task-as-thread-of-work
+
+ARES borrows the operating-system scheduling model as a **design lens** — it is
+an analogy that shapes the API, not a claim to be a real OS. The mapping is
+literal in the code:
+
+| OS concept | ARES | Where |
+|---|---|---|
+| Process / PCB | **Task** — durable, outlives its executor, has an explicit state machine (READY→RUNNING→SUSPENDED→…) | `internal/taskfabric` |
+| Ownership / fencing token | **Lease + epoch** — a resumed task rejects a stale owner's late write | `taskfabric.Fabric.Acquire/Preempt` |
+| Scheduled execution unit | **Agent** — acquires a task, runs it, yields it back | `internal/agentfabric` + `internal/kernelscheduler` |
+| Time slice | **Quantum** — **one** ReAct round (reason → tool → observe → checkpoint), then yield | `agentfabric/chat_cognition.go`, `taskfabric.Yield` |
+| Context save/restore | **Checkpoint + event-sourced replay** — a crashed agent's task is requeued and resumed elsewhere | `internal/aresrecovery` |
+| Scheduler policy | capability match × load × confidence, priority, work-stealing | `kernelscheduler.Scheduler` |
+
+**Be precise about what this is and isn't:**
+
+- Scheduling is **cooperative, not preemptive at the token level**. An agent
+  yields only at a *semantic boundary* — the end of a ReAct round — never
+  mid-LLM-call. `PreemptLowerPriority` marks a lower-priority task READY at the
+  next quantum boundary; it does not interrupt an in-flight step. A single
+  runaway LLM call is bounded by a timeout, not sliced.
+- A "quantum" is one tool round, not a CPU instruction. Granularity is coarse
+  by design — the unit of scheduling is a cognitive step.
+- The default fabric is **in-memory and single-process**. Durability of tasks
+  across a restart requires the Postgres-backed event store; the analogy does
+  not imply a distributed scheduler.
+- This is **experimental**. The model is implemented and tested (durable task
+  state machine, lease/epoch fencing, quantum yield/resume, recovery), but it
+  is a runtime design under active change, not a hardened kernel.
+
+The one invariant that pays for the whole model: **an agent crashing is an
+execution failure, not a task failure** — the task's lease expires, it returns
+to READY, and its checkpoint resumes on another executor.
+
 ## Data Flow
 
 ```mermaid
@@ -653,20 +689,6 @@ go run examples/10-ga-full-evolution/main.go   # Full GA evolution demo
 go run examples/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
 ```
 
-## Candidate Release Closed-Loop (0.3.0)
-
-Evolved strategies go through a **layered release gate** via `CandidatePipeline`:
-
-```
-NewCandidate → Verify (gate1 static + gate2 evidence + gate3 regression) → Verified
-             → Release (coordinator decision + canary) → gate-3 re-check → SetStable → Promoted
-```
-
-- **Gate-3 regression check**: `CandidateVerifier` and `CandidatePipeline.Release` share the same `CandidateRegressionChecker` (via `WithRegressionCheck` / `WithReleaseRegressionCheck`), using `LLMArenaScorer` (`internal/ares_evolution/service/llm_arena_scorer.go`) to run a real-LLM preserved-case regression — stable instructions vs the candidate diff — and reject on a statistically significant drop.
-- **`BatchScorer` batching**: `ares_arena.BatchScorer` + `LLMArenaScorer.ScoreBatch` collapse all runs of a regression into 2 LLM calls (mitigates low-rpm rate limits).
-- **Top-level orchestrator**: `internal/evolution/gate3_orchestrator.go` `BuildRegressionGate3` / `LoadRegressionGate3` assemble `llm.Client` from YAML (ollama / openai providers).
-
-Live runnable examples with full logs: `examples/15-llm-evolution-suite` (real-LLM `scorer` / `regression` / `gate3` / `release` scenarios, each writing `logs/run-<ts>.log`) and the offline, reproducible `examples/19-ga-candidate-e2e`.
 
 ## License
 

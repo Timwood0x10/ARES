@@ -5,9 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-25
 
-### Fixed
+> **Agent OS (AgentOS) release**: the kernel becomes an agent operating system —
+> quantum execution, event-driven scheduling with work-stealing, a unified
+> checkpoint protocol, agent syscalls with execution attribution, flat peer
+> agents with HTTP task submission, DAG scheduling with resource enforcement,
+> lifecycle pillars with an event-driven recovery loop, and the F1 scheduling
+> feedback loop — plus the security & hardening round (JWT auth + RBAC +
+> modular audit, runtime config hot-reload, chaos-recovery e2e, agent-pool
+> benchmarks, versioning) and the Capability Fabric (SkillCatalog) release.
+
+### Fixed (post-release review)
 
 - **Archive round files scoped per stream** (REVIEW #50, data loss): the event
   archive is enabled by default and wired into `serve`
@@ -29,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (commit `871bb004`): multiple correctness fixes across the evidence
   persistence, candidate selection ordering, and evidence-collection paths.
 
-### Added
+### Added (post-release review)
 
 - **Storage expiry cleanup wired for all TTL tables** (REVIEW #7): the
   maintenance worker's hourly purge previously registered only
@@ -37,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   knowledge, conversation, secret) are now wired into the expiry cleaner set so
   every TTL-bearing table is actually purged in the `serve` path.
 
-### Changed
+### Changed (post-release hardening)
 
 - **Leader residual symbols de-leaderized** (aresos-hardening-plan H3): the
   `AresMemoryManager` checkpoint lookup is renamed
@@ -51,17 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AgentTypeTop`); and `agentipc.PolicyLegacyLeader` is renamed to
   `PolicyLegacy` while the dormant legacy dispatch branch is retained. No
   leader role is reintroduced as a Kernel role.
-
-## [0.3.0] - 2026-08-22
-
-> **Agent OS (AgentOS) release**: the kernel becomes an agent operating system —
-> quantum execution, event-driven scheduling with work-stealing, a unified
-> checkpoint protocol, agent syscalls with execution attribution, flat peer
-> agents with HTTP task submission, DAG scheduling with resource enforcement,
-> lifecycle pillars with an event-driven recovery loop, and the F1 scheduling
-> feedback loop — plus the security & hardening round (JWT auth + RBAC +
-> modular audit, runtime config hot-reload, chaos-recovery e2e, agent-pool
-> benchmarks, versioning) and the Capability Fabric (SkillCatalog) release.
 
 ### Changed (fusion Phase C/D)
 
