@@ -20,7 +20,18 @@ var allowedActions = map[string]bool{
 // fragment. JSON tags match plan/context_compression_strategy.md section 3.1.
 type RoundRecord struct {
 	// Round is the 1-based round number. Must be > 0.
+	//
+	// Round numbers are assigned PER STREAM (each event stream restarts at 1),
+	// so a bare round number is only unique within its StreamID. The archive
+	// writer persists each stream's rounds under a per-stream subdirectory to
+	// keep them from colliding on disk (see fileArchiveWriter.streamDir).
 	Round int `json:"round"`
+	// StreamID identifies the event stream this round belongs to. It scopes
+	// the round number so that, e.g., stream A's round 1 and stream B's round 1
+	// are stored independently instead of overwriting one another. Empty means
+	// the round is unscoped (legacy / single-stream) and is stored flat in the
+	// archive root. The value is sanitised before use as a directory name.
+	StreamID string `json:"stream_id,omitempty"`
 	// Action classifies the round: "plan" | "implement" | "fix" | "review".
 	Action string `json:"action"`
 	// Summary is a one-line description of what the round accomplished.

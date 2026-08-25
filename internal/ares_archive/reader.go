@@ -46,6 +46,12 @@ func NewFileArchiveReader(dir string) (*fileArchiveReader, error) {
 
 // Read returns the record for the given round number.
 //
+// Round files may live either flat in the archive root (legacy single-stream
+// layout) or under a per-stream subdirectory (REVIEW #50). Read searches the
+// root first, then any subdirectory, returning the first match. When multiple
+// streams share the same round number, use Search/Recall (which carry stream
+// context in each record) instead.
+//
 // Returns:
 //   - ErrInvalidRound (wrapped) when round <= 0.
 //   - ErrRoundNotFound (wrapped) when the round file does not exist.
@@ -59,23 +65,37 @@ func (r *fileArchiveReader) Read(ctx context.Context, round int) (*RoundRecord, 
 		return nil, fmt.Errorf("read round %d: %w", round, err)
 	}
 
-	path := filepath.Join(r.dir, fmt.Sprintf("round_%d.json", round))
-	data, err := os.ReadFile(path) //nolint:gosec // path is built from a validated integer round number, not user input
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("round %d: %w", round, ErrRoundNotFound)
+	// Search the flat root first (legacy), then each stream subdirectory.
+	name := fmt.Sprintf("round_%d.json", round)
+	candidates := []string{filepath.Join(r.dir, name)}
+	if entries, err := os.ReadDir(r.dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				candidates = append(candidates, filepath.Join(r.dir, e.Name(), name))
+			}
 		}
-		return nil, fmt.Errorf("read round %d: %w", round, err)
 	}
 
-	var record RoundRecord
-	if err := json.Unmarshal(data, &record); err != nil {
-		return nil, fmt.Errorf("unmarshal round %d: %w", round, err)
+	for _, path := range candidates {
+		data, err := os.ReadFile(path) //nolint:gosec // path is built from a validated integer round number + os.ReadDir entry names, not user input
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read round %d: %w", round, err)
+		}
+		var record RoundRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, fmt.Errorf("unmarshal round %d: %w", round, err)
+		}
+		return &record, nil
 	}
-	return &record, nil
+	return nil, fmt.Errorf("round %d: %w", round, ErrRoundNotFound)
 }
 
-// List returns all archived round numbers sorted ascending.
+// List returns all archived round numbers sorted ascending, across both the
+// flat root (legacy) and every per-stream subdirectory (REVIEW #50). Round
+// numbers that appear in multiple streams are de-duplicated.
 //
 // Corrupt filenames (e.g. "round_abc.json") are skipped with a debug log
 // entry, never returned as errors. A missing or empty directory yields a
@@ -86,22 +106,38 @@ func (r *fileArchiveReader) List(ctx context.Context) ([]int, error) {
 		return nil, fmt.Errorf("list rounds: %w", err)
 	}
 
-	matches, err := filepath.Glob(filepath.Join(r.dir, "round_*.json"))
-	if err != nil {
-		return nil, fmt.Errorf("list rounds: %w", err)
+	// Glob the flat root plus one level of stream subdirectories.
+	globs := []string{filepath.Join(r.dir, "round_*.json")}
+	if entries, err := os.ReadDir(r.dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				globs = append(globs, filepath.Join(r.dir, e.Name(), "round_*.json"))
+			}
+		}
 	}
 
 	// Use a nil slice so an empty/missing archive yields (nil, nil) rather
 	// than ([]int{}, nil) — recall CLIs rely on this to print a friendly
 	// "no archive yet" message.
 	var rounds []int
-	for _, m := range matches {
-		n, ok := parseRoundFromName(m)
-		if !ok {
-			r.log.Debug("list: skipping unparseable filename", "file", m)
-			continue
+	seen := make(map[int]bool)
+	for _, g := range globs {
+		matches, err := filepath.Glob(g)
+		if err != nil {
+			return nil, fmt.Errorf("list rounds: %w", err)
 		}
-		rounds = append(rounds, n)
+		for _, m := range matches {
+			n, ok := parseRoundFromName(m)
+			if !ok {
+				r.log.Debug("list: skipping unparseable filename", "file", m)
+				continue
+			}
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			rounds = append(rounds, n)
+		}
 	}
 	sort.Ints(rounds)
 	return rounds, nil
@@ -111,9 +147,14 @@ func (r *fileArchiveReader) List(ctx context.Context) ([]int, error) {
 // Files[].Summary, or Refs values contain the query (case-insensitive
 // substring match). Results are sorted by round descending.
 //
+// Search scans every round file across the flat root and all per-stream
+// subdirectories (REVIEW #50), so records from different streams that share a
+// round number are all considered. A single corrupt round file is skipped
+// (logged) rather than failing the whole search.
+//
 // Returns:
 //   - ErrEmptyQuery (wrapped) when the query is empty or whitespace-only.
-//   - a wrapped error on read or context failure.
+//   - a wrapped error on context failure.
 func (r *fileArchiveReader) Search(ctx context.Context, query string) ([]RoundRecord, error) {
 	q := strings.TrimSpace(query)
 	if q == "" {
@@ -124,22 +165,42 @@ func (r *fileArchiveReader) Search(ctx context.Context, query string) ([]RoundRe
 	}
 
 	needle := strings.ToLower(q)
-	rounds, err := r.List(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
+
+	// Glob the flat root plus one level of stream subdirectories.
+	globs := []string{filepath.Join(r.dir, "round_*.json")}
+	if entries, err := os.ReadDir(r.dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				globs = append(globs, filepath.Join(r.dir, e.Name(), "round_*.json"))
+			}
+		}
 	}
 
 	var matches []RoundRecord
-	for _, n := range rounds {
-		if err := ctx.Err(); err != nil {
+	for _, g := range globs {
+		files, err := filepath.Glob(g)
+		if err != nil {
 			return nil, fmt.Errorf("search: %w", err)
 		}
-		rec, err := r.Read(ctx, n)
-		if err != nil {
-			return nil, fmt.Errorf("search round %d: %w", n, err)
-		}
-		if recordMatches(rec, needle) {
-			matches = append(matches, *rec)
+		for _, path := range files {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("search: %w", err)
+			}
+			data, err := os.ReadFile(path) //nolint:gosec // path comes from Glob over the archive dir, not user input
+			if err != nil {
+				r.log.Debug("search: skipping unreadable round file", "file", path, "error", err)
+				continue
+			}
+			var rec RoundRecord
+			if err := json.Unmarshal(data, &rec); err != nil {
+				// A single corrupt round file must not fail the whole search
+				// (REVIEW: reader.go:137). Skip it and continue.
+				r.log.Debug("search: skipping corrupt round file", "file", path, "error", err)
+				continue
+			}
+			if recordMatches(&rec, needle) {
+				matches = append(matches, rec)
+			}
 		}
 	}
 

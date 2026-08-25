@@ -52,6 +52,11 @@ func NewEventArchiveSink(w ArchiveWriter) ares_events.ArchiveSink {
 		if err != nil {
 			return fmt.Errorf("archive sink: build record: %w", err)
 		}
+		// Stamp the stream identity so per-stream round numbers do not collide
+		// on disk: every stream restarts at round 1, and a stream-agnostic
+		// filename would let two streams' round_1.json overwrite each other
+		// (REVIEW #50). The writer routes each stream to its own subdirectory.
+		record.StreamID = streamID
 		if err := w.RecordRound(ctx, *record); err != nil {
 			return fmt.Errorf("archive sink: record round %d: %w", round, err)
 		}

@@ -72,9 +72,11 @@ func (w *fileArchiveWriter) RecordRound(ctx context.Context, record RoundRecord)
 		return fmt.Errorf("record round %d: %w", record.Round, err)
 	}
 	if w.maxRounds > 0 {
-		if err := w.rotate(ctx); err != nil {
+		// Rotation is scoped to the stream's own subdirectory so one stream's
+		// round count never evicts another stream's files (REVIEW #50).
+		if err := w.rotate(ctx, w.streamDir(record.StreamID)); err != nil {
 			w.log.Warn("record round: rotation failed (non-fatal)",
-				"round", record.Round, "error", err)
+				"round", record.Round, "stream_id", record.StreamID, "error", err)
 		}
 	}
 	return nil
@@ -92,6 +94,11 @@ func (w *fileArchiveWriter) Flush(ctx context.Context) error {
 // writeAtomic marshals the record and writes it via temp-file + rename so
 // readers never observe a partial file. Caller must hold w.mu.
 //
+// The record is written under a per-stream subdirectory (see streamDir) so
+// that two streams both starting at round 1 do not overwrite each other's
+// round files (REVIEW #50). An empty StreamID writes flat in w.dir for
+// backward compatibility with legacy single-stream archives.
+//
 // On any error the temp file is removed before returning, so no .tmp file
 // is ever left behind on disk.
 func (w *fileArchiveWriter) writeAtomic(record RoundRecord) error {
@@ -100,8 +107,12 @@ func (w *fileArchiveWriter) writeAtomic(record RoundRecord) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	tmp := filepath.Join(w.dir, fmt.Sprintf("round_%d.json.tmp", record.Round))
-	final := filepath.Join(w.dir, fmt.Sprintf("round_%d.json", record.Round))
+	dir := w.streamDir(record.StreamID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("mkdir stream dir %q: %w", dir, err)
+	}
+	tmp := filepath.Join(dir, fmt.Sprintf("round_%d.json.tmp", record.Round))
+	final := filepath.Join(dir, fmt.Sprintf("round_%d.json", record.Round))
 
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		_ = os.Remove(tmp)
@@ -114,8 +125,40 @@ func (w *fileArchiveWriter) writeAtomic(record RoundRecord) error {
 	return nil
 }
 
+// streamDir returns the directory that holds a stream's round files. A
+// non-empty StreamID is sanitised into a filesystem-safe segment and used as
+// a subdirectory of w.dir; an empty StreamID maps to w.dir itself (legacy
+// flat layout). Sanitisation replaces any character outside [A-Za-z0-9._-]
+// with '_' so an arbitrary stream id (e.g. a UUID or agent name) can never
+// escape the archive root via path separators.
+func (w *fileArchiveWriter) streamDir(streamID string) string {
+	if streamID == "" {
+		return w.dir
+	}
+	return filepath.Join(w.dir, sanitizeStreamID(streamID))
+}
+
+// sanitizeStreamID maps a stream id to a single filesystem-safe path segment.
+// Every rune outside the allowlist [A-Za-z0-9._-] becomes '_', so the result
+// contains no path separators and cannot traverse outside the archive root.
+func sanitizeStreamID(streamID string) string {
+	var b strings.Builder
+	b.Grow(len(streamID))
+	for _, r := range streamID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
 // rotate deletes the oldest round files when the count exceeds maxRounds.
-// Caller must hold w.mu.
+// Caller must hold w.mu. dir is the stream-scoped directory to rotate within
+// (from streamDir), so rotation is independent per stream.
 //
 // Only fully-renamed round_N.json files are considered (round_N.json.tmp is
 // excluded by the glob), so a file being written is never deleted. Parse
@@ -123,8 +166,8 @@ func (w *fileArchiveWriter) writeAtomic(record RoundRecord) error {
 // not returned — rotation is best-effort housekeeping. A glob error is
 // returned to the caller, which logs it (non-fatal) but never returns it to
 // the RecordRound caller.
-func (w *fileArchiveWriter) rotate(_ context.Context) error {
-	matches, err := filepath.Glob(filepath.Join(w.dir, "round_*.json"))
+func (w *fileArchiveWriter) rotate(_ context.Context, dir string) error {
+	matches, err := filepath.Glob(filepath.Join(dir, "round_*.json"))
 	if err != nil {
 		return fmt.Errorf("glob rounds: %w", err)
 	}
@@ -142,7 +185,7 @@ func (w *fileArchiveWriter) rotate(_ context.Context) error {
 
 	excess := len(rounds) - w.maxRounds
 	for i := range excess {
-		path := filepath.Join(w.dir, fmt.Sprintf("round_%d.json", rounds[i]))
+		path := filepath.Join(dir, fmt.Sprintf("round_%d.json", rounds[i]))
 		if err := os.Remove(path); err != nil {
 			w.log.Debug("rotate: remove old round failed",
 				"file", path, "error", err)

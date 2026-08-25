@@ -39,11 +39,13 @@ func TestNewCompactableStoreWithArchive_EnableDefault(t *testing.T) {
 	}, 0))
 
 	// Archive runs asynchronously in a background goroutine (errgroup), so poll
-	// for the round file rather than asserting synchronously.
+	// for the round file rather than asserting synchronously. Rounds are stored
+	// under a per-stream subdirectory (REVIEW #50) so distinct streams never
+	// overwrite each other's round_N.json.
 	require.Eventually(t, func() bool {
-		_, statErr := os.Stat(filepath.Join(dir, "round_1.json"))
+		_, statErr := os.Stat(filepath.Join(dir, streamID, "round_1.json"))
 		return statErr == nil
-	}, 2*time.Second, 10*time.Millisecond, "round_1.json must be written for the default-on config")
+	}, 2*time.Second, 10*time.Millisecond, "round_1.json must be written under the stream subdir for the default-on config")
 }
 
 // TestNewCompactableStoreWithArchive_Disabled verifies the explicit-opt-out
