@@ -30,6 +30,13 @@ type managedAgent struct {
 	// resurrecting is set to true when NotifyAgentDead triggers RestoreAgent.
 	// Prevents duplicate resurrection attempts for the same agent.
 	resurrecting bool
+	// operatorIntent records that the CURRENT entry was stopped/paused by an
+	// explicit operator call AFTER a resurrection was already scheduled. The
+	// async RestoreAgent re-checks this flag in its install critical section:
+	// without it, an operator Stop/Pause landing inside the ~1s backoff window
+	// was clobbered ~1s later by the pending resurrection installing a fresh
+	// running instance (resurrection-after-kill).
+	operatorIntent bool
 }
 
 // Manager implements the Runtime interface.
@@ -248,6 +255,7 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 		return ErrAgentNotFound
 	}
 	ma.stopped = true
+	ma.operatorIntent = true
 	cancel := ma.cancel
 	agent := ma.agent
 	m.mu.Unlock()
@@ -382,9 +390,24 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 	}
 
 	prevRestarts := 0
+	superseded := false
 	m.mu.Lock()
 	if oldExists && oldMA != nil {
 		prevRestarts = oldMA.restarts
+		// Operator-intent recheck INSIDE the install critical section: the
+		// resurrection was scheduled ~1s ago; if the operator explicitly
+		// stopped/paused this entry in the meantime, installing a fresh
+		// running instance would silently undo their decision.
+		if oldMA.operatorIntent {
+			superseded = true
+		}
+	}
+	if superseded {
+		m.mu.Unlock()
+		log.Info("runtime: restore aborted — operator stopped/paused the agent after resurrection was scheduled",
+			"agent_id", agentID,
+		)
+		return nil // not an error: the desired state is "stopped"
 	}
 	agentCtx, agentCancel := context.WithCancel(m.gctx)
 	m.agents[agentID] = &managedAgent{

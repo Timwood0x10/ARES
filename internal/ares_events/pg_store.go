@@ -365,6 +365,35 @@ func buildAllReadQuery(opts ReadOptions) (string, []any) {
 	return query, args
 }
 
+// pgSubscription carries the per-subscriber poll state. The cursor advances
+// ONLY when a poll drained the window completely (fewer than LIMIT rows);
+// otherwise the SAME `created_at >= cursor` window is re-polled and already
+// delivered events are skipped by id. This closes the timestamp-tie loss: the
+// previous strictly-greater cursor permanently skipped same-microsecond
+// siblings that fell past the LIMIT cut.
+type pgSubscription struct {
+	filter EventFilter
+	ch     chan<- *Event
+
+	cursor    time.Time
+	delivered map[string]bool // event ids already sent on ch (bounded)
+}
+
+const maxDeliveredIDs = 8192
+
+// markDelivered records ids and prunes the set when it grows past the bound.
+func (p *pgSubscription) markDelivered(events []*Event) {
+	for _, evt := range events {
+		p.delivered[evt.ID] = true
+	}
+	if len(p.delivered) > maxDeliveredIDs {
+		// Burst overflow: drop the whole set. Entries here are far behind the
+		// cursor (only tie-window ids matter for dedup), and a reset can at
+		// worst re-deliver old events — never lose new ones.
+		p.delivered = make(map[string]bool, 1024)
+	}
+}
+
 // pollEvents periodically queries for new events matching the filter and sends them to ch.
 // The goroutine exits when ctx is cancelled.
 func (s *PostgresEventStore) pollEvents(
@@ -377,10 +406,14 @@ func (s *PostgresEventStore) pollEvents(
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// Track the last seen timestamp to avoid re-delivering events.
-	cursor := filter.Since
-	if cursor.IsZero() {
-		cursor = time.Now()
+	sub := &pgSubscription{
+		filter:    filter,
+		ch:        ch,
+		cursor:    filter.Since,
+		delivered: make(map[string]bool, 1024),
+	}
+	if sub.cursor.IsZero() {
+		sub.cursor = time.Now()
 	}
 
 	for {
@@ -388,51 +421,62 @@ func (s *PostgresEventStore) pollEvents(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			newCursor, err := s.pollOnce(ctx, filter, cursor, ch)
-			if err != nil {
+			if err := s.pollOnce(ctx, sub); err != nil {
 				log.Error("event subscription poll failed", "error", err)
 				continue
 			}
-			if !newCursor.IsZero() {
-				cursor = newCursor
-			}
 		}
 	}
 }
 
-// pollOnce executes a single poll cycle, returning the updated cursor.
-func (s *PostgresEventStore) pollOnce(
-	ctx context.Context,
-	filter EventFilter,
-	cursor time.Time,
-	ch chan<- *Event,
-) (time.Time, error) {
-	query, args := buildSubscribeQuery(filter, cursor)
+// pollOnce executes a single poll cycle over [cursor, +inf) with an overlap
+// window; it advances sub.cursor only after the window was fully drained.
+func (s *PostgresEventStore) pollOnce(ctx context.Context, sub *pgSubscription) error {
+	query, args := buildSubscribeQuery(sub.filter, sub.cursor)
 
 	events, err := s.queryEvents(ctx, query, args...)
 	if err != nil {
-		return cursor, err
+		return err
 	}
 
-	newCursor := cursor
+	var batch []*Event
 	for _, evt := range events {
+		if sub.delivered[evt.ID] {
+			continue
+		}
+		batch = append(batch, evt)
 		select {
-		case ch <- evt:
-			if evt.Timestamp.After(newCursor) {
-				newCursor = evt.Timestamp
-			}
+		case sub.ch <- evt:
 		case <-ctx.Done():
-			return newCursor, ctx.Err()
+			return ctx.Err()
 		}
 	}
 
-	return newCursor, nil
+	sub.markDelivered(batch)
+
+	// Advance the cursor only when the query returned fewer than the LIMIT —
+	// proof that everything with created_at >= cursor has been delivered.
+	// On a full batch, keep the cursor so the next poll re-reads the tail of
+	// the window (deduped by delivered-ids).
+	if len(events) < defaultEventReadLimit && len(batch) > 0 {
+		maxTS := batch[len(batch)-1].Timestamp
+		for _, evt := range batch {
+			if evt.Timestamp.After(maxTS) {
+				maxTS = evt.Timestamp
+			}
+		}
+		sub.cursor = maxTS
+	}
+	return nil
 }
 
-// buildSubscribeQuery constructs a parameterized query for the subscription poll.
+// buildSubscribeQuery constructs a parameterized query for the subscription
+// poll. The window is `>= cursor` (inclusive): combined with the delivered-id
+// dedup in pollOnce this makes ties at the cursor timestamp observable instead
+// of silently skipped.
 func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
 	query := `SELECT id, stream_id, type, payload, metadata, version, created_at
-		FROM events WHERE created_at > $1`
+		FROM events WHERE created_at >= $1`
 
 	args := []any{cursor}
 	argIdx := 2

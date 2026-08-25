@@ -8,6 +8,7 @@ package ares_events
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -416,4 +417,100 @@ func TestCompactableStore_CompactionCtxDecoupledFromCaller(t *testing.T) {
 		t.Fatal("archive sink was not cancelled by Close; Append must derive " +
 			"the compaction ctx from the store lifecycle so Close stops in-flight workers")
 	}
+}
+
+// failingOnceSink fails the FIRST N invocations, then succeeds — simulating a
+// transient I/O error in the durable archive write.
+type failingOnceSink struct {
+	mu        sync.Mutex
+	remaining int
+	calls     int
+	rounds    []int
+}
+
+func (f *failingOnceSink) call(_ context.Context, round int, _ string, _ []*Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.remaining > 0 {
+		f.remaining--
+		return fmt.Errorf("transient sink failure")
+	}
+	f.rounds = append(f.rounds, round)
+	return nil
+}
+
+func (f *failingOnceSink) successRounds() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]int, len(f.rounds))
+	copy(out, f.rounds)
+	return out
+}
+
+// TestArchiveSink_TransientFailureRetriesSameRound pins the durability
+// contract: a failed sink must NOT advance the round boundary. The retry
+// re-sinks the SAME window and the boundary commits only after a successful
+// write — previously the boundary moved before the write, so one transient
+// error permanently lost the round record (compaction then trimmed the raws).
+func TestArchiveSink_TransientFailureRetriesSameRound(t *testing.T) {
+	mem := NewMemoryEventStore()
+	repo := NewMemorySummaryRepository()
+	cfg := DefaultCompactionConfig()
+	ces, err := NewCompactableEventStore(mem, repo, nil, cfg)
+	require.NoError(t, err)
+	sink := &failingOnceSink{remaining: 1}
+	ces.WithArchiveSink(sink.call)
+
+	ctx := context.Background()
+	streamID := "retry-stream"
+	require.NoError(t, ces.EventStore.Append(ctx, streamID, []*Event{
+		{Type: EventMessageAdded, Payload: map[string]any{"content": "start"}},
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r1"}},
+	}, 0))
+
+	// First attempt: sink fails → boundary must stay put and an error returned.
+	require.Error(t, ces.archivePendingRounds(ctx, streamID))
+	ces.archiveMu.Lock()
+	_, boundarySet := ces.lastArchivedVersion[streamID]
+	ces.archiveMu.Unlock()
+	assert.False(t, boundarySet, "failed sink must not set the round boundary")
+
+	// Second attempt: sink succeeds → same window archived, boundary advances.
+	require.NoError(t, ces.archivePendingRounds(ctx, streamID))
+	rounds := sink.successRounds()
+	require.Len(t, rounds, 1)
+	assert.Equal(t, 1, rounds[0], "the retried round keeps its number")
+
+	ces.archiveMu.Lock()
+	assert.Greater(t, ces.lastArchivedVersion[streamID], int64(0),
+		"successful sink must advance the round boundary")
+	ces.archiveMu.Unlock()
+}
+
+// TestArchiveSink_BoundaryStaysZeroAfterFailure asserts the internal boundary
+// map directly: a failed sink must leave lastArchivedVersion untouched.
+func TestArchiveSink_BoundaryStaysZeroAfterFailure(t *testing.T) {
+	mem := NewMemoryEventStore()
+	repo := NewMemorySummaryRepository()
+	ces, err := NewCompactableEventStore(mem, repo, nil, DefaultCompactionConfig())
+	require.NoError(t, err)
+	sink := &failingOnceSink{remaining: 3}
+	ces.WithArchiveSink(sink.call)
+
+	ctx := context.Background()
+	streamID := "boundary-stream"
+	require.NoError(t, ces.EventStore.Append(ctx, streamID, []*Event{
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r1"}},
+	}, 0))
+
+	for i := 0; i < 3; i++ {
+		require.Error(t, ces.archivePendingRounds(ctx, streamID))
+	}
+
+	ces.archiveMu.Lock()
+	boundary, ok := ces.lastArchivedVersion[streamID]
+	ces.archiveMu.Unlock()
+	assert.False(t, ok || boundary > 0,
+		"failed sinks must never advance the round boundary")
 }

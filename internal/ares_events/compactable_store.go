@@ -485,16 +485,30 @@ func (s *CompactableEventStore) archivePendingRoundsOnce(ctx context.Context, st
 		s.archiveMu.Unlock()
 		return false, nil
 	}
-	s.roundCounter[streamID]++
-	round := s.roundCounter[streamID]
-	s.lastArchivedVersion[streamID] = terminal.Version
+	round := s.roundCounter[streamID] + 1
 	s.archiveMu.Unlock()
 
-	// Step 4: invoke the sink WITHOUT holding the lock. A sink failure is
-	// returned (the caller logs it) but the round is considered claimed — no
-	// rollback, matching the best-effort archive contract.
+	// Step 4: invoke the sink WITHOUT holding the lock. On failure the round
+	// boundary is NOT advanced: drainPendingRounds re-scans the same window
+	// next tick and retries the sink, so a transient I/O error degrades to a
+	// delay instead of permanently losing the round record (the boundary used
+	// to move BEFORE the durable write, letting compaction trim events whose
+	// archive copy never landed).
 	if err := s.archiveSink(ctx, round, streamID, roundEvents); err != nil {
-		return true, fmt.Errorf("archive: sink round %d stream %q: %w", round, streamID, err)
+		return false, fmt.Errorf("archive: sink round %d stream %q (boundary not advanced; will retry): %w", round, streamID, err)
 	}
+
+	// Sink succeeded — commit the round assignment.
+	s.archiveMu.Lock()
+	if current, ok := s.lastArchivedVersion[streamID]; ok && current != roundStart {
+		// A concurrent claimant advanced the boundary while we were sinking.
+		// Keep theirs; our sink wrote an overlapping-but-complete record,
+		// which downstream dedup tolerates better than data loss.
+		s.archiveMu.Unlock()
+		return true, nil
+	}
+	s.roundCounter[streamID] = round
+	s.lastArchivedVersion[streamID] = terminal.Version
+	s.archiveMu.Unlock()
 	return true, nil
 }

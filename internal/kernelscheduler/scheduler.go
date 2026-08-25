@@ -15,6 +15,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"golang.org/x/sync/errgroup"
 )
 
 // Scheduler is the "no leader" execution engine (ares-runtime.md
@@ -189,6 +190,17 @@ func (s *Scheduler) WithMaxConcurrent(n int) *Scheduler {
 	return s
 }
 
+// WithTTL overrides the lease duration granted on Acquire (default 5 minutes).
+// The scheduler heartbeats Renew at ttl/3 (minimum 5s) while a quantum runs,
+// so steps longer than ttl are not requeued by lease expiry. Returns the
+// scheduler for chaining.
+func (s *Scheduler) WithTTL(ttl time.Duration) *Scheduler {
+	if ttl > 0 {
+		s.ttl = ttl
+	}
+	return s
+}
+
 // Run drains ReadyTasks until ctx is cancelled or the fabric becomes nil.
 // It runs synchronously; callers start it in a goroutine. Panics from one
 // task's execution are recovered so a single bad step cannot kill the loop.
@@ -316,6 +328,16 @@ func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.
 func (s *Scheduler) drain(ctx context.Context) {
+	// Zombie-executor reconciliation: a fabric agent killed via chaos/
+	// governance disappears from the fabric, but its STATIC registration (the
+	// configured peers' executors and every spawned agent's executor) stayed
+	// in the map forever — the stale-winner lookup could then execute a task
+	// on a dead agent's registration, and the registry grew unboundedly with
+	// each spawn. Every drain drops registrations whose fabric entry is gone,
+	// EXCEPT recovery-bound replacements (they are deliberately outside the
+	// fabric; they are unregistered at terminal state).
+	s.reconcileFabricDeaths()
+
 	// Work source: READY tasks (new work) plus SUSPENDED tasks (a yielded
 	// quantum the scheduler continues via re-acquire — the SUSPENDED
 	// semantics lock: "Continue is the Scheduler's decision via re-acquire").
@@ -547,14 +569,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			// next drain re-schedules it within one poll interval instead of
 			// stalling for the full lease TTL (EDGE-4: 5-minute stall).
 			// Only when NO capable executor is left do we keep the lease:
-			// Release would leave the task READY-without-candidates, a state
-			// the recovery loop's lease path never visits — the dead agent's
-			// task would strand until another agent appears. Keeping the
-			// lease lets it expire (TTL) so the event-driven recovery
-			// requeues it and the W1 replacement executor resumes the
-			// preserved checkpoint (aresos-agentos-plan E1: death → lease
-			// expiry → replacement resumes). A task still held by other live
-			// agents is unaffected.
+			// keeping it lets TTL expiry drive the E1 recovery chain
+			// (death → lease expiry → requeue → replacement resumes from
+			// checkpoint). A task held by other live agents is unaffected.
 			if s.HasCapableExecutor(taskID) {
 				if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
 					log.Printf("kernel scheduler: release %q for stale winner %q failed: %v", taskID, winner, releaseErr)
@@ -588,6 +605,34 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		return nil
 	}
 	s.tracker.Begin(winner)
+	// Lease heartbeat: renew the winner's lease while the quantum runs so a
+	// long step (> TTL) is not requeued by lease expiry and executed a second
+	// time concurrently. The heartbeat goroutine is managed by an errgroup
+	// (code_rules #8) and stops when the quantum ends, the scheduler context
+	// is cancelled, or renewal fails (ownership lost — preemption/expiry).
+	renewStop := make(chan struct{})
+	qg, qgCtx := errgroup.WithContext(ctx)
+	qg.Go(func() error {
+		interval := s.ttl / 3
+		if interval < 5*time.Second {
+			interval = 5 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewStop:
+				return nil
+			case <-qgCtx.Done():
+				return nil
+			case <-ticker.C:
+				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
+					log.Printf("kernel scheduler: lease renew for task %q by %q failed, stopping heartbeat: %v", taskID, winner, rerr)
+					return nil
+				}
+			}
+		}
+	})
 	// Panic guard: a panic inside the executor unwinds through RunQuantum and
 	// would skip endQuantumOutcome, leaking the winner's LoadTracker slot
 	// forever (load never decrements → Score multiplies by (1-clamp01(load))
@@ -598,8 +643,12 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	defer func() {
 		if !slotReleased {
 			if r := recover(); r == nil {
+				close(renewStop)
+				_ = qg.Wait()
 				return
 			} else {
+				close(renewStop)
+				_ = qg.Wait()
 				// Log BEFORE releasing: the stack trace is the only forensic
 				// trail for an executor panic, and the load slot is released
 				// so the agent stays schedulable (the fabric's expired-lease
@@ -609,61 +658,10 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			}
 		}
 	}()
-	err = s.fabric.RunQuantum(taskID, winner, epoch, func() (any, bool, error) {
-		out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
-		if stepErr != nil {
-			// A step error flows to fabric.Fail, which requeues (retry budget)
-			// or finalizes FAILED — the fabric owns the retry policy.
-			return nil, false, stepErr
-		}
-		if out == nil {
-			return nil, false, fmt.Errorf("executor returned a nil step outcome")
-		}
-		if out.Result != nil && out.Result.Error != "" {
-			return nil, false, fmt.Errorf("%s", out.Result.Error)
-		}
-		if !out.Done {
-			// Yield (P1.1 Execution Quantum): the quantum made progress but the
-			// task is not complete. RunQuantum's not-done branch SUSPENDEDs the
-			// task with this checkpoint preserved; the next drain re-acquires
-			// it and the next quantum resumes from this PCB. Re-wrapping the
-			// submission metadata keeps UserProfile/Payload/UsedExperienceID
-			// alive across yield→resume cycles (Bug 3).
-			return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
-				UserProfile:      meta.UserProfile,
-				Payload:          meta.Payload,
-				UsedExperienceID: meta.UsedExperienceID,
-				StepCheckpoint:   out.Checkpoint,
-			}), false, nil
-		}
-		// Done: carry the worker's real output back through the fabric so the
-		// leader dispatch (which waits on task completion) can surface the
-		// actual items instead of the old "ok" placeholder — the last link
-		// in the no-op chain. The result rides in the quantum checkpoint:
-		// RunQuantum's done branch stores it via CompleteWithCheckpoint, and
-		// the dispatcher reads it back after polling the task to COMPLETED.
-		outMap := map[string]any{"result": "ok"}
-		if res := out.Result; res != nil {
-			if items := res.Items; len(items) > 0 {
-				outMap["items"] = items
-			}
-			if res.Reason != "" {
-				outMap["reason"] = res.Reason
-			}
-			if len(res.Metadata) > 0 {
-				outMap["metadata"] = res.Metadata
-			}
-		}
-		// Re-wrap the step output in the metadata envelope so the dispatcher's
-		// outcomeFromFabric unwraps it on COMPLETED (same as pre-quantum).
-		return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
-			UserProfile:      meta.UserProfile,
-			Payload:          meta.Payload,
-			UsedExperienceID: meta.UsedExperienceID,
-			StepCheckpoint:   outMap,
-		}), true, nil
-	})
+	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta))
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
+	close(renewStop)
+	_ = qg.Wait()
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err)
 	slotReleased = true
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
@@ -695,6 +693,96 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 	if boundID := s.unbindFor(taskID); boundID != "" {
 		s.UnregisterExecutor(boundID)
 		log.Printf("kernel scheduler: unregistered recovery executor %q after task %q reached %s", boundID, taskID, tk2.State)
+	}
+}
+
+// reconcileFabricDeaths drops static executor registrations whose agent has
+// disappeared from the wired Agent Fabric (kill/retire). Recovery-bound
+// executors are skipped — they intentionally live outside the fabric and are
+// cleaned up by the terminal-state unbind. No-op when no fabric is wired.
+func (s *Scheduler) reconcileFabricDeaths() {
+	if s.agents == nil {
+		return
+	}
+	for id := range s.allExecutors() {
+		if s.isBoundToAnyTask(id) {
+			continue // recovery replacements are unregistered at terminal state
+		}
+		if _, err := s.agents.Get(id); err != nil {
+			log.Printf("kernel scheduler: unregistering executor %q — agent no longer in fabric (killed or retired)", id)
+			s.UnregisterExecutor(id)
+		}
+	}
+}
+
+// buildQuantumStep constructs the QuantumStep closure RunQuantum executes:
+// it runs the executor's step and translates the outcome into fabric state
+// transitions (error → Fail, !Done → Yield with checkpoint, Done → Complete
+// with the worker result riding in the checkpoint envelope).
+//
+// Args:
+//   - ctx: the quantum's execution context (cancelled on scheduler shutdown).
+//   - executor: the winning agent running this step.
+//   - tk: the fabric task snapshot taken at acquire time.
+//   - meta: the submission metadata decoded from the task checkpoint; it is
+//     re-wrapped around EVERY quantum output so UserProfile/Payload survive
+//     arbitrary yield→resume cycles.
+func (s *Scheduler) buildQuantumStep(
+	ctx context.Context,
+	executor CapabilityExecutor,
+	tk *taskfabric.Task,
+	meta taskfabric.DecodedCheckpoint,
+) taskfabric.QuantumStep {
+	return func() (any, bool, error) {
+		out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
+		if stepErr != nil {
+			// A step error flows to fabric.Fail, which requeues (retry budget)
+			// or finalizes FAILED — the fabric owns the retry policy.
+			return nil, false, stepErr
+		}
+		if out == nil {
+			return nil, false, fmt.Errorf("executor returned a nil step outcome")
+		}
+		if out.Result != nil && out.Result.Error != "" {
+			return nil, false, fmt.Errorf("%s", out.Result.Error)
+		}
+		if !out.Done {
+			// Yield (P1.1 Execution Quantum): the quantum made progress but the
+			// task is not complete. RunQuantum's not-done branch SUSPENDEDs the
+			// task with this checkpoint preserved; the next drain re-acquires
+			// it and the next quantum resumes from this PCB.
+			return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+				UserProfile:      meta.UserProfile,
+				Payload:          meta.Payload,
+				UsedExperienceID: meta.UsedExperienceID,
+				StepCheckpoint:   out.Checkpoint,
+			}), false, nil
+		}
+		// Done: carry the worker's real output back through the fabric so the
+		// dispatch layer can surface actual items instead of an "ok"
+		// placeholder. The result rides in the quantum checkpoint:
+		// RunQuantum's done branch stores it via CompleteWithCheckpoint, and
+		// the dispatcher reads it back after polling the task to COMPLETED.
+		outMap := map[string]any{"result": "ok"}
+		if res := out.Result; res != nil {
+			if items := res.Items; len(items) > 0 {
+				outMap["items"] = items
+			}
+			if res.Reason != "" {
+				outMap["reason"] = res.Reason
+			}
+			if len(res.Metadata) > 0 {
+				outMap["metadata"] = res.Metadata
+			}
+		}
+		// Re-wrap the step output in the metadata envelope so the dispatcher's
+		// outcomeFromFabric unwraps it on COMPLETED (same as pre-quantum).
+		return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+			UserProfile:      meta.UserProfile,
+			Payload:          meta.Payload,
+			UsedExperienceID: meta.UsedExperienceID,
+			StepCheckpoint:   outMap,
+		}), true, nil
 	}
 }
 

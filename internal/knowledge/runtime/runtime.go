@@ -28,11 +28,10 @@ type KnowledgeRuntime struct {
 	patchRegMu sync.RWMutex
 	patchReg   *patch.Registry
 
-	// planMu guards the planner field so SetPlanConfig (writer) and PlanConfig
-	// (reader, used by the patch executor to capture rollback values) are
-	// race-free. The Execute hot path reads planner without this lock (pre-
-	// existing); plan config swaps do not run concurrently with Execute in
-	// practice.
+	// planMu guards the planner field. SetPlanConfig (writer) swaps the
+	// planner at runtime via KnowledgePatchExecutor.Apply; PlanConfig and the
+	// Execute hot path (readers) take the read lock so a config swap landing
+	// mid-query cannot race the planner read.
 	planMu sync.RWMutex
 
 	evStore evidence.Store      // optional: unified Evidence Store

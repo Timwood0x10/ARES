@@ -75,6 +75,7 @@ func (m *Manager) PauseAgent(ctx context.Context, agentID string) error {
 		return ErrAgentNotFound
 	}
 	ma.paused = true
+	ma.operatorIntent = true
 	cancel := ma.cancel
 	agent := ma.agent
 	m.mu.Unlock()
@@ -121,6 +122,7 @@ func (m *Manager) ResumeAgent(ctx context.Context, agentID string) error {
 	}
 	agentCtx, agentCancel := context.WithCancel(m.gctx)
 	ma.paused = false
+	ma.operatorIntent = false // resume clears operator intent: future deaths may resurrect again
 	ma.cancel = agentCancel
 	agent := ma.agent
 	m.mu.Unlock()

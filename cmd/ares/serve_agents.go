@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -57,6 +58,30 @@ func createAndServeAgents(
 		mgr.RegisterAgent(sa, factory)
 	}
 	log.Printf("serve: %d peer agents registered directly to Kernel", len(subAgents))
+
+	// Live-DAG injection (closes the evolution structure-patch loop): the
+	// configured agent population IS the live workflow topology. Register it
+	// on the runtime manager and swap it into the evolution executors —
+	// without this, workflow/recovery patches mutated the synthetic
+	// input→process→output bootstrap DAG forever and "live promotion" was
+	// unobservable.
+	if comp.NewEvolution != nil {
+		liveDAG, dagErr := buildLiveAgentDAG(cfg)
+		switch {
+		case dagErr == nil:
+			mgr.RegisterAgentDAG("agents", liveDAG)
+			if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
+				log.Printf("serve: live DAG injection failed (evolution keeps placeholder): %v", err)
+			} else {
+				log.Printf("serve: live agent DAG injected into evolution executors (%d nodes)", len(liveDAG.Steps()))
+			}
+		case errors.Is(dagErr, errNoLiveAgentDAG):
+			log.Printf("serve: no peers configured; evolution keeps placeholder DAG")
+		default:
+			log.Printf("serve: live agent DAG build failed (evolution keeps placeholder): %v", dagErr)
+		}
+	}
+
 	return subAgents, peerKernel, nil
 }
 

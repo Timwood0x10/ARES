@@ -151,7 +151,15 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 		return 0, ErrTaskNotReady
 	}
 	f.epoch++
-	lease := NewLease(agentID, ttl, f.epoch)
+	// Build the lease on the FABRIC's clock (f.now), not wall time: expiry is
+	// evaluated against f.now (CheckExpiredLeases), so a mixed clock pair made
+	// every lease born-expired whenever a test/fixture advanced the fabric
+	// clock past real time — recovery then requeued live runners mid-quantum.
+	lease := Lease{
+		Owner:     agentID,
+		ExpiresAt: f.now().Add(ttl),
+		Epoch:     f.epoch,
+	}
 	if err := t.transition(StateLeased); err != nil {
 		return 0, err
 	}
@@ -261,6 +269,32 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
 		return err
 	}
 	f.record(t, EventTaskFailed)
+	return nil
+}
+
+// Renew extends the lease of a LEASED/RUNNING/SUSPENDED task owned by
+// agentID at the fenced epoch. It is the heartbeat a long-running quantum
+// sends so its own lease does not expire mid-execution: without renewal, any
+// step longer than the TTL was requeued by CheckExpiredLeases while the
+// original holder was still executing — duplicate concurrent execution of the
+// same task (state stayed fenced-correct, but work and side effects doubled).
+//
+// Renewal fails (and callers must stop heartbeating) when the caller no
+// longer owns the task: it was preempted, requeued after expiry, or finalized.
+func (f *Fabric) Renew(id, agentID string, epoch uint64, ttl time.Duration) error {
+	if ttl <= 0 {
+		return errors.New("taskfabric: renew ttl must be positive")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, err := f.ownerLocked(id, agentID, epoch)
+	if err != nil {
+		return err
+	}
+	if t.Lease == nil {
+		return ErrTaskNotFound
+	}
+	t.Lease.ExpiresAt = f.now().Add(ttl)
 	return nil
 }
 
