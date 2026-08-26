@@ -267,3 +267,94 @@ func (e *chaosStubExecutor) ExecuteStep(_ context.Context, task *models.Task) (*
 	res.SetSuccess(nil, "replacement done")
 	return &sub.StepOutcome{Done: true, Result: res}, nil
 }
+
+// TestChaosStopEndpointAuth locks the REVIEW #12 Phase 2 emergency-stop
+// contract: the endpoint is disabled without a configured stop_token (503),
+// rejects a wrong X-Chaos-Token (403), and trips the live-chaos kill switch
+// on a valid token.
+func TestChaosStopEndpointAuth(t *testing.T) {
+	newHandler := func(token string) *actionHandler {
+		return &actionHandler{apiKey: "test-key", chaosStopToken: token}
+	}
+
+	t.Run("disabled_when_token_empty", func(t *testing.T) {
+		h := newHandler("")
+		code, body := postChaosWithToken(t, h, "stop", "whatever")
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 when stop_token empty, got %d", code)
+		}
+		if liveChaosCtl.Stopped() {
+			t.Fatal("kill switch must not trip while endpoint is disabled")
+		}
+		_ = body
+	})
+
+	t.Run("forbidden_with_wrong_token", func(t *testing.T) {
+		liveChaosCtl = &chaosStopControl{}
+		h := newHandler("secret")
+		code, _ := postChaosWithToken(t, h, "stop", "wrong")
+		if code != http.StatusForbidden {
+			t.Fatalf("expected 403 for wrong token, got %d", code)
+		}
+		if liveChaosCtl.Stopped() {
+			t.Fatal("kill switch must not trip on wrong token")
+		}
+	})
+
+	t.Run("trips_switch_with_valid_token", func(t *testing.T) {
+		liveChaosCtl = &chaosStopControl{}
+		h := newHandler("secret")
+		code, _ := postChaosWithToken(t, h, "stop", "secret")
+		if code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", code)
+		}
+		if !liveChaosCtl.Stopped() {
+			t.Fatal("kill switch must be tripped by valid token")
+		}
+	})
+}
+
+// postChaosWithToken issues an authenticated POST with an X-Chaos-Token header.
+func postChaosWithToken(t *testing.T, h *actionHandler, chaosType, token string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/chaos/"+chaosType, bytes.NewReader([]byte("{}")))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("X-Chaos-Token", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	return w.Code, body
+}
+
+// TestAgentEligibleForChaosWhitelist locks the whitelist contract: only
+// agents declaring at least one whitelisted capability are injectable; the
+// empty whitelist disables injection entirely.
+func TestAgentEligibleForChaosWhitelist(t *testing.T) {
+	ctx := context.Background()
+	fabric := agentfabric.NewFabric()
+	mustSpawn := func(id string, caps []string) {
+		t.Helper()
+		if _, err := fabric.Spawn(ctx, agentfabric.SpawnSpec{
+			Identity:     id,
+			Capabilities: caps,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustSpawn("coder", []string{"code"})
+	mustSpawn("generic", []string{"misc"})
+
+	if agentEligibleForChaos(fabric, "coder", nil) {
+		t.Error("empty whitelist must make every agent ineligible")
+	}
+	if agentEligibleForChaos(fabric, "coder", []string{"browser"}) {
+		t.Error("agent without whitelisted capability must be ineligible")
+	}
+	if !agentEligibleForChaos(fabric, "coder", []string{"browser", "code"}) {
+		t.Error("agent declaring a whitelisted capability must be eligible")
+	}
+	if agentEligibleForChaos(fabric, "ghost", []string{"code"}) {
+		t.Error("unknown agent must be ineligible")
+	}
+}

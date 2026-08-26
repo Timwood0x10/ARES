@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -197,8 +198,12 @@ type DreamCycle struct {
 	config          DreamCycleConfig
 	mu              sync.Mutex
 	runMu           sync.Mutex // serializes Run() to prevent double-evolution (EV-01)
-	taskCount       int64
-	lastCycle       time.Time
+	// generating reports whether an evolution cycle body is currently
+	// executing. Read via GenerationActive by the live-chaos guard (#12:
+	// GA quiet window) — chaos must not inject while GA is mid-generation.
+	generating atomic.Bool
+	taskCount  int64
+	lastCycle  time.Time
 }
 
 // NewDreamCycle creates a new dream cycle orchestrator with required dependencies.
@@ -285,6 +290,10 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 	// Serialize Run to prevent double-evolution (EV-01).
 	dc.runMu.Lock()
 	defer dc.runMu.Unlock()
+
+	// Mark the generation window for the live-chaos pause gate (#12 Phase 2).
+	dc.generating.Store(true)
+	defer dc.generating.Store(false)
 
 	// Enforce a max duration for the entire cycle to prevent hangs.
 	cycleCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -1041,4 +1050,11 @@ func (dc *DreamCycle) TaskCount() int64 {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 	return dc.taskCount
+}
+
+// GenerationActive reports whether an evolution cycle is currently executing.
+// The live-chaos loop polls this to honor the GA quiet window (pause injections
+// while a generation is in flight).
+func (dc *DreamCycle) GenerationActive() bool {
+	return dc != nil && dc.generating.Load()
 }

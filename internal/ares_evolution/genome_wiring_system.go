@@ -449,6 +449,19 @@ func buildFeedbackRecorder(cfg SystemConfig) *FeedbackRecorder {
 	return NewFeedbackRecorder(cfg.FeedbackService)
 }
 
+// GenerationActive reports whether any evolution generation is currently
+// executing — the GA dream cycle or a population-adapter run. The live-chaos
+// loop polls this to honor the GA quiet window (#12 Phase 2).
+func (s *WiredEvolutionSystem) GenerationActive() bool {
+	if s == nil {
+		return false
+	}
+	if s.DreamCycle != nil && s.DreamCycle.GenerationActive() {
+		return true
+	}
+	return s.PopAdapter != nil && s.PopAdapter.GenerationActive()
+}
+
 // NewWiredEvolutionSystem creates and wires a complete evolution system.
 func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredEvolutionSystem, error) {
 	ctx := context.Background()

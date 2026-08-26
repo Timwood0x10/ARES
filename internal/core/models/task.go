@@ -4,7 +4,13 @@ import "time"
 
 // Task represents a recommendation task.
 type Task struct {
-	TaskID           string         `json:"task_id"`
+	TaskID string `json:"task_id"`
+	// SessionID scopes the task to a conversational session when the source
+	// has one (REVIEW #61). Populated by callers that know the session
+	// (e.g. DistillTask reading agent_checkpoints); empty for session-less
+	// sources (experience search, collaboration tasks). Consumers such as
+	// actionlog use it for per-session audit/replay.
+	SessionID        string         `json:"session_id,omitempty"`
 	TaskType         AgentType      `json:"task_type"`
 	AgentType        AgentType      `json:"agent_type"`
 	UserProfile      *UserProfile   `json:"user_profile"`

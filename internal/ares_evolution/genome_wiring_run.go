@@ -46,6 +46,10 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	a.runMu.Lock()
 	defer a.runMu.Unlock()
 
+	// Mark the generation window for the live-chaos pause gate (#12 Phase 2).
+	a.running.Store(true)
+	defer a.running.Store(false)
+
 	scorer := a.buildRunScorer(ctx)
 	if a.tieredScorer != nil {
 		// Log scoring stats once the cycle returns (mirrors prior defer semantics).
@@ -533,4 +537,10 @@ func computeLineageShares(agents []*mutation.Strategy) map[string]int {
 		}
 	}
 	return shares
+}
+
+// GenerationActive reports whether an adapter-driven evolution run is
+// currently executing (live-chaos GA quiet-window probe, #12 Phase 2).
+func (a *GenomePopulationAdapter) GenerationActive() bool {
+	return a != nil && a.running.Load()
 }

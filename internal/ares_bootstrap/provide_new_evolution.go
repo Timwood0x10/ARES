@@ -46,6 +46,11 @@ type NewEvolutionComponents struct {
 	// bootstrap bridge after the store is created.
 	StrategyStore evolution.StrategyStore
 
+	// GAGenerationActive reports whether a GA generation is currently in
+	// flight (REVIEW #12 Phase 2: the live-chaos GA quiet-window probe). Nil when
+	// no wired evolution system exists.
+	GAGenerationActive func() bool
+
 	// liveDAG holds the agent's live workflow DAG injected after bootstrap
 	// so the evolution system's executors operate on real runtime state
 	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents

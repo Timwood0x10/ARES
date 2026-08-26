@@ -326,7 +326,23 @@ func (r *KnowledgeRuntime) link(ctx context.Context, objects map[string]*knowled
 		}
 		allEdges = append(allEdges, edges...)
 	}
-	return allEdges, nil
+
+	// Defensive dedup on the (From, To, Name) triple (#43): individual
+	// linkers cannot produce duplicates today, but nothing enforces that
+	// invariant across current or future linkers, and downstream aggregation
+	// has no dedup either. First occurrence wins; Properties/Score of the
+	// duplicate are dropped.
+	seen := make(map[knowledge.RelationKey]struct{}, len(allEdges))
+	deduped := make([]knowledge.Relation, 0, len(allEdges))
+	for _, e := range allEdges {
+		k := knowledge.RelationKey{From: e.From, To: e.To, Name: e.Name}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, e)
+	}
+	return deduped, nil
 }
 
 // reduce runs reducers in sequence to prune and compress the graph.

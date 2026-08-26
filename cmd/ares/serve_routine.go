@@ -207,6 +207,9 @@ func startServeHTTPAndHooks(
 		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
 		// (submitPeerTask).
 		kernel: peerKernel,
+		// Chaos emergency-stop credential (#12 Phase 2): POST /api/chaos/stop
+		// requires a matching X-Chaos-Token header; empty disables the route.
+		chaosStopToken: cfg.Kernel.Chaos.StopToken,
 	}
 
 	httpSrv := &http.Server{

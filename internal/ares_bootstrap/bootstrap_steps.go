@@ -223,6 +223,10 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		return fmt.Errorf("wire GA population adapter: %w", wErr)
 	}
 
+	// Live-chaos GA quiet-window probe (#12 Phase 2): expose whether a generation
+	// is mid-flight so serve's chaos loop can defer injections.
+	newEvol.GAGenerationActive = wired.GenerationActive
+
 	// Attach the coordinator bridge to the population adapter.
 	popAdapter := wired.PopAdapter
 	evolution.WithAdapterCoordinator(

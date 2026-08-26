@@ -150,12 +150,22 @@ type ChaosConfig struct {
 	RatePerMin int `yaml:"rate_per_min"`
 	// Cooldown is the per-agent cooldown after an injection (default "10m").
 	Cooldown string `yaml:"cooldown"`
-	// PauseDuringGA, when true, requests that live chaos pause during GA
-	// evolution generations. ADVISORY ONLY (REVIEW #12): there is no GA
-	// generation lifecycle signal to subscribe to yet, so live mode does not
-	// currently honor this field — a startup warning is logged instead. Do
-	// not enable live chaos while GA evaluations are running.
+	// PauseDuringGA, when true, pauses live injections while a GA generation
+	// is in flight. The generation window is probed via the wired evolution
+	// system (DreamCycle / population adapter), so live mode honors this
+	// field at injection time.
 	PauseDuringGA bool `yaml:"pause_during_ga"`
+	// EligibleCapabilities is the target whitelist for live injections
+	// (REVIEW #12 Phase 2): only agents declaring at least one of these
+	// capabilities may be injected. An empty list disables live injection
+	// entirely — it must be populated explicitly before any agent is a valid
+	// target, preventing accidental broad targeting.
+	EligibleCapabilities []string `yaml:"eligible_capabilities"`
+	// StopToken is the bearer token required by the chaos stop endpoint
+	// (POST /api/chaos/stop). Live chaos is only armed when StopToken is
+	// non-empty; an empty token keeps the stop endpoint disabled along with
+	// live mode.
+	StopToken string `yaml:"stop_token"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that

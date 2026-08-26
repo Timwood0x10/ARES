@@ -210,30 +210,6 @@ func Wrapf(err error, format string, args ...any) error {
 	return fmt.Errorf(format+": %w", append(args, err)...)
 }
 
-// FormatError creates a new error with a formatted message using %w for error wrapping.
-// This is used when you want to format an error with additional context.
-func FormatError(baseErr error, format string, args ...any) error {
-	if baseErr == nil {
-		return nil
-	}
-	// Check if format string contains %w
-	if strings.Contains(format, "%w") {
-		// Replace %w with %s for formatting, then wrap the error
-		formatWithoutW := strings.ReplaceAll(format, "%w", "%s")
-		message := fmt.Sprintf(formatWithoutW, append(args, baseErr.Error())...)
-		return &wrappedError{
-			msg: message,
-			err: baseErr,
-		}
-	}
-	// If no %w, just format the message
-	message := fmt.Sprintf(format, args...)
-	return &wrappedError{
-		msg: message,
-		err: baseErr,
-	}
-}
-
 // wrappedError is a lightweight error wrapper.
 type wrappedError struct {
 	msg string

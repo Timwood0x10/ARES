@@ -13,6 +13,32 @@ import (
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
+// chaosStopControl is the process-level kill switch for the live chaos loop
+// (REVIEW #12 Phase 2 emergency stop). The HTTP handler POST /api/chaos/stop
+// calls RequestStop; the loop polls Stopped and exits permanently. Shadow
+// mode is unaffected — it never touches production agents.
+type chaosStopControl struct {
+	mu      sync.Mutex
+	stopped bool
+}
+
+// liveChaosCtl is the singleton control for this process.
+var liveChaosCtl = &chaosStopControl{}
+
+// RequestStop trips the kill switch.
+func (c *chaosStopControl) RequestStop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stopped = true
+}
+
+// Stopped reports whether the kill switch has been tripped.
+func (c *chaosStopControl) Stopped() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopped
+}
+
 // shadowSandboxLoop runs a periodic shadow Sandbox verification: it constructs
 // an independent scratch fabric, replays a canonical failure scenario
 // (agent kill → lease expire → recovery), and logs the result. Production
@@ -98,7 +124,7 @@ func runShadowSandbox(ctx context.Context) {
 // The shadow sandbox loop is attached to the provided context and runs in a
 // background goroutine. It is best-effort: a panic in the sandbox is recovered
 // and logged, never crashing the process.
-func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelHandle) {
+func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelHandle, gaActive func() bool) {
 	if !cfg.Kernel.Chaos.Enabled {
 		log.Printf("serve: chaos subsystem disabled (kernel.chaos.enabled=false)")
 		return
@@ -122,16 +148,28 @@ func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelH
 			return
 		}
 		// Live chaos is dangerous: it kills real production agents.
-		// Only construct the Chaos harness when explicitly confirmed.
+		// Only construct the Chaos harness when explicitly confirmed AND a
+		// non-empty target whitelist is configured (#12 Phase 2): an empty
+		// eligible_capabilities list must disable injection entirely rather
+		// than default to "everything is a target".
+		if len(cfg.Kernel.Chaos.EligibleCapabilities) == 0 {
+			log.Printf("serve: live chaos requested but eligible_capabilities is empty — refusing to arm (falling back to shadow)")
+			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
+			go shadowSandboxLoop(ctx, interval)
+			return
+		}
 		if peerKernel != nil && peerKernel.agents != nil && peerKernel.recovery != nil {
-			if cfg.Kernel.Chaos.PauseDuringGA {
-				log.Printf("serve: LIVE chaos warning — pause_during_ga=true is ADVISORY ONLY (no GA lifecycle signal wired yet); do not run live chaos during GA evaluations")
+			if cfg.Kernel.Chaos.StopToken == "" {
+				log.Printf("serve: live chaos requested but stop_token is empty — refusing to arm without an emergency-stop credential")
+				interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
+				go shadowSandboxLoop(ctx, interval)
+				return
 			}
 			chaos := aresrecovery.NewChaos(peerKernel.agents, peerKernel.recovery)
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go liveChaosLoop(ctx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos)
-			log.Printf("serve: LIVE chaos mode enabled — agents WILL be killed (interval=%s, rate=%d/min enforced)",
-				interval.String(), cfg.Kernel.Chaos.RatePerMin)
+			go liveChaosLoop(ctx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive)
+			log.Printf("serve: LIVE chaos mode enabled — agents WILL be killed (interval=%s, rate=%d/min enforced, whitelist=%v)",
+				interval.String(), cfg.Kernel.Chaos.RatePerMin, cfg.Kernel.Chaos.EligibleCapabilities)
 		} else {
 			log.Printf("serve: live chaos requested but kernel handle incomplete — falling back to shadow")
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
@@ -207,19 +245,20 @@ func (g *liveChaosGuard) isStopped() bool {
 }
 
 // liveChaosLoop runs periodic live chaos injections. This is the dangerous
-// path: real production agents are killed/suspended. Every injection is gated
-// by three enforced guardrails (REVIEW #12 Phase 2):
+// path: real production agents are killed/suspended. Every injection cycle is
+// gated by six enforced guardrails (REVIEW #12 Phase 2):
 //
-//  1. Rate limit — token bucket capped at cfg.RatePerMin injections/minute.
-//  2. Cooldown — an injected agent is not targeted again for cfg.Cooldown.
-//  3. Fail-safe latch — if recovery verification ever fails, ALL further
+//  1. Emergency stop — POST /api/chaos/stop (X-Chaos-Token) exits the loop
+//     permanently.
+//  2. Fail-safe latch — if recovery verification ever fails, ALL further
 //     injections stop until process restart.
-//
-// Note: cfg.PauseDuringGA is currently advisory only — there is no GA
-// generation lifecycle signal to subscribe to yet (tracked with the runtime
-// introspection panel work). Do not enable live mode while GA evaluations
-// are running.
-func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig) {
+//  3. GA quiet window — when cfg.PauseDuringGA is set, injections are deferred
+//     while gaActive() reports a generation mid-flight.
+//  4. Rate limit — token bucket capped at cfg.RatePerMin injections/minute.
+//  5. Cooldown — an injected agent is not targeted again for cfg.Cooldown.
+//  6. Target whitelist — only agents declaring a capability from
+//     cfg.EligibleCapabilities qualify (arming itself refuses an empty list).
+func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig, gaActive func() bool) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -230,12 +269,13 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 	}
 	cooldown := parseChaosInterval(cfg.Cooldown, 10*time.Minute)
 	guard := newLiveChaosGuard(ratePerMin, cooldown)
+	pausedForGA := false
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.Printf("serve: live chaos loop started (interval=%s, rate_limit=%d/min ENFORCED, cooldown=%s ENFORCED, fail_safe=latch)",
-		interval.String(), ratePerMin, cooldown.String())
+	log.Printf("serve: live chaos loop started (interval=%s, rate_limit=%d/min ENFORCED, cooldown=%s ENFORCED, fail_safe=latch, whitelist=%v, ga_pause=%t)",
+		interval.String(), ratePerMin, cooldown.String(), cfg.EligibleCapabilities, cfg.PauseDuringGA)
 
 	for {
 		select {
@@ -243,11 +283,31 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 			log.Printf("serve: live chaos loop stopping (context cancelled)")
 			return
 		case <-ticker.C:
+			// Emergency stop (REVIEW #12 Phase 2): POST /api/chaos/stop trips
+			// this permanently — the loop exits rather than idles.
+			if liveChaosCtl.Stopped() {
+				log.Printf("serve: live chaos loop stopped by emergency stop endpoint")
+				return
+			}
 			if guard.isStopped() {
 				log.Printf("serve: live chaos loop stopped by fail-safe latch (earlier recovery verification failed)")
 				return
 			}
-			runLiveChaosInjection(ctx, chaos, fabric, guard)
+			// GA quiet window (#12 Phase 2): defer injections while a
+			// generation is mid-flight. State transitions are logged once so
+			// operators can see the pause engaging and releasing.
+			if cfg.PauseDuringGA && gaActive != nil && gaActive() {
+				if !pausedForGA {
+					pausedForGA = true
+					log.Printf("serve: live chaos paused — GA generation in flight (quiet window)")
+				}
+				continue
+			}
+			if pausedForGA {
+				pausedForGA = false
+				log.Printf("serve: live chaos resumed — GA generation finished")
+			}
+			runLiveChaosInjection(ctx, chaos, fabric, guard, cfg.EligibleCapabilities)
 		}
 	}
 }
@@ -257,7 +317,7 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 // kill, then verifies recovery; a failed verification trips the fail-safe
 // latch so no further injections occur. The cycle is wrapped in panic
 // recovery so a chaos failure never crashes the process.
-func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard) {
+func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard, eligible []string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("serve: live chaos injection panicked (recovered): %v", r)
@@ -273,18 +333,23 @@ func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabri
 	now := time.Now()
 
 	// Round-robin target selection, skipping agents inside their cooldown
-	// window. If every agent is cooling down, skip this cycle entirely.
+	// window AND agents whose declared capabilities are not whitelisted
+	// (#12 Phase 2). If no agent qualifies, skip this cycle entirely.
 	var target string
 	for i := 0; i < len(agents); i++ {
 		candidate := agents[guard.nextIndex%len(agents)]
 		guard.nextIndex++
-		if guard.allowTarget(candidate, now) {
-			target = candidate
-			break
+		if !guard.allowTarget(candidate, now) {
+			continue
 		}
+		if !agentEligibleForChaos(fabric, candidate, eligible) {
+			continue
+		}
+		target = candidate
+		break
 	}
 	if target == "" {
-		log.Printf("serve: live chaos — all agents within cooldown window, skipping cycle")
+		log.Printf("serve: live chaos — no eligible target (cooldown or whitelist), skipping cycle")
 		return
 	}
 
@@ -325,4 +390,26 @@ func parseChaosInterval(s string, defaultInterval time.Duration) time.Duration {
 		return defaultInterval
 	}
 	return d
+}
+
+// agentEligibleForChaos reports whether the named agent declares at least one
+// capability present in the whitelist (#12 Phase 2). The whitelist is matched
+// against the agent's own Capabilities list; an unknown agent is never
+// eligible.
+func agentEligibleForChaos(fabric *agentfabric.Fabric, agentID string, whitelist []string) bool {
+	if len(whitelist) == 0 {
+		return false
+	}
+	a, err := fabric.Get(agentID)
+	if err != nil || a == nil {
+		return false
+	}
+	for _, capName := range a.Capabilities {
+		for _, w := range whitelist {
+			if capName == w {
+				return true
+			}
+		}
+	}
+	return false
 }

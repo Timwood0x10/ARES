@@ -64,10 +64,18 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 	}
 
 	ev := eval.NewEvidence(taskID, role, "dimension_judge")
-	ev.AddDimension("correctness", clampScore(resp.Correctness, 3), 3, llmJudgeItem("correctness", resp.Correctness, 3), "")
-	ev.AddDimension("completeness", clampScore(resp.Completeness, 3), 3, llmJudgeItem("completeness", resp.Completeness, 3), "")
-	ev.AddDimension("efficiency", clampScore(resp.Efficiency, 2), 2, llmJudgeItem("efficiency", resp.Efficiency, 2), "")
-	ev.AddDimension("safety", clampScore(resp.Safety, 2), 2, llmJudgeItem("safety", resp.Safety, 2), "")
+	// Feed the SAME clamped value to both the dimension verdict and its
+	// evidence item (#45): previously the item status was computed from the
+	// RAW float while Pass used the rounded int, so a score like 1.2/2 could
+	// yield Pass=true with a "failed" item — contradictory evidence.
+	correctness := clampScore(resp.Correctness, 3)
+	completeness := clampScore(resp.Completeness, 3)
+	efficiency := clampScore(resp.Efficiency, 2)
+	safety := clampScore(resp.Safety, 2)
+	ev.AddDimension("correctness", correctness, 3, llmJudgeItem("correctness", float64(correctness), 3), "")
+	ev.AddDimension("completeness", completeness, 3, llmJudgeItem("completeness", float64(completeness), 3), "")
+	ev.AddDimension("efficiency", efficiency, 2, llmJudgeItem("efficiency", float64(efficiency), 2), "")
+	ev.AddDimension("safety", safety, 2, llmJudgeItem("safety", float64(safety), 2), "")
 	ev.Confidence = averageConfidence(resp)
 
 	switch {

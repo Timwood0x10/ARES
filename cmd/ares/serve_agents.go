@@ -135,8 +135,14 @@ func createAndServeAgents(
 	}
 
 	// REVIEW #12 Phase 1+2: wire chaos subsystem. Default is shadow sandbox
-	// (production zero-impact); live mode requires explicit config.
-	wireChaos(ctx, cfg, peerKernel)
+	// (production zero-impact); live mode requires explicit config plus the
+	// wired GA generation probe for the quiet window.
+	wireChaos(ctx, cfg, peerKernel, func() bool {
+		if comp.NewEvolution == nil {
+			return false
+		}
+		return comp.NewEvolution.GAGenerationActive()
+	})
 
 	return subAgents, peerKernel, nil
 }

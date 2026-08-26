@@ -397,7 +397,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
-		a.recordAction(ctx, task.TaskID, false, execErr.Error())
+		a.recordAction(ctx, task, false, execErr.Error())
 		return nil, execErr
 	}
 
@@ -414,7 +414,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		})
-		a.recordAction(ctx, task.TaskID, false, guardErr.Error())
+		a.recordAction(ctx, task, false, guardErr.Error())
 		return result, fmt.Errorf("sub agent %s output guard rejected result: %w", a.id, guardErr)
 	}
 
@@ -426,7 +426,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 		ares_events.EventKeyTenantID:         distillTenantID(),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 	})
-	a.recordAction(ctx, task.TaskID, result.Success, "")
+	a.recordAction(ctx, task, result.Success, "")
 
 	return result, nil
 }
@@ -435,19 +435,20 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 // store is configured (ares-vs-prime-agent 5.3: action store). Append errors
 // are logged and non-fatal: audit must never break the execution path.
 //
-// TODO(tech-debt): (#61) Entry.SessionID is left empty because models.Task
-// carries no session identifier; until Task grows one (threaded from the
-// kernel/fabric at task creation), List/Replay-by-session can never match
-// these entries. Harmless today — no production caller wires an actionlog
-// Store into sub agents.
-func (a *subAgent) recordAction(ctx context.Context, taskID string, success bool, errMsg string) {
+// The entry's SessionID comes from models.Task.SessionID (#61): upstream
+// sources that know the owning conversation session populate it (e.g.
+// DistillTask via agent_checkpoints); session-less sources leave it empty,
+// and such entries are only reachable through List(""). Callers that need
+// per-session replay must therefore dispatch tasks carrying a SessionID.
+func (a *subAgent) recordAction(ctx context.Context, task *models.Task, success bool, errMsg string) {
 	if a.actionLog == nil {
 		return
 	}
 	entry := actionlog.Entry{
-		ID:      "task:" + taskID,
-		AgentID: a.id,
-		Action:  "task.result",
+		ID:        "task:" + task.TaskID,
+		SessionID: task.SessionID,
+		AgentID:   a.id,
+		Action:    "task.result",
 		Payload: map[string]any{
 			"success": success,
 			"error":   errMsg,
@@ -455,7 +456,7 @@ func (a *subAgent) recordAction(ctx context.Context, taskID string, success bool
 	}
 	if appendErr := a.actionLog.Append(ctx, entry); appendErr != nil {
 		log.Error("sub agent action log append failed",
-			KeyAgentID, a.id, KeyTaskID, taskID, "error", appendErr)
+			KeyAgentID, a.id, KeyTaskID, task.TaskID, "error", appendErr)
 	}
 }
 

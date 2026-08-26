@@ -162,6 +162,7 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 	// Convert to models.Task format
 	task := &models.Task{
 		TaskID:    taskResult.ID,
+		SessionID: taskResult.SessionID, // #61: carry the owning session when known
 		TaskType:  models.AgentType(taskResult.TaskType),
 		Payload:   taskResult.Input,
 		Priority:  50, // Default priority

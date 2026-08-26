@@ -49,3 +49,12 @@ type WorkingGraph struct {
 	Nodes map[string]*KnowledgeObject `json:"nodes"`
 	Edges []Relation                  `json:"edges"`
 }
+
+// RelationKey identifies a graph edge by its endpoints and relationship name.
+// Used for duplicate detection when aggregating edges from multiple linkers
+// (#43).
+type RelationKey struct {
+	From string
+	To   string
+	Name string
+}

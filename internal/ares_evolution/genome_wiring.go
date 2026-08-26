@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -38,6 +39,10 @@ type BatchScorer func(ctx context.Context, strategies []*mutation.Strategy) []fl
 // When a scorer is set, new offspring (IsScoreEvaluated() == false) are automatically scored
 // after each evolution cycle, closing the scoring loop for the scheduler path.
 type GenomePopulationAdapter struct {
+
+	// running reports whether Run() is mid-generation; probed by the
+	// live-chaos pause gate (#12). See GenerationActive.
+	running atomic.Bool
 	pop     *genome.Population
 	mutator genome.MutatorInterface
 	crosser genome.CrossoverInterface

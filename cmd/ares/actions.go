@@ -52,6 +52,9 @@ type actionHandler struct {
 	// POST /api/tasks (submitPeerTask); nil on the legacy leader path makes
 	// that endpoint report 503 "peer runtime not active".
 	kernel *kernelHandle
+	// chaosStopToken guards the chaos emergency-stop endpoint: requests must
+	// carry a matching X-Chaos-Token header. Empty disables the endpoint.
+	chaosStopToken string
 }
 
 // checkAuth enforces authentication on destructive endpoints: the legacy API
@@ -136,7 +139,7 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover}
+	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover,stop}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/chaos/") {
 		princ := h.checkAuth(w, r)
 		if princ == nil {
@@ -266,6 +269,27 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal, chaosType string) {
 	w.Header().Set("Content-Type", "application/json")
 	switch chaosType {
+	case "stop":
+		// Emergency stop for the live chaos loop (REVIEW #12 Phase 2). The
+		// endpoint is armed only when the process was started with a stop
+		// token — an empty configured token means live chaos is not armed
+		// and there is nothing to stop, so report 503 instead of silently
+		// accepting.
+		if h.chaosStopToken == "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprint(w, `{"error":"chaos stop endpoint not armed (stop_token empty)"}`) // best-effort body; status code carries the contract
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Chaos-Token")), []byte(h.chaosStopToken)) != 1 {
+			h.auditAction("chaos-stop", "live-loop", princ, false)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, `{"error":"invalid X-Chaos-Token"}`) // best-effort body
+			return
+		}
+		liveChaosCtl.RequestStop()
+		h.auditAction("chaos-stop", "live-loop", princ, true)
+		_, _ = fmt.Fprint(w, `{"status":"stopping","message":"live chaos loop will exit"}`) // best-effort body
+
 	case "random-kill":
 		// P1 unified lifecycle: when the peer kernel exists, kill a fabric
 		// agent so the death flows through the REAL kernel recovery chain

@@ -8,6 +8,12 @@ formatters:
     - gofmt
     - goimports
 
+# NOTE: the old v1 top-level `linters-settings` block (gocyclo=15,
+# goconst 3/5, gocritic tags) was silently IGNORED by golangci-lint v2.
+# Migrating it verbatim into v2 `settings` would activate it for the first
+# time and surface ~200 legacy violations (100+ functions above cyclomatic
+# 15). That cleanup is its own project; until then this config intentionally
+# runs v2 defaults, matching the previously EFFECTIVE behavior.
 linters:
   default: none
   enable:
@@ -288,23 +294,6 @@ linters:
         text: "SA1019"
     paths:
       - third_party$
-
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  goconst:
-    min-len: 3
-    min-occurrences: 5
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - performance
-      - style
-    disabled-checks:
-      - ifElseChain
-      - unnamedResult
-      - whyNoLint
-      - commentFormatting
 
 issues:
   max-issues-per-linter: 100

@@ -112,8 +112,12 @@ func (f *failingWiringStore) Aggregate(_ context.Context, _ evidence.Filter, _ e
 func TestEvaluate_DimensionBridge_PayloadDecodable(t *testing.T) {
 	ctx := context.Background()
 	store := evidence.NewMemoryStore()
+	// efficiency must be ≥ ceil(2*2/3)=2 to pass (#45): the fixture previously
+	// used 1/2, which only passed under the truncated integer threshold while
+	// its evidence item said "failed" — the exact inconsistency the unified
+	// float threshold removes.
 	client := &mockLLMClient{
-		response: `{"correctness":2,"completeness":3,"efficiency":1,"safety":2,"reason":"passes"}`,
+		response: `{"correctness":2,"completeness":3,"efficiency":2,"safety":2,"reason":"passes"}`,
 	}
 	evaluator, err := NewLLMJudgeEvaluator(client,
 		WithDimensionAveraging(),
@@ -137,4 +141,44 @@ func TestEvaluate_DimensionBridge_PayloadDecodable(t *testing.T) {
 	require.NoError(t, json.Unmarshal(records[0].Payload, &decoded))
 	assert.Equal(t, eval.VerdictPass, decoded.Verdict, "payload must carry the structured verdict")
 	require.NotEmpty(t, decoded.Dimensions, "payload must carry per-dimension scores")
+}
+
+// TestDimensionVerdictItemConsistency locks the REVIEW #45 contract: a
+// dimension's Pass flag and its evidence-item status are derived from the SAME
+// clamped score and the SAME float threshold, so they can never contradict.
+func TestDimensionVerdictItemConsistency(t *testing.T) {
+	ctx := context.Background()
+	store := evidence.NewMemoryStore()
+	// efficiency = 1 of max 2 (50% < 66.7%): must FAIL consistently in both
+	// the dimension verdict and the attached item status.
+	client := &mockLLMClient{
+		response: `{"correctness":3,"completeness":3,"efficiency":1,"safety":2,"reason":"weak efficiency"}`,
+	}
+	evaluator, err := NewLLMJudgeEvaluator(client,
+		WithDimensionAveraging(),
+		WithEvidenceStore(store),
+		WithRole("coder"),
+	)
+	require.NoError(t, err)
+
+	tc := TestCase{ID: "tc-consistency", Input: "in", ExpectedOutput: "exp"}
+	result := TestResult{TestCaseID: "tc-consistency", ActualOutput: "out"}
+	_, err = evaluator.Evaluate(ctx, tc, result)
+	require.NoError(t, err)
+
+	records, err := store.Query(ctx, evidence.Filter{Kind: evidence.KindDimensionEval})
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+
+	var decoded eval.Evidence
+	require.NoError(t, json.Unmarshal(records[0].Payload, &decoded))
+	for _, ds := range decoded.Dimensions {
+		if ds.Name != "efficiency" {
+			continue
+		}
+		assert.False(t, ds.Pass, "efficiency 1/2 must not pass")
+		require.Len(t, ds.Evidence, 1)
+		assert.Equal(t, "failed", ds.Evidence[0].Status,
+			"item status must agree with the dimension Pass flag")
+	}
 }
