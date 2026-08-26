@@ -193,8 +193,11 @@ func (p *CandidatePipeline) Release(ctx context.Context, candidateID string) (bo
 
 	// Register the profile executor for this target so the coordinator can
 	// apply (or the deployment pipeline can stage) the instruction change.
+	// Replace, not Register (#25): the registry has no unregister path, so a
+	// second verified candidate for the same TargetRole must be able to
+	// supersede the first — Register would fail with "already registered".
 	target := profileTargetPrefix + c.TargetRole
-	if err := p.registry.Register(target, p.executor); err != nil {
+	if err := p.registry.Replace(target, p.executor); err != nil {
 		return false, fmt.Errorf("evolution: register profile executor: %w", err)
 	}
 

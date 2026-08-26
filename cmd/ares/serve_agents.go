@@ -62,15 +62,15 @@ func createAndServeAgents(
 
 	// Live-DAG injection (closes the evolution structure-patch loop): the
 	// configured agent population IS the live workflow topology. Register it
-	// on the runtime manager and swap it into the evolution executors —
-	// without this, workflow/recovery patches mutated the synthetic
-	// input→process→output bootstrap DAG forever and "live promotion" was
-	// unobservable.
+	// on the runtime manager (under the shared live-DAG key — N3) and swap it
+	// into the evolution executors — without this, workflow/recovery patches
+	// mutated the synthetic input→process→output bootstrap DAG forever and
+	// "live promotion" was unobservable.
 	if comp.NewEvolution != nil {
 		liveDAG, dagErr := buildLiveAgentDAG(cfg)
 		switch {
 		case dagErr == nil:
-			mgr.RegisterAgentDAG("agents", liveDAG)
+			mgr.RegisterAgentDAG(ares_runtime.AgentDAGLiveKey, liveDAG)
 			if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
 				log.Printf("serve: live DAG injection failed (evolution keeps placeholder): %v", err)
 			} else {
@@ -179,6 +179,13 @@ func setupPeerRegistry(
 	default:
 		reg = buildPeerRegistry(subAgents)
 		log.Printf("peer registry wired: %d agents registered", len(reg.IDs()))
+	}
+	// Retain the registry on the kernel handle at construction time (N4: the
+	// return value was previously discarded by callers). serve.go also assigns
+	// it as a defensive second write; the retention contract must not depend
+	// on a single call site.
+	if kernel != nil {
+		kernel.peerRegistry = reg
 	}
 	return reg, nil
 }

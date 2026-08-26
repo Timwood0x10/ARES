@@ -11,10 +11,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/stretchr/testify/require"
 )
 
 // TestTaskFromPayload verifies payload decoding: agent_type is honored, absent
@@ -757,5 +759,24 @@ func TestW1UnregisterExecutor(t *testing.T) {
 	// Lookup must return false.
 	if _, ok := sched.LookupExecutor("removable"); ok {
 		t.Fatal("lookup must return false after unregister")
+	}
+}
+
+// TestSetupPeerRegistryRetainsOnKernel locks the N4 contract: the peer
+// registry built by setupPeerRegistry must be retained on the kernel handle
+// instead of being discarded after construction.
+func TestSetupPeerRegistryRetainsOnKernel(t *testing.T) {
+	var comp ares_bootstrap.Components
+	kernel := &kernelHandle{}
+
+	// No evolution wired: the plain direct peer registry path is used.
+	reg, err := setupPeerRegistry(nil, &comp, kernel)
+	require.NoError(t, err)
+	require.NotNil(t, reg, "setupPeerRegistry must return a usable registry")
+	// The construction site must retain the registry on the kernel handle
+	// (N4) so it stays reachable for direct peer messaging / capability
+	// discovery.
+	if kernel.peerRegistry != reg {
+		t.Fatal("peer registry must be retained on the kernel handle (N4)")
 	}
 }

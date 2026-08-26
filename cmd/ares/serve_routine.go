@@ -81,6 +81,13 @@ func setupServeMonitoring(
 		monitoring.WithTabMap(tabMap),
 		monitoring.WithRuntimeManager(rtAdapter),
 		monitoring.WithMCP(mcpMgr),
+		// REVIEW #14: without a pruner the DAG engine's node map grows with
+		// every agent/task for the process lifetime — the only remover is
+		// the Pruner, which is constructed solely when this option is set.
+		monitoring.WithPruneConfig(monitoring.PruneConfig{
+			MaxAgentAge:   2 * time.Hour,
+			PruneInterval: 10 * time.Minute,
+		}),
 	).(*monitoring.MonitorPlugin)
 
 	if err := plugin.Start(ctx, bus); err != nil {

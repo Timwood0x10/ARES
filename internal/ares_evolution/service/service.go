@@ -444,6 +444,12 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 	// Initialize scores before first generation so selection has meaningful data.
 	s.initScores(ctx)
 
+	// Lineage cursor (#54): collectLineages()/s.lineages return the FULL
+	// accumulated genealogy each generation; appending the whole slice every
+	// generation made result.Lineages O(G × total) with massive duplication.
+	// Only the tail grown since the previous generation is appended.
+	wiredLineageLen := 0
+
 	for i := 0; i < generations; i++ {
 		select {
 		case <-ctx.Done():
@@ -464,7 +470,8 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			result.Stats = append(result.Stats, stats)
 
 			lineages := s.collectLineages()
-			result.Lineages = append(result.Lineages, lineages...)
+			result.Lineages = append(result.Lineages, lineages[wiredLineageLen:]...)
+			wiredLineageLen = len(lineages)
 		case s.population != nil && s.mutator != nil && s.crosser != nil:
 			prevSnapshot, _ := s.population.Snapshot()
 			prevBest := bestFromStrategies(prevSnapshot)
@@ -483,12 +490,13 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			// Record lineages for non-wired mode: link parent→child.
 			s.recordGenealogy(prevBest)
 
-			// Record lineages for non-wired mode: track each offspring's parent-child relationship.
-			s.recordLineages()
+			// Record lineages for non-wired mode: track each offspring's
+			// parent-child relationship. Only this generation's additions go
+			// into the result (#54).
+			result.Lineages = append(result.Lineages, s.recordLineages()...)
 
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
-			result.Lineages = append(result.Lineages, s.lineages...)
 		default:
 			return nil, ErrNotInitialized
 		}
@@ -923,24 +931,28 @@ func toInternalEvidence(ev Evidence) (experience.Evidence, error) {
 	}, nil
 }
 
-// recordLineages records lineage entries for each offspring in non-wired mode,
-// capturing parent-child relationships from the population snapshot.
-// Lineages are capped at maxLineages entries to prevent unbounded growth.
-func (s *Service) recordLineages() {
+// recordLineages records parent→child lineages for the current generation
+// into s.lineages (capped at maxLineages to prevent unbounded growth) and
+// returns exactly the entries added this generation, so callers append the
+// delta instead of the whole accumulated history (#54: O(G × total) duplication).
+func (s *Service) recordLineages() []StrategyLineage {
 	if s.population == nil {
-		return
+		return nil
 	}
 	snapshot, _ := s.population.Snapshot()
+	added := make([]StrategyLineage, 0)
 	for _, agent := range snapshot {
 		if agent.ParentID != "" {
-			s.lineages = append(s.lineages, StrategyLineage{
+			l := StrategyLineage{
 				ParentID:     agent.ParentID,
 				ChildID:      agent.ID,
 				MutationType: agent.StrategyMutationType.String(),
 				WinRate:      0, // Not measured in simple GA mode
 				ScoreDelta:   agent.Score,
 				Timestamp:    time.Now().Unix(),
-			})
+			}
+			s.lineages = append(s.lineages, l)
+			added = append(added, l)
 		}
 	}
 
@@ -949,4 +961,5 @@ func (s *Service) recordLineages() {
 		excess := len(s.lineages) - maxLineages
 		s.lineages = append(s.lineages[:0], s.lineages[excess:]...)
 	}
+	return added
 }

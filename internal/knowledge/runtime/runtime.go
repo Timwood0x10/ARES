@@ -108,7 +108,7 @@ func (r *KnowledgeRuntime) ProviderNames() []string {
 // Config holds optional runtime configuration.
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)
-	LazyLoading            bool // Enable lazy graph mode (default false)
+	LazyLoading            bool // Clamp the graph budget when set; full lazy loading was removed with LazyGraph (tech-debt: see plan/0.3.1plan)
 }
 
 // maxLazyForGraph caps the graph budget in lazy mode before Reduce.

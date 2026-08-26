@@ -52,6 +52,11 @@ func runDemo() error {
 		monitoring.WithAgentTracker(tracker),
 		monitoring.WithTraceLinkerOption(linker),
 		monitoring.WithTabMap(tabMap),
+		// REVIEW #14: same rationale as serve_routine.go — bound DAG growth.
+		monitoring.WithPruneConfig(monitoring.PruneConfig{
+			MaxAgentAge:   2 * time.Hour,
+			PruneInterval: 10 * time.Minute,
+		}),
 	).(*monitoring.MonitorPlugin)
 
 	ctx, cancel := context.WithCancel(context.Background())

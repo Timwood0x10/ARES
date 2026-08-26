@@ -41,8 +41,6 @@ const (
 	ProviderEvolution ProviderType = "evolution"
 	// ProviderPostgres reads rows from a PostgreSQL table.
 	ProviderPostgres ProviderType = "postgres"
-	// ProviderMySQL reads rows from a MySQL table.
-	ProviderMySQL ProviderType = "mysql"
 	// ProviderVector queries a vector store for semantic similarity.
 	ProviderVector ProviderType = "vector"
 	// ProviderStore recalls AKG-distilled objects from a KnowledgeStore.

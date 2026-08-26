@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -33,7 +34,7 @@ func (n *DefaultNormalizer) Normalize(_ context.Context, obj *knowledge.Knowledg
 	switch {
 	case len(obj.Raw) > 0:
 		if n.MaxRawBytes > 0 && len(obj.Raw) > n.MaxRawBytes {
-			raw = string(obj.Raw[:n.MaxRawBytes])
+			raw = truncateUTF8Safe(obj.Raw, n.MaxRawBytes)
 		} else {
 			raw = string(obj.Raw)
 		}
@@ -108,12 +109,20 @@ func (s *DefaultSummarizer) Summarize(_ context.Context, obj *knowledge.Knowledg
 	if len(source) <= maxLen {
 		obj.Summary = source
 	} else {
-		// Take first maxLen chars, breaking at word boundary.
-		trimmed := source[:maxLen]
-		if idx := strings.LastIndex(trimmed, " "); idx > maxLen/2 {
-			trimmed = trimmed[:idx]
+		// Truncate by RUNES, not bytes (#44): source[:maxLen] on byte bounds
+		// splits multi-byte UTF-8 sequences (CJK is 3 bytes/char) producing
+		// invalid summaries. The word-boundary trim only applies when a space
+		// exists well inside the truncated head (CJK has none).
+		runes := []rune(source)
+		if len(runes) <= maxLen {
+			obj.Summary = source
+			return obj, nil
 		}
-		obj.Summary = trimmed + "..."
+		head := string(runes[:maxLen])
+		if idx := strings.LastIndex(head, " "); idx > maxLen/2 {
+			head = head[:idx]
+		}
+		obj.Summary = head + "..."
 	}
 
 	return obj, nil
@@ -254,4 +263,18 @@ func jaccardOverlap(a, b map[string]int) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// truncateUTF8Safe cuts b to at most max bytes without splitting a UTF-8
+// sequence (#44): it walks back from the cut point to the last rune start so
+// the result is always valid UTF-8.
+func truncateUTF8Safe(b []byte, max int) string {
+	if len(b) <= max {
+		return string(b)
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return string(b[:cut])
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"sync"
@@ -577,13 +578,20 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 			continue
 		}
 
-		// Check for duplicate keys within same tenant (per design standard)
+		// Check for duplicate keys within same tenant (per design standard).
+		// A real query error must abort (#48): treating it as "not exists"
+		// silently degraded the failure into an insert attempt.
 		var existingKeyVersion int
 		checkQuery := `SELECT key_version FROM secrets WHERE key = $1 AND tenant_id = $2`
 		err := tx.QueryRowContext(ctx, checkQuery, item.Key, tenantID).Scan(&existingKeyVersion)
-		if err == nil {
+		switch {
+		case err == nil:
 			log.Warn("Secret key already exists, skipping", "key", item.Key, "existing_version", existingKeyVersion)
 			continue
+		case stderrors.Is(err, sql.ErrNoRows):
+			// genuinely new key — proceed to insert
+		default:
+			return 0, errors.Wrapf(err, "check secret %s", item.Key)
 		}
 
 		// Encrypt secret value using current encryption key (AES-256-GCM)
@@ -623,12 +631,8 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		log.Debug("Secret imported successfully", "tenant_id", tenantID, "secret_id", id)
 	}
 
-	// Check if there were any import errors
-	if len(importErrors) > 0 {
-		log.Warn("Secret import completed with errors", "imported_count", importedCount, "error_count", len(importErrors), "errors", importErrors)
-	}
-
-	// Return error if no secrets were imported (atomicity: all-or-nothing)
+	// Atomicity contract (#48): if NOTHING was imported the transaction is
+	// rolled back and the collected reasons are returned as the error.
 	if importedCount == 0 {
 		return 0, fmt.Errorf("no secrets imported, errors: %v", importErrors)
 	}
@@ -639,10 +643,20 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	}
 	committed = true
 
+	// Partial failures are surfaced to the caller (#48): previously they were
+	// only logged and the call returned a clean nil, hiding data loss.
+	var importErr error
+	if len(importErrors) > 0 {
+		importErr = fmt.Errorf("%d of %d secrets failed to import: %v",
+			len(importErrors), len(items), importErrors)
+		log.Warn("Secret import completed with errors",
+			"imported_count", importedCount, "error_count", len(importErrors))
+	}
+
 	// Add audit logging for import events (per design standard)
 	log.Info("Secret import completed", "tenant_id", tenantID, "imported_count", importedCount, "total_items", len(items))
 
-	return importedCount, nil
+	return importedCount, importErr
 }
 
 // GetKeyVersion retrieves the current key version for a secret.

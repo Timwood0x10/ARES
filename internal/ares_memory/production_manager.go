@@ -33,7 +33,6 @@ import (
 type ProductionMemoryManager struct {
 	// Storage components
 	dbPool           *postgres.Pool
-	tenantGuard      *postgres.TenantGuard
 	retrievalService *services.RetrievalService
 	embeddingClient  *embedding.EmbeddingClient
 	writeBuffer      *postgres.WriteBuffer // Write buffer for rate limiting
@@ -127,9 +126,6 @@ func NewProductionMemoryManager(
 		return nil, fmt.Errorf("embedding client is required")
 	}
 
-	// Create tenant guard
-	tenantGuard := postgres.NewTenantGuard(dbPool)
-
 	// Create repositories
 	dbConn := dbPool.GetDB()
 	knowledgeRepo := repositories.NewKnowledgeRepository(dbPool.GetDB(), dbConn)
@@ -152,7 +148,6 @@ func NewProductionMemoryManager(
 		dbPool,
 		embeddingClient,
 		nil, // llmClient (will be created from env if needed)
-		tenantGuard,
 		retrievalGuard,
 		knowledgeRepo,
 		experienceRepo,
@@ -198,7 +193,6 @@ func NewProductionMemoryManager(
 
 	return &ProductionMemoryManager{
 		dbPool:                 dbPool,
-		tenantGuard:            tenantGuard,
 		retrievalService:       retrievalService,
 		embeddingClient:        embeddingClient,
 		pipeline:               pipeline,
@@ -424,11 +418,11 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		return fmt.Errorf("content cannot be empty")
 	}
 
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return errors.Wrap(err, "set tenant context")
-	}
 
 	// Create conversation record (NO vector embedding per design standard)
 	// conversations table: NO vector + expires_at + tenant_id
@@ -492,11 +486,11 @@ func (m *ProductionMemoryManager) GetMessages(ctx context.Context, sessionID str
 		return nil, errors.New("session ID cannot be empty")
 	}
 
-	// Set tenant context
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return nil, errors.Wrap(err, "set tenant context")
-	}
 
 	// Retrieve conversations from database
 	_, maxHist := m.snapshotTuning()
@@ -528,11 +522,11 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		return fmt.Errorf("role cannot be empty")
 	}
 
-	// Set tenant context
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return errors.Wrap(err, "set tenant context")
-	}
 
 	// Build metadata from structured fields
 	metadata := make(map[string]interface{})
@@ -615,11 +609,11 @@ func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessi
 		return nil, errors.New("session ID cannot be empty")
 	}
 
-	// Set tenant context
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return nil, errors.Wrap(err, "set tenant context")
-	}
 
 	// Retrieve conversations with metadata
 	_, maxHist := m.snapshotTuning()
@@ -701,11 +695,11 @@ func (m *ProductionMemoryManager) DeleteSession(ctx context.Context, sessionID s
 		return errors.New("session ID cannot be empty")
 	}
 
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return errors.Wrap(err, "set tenant context")
-	}
 
 	// Delete all conversations for this session
 	deletedCount, err := m.conversationRepository.DeleteBySession(ctx, sessionID, tenantID)
@@ -803,11 +797,9 @@ func (m *ProductionMemoryManager) GetLatestSessionForAgent(ctx context.Context, 
 		return "", nil
 	}
 
-	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return "", errors.Wrap(err, "get latest session for agent: set tenant context")
-	}
-
+	// agent_checkpoints is keyed by agent_id alone (session IDs are globally
+	// unique), so no tenant predicate applies here; tenant scope for the
+	// caller flows via explicit parameters elsewhere (REVIEW #36 Phase 2).
 	query := `SELECT session_id FROM agent_checkpoints WHERE agent_id = $1 ORDER BY updated_at DESC LIMIT 1`
 	row := m.dbPool.QueryRow(ctx, query, agentID)
 

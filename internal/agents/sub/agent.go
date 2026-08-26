@@ -434,6 +434,12 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 // recordAction appends an actionlog entry for a finished task, when an action
 // store is configured (ares-vs-prime-agent 5.3: action store). Append errors
 // are logged and non-fatal: audit must never break the execution path.
+//
+// TODO(tech-debt): (#61) Entry.SessionID is left empty because models.Task
+// carries no session identifier; until Task grows one (threaded from the
+// kernel/fabric at task creation), List/Replay-by-session can never match
+// these entries. Harmless today — no production caller wires an actionlog
+// Store into sub agents.
 func (a *subAgent) recordAction(ctx context.Context, taskID string, success bool, errMsg string) {
 	if a.actionLog == nil {
 		return

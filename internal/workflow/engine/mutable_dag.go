@@ -730,6 +730,28 @@ func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Ste
 		delete(m.steps, oldID)
 		m.steps[newStep.ID] = newStep
 	} else {
+		// Same-ID replacement (#31): edges contributed by the OLD step's
+		// DependsOn that are absent from the new step's DependsOn must be
+		// removed, otherwise the node silently keeps stale dependencies.
+		if oldStep, ok := m.steps[oldID]; ok {
+			newDeps := make(map[string]bool, len(newStep.DependsOn))
+			for _, dep := range newStep.DependsOn {
+				newDeps[dep] = true
+			}
+			for _, oldDep := range oldStep.DependsOn {
+				if newDeps[oldDep] {
+					continue
+				}
+				targets := m.dag.Edges[oldDep]
+				for i, t := range targets {
+					if t == oldID {
+						m.dag.Edges[oldDep] = append(targets[:i], targets[i+1:]...)
+						break
+					}
+				}
+			}
+		}
+
 		m.steps[oldID] = newStep
 		// Add new DependsOn edges, checking for duplicates.
 		for _, dep := range newStep.DependsOn {

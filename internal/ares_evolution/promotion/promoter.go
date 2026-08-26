@@ -109,6 +109,9 @@ func (p *DefaultPromoter) Evaluate(
 		info.ScoreHistory = info.ScoreHistory[len(info.ScoreHistory)-20:]
 	}
 
+	// Periodic sweep of long-retired strategies (#56).
+	p.pruneRetiredLocked(time.Now())
+
 	// Set baseline score when entering shadow state for the first time.
 	// This captures the score at the point the strategy became shadow
 	// and is used to measure absolute improvement for promotion.
@@ -557,6 +560,36 @@ func (p *DefaultPromoter) transitionState(
 	}
 
 	p.history[info.StrategyID] = append(p.history[info.StrategyID], record)
+
+	// Cap per-strategy promotion history (#56): state transitions are
+	// append-only and a long-running process accumulates them forever.
+	if len(p.history[info.StrategyID]) > maxPromotionHistoryPerStrategy {
+		p.history[info.StrategyID] = p.history[info.StrategyID][len(p.history[info.StrategyID])-maxPromotionHistoryPerStrategy:]
+	}
+}
+
+// Caps bounding promoter growth (#56).
+const (
+	// maxPromotionHistoryPerStrategy caps the per-strategy transition record list.
+	maxPromotionHistoryPerStrategy = 64
+	// retiredRetention is how long a Retired strategy (and its history)
+	// stays queryable before the sweep removes it.
+	retiredRetention = 24 * time.Hour
+)
+
+// pruneRetiredLocked removes strategies that have been Retired longer than
+// retiredRetention, together with their history (#56): strategies map only
+// ever grew — retiring changed state but never removed entries, so both maps
+// grew without bound on every new strategy ID. Caller must hold p.mu for
+// writing.
+func (p *DefaultPromoter) pruneRetiredLocked(now time.Time) {
+	cutoff := now.Add(-retiredRetention)
+	for id, info := range p.strategies {
+		if info.CurrentState == StrategyStateRetired && info.LastStateChange.Before(cutoff) {
+			delete(p.strategies, id)
+			delete(p.history, id)
+		}
+	}
 }
 
 // addToChampions adds a strategy to the champions list for a task type.

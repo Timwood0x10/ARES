@@ -339,5 +339,8 @@ func (a *GenomePopulationAdapter) PopulationSize() int {
 	if a.pop == nil {
 		return 0
 	}
-	return len(a.pop.Agents)
+	// Stats() reads len(Agents) under the population RLock; doEvolve can
+	// replace p.Agents wholesale while holding the write lock, so a bare
+	// len(a.pop.Agents) here is a data race (REVIEW #55).
+	return a.pop.Stats().Size
 }

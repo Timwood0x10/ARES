@@ -10,6 +10,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
+// tableKnowledgeChunks is the knowledge chunk table consumed by the
+// embedding worker's write-back dispatch (shared with the expiry cleaner
+// and vector wiring in this package).
+const tableKnowledgeChunks = "knowledge_chunks_1024"
+
 // EmbeddingWorkerConfig controls the embedding worker polling intervals.
 type EmbeddingWorkerConfig struct {
 	// PollInterval is how often the worker polls for pending tasks.
@@ -56,6 +61,12 @@ type embeddingWriter struct {
 	experienceRepo *repositories.ExperienceRepository
 }
 
+// embeddingWriterInterface abstracts the write-back dispatch so tests can
+// inject fakes (the concrete embeddingWriter satisfies it implicitly).
+type embeddingWriterInterface interface {
+	writeEmbedding(ctx context.Context, task *postgres.EmbeddingTask, vec []float64, model string, version int) error
+}
+
 // startEmbeddingWorker launches a background goroutine on comp.bgGroup that
 // polls the embedding queue, computes embeddings, and writes them back to
 // the source table. All dependencies are best-effort: any nil dependency
@@ -66,7 +77,7 @@ func startEmbeddingWorker(
 	comp *Components,
 	queue embeddingQueueClient,
 	embClient embeddingEmbedder,
-	writer embeddingWriter,
+	writer embeddingWriterInterface,
 	embCfg *postgres.EmbeddingConfig,
 	workerCfg EmbeddingWorkerConfig,
 ) {
@@ -153,7 +164,7 @@ func processEmbeddingBatch(
 	ctx context.Context,
 	queue embeddingQueueClient,
 	embClient embeddingEmbedder,
-	writer embeddingWriter,
+	writer embeddingWriterInterface,
 	embCfg *postgres.EmbeddingConfig,
 	logger *slog.Logger,
 ) {
@@ -183,7 +194,7 @@ func processEmbeddingTask(
 	ctx context.Context,
 	queue embeddingQueueClient,
 	embClient embeddingEmbedder,
-	writer embeddingWriter,
+	writer embeddingWriterInterface,
 	task *postgres.EmbeddingTask,
 	logger *slog.Logger,
 ) {
@@ -233,6 +244,10 @@ func processEmbeddingTask(
 // writeEmbedding dispatches to the correct repository based on the task's
 // table name. Returns an error if the table is unknown or the corresponding
 // repo is nil.
+//
+// task.TaskID is the source row id per the queue contract (see
+// postgres.EmbeddingTask): it is passed directly to UpdateEmbedding, which
+// scopes by tenant and errors with ErrRecordNotFound when no row matches.
 func (w embeddingWriter) writeEmbedding(
 	ctx context.Context,
 	task *postgres.EmbeddingTask,
@@ -241,9 +256,9 @@ func (w embeddingWriter) writeEmbedding(
 	version int,
 ) error {
 	switch task.Table {
-	case "knowledge_chunks_1024":
+	case tableKnowledgeChunks:
 		if w.knowledgeRepo == nil {
-			return errNoRepo("knowledge_chunks_1024")
+			return errNoRepo(tableKnowledgeChunks)
 		}
 		return w.knowledgeRepo.UpdateEmbedding(ctx, task.TenantID, task.TaskID, vec, model, version)
 	case "experiences_1024":

@@ -28,17 +28,25 @@ type Entry struct {
 	Timestamp time.Time
 }
 
+// maxEntries caps the in-memory log (#60): the store had no eviction, so a
+// long-lived process grew entries forever. Oldest entries are evicted first;
+// replay of fully-evicted sequences degrades to "start ID not found", which
+// callers already treat as recoverable.
+const maxEntries = 10000
+
 // Store is an append-only action log with replay. It is safe for concurrent
 // use.
 type Store struct {
 	mu      sync.RWMutex
 	entries []Entry
+	ids     map[string]struct{} // O(1) duplicate detection (#60); guarded by mu
 }
 
 // NewStore creates an empty action store.
 func NewStore() *Store {
 	return &Store{
 		entries: make([]Entry, 0),
+		ids:     make(map[string]struct{}),
 	}
 }
 
@@ -50,15 +58,21 @@ func (s *Store) Append(ctx context.Context, e Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, existing := range s.entries {
-		if existing.ID == e.ID {
-			return fmt.Errorf("actionlog: duplicate entry ID %q", e.ID)
-		}
+	if _, dup := s.ids[e.ID]; dup {
+		return fmt.Errorf("actionlog: duplicate entry ID %q", e.ID)
 	}
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now()
 	}
 	s.entries = append(s.entries, e)
+	s.ids[e.ID] = struct{}{}
+	if len(s.entries) > maxEntries {
+		evict := len(s.entries) - maxEntries
+		for i := 0; i < evict; i++ {
+			delete(s.ids, s.entries[i].ID)
+		}
+		s.entries = append(s.entries[:0], s.entries[evict:]...)
+	}
 	return nil
 }
 

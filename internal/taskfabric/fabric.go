@@ -37,6 +37,13 @@ var (
 // agents compete for tasks via CAS ownership, never via a leader's dispatch.
 // Every ownership-carrying operation is fenced by the lease epoch (fencing
 // token) so a stale holder can never act on a task it no longer owns.
+// maxInMemoryEvents bounds the in-memory lifecycle log (N8: unbounded growth).
+// The log is compacted to this size only when it reaches 2× the bound, so the
+// amortized cost of the cap is O(1) per append and the resident log stays
+// within 2× the bound. The durable event store (when attached) keeps the FULL
+// history; the in-memory log is a bounded, convenience view for replay.
+const maxInMemoryEvents = 10000
+
 type Fabric struct {
 	mu         sync.Mutex
 	tasks      map[string]*Task
@@ -45,11 +52,24 @@ type Fabric struct {
 	confidence ConfidenceSource       // experience-derived confidence (§8 Skill-first); guarded by mu
 	now        func() time.Time       // injectable clock for lease tests
 	epoch      uint64
+
+	// flushSeq/flushedSeq gate durable appends into strict causal order (N7:
+	// concurrent flushAppends must not land out of order in the store's
+	// version sequence). flushSeq is assigned under f.mu in recordLocked —
+	// the same lock that serializes every state transition — so the sequence
+	// order IS the causal order. flushCond waits until all earlier sequences
+	// have been flushed, making store.Append calls across goroutines land in
+	// record order regardless of which goroutine reaches flushAppends first.
+	flushCond  *sync.Cond
+	flushSeq   uint64 // next sequence; guarded by mu
+	flushedSeq uint64 // last sequence durably appended; guarded by flushCond.L
 }
 
 // NewFabric creates an empty Task Fabric.
 func NewFabric() *Fabric {
-	return &Fabric{tasks: make(map[string]*Task), now: time.Now}
+	f := &Fabric{tasks: make(map[string]*Task), now: time.Now}
+	f.flushCond = sync.NewCond(&sync.Mutex{})
+	return f
 }
 
 // WithClock injects a controllable clock for deterministic lease-expiry tests.
@@ -273,9 +293,13 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
 		if err := t.transition(StateReady); err != nil {
 			return err
 		}
+		// N8: record the failure while the failing agent is still attached —
+		// the terminal/requeue event must not lose the actor. Ownership is
+		// cleared only after the event is captured, so the following
+		// task.ready event reflects the unowned task.
+		pending = append(pending, f.recordLocked(t, EventTaskFailed))
 		t.Owner = ""
 		t.Lease = nil
-		pending = append(pending, f.recordLocked(t, EventTaskFailed))
 		pending = append(pending, f.recordLocked(t, EventTaskReady))
 		return nil
 	}
@@ -328,9 +352,11 @@ func (f *Fabric) Release(id, agentID string, epoch uint64) error {
 	if err := t.transition(StateReady); err != nil {
 		return err
 	}
+	// N8: record the released event while the releasing agent is still
+	// attached (provenance), then clear ownership so the task is unowned.
+	pending = append(pending, f.recordLocked(t, EventTaskReleased))
 	t.Owner = ""
 	t.Lease = nil
-	pending = append(pending, f.recordLocked(t, EventTaskReleased))
 	return nil
 }
 
@@ -361,9 +387,12 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		if err := t.transition(StateReady); err != nil {
 			continue
 		}
+		// N8: record the expiry while the dead agent is still attached — the
+		// terminal event must identify whose lease expired. Ownership is
+		// cleared only after the event is captured.
+		pending = append(pending, f.recordLocked(t, EventTaskExpired))
 		t.Owner = ""
 		t.Lease = nil
-		pending = append(pending, f.recordLocked(t, EventTaskExpired))
 		requeued = append(requeued, t.ID)
 	}
 	return requeued
@@ -538,6 +567,10 @@ type pendingAppend struct {
 	typ    EventType
 	taskID string
 	event  *ares_events.Event
+	// seq is the fabric-wide monotonic sequence assigned under f.mu at record
+	// time (N7). flushAppends waits for seq contiguity so durable appends from
+	// concurrent fabric calls land in causal order.
+	seq uint64
 }
 
 // recordLocked appends one lifecycle event to the in-memory log (the only
@@ -557,6 +590,12 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 		At:         f.now(),
 	}
 	f.events = append(f.events, ev)
+	// Cap the in-memory event log (N8: unbounded growth). Only compact when
+	// the log exceeds 2×max so the amortized cost is O(1) per append.
+	if max := maxInMemoryEvents; max > 0 && len(f.events) > 2*max {
+		copy(f.events, f.events[len(f.events)-max:])
+		f.events = f.events[:max]
+	}
 	if f.store == nil {
 		return nil
 	}
@@ -564,6 +603,7 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 	if et == "" {
 		return nil
 	}
+	f.flushSeq++
 	return &pendingAppend{
 		store:  f.store,
 		typ:    typ,
@@ -580,6 +620,7 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 			},
 			Timestamp: ev.At,
 		},
+		seq: f.flushSeq,
 	}
 }
 
@@ -600,12 +641,26 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 // events remain best-effort and silent on failure.
 func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 	for _, p := range *pending {
-		if p == nil || p.store == nil {
+		if p == nil {
 			continue
 		}
-		if err := p.store.Append(context.Background(), p.taskID, []*ares_events.Event{p.event}, 0); err != nil {
+		// N7: wait until every earlier-recorded durable event has been
+		// appended, so concurrent fabric calls flush in causal (record) order
+		// and the store's per-stream version sequence never inverts.
+		f.flushCond.L.Lock()
+		for p.seq > f.flushedSeq+1 {
+			f.flushCond.Wait()
+		}
+		var appendErr error
+		if p.store != nil {
+			appendErr = p.store.Append(context.Background(), p.taskID, []*ares_events.Event{p.event}, 0)
+		}
+		f.flushedSeq++
+		f.flushCond.L.Unlock()
+		f.flushCond.Broadcast()
+		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
-				log.Printf("taskfabric: must-persist event %s for task %s append failed (durable log diverges from memory): %v", p.typ, p.taskID, err)
+				log.Printf("taskfabric: must-persist event %s for task %s append failed (durable log diverges from memory): %v", p.typ, p.taskID, appendErr)
 			}
 		}
 	}

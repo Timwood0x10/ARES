@@ -7,6 +7,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stubCognition is a deterministic Cognition for the A1 contract test: it
@@ -55,6 +57,26 @@ func TestSpawnedAgentExecutesQuantum(t *testing.T) {
 	if a.cognition == nil {
 		t.Fatal("Agent must hold the injected Cognition")
 	}
+}
+
+// TestSpawnRejectsNilCognition locks the N10 contract: a NON-nil
+// CognitionFactory that returns nil is a programming error that must surface
+// at spawn time instead of silently producing a permanently non-executable
+// agent.
+func TestSpawnRejectsNilCognition(t *testing.T) {
+	f := NewFabric()
+	_, err := f.Spawn(context.Background(), SpawnSpec{
+		Identity: "broken", Capabilities: []string{"code"},
+		CognitionFactory: func([]string) Cognition { return nil },
+	})
+	require.Error(t, err, "a nil-returning CognitionFactory must fail the spawn")
+	assert.ErrorIs(t, err, ErrInvalidSpawnSpec)
+	assert.Contains(t, err.Error(), "nil")
+
+	// The failed spawn must leave the fabric untouched: the id is still free
+	// and no agent (managed or otherwise) exists under it.
+	_, getErr := f.Get("broken")
+	assert.ErrorIs(t, getErr, ErrAgentNotFound, "failed spawn must not register the agent")
 }
 
 // TestSpawnedAgentYieldCarriesCheckpoint verifies the yield path of the A1

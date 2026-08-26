@@ -279,9 +279,17 @@ func (s *Scheduler) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.safeDrain(ctx)
-		case <-events:
+		case _, ok := <-events:
 			// A dependency-relevant task event arrived: drain now instead of
-			// waiting up to one poll interval.
+			// waiting up to one poll interval. When the subscription channel
+			// is closed, disable the case (nil channel blocks forever) so the
+			// loop falls back to pure polling instead of busy-spinning on a
+			// closed channel (N5: closed-events spin).
+			if !ok {
+				log.Printf("kernel scheduler: event subscription closed, polling only")
+				events = nil
+				continue
+			}
 			s.safeDrain(ctx)
 		}
 	}

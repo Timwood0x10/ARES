@@ -381,7 +381,9 @@ func (dc *DreamCycle) runESEvolution(ctx context.Context, cycleCtx context.Conte
 	popSize := 0
 	if dc.population != nil {
 		popGen = dc.population.CurrentGeneration()
-		popSize = len(dc.population.Agents)
+		// Stats().Size is read under the population RLock; doEvolve can
+		// replace p.Agents wholesale under the write lock (REVIEW #55).
+		popSize = dc.population.Stats().Size
 	}
 	slog.InfoContext(ctx, "[DreamCycle] Starting ES evolution cycle",
 		"agent_id", data.AgentID,

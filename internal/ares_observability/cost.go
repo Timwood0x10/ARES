@@ -121,11 +121,19 @@ func (t *CostTracker) RecordCall(model string, inputTokens, outputTokens int) {
 
 	t.mu.Lock()
 	t.entries = append(t.entries, entry)
+	// Ring cap on the itemized list (#unbounded): totals above remain exact
+	// for the session lifetime; only per-call detail is forgotten.
+	if len(t.entries) > maxEntriesPerTracker {
+		t.entries = t.entries[len(t.entries)-maxEntriesPerTracker:]
+	}
 	t.totalInput += inputTokens
 	t.totalOutput += outputTokens
 	t.totalCost += totalCallCost
 	t.mu.Unlock()
 }
+
+// maxEntriesPerTracker caps CostTracker's itemized call list.
+const maxEntriesPerTracker = 1000
 
 // TotalCost returns the accumulated total cost in USD.
 //
@@ -317,7 +325,23 @@ func (d *CostDashboard) RegisterSession(sessionID string) *CostTracker {
 	tracker := NewCostTracker(d.pricing)
 	d.sessions[sessionID] = tracker
 	d.order = append(d.order, sessionID)
+	d.evictOldestLocked()
 	return tracker
+}
+
+// maxDashboardSessions caps CostDashboard's session map: long-running
+// processes registered one tracker per session forever (#unbounded). The
+// oldest-registered session is evicted once the cap is hit.
+const maxDashboardSessions = 1000
+
+// evictOldestLocked drops the oldest sessions beyond maxDashboardSessions
+// (caller holds d.mu for writing).
+func (d *CostDashboard) evictOldestLocked() {
+	for len(d.order) > maxDashboardSessions {
+		oldest := d.order[0]
+		d.order = d.order[1:]
+		delete(d.sessions, oldest)
+	}
 }
 
 // GetSessionCost returns a detailed cost report for the given session ID.

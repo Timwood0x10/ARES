@@ -148,7 +148,6 @@ type RetrievalService struct {
 	db                       *postgres.Pool
 	embeddingClient          *embedding.EmbeddingClient
 	llmClient                *llm.Client
-	tenantGuard              *postgres.TenantGuard
 	retrievalGuard           *postgres.RetrievalGuard
 	kbRepo                   *repositories.KnowledgeRepository
 	expRepo                  *repositories.ExperienceRepository
@@ -181,7 +180,6 @@ type RetrievalService struct {
 // pool - database connection pool.
 // embeddingClient - embedding service client for vector search.
 // llmClient - LLM client for query rewriting (optional, can be nil).
-// tenantGuard - tenant isolation guard.
 // retrievalGuard - rate limiting and circuit breaker for retrieval.
 // kbRepo - knowledge repository for data access.
 // expRepo - experience repository for experience search.
@@ -191,7 +189,6 @@ func NewRetrievalService(
 	pool *postgres.Pool,
 	embeddingClient *embedding.EmbeddingClient,
 	llmClient *llm.Client,
-	tenantGuard *postgres.TenantGuard,
 	retrievalGuard *postgres.RetrievalGuard,
 	kbRepo *repositories.KnowledgeRepository,
 	expRepo *repositories.ExperienceRepository,
@@ -201,7 +198,6 @@ func NewRetrievalService(
 		db:                       pool,
 		embeddingClient:          embeddingClient,
 		llmClient:                llmClient,
-		tenantGuard:              tenantGuard,
 		retrievalGuard:           retrievalGuard,
 		kbRepo:                   kbRepo,
 		expRepo:                  expRepo,

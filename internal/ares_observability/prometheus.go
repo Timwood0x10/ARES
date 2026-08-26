@@ -3,6 +3,7 @@ package ares_observability
 import (
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -11,7 +12,12 @@ import (
 // cachedMetrics holds the first successfully registered instance so repeated
 // initializations return the already-registered collectors instead of silently
 // creating unregistered ones (whose recordings would never reach /metrics).
-var cachedMetrics *PrometheusMetrics
+// Guarded by cachedMu (#race): concurrent NewPrometheusMetrics calls raced on
+// the plain variable.
+var (
+	cachedMu      sync.Mutex
+	cachedMetrics *PrometheusMetrics
+)
 
 // PrometheusMetrics holds all Prometheus metric definitions for ARES.
 type PrometheusMetrics struct {
@@ -100,7 +106,10 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				Help:       "Total cost in USD",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			},
-			[]string{"model", "session"},
+			// model only (#cardinality): session IDs are unbounded and would
+			// grow the registry forever; per-session detail lives in
+			// CostTracker (cost.go).
+			[]string{"model"},
 		),
 		EvolutionDeployTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -155,15 +164,21 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				// registered vectors; without a cache there is no safe way to
 				// recover the existing instance, so fail loudly rather than
 				// returning an unregistered metric set.
-				if cachedMetrics != nil {
-					return cachedMetrics, nil
+				cachedMu.Lock()
+				cm := cachedMetrics
+				cachedMu.Unlock()
+				if cm != nil {
+					return cm, nil
 				}
 				return nil, fmt.Errorf("prometheus: collectors already registered and no cached instance available: %w", err)
 			}
 			return nil, err
 		}
 	}
+
+	cachedMu.Lock()
 	cachedMetrics = m
+	cachedMu.Unlock()
 
 	return m, nil
 }
@@ -313,7 +328,9 @@ func (m *PrometheusMetrics) RecordCost(model, sessionID string, costUSD float64)
 	if m == nil {
 		return
 	}
-	m.CostUSDTotal.WithLabelValues(model, sessionID).Observe(costUSD)
+	// sessionID intentionally not a label (#cardinality): sessions are
+	// unbounded; per-session tracking stays in CostTracker.
+	m.CostUSDTotal.WithLabelValues(model).Observe(costUSD)
 }
 
 // MetricsHTTPHandler returns an http.Handler that serves Prometheus metrics

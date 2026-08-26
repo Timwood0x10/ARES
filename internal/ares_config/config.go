@@ -150,8 +150,11 @@ type ChaosConfig struct {
 	RatePerMin int `yaml:"rate_per_min"`
 	// Cooldown is the per-agent cooldown after an injection (default "10m").
 	Cooldown string `yaml:"cooldown"`
-	// PauseDuringGA, when true, pauses live chaos during GA evolution
-	// generations (default true).
+	// PauseDuringGA, when true, requests that live chaos pause during GA
+	// evolution generations. ADVISORY ONLY (REVIEW #12): there is no GA
+	// generation lifecycle signal to subscribe to yet, so live mode does not
+	// currently honor this field — a startup warning is logged instead. Do
+	// not enable live chaos while GA evaluations are running.
 	PauseDuringGA bool `yaml:"pause_during_ga"`
 }
 

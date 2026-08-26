@@ -319,11 +319,6 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 
 	subscribeDistillationEvents(ctx, &comp)
 
-	// REVIEW #7 closure: purge expired/decayed rows on a schedule instead of
-	// letting retention-managed tables grow unboundedly. No-op when no
-	// cleaners were wired (e.g. storage disabled).
-	startExpiryCleanupWorker(ctx, &comp)
-
 	// 6. Dashboard
 	// The v0.3.0 M3/M4 observability components (trajectory tracer, feedback
 	// store, global tracer) are created ONCE here and shared: the dashboard
@@ -415,6 +410,12 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 			return nil, fmt.Errorf("evidence: create postgres store: %w", storeErr)
 		}
 		evidenceStore = pgStore
+		// N9 closure: register the evidence store with the maintenance worker
+		// so TTL-expired rows are purged on the same hourly schedule as the
+		// other retention-managed tables. Query already hides expired rows;
+		// this stops the table growing unboundedly with dead ones.
+		comp.ExpiryCleaners = append(comp.ExpiryCleaners,
+			NamedExpiryCleaner{Name: "evidence_records", Cleaner: pgStore})
 		cleanups = append(cleanups, func() {
 			if cerr := pgPool.Close(); cerr != nil {
 				log.Warn("bootstrap: close evidence postgres pool",
@@ -497,7 +498,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// system can apply workflow patches to the live DAG (v0.5.0 DAG reflux).
 	// When a real agent DAG is registered later, it replaces this minimal one.
 	if comp.Runtime != nil && dag != nil {
-		comp.Runtime.RegisterAgentDAG("evolution", dag)
+		comp.Runtime.RegisterAgentDAG(ares_runtime.AgentDAGEvolutionKey, dag)
 	}
 
 	// 9. Wire the GA population adapter, coordinator bridge, and background
@@ -536,6 +537,13 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 	comp.SystemRuntime = orch
 	comp.SystemRegistry = sysReg
+
+	// REVIEW #7 + N9 closure: purge expired/decayed rows on a schedule instead
+	// of letting retention-managed tables grow unboundedly. Started last so it
+	// sees every cleaner registered above (sessions, conversations, knowledge,
+	// secrets, and the evidence store). No-op when no cleaners were wired
+	// (e.g. storage disabled).
+	startExpiryCleanupWorker(ctx, &comp)
 
 	return &comp, nil
 }

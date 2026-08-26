@@ -90,6 +90,12 @@ func (m *Manager) Renew(ctx context.Context, sessionID, owner string, ttl time.D
 	if l.Owner != owner {
 		return fmt.Errorf("%w: %s held by %s", ErrLeaseOwnerMismatch, sessionID, l.Owner)
 	}
+	// An expired lease is dead: renewing it would resurrect a hold the
+	// manager has already given up (#62). Callers must Acquire again.
+	if l.ExpiresAt.Before(m.timeNow()) {
+		delete(m.leases, sessionID)
+		return fmt.Errorf("%w: %s expired at %s", ErrLeaseNotFound, sessionID, l.ExpiresAt.Format(time.RFC3339))
+	}
 	l.ExpiresAt = m.timeNow().Add(ttl)
 	m.leases[sessionID] = l
 	return nil
@@ -128,9 +134,22 @@ func (m *Manager) Held(sessionID string) bool {
 	return ok
 }
 
-// Count returns the number of active leases.
+// Count returns the number of active leases, pruning expired entries first
+// (#59): the map had no sweep, so abandoned sessions accumulated forever and
+// Count stayed inflated long after every lease expired.
 func (m *Manager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneExpiredLocked()
 	return len(m.leases)
+}
+
+// pruneExpiredLocked deletes expired leases from the map (caller holds mu).
+func (m *Manager) pruneExpiredLocked() {
+	now := m.timeNow()
+	for id, l := range m.leases {
+		if l.ExpiresAt.Before(now) {
+			delete(m.leases, id)
+		}
+	}
 }

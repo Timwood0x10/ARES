@@ -277,8 +277,12 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		ch, err := client.GenerateStream(ctx, prompt)
+		// N6: per-attempt context so a silent provider can be cancelled and
+		// failed over without tearing down the caller's overall context.
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		ch, err := client.GenerateStream(attemptCtx, prompt)
 		if err != nil {
+			attemptCancel()
 			lastErr = err
 			cd := fc.cooldownForError(err)
 			fc.markCooldown(key, cd)
@@ -300,26 +304,50 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		// On success, wrap the channel. The first chunk must arrive within
-		// fc.timeout (handshake bound); afterwards the stream runs until
-		// the caller's context is done or the provider finishes, so long
-		// outputs are not cut off by a fixed request timeout.
+		// The first chunk must arrive within fc.timeout (handshake bound).
+		// A timeout here is a FAILED attempt, not a success: the wrapped
+		// stream is cancelled and the next provider is tried, so a silent
+		// provider cannot surface as an empty successful stream (N6: stream
+		// timeout false-success).
+		var first StreamChunk
+		select {
+		case chunk, ok := <-ch:
+			if !ok {
+				attemptCancel()
+				lastErr = fmt.Errorf("stream from %s closed before first chunk", client.GetProvider())
+				fc.markCooldown(key, fc.cooldownForError(lastErr))
+				log.Warn("FailoverClient: provider closed stream before first chunk, cooling down",
+					"provider", client.GetProvider(),
+					"model", client.GetModel(),
+				)
+				continue
+			}
+			first = chunk
+		case <-time.After(fc.timeout):
+			attemptCancel()
+			lastErr = fmt.Errorf("stream from %s: no first chunk within %s", client.GetProvider(), fc.timeout)
+			fc.markCooldown(key, fc.cooldownForError(lastErr))
+			log.Warn("FailoverClient: provider silent on stream (handshake timeout), cooling down and failing over",
+				"provider", client.GetProvider(),
+				"model", client.GetModel(),
+				"timeout", fc.timeout,
+			)
+			continue
+		case <-ctx.Done():
+			attemptCancel()
+			return nil, ctx.Err()
+		}
+
+		// Success: wrap the channel. The first chunk is forwarded, then the
+		// stream runs until the caller's context is done or the provider
+		// finishes, so long outputs are not cut off by a fixed timeout.
 		fc.clearCooldown(key)
 		wrappedCh := make(chan StreamChunk, defaultStreamBuffer)
 		go func() {
 			defer close(wrappedCh)
+			defer attemptCancel()
 			select {
-			case first, ok := <-ch:
-				if !ok {
-					return
-				}
-				select {
-				case wrappedCh <- first:
-				case <-ctx.Done():
-					return
-				}
-			case <-time.After(fc.timeout):
-				return
+			case wrappedCh <- first:
 			case <-ctx.Done():
 				return
 			}

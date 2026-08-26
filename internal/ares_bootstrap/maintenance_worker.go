@@ -84,7 +84,7 @@ func wireExpiryCleaners(comp *Components, db *sql.DB, cfg *ares_config.Config) {
 	// Knowledge chunks: prune stale, low-access rows via the age adapter.
 	knowRepo := repositories.NewKnowledgeRepository(db, db)
 	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
-		NamedExpiryCleaner{Name: "knowledge_chunks_1024",
+		NamedExpiryCleaner{Name: tableKnowledgeChunks,
 			Cleaner: knowledgeCleanerAdapter{repo: knowRepo}})
 
 	// Secrets: DELETE WHERE expires_at < now. NewSecretRepository requires a

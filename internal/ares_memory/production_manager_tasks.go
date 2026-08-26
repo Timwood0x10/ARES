@@ -39,11 +39,9 @@ const (
 func (m *ProductionMemoryManager) CreateTask(ctx context.Context, sessionID, userID, input string) (string, error) {
 	taskID := "task_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); see the Phase 2 note in CreateConversation.
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return "", errors.Wrap(err, "set tenant context")
-	}
 
 	// Create task result record (NO embedding, only for execution history)
 	taskResult := &storage_models.TaskResult{
@@ -77,11 +75,11 @@ func (m *ProductionMemoryManager) CreateTaskWithID(ctx context.Context, taskID, 
 		return errors.New("task ID cannot be empty")
 	}
 
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return errors.Wrap(err, "set tenant context")
-	}
 
 	taskResult := &storage_models.TaskResult{
 		ID:               taskID,
@@ -117,11 +115,11 @@ func (m *ProductionMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, 
 		return errors.New("task ID cannot be empty")
 	}
 
-	// Set tenant context
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return errors.Wrap(err, "set tenant context")
-	}
 
 	// Get existing task
 	task, err := m.taskResultRepository.GetByID(ctx, tenantID, taskID)
@@ -149,11 +147,11 @@ func (m *ProductionMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, 
 // Returns distilled task or error if distillation fails.
 // Note: This retrieves stored task result and converts to Task format.
 func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return nil, errors.Wrap(err, "set tenant context")
-	}
 
 	// Get task result
 	taskResult, err := m.taskResultRepository.GetByID(ctx, tenantID, taskID)
@@ -200,11 +198,11 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 		return errors.New("distilled task cannot be nil")
 	}
 
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return errors.Wrap(err, "set tenant context")
-	}
 
 	// Extract problem and solution from distilled payload.
 	inputStr, ok := distilled.Payload["input"].(string)
@@ -273,11 +271,11 @@ func (m *ProductionMemoryManager) SearchSimilarTasks(ctx context.Context, query 
 		return nil, errors.New("query cannot be empty")
 	}
 
-	// Set tenant context (MUST be called for every tenant-specific operation)
+	// Tenant scope flows via explicit tenantID parameters on repository
+	// methods (REVIEW #36 Phase 1); the session-based SetTenantContext was
+	// removed — its SET LOCAL evaporated under autocommit on a pooled
+	// connection, providing no isolation (REVIEW #36 Phase 2).
 	tenantID := m.getCurrentTenantID()
-	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
-		return nil, errors.Wrap(err, "set tenant context")
-	}
 
 	// Create search request
 	searchRequest := &services.SearchRequest{

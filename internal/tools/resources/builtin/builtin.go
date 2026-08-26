@@ -180,8 +180,9 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"side_effects": "false",
 		}),
 
-		// PDF capability
-		base.WithToolTags(builtin_pdf.NewPDFTool(), map[string]string{
+		// PDF capability — sandboxed to the same allowed directory as
+		// FileTools so it cannot read arbitrary files (REVIEW #30).
+		base.WithToolTags(builtin_pdf.NewPDFTool(builtin_pdf.WithAllowedDir(resolveFileToolsAllowedDir())), map[string]string{
 			"domain": "pdf", "input_type": "file", "output_type": "text",
 			"side_effects": "false",
 		}),

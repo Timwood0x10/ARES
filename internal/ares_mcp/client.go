@@ -50,7 +50,17 @@ type MCPClient struct {
 	cancel     context.CancelFunc
 	eg         errgroup.Group
 	connected  atomic.Bool
+
+	// notifySlots bounds concurrently running notification handlers (#27):
+	// each notification spawned an unbounded goroutine, so a malicious or
+	// buggy server flooding notifications allocated goroutines without limit
+	// (each may also issue a ListTools round-trip). Full slots drop the
+	// notification — notifications are advisory by JSON-RPC semantics.
+	notifySlots chan struct{}
 }
+
+// maxConcurrentNotifications is the notification handler concurrency cap.
+const maxConcurrentNotifications = 8
 
 // NewMCPClient creates a new MCPClient with the given config.
 func NewMCPClient(config MCPClientConfig) *MCPClient {
@@ -60,24 +70,43 @@ func NewMCPClient(config MCPClientConfig) *MCPClient {
 	}
 
 	return &MCPClient{
-		serverName: config.ServerName,
-		tools:      make(map[string]*MCPToolDef),
-		pending:    make(map[int64]chan *JSONRPCMessage),
-		onChange:   config.OnChange,
-		timeout:    timeout,
+		serverName:  config.ServerName,
+		tools:       make(map[string]*MCPToolDef),
+		pending:     make(map[int64]chan *JSONRPCMessage),
+		onChange:    config.OnChange,
+		timeout:     timeout,
+		notifySlots: make(chan struct{}, maxConcurrentNotifications),
 	}
 }
 
 // Connect starts the transport and performs the MCP initialize handshake.
+// The client's lifetime is bound to ctx: cancelling ctx (or calling Close)
+// tears down the connection.
 func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
+	return c.ConnectWithLifetime(ctx, ctx, transport)
+}
+
+// ConnectWithLifetime starts the transport and performs the MCP initialize
+// handshake with separate handshake and lifetime scopes (#26): the handshake
+// steps are bounded by ctx, while the client and its subprocess live as long
+// as lifetimeCtx. This lets a factory bound only the initial connect — a
+// short-lived handshake context must not cascade-cancel the client's own
+// context, or the returned tool dies the moment Connect returns.
+func (c *MCPClient) ConnectWithLifetime(ctx, lifetimeCtx context.Context, transport Transport) error {
 	if transport == nil {
 		return fmt.Errorf("transport is required")
 	}
+	if lifetimeCtx == nil {
+		lifetimeCtx = ctx
+	}
 
 	c.transport = transport
-	c.ctx, c.cancel = context.WithCancel(ctx)
+	c.ctx, c.cancel = context.WithCancel(lifetimeCtx)
 
-	if err := c.transport.Start(c.ctx); err != nil {
+	// The subprocess must be bound to the LIFETIME context (it owns the
+	// process); binding it to the handshake ctx would kill the child as soon
+	// as the handshake scope ends (#26).
+	if err := c.transport.Start(lifetimeCtx); err != nil {
 		return fmt.Errorf("start transport: %w", err)
 	}
 
@@ -86,8 +115,8 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 		return c.receiveLoop()
 	})
 
-	// Perform initialize handshake.
-	if err := c.initialize(c.ctx); err != nil {
+	// Perform initialize handshake against the bounded handshake ctx.
+	if err := c.initialize(ctx); err != nil {
 		if closeErr := c.Close(); closeErr != nil {
 			log.Warn("mcp: close after init failure", "error", closeErr)
 		}
@@ -96,7 +125,7 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 
 	c.connected.Store(true)
 
-	// Discover initial tools.
+	// Discover initial tools against the bounded handshake ctx.
 	if _, err := c.ListTools(ctx); err != nil {
 		if closeErr := c.Close(); closeErr != nil {
 			log.Warn("mcp: close after list tools failure", "error", closeErr)
@@ -312,11 +341,23 @@ func (c *MCPClient) receiveLoop() error {
 			// continue processing responses. handleNotification may issue a
 			// ListTools request whose response arrives on this loop; blocking
 			// here would deadlock.
+			//
+			// Concurrency is capped via notifySlots (#27): try to take a slot
+			// without blocking. When all handlers are busy, drop this
+			// notification instead of queueing unboundedly — a flood must
+			// cost the server its updates, not our memory.
 			msg := msg
-			c.eg.Go(func() error {
-				c.handleNotification(msg)
-				return nil
-			})
+			select {
+			case c.notifySlots <- struct{}{}:
+				c.eg.Go(func() error {
+					defer func() { <-c.notifySlots }()
+					c.handleNotification(msg)
+					return nil
+				})
+			default:
+				log.Warn("mcp: notification dropped, handler slots full",
+					"server", c.serverName, "method", msg.Method)
+			}
 		}
 	}
 }

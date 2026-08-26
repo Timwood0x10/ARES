@@ -76,7 +76,8 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 				Help:       "Total cost in USD",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			},
-			[]string{"model", "session"},
+			// model only (#cardinality), mirrors NewPrometheusMetrics.
+			[]string{"model"},
 		),
 	}
 
@@ -274,8 +275,11 @@ func TestPrometheusMetrics_RecordCost(t *testing.T) {
 	if !strings.Contains(body, `model="gpt-4o"`) {
 		t.Error("expected model label in cost summary")
 	}
-	if !strings.Contains(body, `session="session-abc"`) {
-		t.Error("expected session label in cost summary")
+	// Session is intentionally NOT a label (#cardinality): unbounded session
+	// IDs would grow the Prometheus registry forever. Per-session cost detail
+	// lives in CostTracker (cost.go).
+	if strings.Contains(body, `session="`) {
+		t.Error("expected no session label in cost summary")
 	}
 }
 

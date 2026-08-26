@@ -3,6 +3,7 @@ package ares_bootstrap
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -124,17 +125,16 @@ func (w *fakeWriter) writeEmbedding(_ context.Context, task *postgres.EmbeddingT
 	return nil
 }
 
-// override embeddingWriter.writeEmbedding for test by using a function type.
-// Since embeddingWriter is a struct with concrete repos, we test processEmbeddingTask
-// directly with a fake that satisfies the same dispatch signature.
-
+// TestProcessEmbeddingTask_Success verifies the happy path: embed → write
+// back via the writer (using the TaskID == source-row-id contract) → mark
+// the queue task completed.
 func TestProcessEmbeddingTask_Success(t *testing.T) {
 	queue := &fakeQueue{}
-	emb := &fakeEmbedder{}
+	emb := &fakeEmbedder{vec: []float64{0.4, 0.5}}
 	writer := &fakeWriter{}
 
 	task := &postgres.EmbeddingTask{
-		TaskID:   "task-1",
+		TaskID:   "chunk-1", // source row id in knowledge_chunks_1024
 		Table:    "knowledge_chunks_1024",
 		Content:  "hello world",
 		TenantID: "t1",
@@ -142,41 +142,35 @@ func TestProcessEmbeddingTask_Success(t *testing.T) {
 		Version:  1,
 	}
 
-	// We can't directly use embeddingWriter with fakeWriter, so test
-	// processEmbeddingTask with a real embeddingWriter that has nil repos
-	// — but that would fail. Instead, test the dispatch logic.
-	//
-	// The architecture separates processEmbeddingTask (which takes a queue,
-	// embedder, and embeddingWriter) from the writer dispatch. We test
-	// processEmbeddingTask by injecting a writer that works.
-	//
-	// Since embeddingWriter is a concrete type, we'll test via the
-	// writeEmbedding dispatch separately and focus on the queue/embedder
-	// interaction here.
+	processEmbeddingTask(context.Background(), queue, emb, writer, task, slog.Default())
 
-	// Create a real embeddingWriter with fake repos is not possible.
-	// Instead, test the full flow by using processEmbeddingTask with
-	// an embeddingWriter that has the writeEmbedding overridden.
-	// Since Go doesn't allow method override, we test processEmbeddingBatch
-	// which calls processEmbeddingTask internally, and we verify the queue
-	// interactions (MarkCompleted/MarkFailed).
+	if len(queue.completed) != 1 || queue.completed[0] != "chunk-1" {
+		t.Fatalf("expected task chunk-1 marked completed, got %v", queue.completed)
+	}
+	if len(queue.failed) != 0 {
+		t.Fatalf("expected no failed tasks, got %v", queue.failed)
+	}
 
-	// For this test, we verify the queue and embedder interaction.
-	// The writer dispatch is tested separately.
-
-	_ = writer
-	_ = task
-	_ = emb
-	_ = queue
-
-	// This test structure is documented as a limitation: the concrete
-	// embeddingWriter requires real repos. Full integration testing
-	// is done via the build verification and manual serve testing.
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if len(writer.writes) != 1 {
+		t.Fatalf("expected exactly one write-back, got %d", len(writer.writes))
+	}
+	call := writer.writes[0]
+	if call.taskID != "chunk-1" || call.tenantID != "t1" || call.table != "knowledge_chunks_1024" {
+		t.Errorf("write-back targeted wrong entity: %+v", call)
+	}
+	if call.model != "e5-large" || call.version != 1 {
+		t.Errorf("unexpected model/version: %s/%d", call.model, call.version)
+	}
+	if len(call.vec) != 2 {
+		t.Errorf("expected embedded vector passed through, got %v", call.vec)
+	}
 }
 
 func TestStartEmbeddingWorker_NilDepsSkipsWorker(t *testing.T) {
 	var comp Components
-	comp.bgGroup = *new(errgroup.Group)
+	comp.bgGroup = errgroup.Group{}
 
 	// nil queue → worker not started
 	startEmbeddingWorker(context.Background(), &comp, nil, &fakeEmbedder{}, embeddingWriter{}, nil, defaultEmbeddingWorkerConfig())
@@ -194,7 +188,7 @@ func TestStartEmbeddingWorker_NilDepsSkipsWorker(t *testing.T) {
 
 func TestStartEmbeddingReconciler_NilDepsSkipsReconciler(t *testing.T) {
 	var comp Components
-	comp.bgGroup = *new(errgroup.Group)
+	comp.bgGroup = errgroup.Group{}
 
 	startEmbeddingReconciler(context.Background(), &comp, nil, defaultEmbeddingWorkerConfig())
 
@@ -209,7 +203,7 @@ func TestStartEmbeddingReconciler_NilDepsSkipsReconciler(t *testing.T) {
 
 func TestStartEmbeddingReconciler_ContextCancellation(t *testing.T) {
 	var comp Components
-	comp.bgGroup = *new(errgroup.Group)
+	comp.bgGroup = errgroup.Group{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	queue := &fakeQueue{}
@@ -238,7 +232,7 @@ func TestStartEmbeddingReconciler_ContextCancellation(t *testing.T) {
 
 func TestStartEmbeddingWorker_ProcessesBatch(t *testing.T) {
 	var comp Components
-	comp.bgGroup = *new(errgroup.Group)
+	comp.bgGroup = errgroup.Group{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 

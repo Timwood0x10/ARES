@@ -25,6 +25,13 @@ type EmbeddingQueue struct {
 }
 
 // EmbeddingTask represents a single embedding task.
+//
+// TaskID contract (REVIEW #13): TaskID MUST be the primary key of the source
+// row in Table (e.g. the knowledge_chunks_1024.id or experiences_1024.id the
+// vector will be written back to). The worker passes TaskID directly to
+// UpdateEmbedding, and MarkCompleted/MarkFailed address rows by it. Producers
+// that enqueue without knowing the row id yet must capture it (INSERT ...
+// RETURNING id) before calling Enqueue. Empty TaskIDs are rejected.
 type EmbeddingTask struct {
 	TaskID   string
 	Table    string
@@ -63,6 +70,9 @@ func NewEmbeddingQueue(pool *Pool, embeddingConfig *EmbeddingConfig) *EmbeddingQ
 func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error {
 	if task == nil {
 		return errors.ErrInvalidArgument
+	}
+	if task.TaskID == "" {
+		return fmt.Errorf("embedding task must carry the source row id in TaskID: %w", errors.ErrInvalidArgument)
 	}
 
 	// Generate dedupe key for idempotency.
@@ -106,6 +116,9 @@ func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *Embedd
 	}
 	if tx == nil {
 		return fmt.Errorf("transaction is nil: %w", errors.ErrInvalidArgument)
+	}
+	if task.TaskID == "" {
+		return fmt.Errorf("embedding task must carry the source row id in TaskID: %w", errors.ErrInvalidArgument)
 	}
 
 	// Generate dedupe key for idempotency.

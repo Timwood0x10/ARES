@@ -168,6 +168,12 @@ func createPeerAgents(
 		}
 		sa := sa // capture for the closure (spawn is synchronous, but keep the
 		// loop-scoped binding local for the CognitionFactory below)
+		// N10: build the cognition upfront so a nil-CognitionFactory error
+		// surfaces at spawn time, not silently swallowed in a closure.
+		cog, err := newPeerChatCognition(sa.ID(), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
+		if err != nil {
+			return nil, nil, fmt.Errorf("peer mode: create chat cognition for %q: %w", sa.ID(), err)
+		}
 		if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
 			Identity:     sa.ID(),
 			Capabilities: []string{string(sa.Type())},
@@ -175,11 +181,6 @@ func createPeerAgents(
 			// moved down into agentfabric — a fabric agent is fully
 			// self-contained (LLM + tools), no sub.Agent wrapper.
 			CognitionFactory: func([]string) agentfabric.Cognition {
-				cog, err := newPeerChatCognition(sa.ID(), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
-				if err != nil {
-					log.Printf("peer mode: chat cognition for %q failed: %v", sa.ID(), err)
-					return nil
-				}
 				return cog
 			},
 			ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),

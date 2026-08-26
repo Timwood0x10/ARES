@@ -108,6 +108,7 @@ func (m *Manager) Stop() error {
 	// Use a detached context because m.gctx is already cancelled by m.cancel() above.
 	stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
 	defer stopCancel()
+	defer ares_ctxutil.DoneBackground("runtime:stop") // balance the label registration (#47)
 
 	// Capture final snapshots for stateful agents, then mark all as stopped.
 	type agentStopInfo struct {
@@ -165,6 +166,7 @@ func (m *Manager) Stop() error {
 	}
 
 	_ = g.Wait()
+	ares_ctxutil.DoneBackground("runtime:pre-start") // group drained; release the label (#47)
 
 	// Wait for all errgroup goroutines.
 	if m.g != nil {

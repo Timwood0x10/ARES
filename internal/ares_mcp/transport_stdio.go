@@ -10,10 +10,16 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Default buffer size for reading subprocess stdout lines (1 MB).
 const stdoutBufferSize = 1024 * 1024
+
+// stdioWriteTimeout bounds a single stdin write (#28). A subprocess that
+// stops reading its stdin would otherwise block Send forever while holding
+// t.mu — which also blocks Close, so nothing could tear the transport down.
+const stdioWriteTimeout = 10 * time.Second
 
 // StdioConfig holds configuration for a stdio-based MCP transport.
 type StdioConfig struct {
@@ -26,8 +32,12 @@ type StdioConfig struct {
 // StdioTransport implements Transport by communicating with an MCP server
 // over stdin/stdout of a subprocess.
 type StdioTransport struct {
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	// stdinFile is stdin's concrete *os.File, captured at Start when the
+	// pipe is pollable; it enables SetWriteDeadline in Send (#28). Nil on
+	// exotic platforms where the pipe is not an *os.File.
+	stdinFile  *os.File
 	stdout     *bufio.Scanner
 	stdoutPipe io.ReadCloser
 	stderr     io.ReadCloser
@@ -75,6 +85,11 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
+	// Capture the concrete file for deadline support; os.NewFile-backed pipes
+	// are pollable on all supported platforms.
+	if f, ok := t.stdin.(*os.File); ok {
+		t.stdinFile = f
+	}
 
 	stdoutPipe, err := t.cmd.StdoutPipe()
 	if err != nil {
@@ -118,7 +133,14 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 }
 
 // Send encodes and writes a JSON-RPC message to the subprocess stdin.
+// The write is bounded (#28): ctx is checked up-front, and a write deadline
+// (the lesser of stdioWriteTimeout and any ctx deadline) prevents a stuck
+// subprocess from holding t.mu forever — Close() needs the same mutex, so an
+// unbounded write would also block shutdown.
 func (t *StdioTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -133,6 +155,22 @@ func (t *StdioTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 
 	// Write message followed by newline as delimiter.
 	data = append(data, '\n')
+
+	deadline := time.Now().Add(stdioWriteTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if t.stdinFile != nil {
+		if err := t.stdinFile.SetWriteDeadline(deadline); err != nil {
+			// Pipes are pollable on all supported platforms, so this is
+			// unexpected; proceed without a deadline rather than failing the
+			// send and note it — the blocking hazard returns for this write.
+			log.Warn("mcp: stdin write deadline unavailable", "error", err)
+		} else {
+			defer func() { _ = t.stdinFile.SetWriteDeadline(time.Time{}) }()
+		}
+	}
+
 	if _, err := t.stdin.Write(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}

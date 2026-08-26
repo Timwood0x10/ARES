@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
@@ -110,4 +111,64 @@ func TestSchedulerSkippedWithoutCandidate(t *testing.T) {
 	if tk.State != taskfabric.StateReady && tk.State != taskfabric.StateSuspended {
 		t.Fatalf("task without a capable candidate must keep waiting (READY/SUSPENDED), got %s", tk.State)
 	}
+}
+
+// closedChannelEventStore is a test-only EventStore whose Subscribe returns a
+// caller-owned channel (which the test can close to simulate the store closing
+// a subscription). All other methods are inert.
+type closedChannelEventStore struct {
+	ch chan *ares_events.Event
+}
+
+func (s *closedChannelEventStore) Append(context.Context, string, []*ares_events.Event, int64) error {
+	return nil
+}
+func (s *closedChannelEventStore) Read(context.Context, string, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (s *closedChannelEventStore) ReadAll(context.Context, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (s *closedChannelEventStore) Subscribe(context.Context, ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	return s.ch, nil
+}
+func (s *closedChannelEventStore) StreamVersion(context.Context, string) (int64, error) {
+	return 0, nil
+}
+
+// TestSchedulerClosedEventChannelFallsBackToPolling locks the N5 contract: a
+// subscription channel closed by the event store must disable the event case
+// and fall back to pure polling — the loop keeps draining on the poll ticker
+// instead of busy-spinning on the closed channel.
+func TestSchedulerClosedEventChannelFallsBackToPolling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	exec := &smokeExecutor{id: "coder", typ: models.AgentType("code")}
+	sched := New(fabric, map[string]CapabilityExecutor{"coder": exec}, nil)
+	sched.PollInterval = 20 * time.Millisecond
+
+	ch := make(chan *ares_events.Event)
+	sched.eventStore = &closedChannelEventStore{ch: ch}
+	go sched.Run(ctx)
+
+	// Close the subscription channel while the loop is running.
+	close(ch)
+	// Let the loop observe the close and switch to polling.
+	time.Sleep(50 * time.Millisecond)
+
+	// The scheduler must still be alive and executing via polling: a task
+	// created after the channel closed must still complete.
+	if err := fabric.Create(&taskfabric.Task{
+		ID:          "t-after-close",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		tk, err := fabric.Task("t-after-close")
+		return err == nil && tk.State == taskfabric.StateCompleted
+	}, "task must complete via the polling fallback after the event channel closed")
 }

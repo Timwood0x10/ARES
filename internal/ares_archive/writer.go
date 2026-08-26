@@ -2,6 +2,8 @@ package ares_archive
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -118,6 +120,23 @@ func (w *fileArchiveWriter) writeAtomic(record RoundRecord) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("write temp %q: %w", tmp, err)
 	}
+	// fsync before rename (#durability): the archive is an audit trail, so a
+	// crash after rename must not lose a round that was already reported as
+	// written. Cost is one flush per round file (rounds are low-frequency).
+	//nolint:gosec // G304: tmp is built from a sanitized stream segment + a
+	// strconv'd round number — no user-controlled path reaches os.Open.
+	if f, err := os.Open(tmp); err == nil {
+		syncErr := f.Sync()
+		closeErr := f.Close()
+		if syncErr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("sync temp %q: %w", tmp, syncErr)
+		}
+		if closeErr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("close temp %q: %w", tmp, closeErr)
+		}
+	}
 	if err := os.Rename(tmp, final); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename %q -> %q: %w", tmp, final, err)
@@ -139,21 +158,40 @@ func (w *fileArchiveWriter) streamDir(streamID string) string {
 }
 
 // sanitizeStreamID maps a stream id to a single filesystem-safe path segment.
-// Every rune outside the allowlist [A-Za-z0-9._-] becomes '_', so the result
+// Every rune outside the allowlist [A-Za-z0-9_-] becomes '_', so the result
 // contains no path separators and cannot traverse outside the archive root.
+// The '.' character is NOT allowed (N11): a stream id of ".." must never
+// sanitize to the parent-directory segment and escape the archive root.
+//
+// When sanitisation actually changes the id, a short digest of the ORIGINAL
+// id is appended (N11) so two distinct ids that sanitize to the same segment
+// (e.g. "a/b" and "a_b") never collide on disk.
 func sanitizeStreamID(streamID string) string {
+	// Defense-in-depth: a fully-dot or empty id never maps to a traversal
+	// segment ("." or "..") — it falls back to a safe literal.
+	if streamID == "" || streamID == "." || streamID == ".." {
+		return "archive"
+	}
 	var b strings.Builder
 	b.Grow(len(streamID))
+	changed := false
 	for _, r := range streamID {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
-			r == '.', r == '_', r == '-':
+			r == '_', r == '-':
 			b.WriteRune(r)
 		default:
 			b.WriteRune('_')
+			changed = true
 		}
 	}
-	return b.String()
+	sanitized := b.String()
+	if !changed {
+		return sanitized
+	}
+	// Append a digest of the ORIGINAL id to break sanitize collisions.
+	h := sha256.Sum256([]byte(streamID))
+	return sanitized + "-" + hex.EncodeToString(h[:2])
 }
 
 // rotate deletes the oldest round files when the count exceeds maxRounds.

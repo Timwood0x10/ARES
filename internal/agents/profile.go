@@ -49,8 +49,12 @@ func NewProfileRegistry() *ProfileRegistry {
 	}
 }
 
-// Register adds or updates a profile.
+// Register adds or updates a profile. A nil profile is ignored (#63) —
+// dereferencing p.ID would panic the caller's goroutine.
 func (r *ProfileRegistry) Register(p *AgentProfile) {
+	if p == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.profiles[p.ID] = p

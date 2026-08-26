@@ -461,7 +461,7 @@ func BuildKnowledgeRuntime(
 		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
 			Name:            "knowledge-vectors",
 			Namespace:       fitnessSourceKnowledge,
-			Collection:      "knowledge_chunks_1024",
+			Collection:      tableKnowledgeChunks,
 			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
 			VectorDimension: 1024,
 			Embedder:        emb,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -233,4 +234,57 @@ func TestFlush(t *testing.T) {
 // roundPath returns the absolute path to round_N.json inside dir.
 func roundPath(dir string, round int) string {
 	return filepath.Join(dir, "round_"+strconv.Itoa(round)+".json")
+}
+
+// TestSanitizeStreamID_RejectsTraversal locks the N11 contract: '.' is not an
+// allowed path segment character, so a stream id of ".." can never sanitize
+// to the parent directory and escape the archive root.
+func TestSanitizeStreamID_RejectsTraversal(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{"double_dot", ".."},
+		{"single_dot", "."},
+		{"empty", ""},
+		{"dot_slash", "../"},
+		{"slash_dotdot", "/.."},
+		{"nested_dotdot", "a/../b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeStreamID(tt.id)
+			// The result must be a single, non-dot, non-empty segment that
+			// filepath.Join treats as a child of the archive root — never as
+			// the root itself or a parent.
+			require.NotEmpty(t, got, "sanitized id must not be empty")
+			require.NotEqual(t, ".", got)
+			require.NotEqual(t, "..", got)
+			joined := filepath.Join("archive", got)
+			require.NotEqual(t, "archive", joined, "sanitized segment must not be the root")
+			require.False(t, strings.HasPrefix(got, "."), "sanitized segment must not start with a dot")
+			require.False(t, strings.ContainsAny(got, "/\\"), "sanitized segment must not contain path separators")
+		})
+	}
+}
+
+// TestSanitizeStreamID_CollisionResistant locks the N11 contract: two distinct
+// stream ids that sanitize to the same segment (because one contains a path
+// separator) must not collide on disk.
+func TestSanitizeStreamID_CollisionResistant(t *testing.T) {
+	a := sanitizeStreamID("session/abc")
+	b := sanitizeStreamID("session_abc") // same letters, but distinct ids
+	require.NotEqual(t, a, b,
+		"a/b and a_b must not map to the same archive segment")
+
+	c := sanitizeStreamID("a.b")
+	require.NotEqual(t, c, sanitizeStreamID("a_b"),
+		"a.b and a_b must not collide")
+
+	// Unchanged ids keep their exact form (no hash suffix).
+	require.Equal(t, "plain-id_1", sanitizeStreamID("plain-id_1"),
+		"ids that need no sanitization must be preserved verbatim")
+
+	// Deterministic: the same input maps to the same segment.
+	require.Equal(t, a, sanitizeStreamID("session/abc"))
 }

@@ -60,13 +60,18 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// They share the distillation pool (already open for the process
 			// lifetime) instead of opening a second pool — minimal wiring.
 			wireExpiryCleaners(comp, pool.GetDB(), cfg)
-			// REVIEW #13: wire the embedding queue worker + reconciler so
-			// pending embedding tasks in the queue are consumed and vectors
-			// are written back. Best-effort: if the embedding client is nil
-			// the worker is skipped. The knowledge repo is constructed here
-			// (sharing the same pool) so the worker can write vectors back
-			// to knowledge_chunks_1024; the experience repo is the same
-			// instance already created above.
+			// REVIEW #13 (A1, consumer side only): wire the embedding queue
+			// worker + reconciler so pending embedding tasks in the queue are
+			// consumed and vectors are written back. Best-effort: if the
+			// embedding client is nil the worker is skipped. The knowledge
+			// repo is constructed here (sharing the same pool) so the worker
+			// can write vectors back to knowledge_chunks_1024; the experience
+			// repo is the same instance already created above.
+			//
+			// Scope note (REVIEW #13 A2 not done): serve's distillation path
+			// still embeds synchronously and does NOT enqueue; the queue is
+			// fed today only by Reconcile's orphan scan and the (unwired)
+			// WriteBuffer. Wiring an async producer is tracked separately.
 			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB())
 			var expConcreteRepo *repositories.ExperienceRepository
 			if r, ok := expRepo.(*repositories.ExperienceRepository); ok {

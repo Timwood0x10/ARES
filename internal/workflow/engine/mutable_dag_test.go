@@ -856,3 +856,39 @@ func TestMutableDAG_Concurrent_AddEdge_RemoveEdge(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestReplaceNode_SameID_RemovesStaleEdges locks the REVIEW #31 contract:
+// a same-ID replacement must drop dependency edges contributed by the old
+// step that are absent from the new step's DependsOn.
+func TestReplaceNode_SameID_RemovesStaleEdges(t *testing.T) {
+	m, err := NewMutableDAG([]*Step{
+		makeStep("a"),
+		makeStep("b", "a"), // depends on a
+		makeStep("c", "a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace b: new version no longer depends on "a" but now depends on "c".
+	if err := m.ReplaceNode(context.Background(), "b", makeStep("b", "c")); err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, dep := range m.dag.Edges["a"] {
+		if dep == "b" {
+			t.Errorf("stale edge a->b survived replacement; edges=%v", m.dag.Edges)
+		}
+	}
+	found := false
+	for _, dep := range m.dag.Edges["c"] {
+		if dep == "b" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("new edge c->b missing; edges=%v", m.dag.Edges)
+	}
+}

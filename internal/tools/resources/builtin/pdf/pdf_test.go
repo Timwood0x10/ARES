@@ -15,13 +15,29 @@ func TestNewPDFTool(t *testing.T) {
 	assert.Equal(t, "pdf_tool", tool.Name())
 }
 
-func TestPDFTool_FileNotFound(t *testing.T) {
+func TestPDFTool_DenyByDefault(t *testing.T) {
+	// Without an allowed directory the tool refuses every read (REVIEW #30).
+	// This is the regression test for the arbitrary-file-read + path-existence
+	// oracle that the old "empty allowedDir = any path" behavior allowed.
 	tool := NewPDFTool()
 	ctx := context.Background()
 
 	result, err := tool.Execute(ctx, map[string]interface{}{
 		"operation": "extract_text",
-		"file_path": "/tmp/nonexistent-test-file.pdf",
+		"file_path": "/etc/passwd",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Contains(t, result.Error, "access denied")
+}
+
+func TestPDFTool_FileNotFound(t *testing.T) {
+	tool := NewPDFTool(WithAllowedDir("testdata"))
+	ctx := context.Background()
+
+	result, err := tool.Execute(ctx, map[string]interface{}{
+		"operation": "extract_text",
+		"file_path": "testdata/nonexistent.pdf",
 	})
 	require.NoError(t, err)
 	require.False(t, result.Success)
@@ -72,7 +88,7 @@ func TestPDFTool_IsIdempotent(t *testing.T) {
 // TestPDFTool_ExtractTextFromRealPDF tests with an actual PDF file.
 // Uses testdata/hello.pdf to verify the extraction works end-to-end.
 func TestPDFTool_ExtractTextFromRealPDF(t *testing.T) {
-	tool := NewPDFTool()
+	tool := NewPDFTool(WithAllowedDir("testdata"))
 	ctx := context.Background()
 
 	pdfPath := filepath.Join("testdata", "hello.pdf")

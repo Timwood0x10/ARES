@@ -2,6 +2,7 @@ package agentfabric
 
 import (
 	"context"
+	"fmt"
 )
 
 // SpawnSpec is the syscall-style spawn request (design §13: spawn is a
@@ -100,9 +101,16 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 	}
 	// A1: inject the execution body from the declared capabilities. The
 	// factory is called under the fabric lock; a nil factory leaves the agent
-	// without execution capability (managed but not schedulable).
+	// without execution capability (managed but not schedulable). A NON-nil
+	// factory that produces nil is a programming error: it would silently
+	// spawn a permanently non-executable agent, so it is rejected before any
+	// fabric state is mutated (N10: nil cognition was swallowed).
 	if spec.CognitionFactory != nil {
 		a.cognition = spec.CognitionFactory(spec.Capabilities)
+		if a.cognition == nil {
+			f.mu.Unlock()
+			return nil, fmt.Errorf("%w: CognitionFactory returned nil for agent %q", ErrInvalidSpawnSpec, id)
+		}
 	}
 	// G1: load the distilled prior experience as the agent's initial cognitive
 	// context so a spawned agent starts with reusable experience instead of a

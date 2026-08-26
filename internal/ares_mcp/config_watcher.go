@@ -12,6 +12,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// configDebounceWindow is how long the watcher waits for events to settle
+// before triggering a single reload (#29).
+const configDebounceWindow = 200 * time.Millisecond
+
 // MCPConfigWatcher watches an MCP config file for changes and hot-reloads
 // the MCPManager when the file is modified.
 type MCPConfigWatcher struct {
@@ -115,18 +119,47 @@ func (cw *MCPConfigWatcher) Start(ctx context.Context) error {
 				continue
 			}
 
-			// Debounce: reset timer on each event so rapid saves trigger one reload.
+			// Debounce (#29): keep consuming events and resetting the timer
+			// until a full debounce window elapses with no relevant event.
+			// The previous form waited only on timer/ctx, so every burst of
+			// N events produced N reloads spaced 200ms apart — no coalescing.
 			if debounce == nil {
-				debounce = time.NewTimer(200 * time.Millisecond)
+				debounce = time.NewTimer(configDebounceWindow)
 			} else {
-				debounce.Reset(200 * time.Millisecond)
+				if !debounce.Stop() {
+					select {
+					case <-debounce.C:
+					default:
+					}
+				}
+				debounce.Reset(configDebounceWindow)
 			}
-
-			select {
-			case <-debounce.C:
-				cw.reload(ctx)
-			case <-ctx.Done():
-				return ctx.Err()
+			for {
+				select {
+				case ev, ok := <-cw.watcher.Events:
+					if !ok {
+						return nil
+					}
+					if isRelevantEvent(ev, cw.path) {
+						if !debounce.Stop() {
+							select {
+							case <-debounce.C:
+							default:
+							}
+						}
+						debounce.Reset(configDebounceWindow)
+					}
+				case <-debounce.C:
+					cw.reload(ctx)
+					// Consume any event already drained into the channel
+					// buffer so the outer select doesn't immediately re-fire.
+					debounce = nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if debounce == nil {
+					break
+				}
 			}
 
 		case err, ok := <-cw.watcher.Errors:

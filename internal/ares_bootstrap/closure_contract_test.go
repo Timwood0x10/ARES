@@ -19,6 +19,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -226,11 +227,11 @@ func TestClosure_Ready_AllExecutorsBoundToLiveTargets(t *testing.T) {
 	// is the sole source of the production DAG. This is the F04 hard assertion:
 	// synthetic placeholders never masquerade as a live agent DAG.
 	if comp.NewEvolution != nil && comp.Runtime != nil {
-		dag, ok := comp.Runtime.GetAgentDAG("evolution")
-		require.True(t, ok, "synthetic DAG must be registered under 'evolution'")
+		dag, ok := comp.Runtime.GetAgentDAG(ares_runtime.AgentDAGEvolutionKey)
+		require.True(t, ok, "synthetic DAG must be registered under "+ares_runtime.AgentDAGEvolutionKey)
 		require.NotNil(t, dag, "synthetic DAG must not be nil")
 
-		leaderKey := "leader-live"
+		leaderKey := ares_runtime.AgentDAGLiveKey
 		if _, leaderOK := comp.Runtime.GetAgentDAG(leaderKey); leaderOK {
 			t.Errorf("F04: live DAG key %q must not be populated at Bootstrap "+
 				"(synthetic isolation violated)", leaderKey)

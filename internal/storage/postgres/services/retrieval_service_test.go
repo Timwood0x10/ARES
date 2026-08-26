@@ -643,11 +643,10 @@ func TestSearch_WithRateLimitError(t *testing.T) {
 func TestNewRetrievalService(t *testing.T) {
 	pool := &postgres.Pool{}
 	embeddingClient := &embedding.EmbeddingClient{}
-	tenantGuard := &postgres.TenantGuard{}
 	retrievalGuard := &postgres.RetrievalGuard{}
 	kbRepo := &repositories.KnowledgeRepository{}
 
-	service := NewRetrievalService(pool, embeddingClient, nil, tenantGuard, retrievalGuard, kbRepo,
+	service := NewRetrievalService(pool, embeddingClient, nil, retrievalGuard, kbRepo,
 		nil, /* expRepo */
 		nil, /* tool_repo */
 	)
@@ -657,9 +656,6 @@ func TestNewRetrievalService(t *testing.T) {
 	}
 	if service.embeddingClient != embeddingClient {
 		t.Error("embeddingClient should be set")
-	}
-	if service.tenantGuard != tenantGuard {
-		t.Error("tenantGuard should be set")
 	}
 	if service.retrievalGuard != retrievalGuard {
 		t.Error("retrievalGuard should be set")

@@ -171,6 +171,13 @@ type EvolutionCoordinator struct {
 	patchReg     *patch.Registry // registry for applying patches
 	deployer     PatchDeployer   // optional safe-promotion pipeline (nil = direct apply)
 
+	// maxDecisions / maxPatchHistory cap the two append-only history slices
+	// (#24): Evaluate runs on the bootstrap 15-minute ticker for the process
+	// lifetime, and every proposal appends a decision unconditionally. The
+	// caps are generous — countRecentPatches only looks at a 1-minute window.
+	maxDecisions    int
+	maxPatchHistory int
+
 	// Self-healing state.
 	healingAttempts map[string]int // target -> number of healing attempts
 	healingResults  []HealingAttempt
@@ -193,6 +200,33 @@ func NewEvolutionCoordinator(policy PolicyGenome, patchReg *patch.Registry) *Evo
 		patchReg:        patchReg,
 		healingAttempts: make(map[string]int),
 		healingResults:  make([]HealingAttempt, 0),
+		maxDecisions:    defaultMaxDecisions,
+		maxPatchHistory: defaultMaxPatchHistory,
+	}
+}
+
+// History caps (#24): generous bounds — the decision budget logic only
+// inspects a recent window, so older entries are pure archive.
+const (
+	defaultMaxDecisions    = 2048
+	defaultMaxPatchHistory = 1024
+)
+
+// appendDecision records a decision, trimming the oldest entries when over
+// the cap (caller must hold ec.mu).
+func (ec *EvolutionCoordinator) appendDecision(d PatchDecision) {
+	ec.decisions = append(ec.decisions, d)
+	if len(ec.decisions) > ec.maxDecisions {
+		ec.decisions = ec.decisions[len(ec.decisions)-ec.maxDecisions:]
+	}
+}
+
+// appendPatchResult records an apply result with the same trimming contract
+// as appendDecision (caller must hold ec.mu).
+func (ec *EvolutionCoordinator) appendPatchResult(r PatchResult) {
+	ec.patchHistory = append(ec.patchHistory, r)
+	if len(ec.patchHistory) > ec.maxPatchHistory {
+		ec.patchHistory = ec.patchHistory[len(ec.patchHistory)-ec.maxPatchHistory:]
 	}
 }
 
@@ -242,12 +276,12 @@ func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.
 	}
 
 	err := ec.patchReg.Apply(ctx, patch)
-	ec.decisions = append(ec.decisions, PatchDecision{
+	ec.appendDecision(PatchDecision{
 		Proposal: proposal,
 		Decision: DecisionApply,
 		Reason:   "emergency: bypassed decision process",
 	})
-	ec.patchHistory = append(ec.patchHistory, PatchResult{
+	ec.appendPatchResult(PatchResult{
 		Proposal:  proposal,
 		AppliedAt: time.Now(),
 		Error:     err,
@@ -397,7 +431,7 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 				applyErr = ec.patchReg.Apply(ctx, proposal.Patch)
 			}
 			ec.mu.Lock()
-			ec.patchHistory = append(ec.patchHistory, PatchResult{
+			ec.appendPatchResult(PatchResult{
 				Proposal:  proposal,
 				AppliedAt: time.Now(),
 				Error:     applyErr,
@@ -422,7 +456,7 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 		}
 
 		ec.mu.Lock()
-		ec.decisions = append(ec.decisions, PatchDecision{
+		ec.appendDecision(PatchDecision{
 			Proposal:   proposal,
 			Decision:   decision,
 			Reason:     reason,

@@ -303,7 +303,6 @@ func TestDetectProviderType(t *testing.T) {
 		{"memory", &typedStub{name: "m", pt: provider.ProviderMemory}, string(provider.ProviderMemory)},
 		{"evolution", &typedStub{name: "e", pt: provider.ProviderEvolution}, string(provider.ProviderEvolution)},
 		{"postgres", &typedStub{name: "pg", pt: provider.ProviderPostgres}, string(provider.ProviderPostgres)},
-		{"mysql", &typedStub{name: "my", pt: provider.ProviderMySQL}, string(provider.ProviderMySQL)},
 		{"vector", &typedStub{name: "v", pt: provider.ProviderVector}, string(provider.ProviderVector)},
 		{"store", &typedStub{name: "s", pt: provider.ProviderStore}, string(provider.ProviderStore)},
 		{"code_provider", &typedStub{name: "c", pt: provider.ProviderCode}, string(provider.ProviderCode)},

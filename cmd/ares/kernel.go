@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
+	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
@@ -35,5 +36,10 @@ type kernelHandle struct {
 	// retained so agent priorities can be injected into it (B2: OS-thread-style
 	// thread priority).
 	tracker *loadTracker
-	flipped bool
+	// peerRegistry is the direct peer-to-peer messaging discovery surface
+	// (primitive 2). Retained so the registry built at serve time stays
+	// reachable for agent messaging / capability discovery instead of being
+	// discarded (N4: peer registry return value was dropped).
+	peerRegistry *peer.Registry
+	flipped      bool
 }

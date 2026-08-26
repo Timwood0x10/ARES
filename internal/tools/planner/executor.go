@@ -150,9 +150,10 @@ func (s *memoryEvidenceStore) Save(_ context.Context, evidence *ToolEvidence) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evidence = append(s.evidence, *evidence)
-	// Evict oldest records when over the cap. Rather than shifting the
-	// entire slice on every insert (O(n)), only trim when exceeding by
-	// a batch threshold to amortize the copy cost.
+	// Evict oldest records when over the cap. Reslicing moves the slice
+	// header forward without copying data (O(1)); the backing array is
+	// reallocated only when subsequent appends exhaust remaining capacity,
+	// keeping memory bounded at roughly 2x the cap.
 	if len(s.evidence) > maxEvidenceRecords {
 		trim := len(s.evidence) - maxEvidenceRecords
 		s.evidence = s.evidence[trim:]

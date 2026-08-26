@@ -69,7 +69,10 @@ func RegisterBuiltinTools(r *Registry, opts ...BuiltinToolsOption) error {
 		builtin_math.NewCalculator(),
 		builtin_hash.NewHashTool(),
 		builtin_stringutils.NewStringUtils(),
-		builtin_pdf.NewPDFTool(),
+		// WithFileSandboxDir doc says "when unset, file tool denies all"; PDFTool
+		// follows the same deny-by-default rule via an empty allowedDir (#30), so
+		// the configured sandbox dir (or the deny-all default) is always applied.
+		builtin_pdf.NewPDFTool(builtin_pdf.WithAllowedDir(cfg.fileAllowedDir)),
 		builtin_system.NewIDGenerator(),
 	}
 	for _, t := range internalTools {

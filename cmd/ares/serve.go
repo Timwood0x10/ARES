@@ -91,6 +91,14 @@ func runServe() error {
 		select {
 		case <-sigCh:
 			fmt.Println("\nShutting down...")
+			// A second SIGINT/SIGTERM during the graceful shutdown forces an
+			// immediate exit — a hung shutdown phase (or a stuck component)
+			// must never trap the operator in an unstoppable process (N1).
+			go func() {
+				<-sigCh
+				fmt.Fprintln(os.Stderr, "\nSecond signal received: forcing immediate exit")
+				os.Exit(1)
+			}()
 			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
 			// bounded overall timeout. cancel() afterwards stops background
 			// goroutines (event bridge, task submission) that wait on ctx.
@@ -145,6 +153,13 @@ func runServe() error {
 	// Publish the assembled components to the signal goroutine via the atomic
 	// pointer so the shutdown snapshot/WaitBackground reads never race.
 	compPtr.Store(comp)
+	// N1: assembly-phase exit check — if a shutdown signal arrived during the
+	// (potentially long) Bootstrap, abort the startup instead of proceeding
+	// to wire components and start the runtime on a canceled context.
+	if err := ctx.Err(); err != nil {
+		log.Printf("serve: shutdown was requested during assembly (%v); aborting startup", err)
+		return normalizeShutdownErr(err)
+	}
 	store := comp.EventStore
 	mgr := comp.Runtime
 
@@ -260,9 +275,16 @@ func runServe() error {
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
 	// setupPeerRegistry builds the registry; the kernel handle powers
-	// collaboration-topic execution through the fabric DAG (fusion C2).
-	if _, err := setupPeerRegistry(subAgents, comp, peerKernel); err != nil {
+	// collaboration-topic execution through the fabric DAG (fusion C2). The
+	// registry is retained on the kernel handle (N4) so it stays reachable for
+	// direct peer messaging / capability discovery instead of being discarded.
+	reg, err := setupPeerRegistry(subAgents, comp, peerKernel)
+	if err != nil {
 		return err
+	}
+	if peerKernel != nil {
+		peerKernel.peerRegistry = reg
+		log.Printf("serve: peer registry retained on kernel (%d agents)", len(reg.IDs()))
 	}
 
 	// --- PluginBus + MonitorPlugin (extracted to setupServeMonitoring to keep

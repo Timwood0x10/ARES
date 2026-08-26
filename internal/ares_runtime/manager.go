@@ -158,6 +158,19 @@ func (m *Manager) RegisterAgent(agent base.Agent, factory AgentFactory) {
 	log.Info("runtime: agent registered", "agent_id", id, "type", agent.Type())
 }
 
+// AgentDAGEvolutionKey is the key under which Bootstrap registers the
+// synthetic placeholder DAG that the evolution executors are bound to until a
+// real agent DAG is injected (F04 isolation: the synthetic graph is confined
+// to this key and never masquerades as a live target).
+const AgentDAGEvolutionKey = "evolution"
+
+// AgentDAGLiveKey is the key under which the serve entry registers the real
+// live agent DAG (built from the configured agent population). It is the
+// single key the evolution system reads to apply workflow/recovery patches to
+// the production topology (N3: the serve side previously registered the live
+// DAG under a third, orphaned key, so it never replaced the placeholder).
+const AgentDAGLiveKey = "leader-live"
+
 // RegisterAgentDAG associates a workflow DAG with an agent.
 // The evolution system uses this to apply workflow patches to the live DAG.
 // dag is typically an *engine.MutableDAG, stored as any to avoid importing
@@ -578,7 +591,12 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"agent_id", agentID, "reason", reason,
 	)
 
-	m.emitEvent(ares_ctxutil.WithDetachedLabel("runtime:notify-agent-dead"), agentID, ares_events.EventAgentStopped, map[string]any{
+	// The detached label registers a background job for observability; it
+	// must be released when the emit completes (#47), or the active-count
+	// only ever grows.
+	emitCtx := ares_ctxutil.WithDetachedLabel("runtime:notify-agent-dead")
+	defer ares_ctxutil.DoneBackground("runtime:notify-agent-dead")
+	m.emitEvent(emitCtx, agentID, ares_events.EventAgentStopped, map[string]any{
 		"agent_id":     agentID,
 		"reason":       reason,
 		"auto_restore": true,

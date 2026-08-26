@@ -118,7 +118,7 @@ func TestEmbeddingQueueEnqueueAndFetch(t *testing.T) {
 	require.NoError(t, err)
 
 	task := &postgres.EmbeddingTask{
-		TaskID:   "",
+		TaskID:   fmt.Sprintf("queue-test-entity-%d", time.Now().UnixNano()),
 		Table:    "knowledge_chunks_1024",
 		Content:  fmt.Sprintf("queue-test-content-%d", time.Now().UnixNano()),
 		TenantID: "test-tenant",
@@ -178,6 +178,7 @@ func TestEmbeddingQueueIdempotency(t *testing.T) {
 
 	content := fmt.Sprintf("idempotent-test-%d", time.Now().UnixNano())
 	task := &postgres.EmbeddingTask{
+		TaskID:   fmt.Sprintf("idempotent-entity-%d", time.Now().UnixNano()),
 		Table:    "knowledge_chunks_1024",
 		Content:  content,
 		TenantID: "test-tenant",

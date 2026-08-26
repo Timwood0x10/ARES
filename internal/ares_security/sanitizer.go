@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -38,12 +39,22 @@ type Sanitizer struct {
 }
 
 // SanitizeOptions controls sanitization behavior.
+//
+// All three fields are honored by Sanitizer.Sanitize (#37): MaskChar replaces
+// the default '*' in masked output, PreserveLengthFor overrides the preserved
+// visible prefix for a field type, and KeepLength pads masked output to the
+// original length. Zero-value fields fall back to the built-in mask behavior.
 type SanitizeOptions struct {
-	// KeepLength preserves the original string length
+	// KeepLength pads the masked output with MaskChar so its rune length
+	// matches the original input. Masks that are already longer than the
+	// original (fixed-format masks such as email) are left unchanged.
 	KeepLength bool
-	// MaskChar is the character used for masking
+	// MaskChar is the character used for masking; zero value means '*'.
 	MaskChar rune
-	// PreserveLengthFor keeps the specified length from beginning/end
+	// PreserveLengthFor keeps exactly N leading characters of the original
+	// match visible for the given field type, replacing the mask function's
+	// built-in preserve behavior. Absent entries keep the defaults baked
+	// into each mask function. Negative values are ignored.
 	PreserveLengthFor map[SensitiveFieldType]int
 }
 
@@ -70,15 +81,16 @@ func NewSanitizerWithOptions(options SanitizeOptions) *Sanitizer {
 }
 
 // DefaultSanitizeOptions returns default sanitization options.
+// DefaultSanitizeOptions returns default sanitization options.
+//
+// PreserveLengthFor is intentionally empty: the per-type preserved-character
+// defaults live in the mask functions themselves (maskAPIKey, maskPhone, …).
+// An empty map keeps "map entry present" meaning an explicit caller override
+// in applyMaskOptions (#37).
 func DefaultSanitizeOptions() SanitizeOptions {
 	return SanitizeOptions{
 		KeepLength: false,
 		MaskChar:   '*',
-		PreserveLengthFor: map[SensitiveFieldType]int{
-			SensitiveFieldTypeAPIKey:     4, // Keep first 4 and last 4 chars
-			SensitiveFieldTypeCreditCard: 4, // Keep first 4 and last 4 chars
-			SensitiveFieldTypePhone:      3, // Keep first 3 and last 3 chars
-		},
 	}
 }
 
@@ -139,11 +151,45 @@ func (s *Sanitizer) Sanitize(input string) string {
 	result := input
 	for _, pattern := range s.patterns {
 		result = pattern.Pattern.ReplaceAllStringFunc(result, func(match string) string {
-			return pattern.MaskFunc(match)
+			return s.applyMaskOptions(pattern.Type, match, pattern.MaskFunc(match))
 		})
 	}
 
 	return result
+}
+
+// applyMaskOptions adapts a mask function's output to the configured
+// SanitizeOptions (#37): an explicit PreserveLengthFor entry re-masks the
+// original match with exactly N leading visible characters, MaskChar swaps
+// the default '*', and KeepLength pads short masks up to the original length.
+func (s *Sanitizer) applyMaskOptions(t SensitiveFieldType, orig, masked string) string {
+	mc := s.maskChar()
+
+	if n, ok := s.options.PreserveLengthFor[t]; ok && n >= 0 {
+		o := []rune(orig)
+		if n > len(o) {
+			n = len(o)
+		}
+		masked = string(o[:n]) + strings.Repeat(string(mc), len(o)-n)
+	} else if mc != '*' {
+		masked = strings.ReplaceAll(masked, "*", string(mc))
+	}
+
+	if s.options.KeepLength {
+		diff := len([]rune(orig)) - len([]rune(masked))
+		if diff > 0 {
+			masked += strings.Repeat(string(mc), diff)
+		}
+	}
+	return masked
+}
+
+// maskChar returns the configured masking character, defaulting to '*'.
+func (s *Sanitizer) maskChar() rune {
+	if s.options.MaskChar != 0 {
+		return s.options.MaskChar
+	}
+	return '*'
 }
 
 // SanitizeJSON sanitizes a JSON string, preserving its structure. It parses
@@ -171,10 +217,17 @@ func (s *Sanitizer) SanitizeJSON(jsonStr string) string {
 }
 
 // sanitizeValue recursively walks a decoded JSON value and sanitizes strings.
+// Numeric values are checked too (#38): a number whose digit form matches a
+// sensitive pattern (card/phone/SSN) is degraded to its masked string form —
+// masking wins over type fidelity.
 func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
 	switch val := v.(type) {
 	case string:
 		return s.Sanitize(val)
+	case json.Number:
+		return s.maybeMaskNumeric(val.String())
+	case float64:
+		return s.maybeMaskNumeric(strconv.FormatFloat(val, 'f', -1, 64))
 	case map[string]interface{}:
 		result := make(map[string]interface{}, len(val))
 		for k, vv := range val {
@@ -188,9 +241,20 @@ func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
 		}
 		return result
 	default:
-		// Numbers, booleans, nil — no sanitization needed.
+		// Booleans and nil cannot carry sensitive digit runs.
 		return v
 	}
+}
+
+// maybeMaskNumeric sanitizes the decimal string form of a JSON number. An
+// unchanged value is returned as-is so the caller re-emits it as a number;
+// a hit returns the masked string (quoted in the re-serialized JSON).
+func (s *Sanitizer) maybeMaskNumeric(digits string) interface{} {
+	masked := s.Sanitize(digits)
+	if masked == digits {
+		return digits
+	}
+	return masked
 }
 
 // maskAPIKey masks an API key while preserving some context.
