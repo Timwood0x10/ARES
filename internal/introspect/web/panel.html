@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARES · Runtime Introspection</title>
+<style>
+:root{
+  --bg:#0b0e14;--panel:#11151f;--panel2:#161b28;--line:#1f2637;
+  --txt:#dce3f2;--dim:#8b94a8;--mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --acc:#5b9cff;--ok:#3fd68f;--run:#5b9cff;--sus:#f0b429;--ret:#6b7280;--err:#ff5d73;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:20px 24px 40px}
+header{display:flex;align-items:baseline;gap:14px;margin-bottom:18px}
+h1{font-size:17px;font-weight:600;letter-spacing:.3px}
+h1 .dot{color:var(--acc)}
+#meta{color:var(--dim);font-size:12px;font-family:var(--mono)}
+#meta b{color:var(--ok);font-weight:500}
+main{display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start}
+@media(max-width:1100px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:12px;display:flex;justify-content:space-between}
+h2 span{color:var(--acc);font-family:var(--mono);text-transform:none;letter-spacing:0}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat{background:var(--panel2);border-radius:8px;padding:10px 12px}
+.stat .v{font-size:22px;font-weight:650;font-family:var(--mono)}
+.stat .k{font-size:11px;color:var(--dim);margin-top:2px}
+.kv{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--line)}
+.kv:last-child{border-bottom:0}
+.kv b{font-family:var(--mono);font-weight:500}
+.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;font-family:var(--mono)}
+.b-on{background:rgba(63,214,143,.15);color:var(--ok)}
+.b-off{background:rgba(139,148,168,.15);color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:var(--dim);text-align:left;font-weight:500;font-size:11px;letter-spacing:.6px;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px}
+tr:last-child td{border-bottom:0}
+.st{padding:1px 8px;border-radius:5px;font-size:11px;font-weight:600}
+.st-READY{background:rgba(91,156,255,.14);color:var(--acc)}
+.st-LEASED,.st-RUNNING{background:rgba(63,214,143,.14);color:var(--ok)}
+.st-SUSPENDED{background:rgba(240,180,41,.15);color:var(--sus)}
+.chip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 7px;margin:1px 2px;font-size:11px;font-family:var(--mono);color:var(--dim)}
+.agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px}
+.card h3{font-size:13px;font-weight:600;font-family:var(--mono);display:flex;align-items:center;gap:7px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.d-IDLE{background:var(--ok)}.d-RUNNING{background:var(--acc)}.d-SUSPENDED{background:var(--sus)}.d-RETIRED{background:var(--ret)}
+.bar{height:5px;background:var(--line);border-radius:3px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc);border-radius:3px}
+.empty{color:var(--dim);font-size:12.5px;padding:14px 4px;font-style:italic}
+footer{margin-top:14px;color:var(--dim);font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>ARES <span class="dot">·</span> Runtime Introspection</h1>
+  <span id="meta">connecting…</span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Kernel Scheduler <span id="k-badge"></span></h2>
+      <div class="grid">
+        <div class="stat"><div class="v" id="k-ready">–</div><div class="k">queue depth</div></div>
+        <div class="stat"><div class="v" id="k-sched">–</div><div class="k">scheduled</div></div>
+        <div class="stat"><div class="v" id="k-exec">–</div><div class="k">executors</div></div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="kv"><span>poll / preempt</span><b id="k-cad">–</b></div>
+        <div class="kv"><span>lease ttl</span><b id="k-ttl">–</b></div>
+        <div class="kv"><span>max concurrent</span><b id="k-maxc">–</b></div>
+        <div class="kv"><span>bound executors</span><b id="k-bound">–</b></div>
+        <div class="kv"><span>event-driven</span><b id="k-ev">–</b></div>
+        <div class="kv"><span>governance</span><b id="k-gov">–</b></div>
+        <div class="kv"><span>agent fabric</span><b id="k-af">–</b></div>
+      </div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Agent Loads <span id="a-count"></span></h2>
+      <div id="loads" class="empty">no agents tracked</div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Task Fabric — Leases &amp; Quanta <span id="f-count"></span></h2>
+      <table>
+        <thead><tr><th>task</th><th>state</th><th>owner / epoch</th><th>expiry</th><th>deps</th><th>ckpt</th></tr></thead>
+        <tbody id="fabric"></tbody>
+      </table>
+      <div id="f-empty" class="empty" hidden>no live tasks — fabric is idle</div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Agents <span id="ag-count"></span></h2>
+      <div id="agents" class="agents empty">no agents registered</div>
+    </section>
+  </div>
+</main>
+<footer>read-only introspection · snapshots pulled by the collector loop · nothing here mutates runtime state</footer>
+<script>
+const $=id=>document.getElementById(id);
+const badge=(on,label)=>on?`<span class="badge b-on">${label||'ON'}</span>`:`<span class="badge b-off">OFF</span>`;
+function dur(ms){if(ms<=0)return'expired';const s=Math.floor(ms/1000);
+ if(s<60)return s+'s';const m=Math.floor(s/60);if(m<60)return m+'m'+(s%60?' '+s%60+'s':'');
+ return Math.floor(m/60)+'h'+(m%60)+'m';}
+function esc(s){return (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+function render(s){
+  $('meta').innerHTML='seq <b>'+s.seq+'</b> · ts <b>'+new Date(s.ts).toLocaleTimeString()+'</b>';
+  const k=s.kernel||{};
+  $('k-ready').textContent=k.readyTasks??0;
+  $('k-sched').textContent=k.scheduled??0;
+  $('k-exec').textContent=k.executors??0;
+  $('k-cad').textContent=((k.pollInterval||0)/1000)+'s / '+((k.preemptInterval||0)/1000)+'s';
+  $('k-ttl').textContent=((k.ttl||0)/1000)+'s';
+  $('k-maxc').textContent=k.maxConcurrent??'–';
+  $('k-bound').textContent=k.boundExecutors??0;
+  $('k-ev').innerHTML=badge(k.eventDriven,'LIVE');
+  $('k-gov').innerHTML=badge(k.governanceWired);
+  $('k-af').innerHTML=badge(k.agentFabricWired);
+
+  // fabric table
+  const rows=(s.fabric||[]);
+  $('f-count').textContent=rows.length+' live';
+  $('f-empty').hidden=rows.length>0;
+  $('fabric').innerHTML=rows.map(e=>{
+    const exp=e.owner?dur(new Date(e.expiresAt)-Date.now()):'—';
+    return `<tr><td>${esc(e.taskID)}</td><td><span class="st st-${esc(e.state)}">${esc(e.state)}</span></td>`+
+      `<td>${esc(e.owner||'—')}${e.owner?' · e'+e.epoch:''}</td><td>${exp}</td>`+
+      `<td>${(e.dependencies||[]).length}</td><td>${e.hasCheckpoint?'✓':'—'}</td></tr>`;
+  }).join('');
+
+  // agent load bars
+  const loads=(k.load&&k.load.agents)||[];
+  $('a-count').textContent=loads.length+' tracked';
+  $('loads').className=loads.length?'':'empty';
+  $('loads').innerHTML=loads.map(a=>{
+    const pct=Math.min(100,Math.round(a.load*100));
+    const rate=a.done>0?Math.round(a.ok/a.done*100):100;
+    return `<div class="kv"><span>${esc(a.agentID)} <span class="chip">${rate}% ok</span></span>`+
+      `<b>${a.load.toFixed(2)}</b></div><div class="bar"><i style="width:${pct}%"></i></div>`;
+  }).join('')||'no agents tracked';
+
+  // agent cards
+  const ags=s.agents||[];
+  $('ag-count').textContent=ags.length;
+  $('agents').className=ags.length?'agents':'agents empty';
+  $('agents').innerHTML=ags.map(a=>`
+    <div class="card">
+      <h3><span class="dot d-${esc(a.state)}"></span>${esc(a.identity)}</h3>
+      <div style="margin-top:6px">${(a.capabilities||[]).map(c=>`<span class="chip">${esc(c)}</span>`).join('')||( '<span class="chip">—</span>')}</div>
+      <div class="kv" style="margin-top:8px"><span>state</span><b>${esc(a.state)}</b></div>
+      <div class="kv"><span>load / conf</span><b>${a.load?.toFixed(2)??'–'} / ${((a.confidence??1)*100).toFixed(0)}%</b></div>
+      ${a.parent?`<div class="kv"><span>parent</span><b>${esc(a.parent)}</b></div>`:''}
+    </div>`).join('')||'no agents registered';
+}
+
+async function tick(){
+  try{
+    const r=await fetch('/api/v1/introspect/snapshot',{cache:'no-store'});
+    if(r.status===503){$('meta').textContent='waiting for first snapshot…';return;}
+    if(!r.ok)throw new Error(r.status);
+    render(await r.json());
+  }catch(e){$('meta').textContent='collector unreachable — retrying…';}
+}
+tick();setInterval(tick,2000);
+</script>
+</body>
+</html>

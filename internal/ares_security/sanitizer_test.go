@@ -344,7 +344,8 @@ func TestSanitizeOptionsAreEffective(t *testing.T) {
 
 // TestSanitizeJSONNumericSecrets locks the REVIEW #38 contract: JSON numbers
 // whose digit form matches a sensitive pattern are degraded to their masked
-// string form instead of passing through untouched.
+// string form, while benign numbers keep their numeric type (they are NOT
+// quoted stringified copies).
 func TestSanitizeJSONNumericSecrets(t *testing.T) {
 	s := NewSanitizer()
 
@@ -354,7 +355,10 @@ func TestSanitizeJSONNumericSecrets(t *testing.T) {
 	if strings.Contains(out, "4111111111111111") {
 		t.Errorf("numeric card number not masked: %s", out)
 	}
-	if !strings.Contains(out, `42`) {
-		t.Errorf("benign number must pass through unchanged: %s", out)
+	if strings.Contains(out, `"42"`) {
+		t.Errorf("benign number must keep its numeric type, got quoted copy: %s", out)
+	}
+	if !strings.Contains(out, `"count":42`) {
+		t.Errorf("benign number must pass through as a JSON number: %s", out)
 	}
 }

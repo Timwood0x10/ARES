@@ -1,6 +1,8 @@
 package kernelscheduler
 
 import (
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -161,4 +163,86 @@ func (t *LoadTracker) ConfidenceFor(agentID, capability string) float64 {
 		return t.ok[agentID] / total
 	}
 	return 1.0
+}
+
+// AgentLoadSnapshot is one agent's row in a LoadTracker snapshot — the
+// read-only view the runtime introspection panel consumes (monitoring.md
+// Domain A). All values are copies; mutating them never touches the tracker.
+type AgentLoadSnapshot struct {
+	// AgentID is the tracked agent.
+	AgentID string
+	// Done is the total finished executions; Ok is the successful subset.
+	Done float64
+	Ok   float64
+	// Priority is the agent's scheduling priority.
+	Priority float64
+	// Load is the current in-flight quantum count.
+	Load float64
+	// ConfidenceOverride is the agent-level override (evolution feedback W4);
+	// HasConfidenceOverride reports whether one is set (0.0 is a VALID
+	// override, so the bool — not the value — carries presence).
+	ConfidenceOverride    float64
+	HasConfidenceOverride bool
+	// CapabilityOverrides are this agent's per-capability confidence
+	// overrides, keyed by capability name (GA scheduler F1).
+	CapabilityOverrides map[string]float64
+}
+
+// LoadTrackerSnapshot is a point-in-time copy of every tracked agent,
+// ordered by AgentID for stable panel rendering.
+type LoadTrackerSnapshot struct {
+	Agents []AgentLoadSnapshot
+}
+
+// Snapshot returns a consistent copy of all tracked agents. It takes the
+// tracker lock once and copies everything under it, so callers can render or
+// serialize the result without holding any scheduler locks and without racing
+// concurrent Begin/End updates (monitoring.md Phase 0: read-only snapshots).
+func (t *LoadTracker) Snapshot() LoadTrackerSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	ids := make(map[string]struct{})
+	for id := range t.done {
+		ids[id] = struct{}{}
+	}
+	for id := range t.ok {
+		ids[id] = struct{}{}
+	}
+	for id := range t.priority {
+		ids[id] = struct{}{}
+	}
+	for id := range t.load {
+		ids[id] = struct{}{}
+	}
+	for id := range t.agentConfidenceOverride {
+		ids[id] = struct{}{}
+	}
+
+	out := LoadTrackerSnapshot{Agents: make([]AgentLoadSnapshot, 0, len(ids))}
+	for id := range ids {
+		a := AgentLoadSnapshot{
+			AgentID:             id,
+			Done:                t.done[id],
+			Ok:                  t.ok[id],
+			Priority:            t.priority[id],
+			Load:                t.load[id],
+			CapabilityOverrides: make(map[string]float64),
+		}
+		if v, ok := t.agentConfidenceOverride[id]; ok {
+			a.ConfidenceOverride = v
+			a.HasConfidenceOverride = true
+		}
+		prefix := id + "|"
+		for key, v := range t.capabilityConfidenceOverride {
+			if capName, found := strings.CutPrefix(key, prefix); found {
+				a.CapabilityOverrides[capName] = v
+			}
+		}
+		out.Agents = append(out.Agents, a)
+	}
+	sort.Slice(out.Agents, func(i, j int) bool {
+		return out.Agents[i].AgentID < out.Agents[j].AgentID
+	})
+	return out
 }

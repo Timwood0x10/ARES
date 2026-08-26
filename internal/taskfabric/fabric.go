@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -754,5 +755,66 @@ func (f *Fabric) IDs() []string {
 	for id := range f.tasks {
 		out = append(out, id)
 	}
+	return out
+}
+
+// LeaseEntry is one non-terminal task's scheduling-relevant state — the
+// read-only view the runtime introspection panel consumes (monitoring.md
+// Domain B: which tasks hold leases, how long until expiry, checkpoint
+// progress, dependency posture).
+type LeaseEntry struct {
+	// TaskID is the fabric task identifier.
+	TaskID string
+	// Capability is the required capability.
+	Capability string
+	// State is the current lifecycle state (never terminal in a snapshot).
+	State TaskState
+	// Priority drives preemption decisions.
+	Priority int
+	// Owner is the lease-holding agent; empty when the task is unowned.
+	Owner string
+	// Epoch is the lease acquisition counter (stale-renew observability).
+	Epoch uint64
+	// ExpiresAt is the lease expiry; zero when unowned.
+	ExpiresAt time.Time
+	// HasCheckpoint reports whether durable progress exists.
+	HasCheckpoint bool
+	// Dependencies are the task's prerequisite IDs (copied).
+	Dependencies []string
+}
+
+// LeaseSnapshot returns a point-in-time copy of every non-terminal task,
+// ordered by TaskID for stable rendering. Terminal tasks (COMPLETED/FAILED)
+// are excluded so the snapshot stays bounded by live work rather than
+// accumulating history. Purely read-only: everything is copied under f.mu and
+// no transition/renew side effects can fire (unlike CheckExpiredLeases,
+// which is a WRITE path and must never be used for observation).
+func (f *Fabric) LeaseSnapshot() []LeaseEntry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]LeaseEntry, 0, len(f.tasks))
+	for id, t := range f.tasks {
+		if t.State == StateCompleted || t.State == StateFailed {
+			continue
+		}
+		e := LeaseEntry{
+			TaskID:        id,
+			Capability:    t.Capability,
+			State:         t.State,
+			Priority:      t.Priority,
+			Owner:         t.Owner,
+			HasCheckpoint: t.Checkpoint != nil,
+		}
+		if t.Lease != nil {
+			e.Epoch = t.Lease.Epoch
+			e.ExpiresAt = t.Lease.ExpiresAt
+		}
+		if len(t.Dependencies) > 0 {
+			e.Dependencies = append([]string(nil), t.Dependencies...)
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
 	return out
 }

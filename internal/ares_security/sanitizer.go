@@ -225,9 +225,9 @@ func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
 	case string:
 		return s.Sanitize(val)
 	case json.Number:
-		return s.maybeMaskNumeric(val.String())
+		return s.maybeMaskNumeric(val.String(), val)
 	case float64:
-		return s.maybeMaskNumeric(strconv.FormatFloat(val, 'f', -1, 64))
+		return s.maybeMaskNumeric(strconv.FormatFloat(val, 'f', -1, 64), val)
 	case map[string]interface{}:
 		result := make(map[string]interface{}, len(val))
 		for k, vv := range val {
@@ -249,10 +249,14 @@ func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
 // maybeMaskNumeric sanitizes the decimal string form of a JSON number. An
 // unchanged value is returned as-is so the caller re-emits it as a number;
 // a hit returns the masked string (quoted in the re-serialized JSON).
-func (s *Sanitizer) maybeMaskNumeric(digits string) interface{} {
+// maybeMaskNumeric sanitizes a numeric digit run, preserving the ORIGINAL JSON
+// value — and hence its numeric type — when no sensitive pattern matches
+// (#38): returning the original float64/json.Number keeps benign numbers like
+// {"count": 42} as JSON numbers instead of degrading them to masked strings.
+func (s *Sanitizer) maybeMaskNumeric(digits string, original interface{}) interface{} {
 	masked := s.Sanitize(digits)
 	if masked == digits {
-		return digits
+		return original
 	}
 	return masked
 }

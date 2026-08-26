@@ -18,6 +18,7 @@ import (
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
+	"github.com/Timwood0x10/ares/internal/introspect"
 )
 
 // writeJSON encodes v to w. HTTP handlers cannot recover a failed response
@@ -55,6 +56,11 @@ type actionHandler struct {
 	// chaosStopToken guards the chaos emergency-stop endpoint: requests must
 	// carry a matching X-Chaos-Token header. Empty disables the endpoint.
 	chaosStopToken string
+	// intro serves the runtime introspection panel (monitoring.md): embedded
+	// UI at GET /introspect and the JSON read API at
+	// /api/v1/introspect/*. Nil (panel not wired) yields 404, matching any
+	// other unknown path.
+	intro *introspect.Handler
 }
 
 // checkAuth enforces authentication on destructive endpoints: the legacy API
@@ -137,6 +143,16 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+
+	// Runtime introspection panel (monitoring.md): read-only. The UI page and
+	// its JSON feed are intentionally unauthenticated — they expose no secrets
+	// and mutate nothing; all control endpoints remain behind checkAuth.
+	if h.intro != nil && r.Method == "GET" &&
+		(path == "/introspect" || strings.HasPrefix(path, "/introspect/") ||
+			strings.HasPrefix(path, "/api/v1/introspect/")) {
+		h.intro.ServeHTTP(w, r)
+		return
 	}
 
 	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover,stop}

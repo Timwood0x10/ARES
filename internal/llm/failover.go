@@ -309,9 +309,17 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		// stream is cancelled and the next provider is tried, so a silent
 		// provider cannot surface as an empty successful stream (N6: stream
 		// timeout false-success).
+		// Use a stoppable timer, not time.After: the time.After timer goroutine
+		// would otherwise linger until fc.timeout after a successful handshake,
+		// leaking a timer per stream attempt (review finding).
+		timer := time.NewTimer(fc.timeout)
 		var first StreamChunk
 		select {
 		case chunk, ok := <-ch:
+			// Stop and drain the timer so it is released on the success path.
+			if !timer.Stop() {
+				<-timer.C
+			}
 			if !ok {
 				attemptCancel()
 				lastErr = fmt.Errorf("stream from %s closed before first chunk", client.GetProvider())
@@ -323,7 +331,7 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 				continue
 			}
 			first = chunk
-		case <-time.After(fc.timeout):
+		case <-timer.C:
 			attemptCancel()
 			lastErr = fmt.Errorf("stream from %s: no first chunk within %s", client.GetProvider(), fc.timeout)
 			fc.markCooldown(key, fc.cooldownForError(lastErr))
@@ -335,6 +343,7 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		case <-ctx.Done():
 			attemptCancel()
+			timer.Stop()
 			return nil, ctx.Err()
 		}
 

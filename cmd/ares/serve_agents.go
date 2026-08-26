@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
+
+	"github.com/Timwood0x10/ares/internal/introspect"
 
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -132,6 +135,32 @@ func createAndServeAgents(
 			go aresrecovery.RunKernelEvolutionLoop(ctx, popAdapter, 0, 0)
 			log.Printf("serve: evolution population loop wired (GA topology → fabric spawn/retire)")
 		}
+	}
+
+	// Runtime introspection panel (monitoring.md Phase 1+2): a pull-only
+	// collector refreshes the latest-wins store every 2s; actionHandler serves
+	// the embedded UI at GET /introspect and JSON at /api/v1/introspect/*.
+	if peerKernel.scheduler != nil && peerKernel.fabric != nil && peerKernel.agents != nil {
+		store := &introspect.Store{}
+		collector := introspect.NewCollector(introspect.Sources{
+			Kernel: peerKernel.scheduler.Snapshot,
+			Fabric: peerKernel.fabric.LeaseSnapshot,
+			Agents: peerKernel.agents.AgentsView,
+		})
+		peerKernel.intro = introspect.NewHandler(store)
+		comp.GoBackground(ctx, "introspect-collector", func(ctx context.Context) error {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					store.Set(collector.Collect())
+				}
+			}
+		})
+		log.Printf("serve: introspect panel wired (GET /introspect)")
 	}
 
 	// REVIEW #12 Phase 1+2: wire chaos subsystem. Default is shadow sandbox

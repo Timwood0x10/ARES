@@ -210,6 +210,8 @@ func startServeHTTPAndHooks(
 		// Chaos emergency-stop credential (#12 Phase 2): POST /api/chaos/stop
 		// requires a matching X-Chaos-Token header; empty disables the route.
 		chaosStopToken: cfg.Kernel.Chaos.StopToken,
+		// Runtime introspection panel (monitoring.md): UI + read API.
+		intro: peerKernel.intro,
 	}
 
 	httpSrv := &http.Server{

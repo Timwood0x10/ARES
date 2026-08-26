@@ -5,6 +5,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
+	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -31,6 +32,9 @@ type kernelHandle struct {
 	// wireKernelLifecycle can attach the P3 governance provider once the agent
 	// fabric exists (the scheduler may start before the lifecycle wiring).
 	scheduler *kernelScheduler
+	// intro serves the runtime introspection panel (monitoring.md). Wired in
+	// createAndServeAgents when the full kernel exists; nil on partial paths.
+	intro *introspect.Handler
 	// tracker is the shared per-agent load/confidence/priority source for the
 	// scheduler and the fabric dispatch path. It is created at startup and
 	// retained so agent priorities can be injected into it (B2: OS-thread-style

@@ -45,7 +45,11 @@ func NewPostgresStore(pool *postgres.Pool) (*PostgresStore, error) {
 	return s, nil
 }
 
-// ensureTable creates the evidence_records table if it does not exist.
+// ensureTable creates the evidence_records table if it does not exist, then
+// migrates it in place. CREATE TABLE IF NOT EXISTS alone would leave a
+// pre-existing table (created before ttl_seconds was introduced) without the
+// column, and every later INSERT/Query referencing ttl_seconds would fail at
+// runtime — ADD COLUMN IF NOT EXISTS backfills it idempotently.
 func (s *PostgresStore) ensureTable(ctx context.Context) error {
 	const createTable = `
 		CREATE TABLE IF NOT EXISTS evidence_records (
@@ -57,7 +61,13 @@ func (s *PostgresStore) ensureTable(ctx context.Context) error {
 			ts         timestamptz NOT NULL,
 			ttl_seconds bigint NOT NULL DEFAULT 0
 		)`
-	_, err := s.db.ExecContext(ctx, createTable)
+	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
+		return err
+	}
+	const migrate = `
+		ALTER TABLE evidence_records
+		ADD COLUMN IF NOT EXISTS ttl_seconds bigint NOT NULL DEFAULT 0`
+	_, err := s.db.ExecContext(ctx, migrate)
 	return err
 }
 

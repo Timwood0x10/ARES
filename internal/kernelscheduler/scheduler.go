@@ -874,3 +874,77 @@ func reifyUserProfile(v any) *models.UserProfile {
 		return nil
 	}
 }
+
+// SchedulerSnapshot is a point-in-time, read-only view of the scheduler's
+// observable state — the runtime introspection panel's Domain A read-model
+// (monitoring.md §2.2: queue depth, preemption cadence, executor inventory,
+// budget/governance wiring, per-agent load). Every field is a copy taken
+// under the appropriate lock; callers never touch scheduling internals.
+type SchedulerSnapshot struct {
+	// PollInterval is the drain cadence; PreemptInterval the preemption sweep
+	// cadence (both as configured / defaulted).
+	PollInterval    time.Duration
+	PreemptInterval time.Duration
+	// TTL is the lease granted to each winning agent.
+	TTL time.Duration
+	// MaxConcurrent is the per-drain parallelism cap (after defaulting).
+	MaxConcurrent int
+	// EventDriven reports whether an event store subscription accelerates
+	// dependency completion (GAP 6) on top of polling.
+	EventDriven bool
+	// Executors is the static + spawned executor count; BoundExecutors the
+	// recovery-bound one-task-one-executor subset (W1).
+	Executors      int
+	BoundExecutors int
+	// Scheduled is the total successfully executed task count.
+	Scheduled int64
+	// ReadyTasks is the fabric's current resumable (ready/suspended) depth —
+	// the queue-depth signal for the panel's queue gauge.
+	ReadyTasks int
+	// GovernanceWired / AgentFabricWired report optional subsystem wiring so
+	// the panel can annotate whether budgets and dynamic population are live.
+	GovernanceWired  bool
+	AgentFabricWired bool
+	// Load is the per-agent load/confidence snapshot from the tracker.
+	Load LoadTrackerSnapshot
+}
+
+// Snapshot returns the read-only view. It acquires only reader locks
+// (execMu.RLock, tracker/fabric internal locks), never the drain write path,
+// and is safe to call concurrently with Run (monitoring.md Phase 0:
+// "纯只读、持读锁拷贝、返回不可变副本").
+func (s *Scheduler) Snapshot() SchedulerSnapshot {
+	s.execMu.RLock()
+	execN := len(s.executors)
+	boundN := len(s.boundExecutors)
+	s.execMu.RUnlock()
+
+	snap := SchedulerSnapshot{
+		PollInterval:     s.preemptInterval(), // same guard/default as both tickers
+		PreemptInterval:  s.preemptInterval(),
+		TTL:              s.ttl,
+		MaxConcurrent:    s.maxConcurrent,
+		EventDriven:      s.eventStore != nil,
+		Executors:        execN,
+		BoundExecutors:   boundN,
+		Scheduled:        s.Scheduled.Load(),
+		GovernanceWired:  s.governance != nil,
+		AgentFabricWired: s.agents != nil,
+	}
+	if snap.MaxConcurrent <= 0 {
+		snap.MaxConcurrent = execN // mirror drain's default: executor count
+	}
+	if snap.MaxConcurrent <= 0 {
+		snap.MaxConcurrent = 1
+	}
+	if snap.MaxConcurrent > 32 {
+		snap.MaxConcurrent = 32 // same sanity cap as drain
+	}
+	if s.fabric != nil {
+		snap.ReadyTasks = len(s.fabric.ResumableTasks())
+	}
+	if s.tracker != nil {
+		snap.Load = s.tracker.Snapshot()
+	}
+	return snap
+}

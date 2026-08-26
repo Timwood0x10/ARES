@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
@@ -142,6 +143,24 @@ type ObservabilityComponents struct {
 	// kernel wiring (write side: task/agent lifecycle hooks). Nil when the
 	// dashboard observability wiring is skipped.
 	GlobalTracer *aresrecovery.GlobalTracer
+}
+
+// GoBackground runs fn as an errgroup-managed background goroutine on the
+// Bootstrap group (F06: no bare goroutines) with a panic-recover boundary so
+// one panicking tick logs and returns instead of killing the process (M2).
+// The goroutine runs until WaitBackground; fn should exit promptly when its
+// ctx is cancelled.
+func (c *Components) GoBackground(ctx context.Context, name string, fn func(ctx context.Context) error) {
+	c.bgGroup.Go(func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("bootstrap: background goroutine panicked",
+					"name", name, "panic", r)
+				err = fmt.Errorf("background %s panicked: %v", name, r)
+			}
+		}()
+		return fn(ctx)
+	})
 }
 
 // WaitBackground blocks until all background goroutines started by Bootstrap

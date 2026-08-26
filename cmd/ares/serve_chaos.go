@@ -215,12 +215,21 @@ func newLiveChaosGuard(ratePerMin int, cooldown time.Duration) *liveChaosGuard {
 	}
 }
 
-// allowTarget reports whether agentID is outside its cooldown window.
+// allowTarget reports whether agentID is outside its cooldown window. An
+// expired cooldown entry is dropped on first touch so the map stays bounded to
+// in-cooldown agents instead of accumulating every injected id forever.
 func (g *liveChaosGuard) allowTarget(agentID string, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	until, ok := g.cooldown[agentID]
-	return !ok || now.After(until)
+	if !ok {
+		return true
+	}
+	if now.After(until) {
+		delete(g.cooldown, agentID)
+		return true
+	}
+	return false
 }
 
 // markInjected records that agentID was just injected and advances the

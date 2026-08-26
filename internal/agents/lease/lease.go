@@ -37,9 +37,10 @@ type Lease struct {
 // Manager issues and tracks session leases in memory. It is safe for
 // concurrent use; all state is guarded by mu.
 type Manager struct {
-	mu      sync.Mutex
-	leases  map[string]Lease
-	timeNow func() time.Time // clock injection for tests
+	mu        sync.Mutex
+	leases    map[string]Lease
+	timeNow   func() time.Time // clock injection for tests
+	sweepTick int              // periodic full-prune counter (#59)
 }
 
 // NewManager creates a lease Manager with the system clock.
@@ -117,12 +118,30 @@ func (m *Manager) Release(ctx context.Context, sessionID, owner string) error {
 	return nil
 }
 
+// sweepEvery bounds the periodic full prune (#59): expired leases are swept
+// either when Count is called or, probabilistically, on a Get miss, so
+// abandoned expired keys cannot accumulate unboundedly in a long-lived
+// process that only ever reads via Get/Held.
+const sweepEvery = 1024
+
 // Get returns the current lease for sessionID, if unexpired.
 func (m *Manager) Get(sessionID string) (Lease, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, ok := m.leases[sessionID]
-	if !ok || l.ExpiresAt.Before(m.timeNow()) {
+	if !ok {
+		// Periodic probabilistic full sweep: bounds abandoned expired leases
+		// even when Count is never called (#59).
+		m.sweepTick++
+		if m.sweepTick >= sweepEvery {
+			m.sweepTick = 0
+			m.pruneExpiredLocked()
+		}
+		return Lease{}, false
+	}
+	if l.ExpiresAt.Before(m.timeNow()) {
+		// Lazy cleanup: drop the expired lease on first touch (#59).
+		delete(m.leases, sessionID)
 		return Lease{}, false
 	}
 	return l, true

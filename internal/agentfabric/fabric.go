@@ -3,6 +3,7 @@ package agentfabric
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -177,4 +178,52 @@ func (f *Fabric) record(ctx context.Context, a *Agent, typ AgentEventType, paylo
 		Payload:  payload,
 	}
 	_ = f.sink.Emit(ctx, ev) // best-effort
+}
+
+// AgentView is a read-only copy of an agent's scheduling-relevant state —
+// the runtime introspection panel's Domain C row (monitoring.md §2.2).
+// Named AgentView to avoid clashing with the revival-record AgentSnapshot.
+type AgentView struct {
+	// Identity is the stable agent identifier.
+	Identity string
+	// State is the lifecycle state (IDLE/RUNNING/SUSPENDED/RETIRED).
+	State AgentState
+	// Capabilities are the declared capabilities (copied).
+	Capabilities []string
+	// Load / Confidence / Priority mirror the scheduler hints.
+	Load       float64
+	Confidence float64
+	Priority   float64
+	// Parent is the spawning agent ("" = root); provenance only.
+	Parent string
+	// SpawnedAt is the creation time.
+	SpawnedAt time.Time
+}
+
+// AgentsView returns a point-in-time copy of every registered agent, sorted
+// by Identity. Everything is copied under f.mu so callers can render or
+// serialize without racing lifecycle transitions — unlike Fabric.Get, which
+// hands out the live pointer and must not be read lock-free.
+func (f *Fabric) AgentsView() []AgentView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]AgentView, 0, len(f.agents))
+	for _, a := range f.agents {
+		v := AgentView{
+			Identity:   a.Identity,
+			State:      a.State,
+			Load:       a.Load,
+			Confidence: a.Confidence,
+			Priority:   a.Priority,
+			Parent:     a.Parent,
+			SpawnedAt:  a.SpawnedAt,
+		}
+		if len(a.Capabilities) > 0 {
+			v.Capabilities = append([]string(nil), a.Capabilities...)
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity < out[j].Identity })
+	return out
 }
