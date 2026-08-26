@@ -16,8 +16,8 @@ type mockKnowledgeRepo struct {
 	mock.Mock
 }
 
-func (m *mockKnowledgeRepo) GetByID(ctx context.Context, id string) (*storage_models.KnowledgeChunk, error) {
-	args := m.Called(ctx, id)
+func (m *mockKnowledgeRepo) GetByID(ctx context.Context, tenantID, id string) (*storage_models.KnowledgeChunk, error) {
+	args := m.Called(ctx, tenantID, id)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -43,6 +43,7 @@ func TestCorrectKnowledge_Execute_MissingChunkID(t *testing.T) {
 	ck := NewCorrectKnowledge(repo)
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
 		"corrected_content": "new content",
+		"tenant_id":         "t1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -52,7 +53,8 @@ func TestCorrectKnowledge_Execute_MissingContent(t *testing.T) {
 	repo := &mockKnowledgeRepo{}
 	ck := NewCorrectKnowledge(repo)
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
-		"chunk_id": "1",
+		"chunk_id":  "1",
+		"tenant_id": "t1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -60,11 +62,12 @@ func TestCorrectKnowledge_Execute_MissingContent(t *testing.T) {
 
 func TestCorrectKnowledge_Execute_GetByIDError(t *testing.T) {
 	repo := &mockKnowledgeRepo{}
-	repo.On("GetByID", mock.Anything, "1").Return(nil, errors.New("db error"))
+	repo.On("GetByID", mock.Anything, "t1", "1").Return(nil, errors.New("db error"))
 	ck := NewCorrectKnowledge(repo)
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
 		"chunk_id":          "1",
 		"corrected_content": "new content",
+		"tenant_id":         "t1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -73,11 +76,12 @@ func TestCorrectKnowledge_Execute_GetByIDError(t *testing.T) {
 
 func TestCorrectKnowledge_Execute_ChunkNotFound(t *testing.T) {
 	repo := &mockKnowledgeRepo{}
-	repo.On("GetByID", mock.Anything, "1").Return(nil, nil)
+	repo.On("GetByID", mock.Anything, "t1", "1").Return(nil, nil)
 	ck := NewCorrectKnowledge(repo)
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
 		"chunk_id":          "1",
 		"corrected_content": "new content",
+		"tenant_id":         "t1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -93,7 +97,7 @@ func TestCorrectKnowledge_Execute_Success(t *testing.T) {
 		UpdatedAt: now,
 		Metadata:  map[string]interface{}{},
 	}
-	repo.On("GetByID", mock.Anything, "1").Return(chunk, nil)
+	repo.On("GetByID", mock.Anything, "t1", "1").Return(chunk, nil)
 	repo.On("Update", mock.Anything, mock.MatchedBy(func(c *storage_models.KnowledgeChunk) bool {
 		return c.Content == "corrected content"
 	})).Return(nil)
@@ -101,6 +105,7 @@ func TestCorrectKnowledge_Execute_Success(t *testing.T) {
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
 		"chunk_id":          "1",
 		"corrected_content": "corrected content",
+		"tenant_id":         "t1",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -113,12 +118,13 @@ func TestCorrectKnowledge_Execute_UpdateError(t *testing.T) {
 		ID:      "1",
 		Content: "old content",
 	}
-	repo.On("GetByID", mock.Anything, "1").Return(chunk, nil)
+	repo.On("GetByID", mock.Anything, "t1", "1").Return(chunk, nil)
 	repo.On("Update", mock.Anything, mock.Anything).Return(errors.New("update failed"))
 	ck := NewCorrectKnowledge(repo)
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
 		"chunk_id":          "1",
 		"corrected_content": "new content",
+		"tenant_id":         "t1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -131,7 +137,7 @@ func TestCorrectKnowledge_Execute_MetadataNil(t *testing.T) {
 		ID:      "1",
 		Content: "old content",
 	}
-	repo.On("GetByID", mock.Anything, "1").Return(chunk, nil)
+	repo.On("GetByID", mock.Anything, "t1", "1").Return(chunk, nil)
 	repo.On("Update", mock.Anything, mock.MatchedBy(func(c *storage_models.KnowledgeChunk) bool {
 		return c.Metadata != nil && c.Metadata["correction"] == true
 	})).Return(nil)
@@ -139,6 +145,7 @@ func TestCorrectKnowledge_Execute_MetadataNil(t *testing.T) {
 	result, err := ck.Execute(context.Background(), map[string]interface{}{
 		"chunk_id":          "1",
 		"corrected_content": "new content",
+		"tenant_id":         "t1",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)

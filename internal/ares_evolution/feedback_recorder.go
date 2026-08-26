@@ -214,9 +214,9 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 	for _, expID := range expIDs {
 		var err error
 		if outcome.Success {
-			err = r.feedbackService.RecordSuccess(ctx, expID)
+			err = r.feedbackService.RecordSuccess(ctx, outcome.TenantID, expID)
 		} else {
-			err = r.feedbackService.RecordFailure(ctx, expID)
+			err = r.feedbackService.RecordFailure(ctx, outcome.TenantID, expID)
 		}
 		if err != nil {
 			failCount++

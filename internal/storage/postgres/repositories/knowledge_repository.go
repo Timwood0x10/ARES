@@ -312,9 +312,12 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 // ctx - database operation context.
 // id - knowledge chunk ID, must be non-empty.
 // Returns knowledge chunk or error if not found or invalid argument.
-func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_models.KnowledgeChunk, error) {
+func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.KnowledgeChunk, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
 	}
 
 	query := `
@@ -322,13 +325,13 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 			   embedding_status, source_type, source, metadata::text, document_id,
 			   chunk_index, content_hash, access_count, created_at, updated_at
 		FROM knowledge_chunks_1024
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	chunk := &storage_models.KnowledgeChunk{}
 	var metadataStr string
 	var documentID sql.NullString
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&chunk.ID, &chunk.TenantID, &chunk.Content,
 		&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 		&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
@@ -364,6 +367,9 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 // chunk - knowledge chunk with updated values.
 // Returns error if update operation fails.
 func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.KnowledgeChunk) error {
+	if chunk.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert metadata to JSON for database storage
 	metadataJSON, err := json.Marshal(chunk.Metadata)
 	if err != nil {
@@ -386,13 +392,13 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 		SET content = $2, embedding = $3::vector, embedding_status = $4,
 			source_type = $5, source = $6, metadata = $7,
 			document_id = $8, chunk_index = $9, access_count = $10, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $11
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		chunk.ID, chunk.Content, embeddingStr, chunk.EmbeddingStatus,
 		chunk.SourceType, chunk.Source, metadataJSON,
-		documentID, chunk.ChunkIndex, chunk.AccessCount,
+		documentID, chunk.ChunkIndex, chunk.AccessCount, chunk.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update knowledge chunk")
@@ -733,7 +739,10 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
@@ -741,10 +750,10 @@ func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, em
         SET embedding = $2::vector, embedding_model = $3, embedding_version = $4,
             embedding_status = 'completed', embedding_processed_at = NOW(),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND tenant_id = $5
     `
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}
@@ -768,14 +777,17 @@ func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, em
 // status - new embedding status.
 // error - error message if status is failed.
 // Returns error if update operation fails.
-func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, id, status, errorMsg string) error {
+func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, tenantID, id, status, errorMsg string) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE knowledge_chunks_1024
 		SET embedding_status = $2, embedding_error = $3, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $4
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg)
+	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding status")
 	}

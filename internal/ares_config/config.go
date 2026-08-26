@@ -120,6 +120,39 @@ type KernelConfig struct {
 	// EvolutionApplyTimeout bounds each population policy application
 	// (default "30s"). A hung policy store must not stall the loop.
 	EvolutionApplyTimeout string `yaml:"evolution_apply_timeout"`
+	// Chaos controls the fault injection subsystem (REVIEW #12). By default
+	// chaos runs in "shadow" mode — a scratch Sandbox verifies recovery
+	// without touching production agents. "live" mode (requires
+	// allow_live=true) enables real agent kill/suspend; it is dangerous
+	// and intended only for dedicated chaos testing environments.
+	Chaos ChaosConfig `yaml:"chaos"`
+}
+
+// ChaosConfig configures the chaos fault injection subsystem.
+// Default is zero-impact (shadow sandbox): recovery is verified on a
+// scratch fabric, production agents are never touched.
+type ChaosConfig struct {
+	// Enabled is the master switch. When false (default), no chaos
+	// subsystem is constructed at all.
+	Enabled bool `yaml:"enabled"`
+	// Mode selects shadow (default) or live. In shadow mode, a scratch
+	// Sandbox runs Simulate/Replay to verify recovery offline. In live
+	// mode, real agents are killed/suspended — requires allow_live=true.
+	Mode string `yaml:"mode"`
+	// AllowLive is the secondary confirmation for live mode. Live chaos
+	// is only active when mode=live AND allow_live=true. This prevents
+	// accidental misconfiguration from enabling destructive chaos.
+	AllowLive bool `yaml:"allow_live"`
+	// Interval is the chaos injection / shadow verification period
+	// (default "5m").
+	Interval string `yaml:"interval"`
+	// RatePerMin limits live injections per minute (default 2).
+	RatePerMin int `yaml:"rate_per_min"`
+	// Cooldown is the per-agent cooldown after an injection (default "10m").
+	Cooldown string `yaml:"cooldown"`
+	// PauseDuringGA, when true, pauses live chaos during GA evolution
+	// generations (default true).
+	PauseDuringGA bool `yaml:"pause_during_ga"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that

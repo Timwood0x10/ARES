@@ -134,6 +134,10 @@ func createAndServeAgents(
 		}
 	}
 
+	// REVIEW #12 Phase 1+2: wire chaos subsystem. Default is shadow sandbox
+	// (production zero-impact); live mode requires explicit config.
+	wireChaos(ctx, cfg, peerKernel)
+
 	return subAgents, peerKernel, nil
 }
 

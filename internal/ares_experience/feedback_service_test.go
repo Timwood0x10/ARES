@@ -20,7 +20,7 @@ func (m *mockExperienceRepo) Create(ctx context.Context, exp *storage_models.Exp
 	return nil
 }
 
-func (m *mockExperienceRepo) GetByID(ctx context.Context, id string) (*storage_models.Experience, error) {
+func (m *mockExperienceRepo) GetByID(ctx context.Context, tenantID, id string) (*storage_models.Experience, error) {
 	return nil, errors.New("not implemented in mock")
 }
 
@@ -40,7 +40,7 @@ func (m *mockExperienceRepo) SearchByKeyword(ctx context.Context, query, tenantI
 	return nil, nil
 }
 
-func (m *mockExperienceRepo) IncrementUsageCount(ctx context.Context, id string) error {
+func (m *mockExperienceRepo) IncrementUsageCount(ctx context.Context, tenantID, id string) error {
 	// Always record the call, even if returning an error.
 	m.incrementCalls = append(m.incrementCalls, id)
 	if m.err != nil {
@@ -49,7 +49,7 @@ func (m *mockExperienceRepo) IncrementUsageCount(ctx context.Context, id string)
 	return nil
 }
 
-func (m *mockExperienceRepo) DecrementRank(ctx context.Context, id string) error {
+func (m *mockExperienceRepo) DecrementRank(ctx context.Context, tenantID, id string) error {
 	// Always record the call, even if returning an error.
 	m.decrementCalls = append(m.decrementCalls, id)
 	if m.err != nil {
@@ -103,7 +103,7 @@ func TestFeedbackService_RecordSuccess(t *testing.T) {
 			repo := &mockExperienceRepo{err: tt.mockErr}
 			svc := NewFeedbackService(repo)
 
-			err := svc.RecordSuccess(context.Background(), tt.experienceID)
+			err := svc.RecordSuccess(context.Background(), "t1", tt.experienceID)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("RecordSuccess() error = %v, wantErr %v", err, tt.wantErr)
@@ -152,7 +152,7 @@ func TestFeedbackService_RecordFailure(t *testing.T) {
 			repo := &mockExperienceRepo{err: tt.mockErr}
 			svc := NewFeedbackService(repo)
 
-			err := svc.RecordFailure(context.Background(), tt.experienceID)
+			err := svc.RecordFailure(context.Background(), "t1", tt.experienceID)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("RecordFailure() error = %v, wantErr %v", err, tt.wantErr)
@@ -207,7 +207,7 @@ func TestFeedbackService_RecordFeedback(t *testing.T) {
 			repo := &mockExperienceRepo{}
 			svc := NewFeedbackService(repo)
 
-			err := svc.RecordFeedback(context.Background(), tt.experienceID, tt.success)
+			err := svc.RecordFeedback(context.Background(), "t1", tt.experienceID, tt.success)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("RecordFeedback() error = %v, wantErr %v", err, tt.wantErr)

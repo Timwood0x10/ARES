@@ -128,21 +128,24 @@ func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.E
 // ctx - database operation context.
 // id - experience ID, must be non-empty.
 // Returns experience or error if not found or invalid argument.
-func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage_models.Experience, error) {
+func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.Experience, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
 	}
 
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
 			   score, success, agent_id, metadata::text, decay_at, created_at
 		FROM experiences_1024
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	exp := &storage_models.Experience{}
 	var metadataStr string
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 		&exp.EmbeddingModel, &exp.EmbeddingVersion,
 		&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
@@ -172,6 +175,9 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 // exp - experience with updated values.
 // Returns error if update operation fails.
 func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.Experience) error {
+	if exp.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert metadata to JSON for database storage
 	metadataJSON, err := json.Marshal(exp.Metadata)
 	if err != nil {
@@ -186,13 +192,13 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 		SET type = $2, input = $3, output = $4, embedding = $5::vector,
 			embedding_model = $6, embedding_version = $7, score = $8,
 			success = $9, agent_id = $10, metadata = $11
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $12
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		exp.ID, exp.Type, exp.Input, exp.Output, embeddingStr,
 		exp.EmbeddingModel, exp.EmbeddingVersion, exp.Score,
-		exp.Success, exp.AgentID, metadataJSON,
+		exp.Success, exp.AgentID, metadataJSON, exp.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update experience")
@@ -419,14 +425,17 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 // id - experience identifier.
 // score - new score value (0-1).
 // Returns error if update operation fails.
-func (r *ExperienceRepository) UpdateScore(ctx context.Context, id string, score float64) error {
+func (r *ExperienceRepository) UpdateScore(ctx context.Context, tenantID, id string, score float64) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE experiences_1024
 		SET score = $2
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $3
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, score)
+	result, err := r.db.ExecContext(ctx, query, id, score, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update experience score")
 	}
@@ -508,17 +517,20 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE experiences_1024
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}
@@ -604,19 +616,22 @@ func (r *ExperienceRepository) GetStatistics(ctx context.Context, tenantID strin
 // ctx - database operation context.
 // id - experience identifier.
 // Returns error if update operation fails.
-func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id string) error {
+func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, tenantID, id string) error {
 	if id == "" {
 		return errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
 	}
 
 	query := `
 		UPDATE experiences_1024
 		SET usage_count = COALESCE(usage_count, 0) + 1,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id)
+	result, err := r.db.ExecContext(ctx, query, id, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "increment usage count")
 	}
@@ -640,9 +655,12 @@ func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id strin
 // ctx - database operation context.
 // id - experience identifier.
 // Returns error if update operation fails.
-func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) error {
+func (r *ExperienceRepository) DecrementRank(ctx context.Context, tenantID, id string) error {
 	if id == "" {
 		return errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
 	}
 
 	// Apply a 10% score penalty, with a floor of 0.
@@ -650,10 +668,10 @@ func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) err
 		UPDATE experiences_1024
 		SET score = GREATEST(score - (score * 0.1), 0),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id)
+	result, err := r.db.ExecContext(ctx, query, id, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "decrement rank")
 	}

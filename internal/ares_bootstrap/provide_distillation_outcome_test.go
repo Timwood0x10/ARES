@@ -30,7 +30,7 @@ func (m *mockExpRepo) Create(ctx context.Context, exp *models.Experience) error 
 	return nil
 }
 
-func (m *mockExpRepo) GetByID(ctx context.Context, id string) (*models.Experience, error) {
+func (m *mockExpRepo) GetByID(ctx context.Context, tenantID, id string) (*models.Experience, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -50,11 +50,11 @@ func (m *mockExpRepo) SearchByKeyword(ctx context.Context, query, tenantID strin
 	return nil, nil
 }
 
-func (m *mockExpRepo) IncrementUsageCount(ctx context.Context, id string) error {
+func (m *mockExpRepo) IncrementUsageCount(ctx context.Context, tenantID, id string) error {
 	return errors.New("not implemented")
 }
 
-func (m *mockExpRepo) DecrementRank(ctx context.Context, id string) error {
+func (m *mockExpRepo) DecrementRank(ctx context.Context, tenantID, id string) error {
 	return errors.New("not implemented")
 }
 

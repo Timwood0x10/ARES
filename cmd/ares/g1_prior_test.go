@@ -22,7 +22,7 @@ type stubExpRepo struct {
 var _ repositories.ExperienceRepositoryInterface = (*stubExpRepo)(nil)
 
 func (s *stubExpRepo) Create(context.Context, *models.Experience) error { panic("not used") }
-func (s *stubExpRepo) GetByID(context.Context, string) (*models.Experience, error) {
+func (s *stubExpRepo) GetByID(context.Context, string, string) (*models.Experience, error) {
 	panic("not used")
 }
 func (s *stubExpRepo) Update(context.Context, *models.Experience) error { panic("not used") }
@@ -33,8 +33,8 @@ func (s *stubExpRepo) SearchByVector(context.Context, []float64, string, int) ([
 func (s *stubExpRepo) SearchByKeyword(context.Context, string, string, int) ([]*models.Experience, error) {
 	panic("not used")
 }
-func (s *stubExpRepo) IncrementUsageCount(context.Context, string) error { panic("not used") }
-func (s *stubExpRepo) DecrementRank(context.Context, string) error       { panic("not used") }
+func (s *stubExpRepo) IncrementUsageCount(context.Context, string, string) error { panic("not used") }
+func (s *stubExpRepo) DecrementRank(context.Context, string, string) error       { panic("not used") }
 func (s *stubExpRepo) ListByType(context.Context, string, string, int) ([]*models.Experience, error) {
 	panic("not used")
 }

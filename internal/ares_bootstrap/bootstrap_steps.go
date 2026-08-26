@@ -19,6 +19,7 @@ import (
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	_ "github.com/lib/pq"
 	"golang.org/x/sync/errgroup"
 )
@@ -59,6 +60,19 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// They share the distillation pool (already open for the process
 			// lifetime) instead of opening a second pool — minimal wiring.
 			wireExpiryCleaners(comp, pool.GetDB(), cfg)
+			// REVIEW #13: wire the embedding queue worker + reconciler so
+			// pending embedding tasks in the queue are consumed and vectors
+			// are written back. Best-effort: if the embedding client is nil
+			// the worker is skipped. The knowledge repo is constructed here
+			// (sharing the same pool) so the worker can write vectors back
+			// to knowledge_chunks_1024; the experience repo is the same
+			// instance already created above.
+			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB())
+			var expConcreteRepo *repositories.ExperienceRepository
+			if r, ok := expRepo.(*repositories.ExperienceRepository); ok {
+				expConcreteRepo = r
+			}
+			wireEmbeddingWorker(ctx, comp, pool, client, knowRepo, expConcreteRepo)
 			// Back the knowledge runtime's VectorProvider with the same PG
 			// pool, so AKF vector search reads the same embedded corpus the
 			// distillation path writes. Best-effort: nil embedding config uses

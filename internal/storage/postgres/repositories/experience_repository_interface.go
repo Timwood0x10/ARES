@@ -8,14 +8,17 @@ import (
 )
 
 // ExperienceRepositoryInterface defines the interface for experience data access.
+// All id-scoped methods require a tenantID parameter to enforce tenant isolation
+// at the SQL layer (REVIEW #36).
 type ExperienceRepositoryInterface interface {
 	// Create inserts a new experience into the database.
 	Create(ctx context.Context, exp *storage_models.Experience) error
 
-	// GetByID retrieves an experience by ID.
-	GetByID(ctx context.Context, id string) (*storage_models.Experience, error)
+	// GetByID retrieves an experience by ID within the given tenant.
+	GetByID(ctx context.Context, tenantID, id string) (*storage_models.Experience, error)
 
-	// Update updates an existing experience.
+	// Update updates an existing experience. The experience must carry a
+	// non-empty TenantID; the SQL predicate includes tenant_id.
 	Update(ctx context.Context, exp *storage_models.Experience) error
 
 	// Delete removes an experience by its ID.
@@ -27,12 +30,13 @@ type ExperienceRepositoryInterface interface {
 	// SearchByKeyword performs keyword-based search for experiences.
 	SearchByKeyword(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.Experience, error)
 
-	// IncrementUsageCount increments the usage count of an experience.
-	IncrementUsageCount(ctx context.Context, id string) error
+	// IncrementUsageCount increments the usage count of an experience
+	// within the given tenant.
+	IncrementUsageCount(ctx context.Context, tenantID, id string) error
 
 	// DecrementRank decreases the score of an experience as negative feedback.
 	// This is used when an experience leads to a failed task.
-	DecrementRank(ctx context.Context, id string) error
+	DecrementRank(ctx context.Context, tenantID, id string) error
 
 	// ListByType retrieves experiences by type.
 	ListByType(ctx context.Context, expType, tenantID string, limit int) ([]*storage_models.Experience, error)

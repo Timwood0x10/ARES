@@ -23,7 +23,7 @@ func (m *mockRepoFR) Create(_ context.Context, _ *storageModels.Experience) erro
 	return nil
 }
 
-func (m *mockRepoFR) GetByID(_ context.Context, _ string) (*storageModels.Experience, error) {
+func (m *mockRepoFR) GetByID(_ context.Context, _, _ string) (*storageModels.Experience, error) {
 	return nil, errors.New("not found")
 }
 
@@ -43,7 +43,7 @@ func (m *mockRepoFR) SearchByKeyword(_ context.Context, _, _ string, _ int) ([]*
 	return nil, nil
 }
 
-func (m *mockRepoFR) IncrementUsageCount(_ context.Context, id string) error {
+func (m *mockRepoFR) IncrementUsageCount(_ context.Context, _ string, id string) error {
 	m.incrementCalls = append(m.incrementCalls, id)
 	if m.err != nil {
 		return m.err
@@ -51,7 +51,7 @@ func (m *mockRepoFR) IncrementUsageCount(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *mockRepoFR) DecrementRank(_ context.Context, id string) error {
+func (m *mockRepoFR) DecrementRank(_ context.Context, _ string, id string) error {
 	m.decrementCalls = append(m.decrementCalls, id)
 	if m.err != nil {
 		return m.err

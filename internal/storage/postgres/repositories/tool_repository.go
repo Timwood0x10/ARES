@@ -161,21 +161,24 @@ func (r *ToolRepository) Create(ctx context.Context, tool *storage_models.Tool) 
 // ctx - database operation context.
 // id - tool ID, must be non-empty.
 // Returns tool or error if not found or invalid argument.
-func (r *ToolRepository) GetByID(ctx context.Context, id string) (*storage_models.Tool, error) {
+func (r *ToolRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.Tool, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
 	}
 
 	query := `
 		SELECT id, tenant_id, name, description, embedding_model, embedding_version,
 			   agent_type, tags, usage_count, success_rate, last_used_at, metadata::text, created_at
 		FROM tools
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	tool := &storage_models.Tool{}
 	var metadataStr string
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&tool.ID, &tool.TenantID, &tool.Name, &tool.Description,
 		&tool.EmbeddingModel, &tool.EmbeddingVersion,
 		&tool.AgentType, &tool.Tags, &tool.UsageCount, &tool.SuccessRate,
@@ -245,6 +248,9 @@ func (r *ToolRepository) GetByName(ctx context.Context, name, tenantID string) (
 // tool - tool with updated values.
 // Returns error if update operation fails.
 func (r *ToolRepository) Update(ctx context.Context, tool *storage_models.Tool) error {
+	if tool.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert metadata to JSON for database storage
 	metadataJSON, err := json.Marshal(tool.Metadata)
 	if err != nil {
@@ -258,13 +264,13 @@ func (r *ToolRepository) Update(ctx context.Context, tool *storage_models.Tool) 
 		UPDATE tools
 		SET name = $2, description = $3, embedding = $4::vector, embedding_model = $5,
 			embedding_version = $6, agent_type = $7, tags = $8, metadata = $9
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $10
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		tool.ID, tool.Name, tool.Description, embeddingStr,
 		tool.EmbeddingModel, tool.EmbeddingVersion, tool.AgentType,
-		tool.Tags, metadataJSON,
+		tool.Tags, metadataJSON, tool.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update tool")
@@ -535,7 +541,10 @@ func (r *ToolRepository) ListByAgentType(ctx context.Context, agentType, tenantI
 // id - tool identifier.
 // success - whether the tool execution was successful.
 // Returns error if update operation fails.
-func (r *ToolRepository) UpdateUsage(ctx context.Context, id string, success bool) error {
+func (r *ToolRepository) UpdateUsage(ctx context.Context, tenantID, id string, success bool) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE tools
 		SET usage_count = usage_count + 1,
@@ -544,10 +553,10 @@ func (r *ToolRepository) UpdateUsage(ctx context.Context, id string, success boo
 				ELSE success_rate * 0.9 + 0.0 * 0.1
 			END,
 			last_used_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $3
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, success)
+	result, err := r.db.ExecContext(ctx, query, id, success, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update tool usage")
 	}
@@ -572,15 +581,18 @@ func (r *ToolRepository) UpdateUsage(ctx context.Context, id string, success boo
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *ToolRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *ToolRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	embeddingStr := postgres.FormatVector(embedding)
 	query := `
 		UPDATE tools
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}

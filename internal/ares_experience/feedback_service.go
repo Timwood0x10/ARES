@@ -43,12 +43,12 @@ func NewFeedbackService(experienceRepo repositories.ExperienceRepositoryInterfac
 // Returns:
 //
 //	error - nil on success, or error if the update fails.
-func (s *FeedbackService) RecordSuccess(ctx context.Context, experienceID string) error {
+func (s *FeedbackService) RecordSuccess(ctx context.Context, tenantID, experienceID string) error {
 	if experienceID == "" {
 		return nil
 	}
 
-	if err := s.experienceRepo.IncrementUsageCount(ctx, experienceID); err != nil {
+	if err := s.experienceRepo.IncrementUsageCount(ctx, tenantID, experienceID); err != nil {
 		s.logger.Error("Failed to increment usage count",
 			"experience_id", experienceID,
 			"error", err,
@@ -74,12 +74,12 @@ func (s *FeedbackService) RecordSuccess(ctx context.Context, experienceID string
 // Returns:
 //
 //	error - nil on success, or error if the update fails.
-func (s *FeedbackService) RecordFailure(ctx context.Context, experienceID string) error {
+func (s *FeedbackService) RecordFailure(ctx context.Context, tenantID, experienceID string) error {
 	if experienceID == "" {
 		return nil
 	}
 
-	if err := s.experienceRepo.DecrementRank(ctx, experienceID); err != nil {
+	if err := s.experienceRepo.DecrementRank(ctx, tenantID, experienceID); err != nil {
 		s.logger.Error("Failed to decrement rank",
 			"experience_id", experienceID,
 			"error", err,
@@ -106,13 +106,13 @@ func (s *FeedbackService) RecordFailure(ctx context.Context, experienceID string
 // Returns:
 //
 //	error - nil on success, or error if the update fails.
-func (s *FeedbackService) RecordFeedback(ctx context.Context, experienceID string, success bool) error {
+func (s *FeedbackService) RecordFeedback(ctx context.Context, tenantID, experienceID string, success bool) error {
 	if experienceID == "" {
 		return nil
 	}
 
 	if success {
-		return s.RecordSuccess(ctx, experienceID)
+		return s.RecordSuccess(ctx, tenantID, experienceID)
 	}
-	return s.RecordFailure(ctx, experienceID)
+	return s.RecordFailure(ctx, tenantID, experienceID)
 }

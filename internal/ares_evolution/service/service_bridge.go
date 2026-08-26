@@ -27,8 +27,28 @@ func (b *apiGuidanceBridge) HintsForTask(ctx context.Context, taskType string, l
 	return out, nil
 }
 
+// RecordStrategyOutcome forwards the strategy outcome to the API-layer
+// GuidanceProvider. Previously this was a no-op, silently discarding every
+// strategy outcome and breaking the experience learning feedback loop
+// (outcome → future mutation bias). The provider is responsible for
+// persisting the outcome; if no provider is wired the call is a safe no-op
+// (REVIEW #52).
 func (b *apiGuidanceBridge) RecordStrategyOutcome(ctx context.Context, outcome evolution.StrategyOutcome) error {
-	return nil
+	if b == nil || b.provider == nil {
+		return nil
+	}
+	apiOutcome := StrategyOutcome{
+		StrategyID:    outcome.StrategyID,
+		TaskType:      outcome.TaskType,
+		Success:       outcome.Success,
+		Score:         outcome.Score,
+		Cost:          outcome.Cost,
+		LatencyMs:     outcome.LatencyMs,
+		MutationType:  outcome.MutationType,
+		ExperienceIDs: outcome.ExperienceIDs,
+		Timestamp:     outcome.Timestamp,
+	}
+	return b.provider.RecordStrategyOutcome(ctx, apiOutcome)
 }
 
 type apiMemoryBridge struct {
@@ -109,4 +129,28 @@ func cloneDimensionScores(src map[string]float64) map[string]float64 {
 	return dst
 }
 
-func toAPILineage(l interface{}) StrategyLineage { return StrategyLineage{} }
+// toAPILineage converts an internal evolution.StrategyLineage into the
+// service-layer StrategyLineage type. The internal type uses ScoreImprovement
+// while the API type uses ScoreDelta; both represent the same concept (child
+// score minus parent score). Previously this was a stub returning an empty
+// struct, causing the Lineages() API to return N zero-value records (REVIEW #51).
+func toAPILineage(l interface{}) StrategyLineage {
+	if l == nil {
+		return StrategyLineage{}
+	}
+	internal, ok := l.(evolution.StrategyLineage)
+	if !ok {
+		return StrategyLineage{}
+	}
+	return StrategyLineage{
+		ParentID:               internal.ParentID,
+		ChildID:                internal.ChildID,
+		MutationType:           internal.MutationType,
+		WinRate:                internal.WinRate,
+		ScoreDelta:             internal.ScoreImprovement,
+		ParentScore:            internal.ParentScore,
+		ChildScore:             internal.ChildScore,
+		ImprovementSignificant: internal.ImprovementSignificant,
+		Timestamp:              internal.Timestamp,
+	}
+}

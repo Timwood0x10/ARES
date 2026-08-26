@@ -142,23 +142,26 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 // ctx - database operation context.
 // id - task result ID, must be non-empty.
 // Returns task result or error if not found or invalid argument.
-func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage_models.TaskResult, error) {
+func (r *TaskResultRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.TaskResult, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
 	}
 
 	query := `
 		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	result := &storage_models.TaskResult{}
 	var inputJSON, outputJSON []byte
 	var metadataStr string
 
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
 		&result.AgentID, &inputJSON, &outputJSON,
 		&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
@@ -200,6 +203,9 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 // result - task result with updated values.
 // Returns error if update operation fails.
 func (r *TaskResultRepository) Update(ctx context.Context, result *storage_models.TaskResult) error {
+	if result.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	inputJSON, err := json.Marshal(result.Input)
 	if err != nil {
 		return errors.Wrap(err, "marshal input")
@@ -227,13 +233,13 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 		SET task_type = $2, agent_id = $3, input = $4, output = $5, embedding = $6::vector,
 			embedding_model = $7, embedding_version = $8, status = $9, error = $10,
 			latency_ms = $11, metadata = $12
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $13
 	`
 
 	resultSQL, err := r.db.ExecContext(ctx, query,
 		result.ID, result.TaskType, result.AgentID, inputJSON, outputJSON,
 		embeddingStr, result.EmbeddingModel, result.EmbeddingVersion,
-		result.Status, result.Error, result.LatencyMs, metadataJSON,
+		result.Status, result.Error, result.LatencyMs, metadataJSON, result.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update task result")
@@ -543,17 +549,20 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE ` + storage_models.TaskResultsTable + `
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}
@@ -578,14 +587,17 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, e
 // errorMsg - error message if status is failed.
 // latencyMs - execution latency in milliseconds.
 // Returns error if update operation fails.
-func (r *TaskResultRepository) UpdateStatus(ctx context.Context, id, status, errorMsg string, latencyMs int) error {
+func (r *TaskResultRepository) UpdateStatus(ctx context.Context, tenantID, id, status, errorMsg string, latencyMs int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE ` + storage_models.TaskResultsTable + `
 		SET status = $2, error = $3, latency_ms = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg, latencyMs)
+	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg, latencyMs, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update status")
 	}

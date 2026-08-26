@@ -80,12 +80,18 @@ func (b *ToolExecutionBridge) Execute(
 			result, err := tool.Execute(ctx, params)
 			latency := time.Since(start)
 
-			// Save execution evidence.
+			// Save execution evidence. The direct path must populate CapabilityName
+			// so the evidence scorer (keyed by ToolName:CapabilityName) can match
+			// it with planner-based path evidence. Without this, the most common
+			// execution path (LLM directly naming a known tool) produces evidence
+			// that the scorer never consumes (REVIEW #15a).
+			capName := primaryCapabilityName(tool)
 			if saveErr := b.evidence.Save(ctx, &ToolEvidence{
-				ToolName:  toolName,
-				Success:   err == nil && result.Success,
-				Latency:   latency,
-				Timestamp: time.Now(),
+				ToolName:       toolName,
+				CapabilityName: capName,
+				Success:        err == nil && result.Success,
+				Latency:        latency,
+				Timestamp:      time.Now(),
 			}); saveErr != nil {
 				log.Warn("tool_bridge: failed to save evidence",
 					"tool", toolName,
@@ -302,6 +308,18 @@ func (b *ToolExecutionBridge) executeMultiStep(
 	}
 
 	return lastResult, nil
+}
+
+// primaryCapabilityName extracts the first capability name from a tool's
+// Capabilities() list. Returns an empty string when the tool has no
+// capabilities, preserving backward compatibility with tools that do not
+// declare capabilities.
+func primaryCapabilityName(tool core.Tool) string {
+	caps := tool.Capabilities()
+	if len(caps) == 0 {
+		return ""
+	}
+	return string(caps[0])
 }
 
 // executeStep runs a single step with the given parameters and saves evidence.

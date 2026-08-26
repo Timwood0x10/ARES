@@ -77,6 +77,9 @@ type StrategyOutcome struct {
 	// ExperienceIDs are the IDs of experiences that influenced this strategy.
 	ExperienceIDs []string
 
+	// TenantID is the tenant scope for this outcome.
+	TenantID string
+
 	// Timestamp is when this outcome was recorded.
 	Timestamp time.Time
 }

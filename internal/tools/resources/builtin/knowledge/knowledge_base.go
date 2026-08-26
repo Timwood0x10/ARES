@@ -232,6 +232,9 @@ func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interfa
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("failed to get existing item: %v", err)), nil
 	}
+	if existing == nil {
+		return core.NewErrorResult("knowledge item not found"), nil
+	}
 
 	// Update fields
 	existing.Content = content
@@ -242,10 +245,10 @@ func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interfa
 		existing.Category = category
 	}
 	if tags, ok := params["tags"].([]interface{}); ok {
-		tagStrings := make([]string, len(tags))
-		for i, tag := range tags {
-			if s, ok := tag.(string); ok {
-				tagStrings[i] = s
+		tagStrings := make([]string, 0, len(tags))
+		for _, tag := range tags {
+			if s, ok := tag.(string); ok && s != "" {
+				tagStrings = append(tagStrings, s)
 			}
 		}
 		existing.Tags = tagStrings
@@ -345,10 +348,10 @@ func (t *KnowledgeAdd) Execute(ctx context.Context, params map[string]interface{
 		item.Category = category
 	}
 	if tags, ok := params["tags"].([]interface{}); ok {
-		tagStrings := make([]string, len(tags))
-		for i, tag := range tags {
-			if s, ok := tag.(string); ok {
-				tagStrings[i] = s
+		tagStrings := make([]string, 0, len(tags))
+		for _, tag := range tags {
+			if s, ok := tag.(string); ok && s != "" {
+				tagStrings = append(tagStrings, s)
 			}
 		}
 		item.Tags = tagStrings

@@ -124,7 +124,7 @@ func (m *ProductionMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, 
 	}
 
 	// Get existing task
-	task, err := m.taskResultRepository.GetByID(ctx, taskID)
+	task, err := m.taskResultRepository.GetByID(ctx, tenantID, taskID)
 	if err != nil {
 		return errors.Wrap(err, "get task result")
 	}
@@ -156,7 +156,7 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 	}
 
 	// Get task result
-	taskResult, err := m.taskResultRepository.GetByID(ctx, taskID)
+	taskResult, err := m.taskResultRepository.GetByID(ctx, tenantID, taskID)
 	if err != nil {
 		return nil, errors.Wrap(err, "get task result")
 	}

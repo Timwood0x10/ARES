@@ -605,7 +605,19 @@ func (p *Population) handleStagnationLocked() {
 				perturbation := f * (0.2 + p.rng.Float64()*1.6)
 				clone.Params[k] = perturbation
 			} else if iVal, ok := v.(int); ok {
-				delta := p.rng.Intn(max(iVal, 1)+iVal) - iVal/2
+				// Safe perturbation for int params: use a symmetric delta
+				// range around iVal. The previous form rng.Intn(max(iVal,1)+iVal)
+				// panics when iVal <= -1 because the argument becomes <= 0.
+				// Use abs(iVal) as the base so the argument is always positive,
+				// then shift the result to center around iVal (REVIEW #57).
+				base := iVal
+				if base < 0 {
+					base = -base
+				}
+				if base == 0 {
+					base = 1 // ensure non-zero argument for Intn
+				}
+				delta := p.rng.Intn(base*2+1) - base
 				clone.Params[k] = iVal + delta
 			}
 		}

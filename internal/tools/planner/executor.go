@@ -120,6 +120,13 @@ func fallbackToolsFor(capability string) []string {
 	}
 }
 
+// maxEvidenceRecords caps the in-memory evidence store to prevent
+// unbounded growth during long-running serve sessions (REVIEW #15b).
+// When the cap is reached, the oldest records are evicted (ring-buffer
+// semantics). The default is generous enough for scoring relevance
+// (Query uses limit 50/100) while bounding memory.
+const maxEvidenceRecords = 5000
+
 // memoryEvidenceStore implements EvidenceStore with in-memory storage.
 type memoryEvidenceStore struct {
 	mu       sync.RWMutex
@@ -133,7 +140,9 @@ func NewMemoryEvidenceStore() EvidenceStore {
 	}
 }
 
-// Save records a tool execution result.
+// Save records a tool execution result. When the store reaches
+// maxEvidenceRecords, the oldest entries are evicted to bound memory
+// usage (REVIEW #15b).
 func (s *memoryEvidenceStore) Save(_ context.Context, evidence *ToolEvidence) error {
 	if evidence == nil {
 		return fmt.Errorf("planner: evidence is nil")
@@ -141,6 +150,13 @@ func (s *memoryEvidenceStore) Save(_ context.Context, evidence *ToolEvidence) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evidence = append(s.evidence, *evidence)
+	// Evict oldest records when over the cap. Rather than shifting the
+	// entire slice on every insert (O(n)), only trim when exceeding by
+	// a batch threshold to amortize the copy cost.
+	if len(s.evidence) > maxEvidenceRecords {
+		trim := len(s.evidence) - maxEvidenceRecords
+		s.evidence = s.evidence[trim:]
+	}
 	return nil
 }
 

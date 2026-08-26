@@ -29,8 +29,12 @@ func NewCorrectKnowledge(repo repositories.KnowledgeRepositoryInterface) *Correc
 				Type:        "string",
 				Description: "Corrected content",
 			},
+			"tenant_id": {
+				Type:        "string",
+				Description: "Tenant identifier for isolation",
+			},
 		},
-		Required: []string{"chunk_id", "corrected_content"},
+		Required: []string{"chunk_id", "corrected_content", "tenant_id"},
 	}
 
 	ck := &CorrectKnowledge{
@@ -52,13 +56,18 @@ func (t *CorrectKnowledge) Execute(ctx context.Context, params map[string]interf
 		return core.NewErrorResult("chunk_id is required"), nil
 	}
 
+	tenantID, ok := params["tenant_id"].(string)
+	if !ok || tenantID == "" {
+		return core.NewErrorResult("tenant_id is required"), nil
+	}
+
 	correctedContent, ok := params["corrected_content"].(string)
 	if !ok || correctedContent == "" {
 		return core.NewErrorResult("corrected_content is required"), nil
 	}
 
 	// Get existing chunk
-	chunk, err := t.repo.GetByID(ctx, chunkID)
+	chunk, err := t.repo.GetByID(ctx, tenantID, chunkID)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("failed to get chunk: %v", err)), nil
 	}
