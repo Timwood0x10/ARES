@@ -36,7 +36,7 @@ func newFeedbackLoopComponents(t *testing.T) (*Components, context.CancelFunc) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
-		Memory:    ares_config.MemoryConfig{Enabled: true},
+		Memory:    ares_config.MemoryConfig{Enabled: boolPtr(true)},
 		Evolution: ares_config.EvolutionConfig{Enabled: true},
 	}
 	ctx, cancel := context.WithCancel(context.Background())

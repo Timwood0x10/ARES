@@ -24,6 +24,7 @@
 //	ARES version                       Show version
 //	ARES doctor                        Diagnose environment
 //	ARES status                        Show runtime status at a glance
+//	ARES dashboard                     Open the runtime introspection panel
 //	ARES init                          Scaffold new project
 //	ARES run                           Run agent from config file
 //	ARES bench                         Run benchmark

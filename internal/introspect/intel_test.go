@@ -1,6 +1,7 @@
 package introspect
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -202,5 +203,47 @@ func TestEngine_HealthWindowPrune(t *testing.T) {
 	// Stale events pruned → error rate ~0 → healthy again.
 	if h := e.Health("p1"); h.ErrorRate != 0 {
 		t.Fatalf("stale errors must be pruned, error rate %v", h.ErrorRate)
+	}
+}
+
+// TestEngine_BoundedGrowth locks the migration-regression fixes (#intel): the
+// anomalies ring, per-agent event slices, and the agent map must all stay
+// bounded under sustained churn.
+func TestEngine_BoundedGrowth(t *testing.T) {
+	e := NewEngine(&EngineConfig{
+		HealthWindow:      time.Hour, // wide window so time-trim never fires
+		MaxRestartsPerMin: 1,
+		MaxErrorRate:      0.001, // trivially exceeded → anomalies fire
+		LatencyThreshold:  1,
+		AnomalyCooldown:   0, // every error can re-fire an anomaly
+		InsightCooldown:   time.Minute,
+	})
+
+	// One agent, thousands of errors: errors slice must cap, anomalies ring
+	// must cap.
+	for i := 0; i < maxEventSamplesPerAgent+500; i++ {
+		e.ObserveAgentEvent("busy", "op", 0, true)
+	}
+	e.mu.RLock()
+	st := e.agents["busy"]
+	nErr := len(st.errors)
+	nAnom := len(e.anomalies)
+	e.mu.RUnlock()
+	if nErr > maxEventSamplesPerAgent {
+		t.Errorf("errors slice unbounded: %d > %d", nErr, maxEventSamplesPerAgent)
+	}
+	if nAnom > maxAnomalies {
+		t.Errorf("anomalies ring unbounded: %d > %d", nAnom, maxAnomalies)
+	}
+
+	// Many distinct stream IDs: the agent map must cap.
+	for i := 0; i < maxTrackedAgents+300; i++ {
+		e.ObserveAgentEvent(fmt.Sprintf("stream-%d", i), "tick", 0, false)
+	}
+	e.mu.RLock()
+	nAgents := len(e.agents)
+	e.mu.RUnlock()
+	if nAgents > maxTrackedAgents {
+		t.Errorf("agent map unbounded: %d > %d", nAgents, maxTrackedAgents)
 	}
 }

@@ -105,7 +105,6 @@ func TestSearchKnowledgeVector_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - user will start embedding service when needed
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		kbRepo,
 		nil, /* expRepo */
@@ -205,7 +204,6 @@ func TestBm25SearchKnowledge_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - not needed for BM25 search
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		kbRepo,
 		nil, /* expRepo */
@@ -285,7 +283,6 @@ func TestMergeAndRank_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - not needed for merge and rank test
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		kbRepo,
 		nil, /* expRepo */
@@ -381,7 +378,6 @@ func TestGetEmbedding_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - will be nil, getEmbedding will return nil
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		nil, // kbRepo not needed for this test
 		nil, // expRepo
@@ -416,7 +412,6 @@ func TestFilterByScore_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - not needed for score filtering test
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		nil, // kbRepo
 		nil, // expRepo
@@ -465,7 +460,6 @@ func TestCalculateTimeDecay_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - not needed for time decay test
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		nil, // kbRepo
 		nil, // expRepo
@@ -507,7 +501,6 @@ func TestCountResultsBySource_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - not needed for count results test
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		nil, // kbRepo
 		nil, // expRepo
@@ -553,7 +546,6 @@ func TestValidateRequest_Integration(t *testing.T) {
 		pool,
 		nil, // embeddingClient - not needed for validation test
 		nil, // llmClient
-		&postgres.TenantGuard{},
 		&postgres.RetrievalGuard{},
 		nil, // kbRepo
 		nil, // expRepo

@@ -238,7 +238,7 @@ func TestKnowledgeRepository_GetByID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve by ID
-	retrieved, err := repo.GetByID(ctx, chunk.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", chunk.ID)
 	require.NoError(t, err)
 	assert.Equal(t, chunk.ID, retrieved.ID)
 	assert.Equal(t, chunk.TenantID, retrieved.TenantID)
@@ -259,7 +259,7 @@ func TestKnowledgeRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewKnowledgeRepository(db, db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := repo.GetByID(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000")
 	assert.Error(t, err)
 }
 
@@ -303,7 +303,7 @@ func TestKnowledgeRepository_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, chunk.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", chunk.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "updated content", retrieved.Content)
 	assert.Equal(t, storage_models.EmbeddingStatusCompleted, retrieved.EmbeddingStatus)
@@ -347,7 +347,7 @@ func TestKnowledgeRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify deletion
-	_, err = repo.GetByID(ctx, id)
+	_, err = repo.GetByID(ctx, "tenant-1", id)
 	assert.Error(t, err)
 }
 
@@ -524,7 +524,7 @@ func TestKnowledgeRepository_Create_WithComplexMetadata(t *testing.T) {
 	assert.NotEmpty(t, chunk.ID)
 
 	// Retrieve and verify metadata
-	retrieved, err := repo.GetByID(ctx, chunk.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", chunk.ID)
 	require.NoError(t, err)
 	assert.NotNil(t, retrieved.Metadata)
 }
@@ -884,20 +884,20 @@ func TestKnowledgeRepository_UpdateEmbeddingStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update status to completed
-	err = repo.UpdateEmbeddingStatus(ctx, chunk.ID, string(storage_models.EmbeddingStatusCompleted), "")
+	err = repo.UpdateEmbeddingStatus(ctx, "tenant-1", chunk.ID, string(storage_models.EmbeddingStatusCompleted), "")
 	require.NoError(t, err)
 
 	// Verify the update
-	updatedChunk, err := repo.GetByID(ctx, chunk.ID)
+	updatedChunk, err := repo.GetByID(ctx, "tenant-1", chunk.ID)
 	require.NoError(t, err)
 	assert.Equal(t, storage_models.EmbeddingStatusCompleted, updatedChunk.EmbeddingStatus, "Status should be completed")
 
 	// Update status to failed with error message
-	err = repo.UpdateEmbeddingStatus(ctx, chunk.ID, string(storage_models.EmbeddingStatusFailed), "embedding service error")
+	err = repo.UpdateEmbeddingStatus(ctx, "tenant-1", chunk.ID, string(storage_models.EmbeddingStatusFailed), "embedding service error")
 	require.NoError(t, err)
 
 	// Verify the failure update
-	failedChunk, err := repo.GetByID(ctx, chunk.ID)
+	failedChunk, err := repo.GetByID(ctx, "tenant-1", chunk.ID)
 	require.NoError(t, err)
 	assert.Equal(t, storage_models.EmbeddingStatusFailed, failedChunk.EmbeddingStatus, "Status should be failed")
 }
@@ -916,7 +916,7 @@ func TestKnowledgeRepository_UpdateEmbeddingStatus_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Try to update non-existent chunk (use valid UUID format)
-	err := repo.UpdateEmbeddingStatus(ctx, "550e8400-e29b-41d4-a716-446655440998", string(storage_models.EmbeddingStatusCompleted), "")
+	err := repo.UpdateEmbeddingStatus(ctx, "tenant-1", "550e8400-e29b-41d4-a716-446655440998", string(storage_models.EmbeddingStatusCompleted), "")
 	assert.Error(t, err)
 }
 
@@ -973,11 +973,11 @@ func TestKnowledgeRepository_CleanupExpired(t *testing.T) {
 	assert.GreaterOrEqual(t, deleted, int64(1), "Expected at least 1 chunk to be deleted")
 
 	// Verify old chunk is deleted
-	_, err = repo.GetByID(ctx, oldChunk.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", oldChunk.ID)
 	assert.Error(t, err, "Old chunk should be deleted")
 
 	// Verify recent chunk still exists
-	_, err = repo.GetByID(ctx, recentChunk.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", recentChunk.ID)
 	assert.NoError(t, err, "Recent chunk should still exist")
 }
 
@@ -1017,6 +1017,6 @@ func TestKnowledgeRepository_CleanupExpired_NoChunks(t *testing.T) {
 	assert.Equal(t, int64(0), deleted, "Expected no chunks to be deleted")
 
 	// Verify chunk still exists
-	_, err = repo.GetByID(ctx, chunk.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", chunk.ID)
 	assert.NoError(t, err, "Chunk should still exist")
 }

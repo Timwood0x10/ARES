@@ -143,7 +143,7 @@ func TestToolRepository_GetByID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve by ID
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, tool.ID, retrieved.ID)
 	assert.Equal(t, tool.TenantID, retrieved.TenantID)
@@ -170,7 +170,7 @@ func TestToolRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewToolRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := repo.GetByID(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -188,7 +188,7 @@ func TestToolRepository_GetByID_InvalidID(t *testing.T) {
 	repo := NewToolRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "")
+	_, err := repo.GetByID(ctx, "tenant-1", "")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrInvalidArgument, err)
 }
@@ -315,7 +315,7 @@ func TestToolRepository_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the update
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "Updated description", retrieved.Description)
 	assert.Equal(t, "updated-agent", retrieved.AgentType)
@@ -380,7 +380,7 @@ func TestToolRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's deleted
-	_, err = repo.GetByID(ctx, tool.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", tool.ID)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -870,11 +870,11 @@ func TestToolRepository_UpdateUsage_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update usage with success
-	err = repo.UpdateUsage(ctx, tool.ID, true)
+	err = repo.UpdateUsage(ctx, "tenant-1", tool.ID, true)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, retrieved.UsageCount)
 	assert.Greater(t, retrieved.SuccessRate, 0.0)
@@ -910,11 +910,11 @@ func TestToolRepository_UpdateUsage_Failure(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update usage with failure
-	err = repo.UpdateUsage(ctx, tool.ID, false)
+	err = repo.UpdateUsage(ctx, "tenant-1", tool.ID, false)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, retrieved.UsageCount)
 	assert.Less(t, retrieved.SuccessRate, 1.0)
@@ -933,7 +933,7 @@ func TestToolRepository_UpdateUsage_NotFound(t *testing.T) {
 	repo := NewToolRepository(db)
 	ctx := context.Background()
 
-	err := repo.UpdateUsage(ctx, "00000000-0000-0000-0000-000000000000", true)
+	err := repo.UpdateUsage(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000", true)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -969,12 +969,12 @@ func TestToolRepository_UpdateUsage_MultipleUpdates(t *testing.T) {
 	// Update usage multiple times
 	for i := 0; i < 5; i++ {
 		success := i < 4 // 4 successes, 1 failure
-		err = repo.UpdateUsage(ctx, tool.ID, success)
+		err = repo.UpdateUsage(ctx, "tenant-1", tool.ID, success)
 		require.NoError(t, err)
 	}
 
 	// Verify cumulative update
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 5, retrieved.UsageCount)
 	// UpdateUsage uses moving average: 4 successes, 1 failure
@@ -1012,11 +1012,11 @@ func TestToolRepository_UpdateEmbedding(t *testing.T) {
 	// Update embedding
 	newEmbedding := createTestEmbedding()
 	newEmbedding[0] = 1.0 // Modify first element
-	err = repo.UpdateEmbedding(ctx, tool.ID, newEmbedding, "e5-large-v2", 2)
+	err = repo.UpdateEmbedding(ctx, "tenant-1", tool.ID, newEmbedding, "e5-large-v2", 2)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, newEmbedding[0], retrieved.Embedding[0])
 	assert.Equal(t, "e5-large-v2", retrieved.EmbeddingModel)
@@ -1037,7 +1037,7 @@ func TestToolRepository_UpdateEmbedding_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	newEmbedding := createTestEmbedding()
-	err := repo.UpdateEmbedding(ctx, "00000000-0000-0000-0000-000000000000", newEmbedding, "e5-large", 1)
+	err := repo.UpdateEmbedding(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000", newEmbedding, "e5-large", 1)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -1212,7 +1212,7 @@ func TestToolRepository_MetadataHandling(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve and verify metadata
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(2), retrieved.Metadata["version"])
 	assert.True(t, retrieved.Metadata["enabled"].(bool))
@@ -1252,7 +1252,7 @@ func TestToolRepository_EmbeddingHandling(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve and verify embedding
-	retrieved, err := repo.GetByID(ctx, tool.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 	require.NoError(t, err)
 	assert.Len(t, retrieved.Embedding, 1024)
 	for i := 0; i < 1024; i++ {
@@ -1294,7 +1294,7 @@ func TestToolRepository_ConcurrentOperations(t *testing.T) {
 	// Concurrent reads
 	for i := 0; i < 3; i++ {
 		go func() {
-			_, err := repo.GetByID(ctx, tool.ID)
+			_, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 			errCh <- err
 		}()
 	}
@@ -1302,7 +1302,7 @@ func TestToolRepository_ConcurrentOperations(t *testing.T) {
 	// Concurrent usage updates
 	for i := 0; i < 3; i++ {
 		go func() {
-			err := repo.UpdateUsage(ctx, tool.ID, true)
+			err := repo.UpdateUsage(ctx, "tenant-1", tool.ID, true)
 			errCh <- err
 		}()
 	}
@@ -1413,7 +1413,7 @@ func TestToolRepository_AllTagsTypes(t *testing.T) {
 		require.NoError(t, err, "Failed to create tool: %s", tc.name)
 
 		// Retrieve and verify tags
-		retrieved, err := repo.GetByID(ctx, tool.ID)
+		retrieved, err := repo.GetByID(ctx, "tenant-1", tool.ID)
 		require.NoError(t, err, "Failed to retrieve tool: %s", tc.name)
 		assert.Equal(t, tc.expected, retrieved.Tags, "Tags mismatch for: %s", tc.name)
 	}

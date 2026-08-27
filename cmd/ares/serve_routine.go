@@ -62,7 +62,12 @@ func setupServeControlPlane(
 				select {
 				case <-ctx.Done():
 					return nil
-				case evt := <-ch:
+				case evt, ok := <-ch:
+					if !ok {
+						// Subscription closed on store shutdown: stop instead
+						// of busy-spinning on a closed channel returning nil.
+						return nil
+					}
 					introspect.FeedIntel(intelEngine, evt)
 				}
 			}

@@ -115,7 +115,7 @@ func TestTaskResultRepository_Create_WithOutput(t *testing.T) {
 	assert.NotEmpty(t, result.ID)
 
 	// Retrieve and verify output
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "success", retrieved.Output["result"])
 }
@@ -153,7 +153,7 @@ func TestTaskResultRepository_GetByID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve by ID
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, result.ID, retrieved.ID)
 	assert.Equal(t, result.TenantID, retrieved.TenantID)
@@ -181,7 +181,7 @@ func TestTaskResultRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewTaskResultRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := repo.GetByID(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -199,7 +199,7 @@ func TestTaskResultRepository_GetByID_InvalidID(t *testing.T) {
 	repo := NewTaskResultRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "")
+	_, err := repo.GetByID(ctx, "tenant-1", "")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrInvalidArgument, err)
 }
@@ -246,7 +246,7 @@ func TestTaskResultRepository_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the update
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "new", retrieved.Output["result"])
 	assert.Equal(t, "completed", retrieved.Status)
@@ -316,7 +316,7 @@ func TestTaskResultRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's deleted
-	_, err = repo.GetByID(ctx, result.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", result.ID)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -763,11 +763,11 @@ func TestTaskResultRepository_UpdateEmbedding(t *testing.T) {
 	// Update embedding
 	newEmbedding := createTestEmbedding()
 	newEmbedding[0] = 1.0 // Modify first element
-	err = repo.UpdateEmbedding(ctx, result.ID, newEmbedding, "e5-large-v2", 2)
+	err = repo.UpdateEmbedding(ctx, "tenant-1", result.ID, newEmbedding, "e5-large-v2", 2)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, newEmbedding[0], retrieved.Embedding[0])
 	assert.Equal(t, "e5-large-v2", retrieved.EmbeddingModel)
@@ -788,7 +788,7 @@ func TestTaskResultRepository_UpdateEmbedding_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	newEmbedding := createTestEmbedding()
-	err := repo.UpdateEmbedding(ctx, "00000000-0000-0000-0000-000000000000", newEmbedding, "e5-large", 1)
+	err := repo.UpdateEmbedding(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000", newEmbedding, "e5-large", 1)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -821,11 +821,11 @@ func TestTaskResultRepository_UpdateStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update status
-	err = repo.UpdateStatus(ctx, result.ID, "completed", "", 200)
+	err = repo.UpdateStatus(ctx, "tenant-1", result.ID, "completed", "", 200)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "completed", retrieved.Status)
 	assert.Equal(t, 200, retrieved.LatencyMs)
@@ -859,11 +859,11 @@ func TestTaskResultRepository_UpdateStatus_WithError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update status with error
-	err = repo.UpdateStatus(ctx, result.ID, "failed", "timeout error", 0)
+	err = repo.UpdateStatus(ctx, "tenant-1", result.ID, "failed", "timeout error", 0)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "failed", retrieved.Status)
 	assert.Equal(t, "timeout error", retrieved.Error)
@@ -882,7 +882,7 @@ func TestTaskResultRepository_UpdateStatus_NotFound(t *testing.T) {
 	repo := NewTaskResultRepository(db)
 	ctx := context.Background()
 
-	err := repo.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000000", "completed", "", 0)
+	err := repo.UpdateStatus(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000", "completed", "", 0)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -1053,7 +1053,7 @@ func TestTaskResultRepository_ComplexInputOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve and verify complex structures
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "test", retrieved.Input["query"])
 	assert.Equal(t, "value1", retrieved.Input["options"].(map[string]interface{})["param1"])
@@ -1140,7 +1140,7 @@ func TestTaskResultRepository_LongMetadata(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve and verify metadata
-	retrieved, err := repo.GetByID(ctx, result.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", result.ID)
 	require.NoError(t, err)
 	assert.Len(t, retrieved.Metadata, 100)
 	assert.Equal(t, "value0", retrieved.Metadata["key0"])

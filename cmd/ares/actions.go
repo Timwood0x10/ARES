@@ -16,6 +16,7 @@ import (
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/introspect"
@@ -134,6 +135,12 @@ func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, 
 		strings.HasPrefix(path, "/api/v1/introspect/"):
 		h.intro.ServeHTTP(w, r)
 		return true
+	case path == "/metrics":
+		// Prometheus scrape endpoint (monitoring.md Phase 4: the old :8090
+		// dashboard server mounted /metrics; re-mounted here so scraping the
+		// ARES runtime survives the dashboard deletion).
+		ares_observability.MetricsHTTPHandler().ServeHTTP(w, r)
+		return true
 	case path == "/":
 		http.Redirect(w, r, "/introspect", http.StatusFound)
 		return true
@@ -166,7 +173,8 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Read-only introspection routes (panel UI + JSON feed + root redirect).
+	// Read-only introspection + metrics routes (panel UI, JSON feed, root
+	// redirect, Prometheus scrape) — all unauthenticated GET pass-throughs.
 	if h.serveIntrospect(w, r, path) {
 		return
 	}

@@ -45,7 +45,7 @@ func TestClosure_MemoryDisabled_NotConstructed(t *testing.T) {
 			BaseURL:  "http://localhost:9999",
 		},
 		Memory: ares_config.MemoryConfig{
-			Enabled: false, // Explicitly disable memory.
+			Enabled: boolPtr(false), // Explicitly disable memory (*bool: false = opt out).
 		},
 	}
 
@@ -260,7 +260,7 @@ func newClosureTestConfig() *ares_config.Config {
 			BaseURL:  "http://localhost:9999",
 		},
 		Memory: ares_config.MemoryConfig{
-			Enabled: true,
+			Enabled: boolPtr(true),
 		},
 		Evolution: ares_config.EvolutionConfig{
 			Enabled: false,
@@ -299,7 +299,7 @@ func TestClosure_MemoryEnabled_Constructed(t *testing.T) {
 	defer cancel()
 
 	cfg := newClosureTestConfig()
-	cfg.Memory.Enabled = true
+	cfg.Memory.Enabled = boolPtr(true)
 
 	comp, err := Bootstrap(ctx, cfg, nil)
 	require.NoError(t, err)

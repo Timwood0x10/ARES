@@ -51,8 +51,13 @@ func (s *Sink) Run(ctx context.Context, eventStore ares_events.EventStore) error
 		select {
 		case <-ctx.Done():
 			return nil
-		case evt := <-ch:
-			if entry, ok := MapTimelineEvent(evt); ok {
+		case evt, ok := <-ch:
+			if !ok {
+				// The event store closed the subscription (shutdown). Stop
+				// rather than busy-spin on a closed channel returning nil.
+				return nil
+			}
+			if entry, mapped := MapTimelineEvent(evt); mapped {
 				s.store.PushEvent(entry)
 			}
 		}
@@ -87,7 +92,7 @@ func MapTimelineEvent(evt *ares_events.Event) (TimelineEntry, bool) {
 		e.Kind, e.Level = kindRecovery, feedWarn
 		e.Text = "recovery started"
 	case ares_events.EventStepRecoveryFailed:
-		e.Kind, e.Level = feedDanger, feedDanger
+		e.Kind, e.Level = kindRecovery, feedDanger
 		e.Text = "recovery FAILED"
 	case ares_events.EventTaskCreated, ares_events.EventTaskReady:
 		e.Kind, e.Level = kindTask, feedInfo
@@ -108,7 +113,7 @@ func MapTimelineEvent(evt *ares_events.Event) (TimelineEntry, bool) {
 		e.Kind, e.Level = kindTask, feedOK
 		e.Text = fmt.Sprintf("%s done", idOr(e.TaskID, "task"))
 	case ares_events.EventTaskFailed:
-		e.Kind, e.Level = feedDanger, feedDanger
+		e.Kind, e.Level = kindTask, feedDanger
 		e.Text = fmt.Sprintf("%s failed", idOr(e.TaskID, "task"))
 	default:
 		return TimelineEntry{}, false

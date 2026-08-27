@@ -62,7 +62,7 @@ func TestClosure_EntryComponentGraphEquivalence_ServeVsStart(t *testing.T) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
-		Memory:    ares_config.MemoryConfig{Enabled: true},
+		Memory:    ares_config.MemoryConfig{Enabled: boolPtr(true)},
 		Evolution: ares_config.EvolutionConfig{Enabled: true},
 	}
 
@@ -108,7 +108,7 @@ func TestClosure_EntryGraph_DisabledComponentsAbsent(t *testing.T) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
-		Memory:    ares_config.MemoryConfig{Enabled: false},
+		Memory:    ares_config.MemoryConfig{Enabled: boolPtr(false)},
 		Evolution: ares_config.EvolutionConfig{Enabled: false},
 	}
 

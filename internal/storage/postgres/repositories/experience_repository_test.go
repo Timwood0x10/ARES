@@ -78,7 +78,7 @@ func TestExperienceRepository_GetByID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve by ID
-	retrieved, err := repo.GetByID(ctx, exp.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", exp.ID)
 	require.NoError(t, err)
 	assert.Equal(t, exp.ID, retrieved.ID)
 	assert.Equal(t, exp.TenantID, retrieved.TenantID)
@@ -100,7 +100,7 @@ func TestExperienceRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewExperienceRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := repo.GetByID(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000")
 	assert.Error(t, err)
 }
 
@@ -144,7 +144,7 @@ func TestExperienceRepository_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, exp.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", exp.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "updated input", retrieved.Input)
 	assert.Equal(t, "updated output", retrieved.Output)
@@ -185,7 +185,7 @@ func TestExperienceRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify deletion
-	_, err = repo.GetByID(ctx, id)
+	_, err = repo.GetByID(ctx, "tenant-1", id)
 	assert.Error(t, err)
 }
 
@@ -297,11 +297,11 @@ func TestExperienceRepository_UpdateScore(t *testing.T) {
 
 	// Update score
 	newScore := 0.9
-	err = repo.UpdateScore(ctx, exp.ID, newScore)
+	err = repo.UpdateScore(ctx, "tenant-1", exp.ID, newScore)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, exp.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", exp.ID)
 	require.NoError(t, err)
 	assert.Equal(t, newScore, retrieved.Score)
 }
@@ -380,11 +380,11 @@ func TestExperienceRepository_UpdateEmbedding(t *testing.T) {
 	}
 
 	// Update embedding
-	err = repo.UpdateEmbedding(ctx, exp.ID, newEmbedding, "e5-large", 2)
+	err = repo.UpdateEmbedding(ctx, "tenant-1", exp.ID, newEmbedding, "e5-large", 2)
 	require.NoError(t, err)
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, exp.ID)
+	retrieved, err := repo.GetByID(ctx, "tenant-1", exp.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, retrieved.EmbeddingVersion)
 	assert.Equal(t, "e5-large", retrieved.EmbeddingModel)
@@ -439,11 +439,11 @@ func TestExperienceRepository_CleanupExpired(t *testing.T) {
 	assert.Greater(t, count, int64(0))
 
 	// Verify expired experience is deleted
-	_, err = repo.GetByID(ctx, expiredExp.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", expiredExp.ID)
 	assert.Error(t, err)
 
 	// Verify valid experience still exists
-	_, err = repo.GetByID(ctx, validExp.ID)
+	_, err = repo.GetByID(ctx, "tenant-1", validExp.ID)
 	assert.NoError(t, err)
 }
 

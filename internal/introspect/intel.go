@@ -104,6 +104,23 @@ type agentState struct {
 // bound memory usage. Older samples are discarded first.
 const maxLatencySamples = 1000
 
+// Retention bounds carried over from the migration (the old dashboard engine
+// relied on an external pruner that no longer exists — these caps replace it
+// so a long-running process cannot grow unboundedly).
+const (
+	// maxEventSamplesPerAgent hard-caps restarts/errors per agent on top of
+	// the time-window trim, so a high-frequency burst within the window
+	// cannot balloon the slice to rate×window.
+	maxEventSamplesPerAgent = 1000
+	// maxAnomalies caps the retained anomaly ring; oldest are evicted first.
+	// Anomalies() still filters resolved entries from the response.
+	maxAnomalies = 500
+	// maxTrackedAgents caps the per-stream state map. When exceeded, the
+	// least-recently-active entries are pruned (bounded by stream cardinality
+	// on a busy bus: tasks, sessions and agents each get a StreamID).
+	maxTrackedAgents = 2000
+)
+
 // DefaultEngineConfig returns sensible defaults.
 func DefaultEngineConfig() *EngineConfig {
 	return &EngineConfig{
@@ -167,11 +184,11 @@ func (e *Engine) ObserveAgentEvent(agentID, eventType string, latencyMs float64,
 
 	switch {
 	case eventType == "restart" || eventType == "resurrection":
-		state.restarts = append(state.restarts, now)
+		state.restarts = capAppend(state.restarts, now)
 		e.detectRestartAnomaly(agentID, state, now)
 
 	case hasError:
-		state.errors = append(state.errors, now)
+		state.errors = capAppend(state.errors, now)
 		e.detectErrorAnomaly(agentID, state, now)
 
 	case latencyMs > 0:
@@ -182,6 +199,17 @@ func (e *Engine) ObserveAgentEvent(agentID, eventType string, latencyMs float64,
 		}
 		e.detectLatencyAnomaly(agentID, state, now)
 	}
+}
+
+// capAppend appends t and hard-caps the slice at maxEventSamplesPerAgent,
+// dropping oldest entries — a ceiling on top of the time-window trim so a
+// burst within the window cannot grow the slice without bound (#intel).
+func capAppend(times []time.Time, t time.Time) []time.Time {
+	times = append(times, t)
+	if len(times) > maxEventSamplesPerAgent {
+		times = times[len(times)-maxEventSamplesPerAgent:]
+	}
+	return times
 }
 
 // trimState prunes entries older than the health window from the restarts and
@@ -333,13 +361,36 @@ func (e *Engine) AcknowledgeInsight(id string) {
 }
 
 // ensureState returns the per-agent state, creating it on first sight.
+// When the map exceeds maxTrackedAgents, the least-recently-active entries
+// are pruned first — bounding the map by stream cardinality on a busy bus
+// (#intel: every distinct StreamID — tasks, sessions, agents — would
+// otherwise become a permanent entry).
 func (e *Engine) ensureState(agentID string) *agentState {
 	s, ok := e.agents[agentID]
 	if !ok {
+		if len(e.agents) >= maxTrackedAgents {
+			e.pruneStalestAgent()
+		}
 		s = &agentState{}
 		e.agents[agentID] = s
 	}
 	return s
+}
+
+// pruneStalestAgent removes the single least-recently-active agent state.
+// Caller holds e.mu. O(n) but only runs at the cap boundary.
+func (e *Engine) pruneStalestAgent() {
+	var oldestID string
+	var oldest time.Time
+	first := true
+	for id, s := range e.agents {
+		if first || s.lastEvent.Before(oldest) {
+			oldestID, oldest, first = id, s.lastEvent, false
+		}
+	}
+	if oldestID != "" {
+		delete(e.agents, oldestID)
+	}
 }
 
 func (e *Engine) computeHealth(s *agentState) (float64, HealthLevel) {
@@ -453,6 +504,12 @@ func (e *Engine) recentAnomaly(agentID, category string) bool {
 
 func (e *Engine) addAnomaly(a *Anomaly) {
 	e.anomalies = append(e.anomalies, a)
+	// Bound the ring (#intel migration regression: the old engine relied on
+	// an external pruner). Evict oldest first; Anomalies() still filters
+	// resolved entries from the response.
+	if len(e.anomalies) > maxAnomalies {
+		e.anomalies = e.anomalies[len(e.anomalies)-maxAnomalies:]
+	}
 }
 
 func ratePerMin(events []time.Time, window time.Duration) float64 {
