@@ -84,19 +84,19 @@ func TestPickPrefersHighPriorityTieBreak(t *testing.T) {
 // scores 0, and an unconstrained task is open.
 func TestCapabilityOverlapProportional(t *testing.T) {
 	// Partial coverage: "rust" covers half of the chain.
-	if o := capabilityOverlap("rust/unsafe-analysis", []string{"rust"}); o != 0.5 {
+	if o := CapabilityOverlap("rust/unsafe-analysis", []string{"rust"}); o != 0.5 {
 		t.Fatalf("want 0.5, got %v", o)
 	}
 	// Full coverage.
-	if o := capabilityOverlap("rust/unsafe-analysis", []string{"rust", "unsafe-analysis"}); o != 1.0 {
+	if o := CapabilityOverlap("rust/unsafe-analysis", []string{"rust", "unsafe-analysis"}); o != 1.0 {
 		t.Fatalf("want 1.0, got %v", o)
 	}
 	// No overlap.
-	if o := capabilityOverlap("rust/llvm", []string{"python"}); o != 0 {
+	if o := CapabilityOverlap("rust/llvm", []string{"python"}); o != 0 {
 		t.Fatalf("want 0, got %v", o)
 	}
 	// Unconstrained → open.
-	if o := capabilityOverlap("", []string{"anything"}); o != 1.0 {
+	if o := CapabilityOverlap("", []string{"anything"}); o != 1.0 {
 		t.Fatalf("unconstrained must be open, got %v", o)
 	}
 }

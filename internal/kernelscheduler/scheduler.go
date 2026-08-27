@@ -91,6 +91,11 @@ type Scheduler struct {
 	// explicit registry sync. Nil keeps the static executor registry only
 	// (backward compatible with tests and minimal wiring).
 	agents *agentfabric.Fabric
+	// decisions records every scheduling decision (candidate pool + scores +
+	// winner) for the Scheduling Observatory (dashboard.md §7). It is written
+	// in executeWithCandidates and read via DecisionsSnapshot — the panel
+	// explains WHY a task went to a particular agent.
+	decisions *DecisionRecorder
 }
 
 // noCandidateLogInterval throttles "no capable candidate" logs to one per
@@ -161,6 +166,7 @@ func New(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tra
 		tracker:        tracker,
 		PollInterval:   500 * time.Millisecond,
 		ttl:            5 * time.Minute,
+		decisions:      newDecisionRecorder(),
 	}
 }
 
@@ -555,6 +561,24 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		cands[i].Confidence = s.tracker.ConfidenceFor(cands[i].AgentID, tk.Capability)
 	}
 	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.ttl)
+	// Record the scheduling decision for the Observatory (dashboard.md §7):
+	// candidate breakdown + winner. Recorded even on failure (e.g. no capable
+	// candidate) so the panel explains why a task stayed unscheduled.
+	if s.decisions != nil {
+		d := ScheduleDecision{
+			TaskID:     taskID,
+			Capability: tk.Capability,
+			Candidates: scoreCandidates(tk.Capability, cands),
+			Time:       time.Now(),
+		}
+		if err == nil {
+			d.Winner = winner
+			d.Epoch = epoch
+		} else {
+			d.Err = err.Error()
+		}
+		s.decisions.Record(d)
+	}
 	if err != nil {
 		return err
 	}
@@ -907,6 +931,16 @@ type SchedulerSnapshot struct {
 	AgentFabricWired bool `json:"agentFabricWired"`
 	// Load is the per-agent load/confidence snapshot from the tracker.
 	Load LoadTrackerSnapshot `json:"load"`
+}
+
+// DecisionsSnapshot returns the recorded scheduling decisions (newest first)
+// for the Scheduling Observatory (dashboard.md §7). Purely read-only: the
+// recorder's lock is internal; no scheduling write path is touched.
+func (s *Scheduler) DecisionsSnapshot() []ScheduleDecision {
+	if s.decisions == nil {
+		return nil
+	}
+	return s.decisions.Snapshot()
 }
 
 // Snapshot returns the read-only view. It acquires only reader locks

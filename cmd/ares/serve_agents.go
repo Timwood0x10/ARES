@@ -142,6 +142,11 @@ func createAndServeAgents(
 	// the embedded UI at GET /introspect and JSON at /api/v1/introspect/*.
 	// The chaos status source (Phase 3) is a shared reporter the chaos loops
 	// update — created here so the collector and wireChaos see the same frame.
+	//
+	// SECURITY: the introspect handler is unauthenticated and its eventstream
+	// endpoint exposes raw event payloads (task inputs, checkpoints). Only
+	// expose it on localhost/an internal network or behind an authenticating
+	// reverse proxy — never bind it directly to a public address.
 	chaosStatus := introspect.NewChaosReporter()
 	if peerKernel.scheduler != nil && peerKernel.fabric != nil && peerKernel.agents != nil {
 		store := &introspect.Store{}
@@ -151,7 +156,7 @@ func createAndServeAgents(
 			Agents: peerKernel.agents.AgentsView,
 			Chaos:  chaosStatus.Snapshot,
 		})
-		peerKernel.intro = introspect.NewHandler(store)
+		peerKernel.intro = introspect.NewHandler(store).WithEventStore(comp.EventStore)
 		sink := introspect.NewSink(store)
 		comp.GoBackground(ctx, "introspect-sink", func(ctx context.Context) error {
 			return sink.Run(ctx, comp.EventStore)

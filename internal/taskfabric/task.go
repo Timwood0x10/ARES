@@ -33,6 +33,19 @@ type Task struct {
 	// (kernelctx.CallerID), never from LLM-supplied arguments, so provenance
 	// such as "B.origin = A" is auditable end-to-end (plan D1-5).
 	Origin string
+	// Quantum counts how many execution quanta (agent steps) this task has
+	// run across ALL lease holders (accumulated across yield→resume cycles,
+	// preemptions and chaos-recovery replacements). It is the "semantic step"
+	// number the observability UI shows as Quantum #N (dashboard.md §4:
+	// "Agent 正在执行第 18 个 semantic quantum"). Guarded by f.mu like every
+	// other Task field.
+	Quantum int
+	// CreatedAt is when the task entered the fabric; UpdatedAt is the last
+	// state/lease mutation (both injectable-clock aware). Used by the panel
+	// for age/recency display.
+	CreatedAt time.Time
+	// UpdatedAt is the last state transition or quantum boundary time.
+	UpdatedAt time.Time
 }
 
 // RetryPolicy bounds re-queueing after failures.

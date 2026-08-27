@@ -141,6 +141,8 @@ func (f *Fabric) Create(t *Task) error {
 	t.State = StateReady
 	t.Owner = ""
 	t.Lease = nil
+	t.CreatedAt = f.now()
+	t.UpdatedAt = t.CreatedAt
 	f.tasks[t.ID] = t
 	pending = append(pending, f.recordLocked(t, EventTaskCreated))
 	return nil
@@ -590,6 +592,12 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 		Checkpoint: t.Checkpoint,
 		At:         f.now(),
 	}
+	// Every recorded event is a task mutation (state transition, lease change
+	// or quantum boundary), so stamp UpdatedAt here to keep it the single
+	// source of "last change" the Tasks page renders — otherwise terminal
+	// transitions (Complete/Fail) would leave UpdatedAt frozen at the last
+	// quantum. Matches the event's own timestamp so the two never drift.
+	t.UpdatedAt = ev.At
 	f.events = append(f.events, ev)
 	// Cap the in-memory event log (N8: unbounded growth). Only compact when
 	// the log exceeds 2×max so the amortized cost is O(1) per append.
@@ -814,6 +822,66 @@ func (f *Fabric) LeaseSnapshot() []LeaseEntry {
 			e.Dependencies = append([]string(nil), t.Dependencies...)
 		}
 		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
+	return out
+}
+
+// TaskView is the full task row for the Tasks page (dashboard.md §5): unlike
+// LeaseEntry it includes terminal states, the accumulated quantum count, and
+// the owner across the whole lifecycle — so the UI can render the task board
+// (Ready/Running/Done) and the DAG from one source.
+type TaskView struct {
+	// TaskID is the fabric task identifier.
+	TaskID string `json:"taskID"`
+	// Capability is the required capability.
+	Capability string `json:"capability"`
+	// State is the current lifecycle state (including terminal).
+	State TaskState `json:"state"`
+	// Priority drives preemption decisions.
+	Priority int `json:"priority"`
+	// Owner is the current lease holder ("" when unowned/terminal).
+	Owner string `json:"owner"`
+	// Quantum is the total execution quanta across all holders.
+	Quantum int `json:"quantum"`
+	// HasCheckpoint reports whether durable progress exists.
+	HasCheckpoint bool `json:"hasCheckpoint"`
+	// Dependencies are the task's prerequisite IDs (copied).
+	Dependencies []string `json:"dependencies"`
+	// Origin is the creating agent id ("" = root/user-submitted).
+	Origin string `json:"origin"`
+	// CreatedAt / UpdatedAt are the lifecycle timestamps.
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// TaskSnapshot returns a point-in-time copy of EVERY task, including terminal
+// ones, ordered by TaskID. It powers the Tasks page board + DAG (dashboard.md
+// §5: "看真正的任务依赖关系"). Terminal tasks are included so the Done column
+// and the dependency closure render correctly. Purely read-only: everything
+// is copied under f.mu, no write path fires.
+func (f *Fabric) TaskSnapshot() []TaskView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]TaskView, 0, len(f.tasks))
+	for id, t := range f.tasks {
+		v := TaskView{
+			TaskID:        id,
+			Capability:    t.Capability,
+			State:         t.State,
+			Priority:      t.Priority,
+			Owner:         t.Owner,
+			Quantum:       t.Quantum,
+			HasCheckpoint: t.Checkpoint != nil,
+			Origin:        t.Origin,
+			CreatedAt:     t.CreatedAt,
+			UpdatedAt:     t.UpdatedAt,
+		}
+		if len(t.Dependencies) > 0 {
+			v.Dependencies = append([]string(nil), t.Dependencies...)
+		}
+		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
 	return out

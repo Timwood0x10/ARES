@@ -42,17 +42,45 @@ type Candidate struct {
 // bound the boost, callers clamp the priority they inject; clamping here
 // would silently distort the operator's intent.
 func Score(taskCapability string, c Candidate) float64 {
-	overlap := capabilityOverlap(taskCapability, c.Capabilities)
-	if overlap <= 0 {
-		return 0
-	}
+	return ScoreBreakdown(taskCapability, c).Score
+}
+
+// ScoreParts is the decomposed scheduling score — every factor the Score
+// formula multiplies, plus the final Score itself. It exists so observability
+// consumers (the scheduler's decision recorder) can render the exact breakdown
+// the scheduler used WITHOUT recomputing any factor: Score and its explanation
+// come from one evaluation, so they can never drift.
+type ScoreParts struct {
+	// Overlap is the capability-overlap fraction [0,1].
+	Overlap float64
+	// Load is the clamped utilization [0,1].
+	Load float64
+	// Confidence is the clamped experience prior [0,1].
+	Confidence float64
+	// PriorityBoost is (1 + priority), clamped to a 1.0 floor.
+	PriorityBoost float64
+	// Score is the final score (0 when Overlap <= 0).
+	Score float64
+}
+
+// ScoreBreakdown computes the scheduling score AND its decomposition in a
+// single pass. Score delegates to this; the decision recorder consumes it
+// directly so the panel's per-candidate breakdown is the very computation the
+// scheduler ranked on. The score is 0 whenever capability does not overlap,
+// matching Score's capability gate exactly.
+func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
+	overlap := CapabilityOverlap(taskCapability, c.Capabilities)
 	load := clamp01(c.Load)
 	conf := clamp01(c.Confidence)
 	boost := 1.0
 	if c.Priority > 0 {
 		boost = 1.0 + c.Priority
 	}
-	return overlap * (1 - load) * conf * boost
+	parts := ScoreParts{Overlap: overlap, Load: load, Confidence: conf, PriorityBoost: boost}
+	if overlap > 0 {
+		parts.Score = overlap * (1 - load) * conf * boost
+	}
+	return parts
 }
 
 // Pick returns the best candidate (highest Score) for the task, or nil when
@@ -79,7 +107,7 @@ func Pick(taskCapability string, candidates []Candidate) *Candidate {
 			best = c
 			bestScore = s
 		}
-		overlap := capabilityOverlap(taskCapability, c.Capabilities)
+		overlap := CapabilityOverlap(taskCapability, c.Capabilities)
 		if overlap <= 0 {
 			continue
 		}
@@ -106,12 +134,15 @@ func Pick(taskCapability string, candidates []Candidate) *Candidate {
 	return lastResort
 }
 
-// capabilityOverlap is the fraction of the required capability segments (a
+// CapabilityOverlap is the fraction of the required capability segments (a
 // slash-separated chain like "rust/unsafe-analysis") that the candidate's
 // declared capabilities cover. A prefix match counts (agent declaring "rust"
 // covers required "rust/unsafe-analysis"). An empty required capability means
 // the task is unconstrained and open to any candidate (overlap = 1).
-func capabilityOverlap(required string, have []string) float64 {
+// Exported so observability consumers (e.g. the scheduler's decision recorder)
+// can render the same breakdown the Score formula uses, without duplicating
+// the matching logic.
+func CapabilityOverlap(required string, have []string) float64 {
 	if strings.TrimSpace(required) == "" {
 		return 1.0
 	}

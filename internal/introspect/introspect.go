@@ -34,6 +34,14 @@ type Snapshot struct {
 	// Collab is the agent collaboration graph (who handed work to whom).
 	// Omitted when the collab source is nil.
 	Collab *CollabSnapshot `json:"collab,omitempty"`
+	// Tasks is the full task board (all states incl. terminal) + quantum
+	// counts for the Tasks page (dashboard.md §5). Omitted when the source
+	// is nil.
+	Tasks []taskfabric.TaskView `json:"tasks,omitempty"`
+	// Decisions is the scheduling-decision trail (candidates + scores +
+	// winner) for the Scheduler page (dashboard.md §7). Omitted when the
+	// source is nil.
+	Decisions []kernelscheduler.ScheduleDecision `json:"decisions,omitempty"`
 }
 
 // Sources abstract the three subsystems so tests can fake them (code_rules_v2
@@ -48,6 +56,12 @@ type Sources struct {
 	// Collab reports the agent collaboration graph. A nil Collab source omits
 	// the field from the snapshot.
 	Collab func() CollabSnapshot
+	// Tasks reports the full task board (all states, quantum counts). A nil
+	// Tasks source omits the field.
+	Tasks func() []taskfabric.TaskView
+	// Decisions reports the scheduling-decision trail. A nil Decisions source
+	// omits the field.
+	Decisions func() []kernelscheduler.ScheduleDecision
 }
 
 // Collector produces Snapshots from Sources.
@@ -81,6 +95,12 @@ func (c *Collector) Collect() Snapshot {
 	if c.src.Collab != nil {
 		cs := c.src.Collab()
 		snap.Collab = &cs
+	}
+	if c.src.Tasks != nil {
+		snap.Tasks = c.src.Tasks()
+	}
+	if c.src.Decisions != nil {
+		snap.Decisions = c.src.Decisions()
 	}
 	return snap
 }

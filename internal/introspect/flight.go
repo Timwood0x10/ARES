@@ -146,11 +146,11 @@ func (s *ControlServer) handleFlightDecisions(w http.ResponseWriter, r *http.Req
 func (s *ControlServer) handleFlightDiagnostics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if s.flight == nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"records": []any{}, "distribution": flight.CategoryDistribution{}})
+		_ = json.NewEncoder(w).Encode(map[string]any{keyRecords: []any{}, keyDist: flight.CategoryDistribution{}})
 		return
 	}
 	records, dist := s.flight.Diagnostics(r.URL.Query().Get("agent_id"))
-	_ = json.NewEncoder(w).Encode(map[string]any{"records": records, "distribution": dist})
+	_ = json.NewEncoder(w).Encode(map[string]any{keyRecords: records, keyDist: dist})
 }
 
 func (s *ControlServer) handleFlightGenealogy(w http.ResponseWriter, r *http.Request) {

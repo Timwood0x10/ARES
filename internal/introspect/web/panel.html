@@ -3,318 +3,522 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ARES · Runtime Introspection</title>
+<title>ARES · Observatory</title>
 <style>
 :root{
-  --bg:#0b0e14;--panel:#11151f;--panel2:#161b28;--line:#1f2637;
-  --txt:#dce3f2;--dim:#8b94a8;--mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
-  --acc:#5b9cff;--ok:#3fd68f;--run:#5b9cff;--sus:#f0b429;--ret:#6b7280;--err:#ff5d73;
+  --bg:#F7F8F6;--surface:#FFFFFF;--surface2:#FBFCFA;--border:#E5E7E3;
+  --ink:#1F2A24;--ink2:#3A4A42;--dim:#7A857F;--faint:#A8B0AB;
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --primary:#14453D;      /* deep ink green */
+  --accent:#3B82F6;       /* soft blue */
+  --violet:#8B5CF6;       /* soft purple */
+  --ok:#2F9E63;           /* green */
+  --warn:#B45309;         /* amber */
+  --err:#C0392B;          /* muted red */
+  --sel:#E9F0EE;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{min-height:100%}
-body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:20px 24px 28px;display:flex;flex-direction:column;min-height:100vh}
-header{display:flex;align-items:baseline;gap:14px;margin-bottom:18px;flex:none}
-h1{font-size:17px;font-weight:600;letter-spacing:.3px}
-h1 .dot{color:var(--acc)}
-#meta{color:var(--dim);font-size:12px;font-family:var(--mono)}
-#meta b{color:var(--ok);font-weight:500}
-main{display:grid;grid-template-columns:minmax(320px,380px) minmax(0,1fr);gap:16px;align-items:start;flex:1}
-@media(max-width:1100px){main{grid-template-columns:1fr}}
-section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
-h2{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:12px;display:flex;justify-content:space-between}
-h2 span{color:var(--acc);font-family:var(--mono);text-transform:none;letter-spacing:0}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.stat{background:var(--panel2);border-radius:8px;padding:10px 12px}
-.stat .v{font-size:22px;font-weight:650;font-family:var(--mono)}
-.stat .k{font-size:11px;color:var(--dim);margin-top:2px}
-.kv{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--line)}
+body{background:var(--bg);color:var(--ink);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;min-height:100vh}
+/* ── Sidebar ── */
+#side{width:212px;flex:none;background:var(--surface);border-right:1px solid var(--border);padding:20px 12px;display:flex;flex-direction:column;gap:2px}
+#side .logo{font-size:15px;font-weight:650;letter-spacing:.4px;padding:2px 10px 12px}
+#side .logo small{display:block;font-size:10.5px;color:var(--dim);font-weight:500;letter-spacing:.6px;margin-top:1px}
+#side .group{font-size:10px;text-transform:uppercase;letter-spacing:1.4px;color:var(--faint);padding:12px 10px 4px}
+.nav{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:7px;color:var(--ink2);cursor:pointer;font-size:13px;border:1px solid transparent}
+.nav:hover{background:var(--surface2)}
+.nav.on{background:var(--sel);color:var(--primary);border-color:var(--border);font-weight:600}
+.nav .ic{width:15px;text-align:center;color:var(--dim);font-size:12px}
+.nav.on .ic{color:var(--primary)}
+#side .foot{margin-top:auto;padding:14px 10px 0;font-size:10.5px;color:var(--faint);font-family:var(--mono)}
+#side .foot b{color:var(--primary)}
+/* ── Main ── */
+#main{flex:1;min-width:0;padding:20px 26px 30px;display:flex;flex-direction:column}
+.page{display:none}
+.page.on{display:block}
+h1{font-size:17px;font-weight:650;letter-spacing:.3px;display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+h1 .sub{color:var(--dim);font-size:12px;font-weight:500;font-family:var(--mono)}
+.pg-desc{color:var(--dim);font-size:12.5px;margin-bottom:18px}
+/* ── Cards / panels ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.card+.card{margin-top:14px}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline}
+h2 span{color:var(--accent);font-family:var(--mono);text-transform:none;letter-spacing:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+@media(max-width:1150px){.grid3,.grid4{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}}
+.kv{display:flex;justify-content:space-between;font-size:12.5px;padding:3.5px 0;border-bottom:1px dashed var(--border);gap:10px}
 .kv:last-child{border-bottom:0}
-.kv b{font-family:var(--mono);font-weight:500}
-.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;font-family:var(--mono)}
-.b-on{background:rgba(63,214,143,.15);color:var(--ok)}
-.b-off{background:rgba(139,148,168,.15);color:var(--dim)}
+.kv b{font-family:var(--mono);font-weight:600;color:var(--ink2);text-align:right}
+.kv i{font-style:normal;color:var(--faint)}
+.stat .v{font-size:24px;font-weight:700;font-family:var(--mono);color:var(--primary)}
+.stat .k{font-size:11px;color:var(--dim);margin-top:2px;text-transform:uppercase;letter-spacing:.6px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle}
+.d-ok{background:var(--ok)}.d-info{background:var(--accent)}.d-warn{background:var(--warn)}.d-err{background:var(--err)}.d-dim{background:var(--faint)}.d-violet{background:var(--violet)}
+.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;font-family:var(--mono);border:1px solid var(--border);color:var(--ink2)}
+.b-ok{background:#E8F5EE;border-color:#CDEBD9;color:var(--ok)}
+.b-err{background:#FBECEA;border-color:#F3D5D0;color:var(--err)}
+.b-warn{background:#FBF1E3;border-color:#F0DFC2;color:var(--warn)}
+.b-info{background:#EAF1FD;border-color:#D4E2F7;color:var(--accent)}
+.b-off{background:var(--surface2);color:var(--faint)}
+/* ── tables ── */
 table{width:100%;border-collapse:collapse;font-size:12.5px}
-th{color:var(--dim);text-align:left;font-weight:500;font-size:11px;letter-spacing:.6px;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--line)}
-td{padding:7px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px}
+th{color:var(--dim);text-align:left;font-weight:600;font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--border)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--ink2)}
 tr:last-child td{border-bottom:0}
-.st{padding:1px 8px;border-radius:5px;font-size:11px;font-weight:600}
-.st-READY{background:rgba(91,156,255,.14);color:var(--acc)}
-.st-LEASED,.st-RUNNING{background:rgba(63,214,143,.14);color:var(--ok)}
-.st-SUSPENDED{background:rgba(240,180,41,.15);color:var(--sus)}
-.tchip{display:inline-block;border-radius:5px;padding:1px 7px;font-size:11px;font-family:var(--mono);font-weight:500}
-.chip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 7px;margin:1px 2px;font-size:11px;font-family:var(--mono);color:var(--dim)}
-.agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
-.card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px}
-.card h3{font-size:13px;font-weight:600;font-family:var(--mono);display:flex;align-items:center;gap:7px}
-.dot{width:8px;height:8px;border-radius:50%;flex:none}
-.d-IDLE{background:var(--ok)}.d-RUNNING{background:var(--acc)}.d-SUSPENDED{background:var(--sus)}.d-RETIRED{background:var(--ret)}
-.bar{height:5px;background:var(--line);border-radius:3px;margin-top:8px;overflow:hidden}
-.bar i{display:block;height:100%;background:var(--acc);border-radius:3px}
-.empty{color:var(--dim);font-size:12.5px;padding:14px 4px;font-style:italic}
-#activity{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:16px;max-height:190px;overflow-y:auto}
-.act{display:flex;gap:9px;align-items:baseline;font-family:var(--mono);font-size:11.5px;padding:3px 0;color:#aab3c5;border-bottom:1px solid rgba(31,38,55,.6)}
-.act:last-child{border-bottom:0}
-.act .t{color:#5b6478;flex:none;width:64px}
-.act .d{width:7px;height:7px;border-radius:50%;flex:none;align-self:center}
-.d-ok{background:var(--ok)}.d-info{background:#4a556e}.d-warn{background:var(--sus)}.d-danger{background:var(--err)}
-.act .x{margin-left:auto;color:#5b6478;font-size:10.5px}
-.filters{display:flex;gap:6px;margin-bottom:10px}
-.fchip{cursor:pointer;background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:99px;padding:2px 10px;font-size:11px;font-family:var(--mono)}
-.fchip.on{border-color:var(--acc);color:var(--acc)}
 tr.click{cursor:pointer}
-tr.click:hover td{background:rgba(91,156,255,.05)}
-tr.detail td{background:var(--panel2);color:var(--dim);font-size:11.5px}
-.dimrow td{opacity:.32}
-.card.sel{border-color:var(--acc)}
-.co-row{display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px dashed var(--line);font-family:var(--mono);font-size:12px;flex-wrap:wrap}
+tr.click:hover td{background:var(--surface2)}
+.st{display:inline-block;padding:1px 8px;border-radius:5px;font-size:11px;font-weight:600;font-family:var(--mono)}
+.st-READY{background:#EAF1FD;color:var(--accent)}
+.st-LEASED,.st-RUNNING{background:#E8F5EE;color:var(--ok)}
+.st-SUSPENDED{background:#FBF1E3;color:var(--warn)}
+.st-COMPLETED{background:#EEF0F2;color:var(--faint)}
+.st-FAILED{background:#FBECEA;color:var(--err)}
+.st-PREEMPTED,.st-EXPIRED{background:#FBF1E3;color:var(--warn)}
+/* ── tasks board ── */
+.board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:1200px){.board{grid-template-columns:1fr 1fr}}
+.bcol{background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:10px}
+.bcol h3{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:8px;display:flex;justify-content:space-between}
+.bcol h3 b{font-family:var(--mono);color:var(--ink2)}
+.tcard{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:8px 10px;margin-bottom:7px;cursor:pointer}
+.tcard:hover{border-color:var(--accent)}
+.tcard .tid{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink2)}
+.tcard .cap{font-size:11px;color:var(--dim);margin-top:1px}
+.tcard .meta{font-size:10.5px;color:var(--faint);font-family:var(--mono);margin-top:4px;display:flex;justify-content:space-between}
+/* ── scheduler decision rows ── */
+.sdec{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.sdec .head{display:flex;gap:8px;align-items:baseline;margin-bottom:6px;flex-wrap:wrap}
+.sdec .head .tid{font-family:var(--mono);font-weight:700;color:var(--primary)}
+.sdec .head .time{margin-left:auto;color:var(--faint);font-size:11px;font-family:var(--mono)}
+.scorebar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.scorebar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.cand{display:flex;align-items:center;gap:8px;font-size:12px;padding:2px 0;font-family:var(--mono)}
+.cand .name{min-width:90px;color:var(--ink2)}
+.cand .sc{margin-left:auto;color:var(--faint)}
+.cand.win .name{color:var(--ok);font-weight:700}
+/* ── execution timeline ── */
+.tl{border-left:2px solid var(--border);margin-left:8px;padding-left:16px}
+.tl .ev{position:relative;padding:5px 0 9px}
+.tl .ev::before{content:"";position:absolute;left:-21.5px;top:9px;width:9px;height:9px;border-radius:50%;background:var(--faint)}
+.tl .ev.t-ok::before{background:var(--ok)}
+.tl .ev.t-warn::before{background:var(--warn)}
+.tl .ev.t-err::before{background:var(--err)}
+.tl .ev.t-info::before{background:var(--accent)}
+.tl .ev .t{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.tl .ev .ty{font-family:var(--mono);font-size:12.5px;color:var(--ink2);font-weight:600}
+.tl .ev .pl{font-size:11.5px;color:var(--dim);margin-top:2px;font-family:var(--mono);word-break:break-all}
+/* ── event stream ── */
+.evrow{display:flex;gap:10px;align-items:baseline;font-family:var(--mono);font-size:12px;padding:4px 0;border-bottom:1px dashed var(--border);cursor:pointer}
+.evrow:last-child{border-bottom:0}
+.evrow:hover{background:var(--surface2)}
+.evrow .t{color:var(--faint);flex:none;width:74px}
+.evrow .ty{font-weight:600;color:var(--ink2);min-width:170px;flex:none}
+.evrow .s{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evrow .s-id{margin-left:auto;color:var(--faint);font-size:11px}
+.evrow.open .detail{display:block}
+.evrow .detail{display:none;margin:6px 0 8px;padding:8px 10px;background:var(--surface2);border-radius:6px;font-size:11.5px;color:var(--ink2);white-space:pre-wrap;word-break:break-all}
+/* ── overview live execution ── */
+.pulse{display:flex;gap:0;border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden}
+.pulse .ps{flex:1;padding:14px 18px;border-right:1px solid var(--border)}
+.pulse .ps:last-child{border-right:0}
+.pulse .ps .v{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--primary)}
+.pulse .ps .k{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.7px;margin-top:1px}
+.health{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px}
+.health .kv b{color:var(--ink2)}
+/* ── collab / DAG ── */
+.co-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border);font-family:var(--mono);font-size:12px;flex-wrap:wrap}
 .co-row:last-child{border-bottom:0}
-.co-row.small{font-size:11px;padding:4px 2px;color:var(--dim)}
-.co-node{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 9px;color:var(--acc);font-weight:600}
-.co-arrow{color:var(--ok);flex:none}
-.co-tag{background:var(--panel2);border-radius:99px;padding:1px 8px;color:var(--dim);font-size:11px}
-.co-time{margin-left:auto;color:#5b6478;font-size:10.5px;flex:none}
-.pausebtn{cursor:pointer;margin-left:auto;background:none;border:1px solid var(--line);color:var(--dim);border-radius:6px;padding:2px 9px;font-size:11px;font-family:var(--mono)}
-.pausebtn.on{border-color:var(--sus);color:var(--sus)}
-footer{margin-top:auto;padding-top:14px;color:var(--dim);font-size:11px}
+.co-node{background:var(--sel);border:1px solid var(--border);border-radius:6px;padding:1px 8px;color:var(--primary);font-weight:600}
+.co-arrow{color:var(--accent)}
+.co-tag{background:var(--surface2);border-radius:99px;padding:1px 8px;color:var(--dim);font-size:11px}
+.co-time{margin-left:auto;color:var(--faint);font-size:10.5px}
+.empty{color:var(--faint);font-size:12.5px;padding:12px 2px;font-style:italic}
+#meta{color:var(--dim);font-size:12px;font-family:var(--mono);margin-bottom:16px}
+#meta b{color:var(--primary);font-weight:600}
+.tools{display:flex;gap:6px;margin-bottom:10px}
+.tbtn{cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--dim);border-radius:99px;padding:2px 11px;font-size:11.5px;font-family:var(--mono)}
+.tbtn.on{border-color:var(--primary);color:var(--primary);background:var(--sel)}
+.tbtn:hover{border-color:var(--accent)}
+.pausebtn{cursor:pointer;margin-left:auto;background:none;border:1px solid var(--border);color:var(--dim);border-radius:6px;padding:2px 9px;font-size:11px;font-family:var(--mono)}
+.pausebtn.on{border-color:var(--warn);color:var(--warn)}
 </style>
 </head>
 <body>
-<header>
-  <h1>ARES <span class="dot">·</span> Runtime Introspection</h1>
-  <span id="meta">connecting…</span>
-  <button id="pause" class="pausebtn" onclick="togglePause()">⏸ pause</button>
-</header>
-<div id="activity"><div class="act" style="color:#5b6478">activity feed — deaths, revivals, dispatches appear here</div></div>
-<main>
-  <div>
-    <section>
-      <h2>Kernel Scheduler <span id="k-badge"></span></h2>
-      <div class="grid">
-        <div class="stat"><div class="v" id="k-ready">–</div><div class="k">queue depth</div></div>
-        <div class="stat"><div class="v" id="k-sched">–</div><div class="k">scheduled</div></div>
-        <div class="stat"><div class="v" id="k-exec">–</div><div class="k">executors</div></div>
+<nav id="side">
+  <div class="logo">ARES<small>Agent Operating System</small></div>
+  <div class="nav on" data-page="overview"><span class="ic">◉</span>Overview</div>
+  <div class="group">WORK</div>
+  <div class="nav" data-page="tasks"><span class="ic">▤</span>Tasks</div>
+  <div class="nav" data-page="agents"><span class="ic">☷</span>Agents</div>
+  <div class="nav" data-page="scheduler"><span class="ic">⇶</span>Scheduler</div>
+  <div class="group">RUNTIME</div>
+  <div class="nav" data-page="execution"><span class="ic">↷</span>Execution</div>
+  <div class="nav" data-page="events"><span class="ic">≡</span>Events</div>
+  <div class="foot">Runtime <b id="ver">v0.3.1</b><br><span id="side-meta">connecting…</span></div>
+</nav>
+<main id="main">
+  <div id="meta">connecting…</div>
+
+  <!-- ══ OVERVIEW ══ -->
+  <section class="page on" id="page-overview">
+    <h1>Overview <span class="sub">what ARES is doing right now</span></h1>
+    <div class="pg-desc">A quiet operating system: tasks flow, execution happens, state is saved, faults recover, experience accumulates.</div>
+
+    <div class="pulse" id="pulse"></div>
+
+    <div class="grid2" style="margin-top:14px">
+      <div class="card">
+        <h2>Runtime Health</h2>
+        <div class="health" id="health"></div>
+        <div class="kv" style="margin-top:8px"><span>last event</span><b id="h-last-ev">—</b></div>
       </div>
-      <div style="margin-top:12px">
-        <div class="kv"><span>poll / preempt</span><b id="k-cad">–</b></div>
-        <div class="kv"><span>lease ttl</span><b id="k-ttl">–</b></div>
-        <div class="kv"><span>max concurrent</span><b id="k-maxc">–</b></div>
-        <div class="kv"><span>bound executors</span><b id="k-bound">–</b></div>
-        <div class="kv"><span>event-driven</span><b id="k-ev">–</b></div>
-        <div class="kv"><span>governance</span><b id="k-gov">–</b></div>
-        <div class="kv"><span>agent fabric</span><b id="k-af">–</b></div>
+      <div class="card">
+        <h2>Live Execution <span id="live-tag"></span></h2>
+        <div id="live" class="empty">no task is executing right now</div>
       </div>
-    </section>
-    <section style="margin-top:16px">
-      <h2>Chaos Subsystem <span id="c-mode"></span></h2>
-      <div class="grid" id="chaos-grid">
-        <div class="stat"><div class="v" id="c-recovered">–</div><div class="k">shadow recovered_ready</div></div>
-        <div class="stat"><div class="v" id="c-injections">–</div><div class="k">live injections</div></div>
-        <div class="stat"><div class="v" id="c-last">–</div><div class="k">last shadow run</div></div>
+    </div>
+
+    <div class="grid3" style="margin-top:14px">
+      <div class="card"><h2>Task Fabric</h2><div class="kv"><span>ready</span><b id="o-ready">0</b></div><div class="kv"><span>running / leased</span><b id="o-running">0</b></div><div class="kv"><span>suspended</span><b id="o-suspend">0</b></div><div class="kv"><span>done / failed</span><b id="o-done">0</b></div></div>
+      <div class="card"><h2>Collaboration</h2><div id="o-collab" class="empty">no collaboration yet</div></div>
+      <div class="card"><h2>Chaos</h2><div id="o-chaos" class="empty">—</div></div>
+    </div>
+  </section>
+
+  <!-- ══ TASKS ══ -->
+  <section class="page" id="page-tasks">
+    <h1>Tasks <span class="sub">task fabric · durable intent</span></h1>
+    <div class="pg-desc">Tasks are durable — agents are disposable. Board shows state; DAG shows the real dependency graph.</div>
+    <div class="tools">
+      <span class="tbtn on" id="tv-board">Board</span>
+      <span class="tbtn" id="tv-dag">DAG</span>
+    </div>
+    <div id="tasks-board"></div>
+    <div id="tasks-dag" style="display:none"></div>
+  </section>
+
+  <!-- ══ AGENTS ══ -->
+  <section class="page" id="page-agents">
+    <h1>Agents <span class="sub">disposable execution entities</span></h1>
+    <div class="pg-desc">Agents are runtime entities, not employees. Click a row for its lease / quantum / lifecycle.</div>
+    <div class="card">
+      <table><thead><tr><th>Agent</th><th>State</th><th>Task</th><th>Capabilities</th><th>Load</th><th>Quantum</th></tr></thead>
+      <tbody id="agents-tbl"></tbody></table>
+      <div id="agent-detail" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- ══ SCHEDULER ══ -->
+  <section class="page" id="page-scheduler">
+    <h1>Scheduler <span class="sub">scheduling observatory</span></h1>
+    <div class="pg-desc">Why was this task assigned to that agent? Every decision — candidate pool, scores, winner — explained.</div>
+    <div class="card">
+      <h2>Recent Decisions <span id="sched-count"></span></h2>
+      <div id="sched-list"></div>
+    </div>
+  </section>
+
+  <!-- ══ EXECUTION ══ -->
+  <section class="page" id="page-execution">
+    <h1>Execution <span class="sub">event → state replay</span></h1>
+    <div class="pg-desc">Pick a task to replay its execution timeline (raw event stream).</div>
+    <div class="card">
+      <h2>Task <span id="ex-sel">(choose below)</span></h2>
+      <div class="tools" id="ex-tasks"></div>
+      <div class="grid2">
+        <div><h2>Timeline</h2><div class="tl" id="ex-timeline"><div class="empty">select a task</div></div></div>
+        <div><h2>Task State</h2><div id="ex-state" class="empty">—</div></div>
       </div>
-      <div style="margin-top:12px" id="chaos-detail"></div>
-    </section>
-    <section style="margin-top:16px">
-      <h2>Agent Loads <span id="a-count"></span></h2>
-      <div id="loads" class="empty">no agents tracked</div>
-    </section>
-  </div>
-  <div>
-    <section>
-      <h2>Task Fabric — Leases &amp; Quanta <span id="f-count"></span></h2>
-      <div class="filters" id="ffilters"></div>
-      <table>
-        <thead><tr><th>task</th><th>state</th><th>owner / epoch</th><th>expiry</th><th>deps</th><th>ckpt</th></tr></thead>
-        <tbody id="fabric"></tbody>
-      </table>
-      <div id="f-empty" class="empty" hidden>no live tasks — fabric is idle</div>
-    </section>
-    <section style="margin-top:16px">
-      <h2>Agents <span id="ag-count"></span></h2>
-      <div id="agents" class="agents empty">no agents registered</div>
-    </section>
-    <section style="margin-top:16px">
-      <h2>Collaboration <span id="co-count"></span></h2>
-      <div id="collab" class="empty">no collaboration yet</div>
-      <div style="margin-top:8px" id="collab-edges"></div>
-    </section>
-  </div>
+    </div>
+  </section>
+
+  <!-- ══ EVENTS ══ -->
+  <section class="page" id="page-events">
+    <h1>Events <span class="sub">event stream · not logs</span></h1>
+    <div class="pg-desc">Event ≠ Log. Click an event to expand its full payload.</div>
+    <div class="card">
+      <div id="event-list"></div>
+    </div>
+  </section>
 </main>
-<footer>read-only introspection · snapshots pulled by the collector loop · nothing here mutates runtime state</footer>
 <script>
 const $=id=>document.getElementById(id);
-let paused=false,fState='ALL',selAgent='';
-let lastFabric=[],lastEvents=[];
-const badge=(on,label)=>on?`<span class="badge b-on">${label||'ON'}</span>`:`<span class="badge b-off">OFF</span>`;
+let paused=false,curPage='overview',taskView='board',selTask='';
+let last=null,lastEvents=[],lastRaw=[];
+const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const badge=(on,label,cls)=>on?`<span class="badge ${cls||'b-info'}">${esc(label||'ON')}</span>`:`<span class="badge b-off">OFF</span>`;
 function dur(ms){if(ms<=0)return'expired';const s=Math.floor(ms/1000);
  if(s<60)return s+'s';const m=Math.floor(s/60);if(m<60)return m+'m'+(s%60?' '+s%60+'s':'');
  return Math.floor(m/60)+'h'+(m%60)+'m';}
-function togglePause(){paused=!paused;
- const b=$('pause');b.textContent=paused?'▶ resume':'⏸ pause';b.classList.toggle('on',paused);}
-function esc(s){return (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function ago(t){if(!t)return'—';const d=Date.now()-new Date(t).getTime();if(d<1000)return'just now';
+ if(d<60000)return Math.floor(d/1000)+'s ago';if(d<3600000)return Math.floor(d/60000)+'m ago';return Math.floor(d/3600000)+'h ago';}
+function stl(t){return t?new Date(t).toLocaleTimeString('en-GB'):'—';}
 
-function render(s){
-  $('meta').innerHTML='seq <b>'+s.seq+'</b> · ts <b>'+new Date(s.ts).toLocaleTimeString()+'</b>';
-  const k=s.kernel||{};
-  $('k-ready').textContent=k.readyTasks??0;
-  $('k-sched').textContent=k.scheduled??0;
-  $('k-exec').textContent=k.executors??0;
-  $('k-cad').textContent=((k.pollInterval||0)/1000)+'s / '+((k.preemptInterval||0)/1000)+'s';
-  $('k-ttl').textContent=((k.ttl||0)/1000)+'s';
-  $('k-maxc').textContent=k.maxConcurrent??'–';
-  $('k-bound').textContent=k.boundExecutors??0;
-  $('k-ev').innerHTML=badge(k.eventDriven,'LIVE');
-  $('k-gov').innerHTML=badge(k.governanceWired);
-  $('k-af').innerHTML=badge(k.agentFabricWired);
+/* ── navigation ── */
+document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>{
+  document.querySelectorAll('.nav').forEach(x=>x.classList.remove('on'));
+  n.classList.add('on');
+  curPage=n.dataset.page;
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
+  $('page-'+curPage).classList.add('on');
+  if(curPage==='events')loadEvents();if(curPage==='execution')renderExec();
+});
 
-  // ── fabric table with filters + expandable rows + agent highlight ──
-  lastFabric=(s.fabric||[]);
-  const counts={};lastFabric.forEach(e=>counts[e.state]=(counts[e.state]||0)+1);
-  counts['ALL']=lastFabric.length;
-  $('ffilters').innerHTML=Object.keys(counts).sort().map(f=>
-    `<span class="fchip${f===fState?' on':''}" onclick="fState='${f}';render(last)">${f} ${counts[f]}</span>`).join('');
-  const rows=lastFabric.filter(e=>fState==='ALL'||e.state===fState);
-  $('f-count').textContent=rows.length+' shown / '+lastFabric.length+' live';
-  $('f-empty').hidden=rows.length>0;
-  let prev=null;
-  $('fabric').innerHTML=rows.map(e=>{
-    const exp=e.owner?dur(new Date(e.expiresAt)-Date.now()):'—';
-    const dimmed=selAgent&&e.owner!==selAgent?' class="dimrow"':'';
-    const open=prev===e.taskID?'':' hidden';prev=e.taskID;
-    return `<tr class="click"${dimmed} onclick="expand('${esc(e.taskID)}',this)">
-      <td>${esc(e.taskID)}</td>
-      <td><span class="st st-${esc(e.state)}">${esc(e.state)}</span></td>
-      <td>${esc(e.owner||'—')}${e.owner?' · e'+e.epoch:''}</td>
-      <td>${exp}</td><td>${(e.dependencies||[]).length}</td><td>${e.hasCheckpoint?'✓':'—'}</td></tr>
-    <tr class="detail"${open}><td colspan="6">capability ${esc(e.capability)} · deps [${(e.dependencies||[]).map(esc).join(', ')||'—'}] · expires ${e.owner?new Date(e.expiresAt).toLocaleTimeString():'—'}</td></tr>`;
-  }).join('');
-
-  // loads
-  const loads=(k.load&&k.load.agents)||[];
-  $('a-count').textContent=loads.length+' tracked';
-  $('loads').className=loads.length?'':'empty';
-  $('loads').innerHTML=loads.map(a=>{
-    const pct=Math.min(100,Math.round(a.load*100));
-    const rate=a.done>0?Math.round(a.ok/a.done*100):100;
-    return `<div class="kv"><span>${esc(a.agentID)} <span class="chip">${rate}% ok</span></span>`+
-      `<b>${a.load.toFixed(2)}</b></div><div class="bar"><i style="width:${pct}%"></i></div>`;
-  }).join('')||'no agents tracked';
-
-  // chaos subsystem (#12 Phase 3)
-  const c=s.chaos||null;
-  $('c-mode').innerHTML=c?(badge(c.enabled,c.mode==='off'?'OFF':c.mode.toUpperCase())):'';
-  if(c){
-    const sh=c.shadow||{},lv=c.live||{};
-    const ok=sh.recovered===true;
-    const er=sh.errored===true;
-    const recState=!sh.last_run?'—':(er?'INCONCLUSIVE':(ok?'READY ✓':'DEGRADED'));
-    $('c-recovered').textContent=recState;
-    $('c-recovered').style.color=er||(sh.last_run&&!ok)?'var(--err)':(ok?'var(--ok)':'var(--dim)');
-    $('c-injections').textContent=lv.injections??0;
-    $('c-last').textContent=sh.last_run?new Date(sh.last_run).toLocaleTimeString():'—';
-    const liveBadges=(lv.active?badge(true,'LIVE ACTIVE'):'')+
-      (lv.fail_safe_tripped?badge(true,'FAIL-SAFE'):'')+
-      (lv.stopped_by_control?badge(true,'EMERGENCY STOP'):'')+
-      (lv.paused_for_ga?badge(true,'GA PAUSE'):'');
-    const liveRow=lv.active||lv.fail_safe_tripped||lv.stopped_by_control||lv.paused_for_ga?
-      `<div class="kv"><span>live state</span><b style="display:flex;gap:6px;flex-wrap:wrap">${liveBadges||'—'}</b></div>`:'';
-    const injRow=lv.last_injection?`<div class="kv"><span>last injection</span><b>${new Date(lv.last_injection).toLocaleTimeString()}</b></div>`:'';
-    $('chaos-detail').innerHTML=
-      `<div class="kv"><span>shadow events</span><b>${sh.events??0}</b></div>`+
-      (liveRow||'')+(injRow||'');
-  } else {
-    $('c-recovered').textContent='—';$('c-injections').textContent='—';$('c-last').textContent='—';
-    $('chaos-detail').innerHTML='<div class="empty">chaos source not wired</div>';
-  }
-
-  // agents wall (click to focus) — each card also shows the task(s) the
-  // agent currently owns (cross-referenced from the fabric leases).
-  const ags=s.agents||[];
-  $('ag-count').textContent=ags.length+(selAgent?' · focused:'+selAgent:'');
-  $('agents').className=ags.length?'agents':'agents empty';
-  $('agents').innerHTML=ags.map(a=>{
-    const owned=lastFabric.filter(e=>e.owner===a.identity);
-    const busy=owned.some(e=>e.state==='RUNNING'||e.state==='LEASED');
-    // A fabric agent that holds a RUNNING/LEASED lease is busy even if its
-    // lifecycle state still reads IDLE (the lifecycle state only changes on
-    // explicit kill/suspend). Reflect the busy dot so operators see at a
-    // glance which agents are actually working.
-    const dotCls=busy?'d-RUNNING':('d-'+esc(a.state));
-    const taskLine=owned.length
-      ? owned.map(e=>`<span class="tchip st-${esc(e.state)}">${esc(e.taskID)}</span>`).join('')
-      : '<span class="chip">— idle</span>';
-    return `<div class="card${selAgent===a.identity?' sel':''}" style="cursor:pointer" onclick="selAgent=selAgent==='${esc(a.identity)}'?'':'${esc(a.identity)}';render(last)">
-      <h3><span class="dot ${dotCls}"></span>${esc(a.identity)}</h3>
-      <div style="margin-top:6px">${(a.capabilities||[]).map(c=>`<span class="chip">${esc(c)}</span>`).join('')||'<span class="chip">—</span>'}</div>
-      <div class="kv" style="margin-top:8px"><span>task</span><b style="display:flex;gap:4px;flex-wrap:wrap">${taskLine}</b></div>
-      <div class="kv"><span>state</span><b>${busy?esc(a.state)+' · working':esc(a.state)}</b></div>
-      <div class="kv"><span>load / conf</span><b>${a.load?.toFixed(2)??'–'} / ${((a.confidence??1)*100).toFixed(0)}%</b></div>
-      ${a.parent?`<div class="kv"><span>parent</span><b>${esc(a.parent)}</b></div>`:''}
-    </div>`;
-  }).join('')||'no agents registered';
-
-  // collaboration graph (#panel multi-agent): who handed work to whom.
-  // Nodes are the agent cards above; edges come from the collab reporter —
-  // real agentipc handoffs, rendered as from → to rows with the task/topic.
-  const co=s.collab||null;
+/* ── OVERVIEW ── */
+function renderOverview(s){
+  const k=s.kernel||{},f=s.fabric||[],ags=s.agents||[],ts=s.tasks||[];
+  const running=f.filter(e=>e.state==='RUNNING'||e.state==='LEASED').length;
+  const ready=f.filter(e=>e.state==='READY').length;
+  const sus=f.filter(e=>e.state==='SUSPENDED').length;
+  const done=ts.filter(t=>t.state==='COMPLETED').length;
+  const fail=ts.filter(t=>t.state==='FAILED').length;
+  $('pulse').innerHTML=`
+    <div class="ps"><div class="v">${ts.length}</div><div class="k">tasks</div></div>
+    <div class="ps"><div class="v">${ags.length}</div><div class="k">agents</div></div>
+    <div class="ps"><div class="v">${running}</div><div class="k">running</div></div>
+    <div class="ps"><div class="v">${ready}</div><div class="k">ready</div></div>
+    <div class="ps"><div class="v">${done+fail}</div><div class="k">done</div></div>`;
+  $('health').innerHTML=`
+    <div class="kv"><span>Kernel</span><b><span class="dot d-ok"></span> ${k.governanceWired?'healthy':'ok'}</b></div>
+    <div class="kv"><span>Scheduler</span><b><span class="dot d-info"></span> ${k.eventDriven?'event-driven':'running'}</b></div>
+    <div class="kv"><span>Scheduled</span><b>${k.scheduled??0}</b></div>
+    <div class="kv"><span>Queue depth</span><b>${k.readyTasks??0}</b></div>
+    <div class="kv"><span>Lease TTL</span><b>${((k.ttl||0)/1000).toFixed(0)}s</b></div>
+    <div class="kv"><span>Executors</span><b>${k.executors??0}</b></div>
+    <div class="kv"><span>Preempt</span><b>${((k.preemptInterval||0)/1000).toFixed(1)}s</b></div>
+    <div class="kv"><span>Load tracked</span><b>${((k.load&&k.load.agents)||[]).length}</b></div>`;
+  // live execution: first RUNNING task
+  const liveTask=f.find(e=>e.state==='RUNNING'||e.state==='LEASED');
+  $('live-tag').textContent=liveTask?('● '+liveTask.taskID):'';
+  if(liveTask){
+    const tv=ts.find(t=>t.taskID===liveTask.taskID);
+    const ag=ags.find(a=>a.identity===liveTask.owner);
+    $('live').innerHTML=`
+      <div class="kv"><span>task</span><b>${esc(liveTask.taskID)} <span class="st st-${esc(liveTask.state)}">${esc(liveTask.state)}</span></b></div>
+      <div class="kv"><span>capability</span><b>${esc(liveTask.capability)}</b></div>
+      <div class="kv"><span>agent</span><b>${esc(liveTask.owner||'—')}</b></div>
+      <div class="kv"><span>epoch</span><b>${liveTask.epoch}</b></div>
+      <div class="kv"><span>quantum</span><b>#${tv?tv.quantum:0}</b></div>
+      <div class="kv"><span>lease expires</span><b>${liveTask.expiresAt?dur(new Date(liveTask.expiresAt)-Date.now()):'—'}</b></div>
+      <div class="kv"><span>checkpoint</span><b>${liveTask.hasCheckpoint?'✓':'—'}</b></div>`;
+  } else $('live').textContent='no task is executing right now';
+  $('o-ready').textContent=ready;$('o-running').textContent=running;$('o-suspend').textContent=sus;$('o-done').textContent=done+fail;
+  // collab
+  const co=s.collab;
   if(co&&co.graph&&co.graph.length){
-    $('co-count').textContent=co.graph.length+' edges · '+co.recent.length+' msgs';
-    $('collab').className='';
-    $('collab').innerHTML=co.graph.map(e=>
-      `<div class="co-row">
-        <span class="co-node">${esc(e.from)}</span>
-        <span class="co-arrow">➜</span>
-        <span class="co-node">${esc(e.to)}</span>
-        <span class="co-tag">${esc(e.topic)}</span>
-        ${e.task_id?`<span class="co-tag tchip st-LEASED">${esc(e.task_id)}</span>`:''}
-        <span class="co-time">${new Date(e.ts).toLocaleTimeString()}</span>
-      </div>`).join('');
-    const tail=(co.recent||[]).slice(-8).reverse();
-    $('collab-edges').innerHTML='<div class="kv" style="color:var(--dim)">recent activity</div>'+
-      tail.map(e=>`<div class="co-row small">
-        <span class="co-node">${esc(e.from)}</span><span class="co-arrow">➜</span>
-        <span class="co-node">${esc(e.to)}</span>
-        <span class="co-tag">${esc(e.topic)}</span>
-        ${e.task_id?`<span class="co-tag tchip st-LEASED">${esc(e.task_id)}</span>`:''}
-        <span class="co-time">${new Date(e.ts).toLocaleTimeString()}</span>
-      </div>`).join('');
-  } else {
-    $('co-count').textContent='';
-    $('collab').className='empty';
-    $('collab').textContent=co?'no collaboration yet':'collab source not wired';
-    $('collab-edges').innerHTML='';
-  }
+    $('o-collab').className='';
+    $('o-collab').innerHTML=co.graph.slice(0,6).map(e=>
+      `<div class="co-row"><span class="co-node">${esc(e.from)}</span><span class="co-arrow">→</span><span class="co-node">${esc(e.to)}</span><span class="co-tag">${esc(e.topic)}</span></div>`).join('');
+  } else $('o-collab').textContent='no collaboration yet';
+  // chaos
+  const c=s.chaos;
+  if(c){
+    const sh=c.shadow||{};
+    const state=!sh.last_run?'—':(sh.errored?'inconclusive':(sh.recovered?'recovered ✓':'degraded'));
+    $('o-chaos').className='';
+    $('o-chaos').innerHTML=`
+      <div class="kv"><span>mode</span><b>${badge(c.enabled,c.mode||'off',c.mode==='live'?'b-warn':'b-info')}</b></div>
+      <div class="kv"><span>shadow last run</span><b>${sh.last_run?ago(sh.last_run):'—'}</b></div>
+      <div class="kv"><span>recovery</span><b>${state}</b></div>
+      <div class="kv"><span>live injections</span><b>${(c.live&&c.live.injections)||0}</b></div>`;
+  } else $('o-chaos').textContent='—';
 }
 
-function expand(id,row){
-  const det=row.nextElementSibling;
-  if(det&&det.classList.contains('detail'))det.hidden=!det.hidden;
+/* ── TASKS ── */
+document.querySelectorAll('#tv-board,#tv-dag').forEach(b=>b.onclick=()=>{
+  taskView=b.id==='tv-board'?'board':'dag';
+  $('#tv-board').classList.toggle('on',taskView==='board');
+  $('#tv-dag').classList.toggle('on',taskView==='dag');
+  $('tasks-board').style.display=taskView==='board'?'':'none';
+  $('tasks-dag').style.display=taskView==='dag'?'':'none';
+  renderTasks(last);
+});
+function renderTasks(s){
+  const ts=(s&&s.tasks)||[];
+  if(taskView==='board')renderBoard(ts);else renderDAG(ts);
 }
+function renderBoard(ts){
+  const cols={READY:[],LEASED:[],RUNNING:[],SUSPENDED:[]};
+  const done=[],fail=[];
+  ts.forEach(t=>{
+    if(cols[t.state])cols[t.state].push(t);
+    else if(t.state==='COMPLETED')done.push(t);
+    else if(t.state==='FAILED')fail.push(t);
+    else if(!cols[t.state])cols[t.state]=[];
+  });
+  const card=t=>`<div class="tcard" onclick="selTask='${esc(t.taskID)}';renderTasks(last)">
+    <div class="tid">${esc(t.taskID)}</div><div class="cap">${esc(t.capability)}</div>
+    <div class="meta"><span>q#${t.quantum||0}</span><span>${t.owner||''}${t.hasCheckpoint?' · ✓':''}</span></div></div>`;
+  const col=(name,arr)=>`<div class="bcol"><h3>${name}<b>${arr.length}</b></h3>${arr.map(card).join('')||'<div class="empty">—</div>'}</div>`;
+  $('tasks-board').innerHTML=`<div class="board">${col('Ready',cols.READY)}${col('Running',[...cols.RUNNING,...cols.LEASED])}${col('Suspended',cols.SUSPENDED)}${col('Done',done)+col('Failed',fail)}</div>`;
+}
+function renderDAG(ts){
+  if(!ts.length){$('tasks-dag').innerHTML='<div class="empty">no tasks</div>';return;}
+  // Simple layered render: roots (no deps) at top, then dependents.
+  const byID={};ts.forEach(t=>byID[t.taskID]=t);
+  const roots=ts.filter(t=>!(t.dependencies||[]).length);
+  const children={};ts.forEach(t=>(t.dependencies||[]).forEach(d=>{(children[d]=children[d]||[]).push(t.taskID)}));
+  const rows=[];
+  let frontier=roots.map(r=>r.taskID),seen=new Set(frontier),depth=0;
+  while(frontier.length&&depth<40){
+    rows.push(frontier);
+    const next=[];
+    frontier.forEach(id=>(children[id]||[]).forEach(c=>{if(!seen.has(c)){seen.add(c);next.push(c);}}));
+    frontier=next;depth++;
+  }
+  const node=t=>`<span class="tcard" style="display:inline-block;min-width:120px;margin:0 6px 6px" onclick="selTask='${esc(t.taskID)}';renderTasks(last)">
+    <div class="tid">${esc(t.taskID)}</div><div class="cap">${esc(t.capability)}</div>
+    <div class="meta"><span class="st st-${esc(t.state)}">${esc(t.state)}</span><span>q#${t.quantum||0}</span></div></span>`;
+  $('tasks-dag').innerHTML=rows.map((row,i)=>`
+    <div style="margin-bottom:12px"><div class="kv" style="border:0"><span style="color:var(--faint)">depth ${i}</span></div>${row.map(id=>node(byID[id])).join('')}</div>`).join('');
+}
+
+/* ── AGENTS ── */
+function renderAgents(s){
+  const ags=s.agents||[],ts=s.tasks||[];
+  const busyOf={};
+  (s.fabric||[]).forEach(e=>{if(e.owner)busyOf[e.owner]=(busyOf[e.owner]||[]).concat(e);});
+  const quantumOf={};ts.forEach(t=>{if(t.owner)quantumOf[t.owner]=t.quantum||0;});
+  $('agents-tbl').innerHTML=ags.map(a=>{
+    const owned=busyOf[a.identity]||[];
+    const taskCell=owned.length?owned.map(e=>`<span class="st st-${esc(e.state)}">${esc(e.taskID)}</span>`).join(' '):'—';
+    const dot=owned.length?'d-info':('d-'+((a.state==='IDLE')?'dim':(a.state==='SUSPENDED'?'warn':'ok')));
+    return `<tr class="click" onclick="agentRow('${esc(a.identity)}')">
+      <td><span class="dot ${dot}"></span> ${esc(a.identity)}</td>
+      <td>${esc(a.state)}${owned.length?' · working':''}</td>
+      <td>${taskCell}</td>
+      <td>${(a.capabilities||[]).map(c=>`<span class="badge b-off">${esc(c)}</span>`).join(' ')}</td>
+      <td>${(a.load??0).toFixed(2)}</td>
+      <td>#${quantumOf[a.identity]||0}</td></tr>`;
+  }).join('')||'<tr><td colspan="6"><div class="empty">no agents</div></td></tr>';
+  window.__agentDetail=a=>{};
+}
+function agentRow(id){
+  const s=last,ags=s.agents||[],f=s.fabric||[];
+  const a=ags.find(x=>x.identity===id);if(!a)return;
+  const owned=f.filter(e=>e.owner===id);
+  $('agent-detail').innerHTML=`
+    <div class="card"><h2>${esc(id)} <span>agent detail</span></h2>
+    <div class="grid3">
+      <div><div class="kv"><span>state</span><b>${esc(a.state)}</b></div>
+      <div class="kv"><span>capabilities</span><b>${(a.capabilities||[]).join(', ')}</b></div>
+      <div class="kv"><span>load / conf</span><b>${(a.load??0).toFixed(2)} / ${((a.confidence??1)*100).toFixed(0)}%</b></div>
+      <div class="kv"><span>parent</span><b>${esc(a.parent||'—')}</b></div></div>
+      <div><div class="kv"><span>current task</span><b>${owned.map(e=>esc(e.taskID)).join(', ')||'—'}</b></div>
+      ${owned.map(e=>`<div class="kv"><span>epoch / quantum</span><b>e${e.epoch} / #${(s.tasks||[]).find(t=>t.taskID===e.taskID)?.quantum||0}</b></div>`).join('')}
+      <div class="kv"><span>lease</span><b>${owned[0]&&owned[0].expiresAt?dur(new Date(owned[0].expiresAt)-Date.now()):'—'}</b></div></div>
+      <div><div class="kv"><span>spawned</span><b>${a.spawnedAt?stl(a.spawnedAt):'—'}</b></div>
+      <div class="kv"><span>collaborates with</span><b>${(s.collab?.graph||[]).filter(e=>e.from===id||e.to===id).map(e=>e.from===id?esc(e.to):esc(e.from)).join(', ')||'—'}</b></div></div>
+    </div></div>`;
+}
+
+/* ── SCHEDULER ── */
+function renderScheduler(s){
+  const ds=(s&&s.decisions)||[];
+  $('sched-count').textContent=ds.length+' recorded';
+  $('sched-list').innerHTML=ds.slice(0,12).map(d=>{
+    const cands=(d.candidates||[]).slice(0,4);
+    const candRows=cands.map(c=>{
+      const pct=Math.min(100,Math.round(c.score*100));
+      return `<div class="cand${c.agentId===d.winner?' win':''}"><span class="name">${esc(c.agentId)}${c.agentId===d.winner?' ◂':''}</span>
+        <div class="scorebar" style="flex:1"><i style="width:${pct}%"></i></div>
+        <span class="sc">${c.score.toFixed(3)}</span></div>`;
+    }).join('');
+    const err=d.err?`<span class="badge b-err">${esc(d.err)}</span>`:'';
+    return `<div class="sdec">
+      <div class="head"><span class="tid">${esc(d.taskId)}</span>
+        <span class="badge b-off">${esc(d.capability)}</span>
+        ${err}
+        ${d.winner?`<span class="badge b-ok">→ ${esc(d.winner)} · epoch ${d.epoch}</span>`:''}
+        <span class="time">${stl(d.time)}</span></div>
+      ${candRows}</div>`;
+  }).join('')||'<div class="empty">no decisions recorded yet — submit tasks to see the scheduler explain itself</div>';
+}
+
+/* ── EXECUTION ── */
+function renderExec(){
+  if(!last)return;
+  const ts=last.tasks||[];
+  const uniq={};ts.forEach(t=>uniq[t.taskID]=t);
+  const ids=Object.keys(uniq).slice(-12);
+  $('ex-tasks').innerHTML=ids.map(id=>
+    `<span class="tbtn${id===selTask?' on':''}" onclick="selTask='${esc(id)}';renderExec()">${esc(id)}</span>`).join('');
+  $('ex-sel').textContent=selTask?selTask:'(choose above)';
+  if(!selTask){$('ex-timeline').innerHTML='<div class="empty">select a task</div>';$('ex-state').innerHTML='<div class="empty">—</div>';return;}
+  const t=uniq[selTask];
+  $('ex-state').innerHTML=`
+    <div class="kv"><span>state</span><b><span class="st st-${esc(t.state)}">${esc(t.state)}</span></b></div>
+    <div class="kv"><span>capability</span><b>${esc(t.capability)}</b></div>
+    <div class="kv"><span>owner</span><b>${esc(t.owner||'—')}</b></div>
+    <div class="kv"><span>quantum</span><b>#${t.quantum||0}</b></div>
+    <div class="kv"><span>checkpoint</span><b>${t.hasCheckpoint?'✓':'—'}</b></div>
+    <div class="kv"><span>dependencies</span><b>${(t.dependencies||[]).join(', ')||'—'}</b></div>
+    <div class="kv"><span>origin</span><b>${esc(t.origin||'root')}</b></div>
+    <div class="kv"><span>created</span><b>${stl(t.createdAt)}</b></div>`;
+  // timeline from raw events filtered to this task
+  const evts=lastRaw.filter(e=>e.stream_id===selTask);
+  $('ex-timeline').innerHTML=evts.slice(0,40).map(e=>{
+    const cls=e.type&&e.type.startsWith('task.failed')?'t-err':(e.type&&(e.type.startsWith('task.completed'))?'t-ok':(e.type&&e.type.includes('expired')?'t-warn':'t-info'));
+    return `<div class="ev ${cls}"><div class="t">${stl(e.timestamp)}</div><div class="ty">${esc(e.type)}</div>
+      <div class="pl">${esc(jsonSnippet(e.payload))}</div></div>`;
+  }).join('')||'<div class="empty">no raw events for this task</div>';
+}
+
+/* ── EVENTS ── */
 async function loadEvents(){
   try{
-    const r=await fetch('/api/v1/introspect/events?limit=60',{cache:'no-store'});
+    const r=await fetch('/api/v1/introspect/eventstream?limit=200',{cache:'no-store'});
     if(!r.ok)return;
     const d=await r.json();
-    lastEvents=d.events||[];
-    if(!lastEvents.length){return;}
-    $('activity').innerHTML=lastEvents.map(e=>{
-      const t=new Date(e.ts).toLocaleTimeString('en-GB');
-      return `<div class="act"><span class="t">${t}</span><span class="d d-${e.level}"></span>`+
-        `<span>${esc(e.text)}</span><span class="x">${esc(e.type)}</span></div>`;
-    }).join('');
+    lastRaw=d.events||[];
+    if(curPage!=='events')return;
+    $('event-list').innerHTML=lastRaw.map((e,i)=>
+      `<div class="evrow" onclick="this.classList.toggle('open')">
+        <span class="t">${stl(e.timestamp)}</span>
+        <span class="ty">${esc(e.type)}</span>
+        <span class="s">${esc(jsonSnippet(e.payload))}</span>
+        <span class="s-id">${esc(e.stream_id||'')}</span>
+        <div class="detail">${esc(JSON.stringify(e,null,2))}</div>
+      </div>`).join('')||'<div class="empty">no events yet</div>';
   }catch(_){}
 }
 
-let last=null;
+function jsonSnippet(p){
+  if(!p)return'';
+  try{
+    const parts=[];
+    if(p.task_id)parts.push('task='+p.task_id);
+    if(p.agent_id)parts.push('agent='+p.agent_id);
+    if(p.reason)parts.push('reason='+p.reason);
+    if(p.duration_ms)parts.push(p.duration_ms+'ms');
+    return parts.join(' · ')||JSON.stringify(p).slice(0,80);
+  }catch(_){return '';}
+}
+
+/* ── main tick ── */
+let lastFetch=0;
 async function tick(){
   if(paused)return;
   try{
     const r=await fetch('/api/v1/introspect/snapshot',{cache:'no-store'});
     if(r.status===503){$('meta').textContent='waiting for first snapshot…';return;}
     if(!r.ok)throw new Error(r.status);
-    last=await r.json();render(last);
+    last=await r.json();
+    $('meta').innerHTML='seq <b>'+last.seq+'</b> · ts <b>'+new Date(last.ts).toLocaleTimeString()+'</b> · refresh 2s';
+    $('side-meta').textContent='seq '+last.seq;
+    renderOverview(last);
+    if(curPage==='tasks')renderTasks(last);
+    if(curPage==='agents')renderAgents(last);
+    if(curPage==='scheduler')renderScheduler(last);
+    if(curPage==='execution')renderExec();
+    if(curPage==='events'&&Date.now()-lastFetch>3000){lastFetch=Date.now();loadEvents();}
   }catch(e){$('meta').textContent='collector unreachable — retrying…';}
 }
-tick();loadEvents();setInterval(tick,2000);setInterval(()=>{if(!paused)loadEvents();},2000);
+// load raw events periodically for execution/events pages
+setInterval(()=>{if(!paused)loadEvents();},4000);
+tick();setInterval(tick,2000);
 </script>
 </body>
 </html>

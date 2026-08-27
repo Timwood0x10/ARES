@@ -49,6 +49,18 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 	if err := f.Start(taskID, agentID, epoch); err != nil {
 		return err
 	}
+	// Count this quantum BEFORE the step runs: every attempt at the task's
+	// semantic progress — whether it yields, fails or completes — is one
+	// quantum. The count accumulates across lease holders (yield→resume,
+	// preemption, chaos replacement), so the panel's "Quantum #N" is the
+	// task's true execution depth, not the current holder's.
+	f.mu.Lock()
+	if t, ok := f.tasks[taskID]; ok {
+		t.Quantum++
+		t.UpdatedAt = f.now()
+	}
+	f.mu.Unlock()
+
 	checkpoint, done, stepErr := step()
 	if stepErr != nil {
 		if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
