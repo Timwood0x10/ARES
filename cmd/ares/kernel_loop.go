@@ -58,6 +58,8 @@ const kernelDispatchTimeout = 300 * time.Second
 // the package defaults, so an absent kernel loop config section keeps prior
 // behavior (zero-value usable, code_rules_v2 §5.4).
 type kernelLoopConfig struct {
+	// LeaseTTL is the scheduler task-lease duration (0 = scheduler default).
+	LeaseTTL time.Duration
 	// QuotaApplyInterval is how often the quota loop re-applies the budget.
 	QuotaApplyInterval time.Duration
 	// QuotaApplyTimeout bounds each quota Apply call.
@@ -117,7 +119,16 @@ func parseKernelLoopConfig(cfg *ares_config.Config) kernelLoopConfig {
 		}
 		return d
 	}
+	leaseTTL := time.Duration(0)
+	if raw := cfg.Kernel.LeaseTTL; raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			leaseTTL = d
+		} else {
+			log.Printf("kernel: invalid lease_ttl %q, using scheduler default", raw)
+		}
+	}
 	return kernelLoopConfig{
+		LeaseTTL:               leaseTTL,
 		QuotaApplyInterval:     parse(cfg.Kernel.QuotaApplyInterval, quotaApplyInterval),
 		QuotaApplyTimeout:      parse(cfg.Kernel.QuotaApplyTimeout, quotaApplyTimeout),
 		EvolutionApplyInterval: parse(cfg.Kernel.EvolutionApplyInterval, evolutionApplyInterval),

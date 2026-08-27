@@ -132,6 +132,11 @@ func createPeerAgents(
 		sched.WithEventStore(store)
 	}
 	sched.WithMaxConcurrent(0)
+	// Optional snappier leases for chaos/recovery demos (#panel): a dead
+	// agent's tasks requeue after lease_ttl instead of the 5-minute default.
+	if ttl := parseKernelLoopConfig(cfg).LeaseTTL; ttl > 0 {
+		sched.WithTTL(ttl)
+	}
 	kernel.scheduler = sched
 	kernel.flipped = true
 
@@ -149,7 +154,13 @@ func createPeerAgents(
 	go runCollabGCLoop(ctx, kernel.fabric, 60*time.Second)
 
 	// Assemble the Lifecycle pillar (agentfabric + aresrecovery).
-	agents := agentfabric.NewFabric()
+	// Wire the agent-fabric lifecycle sink into the shared event bus (#panel
+	// feedback): deaths/spawns/suspensions must reach the introspection feed
+	// the moment they happen, not only via lease-expiry downstream. Mapping to
+	// existing bus types keeps consumers uniform (spawned/resumed → started;
+	// killed/suspended/retired → stopped with reason).
+	agentBus := &fabricEventSink{store: store}
+	agents := agentfabric.NewFabric().WithEventSink(agentBus)
 	if len(cfg.Kernel.Resources) > 0 {
 		agents = agents.WithResourceBudget(cfg.Kernel.Resources)
 	}
@@ -480,4 +491,42 @@ func (a *peerExecutorAdapter) ExecuteStep(ctx context.Context, task *models.Task
 		Checkpoint: out.Checkpoint,
 		Result:     out.Result,
 	}, nil
+}
+
+// fabricEventSink forwards agentfabric lifecycle records onto the shared
+// ares_events bus so observability consumers (introspection feed, archive)
+// see agent deaths and revivals in real time.
+type fabricEventSink struct {
+	store ares_events.EventStore
+}
+
+// Emit implements agentfabric.EventSink.
+func (f *fabricEventSink) Emit(ctx context.Context, ev agentfabric.AgentEvent) error {
+	if f == nil || f.store == nil {
+		return nil
+	}
+	busType := ares_events.EventAgentStarted
+	reason := string(ev.Type)
+	switch ev.Type {
+	case agentfabric.EventAgentSpawned, agentfabric.EventAgentResumed:
+		reason = ""
+	case agentfabric.EventAgentSuspended, agentfabric.EventAgentRetired,
+		agentfabric.EventAgentKilled:
+		busType = ares_events.EventAgentStopped
+	}
+	payload := map[string]any{
+		"agent_id": ev.AgentID,
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	if ev.ParentID != "" {
+		payload["parent"] = ev.ParentID
+	}
+	return f.store.Append(ctx, ev.AgentID, []*ares_events.Event{{
+		Type:       busType,
+		ModuleName: "agentfabric",
+		Payload:    payload,
+		Timestamp:  ev.At,
+	}}, 0)
 }

@@ -170,28 +170,28 @@ func (t *LoadTracker) ConfidenceFor(agentID, capability string) float64 {
 // Domain A). All values are copies; mutating them never touches the tracker.
 type AgentLoadSnapshot struct {
 	// AgentID is the tracked agent.
-	AgentID string
+	AgentID string `json:"agentID"`
 	// Done is the total finished executions; Ok is the successful subset.
-	Done float64
-	Ok   float64
+	Done float64 `json:"done"`
+	Ok   float64 `json:"ok"`
 	// Priority is the agent's scheduling priority.
-	Priority float64
+	Priority float64 `json:"priority"`
 	// Load is the current in-flight quantum count.
-	Load float64
+	Load float64 `json:"load"`
 	// ConfidenceOverride is the agent-level override (evolution feedback W4);
 	// HasConfidenceOverride reports whether one is set (0.0 is a VALID
 	// override, so the bool — not the value — carries presence).
-	ConfidenceOverride    float64
-	HasConfidenceOverride bool
+	ConfidenceOverride    float64 `json:"confidenceOverride"`
+	HasConfidenceOverride bool    `json:"hasConfidenceOverride"`
 	// CapabilityOverrides are this agent's per-capability confidence
 	// overrides, keyed by capability name (GA scheduler F1).
-	CapabilityOverrides map[string]float64
+	CapabilityOverrides map[string]float64 `json:"capabilityOverrides"`
 }
 
 // LoadTrackerSnapshot is a point-in-time copy of every tracked agent,
 // ordered by AgentID for stable panel rendering.
 type LoadTrackerSnapshot struct {
-	Agents []AgentLoadSnapshot
+	Agents []AgentLoadSnapshot `json:"agents"`
 }
 
 // Snapshot returns a consistent copy of all tracked agents. It takes the

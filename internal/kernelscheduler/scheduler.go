@@ -883,30 +883,30 @@ func reifyUserProfile(v any) *models.UserProfile {
 type SchedulerSnapshot struct {
 	// PollInterval is the drain cadence; PreemptInterval the preemption sweep
 	// cadence (both as configured / defaulted).
-	PollInterval    time.Duration
-	PreemptInterval time.Duration
+	PollInterval    time.Duration `json:"pollInterval"`
+	PreemptInterval time.Duration `json:"preemptInterval"`
 	// TTL is the lease granted to each winning agent.
-	TTL time.Duration
+	TTL time.Duration `json:"ttl"`
 	// MaxConcurrent is the per-drain parallelism cap (after defaulting).
-	MaxConcurrent int
+	MaxConcurrent int `json:"maxConcurrent"`
 	// EventDriven reports whether an event store subscription accelerates
 	// dependency completion (GAP 6) on top of polling.
-	EventDriven bool
+	EventDriven bool `json:"eventDriven"`
 	// Executors is the static + spawned executor count; BoundExecutors the
 	// recovery-bound one-task-one-executor subset (W1).
-	Executors      int
-	BoundExecutors int
+	Executors      int `json:"executors"`
+	BoundExecutors int `json:"boundExecutors"`
 	// Scheduled is the total successfully executed task count.
-	Scheduled int64
+	Scheduled int64 `json:"scheduled"`
 	// ReadyTasks is the fabric's current resumable (ready/suspended) depth —
 	// the queue-depth signal for the panel's queue gauge.
-	ReadyTasks int
+	ReadyTasks int `json:"readyTasks"`
 	// GovernanceWired / AgentFabricWired report optional subsystem wiring so
 	// the panel can annotate whether budgets and dynamic population are live.
-	GovernanceWired  bool
-	AgentFabricWired bool
+	GovernanceWired  bool `json:"governanceWired"`
+	AgentFabricWired bool `json:"agentFabricWired"`
 	// Load is the per-agent load/confidence snapshot from the tracker.
-	Load LoadTrackerSnapshot
+	Load LoadTrackerSnapshot `json:"load"`
 }
 
 // Snapshot returns the read-only view. It acquires only reader locks

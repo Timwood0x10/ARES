@@ -148,6 +148,10 @@ func createAndServeAgents(
 			Agents: peerKernel.agents.AgentsView,
 		})
 		peerKernel.intro = introspect.NewHandler(store)
+		sink := introspect.NewSink(store)
+		comp.GoBackground(ctx, "introspect-sink", func(ctx context.Context) error {
+			return sink.Run(ctx, comp.EventStore)
+		})
 		comp.GoBackground(ctx, "introspect-collector", func(ctx context.Context) error {
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()

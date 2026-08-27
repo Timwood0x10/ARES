@@ -185,19 +185,19 @@ func (f *Fabric) record(ctx context.Context, a *Agent, typ AgentEventType, paylo
 // Named AgentView to avoid clashing with the revival-record AgentSnapshot.
 type AgentView struct {
 	// Identity is the stable agent identifier.
-	Identity string
+	Identity string `json:"identity"`
 	// State is the lifecycle state (IDLE/RUNNING/SUSPENDED/RETIRED).
-	State AgentState
+	State AgentState `json:"state"`
 	// Capabilities are the declared capabilities (copied).
-	Capabilities []string
+	Capabilities []string `json:"capabilities"`
 	// Load / Confidence / Priority mirror the scheduler hints.
-	Load       float64
-	Confidence float64
-	Priority   float64
+	Load       float64 `json:"load"`
+	Confidence float64 `json:"confidence"`
+	Priority   float64 `json:"priority"`
 	// Parent is the spawning agent ("" = root); provenance only.
-	Parent string
+	Parent string `json:"parent"`
 	// SpawnedAt is the creation time.
-	SpawnedAt time.Time
+	SpawnedAt time.Time `json:"spawnedAt"`
 }
 
 // AgentsView returns a point-in-time copy of every registered agent, sorted

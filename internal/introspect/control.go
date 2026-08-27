@@ -1,0 +1,303 @@
+// Package introspect — control-plane endpoints (monitoring.md Phase 4).
+//
+// After the old internal/monitoring gin server is deleted, the serve control
+// plane still needs a small set of read-only JSON endpoints: agent list/detail,
+// runtime config snapshot and intelligence health. This file implements them
+// as a plain net/http handler so the serve wiring (actionHandler.inner) keeps
+// working without gin or the old monitoring package. Destructive endpoints
+// (agent kill/resume/retry, chaos, MCP tool call) stay in cmd/ares/actions.go
+// behind checkAuth — this handler is strictly read-only.
+package introspect
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+)
+
+// JSON response keys reused across control endpoints.
+const (
+	keyError = "error"
+	keyLevel = "level"
+)
+
+// ControlServerOption configures the control-plane server.
+type ControlServerOption func(*ControlServer)
+
+// WithRuntimeConfig attaches the runtime config snapshot source
+// (cfgStore.Current().Redacted() + History()); without it the endpoint is
+// disabled (mirrors the old monitoring.WithConfigStore).
+func WithRuntimeConfig(getConfig func() (cfg any, history []map[string]any)) ControlServerOption {
+	return func(s *ControlServer) {
+		s.getConfig = getConfig
+	}
+}
+
+// WithIntel attaches the intelligence engine backing /api/health,
+// /api/anomalies and /api/insights.
+func WithIntel(intel *Engine) ControlServerOption {
+	return func(s *ControlServer) {
+		s.intel = intel
+	}
+}
+
+// AgentSource supplies the agent fleet snapshot.
+type AgentSource interface {
+	// ListAgents returns a point-in-time copy of every registered agent.
+	ListAgents() []AgentView
+}
+
+// AgentView is the control-plane's agent row. It mirrors the shape the old
+// monitoring /api/agents endpoint returned (id/name/role/status/task_id) so
+// `ares status` and existing scripts keep working unchanged.
+type AgentView struct {
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Role   string `json:"role,omitempty"`
+	Status string `json:"status"`
+	TaskID string `json:"task_id,omitempty"`
+}
+
+// ControlServer serves the minimal read-only control-plane JSON API on /api/*.
+// It is registered by the serve wiring as the fallback handler
+// (actionHandler.inner): every request that the actionHandler does not
+// intercept (agents/chaos/tools/tasks/graphs/introspect) lands here.
+type ControlServer struct {
+	agents    AgentSource
+	intel     *Engine
+	getConfig func() (cfg any, history []map[string]any)
+
+	// M3/M4 observability providers (migrated from internal/dashboard,
+	// monitoring.md Phase 4): evolution trajectory (M3-1), human feedback sink
+	// (M3-2) and cross-Fabric spans (M4-1). Nil disables the endpoint.
+	evolution EvolutionTrajectoryProvider
+	feedback  EvolutionFeedbackSink
+	spans     ObservabilitySpansProvider
+}
+
+// EvolutionTrajectoryProvider supplies the evolution trajectory (v0.3.0 M3-1).
+// Implementations record per-generation snapshots; the endpoint renders them
+// as JSON.
+type EvolutionTrajectoryProvider interface {
+	// EvolutionTrajectory returns the recorded generations (oldest first)
+	// as generic JSON-friendly values, or nil when nothing is recorded.
+	EvolutionTrajectory() []map[string]any
+}
+
+// EvolutionFeedback is a human review of an evolution candidate (v0.3.0 M3-2).
+type EvolutionFeedback struct {
+	// CandidateID is the reviewed strategy/candidate id.
+	CandidateID string `json:"candidate_id"`
+	// Rating is the human rating (1-5 scale).
+	Rating float64 `json:"rating"`
+	// Comments is free-form human commentary.
+	Comments string `json:"comments,omitempty"`
+	// Approved is the human approval decision.
+	Approved bool `json:"approved"`
+	// Reason explains the approval/denial.
+	Reason string `json:"reason,omitempty"`
+}
+
+// EvolutionFeedbackSink receives human feedback submissions (v0.3.0 M3-2).
+type EvolutionFeedbackSink interface {
+	// SubmitFeedback records one human feedback entry.
+	SubmitFeedback(fb EvolutionFeedback) error
+}
+
+// ObservabilitySpansProvider supplies cross-Fabric trace spans (v0.3.0 M4-1).
+type ObservabilitySpansProvider interface {
+	// Spans returns a snapshot of the recorded spans (insertion order), or
+	// nil when nothing is recorded.
+	Spans() []map[string]any
+}
+
+// WithEvolution attaches the evolution trajectory + feedback providers
+// (migrated from dashboard.APIv2 SetEvolutionTrajectory/SetEvolutionFeedback).
+func WithEvolution(trajectory EvolutionTrajectoryProvider, feedback EvolutionFeedbackSink) ControlServerOption {
+	return func(s *ControlServer) {
+		s.evolution = trajectory
+		s.feedback = feedback
+	}
+}
+
+// WithObservability attaches the cross-Fabric span provider (migrated from
+// dashboard.APIv2 SetObservability).
+func WithObservability(provider ObservabilitySpansProvider) ControlServerOption {
+	return func(s *ControlServer) {
+		s.spans = provider
+	}
+}
+
+// NewControlServer builds the control-plane server. agents may be nil (the
+// agent endpoints then report 503, matching the old behavior of an
+// unconfigured monitoring plugin).
+func NewControlServer(agents AgentSource, opts ...ControlServerOption) *ControlServer {
+	s := &ControlServer{agents: agents}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// ServeHTTP routes the read-only control-plane endpoints.
+func (s *ControlServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	switch {
+	case r.Method == http.MethodGet && path == "/api/agents":
+		s.handleListAgents(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/agents/"):
+		s.handleGetAgent(w, r, strings.TrimPrefix(path, "/api/agents/"))
+	case r.Method == http.MethodGet && path == "/api/runtime/config":
+		s.handleRuntimeConfig(w, r)
+	case r.Method == http.MethodGet && path == "/api/health":
+		s.handleHealth(w, r)
+	case r.Method == http.MethodGet && path == "/api/health/agents":
+		s.handleHealthAgents(w, r)
+	case r.Method == http.MethodGet && path == "/api/anomalies":
+		s.handleAnomalies(w, r)
+	case r.Method == http.MethodGet && path == "/api/insights":
+		s.handleInsights(w, r)
+	// M3/M4 observability (migrated from dashboard :8090):
+	case r.Method == http.MethodGet && path == "/api/evolution/trajectory":
+		s.handleEvolutionTrajectory(w, r)
+	case r.Method == http.MethodPost && path == "/api/evolution/feedback":
+		s.handleEvolutionFeedback(w, r)
+	case r.Method == http.MethodGet && path == "/api/observability/spans":
+		s.handleObservabilitySpans(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *ControlServer) handleEvolutionTrajectory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.evolution == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "evolution trajectory not configured"})
+		return
+	}
+	views := s.evolution.EvolutionTrajectory()
+	if views == nil {
+		views = []map[string]any{}
+	}
+	_ = json.NewEncoder(w).Encode(views)
+}
+
+func (s *ControlServer) handleEvolutionFeedback(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.feedback == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "evolution feedback not configured"})
+		return
+	}
+	var fb EvolutionFeedback
+	if err := json.NewDecoder(r.Body).Decode(&fb); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "invalid request body"})
+		return
+	}
+	if err := s.feedback.SubmitFeedback(fb); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+}
+
+func (s *ControlServer) handleObservabilitySpans(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.spans == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "observability spans not configured"})
+		return
+	}
+	spans := s.spans.Spans()
+	if spans == nil {
+		spans = []map[string]any{}
+	}
+	_ = json.NewEncoder(w).Encode(spans)
+}
+
+func (s *ControlServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.agents == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "agent source not configured"})
+		return
+	}
+	views := s.agents.ListAgents()
+	if views == nil {
+		views = []AgentView{}
+	}
+	_ = json.NewEncoder(w).Encode(views)
+}
+
+func (s *ControlServer) handleGetAgent(w http.ResponseWriter, r *http.Request, id string) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.agents == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "agent source not configured"})
+		return
+	}
+	for _, v := range s.agents.ListAgents() {
+		if v.ID == id {
+			_ = json.NewEncoder(w).Encode(v)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]any{keyError: "agent not found: " + id})
+}
+
+func (s *ControlServer) handleRuntimeConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.getConfig == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "runtime config not configured"})
+		return
+	}
+	cfg, history := s.getConfig()
+	_ = json.NewEncoder(w).Encode(map[string]any{"config": cfg, "history": history})
+}
+
+func (s *ControlServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.intel == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{keyLevel: "unknown"})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		keyLevel: s.intel.SystemHealth().Level,
+		"agents": len(s.intel.Anomalies()),
+	})
+}
+
+func (s *ControlServer) handleHealthAgents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.intel == nil {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		keyLevel:    s.intel.SystemHealth().Level,
+		"anomalies": len(s.intel.Anomalies()),
+	})
+}
+
+func (s *ControlServer) handleAnomalies(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.intel == nil {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(s.intel.Anomalies())})
+}
+
+func (s *ControlServer) handleInsights(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.intel == nil {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(s.intel.Insights())})
+}

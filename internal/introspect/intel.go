@@ -1,18 +1,20 @@
-// Package dashboard — intelligent monitoring subsystem.
+// Package introspect — intelligence engine (migrated from internal/dashboard).
 //
-// The intelligence engine observes agent behavior, computes health scores,
-// detects anomalies, and generates actionable insights. It runs as a
-// background service attached to the dashboard's event stream.
-package dashboard
+// The engine observes agent behavior, computes health scores, detects
+// anomalies, and generates actionable insights (monitoring.md §5: intelligence
+// is MIGRATED, not rewritten — the algorithm is unchanged). It is fed from the
+// shared event stream via FeedIntel and queried by the serve control plane
+// (/api/health, /api/anomalies, /api/insights).
+package introspect
 
 import (
 	"fmt"
 	"sort"
 	"sync"
 	"time"
-)
 
-// ── Health ───────────────────────────────────────────────────
+	"github.com/Timwood0x10/ares/internal/ares_events"
+)
 
 // HealthLevel rates the overall health of a component.
 type HealthLevel string
@@ -34,8 +36,6 @@ type HealthScore struct {
 	Uptime    float64     `json:"uptime_pct"`  // % uptime in window
 	UpdatedAt time.Time   `json:"updated_at"`
 }
-
-// ── Anomaly ──────────────────────────────────────────────────
 
 // Severity rates how critical an anomaly is.
 type Severity string
@@ -59,8 +59,6 @@ type Anomaly struct {
 	Resolved  bool      `json:"resolved"`
 }
 
-// ── Insight ──────────────────────────────────────────────────
-
 // Insight is an actionable observation derived from correlated events.
 type Insight struct {
 	ID              string    `json:"id"`
@@ -73,8 +71,6 @@ type Insight struct {
 	CreatedAt       time.Time `json:"created_at"`
 	Acknowledged    bool      `json:"acknowledged"`
 }
-
-// ── Intelligence Engine ──────────────────────────────────────
 
 // Engine monitors agent behavior, computes health, and surfaces insights.
 type Engine struct {
@@ -153,8 +149,6 @@ func (e *Engine) OnInsight(fn func(*Insight)) {
 	e.onInsight = fn
 }
 
-// ── Event Feed ───────────────────────────────────────────────
-
 // ObserveAgentEvent feeds a raw agent observation into the engine.
 func (e *Engine) ObserveAgentEvent(agentID, eventType string, latencyMs float64, hasError bool) {
 	e.mu.Lock()
@@ -210,8 +204,6 @@ func trimTimes(times []time.Time, cutoff time.Time) []time.Time {
 	// Shift to the front to allow the old backing array to be GC'd.
 	return append(times[:0], times[idx:]...)
 }
-
-// ── Health Queries ───────────────────────────────────────────
 
 // Health returns the current health score for an agent.
 func (e *Engine) Health(agentID string) HealthScore {
@@ -287,8 +279,6 @@ func (e *Engine) SystemHealth() HealthScore {
 	}
 }
 
-// ── Anomaly Queries ──────────────────────────────────────────
-
 // Anomalies returns all active (unresolved) anomalies.
 func (e *Engine) Anomalies() []*Anomaly {
 	e.mu.RLock()
@@ -316,8 +306,6 @@ func (e *Engine) ResolveAnomaly(id string) {
 	}
 }
 
-// ── Insight Queries ─────────────────────────────────────────
-
 // Insights returns all unacknowledged insights.
 func (e *Engine) Insights() []*Insight {
 	e.mu.RLock()
@@ -344,8 +332,7 @@ func (e *Engine) AcknowledgeInsight(id string) {
 	}
 }
 
-// ── Internal ─────────────────────────────────────────────────
-
+// ensureState returns the per-agent state, creating it on first sight.
 func (e *Engine) ensureState(agentID string) *agentState {
 	s, ok := e.agents[agentID]
 	if !ok {
@@ -468,8 +455,6 @@ func (e *Engine) addAnomaly(a *Anomaly) {
 	e.anomalies = append(e.anomalies, a)
 }
 
-// ── Helpers ──────────────────────────────────────────────────
-
 func ratePerMin(events []time.Time, window time.Duration) float64 {
 	if len(events) == 0 {
 		return 0
@@ -528,4 +513,56 @@ func severity(l HealthLevel) int {
 	default:
 		return -1
 	}
+}
+
+// evErrKind is the event-type label mapped to an error observation.
+const evErrKind = "error"
+
+// FeedIntel feeds one bus event into the intelligence engine using the same
+// mapping as the migrated dashboard.EventBridge (monitoring.md Phase 4):
+// restart/error/latency/tick observations drive health scoring.
+func FeedIntel(intel *Engine, evt *ares_events.Event) {
+	if intel == nil || evt == nil {
+		return
+	}
+	agentID := evt.StreamID
+	latency := extractLatency(evt)
+	hasError := evt.Type == evErrKind || evt.Type == "task.failed" || evt.Type == "tool.error" || evt.Type == "llm.error"
+	isRestart := evt.Type == "agent.restarted" || evt.Type == "failover.completed"
+	switch {
+	case isRestart:
+		intel.ObserveAgentEvent(agentID, "restart", 0, false)
+	case hasError:
+		intel.ObserveAgentEvent(agentID, evErrKind, 0, true)
+	case latency > 0:
+		intel.ObserveAgentEvent(agentID, "latency", latency, false)
+	default:
+		intel.ObserveAgentEvent(agentID, "tick", 0, false)
+	}
+}
+
+// extractLatency attempts to extract a latency value in milliseconds from an
+// event payload. The "duration_ms" key is already in milliseconds. The
+// "duration" key stores nanoseconds (as float64, int64, or time.Duration) and
+// is converted to milliseconds to avoid unit confusion that would cause
+// 5ms to appear as 5,000,000ms.
+func extractLatency(evt *ares_events.Event) float64 {
+	if evt.Payload == nil {
+		return 0
+	}
+	// duration_ms is already in milliseconds.
+	if d, ok := evt.Payload["duration_ms"].(float64); ok {
+		return d
+	}
+	// duration is stored as nanoseconds; convert to ms.
+	if d, ok := evt.Payload["duration"].(float64); ok {
+		return d / 1e6
+	}
+	if d, ok := evt.Payload["duration"].(time.Duration); ok {
+		return float64(d.Milliseconds())
+	}
+	if d, ok := evt.Payload["duration"].(int64); ok {
+		return float64(d) / 1e6
+	}
+	return 0
 }

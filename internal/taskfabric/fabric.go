@@ -764,23 +764,23 @@ func (f *Fabric) IDs() []string {
 // progress, dependency posture).
 type LeaseEntry struct {
 	// TaskID is the fabric task identifier.
-	TaskID string
+	TaskID string `json:"taskID"`
 	// Capability is the required capability.
-	Capability string
+	Capability string `json:"capability"`
 	// State is the current lifecycle state (never terminal in a snapshot).
-	State TaskState
+	State TaskState `json:"state"`
 	// Priority drives preemption decisions.
-	Priority int
+	Priority int `json:"priority"`
 	// Owner is the lease-holding agent; empty when the task is unowned.
-	Owner string
+	Owner string `json:"owner"`
 	// Epoch is the lease acquisition counter (stale-renew observability).
-	Epoch uint64
+	Epoch uint64 `json:"epoch"`
 	// ExpiresAt is the lease expiry; zero when unowned.
-	ExpiresAt time.Time
+	ExpiresAt time.Time `json:"expiresAt"`
 	// HasCheckpoint reports whether durable progress exists.
-	HasCheckpoint bool
+	HasCheckpoint bool `json:"hasCheckpoint"`
 	// Dependencies are the task's prerequisite IDs (copied).
-	Dependencies []string
+	Dependencies []string `json:"dependencies"`
 }
 
 // LeaseSnapshot returns a point-in-time copy of every non-terminal task,

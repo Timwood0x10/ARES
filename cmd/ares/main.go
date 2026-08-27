@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	ARES serve                         Start full agent monitoring (LLM + MCP + dashboard)
+//	ARES serve                         Start full agent runtime (LLM + MCP + introspection)
 //	ARES agent list                    List all registered agents
 //	ARES arena run <scenario>          Run chaos scenario
 //	ARES arena validate <scenario>     Validate scenario
@@ -21,7 +21,6 @@
 //	ARES db setup-test                 Setup test database
 //	ARES db create-table               Create distilled_memories table
 //	ARES db check-rls                  Check RLS policies
-//	ARES demo                          Start console demo with simulated workload
 //	ARES version                       Show version
 //	ARES doctor                        Diagnose environment
 //	ARES status                        Show runtime status at a glance

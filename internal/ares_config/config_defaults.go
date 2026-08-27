@@ -229,7 +229,11 @@ func (c *Config) setDefaults() {
 			c.MCP.Servers[i].Timeout = 30
 		}
 	}
-	// Dashboard defaults
+	// Dashboard defaults — TODO(tech-debt): the standalone :8090 dashboard
+	// server was removed in 0.3.1 #14 Phase 4 (monitoring/dashboard packages
+	// deleted; M3/M4 providers migrated to introspect.ControlServer). The
+	// config fields are retained so existing config files keep validating;
+	// they are inert until the config schema is pruned in a follow-up.
 	if c.Dashboard.Addr == "" {
 		c.Dashboard.Addr = ":8090"
 	}

@@ -120,6 +120,10 @@ type KernelConfig struct {
 	// EvolutionApplyTimeout bounds each population policy application
 	// (default "30s"). A hung policy store must not stall the loop.
 	EvolutionApplyTimeout string `yaml:"evolution_apply_timeout"`
+	// LeaseTTL is the task-lease duration granted by the kernel scheduler
+	// (e.g. "5m" default, "45s" for snappy chaos/recovery demos). Empty keeps
+	// the scheduler default.
+	LeaseTTL string `yaml:"lease_ttl"`
 	// Chaos controls the fault injection subsystem (REVIEW #12). By default
 	// chaos runs in "shadow" mode — a scratch Sandbox verifies recovery
 	// without touching production agents. "live" mode (requires

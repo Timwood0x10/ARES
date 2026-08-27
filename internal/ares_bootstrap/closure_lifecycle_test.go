@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -159,11 +158,9 @@ func TestClosure_Lifecycle_DashboardStop(t *testing.T) {
 	comp, err := Bootstrap(ctx, cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, comp)
+	// The M3/M4 observability providers are assembled (Phase 4: the standalone
+	// :8090 dashboard server was removed, so there is nothing to Stop).
 	require.NotNil(t, comp.Dashboard)
-
-	// Dashboard should stop cleanly.
-	err = comp.Dashboard.Stop(ctx)
-	assert.NoError(t, err)
 
 	cancel()
 	comp.WaitBackground()

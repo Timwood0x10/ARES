@@ -12,6 +12,7 @@ import (
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -19,115 +20,114 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
-	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/monitoring"
-	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
-	"github.com/Timwood0x10/ares/internal/monitoring/data"
-	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
 	"golang.org/x/sync/errgroup"
 )
 
-// setupServeMonitoring builds the PluginBus + MonitorPlugin console, the
-// dashboard intelligence engine, the evolution store bridge, and the
-// EventStore→PluginBus forwarder goroutine. Extracted from runServe to keep its
-// cyclomatic complexity within gocyclo's 30 limit.
-func setupServeMonitoring(
+// setupServeControlPlane builds the runtime introspection control plane
+// (monitoring.md Phase 4): the intelligence engine (health/anomalies/insights,
+// migrated from internal/dashboard) and the read-only control server that
+// serves the old monitoring /api/agents + /api/health surface. The old
+// MonitorPlugin / tabs / PluginBus bridge are gone — the introspection panel
+// (internal/introspect) is the single observability surface.
+func setupServeControlPlane(
 	ctx context.Context,
 	g *errgroup.Group,
 	cfg *ares_config.Config,
-	mgr *ares_runtime.Manager,
-	registry *api_tools.Registry,
+	cfgStore *ares_config.ConfigStore,
 	store ares_events.EventStore,
-) (*monitoring.MonitorPlugin, error) {
-	// NOTE: The ares_runtime plugin framework (PluginBus + capability discovery)
-	// is actively consumed by the production workflow Runner
-	// (internal/workflow/runner_plugins.go): CapCheckpoint/CapEvolution/Flusher/
-	// EvolutionPlugin are type-asserted there to flush checkpoints and record
-	// evolution outcomes at run boundaries.
-	//
-	// The built-in plugin IMPLEMENTATIONS, however, are retained as capability
-	// reserves (future "nice-to-have", not dead code) and are intentionally NOT
-	// registered here, because the unified workflow Runner already provides
-	// native loop/checkpoint/routing via LoopSpec/WithCheckpointStore/NodeRouter:
-	//   - LoopPlugin/CheckpointPlugin — exercised as fixtures by the graph
-	//     executor's plugin-integration tests (internal/workflow/graph).
-	//   - ArenaPlugin (fault injection) / ObserverPlugin (event observation) /
-	//     ToolPlugin (tool bridge) / MemoryRouter / EvolutionRouter /
-	//     FallbackRouter / NewEvolutionPlugin — complete, tested capability
-	//     reserves. Wiring them changes runtime behavior, which is a product/
-	//     direction decision (code_rules_v2 铁律 #4), so they are deferred. See
-	//     docs/analysis-reports/ares-runtime-capability-reserve.md for the enablement
-	//     path.
-	bus := ares_runtime.NewPluginBus()
-	tracker := data.NewAgentTracker()
-	linker := data.NewTraceLinker()
-	tabMap := map[string]monitoring.Tab{
-		"events":    tabs.NewEventTab(),
-		"memory":    tabs.NewMemoryTab(),
-		"evolution": tabs.NewEvolutionTab(),
-		"arena":     tabs.NewArenaTab(),
-		"workflow":  tabs.NewWorkflowTab(),
-		"mcp":       tabs.NewMCPTab(),
-		"llm":       tabs.NewLLMTab(),
-	}
-
-	rtAdapter := adapter.NewRuntimeAdapter(&runtimeAdapterShim{mgr})
-	mcpMgr := &mcpAdapter{registry: registry}
-
-	plugin := monitoring.NewConsole(
-		monitoring.WithAgentTracker(tracker),
-		monitoring.WithTraceLinkerOption(linker),
-		monitoring.WithTabMap(tabMap),
-		monitoring.WithRuntimeManager(rtAdapter),
-		monitoring.WithMCP(mcpMgr),
-		// REVIEW #14: without a pruner the DAG engine's node map grows with
-		// every agent/task for the process lifetime — the only remover is
-		// the Pruner, which is constructed solely when this option is set.
-		monitoring.WithPruneConfig(monitoring.PruneConfig{
-			MaxAgentAge:   2 * time.Hour,
-			PruneInterval: 10 * time.Minute,
-		}),
-	).(*monitoring.MonitorPlugin)
-
-	if err := plugin.Start(ctx, bus); err != nil {
-		return nil, fmt.Errorf("start monitor plugin: %w", err)
-	}
-
-	// ── Intelligence engine: bridge dashboard.Engine → monitoring.IntelProvider ──
-	intelEngine := dashboard.NewEngine(nil)
-	plugin.SetIntel(adapter.NewIntelAdapter(intelEngine))
+	peerKernel *kernelHandle,
+	obs *ares_bootstrap.ObservabilityProviders,
+) (*introspect.Engine, *introspect.ControlServer, error) {
+	// Intelligence engine: observes the shared event stream (fed by the
+	// dedicated goroutine below, migrated from dashboard.EventBridge) to
+	// score health / detect anomalies.
+	intelEngine := introspect.NewEngine(nil)
 	log.Printf("intelligence engine started: system=%s anomalies=%d",
 		intelEngine.SystemHealth().Level, len(intelEngine.Anomalies()))
 
-	// ── Evolution store: bridges flight genealogy → console AgentEvolution ──
-	evoStore := &monitoring.EvolutionStore{}
-	plugin.SetEvolutionStore(evoStore)
-
-	// --- Bridge: EventStore → PluginBus ---
-	// Agent metadata must cover BOTH config shapes: the C1 flat peers list is
-	// the default and the legacy agents.sub entries are the fallback — the
-	// same normalization createPeerAgents applies (normalizedPeers). Keying
-	// off agents.sub alone left peers-config deployments with an empty meta
-	// map, so bridged events carried no name/role/model enrichment.
-	agentMetaByID := make(map[string]agentMeta, len(cfg.Agents.Sub))
-	for _, s := range normalizedPeers(cfg) {
-		role := ""
-		if len(s.Capabilities) > 0 {
-			role = s.Capabilities[0]
-		}
-		agentMetaByID[s.ID] = agentMeta{
-			name:     s.ID,
-			role:     role,
-			model:    cfg.LLM.Model,
-			parentID: "",
-		}
+	// Feed the intelligence engine from the shared event store. Independent of
+	// the introspect panel sink: this subscription only powers
+	// health/anomalies/insights. Best-effort — a broken subscribe is logged,
+	// the engine just stays empty (deny-by-default health).
+	if store != nil {
+		g.Go(func() error {
+			ch, err := store.Subscribe(ctx, ares_events.EventFilter{})
+			if err != nil {
+				log.Printf("[intel] event subscribe failed: %v", err)
+				return nil
+			}
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case evt := <-ch:
+					introspect.FeedIntel(intelEngine, evt)
+				}
+			}
+		})
 	}
-	g.Go(func() error {
-		bridgeEvents(ctx, store, bus, agentMetaByID)
-		return nil
-	})
-	return plugin, nil
+
+	// Read-only control server: /api/agents, /api/agents/:id, /api/health,
+	// /api/anomalies, /api/insights. Agent source comes from the peer kernel's
+	// agent fabric when the full kernel exists; otherwise the endpoints report
+	// 503 (partial paths must still compile and serve).
+	var agentsSource introspect.AgentSource
+	if peerKernel != nil && peerKernel.agents != nil {
+		agentsSource = &fabricAgentSource{fabric: peerKernel.agents}
+	}
+	var cfgOpt introspect.ControlServerOption
+	if cfgStore != nil {
+		cfgOpt = introspect.WithRuntimeConfig(func() (any, []map[string]any) {
+			cfg := cfgStore.Current().Redacted()
+			history := cfgStore.History()
+			out := make([]map[string]any, 0, len(history))
+			for _, h := range history {
+				out = append(out, map[string]any{
+					"time":    h.Time,
+					"ok":      h.OK,
+					"message": h.Message,
+				})
+			}
+			return cfg, out
+		})
+	}
+	opts := []introspect.ControlServerOption{
+		introspect.WithIntel(intelEngine),
+		cfgOpt,
+	}
+	// M3/M4 observability (migrated from the deleted dashboard :8090 server):
+	// evolution trajectory / human feedback / cross-Fabric spans.
+	if obs != nil {
+		opts = append(opts, obs.IntrospectOptions()...)
+	}
+	server := introspect.NewControlServer(agentsSource, opts...)
+	return intelEngine, server, nil
+}
+
+// fabricAgentSource adapts *agentfabric.Fabric to introspect.AgentSource so
+// the control plane lists the live fabric population.
+type fabricAgentSource struct {
+	fabric *agentfabric.Fabric
+}
+
+// ListAgents implements introspect.AgentSource.
+func (s *fabricAgentSource) ListAgents() []introspect.AgentView {
+	views := s.fabric.AgentsView()
+	out := make([]introspect.AgentView, 0, len(views))
+	for _, v := range views {
+		row := introspect.AgentView{
+			ID:     v.Identity,
+			Name:   v.Identity,
+			Status: string(v.State),
+		}
+		if len(v.Capabilities) > 0 {
+			row.Role = v.Capabilities[0]
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // startServeHTTPAndHooks builds the console HTTP server, starts it in the
@@ -140,7 +140,8 @@ func startServeHTTPAndHooks(
 	g *errgroup.Group,
 	cfg *ares_config.Config,
 	cfgStore *ares_config.ConfigStore,
-	plugin *monitoring.MonitorPlugin,
+	controlServer *introspect.ControlServer,
+	intelEngine *introspect.Engine,
 	mgr *ares_runtime.Manager,
 	registry *api_tools.Registry,
 	toolBinder sub.ToolBinder,
@@ -150,55 +151,30 @@ func startServeHTTPAndHooks(
 ) (*http.Server, error) {
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Println("=== ARES Console — Live Runtime ===")
-	fmt.Printf("Console:  http://localhost%s/console/\n", addr)
+	fmt.Printf("Console:  http://localhost%s/introspect\n", addr)
 	fmt.Printf("LLM:      %s / %s\n", cfg.LLM.Provider, cfg.LLM.Model)
 	fmt.Printf("Tools:    %v\n", toolBinder.ListTools())
 	fmt.Println("Press Ctrl+C to stop.")
 	fmt.Println()
 
-	server := monitoring.NewHTTPServer(plugin)
-
 	// API key for destructive endpoints (agents/chaos/tools). When empty,
 	// all destructive requests are denied (deny-by-default). Configure via
 	// ARES_API_KEY environment variable.
 	serveAPIKey := os.Getenv("ARES_API_KEY")
-	// One shared audit sink for the gin middleware, the actionHandler and the
-	// monitoring server, so auth decisions and destructive actions land in the
-	// same process log stream (no duplicated loggers for one sink).
+	// One shared audit sink for the actionHandler, so auth decisions and
+	// destructive actions land in the same process log stream.
 	auditLogger := ares_security.NewAuditLogger(slog.Default())
-	opts := []monitoring.HTTPServerOption{
-		monitoring.WithConfigStore(cfgStore),
-		// Modular audit: records auth decisions (middleware) and destructive
-		// actions (kill/resume/retry, MCP tool calls) on the process logger.
-		monitoring.WithAudit(auditLogger),
-	}
-	if serveAPIKey != "" {
-		opts = append(opts, monitoring.WithAPIKey(serveAPIKey))
-	}
-	// JWT auth for the same destructive endpoints. A request is accepted when
-	// it presents either the API key or a valid JWT with write permission.
-	// Secret comes from security.jwt_secret / ARES_JWT_SECRET; when auth is
-	// enabled but no secret is set, protected endpoints stay deny-by-default
-	// (misconfig is safer than an open endpoint).
-	if cfg.Security.AuthEnabled {
-		opts = append(opts, monitoring.WithJWT([]byte(cfg.Security.JWTSecret)))
-	}
-	if len(opts) > 0 {
-		server = monitoring.NewHTTPServer(plugin, opts...)
-	}
 
-	// The actionHandler intercepts agent/chaos/tool routes BEFORE the gin
-	// server, so it must carry the same credentials and audit sink as the gin
-	// middleware (v0.3.0 review: these routes were API-key-only and un-audited
-	// because the interception bypassed requireAPIKey). JWT is enabled exactly
-	// when the gin server gets it.
+	// The actionHandler intercepts agent/chaos/tool/MCP routes BEFORE the
+	// read-only control server (introspect.ControlServer), so it must carry
+	// the same credentials and audit sink. JWT is enabled when configured.
 	var authMW *ares_security.AuthMiddleware
 	if cfg.Security.AuthEnabled && cfg.Security.JWTSecret != "" {
 		authMW = ares_security.NewAuthMiddleware([]byte(cfg.Security.JWTSecret), ares_security.PermWrite,
 			ares_security.WithAudit(auditLogger))
 	}
 	handler := &actionHandler{
-		inner:  server,
+		inner:  controlServer,
 		mgr:    mgr,
 		tools:  registry,
 		apiKey: serveAPIKey,
@@ -384,41 +360,3 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 // ErrNoLLMAdapter) — e.g. to surface a degraded-mode warning instead of a hard
 // crash. (code_rules_v2 §3: prefer typed errors over string matching.)
 var ErrNoLLMAdapter = errors.New("serve: no LLM adapter available")
-
-// agentMeta holds metadata for enriching events from real agents.
-type agentMeta struct {
-	name     string
-	role     string
-	model    string
-	parentID string
-}
-
-// runtimeAdapterShim adapts ares_runtime.Manager to adapter.RuntimeManager.
-type runtimeAdapterShim struct {
-	mgr *ares_runtime.Manager
-}
-
-func (s *runtimeAdapterShim) NotifyAgentDead(agentID, reason string) {
-	s.mgr.NotifyAgentDead(agentID, reason)
-}
-
-func (s *runtimeAdapterShim) RestartAgent(ctx context.Context, agentID string) error {
-	return s.mgr.RestartAgent(ctx, agentID)
-}
-
-func (s *runtimeAdapterShim) GetAgentInfo(agentID string) (*adapter.AgentInfo, bool) {
-	info, ok := s.mgr.GetAgentInfo(agentID)
-	if !ok {
-		return nil, false
-	}
-	return &adapter.AgentInfo{
-		ID:       info.ID,
-		Type:     info.Type,
-		Status:   info.Status,
-		Restarts: info.Restarts,
-	}, true
-}
-
-var (
-	_ adapter.RuntimeManager = (*runtimeAdapterShim)(nil)
-)

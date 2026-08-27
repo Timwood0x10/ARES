@@ -7,6 +7,7 @@
 package introspect
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -69,6 +70,11 @@ func (c *Collector) Collect() Snapshot {
 // here.
 type Store struct {
 	latest atomic.Pointer[Snapshot]
+
+	// eventsMu/events form the bounded activity ring (#panel feedback);
+	// separate lock from the atomic latest pointer.
+	eventsMu sync.Mutex
+	events   []TimelineEntry
 }
 
 // Set publishes a new latest snapshot.
@@ -76,3 +82,54 @@ func (s *Store) Set(snap Snapshot) { s.latest.Store(&snap) }
 
 // Latest returns the most recent snapshot, or nil before the first collect.
 func (s *Store) Latest() *Snapshot { return s.latest.Load() }
+
+// TimelineEntry is one understated activity-feed row (#panel feedback): who
+// died, who took work, what got preempted. Terse text, color carried by Level.
+type TimelineEntry struct {
+	// TS is the event time.
+	TS time.Time `json:"ts"`
+	// Kind is "agent", "task" or "recovery".
+	Kind string `json:"kind"`
+	// Level drives the dot color: ok | info | warn | danger.
+	Level string `json:"level"`
+	// Type is the raw event type (e.g. agent.stopped).
+	Type string `json:"type"`
+	// Text is the terse human line (pre-formatted server-side).
+	Text string `json:"text"`
+	// AgentID / TaskID enable cross-highlighting in the UI.
+	AgentID string `json:"agent_id,omitempty"`
+	TaskID  string `json:"task_id,omitempty"`
+}
+
+// maxTimelineEntries bounds the activity ring (monitoring.md: bounded
+// read-model — history beyond this lives in the event log/archive).
+const maxTimelineEntries = 300
+
+// PushEvent appends to the bounded activity ring (newest last), guarded by
+// Store.eventsMu.
+func (s *Store) PushEvent(e TimelineEntry) {
+	s.eventsMu.Lock()
+	defer s.eventsMu.Unlock()
+	s.events = append(s.events, e)
+	if len(s.events) > maxTimelineEntries {
+		s.events = s.events[len(s.events)-maxTimelineEntries:]
+	}
+}
+
+// Events returns up to limit most-recent entries, newest FIRST (feed order).
+func (s *Store) Events(limit int) []TimelineEntry {
+	if limit <= 0 {
+		limit = maxTimelineEntries
+	}
+	s.eventsMu.Lock()
+	defer s.eventsMu.Unlock()
+	n := len(s.events)
+	if limit > n {
+		limit = n
+	}
+	out := make([]TimelineEntry, 0, limit)
+	for i := n - 1; i >= n-limit; i-- {
+		out = append(out, s.events[i])
+	}
+	return out
+}

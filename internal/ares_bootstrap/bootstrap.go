@@ -39,7 +39,7 @@ const dagStepProcess = "process"
 // Components holds all assembled system components.
 type Components struct {
 	MCP          *ares_mcp.MCPManager
-	Dashboard    *DashboardComponents
+	Dashboard    *ObservabilityProviders
 	LLM          *LLMComponents
 	Evolution    *EvolutionComponents
 	NewEvolution *NewEvolutionComponents
@@ -349,19 +349,14 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		FeedbackStore:   aresrecovery.NewFeedbackStore(),
 		GlobalTracer:    aresrecovery.NewGlobalTracer(),
 	}
-	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr,
-		comp.Observability.EvolutionTracer, comp.Observability.FeedbackStore,
-		comp.Observability.GlobalTracer)
-	if err != nil {
-		runCleanups()
-		return nil, err
-	}
-	comp.Dashboard = dash
-	cleanups = append(cleanups, func() {
-		if err := dash.Stop(ctx); err != nil {
-			log.Warn("bootstrap: cleanup dashboard stop error", "error", err)
-		}
-	})
+	// Runtime observability providers (monitoring.md Phase 4): the M3/M4
+	// surfaces now feed introspect.ControlServer directly; the standalone
+	// :8090 dashboard server was removed.
+	comp.Dashboard = ProvideObservability(
+		comp.Observability.EvolutionTracer,
+		comp.Observability.FeedbackStore,
+		comp.Observability.GlobalTracer,
+	)
 
 	// 7+8. Evolution wiring order matters: ProvideNewEvolution (below) creates
 	// the shared evidence store (newEvol.EvidenceStore); ProvideEvolution's

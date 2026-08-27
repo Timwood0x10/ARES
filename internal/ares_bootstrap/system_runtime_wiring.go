@@ -24,7 +24,6 @@ const (
 	sysCompMemory         = "memory"
 	sysCompMCP            = "mcp"
 	sysCompLLM            = "llm"
-	sysCompDashboard      = "dashboard"
 	sysCompEvidenceStore  = "evidence"
 	sysCompFlightRecorder = "flight"
 	sysCompKnowledge      = "knowledge"
@@ -124,8 +123,6 @@ func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Compo
 	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil, system_runtime.ModeRequired,
 		func(ctx context.Context) error { return comp.MCP.Stop(ctx) }, nil, nil)
 	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
-	registerSystemComponent(reg, sysCompDashboard, comp.Dashboard != nil, []string{sysCompMCP}, system_runtime.ModeRequired,
-		func(ctx context.Context) error { return comp.Dashboard.Stop(ctx) }, nil, nil)
 	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
 	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore}, system_runtime.ModeRequired,
 		func(ctx context.Context) error { comp.FlightRecorder.Stop(); return nil }, nil, nil)

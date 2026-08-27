@@ -120,6 +120,27 @@ func (h *actionHandler) auditAction(action, target string, princ *ares_security.
 	h.audit.Action(action, subject, target, ok)
 }
 
+// serveIntrospect handles the read-only introspection surface: the panel UI,
+// its JSON feed under /api/v1/introspect/*, and a root redirect to the panel.
+// Returns true when it handled the request. These routes are intentionally
+// unauthenticated — they expose no secrets and mutate nothing; every control
+// endpoint stays behind checkAuth.
+func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, path string) bool {
+	if h.intro == nil || r.Method != http.MethodGet {
+		return false
+	}
+	switch {
+	case path == "/introspect" || strings.HasPrefix(path, "/introspect/") ||
+		strings.HasPrefix(path, "/api/v1/introspect/"):
+		h.intro.ServeHTTP(w, r)
+		return true
+	case path == "/":
+		http.Redirect(w, r, "/introspect", http.StatusFound)
+		return true
+	}
+	return false
+}
+
 func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
@@ -145,13 +166,8 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Runtime introspection panel (monitoring.md): read-only. The UI page and
-	// its JSON feed are intentionally unauthenticated — they expose no secrets
-	// and mutate nothing; all control endpoints remain behind checkAuth.
-	if h.intro != nil && r.Method == "GET" &&
-		(path == "/introspect" || strings.HasPrefix(path, "/introspect/") ||
-			strings.HasPrefix(path, "/api/v1/introspect/")) {
-		h.intro.ServeHTTP(w, r)
+	// Read-only introspection routes (panel UI + JSON feed + root redirect).
+	if h.serveIntrospect(w, r, path) {
 		return
 	}
 
@@ -179,6 +195,26 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && path == "/api/tools" {
 		h.handleListTools(w)
 		return
+	}
+
+	// MCP tool API (monitoring.md Phase 4: migrated from the old gin server
+	// into the actionHandler so the control plane stays unified):
+	//   GET  /api/mcp/tools           → list available tools
+	//   POST /api/mcp/tools/:name/call → invoke a tool (requires auth)
+	if r.Method == "GET" && path == "/api/mcp/tools" {
+		h.handleListMCPTools(w)
+		return
+	}
+	if r.Method == "POST" && strings.HasPrefix(path, "/api/mcp/tools/") {
+		parts := strings.Split(strings.TrimPrefix(path, "/api/mcp/tools/"), "/")
+		if len(parts) == 2 && parts[1] == "call" {
+			princ := h.checkAuth(w, r)
+			if princ == nil {
+				return
+			}
+			h.handleCallMCPTool(w, r, princ, parts[0])
+			return
+		}
 	}
 
 	// Peer task submission: POST /api/tasks — the user-facing entry of the
@@ -475,6 +511,51 @@ func (h *actionHandler) handleListTools(w http.ResponseWriter) {
 	writeJSON(w, map[string]any{
 		"tools": names,
 		"count": len(names),
+	})
+}
+
+// ── MCP Tool API (migrated from internal/monitoring, monitoring.md Phase 4) ──
+
+// handleListMCPTools returns the available tools with descriptions, matching
+// the shape the old monitoring gin /api/mcp/tools endpoint produced.
+func (h *actionHandler) handleListMCPTools(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.tools == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "no tool registry"})
+		return
+	}
+	infos := h.tools.ListTools()
+	if infos == nil {
+		infos = []api_tools.ToolInfo{}
+	}
+	writeJSON(w, infos)
+}
+
+// handleCallMCPTool invokes an MCP tool by name. The outcome is audited after
+// the call runs so failures are recorded as such (same contract as the old
+// monitoring handler).
+func (h *actionHandler) handleCallMCPTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal, name string) {
+	w.Header().Set("Content-Type", "application/json")
+	var args map[string]any
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&args); err != nil && err.Error() != "EOF" {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "invalid request body"})
+			return
+		}
+	}
+	result, err := h.tools.Execute(r.Context(), name, args)
+	h.auditAction("call_mcp_tool", name, princ, err == nil)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{
+		"tool_name": name,
+		"is_error":  !result.Success,
+		"output":    map[string]any{"success": result.Success, "data": result.Data},
 	})
 }
 

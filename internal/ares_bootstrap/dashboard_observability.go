@@ -1,18 +1,20 @@
-// Package ares_bootstrap — dashboard observability adapters (v0.3.0 M3/M4).
+// Package ares_bootstrap — runtime observability adapters (v0.3.0 M3/M4).
 //
 // Bridges aresrecovery's recording surfaces (EvolutionTracer / FeedbackStore
-// / GlobalTracer) to the dashboard's provider contracts so the existing
-// /evolution/trajectory, /evolution/feedback and /observability/spans
-// endpoints are backed by real components instead of returning empty lists.
+// / GlobalTracer) to the introspection control plane's provider contracts
+// (internal/introspect, monitoring.md Phase 4) so the existing
+// /api/evolution/trajectory, /api/evolution/feedback and
+// /api/observability/spans endpoints are backed by real components instead of
+// returning empty lists.
 package ares_bootstrap
 
 import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
-	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/introspect"
 )
 
 // evolutionTrajectoryAdapter adapts *aresrecovery.EvolutionTracer to
-// dashboard.EvolutionTrajectoryProvider. The adapter also consumes the two
+// introspect.EvolutionTrajectoryProvider. The adapter also consumes the two
 // components the v0.3.0 review flagged as library-only:
 //
 //   - ChangeAttributor fills each generation change's Impact estimate (equal
@@ -26,16 +28,16 @@ type evolutionTrajectoryAdapter struct {
 }
 
 // NewEvolutionTrajectoryProvider wraps a tracer (and optional feedback store)
-// as the dashboard trajectory provider. Returns nil when the tracer is nil
+// as the introspect trajectory provider. Returns nil when the tracer is nil
 // (endpoint disabled). A nil store disables the feedback enrichment only.
-func NewEvolutionTrajectoryProvider(tracer *aresrecovery.EvolutionTracer, store *aresrecovery.FeedbackStore) dashboard.EvolutionTrajectoryProvider {
+func NewEvolutionTrajectoryProvider(tracer *aresrecovery.EvolutionTracer, store *aresrecovery.FeedbackStore) introspect.EvolutionTrajectoryProvider {
 	if tracer == nil {
 		return nil
 	}
 	return &evolutionTrajectoryAdapter{tracer: tracer, store: store}
 }
 
-var _ dashboard.EvolutionTrajectoryProvider = (*evolutionTrajectoryAdapter)(nil)
+var _ introspect.EvolutionTrajectoryProvider = (*evolutionTrajectoryAdapter)(nil)
 
 // EvolutionTrajectory returns the recorded generations as JSON-friendly
 // values (oldest first), or nil when nothing is recorded. Each generation is
@@ -110,25 +112,25 @@ func (a *evolutionTrajectoryAdapter) EvolutionTrajectory() []map[string]any {
 }
 
 // evolutionFeedbackAdapter adapts *aresrecovery.FeedbackStore to
-// dashboard.EvolutionFeedbackSink. The dashboard's EvolutionFeedback payload
+// introspect.EvolutionFeedbackSink. The introspect EvolutionFeedback payload
 // maps directly onto aresrecovery.HumanFeedback.
 type evolutionFeedbackAdapter struct {
 	store *aresrecovery.FeedbackStore
 }
 
-// NewEvolutionFeedbackSink wraps a feedback store as the dashboard feedback
+// NewEvolutionFeedbackSink wraps a feedback store as the introspect feedback
 // sink. Returns nil when the store is nil (endpoint disabled).
-func NewEvolutionFeedbackSink(store *aresrecovery.FeedbackStore) dashboard.EvolutionFeedbackSink {
+func NewEvolutionFeedbackSink(store *aresrecovery.FeedbackStore) introspect.EvolutionFeedbackSink {
 	if store == nil {
 		return nil
 	}
 	return &evolutionFeedbackAdapter{store: store}
 }
 
-var _ dashboard.EvolutionFeedbackSink = (*evolutionFeedbackAdapter)(nil)
+var _ introspect.EvolutionFeedbackSink = (*evolutionFeedbackAdapter)(nil)
 
 // SubmitFeedback records one human feedback entry.
-func (a *evolutionFeedbackAdapter) SubmitFeedback(fb dashboard.EvolutionFeedback) error {
+func (a *evolutionFeedbackAdapter) SubmitFeedback(fb introspect.EvolutionFeedback) error {
 	a.store.Add(aresrecovery.HumanFeedback{
 		CandidateID: fb.CandidateID,
 		Rating:      fb.Rating,
@@ -140,22 +142,22 @@ func (a *evolutionFeedbackAdapter) SubmitFeedback(fb dashboard.EvolutionFeedback
 }
 
 // globalTracerAdapter adapts *aresrecovery.GlobalTracer to
-// dashboard.ObservabilitySpansProvider.
+// introspect.ObservabilitySpansProvider.
 type globalTracerAdapter struct {
 	tracer *aresrecovery.GlobalTracer
 }
 
-// NewObservabilitySpansProvider wraps a global tracer as the dashboard
+// NewObservabilitySpansProvider wraps a global tracer as the introspect
 // observability provider. Returns nil when the tracer is nil (endpoint
 // disabled).
-func NewObservabilitySpansProvider(tracer *aresrecovery.GlobalTracer) dashboard.ObservabilitySpansProvider {
+func NewObservabilitySpansProvider(tracer *aresrecovery.GlobalTracer) introspect.ObservabilitySpansProvider {
 	if tracer == nil {
 		return nil
 	}
 	return &globalTracerAdapter{tracer: tracer}
 }
 
-var _ dashboard.ObservabilitySpansProvider = (*globalTracerAdapter)(nil)
+var _ introspect.ObservabilitySpansProvider = (*globalTracerAdapter)(nil)
 
 // Spans returns a snapshot of the recorded spans (insertion order) as
 // JSON-friendly values, or nil when nothing is recorded.
