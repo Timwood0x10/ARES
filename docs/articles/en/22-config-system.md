@@ -42,7 +42,6 @@ type Config struct {
     Storage    StorageConfig      `yaml:"storage"`
     Memory     MemoryConfig       `yaml:"memory"`
     MCP        MCPConfig          `yaml:"mcp"`
-    Dashboard  DashboardAppConfig `yaml:"dashboard"`
     Evolution  EvolutionConfig    `yaml:"evolution"`
 }
 ```

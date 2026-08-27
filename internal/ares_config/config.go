@@ -52,24 +52,23 @@ const (
 
 // Config holds all configuration for the server.
 type Config struct {
-	Server     ServerConfig       `yaml:"server"`
-	LLM        LLMConfig          `yaml:"llm"`
-	Agents     AgentsConfig       `yaml:"agents"`
-	Tools      ToolsConfig        `yaml:"tools"`
-	Prompts    PromptsConfig      `yaml:"prompts"`
-	Output     OutputConfig       `yaml:"output"`
-	Validation ValidationConfig   `yaml:"validation"`
-	Workflow   WorkflowConfig     `yaml:"workflow"`
-	Storage    StorageConfig      `yaml:"storage"`
-	Memory     MemoryConfig       `yaml:"memory"`
-	Knowledge  KnowledgeConfig    `yaml:"knowledge"`
-	MCP        MCPConfig          `yaml:"mcp"`
-	Dashboard  DashboardAppConfig `yaml:"dashboard"`
-	Evolution  EvolutionConfig    `yaml:"evolution"`
-	Embedding  EmbeddingConfig    `yaml:"embedding"`
-	Discovery  DiscoveryConfig    `yaml:"discovery"`
-	Kernel     KernelConfig       `yaml:"kernel"`
-	Security   SecurityConfig     `yaml:"security"`
+	Server     ServerConfig     `yaml:"server"`
+	LLM        LLMConfig        `yaml:"llm"`
+	Agents     AgentsConfig     `yaml:"agents"`
+	Tools      ToolsConfig      `yaml:"tools"`
+	Prompts    PromptsConfig    `yaml:"prompts"`
+	Output     OutputConfig     `yaml:"output"`
+	Validation ValidationConfig `yaml:"validation"`
+	Workflow   WorkflowConfig   `yaml:"workflow"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Memory     MemoryConfig     `yaml:"memory"`
+	Knowledge  KnowledgeConfig  `yaml:"knowledge"`
+	MCP        MCPConfig        `yaml:"mcp"`
+	Evolution  EvolutionConfig  `yaml:"evolution"`
+	Embedding  EmbeddingConfig  `yaml:"embedding"`
+	Discovery  DiscoveryConfig  `yaml:"discovery"`
+	Kernel     KernelConfig     `yaml:"kernel"`
+	Security   SecurityConfig   `yaml:"security"`
 }
 
 // KernelConfig controls the dual-track dispatch kernel (ares-runtime.md P4 D4:
@@ -681,13 +680,6 @@ type SSEEntry struct {
 	URL     string            `yaml:"url"`
 	Headers map[string]string `yaml:"headers"`
 	Timeout int               `yaml:"timeout"` // seconds
-}
-
-// DashboardAppConfig holds dashboard configuration.
-type DashboardAppConfig struct {
-	Addr           string `yaml:"addr"`
-	EnableAuth     bool   `yaml:"enable_auth"`
-	WSPingInterval int    `yaml:"ws_ping_interval"` // seconds
 }
 
 // EvolutionConfig holds genetic algorithm evolution system configuration.

@@ -28,6 +28,12 @@ type Snapshot struct {
 	Fabric []taskfabric.LeaseEntry `json:"fabric"`
 	// Agents is the lifecycle Domain C view.
 	Agents []agentfabric.AgentView `json:"agents"`
+	// Chaos is the #12 Phase 3 chaos-subsystem status (shadow sandbox health
+	// + live-injection state). Omitted when the chaos source is nil.
+	Chaos *ChaosStatus `json:"chaos,omitempty"`
+	// Collab is the agent collaboration graph (who handed work to whom).
+	// Omitted when the collab source is nil.
+	Collab *CollabSnapshot `json:"collab,omitempty"`
 }
 
 // Sources abstract the three subsystems so tests can fake them (code_rules_v2
@@ -36,6 +42,12 @@ type Sources struct {
 	Kernel func() kernelscheduler.SchedulerSnapshot
 	Fabric func() []taskfabric.LeaseEntry
 	Agents func() []agentfabric.AgentView
+	// Chaos reports the chaos-subsystem status (monitoring.md #12 Phase 3).
+	// A nil Chaos source omits the field from the snapshot.
+	Chaos func() ChaosStatus
+	// Collab reports the agent collaboration graph. A nil Collab source omits
+	// the field from the snapshot.
+	Collab func() CollabSnapshot
 }
 
 // Collector produces Snapshots from Sources.
@@ -61,6 +73,14 @@ func (c *Collector) Collect() Snapshot {
 	}
 	if c.src.Agents != nil {
 		snap.Agents = c.src.Agents()
+	}
+	if c.src.Chaos != nil {
+		cs := c.src.Chaos()
+		snap.Chaos = &cs
+	}
+	if c.src.Collab != nil {
+		cs := c.src.Collab()
+		snap.Collab = &cs
 	}
 	return snap
 }

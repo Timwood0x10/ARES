@@ -4,7 +4,6 @@ package ares_config
 
 import (
 	"fmt"
-	"net"
 )
 
 // Validate validates the configuration values.
@@ -38,10 +37,6 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateMCP(); err != nil {
-		return err
-	}
-
-	if err := c.validateDashboard(); err != nil {
 		return err
 	}
 
@@ -253,21 +248,6 @@ func (c *Config) validateMCPTransport(srv MCPServerEntry) error {
 		if srv.Transport.SSE.URL == "" {
 			return fmt.Errorf("mcp server %q: sse url must not be empty", srv.Name)
 		}
-	}
-	return nil
-}
-
-// validateDashboard validates dashboard configuration
-func (c *Config) validateDashboard() error {
-	if c.Dashboard.Addr == "" {
-		return nil
-	}
-
-	if _, _, err := net.SplitHostPort(c.Dashboard.Addr); err != nil {
-		return fmt.Errorf("invalid dashboard addr %q: %v", c.Dashboard.Addr, err)
-	}
-	if c.Dashboard.WSPingInterval < 1 {
-		return fmt.Errorf("invalid dashboard ws_ping_interval: %d, must be positive", c.Dashboard.WSPingInterval)
 	}
 	return nil
 }

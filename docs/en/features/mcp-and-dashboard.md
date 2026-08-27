@@ -285,9 +285,6 @@ mcp:
         stdio:
           command: codegraph
           args: ["serve", "--mcp"]
-
-dashboard:
-  addr: ":8090"
 ```
 
 Dependencies: codegraph binary + Ollama running. No database.

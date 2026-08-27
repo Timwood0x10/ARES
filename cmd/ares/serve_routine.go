@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
@@ -39,6 +40,7 @@ func setupServeControlPlane(
 	store ares_events.EventStore,
 	peerKernel *kernelHandle,
 	obs *ares_bootstrap.ObservabilityProviders,
+	flightRecorder *flight.FlightRecorder,
 ) (*introspect.Engine, *introspect.ControlServer, error) {
 	// Intelligence engine: observes the shared event stream (fed by the
 	// dedicated goroutine below, migrated from dashboard.EventBridge) to
@@ -106,6 +108,12 @@ func setupServeControlPlane(
 	// evolution trajectory / human feedback / cross-Fabric spans.
 	if obs != nil {
 		opts = append(opts, obs.IntrospectOptions()...)
+	}
+	// Flight-recorder read surfaces (migrated from the deleted dashboard
+	// /flight/* endpoints): timeline / summary / graph / decisions /
+	// diagnostics / genealogy.
+	if flightRecorder != nil {
+		opts = append(opts, introspect.WithFlight(introspect.NewFlightRecorderAdapter(flightRecorder)))
 	}
 	server := introspect.NewControlServer(agentsSource, opts...)
 	return intelEngine, server, nil

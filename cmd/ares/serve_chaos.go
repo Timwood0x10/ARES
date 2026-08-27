@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
+	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -46,7 +47,10 @@ func (c *chaosStopControl) Stopped() bool {
 //
 // This closes REVIEW #12 Phase 1: the chaos subsystem defaults to shadow
 // mode, which verifies recovery capability without impacting live agents.
-func shadowSandboxLoop(ctx context.Context, interval time.Duration) {
+//
+// The status reporter (Phase 3) records the latest verification outcome so the
+// introspection panel can surface shadow-sandbox health.
+func shadowSandboxLoop(ctx context.Context, interval time.Duration, status *introspect.ChaosReporter) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -63,7 +67,7 @@ func shadowSandboxLoop(ctx context.Context, interval time.Duration) {
 			log.Printf("serve: shadow sandbox loop stopping (context cancelled)")
 			return
 		case <-ticker.C:
-			runShadowSandbox(ctx)
+			runShadowSandbox(ctx, status)
 		}
 	}
 }
@@ -71,7 +75,8 @@ func shadowSandboxLoop(ctx context.Context, interval time.Duration) {
 // runShadowSandbox constructs a scratch fabric, runs a canonical
 // agent-kill→recovery scenario, and logs the outcome. All scratch fabrics
 // are local to this call and discarded after — production is never touched.
-func runShadowSandbox(ctx context.Context) {
+// The outcome (recovered_ready / errored) is recorded to the panel status.
+func runShadowSandbox(ctx context.Context, status *introspect.ChaosReporter) {
 	// Build scratch fabrics — completely independent from production.
 	scratchTasks := taskfabric.NewFabric()
 	scratchAgents := agentfabric.NewFabric()
@@ -96,22 +101,50 @@ func runShadowSandbox(ctx context.Context) {
 	outcomes, err := sandbox.Replay(ctx, events)
 	if err != nil {
 		log.Printf("serve: shadow sandbox replay failed: %v (recovery verification inconclusive)", err)
+		if status != nil {
+			status.RecordShadow(introspect.ShadowResult{
+				LastRun:   time.Now(),
+				Events:    len(events),
+				Recovered: false,
+				Errored:   true,
+			})
+		}
 		return
 	}
 
-	// Check the final outcome — after the recovery chain the task must be
-	// back in READY (requeued for execution), not merely in any non-empty
-	// state. A missing/empty outcome list is treated as inconclusive.
+	// Check the final outcome — the recovery chain must have fully recovered
+	// the requeued task (RecoverFromAgentDeath re-acquires it for a
+	// replacement agent, so the final state is LEASED, not READY). The
+	// reliable signal is the recovered-task count carried on the
+	// recover.all outcome's Detail. A missing/empty outcome list is treated
+	// as inconclusive.
 	if len(outcomes) == 0 {
 		log.Printf("serve: shadow sandbox replay produced no outcomes (recovery verification inconclusive)")
+		if status != nil {
+			status.RecordShadow(introspect.ShadowResult{
+				LastRun:   time.Now(),
+				Events:    len(events),
+				Recovered: false,
+				Errored:   true,
+			})
+		}
 		return
 	}
 	last := outcomes[len(outcomes)-1]
-	recovered := last.TaskState == string(taskfabric.StateReady)
-	log.Printf("serve: shadow sandbox completed (events=%d, final_task_state=%s, recovered_ready=%v)",
+	recovered, _ := last.Detail["recovered"].(int)
+	recoveredOK := recovered > 0
+	log.Printf("serve: shadow sandbox completed (events=%d, final_task_state=%s, recovered=%d)",
 		len(outcomes), last.TaskState, recovered)
-	if !recovered {
-		log.Printf("serve: shadow sandbox WARNING — task did not return to READY; recovery chain may be degraded")
+	if !recoveredOK {
+		log.Printf("serve: shadow sandbox WARNING — recovery chain did not recover the requeued task; chain may be degraded")
+	}
+	if status != nil {
+		status.RecordShadow(introspect.ShadowResult{
+			LastRun:   time.Now(),
+			Events:    len(outcomes),
+			Recovered: recoveredOK,
+			Errored:   false,
+		})
 	}
 }
 
@@ -124,7 +157,17 @@ func runShadowSandbox(ctx context.Context) {
 // The shadow sandbox loop is attached to the provided context and runs in a
 // background goroutine. It is best-effort: a panic in the sandbox is recovered
 // and logged, never crashing the process.
-func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelHandle, gaActive func() bool) {
+//
+// status (Phase 3) bridges the loops into the introspection panel; it may be
+// nil when the panel is not wired — the loops then only log.
+func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelHandle, gaActive func() bool, status *introspect.ChaosReporter) {
+	if status != nil {
+		if cfg.Kernel.Chaos.Enabled {
+			status.SetConfig(true, effectiveChaosMode(cfg))
+		} else {
+			status.SetConfig(false, "off")
+		}
+	}
 	if !cfg.Kernel.Chaos.Enabled {
 		log.Printf("serve: chaos subsystem disabled (kernel.chaos.enabled=false)")
 		return
@@ -138,13 +181,13 @@ func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelH
 	switch mode {
 	case "shadow":
 		interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-		go shadowSandboxLoop(ctx, interval)
+		go shadowSandboxLoop(ctx, interval, status)
 
 	case "live":
 		if !cfg.Kernel.Chaos.AllowLive {
 			log.Printf("serve: chaos mode=live but allow_live=false — falling back to shadow mode")
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go shadowSandboxLoop(ctx, interval)
+			go shadowSandboxLoop(ctx, interval, status)
 			return
 		}
 		// Live chaos is dangerous: it kills real production agents.
@@ -155,32 +198,50 @@ func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelH
 		if len(cfg.Kernel.Chaos.EligibleCapabilities) == 0 {
 			log.Printf("serve: live chaos requested but eligible_capabilities is empty — refusing to arm (falling back to shadow)")
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go shadowSandboxLoop(ctx, interval)
+			go shadowSandboxLoop(ctx, interval, status)
 			return
 		}
 		if peerKernel != nil && peerKernel.agents != nil && peerKernel.recovery != nil {
 			if cfg.Kernel.Chaos.StopToken == "" {
 				log.Printf("serve: live chaos requested but stop_token is empty — refusing to arm without an emergency-stop credential")
 				interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-				go shadowSandboxLoop(ctx, interval)
+				go shadowSandboxLoop(ctx, interval, status)
 				return
 			}
 			chaos := aresrecovery.NewChaos(peerKernel.agents, peerKernel.recovery)
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go liveChaosLoop(ctx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive)
+			go liveChaosLoop(ctx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive, status)
 			log.Printf("serve: LIVE chaos mode enabled — agents WILL be killed (interval=%s, rate=%d/min enforced, whitelist=%v)",
 				interval.String(), cfg.Kernel.Chaos.RatePerMin, cfg.Kernel.Chaos.EligibleCapabilities)
 		} else {
 			log.Printf("serve: live chaos requested but kernel handle incomplete — falling back to shadow")
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go shadowSandboxLoop(ctx, interval)
+			go shadowSandboxLoop(ctx, interval, status)
 		}
 
 	default:
 		log.Printf("serve: unknown chaos mode %q — defaulting to shadow", mode)
 		interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-		go shadowSandboxLoop(ctx, interval)
+		go shadowSandboxLoop(ctx, interval, status)
 	}
+}
+
+// effectiveChaosMode resolves the mode that will actually run given the
+// arming guards (allow_live, whitelist, stop token, kernel handle). It mirrors
+// the branching inside wireChaos so the panel reports the true effective mode
+// rather than the raw configured string.
+func effectiveChaosMode(cfg *ares_config.Config) string {
+	mode := cfg.Kernel.Chaos.Mode
+	if mode == "" {
+		mode = "shadow"
+	}
+	if mode != "live" || !cfg.Kernel.Chaos.AllowLive {
+		return "shadow"
+	}
+	if len(cfg.Kernel.Chaos.EligibleCapabilities) == 0 || cfg.Kernel.Chaos.StopToken == "" {
+		return "shadow"
+	}
+	return "live"
 }
 
 // liveChaosGuard holds the enforced safety state for a live chaos loop:
@@ -267,7 +328,10 @@ func (g *liveChaosGuard) isStopped() bool {
 //  5. Cooldown — an injected agent is not targeted again for cfg.Cooldown.
 //  6. Target whitelist — only agents declaring a capability from
 //     cfg.EligibleCapabilities qualify (arming itself refuses an empty list).
-func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig, gaActive func() bool) {
+//
+// status (Phase 3) surfaces the loop's operational state to the panel
+// (active / injections / fail-safe / GA pause); it may be nil.
+func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig, gaActive func() bool, status *introspect.ChaosReporter) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -280,6 +344,11 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 	guard := newLiveChaosGuard(ratePerMin, cooldown)
 	pausedForGA := false
 
+	// Report the armed live state to the panel on loop start.
+	if status != nil {
+		status.SetLive(introspect.LiveChaosState{Active: true})
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -290,16 +359,31 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 		select {
 		case <-ctx.Done():
 			log.Printf("serve: live chaos loop stopping (context cancelled)")
+			if status != nil {
+				status.SetLive(introspect.LiveChaosState{Active: false})
+			}
 			return
 		case <-ticker.C:
 			// Emergency stop (REVIEW #12 Phase 2): POST /api/chaos/stop trips
 			// this permanently — the loop exits rather than idles.
 			if liveChaosCtl.Stopped() {
 				log.Printf("serve: live chaos loop stopped by emergency stop endpoint")
+				if status != nil {
+					status.SetLive(introspect.LiveChaosState{
+						Active:           false,
+						StoppedByControl: true,
+					})
+				}
 				return
 			}
 			if guard.isStopped() {
 				log.Printf("serve: live chaos loop stopped by fail-safe latch (earlier recovery verification failed)")
+				if status != nil {
+					status.SetLive(introspect.LiveChaosState{
+						Active:          false,
+						FailSafeTripped: true,
+					})
+				}
 				return
 			}
 			// GA quiet window (#12 Phase 2): defer injections while a
@@ -309,14 +393,20 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 				if !pausedForGA {
 					pausedForGA = true
 					log.Printf("serve: live chaos paused — GA generation in flight (quiet window)")
+					if status != nil {
+						status.SetLive(introspect.LiveChaosState{Active: true, PausedForGA: true})
+					}
 				}
 				continue
 			}
 			if pausedForGA {
 				pausedForGA = false
 				log.Printf("serve: live chaos resumed — GA generation finished")
+				if status != nil {
+					status.SetLive(introspect.LiveChaosState{Active: true, PausedForGA: false})
+				}
 			}
-			runLiveChaosInjection(ctx, chaos, fabric, guard, cfg.EligibleCapabilities)
+			runLiveChaosInjection(ctx, chaos, fabric, guard, cfg.EligibleCapabilities, status)
 		}
 	}
 }
@@ -326,7 +416,10 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 // kill, then verifies recovery; a failed verification trips the fail-safe
 // latch so no further injections occur. The cycle is wrapped in panic
 // recovery so a chaos failure never crashes the process.
-func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard, eligible []string) {
+//
+// status (Phase 3) records the injection count and fail-safe state; it may be
+// nil.
+func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard, eligible []string, status *introspect.ChaosReporter) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("serve: live chaos injection panicked (recovered): %v", r)
@@ -375,6 +468,11 @@ func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabri
 	}
 	guard.markInjected(target, now)
 
+	// Report injection to the panel (Phase 3).
+	if status != nil {
+		status.AddInjection(now)
+	}
+
 	// Verify recovery. VerifyRecovery returns the count of recovered agents;
 	// zero means the recovery chain did not restore anything — trip the
 	// fail-safe latch so no further injections run.
@@ -382,6 +480,12 @@ func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabri
 	if recovered == 0 {
 		guard.stop()
 		log.Printf("serve: live chaos — recovery verification FAILED for %s (0 agents recovered); FURTHER INJECTIONS STOPPED by fail-safe latch", target)
+		if status != nil {
+			status.SetLive(introspect.LiveChaosState{
+				Active:          true,
+				FailSafeTripped: true,
+			})
+		}
 		return
 	}
 

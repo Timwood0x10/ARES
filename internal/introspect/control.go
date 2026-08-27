@@ -73,6 +73,11 @@ type ControlServer struct {
 	evolution EvolutionTrajectoryProvider
 	feedback  EvolutionFeedbackSink
 	spans     ObservabilitySpansProvider
+
+	// flight exposes the flight-recorder read surfaces (timeline/summary/
+	// graph/decisions/diagnostics/genealogy) migrated from the deleted
+	// dashboard /flight/* routes. Nil disables the endpoints.
+	flight FlightProvider
 }
 
 // EvolutionTrajectoryProvider supplies the evolution trajectory (v0.3.0 M3-1).
@@ -164,6 +169,29 @@ func (s *ControlServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleEvolutionFeedback(w, r)
 	case r.Method == http.MethodGet && path == "/api/observability/spans":
 		s.handleObservabilitySpans(w, r)
+	// Flight-recorder read surfaces (migrated from dashboard /flight/*):
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/flight/"):
+		s.serveFlight(w, r, path)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveFlight dispatches the flight-recorder read endpoints by path suffix.
+func (s *ControlServer) serveFlight(w http.ResponseWriter, r *http.Request, path string) {
+	switch path {
+	case "/api/flight/timeline":
+		s.handleFlightTimeline(w, r)
+	case "/api/flight/summary":
+		s.handleFlightSummary(w, r)
+	case "/api/flight/graph":
+		s.handleFlightGraph(w, r)
+	case "/api/flight/decisions":
+		s.handleFlightDecisions(w, r)
+	case "/api/flight/diagnostics":
+		s.handleFlightDiagnostics(w, r)
+	case "/api/flight/genealogy":
+		s.handleFlightGenealogy(w, r)
 	default:
 		http.NotFound(w, r)
 	}

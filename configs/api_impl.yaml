@@ -1,9 +1,9 @@
 # ARES embedded launcher config — internal/api_impl.ServiceConfig
 # Used by: `ares start --config configs/api_impl.yaml`
 #
-# Fill in llm.api_key (or hardcode it) and adjust the mcp servers /
-# dashboard.addr for your environment. StartService verifies LLM reachability
-# on boot, so a bad api_key fails fast with a clear error.
+# Fill in llm.api_key (or hardcode it) and adjust the mcp servers for your
+# environment. StartService verifies LLM reachability on boot, so a bad
+# api_key fails fast with a clear error.
 
 llm:
   provider: "openai"
@@ -25,9 +25,6 @@ mcp:
         stdio:
           command: codebase-memory-mcp
           args: []
-
-dashboard:
-  addr: ":9092"
 
 # Optional PostgreSQL-backed evaluation service.
 # When `enabled: true`, StartService wires the eval HTTP endpoints under

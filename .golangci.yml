@@ -199,10 +199,6 @@ linters:
       - path: internal/ares_observability/
         linters:
           - goconst
-      # Monitoring tab/aggregator field names.
-      - path: internal/monitoring/
-        linters:
-          - goconst
       # API tool schema parameter/result field names.
       - path: api/tools/builtin.go
         linters:
@@ -223,13 +219,6 @@ linters:
           - goconst
       # Quant research graph/schema field names.
       - path: internal/ares_quant/research/
-        linters:
-          - goconst
-      # Dashboard orchestrator event field names.
-      - path: internal/dashboard/orchestrator.go
-        linters:
-          - goconst
-      - path: internal/dashboard/event_bridge.go
         linters:
           - goconst
       # Discovery binary provider metadata field names.

@@ -285,9 +285,6 @@ mcp:
         stdio:
           command: codegraph
           args: ["serve", "--mcp"]
-
-dashboard:
-  addr: ":8090"
 ```
 
 依赖：codegraph 二进制 + 本地运行的 Ollama。无数据库。

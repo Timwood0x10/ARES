@@ -290,7 +290,7 @@ func runServe() error {
 	// intelligence engine + read-only control server (extracted to
 	// setupServeControlPlane to keep runServe's cyclomatic complexity within
 	// gocyclo's 30 limit). The old MonitorPlugin/tabs/PluginBus bridge is gone.
-	intelEngine, controlServer, err := setupServeControlPlane(ctx, g, cfg, cfgStore, store, peerKernel, comp.Dashboard)
+	intelEngine, controlServer, err := setupServeControlPlane(ctx, g, cfg, cfgStore, store, peerKernel, comp.Dashboard, comp.FlightRecorder)
 	if err != nil {
 		return err
 	}

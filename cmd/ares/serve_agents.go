@@ -140,12 +140,16 @@ func createAndServeAgents(
 	// Runtime introspection panel (monitoring.md Phase 1+2): a pull-only
 	// collector refreshes the latest-wins store every 2s; actionHandler serves
 	// the embedded UI at GET /introspect and JSON at /api/v1/introspect/*.
+	// The chaos status source (Phase 3) is a shared reporter the chaos loops
+	// update — created here so the collector and wireChaos see the same frame.
+	chaosStatus := introspect.NewChaosReporter()
 	if peerKernel.scheduler != nil && peerKernel.fabric != nil && peerKernel.agents != nil {
 		store := &introspect.Store{}
 		collector := introspect.NewCollector(introspect.Sources{
 			Kernel: peerKernel.scheduler.Snapshot,
 			Fabric: peerKernel.fabric.LeaseSnapshot,
 			Agents: peerKernel.agents.AgentsView,
+			Chaos:  chaosStatus.Snapshot,
 		})
 		peerKernel.intro = introspect.NewHandler(store)
 		sink := introspect.NewSink(store)
@@ -169,13 +173,14 @@ func createAndServeAgents(
 
 	// REVIEW #12 Phase 1+2: wire chaos subsystem. Default is shadow sandbox
 	// (production zero-impact); live mode requires explicit config plus the
-	// wired GA generation probe for the quiet window.
+	// wired GA generation probe for the quiet window. The shared chaos status
+	// reporter bridges the loops into the introspection panel (Phase 3).
 	wireChaos(ctx, cfg, peerKernel, func() bool {
 		if comp.NewEvolution == nil {
 			return false
 		}
 		return comp.NewEvolution.GAGenerationActive()
-	})
+	}, chaosStatus)
 
 	return subAgents, peerKernel, nil
 }
