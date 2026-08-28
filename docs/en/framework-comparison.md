@@ -9,12 +9,14 @@
 ### 1.1 Core Abstractions
 
 | Framework | Core Abstraction | Design Philosophy | Language |
-|-----------|-----------------|-------------------|----------|
+|-----------|-----------------|------------------|----------|
 | **LangGraph** | StateGraph (directed graph) | Graph computation model, node=function, edge=transition | Python/JS |
 | **CrewAI** | Crew + Agent + Task | Team collaboration metaphor, role-driven | Python |
 | **AutoGen/AG2** | ConversableAgent + GroupChat | Conversation-driven, message passing | Python |
 | **Semantic Kernel** | Kernel + Plugin + Function | Enterprise middleware, DI container | C#/Python/Java |
-| **ARES** | Peer Agent + Kernel + DAG + AHP | Agent Operating System, peer-to-peer, capability-scheduled | Go |
+| **ARES** | Peer Agent + Kernel Scheduler + Task Fabric | Agent OS, peer-to-peer, capability-scheduled, event-sourced | Go |
+
+> **Scope note**: ARES is a research-oriented Agent OS under active development (dev branch, ~1300 commits). Features marked "implemented but not wired" exist in code but are not reachable from the production `ares serve` path. The v0.3.0 review documented ~20 such "open circuits".
 
 ### 1.2 Architecture Diagrams
 
@@ -40,71 +42,27 @@ graph TD
     Manager --> A1[Agent 1: Researcher]
     Manager --> A2[Agent 2: Writer]
     Manager --> A3[Agent 3: Reviewer]
-    A1 -->|delegate| A2
-    A2 -->|delegate| A3
 ```
 
-#### AutoGen — Conversation-Driven
+#### ARES — Flat Peer + Kernel Scheduler (current, dev branch)
 
 ```mermaid
 graph TD
-    GC[GroupChat] --> GSM[GroupChatManager]
-    GSM -->|speaker selection| A1[AssistantAgent]
-    GSM -->|speaker selection| A2[UserProxyAgent]
-    GSM -->|speaker selection| A3[CriticAgent]
-    A1 -->|message| GC
-    A2 -->|message| GC
-    A3 -->|message| GC
-    GSM -->|selection methods| SM{Method}
-    SM -->|auto| LLM[LLM picks next]
-    SM -->|round_robin| RR[Fixed order]
-    SM -->|fsm| FSM[State machine]
+    User[User Input] --> Fabric[Task Fabric<br/>durable task state machine]
+    Fabric --> Sched[Kernel Scheduler<br/>capability-score candidates]
+    Sched -->|lease + quantum| A1[Peer Agent A]
+    Sched -->|lease + quantum| A2[Peer Agent B]
+    Sched -->|lease + quantum| A3[Peer Agent C]
+    A1 -->|agentipc| A2
+    A2 -->|agentipc| A3
+    A1 --> Recovery[aresrecovery<br/>lease expiry → requeue → checkpoint resume]
+    A2 --> Recovery
+    A3 --> Recovery
+    Fabric --> Events[Event store<br/>event-sourced history]
+    Sched --> Panel[introspect panel<br/>scheduler decisions + event stream]
 ```
 
-#### Semantic Kernel — Plugin Middleware
-
-```mermaid
-graph LR
-    App[Application] --> Kernel[Kernel]
-    Kernel --> Plugins[Plugins]
-    Kernel --> Services[AI Services]
-    Kernel --> VectorStore[Vector Stores]
-    Kernel --> Filters[Pre/Post Filters]
-    Plugins --> F1[Function A]
-    Plugins --> F2[Function B]
-    Services --> OpenAI[OpenAI]
-    Services --> Azure[Azure OpenAI]
-    Services --> HF[HuggingFace]
-    VectorStore --> Qdrant[Qdrant]
-    VectorStore --> PG[PostgreSQL]
-    VectorStore --> Redis[Redis]
-```
-
-#### ARES — Leader-Sub Agent with AHP
-
-```mermaid
-graph TD
-    User[User Input] --> Leader[Leader Agent]
-    Leader --> Parser[Parser]
-    Leader --> Planner[Planner]
-    Leader --> Dispatcher[Dispatcher]
-    Dispatcher -->|errgroup + semaphore| SA1[Sub-Agent A]
-    Dispatcher -->|errgroup + semaphore| SA2[Sub-Agent B]
-    Dispatcher -->|errgroup + semaphore| SA3[Sub-Agent C]
-    SA1 -->|AHP RESULT| Agg[Aggregator]
-    SA2 -->|AHP RESULT| Agg
-    SA3 -->|AHP RESULT| Agg
-    Agg --> Result[Final Result]
-    Leader -->|background| Distiller[Memory Distiller]
-    Distiller --> PG[(PostgreSQL + pgvector)]
-
-    subgraph AHP Protocol
-        SA1 -.->|HEARTBEAT| HB[Heartbeat Monitor]
-        SA2 -.->|HEARTBEAT| HB
-        SA3 -.->|HEARTBEAT| HB
-        HB -.->|timeout| DLQ[Dead Letter Queue]
-    end
-```
+The legacy Leader-Sub architecture (v0.2.x) has been removed. There is no `leader` package, no dispatcher/aggregator, and no production dead-letter queue. Agents are flat peers scheduled by the kernel.
 
 ---
 
@@ -114,48 +72,19 @@ graph TD
 
 | Capability | LangGraph | CrewAI | AutoGen | SK | ARES |
 |------------|-----------|--------|---------|-----|---------|
-| **DAG** | Native | Sequential/Hierarchical only | No (conversation flow) | Planners deprecated | Native |
-| **Conditional Edges** | `add_conditional_edges` | None | LLM selects speaker | Function calling | None (TODO) |
-| **Cycles/Loops** | Native | Not supported | Natural conversation loops | Function calling loop | Not supported (DAG forbids) |
-| **Parallel Execution** | Nodes in same super-step | `async_execution=True` | GroupChat is serial | Parallel function calling | Semaphore-based |
-| **Subgraph Nesting** | Supported (node=subgraph) | Flow wraps Crews | Not supported | Plugin composition | Not supported (TODO) |
-| **Hot Reload** | Not supported | Not supported | Not supported | Not supported | fsnotify file watcher |
-| **Topological Sort** | Implicit (graph traversal) | Not needed | Not needed | Not needed | Kahn's algorithm (explicit) |
-| **Cycle Detection** | Not needed (cycles allowed) | Not needed | Not needed | Not needed | DFS + recursion stack |
+| **DAG** | Native | Sequential/Hierarchical only | No (conversation flow) | Planners deprecated | Task fabric dependencies |
+| **Conditional Edges** | `add_conditional_edges` | None | LLM selects speaker | Function calling | Runtime routing via kernel dispatch |
+| **Cycles/Loops** | Native | Not supported | Natural conversation loops | Function calling loop | Not supported (no arbitrary cycles) |
+| **Parallel Execution** | Nodes in same super-step | `async_execution=True` | GroupChat is serial | Parallel function calling | Scheduler maxConcurrent (goroutine) |
+| **Subgraph Nesting** | Supported (node=subgraph) | Flow wraps Crews | Not supported | Plugin composition | Not in production path |
+| **Hot Reload** | Not supported | Not supported | Not supported | Not supported | Config watcher (cfgStore) only |
+| **Topological Sort** | Implicit (graph traversal) | Not needed | Not needed | Not needed | Explicit in task fabric scheduler |
 
-#### ARES DAG — Cycle Detection
-
-```go
-// internal/workflow/engine/types.go
-func (d *DAG) hasCycle() bool {
-    visited := make(map[string]bool)
-    recStack := make(map[string]bool)
-
-    var dfs func(node string) bool
-    dfs = func(node string) bool {
-        visited[node] = true
-        recStack[node] = true
-        for _, neighbor := range d.Edges[node] {
-            if recStack[neighbor] { return true }  // back edge → cycle
-            if !visited[neighbor] && dfs(neighbor) { return true }
-        }
-        recStack[node] = false
-        return false
-    }
-    // ...
-}
-
-// Kahn's algorithm for topological sort
-func (d *DAG) GetExecutionOrder() ([]string, error) {
-    // compute in-degrees → BFS from zero-indegree nodes
-    // result count != node count → cycle detected
-}
-```
+> Note on ARES workflow: the `internal/workflow/engine` package (MutableDAG, DynamicExecutor, HITL, LoopConfig, Subgraph) is implemented but **not wired into production** — it exists as a capability reserve for the evolution system. The production orchestration path is the task fabric + kernel scheduler.
 
 #### LangGraph — Cycles by Design
 
 ```python
-# LangGraph: cycles are a core feature (agentic loop)
 graph = StateGraph(State)
 graph.add_node("llm", call_llm)
 graph.add_node("tools", call_tools)
@@ -166,69 +95,20 @@ graph.add_conditional_edges("llm", should_continue, {
 graph.add_edge("tools", "llm")  # cycle! tools → llm
 ```
 
-**Key Difference**: LangGraph allows cycles (agentic loop is core design). ARES's DAG explicitly forbids cycles (task orchestration scenario).
-
-#### Workflow Execution Flow Comparison
-
-```mermaid
-graph TD
-    subgraph "LangGraph Execution"
-        LG1[compile graph] --> LG2[invoke/stream]
-        LG2 --> LG3[super-step: run all ready nodes]
-        LG3 --> LG4[checkpoint state]
-        LG4 --> LG5[evaluate edges]
-        LG5 -->|more nodes| LG3
-        LG5 -->|done| LG6[return result]
-    end
-
-    subgraph "ARES DAG Execution"
-        GA1[NewDAG: build + cycle check] --> GA2[GetExecutionOrder: Kahn's sort]
-        GA2 --> GA3[runSteps: semaphore + goroutines]
-        GA3 --> GA4[executeWithRetry: exponential backoff]
-        GA4 --> GA5[deadlock detection: 5s timeout]
-        GA5 -->|more steps| GA3
-        GA5 -->|done| GA6[return WorkflowResult]
-    end
-```
+**Key Difference**: LangGraph allows cycles (the agentic loop is core design). ARES's production task fabric forbids arbitrary cycles — tasks are a DAG with dependencies, and each task runs to completion through lease/epoch/quantum.
 
 ### 2.2 State Management
 
 | Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **State Model** | TypedDict, partial updates | Implicit per-agent | Message history | Kernel DI container | `map[string]any` shared |
-| **Checkpointing** | Native (PostgresSaver, SQLite) | Flow uses SQLite | Not supported | Not supported | Not supported (TODO) |
+| **Checkpointing** | Native (PostgresSaver, SQLite) | Flow uses SQLite | Not supported | Not supported | Task checkpoint (in-memory fabric) |
 | **Persistence** | PostgreSQL, SQLite, CosmosDB | LanceDB (memory), SQLite (flow) | Not supported | Vector store abstraction | PostgreSQL |
 | **State Merging** | Reducers (append vs overwrite) | Not supported | Not supported | Not supported | Not supported |
 | **State Replay** | Supported (any checkpoint) | Not supported | Not supported | Not supported | Not supported |
 | **Consistency** | 3 durability modes | None | None | None | Transaction-level (PG) |
 
-#### LangGraph Checkpoint Architecture
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Graph
-    participant Checkpointer as PostgresSaver
-    participant DB as PostgreSQL
-
-    User->>Graph: invoke(input, thread_id="t1")
-    Graph->>Graph: execute node A
-    Graph->>Checkpointer: save checkpoint (state + next)
-    Checkpointer->>DB: INSERT INTO checkpoints
-    Graph->>Graph: execute node B
-    Graph->>Checkpointer: save checkpoint
-    Checkpointer->>DB: INSERT INTO checkpoints
-    Graph->>User: return result
-
-    Note over User,DB: Later: resume from checkpoint
-    User->>Graph: get_state(thread_id="t1")
-    Graph->>Checkpointer: load latest checkpoint
-    Checkpointer->>DB: SELECT FROM checkpoints
-    Graph->>User: StateSnapshot (values, next, metadata)
-    User->>Graph: Command(resume=value)
-    Graph->>Checkpointer: load checkpoint
-    Graph->>Graph: re-execute interrupted node
-```
+LangGraph has the most advanced state management. ARES's task fabric checkpoints durable progress per task (survives agent death via aresrecovery), but does not offer arbitrary graph-state replay like LangGraph.
 
 ---
 
@@ -238,66 +118,57 @@ sequenceDiagram
 
 | Pattern | LangGraph | CrewAI | AutoGen | SK | ARES |
 |---------|-----------|--------|---------|-----|---------|
-| **Supervisor** | Subgraph composition | Hierarchical Process | GroupChatManager | GroupChatOrchestration | Leader Agent |
-| **Peer-to-peer** | Shared state nodes | Delegation | Pairwise chat | AgentTool | AHP point-to-point |
+| **Supervisor** | Subgraph composition | Hierarchical Process | GroupChatManager | GroupChatOrchestration | None (flat peer) |
+| **Peer-to-peer** | Shared state nodes | Delegation | Pairwise chat | AgentTool | agentipc bus (real IPC) |
 | **Swarm** | Handoff mechanism | Not supported | Not supported | Not supported | Not supported |
-| **Task Distribution** | Graph node scheduling | Manager agent dynamic | Speaker selection | RoundRobin/custom | Dispatcher + errgroup |
-| **Result Aggregation** | State merge | Task output chaining | Conversation convergence | FilterResults | Aggregator (dedupe + sort) |
+| **Task Distribution** | Graph node scheduling | Manager agent dynamic | Speaker selection | RoundRobin/custom | Kernel scheduler (capability score) |
+| **Result Aggregation** | State merge | Task output chaining | Conversation convergence | FilterResults | Each task completes independently |
 
-### 3.2 Leader / Sub-Agent Pattern Comparison
-
-#### ARES — Deterministic Task Dispatch
+### 3.2 ARES — Capability-Scheduled Dispatch
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Leader as Leader Agent
-    participant Planner
-    participant Dispatcher
-    participant SA1 as Sub-Agent A
-    participant SA2 as Sub-Agent B
-    participant Agg as Aggregator
-    participant Mem as Distiller
+    participant Fabric as Task Fabric
+    participant Sched as Kernel Scheduler
+    participant A as Peer Agent
+    participant R as aresrecovery
 
-    User->>Leader: input
-    Leader->>Leader: initMemoryContext (retrieve similar tasks)
-    Leader->>Planner: Plan (trigger-based agent selection)
-    Planner->>Dispatcher: tasks[]
-    par parallel dispatch
-        Dispatcher->>SA1: AHP TASK message
-        Dispatcher->>SA2: AHP TASK message
+    User->>Fabric: submit task (capability + input)
+    Fabric->>Fabric: state = READY (event: task.created)
+    Sched->>Sched: drain → score candidates by capability
+    Sched->>A: acquire (lease + epoch)
+    A->>A: run quantum (LLM + tools)
+    A->>Fabric: yield (checkpoint) / complete / fail
+    Fabric->>User: final result
+
+    alt agent dies mid-task
+        R->>R: lease expires → requeue
+        R->>Sched: replacement agent acquires
+        Sched->>A: resume from checkpoint
     end
-    SA1->>Agg: AHP RESULT
-    SA2->>Agg: AHP RESULT
-    Agg->>Leader: merged result
-    Leader->>Mem: background distillation
-    Leader->>User: final result
 ```
 
-#### CrewAI — Manager-Driven Assignment
+ARES's dispatch is deterministic: candidates are scored by capability overlap × load × confidence, the highest wins, and a lease+epoch fence prevents stale holders. CrewAI's manager and AutoGen's speaker selection are LLM-driven and less predictable.
+
+### 3.3 CrewAI — Manager-Driven Assignment
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Crew
     participant Manager as Manager Agent
     participant Researcher
     participant Writer
-    participant Reviewer
 
-    User->>Crew: kickoff()
-    Crew->>Manager: start hierarchical process
+    User->>Manager: kickoff()
     Manager->>Researcher: assign research task
     Researcher->>Manager: research output
-    Manager->>Writer: assign writing task (with context)
+    Manager->>Writer: assign writing task
     Writer->>Manager: draft output
-    Manager->>Reviewer: assign review task
-    Reviewer->>Manager: review feedback
-    Manager->>Crew: final result
-    Crew->>User: output
+    Manager->>User: final result
 ```
 
-#### AutoGen — LLM-Selected Speaker
+### 3.4 AutoGen — LLM-Selected Speaker
 
 ```mermaid
 sequenceDiagram
@@ -312,15 +183,14 @@ sequenceDiagram
     Assistant->>GSM: response + tool calls
     GSM->>Critic: select as next speaker
     Critic->>GSM: feedback
-    GSM->>GSM: check termination
     GSM->>User: final answer
 ```
 
 **Key Differences**:
-- **ARES**: Deterministic dispatch (trigger keywords), deterministic aggregation (dedupe + sort)
-- **CrewAI**: Manager agent dynamically assigns, more uncertain
+- **ARES**: deterministic dispatch (capability score), deterministic task completion
+- **CrewAI**: manager agent dynamically assigns, more uncertain
 - **AutoGen**: LLM selects speaker, most uncertain but most flexible
-- **LangGraph**: Graph structure determines flow, most controllable
+- **LangGraph**: graph structure determines flow, most controllable
 
 ---
 
@@ -330,59 +200,12 @@ sequenceDiagram
 
 | Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
-| **Comm Style** | Shared state | Task output chaining | Message queue (chat history) | Shared Kernel | AHP Message Protocol |
-| **Message Format** | State dict | Task.output | ChatMessage | KernelArguments | AHPMessage |
-| **Message Types** | None (state updates) | None | user/assistant/function | None | TASK/RESULT/PROGRESS/ACK/HEARTBEAT |
-| **Heartbeat** | Not supported | Not supported | Not supported | Not supported | 5s interval, 30s timeout |
-| **Dead Letter Queue** | Not supported | Not supported | Not supported | Not supported | DLQ (max 10000) |
-| **Idempotency** | Checkpoint guarantees | Not supported | Not supported | Not supported | Global unique MessageID |
+| **Comm Style** | Shared state | Task output chaining | Message queue (chat history) | Shared Kernel | agentipc (current), AHP (legacy) |
+| **Message Format** | State dict | Task.output | ChatMessage | KernelArguments | agentipc.Message |
+| **Heartbeat** | Not supported | Not supported | Not supported | Not supported | AHP only (legacy, not in production) |
+| **Dead Letter Queue** | Not supported | Not supported | Not supported | Not supported | AHP only (legacy, not in production) |
 
-#### AHP Message Flow
-
-```mermaid
-sequenceDiagram
-    participant Leader
-    participant Queue as AHP Queue
-    participant SubAgent
-    participant HB as Heartbeat Monitor
-    participant DLQ as Dead Letter Queue
-
-    Leader->>Queue: SendTask(TASK)
-    Queue->>SubAgent: Dequeue
-    SubAgent->>SubAgent: Execute task
-
-    loop every 5s
-        SubAgent->>HB: HEARTBEAT
-        HB->>HB: update LastSeen
-    end
-
-    SubAgent->>Queue: SendResult(RESULT)
-    Queue->>Leader: Dequeue
-
-    Note over HB,DLQ: On failure
-    HB->>HB: CheckTimeouts (30s threshold)
-    HB->>Leader: MarkAgentOffline
-    Leader->>Queue: ReDispatch to another agent
-    Queue->>DLQ: failed messages
-```
-
-#### AHP Message Structure
-
-```go
-// internal/ares_protocol/ahp/message.go
-type AHPMessage struct {
-    MessageID   string         `json:"message_id"`    // <ts>.<counter>.<rand6>
-    Method      AHPMethod      `json:"method"`        // TASK|RESULT|PROGRESS|ACK|HEARTBEAT
-    AgentID     string         `json:"agent_id"`      // sender
-    TargetAgent string         `json:"target_agent"`  // receiver
-    TaskID      string         `json:"task_id"`
-    SessionID   string         `json:"session_id"`
-    Payload     map[string]any `json:"payload"`
-    Timestamp   time.Time      `json:"timestamp"`
-}
-```
-
-**ARES's Unique Advantage**: AHP is the only protocol with **heartbeat detection + dead letter queue + progress reporting**. Other frameworks' messaging is "send→receive" with no agent liveness detection or failure recovery.
+**Important correction**: ARES's production agent communication uses `agentipc.Bus` (Send/Request/Reply/Delegate/Handoff/Subscribe). The AHP protocol with heartbeat + DLQ exists in `internal/ares_protocol/ahp` but is **not wired into production** — it is used only for evolution IPC bridging. The heartbeat monitor and dead-letter queue have zero production call sites. Claims that "AHP provides protocol-level heartbeat + DLQ guarantees" are not accurate for the production path.
 
 ---
 
@@ -392,72 +215,15 @@ type AHPMessage struct {
 
 | Mechanism | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
-| **Retry** | None built-in | `max_retry_limit=2` | None built-in | None built-in | 3x exponential backoff |
+| **Retry** | None built-in | `max_retry_limit=2` | None built-in | None built-in | 3x exponential backoff (task executor) |
 | **Timeout** | None built-in | `max_execution_time` | None built-in | None built-in | Tiered (LLM 120s, DB 30s, Vector 10s) |
 | **Output Validation** | None built-in | `output_pydantic` + Guardrails | None built-in | None built-in | Schema-based Validator |
-| **Fallback** | None built-in | None built-in | None built-in | None built-in | FallbackClient (Cache/Keyword/Error) |
-| **Circuit Breaker** | Not supported | Not supported | Not supported | Not supported | 3-state machine |
-| **Dead Letter Queue** | Not supported | Not supported | Not supported | Not supported | DLQ + DLQProcessor |
-| **Human-in-the-loop** | `interrupt()` | `human_input=True` | `human_input_mode` | Filter | Not supported (TODO) |
+| **Fallback** | None built-in | None built-in | None built-in | None built-in | FailoverClient (multi-provider + cooldown) |
+| **Circuit Breaker** | Not supported | Not supported | Not supported | Not supported | PostgreSQL retrieval guard only |
+| **Dead Letter Queue** | Not supported | Not supported | Not supported | Not supported | Implemented in AHP, not wired to production |
+| **Human-in-the-loop** | `interrupt()` | `human_input=True` | `human_input_mode` | Filter | Implemented in workflow/engine, not in production |
 
-#### ARES — Layered Error Handling
-
-```mermaid
-graph TD
-    A[Tool Call] --> B{Retry 3x}
-    B -->|success| C[Validate Output]
-    B -->|3x failed| D{Fallback}
-    C -->|valid| E[Return Result]
-    C -->|invalid + retryOnFail| B
-    C -->|invalid + strictMode| F[Return Error]
-    D -->|FallbackToCache| G[Try Cache]
-    D -->|FallbackToKeyword| H[Keyword Search]
-    D -->|FallbackToError| I[Return Error]
-    G -->|miss| I
-    J[Any Failure] --> K{ShouldDLQ?}
-    K -->|yes| L[Dead Letter Queue]
-    K -->|no| M[Log + Alert]
-```
-
-#### ARES Circuit Breaker
-
-```go
-// internal/storage/postgres/circuit_breaker.go
-func (cb *CircuitBreaker) AllowRequest() bool {
-    switch cb.state {
-    case StateClosed:  return true
-    case StateOpen:
-        if time.Since(cb.lastFailure) > cb.timeout {
-            // CAS transition to HalfOpen
-            atomic.CompareAndSwapInt32(&cb.state, StateOpen, StateHalfOpen)
-            return true  // allow one probe
-        }
-        return false
-    case StateHalfOpen:
-        // only one inflight request via CAS
-        return atomic.CompareAndSwapInt32(&cb.halfOpenInflight, 0, 1)
-    }
-}
-```
-
-#### ARES Retry with Validation
-
-```go
-// internal/agents/sub/executor.go
-func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
-    for attempt := 0; attempt < e.maxRetries; attempt++ {
-        result, err := e.llmClient.Call(ctx, task.Prompt)
-        if err != nil { continue }
-
-        if err := e.validator.Validate(result); err != nil {
-            if e.strictMode { return nil, err }
-            if e.retryOnFail { continue }
-        }
-        return result, nil
-    }
-    return e.executeByType(ctx, task)  // fallback
-}
-```
+**Note on ARES reliability claims**: The 3-state circuit breaker in `internal/storage/postgres/circuit_breaker.go` is specific to the PostgreSQL retrieval guard, not a general-purpose breaker. The LLM failover uses cooldown-based switching (a provider that errors, e.g. 429, is cooled down and the next is tried) — this is production-wired and real, but it is a simpler mechanism than a full circuit-breaker FSM.
 
 ---
 
@@ -471,49 +237,19 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*
 | **Long-term** | Store (PostgresStore etc.) | LanceDB vector store | mem0 integration | Vector store abstraction | PostgreSQL + pgvector |
 | **Entity Memory** | Not supported | Knowledge Graph | Not supported | Not supported | MemoryProfile type |
 | **Deduplication** | Not supported | cosine > 0.85 merge | Not supported | Not supported | cosine > 0.85 conflict detection |
-| **Importance Scoring** | Not supported | `0.5*sim + 0.3*recency + 0.2*llm` | Not supported | Not supported | Keyword + type + length rules |
-| **Distillation** | Not supported | Not supported | Not supported | Not supported | 6-step Pipeline |
-| **Multi-tenancy** | namespace tuple | Not supported | Not supported | Not supported | `SET LOCAL app.tenant_id` |
+| **Importance Scoring** | Not supported | `0.5*sim + 0.3*recency + 0.2*llm` | Not supported | Not supported | Rule-based (keyword + type + length) |
+| **Distillation** | Not supported | Not supported | Not supported | Not supported | 6-step rule pipeline |
+| **Multi-tenancy** | namespace tuple | Not supported | Not supported | Not supported | Application-level tenantID predicates |
 
-#### ARES Memory Distillation Pipeline
+### 6.2 ARES Memory Distillation
 
-```mermaid
-graph LR
-    Conv[Conversation Messages] --> S1[Step 1: ExtractExperiences]
-    S1 --> S2[Step 2: Classify + Score]
-    S2 --> S3[Step 3: Top-N Filter Before]
-    S3 --> S4[Step 4: Embed + Detect Conflicts]
-    S4 --> S5[Step 5: Top-N Filter After]
-    S5 --> S6[Step 6: Enforce Cap 5000/tenant]
-    S6 --> Store[(PostgreSQL + pgvector)]
+ARES has an automated 6-step memory distillation pipeline (extract → classify+score → filter → embed+conflict → filter → cap). It is rule-driven (no LLM call per step) so it is fast but less accurate than LLM-assisted scoring. The scoring uses keyword + type + length rules with a base score of 0.4.
 
-    subgraph "Step 2 Details"
-        SEC[Security Filter] --> NOISE[Noise Filter]
-        NOISE --> CLS[Classifier: Profile/Interaction/Preference/Knowledge]
-        CLS --> SCORE[Scorer: base 0.4 + keywords + type + length]
-    end
+Claims of "nanosecond latency" for this pipeline are misleading — it involves SQLite reads/writes and embedding generation, which take milliseconds, not nanoseconds.
 
-    subgraph "Step 4 Details"
-        EMB[Generate Embedding] --> COS[cosine similarity]
-        COS -->|> 0.85| CONFLICT{Conflict}
-        CONFLICT -->|new higher confidence| REPLACE[ReplaceOld]
-        CONFLICT -->|otherwise| KEEP[KeepBoth]
-    end
-```
+### 6.3 Multi-tenancy
 
-#### CrewAI Memory Recall
-
-```python
-# Composite scoring: 0.5*semantic_similarity + 0.3*recency_decay + 0.2*llm_importance
-score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
-
-# On save: dedup check — cosine > 0.85 → LLM decides keep/merge/delete
-```
-
-**Key Differences**:
-- ARES's distillation is an **automated Pipeline** (rule-driven, nanosecond-level), CrewAI's memory is **LLM-assisted** (more accurate but slower and more expensive)
-- ARES has **multi-tenant isolation** (PostgreSQL `SET LOCAL`), others don't
-- LangGraph's Store is most flexible (namespace tuple), but no automatic distillation
+ARES uses application-level tenantID predicates on all repository queries. The previous PostgreSQL RLS approach (`SET LOCAL app.tenant_id`) was removed in v0.3.1 (tenant_isolation.md, #36 descoped).
 
 ---
 
@@ -525,13 +261,11 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 |---------|-----------|--------|---------|-----|---------|
 | **Language** | Python | Python | Python | C#/Python/Java | Go |
 | **Concurrency** | asyncio | asyncio | asyncio | async/await | goroutine + channel |
-| **Connection Pool** | Via psycopg | Not supported | Not supported | Driver-dependent | Custom Pool (MaxOpen=25) |
-| **Circuit Breaker** | Not supported | Not supported | Not supported | Not supported | 3-state machine |
+| **Connection Pool** | Via psycopg | Not supported | Not supported | Driver-dependent | Custom Pool |
 | **Rate Limiting** | Not supported | Not supported | Not supported | Not supported | TokenBucket/SlidingWindow/Semaphore |
-| **Multi-tenancy** | namespace | Not supported | Not supported | Not supported | PostgreSQL RLS + SET LOCAL |
+| **Multi-tenancy** | namespace | Not supported | Not supported | Not supported | App-level tenantID |
 | **PII Redaction** | Not supported | Not supported | Not supported | Not supported | Regex masking (API key/email/phone/SSN) |
-| **SQL Injection** | N/A | N/A | N/A | ORM | Table name regex + keyword detection |
-| **Observability** | LangSmith (paid) | Basic logging | AutoGen Studio | Application Insights | Tracer + Metrics |
+| **Observability** | LangSmith (paid) | Basic logging | AutoGen Studio | Application Insights | introspect panel (6 pages, free) |
 | **Deployment** | LangGraph Platform | Local/container | AutoGen Studio (not prod) | Azure integration | Containerized |
 
 ### 7.2 Performance Characteristics
@@ -539,45 +273,8 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 | Dimension | LangGraph | CrewAI | AutoGen | SK | ARES |
 |-----------|-----------|--------|---------|-----|---------|
 | **Startup Overhead** | High (LangChain ecosystem) | Medium | Medium | High (.NET DI) | Low (native Go) |
-| **State Serialization** | JsonPlusSerializer + AES | None | None | None | None (in-memory map) |
-| **Checkpoint Latency** | Per super-step write | None | None | None | None |
+| **State Serialization** | JsonPlusSerializer + AES | None | None | None | In-memory map |
 | **Vector Search** | Store-dependent | LanceDB (local) | None | Multi-backend | pgvector (ivfflat index) |
-| **Embedding Cache** | Not supported | Not supported | Not supported | Not supported | Two-tier (Redis + memory) |
-
-#### ARES Protection Stack
-
-```mermaid
-graph TD
-    subgraph "Resource Controls"
-        MS[MaxSteps = 10]
-        MI[MaxIterations = 3]
-        MLC[MaxLLMCalls = 50]
-        MLD[MaxLoopDuration = 10min]
-    end
-
-    subgraph "Timeout Controls"
-        TT[TaskTimeout = 5min]
-        DT[DispatchTimeout = 2min]
-        AT[AggregationTimeout = 1min]
-        LLM[LLMRequest = 120s]
-        DB[DBQuery = 30s]
-        VS[VectorSearch = 10s]
-    end
-
-    subgraph "Reliability"
-        CB[CircuitBreaker 3-state]
-        RL[RateLimiter TokenBucket/Semaphore]
-        DLQ[Dead Letter Queue 10000]
-        HB[HeartbeatMonitor 5s/30s]
-    end
-
-    subgraph "Security"
-        PII[PII Redaction regex]
-        SQL[SQL Injection Prevention]
-        TENANT[Multi-tenant Isolation SET LOCAL]
-        SAN[Sanitizer API key/email/phone/SSN]
-    end
-```
 
 ---
 
@@ -587,16 +284,18 @@ graph TD
 
 ```mermaid
 graph TD
-    START{Your Scenario?} --> Q1{Complex state machine / loops?}
+    START{Your Scenario?} --> Q1{Complex state machine / loops / checkpoints?}
     Q1 -->|Yes| LG[LangGraph]
     Q1 -->|No| Q2{Quick multi-agent team prototype?}
     Q2 -->|Yes| CA[CrewAI]
     Q2 -->|No| Q3{Code execution + conversational agents?}
     Q3 -->|Yes| AG[AutoGen/AG2]
-    Q3 -->|No| Q4{Enterprise .NET integration?}
+    Q3 -->|No| Q4{Enterprise .NET / Azure integration?}
     Q4 -->|Yes| SK[Semantic Kernel]
-    Q4 -->|No| Q5{High concurrency + distributed + production reliability?}
-    Q5 -->|Yes| GA[ARES]
+    Q4 -->|No| Q5{Go, high concurrency, crash recovery, free observability?}
+    Q5 -->|Yes| ARES[ARES]
+    Q5 -->|No| Q6{Need RAG / document processing / huge ecosystem?}
+    Q6 -->|Yes| LG[LangGraph]
 ```
 
 ### 8.2 One-Line Positioning
@@ -607,146 +306,71 @@ graph TD
 | **CrewAI** | Team collaboration simulator | Rapid prototyping, role-play scenarios | Production, high determinism |
 | **AutoGen** | Conversational Agent framework | Code generation/execution, research dialogues | Production deployment, structured workflows |
 | **Semantic Kernel** | Enterprise AI middleware | .NET ecosystem, Azure, multi-language | Python-only teams, lightweight scenarios |
-| **ARES** | Distributed Agent orchestration engine | High concurrency, multi-tenancy, protocol-level communication | Scenarios needing cycles/state rollback |
+| **ARES** | Go-native Agent OS with kernel scheduler | High concurrency, crash recovery, free observability | RAG/document processing, large ecosystem, stable production-proven APIs |
 
 ---
 
-## 9. ARES's Differentiators
+## 9. ARES's Honest Differentiators
 
-### 9.1 Unique Capabilities
+### 9.1 What ARES Actually Does Differently (production-wired)
 
-| Capability | Other Frameworks | ARES |
+| Capability | Other Frameworks | ARES (production) |
 |------------|-----------------|---------|
-| **Heartbeat Detection** | None | HeartbeatMonitor (5s interval, 30s timeout) |
-| **Dead Letter Queue** | None | DLQ (max 10000) + DLQProcessor |
-| **Circuit Breaker** | None | 3-state machine (Closed/Open/HalfOpen) |
-| **Embedding Cache** | None | Two-tier (Redis + memory), BLAKE2b keys |
-| **Memory Distillation** | CrewAI has simple version | 6-step Pipeline (extract→classify→score→denoise→conflict→cap) |
-| **Multi-tenant Isolation** | None | PostgreSQL SET LOCAL app.tenant_id |
-| **PII Redaction** | None | Regex masking (API key/email/phone/SSN/credit card) |
-| **Hot Reload** | None | fsnotify file watcher + polling fallback |
-| **Go Concurrency** | Python asyncio | goroutine + channel + errgroup |
-| **Topological Sort** | Implicit | Explicit Kahn's algorithm + DFS cycle detection |
+| **Agent-as-Thread architecture** | Role-based teams | Flat peer agents scheduled by kernel, tasks durable |
+| **Crash recovery** | None built-in | lease expiry → requeue → checkpoint resume (aresrecovery) |
+| **Real agent IPC** | Shared state / message queues | agentipc bus (Send/Request/Reply/Delegate/Handoff) |
+| **Event-sourced observability** | LangSmith (paid) / basic logging | introspect panel: scheduler decisions, task state machines, event stream (free) |
+| **Go concurrency** | Python asyncio | goroutine + channel, no GIL |
+| **Chaos isolation** | None | Shadow sandbox + live mode with six guardrails |
 
-### 9.2 Current Gaps (vs Competitors)
+### 9.2 Honest Gaps (vs Competitors)
 
 | Gap | Competitor Advantage | ARES Status |
 |-----|---------------------|----------------|
-| **State Checkpoint** | LangGraph has PostgresSaver for breakpoint recovery | State in-memory, lost on crash |
-| **Cycle/Loop Support** | LangGraph native agentic loop | DAG forbids cycles |
-| **Human-in-the-loop** | LangGraph `interrupt()`, CrewAI `human_input` | Not implemented |
-| **Conditional Edges** | LangGraph `add_conditional_edges` | Not implemented |
-| **Subgraph Nesting** | LangGraph node=subgraph | Not implemented |
-| **Output Validation** | CrewAI `output_pydantic` + Guardrails | Schema Validator (basic) |
-| **LLM-as-Judge** | CrewAI uses LLM for memory importance scoring | Pure rule-based scoring |
-| **Streaming** | LangGraph 7 stream modes | Basic stream support |
+| **Ecosystem** | LangChain has 1000+ integrations | ~20 built-in tools, ~2 contributors, near-zero third-party integrations |
+| **RAG / Document Processing** | LangChain has 100+ document loaders | None |
+| **LLM Provider Coverage** | LangChain 50+ providers | OpenAI + Ollama (well-tested) |
+| **State Checkpoint** | LangGraph PostgresSaver for breakpoint recovery | Task-level checkpoint (crash recovery) but no arbitrary graph-state replay |
+| **Cycle/Loop Support** | LangGraph native agentic loop | Production fabric forbids cycles |
+| **Human-in-the-loop** | LangGraph `interrupt()`, CrewAI `human_input` | Implemented in workflow/engine but not wired to production |
+| **Streaming** | LangGraph 7 stream modes | Basic |
+| **Maturity** | LangChain (2022), CrewAI (2023) | 2025, architecture still evolving (dev branch ~1300 commits) |
 
 ---
 
-## 10. Cross-Framework Borrowing: ARES v2
-
-### 10.1 From LangGraph
-
-1. **Checkpoint Mechanism**: Persist `StepState` to PostgreSQL for workflow breakpoint recovery
-2. **Conditional Edges**: Add `Condition func(*State) bool` to DAG edges for dynamic routing
-3. **State Reducers**: Define merge strategies (append vs overwrite) for parallel node conflicts
-
-### 10.2 From CrewAI
-
-1. **Guardrails**: Output validation function chain, failures fed back to agent for retry
-2. **Memory Recall Scoring**: Introduce `0.5*similarity + 0.3*recency + 0.2*llm_importance` into ImportanceScorer
-3. **Delegation**: Sub-agents can delegate tasks to each other (with infinite-loop protection)
-
-### 10.3 From AutoGen
-
-1. **FSM Speaker Selection**: Use finite state machines to constrain agent transitions
-2. **Code Executor**: Docker sandbox for code execution, improving Tool Calling safety
-3. **Runtime Abstraction**: SingleThreadedRuntime → DistributedRuntime for distributed readiness
-
-### 10.4 From Semantic Kernel
-
-1. **Filter Mechanism**: IFunctionInvocationFilter (pre/post hooks) for unified Tool call interception
-2. **DI Container**: Kernel's dependency injection pattern for decoupling Agent and Service
-3. **Vector Store Abstraction**: Unified interface for multi-backend (pgvector, Redis, Qdrant)
-
----
-
-## 11. 2026 Industry Trends
-
-### 11.1 Framework Evolution Direction
+## 10. 2026 Industry Trends
 
 | Trend | Description |
 |-------|-------------|
-| **Python → Multi-language** | SK already C#/Python/Java, ARES using Go is the right direction |
-| **Single-node → Distributed** | AutoGen 0.4 added DistributedAgentRuntime, ARES's AHP natively supports |
-| **Conversation → Workflow** | CrewAI expanded from Crew to Flow, LangGraph's graph model is the ultimate form |
-| **Memory becomes core** | All frameworks adding Memory, only ARES has automated distillation |
-| **Observability becomes standard** | LangSmith binds LangGraph, open-source alternatives emerging |
-| **Security from optional to mandatory** | PII redaction, Prompt Injection detection, sandbox execution |
-
-### 11.2 ARES's Ecosystem Position
-
-```mermaid
-quadrantChart
-    title Framework Positioning
-    x-axis Low Determinism --> High Determinism
-    y-axis Simple --> Complex
-    quadrant-1 "Complex + High Determinism"
-    quadrant-2 "Complex + Low Determinism"
-    quadrant-3 "Simple + Low Determinism"
-    quadrant-4 "Simple + High Determinism"
-    LangGraph: [0.85, 0.80]
-    ARES: [0.75, 0.70]
-    AutoGen: [0.35, 0.65]
-    CrewAI: [0.25, 0.40]
-    Semantic Kernel: [0.60, 0.75]
-```
-
-**ARES's differentiating position**: Leverage Go's concurrency advantages for **high-reliability, multi-tenant, protocol-level distributed Agent orchestration**. Don't compete with LangGraph on graph computation flexibility, don't compete with CrewAI on out-of-box experience, but play the **"production-grade reliability"** card.
+| **Python → Multi-language** | SK already C#/Python/Java; ARES using Go aligns with this direction |
+| **Single-node → Distributed** | AutoGen 0.4 added distributed runtime; ARES is single-process in-memory (multi-node not yet supported) |
+| **Conversation → Workflow** | CrewAI expanded from Crew to Flow; graph/task models are becoming the norm |
+| **Memory becomes core** | All frameworks adding Memory; ARES has a rule-based distillation pipeline (fast but less accurate than LLM-assisted) |
+| **Observability becomes standard** | LangSmith binds LangGraph; ARES offers a free introspect panel |
+| **Security from optional to mandatory** | PII redaction, sandbox execution becoming standard |
 
 ---
 
-## Appendix: Key Code File Index
+## Appendix: Key Code File Index (current dev branch)
 
-| Domain | File Path |
-|--------|-----------|
-| Repository Pattern | `internal/storage/postgres/repository.go` |
-| Circuit Breaker | `internal/storage/postgres/circuit_breaker.go` |
-| Vector Search | `internal/storage/postgres/vector.go` |
-| Connection Pool | `internal/storage/postgres/pool.go` |
-| Write Buffer | `internal/storage/postgres/write_buffer.go` |
-| Embedding Queue | `internal/storage/postgres/embedding_queue.go` |
-| Embedding Cache | `internal/storage/postgres/embedding/cache.go` |
-| Embedding Fallback | `internal/storage/postgres/embedding/fallback.go` |
-| Retrieval Guard | `internal/storage/postgres/retrieval_guard.go` |
-| SQL Injection Prevention | `internal/storage/postgres/security.go` |
-| Multi-tenant Isolation | `internal/storage/postgres/tenant_guard.go` |
-| DAG Definition | `internal/workflow/engine/types.go` |
-| DAG Executor | `internal/workflow/engine/executor.go` |
-| Hot Reload | `internal/workflow/engine/reloader.go` |
-| Graph Execution | `internal/workflow/graph/executor.go` |
-| Graph Scheduler | `internal/workflow/graph/scheduler.go` |
-| AHP Message | `internal/ares_protocol/ahp/message.go` |
-| AHP Protocol | `internal/ares_protocol/ahp/protocol.go` |
-| AHP Queue | `internal/ares_protocol/ahp/queue.go` |
-| Heartbeat | `internal/ares_protocol/ahp/heartbeat.go` |
-| Dead Letter Queue | `internal/ares_protocol/ahp/dlq.go` |
-| Leader Agent | `internal/agents/leader/agent.go` |
-| Task Dispatcher | `internal/agents/leader/dispatcher.go` |
-| Task Planner | `internal/agents/leader/planner.go` |
-| Result Aggregator | `internal/agents/leader/aggregator.go` |
-| Result Evaluator | `internal/agents/leader/evaluator.go` |
-| Sub Agent | `internal/agents/sub/agent.go` |
-| Task Executor | `internal/agents/sub/executor.go` |
-| Distiller | `internal/memory/distillation/distiller.go` |
-| Importance Scorer | `internal/memory/distillation/scorer.go` |
-| Conflict Resolver | `internal/memory/distillation/resolver.go` |
-| Experience Extractor | `internal/memory/distillation/extractor.go` |
-| Noise Filter | `internal/memory/distillation/filter.go` |
-| Memory Manager | `internal/memory/manager.go` |
-| Timeout Config | `internal/llm/output/timeout.go` |
-| Output Validator | `internal/llm/output/validator.go` |
-| LLM Client | `internal/llm/client.go` |
-| Rate Limiter | `internal/ratelimit/limiter.go` |
-| Error Strategy | `internal/core/errors/code.go`, `strategy.go` |
-| PII Sanitizer | `internal/security/sanitizer.go` |
+| Domain | File Path | Production-Wired |
+|--------|-----------|-----------------|
+| Task Fabric | `internal/taskfabric/fabric.go` | ✅ |
+| Kernel Scheduler | `internal/kernelscheduler/scheduler.go` | ✅ |
+| Agent Fabric | `internal/agentfabric/lifecycle.go` | ✅ |
+| Crash Recovery | `internal/aresrecovery/recovery.go` | ✅ |
+| Agent IPC | `internal/agentipc/bus.go` | ✅ |
+| Introspect Panel | `internal/introspect/web/panel.html` | ✅ |
+| Chaos Isolation | `cmd/ares/serve_chaos.go` | ✅ |
+| Failover LLM | `internal/llm/failover.go` | ✅ |
+| Memory Distillation | `internal/ares_memory/distillation/` | ✅ |
+| Circuit Breaker (PG guard) | `internal/storage/postgres/circuit_breaker.go` | ✅ (retrieval guard only) |
+| PII Sanitizer | `internal/ares_security/sanitizer.go` | ✅ |
+| Rate Limiter | `internal/ares_ratelimit/` | ✅ |
+| AHP Protocol (legacy) | `internal/ares_protocol/ahp/` | ❌ (evolution IPC only) |
+| Mutable DAG | `internal/workflow/engine/` | ❌ (not wired) |
+| HITL | `internal/workflow/engine/hitl.go` | ❌ (not wired) |
+| Evolution (v0.2.9) | `internal/evolution/` | Partial (being replaced) |
+| Evolution (new) | `internal/ares_evolution/` | Partial |
+| Leader-Sub (legacy) | `internal/agents/leader/` | ❌ (removed) |
+| Multi-tenant RLS | `internal/storage/postgres/tenant_guard.go` | ❌ (removed, app-level predicates) |
