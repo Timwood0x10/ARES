@@ -2,6 +2,7 @@ package ares_skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -99,7 +100,7 @@ func capPatternLength(pattern string) string {
 
 func (e *Experience) Record(skill, taskPattern string, successRate float64) error {
 	if skill == "" || taskPattern == "" {
-		return fmt.Errorf("ares_skills: experience record needs skill and task pattern")
+		return errors.New("ares_skills: experience record needs skill and task pattern")
 	}
 	if successRate < 0 {
 		successRate = 0

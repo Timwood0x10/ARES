@@ -2,6 +2,7 @@ package aresrecovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -71,7 +72,7 @@ func NewPopulationAdapter(agents *agentfabric.Fabric, source PopulationPolicySou
 //   - error: the first spawn/retire error encountered.
 func (a *PopulationAdapter) Apply(ctx context.Context) ([]string, error) {
 	if a.adapter == nil || a.adapter.agents == nil {
-		return nil, fmt.Errorf("aresrecovery: population adapter has no agent fabric")
+		return nil, errors.New("aresrecovery: population adapter has no agent fabric")
 	}
 	if a.source == nil {
 		return nil, nil // no evolution source wired — leave population untouched

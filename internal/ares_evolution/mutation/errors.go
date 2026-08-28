@@ -1,9 +1,9 @@
 // Package mutation ...
 package mutation
 
-import "fmt"
+import "errors"
 
 var (
-	ErrNilParent    = fmt.Errorf("parent strategy must not be nil")
-	ErrInvalidCount = fmt.Errorf("mutation count must be positive")
+	ErrNilParent    = errors.New("parent strategy must not be nil")
+	ErrInvalidCount = errors.New("mutation count must be positive")
 )

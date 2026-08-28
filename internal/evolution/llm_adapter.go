@@ -7,6 +7,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,7 +50,7 @@ type ParseResult struct {
 //	"change recovery to <strategy>"    → PatchChangeRecoveryStrategy
 func (a *LLMAdapter) Parse(_ context.Context, suggestion string) ([]ParseResult, error) {
 	if suggestion == "" {
-		return nil, fmt.Errorf("llm: empty suggestion")
+		return nil, errors.New("llm: empty suggestion")
 	}
 
 	// Normalize whitespace: collapse multiple spaces, trim.
@@ -99,7 +100,7 @@ func (a *LLMAdapter) parseInsertNode(text string) ([]ParseResult, error) {
 	// "insert node <id> after <dep>"
 	parts := strings.Fields(text)
 	if len(parts) < 5 || parts[3] != "after" {
-		return nil, fmt.Errorf("llm: insert node format: 'insert node <id> after <dep>'")
+		return nil, errors.New("llm: insert node format: 'insert node <id> after <dep>'")
 	}
 	nodeID := parts[2]
 	dep := parts[4]
@@ -125,7 +126,7 @@ func (a *LLMAdapter) parseRemoveNode(text string) ([]ParseResult, error) {
 	// "remove node <id>"
 	parts := strings.Fields(text)
 	if len(parts) < 3 {
-		return nil, fmt.Errorf("llm: remove node format: 'remove node <id>'")
+		return nil, errors.New("llm: remove node format: 'remove node <id>'")
 	}
 	nodeID := parts[2]
 
@@ -149,7 +150,7 @@ func (a *LLMAdapter) parseReplaceNode(text string) ([]ParseResult, error) {
 	// "replace node <id> with <agentType>"
 	parts := strings.Fields(text)
 	if len(parts) < 5 || parts[3] != "with" {
-		return nil, fmt.Errorf("llm: replace node format: 'replace node <id> with <agent_type>'")
+		return nil, errors.New("llm: replace node format: 'replace node <id> with <agent_type>'")
 	}
 	nodeID := parts[2]
 	agentType := parts[4]
@@ -175,7 +176,7 @@ func (a *LLMAdapter) parseAddEdge(text string) ([]ParseResult, error) {
 	// "add edge <from> -> <to>"
 	parts := strings.Fields(text)
 	if len(parts) < 5 || parts[3] != "->" {
-		return nil, fmt.Errorf("llm: add edge format: 'add edge <from> -> <to>'")
+		return nil, errors.New("llm: add edge format: 'add edge <from> -> <to>'")
 	}
 	from := parts[2]
 	to := parts[4]
@@ -201,7 +202,7 @@ func (a *LLMAdapter) parseRemoveEdge(text string) ([]ParseResult, error) {
 	// "remove edge <from> -> <to>"
 	parts := strings.Fields(text)
 	if len(parts) < 5 || parts[3] != "->" {
-		return nil, fmt.Errorf("llm: remove edge format: 'remove edge <from> -> <to>'")
+		return nil, errors.New("llm: remove edge format: 'remove edge <from> -> <to>'")
 	}
 	from := parts[2]
 	to := parts[4]
@@ -227,7 +228,7 @@ func (a *LLMAdapter) parseChangeScheduler(text string) ([]ParseResult, error) {
 	// "change scheduler to <type>"
 	parts := strings.Fields(text)
 	if len(parts) < 4 || parts[2] != "to" {
-		return nil, fmt.Errorf("llm: change scheduler format: 'change scheduler to <type>'")
+		return nil, errors.New("llm: change scheduler format: 'change scheduler to <type>'")
 	}
 	schedType := parts[3]
 
@@ -252,7 +253,7 @@ func (a *LLMAdapter) parseChangeBudget(text string) ([]ParseResult, error) {
 	// "change topk to <n>"
 	parts := strings.Fields(text)
 	if len(parts) < 4 || parts[2] != "to" {
-		return nil, fmt.Errorf("llm: change topk format: 'change topk to <n>'")
+		return nil, errors.New("llm: change topk format: 'change topk to <n>'")
 	}
 	//nolint:gosec // not security-sensitive
 	var n int
@@ -281,7 +282,7 @@ func (a *LLMAdapter) parseChangeReducer(text string) ([]ParseResult, error) {
 	// "change reducer to <strategy>"
 	parts := strings.Fields(text)
 	if len(parts) < 4 || parts[2] != "to" {
-		return nil, fmt.Errorf("llm: change reducer format: 'change reducer to <strategy>'")
+		return nil, errors.New("llm: change reducer format: 'change reducer to <strategy>'")
 	}
 	strategy := parts[3]
 
@@ -306,7 +307,7 @@ func (a *LLMAdapter) parseChangePlanner(text string) ([]ParseResult, error) {
 	// "change planner to <strategy>"
 	parts := strings.Fields(text)
 	if len(parts) < 4 || parts[2] != "to" {
-		return nil, fmt.Errorf("llm: change planner format: 'change planner to <strategy>'")
+		return nil, errors.New("llm: change planner format: 'change planner to <strategy>'")
 	}
 	strategy := parts[3]
 
@@ -331,7 +332,7 @@ func (a *LLMAdapter) parseChangeRecovery(text string) ([]ParseResult, error) {
 	// "change recovery to <strategy>"
 	parts := strings.Fields(text)
 	if len(parts) < 4 || parts[2] != "to" {
-		return nil, fmt.Errorf("llm: change recovery format: 'change recovery to <strategy>'")
+		return nil, errors.New("llm: change recovery format: 'change recovery to <strategy>'")
 	}
 	strategy := parts[3]
 

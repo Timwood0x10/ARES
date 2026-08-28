@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 	"golang.org/x/sync/errgroup"
 )
@@ -159,9 +159,19 @@ func New(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tra
 	if tracker == nil {
 		tracker = NewLoadTracker()
 	}
+	// P1-1: copy the initial executor map so the scheduler owns its own
+	// map. The caller's map and the scheduler's map are now independent —
+	// the caller must use RegisterExecutor/UnregisterExecutor to mutate
+	// the live registry. Without this copy, both sides hold the same map
+	// reference guarded by DIFFERENT mutexes (caller's lock vs execMu),
+	// and concurrent read/write is a fatal race.
+	ownExecutors := make(map[string]CapabilityExecutor, len(executors))
+	for k, v := range executors {
+		ownExecutors[k] = v
+	}
 	return &Scheduler{
 		fabric:         fabric,
-		executors:      executors,
+		executors:      ownExecutors,
 		boundExecutors: make(map[string]string),
 		tracker:        tracker,
 		PollInterval:   500 * time.Millisecond,
@@ -224,7 +234,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 		log.Printf("kernel scheduler: fabric nil, scheduler disabled")
 		return
 	}
-	ticker := time.NewTicker(s.PollInterval)
+	// Guard against zero or negative PollInterval which would panic
+	// in time.NewTicker (B34). Fall back to preemptInterval which
+	// applies the same safe default.
+	pollInterval := s.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = s.preemptInterval()
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	// Cooperative-preemption watcher (BUG-KSCHED-001): drain() blocks on
@@ -412,7 +429,21 @@ func (s *Scheduler) drain(ctx context.Context) {
 // running task on a tie or on unset priorities. The preempted task keeps its
 // checkpoint and returns to READY for a later quantum.
 func (s *Scheduler) PreemptLowerPriority(ready []string) {
-	if s.ExecutorCount() == 0 || len(ready) == 0 {
+	// B11: guard must also check fabric agents, not just static executors.
+	// In production mode (agent fabric wired), the static executor count may
+	// be 0 while fabric agents are the real candidate source.
+	hasCandidates := s.ExecutorCount() > 0
+	if !hasCandidates && s.agents != nil {
+		for _, id := range s.agents.Agents() {
+			if s.agents.IsIdle(id) {
+				if a, err := s.agents.Get(id); err == nil && a != nil && a.Executable() {
+					hasCandidates = true
+					break
+				}
+			}
+		}
+	}
+	if !hasCandidates || len(ready) == 0 {
 		return
 	}
 	maxReady := 0
@@ -523,7 +554,8 @@ func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 		// of the configured sub-agents have a managed copy in the fabric, so a
 		// chaos kill takes effect on the next drain. Only recovery-bound
 		// executors (reserved for their task) stay in the static pool.
-		if s.agents != nil && !s.isBoundToAnyTask(agentID) {
+		// (isBoundToAnyTask already checked above, so this is just s.agents != nil)
+		if s.agents != nil {
 			continue
 		}
 		cands = append(cands, taskfabric.Candidate{
@@ -550,7 +582,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		return err
 	}
 	if len(cands) == 0 {
-		return taskfabric.ErrNoCapableCandidate
+		// KernelError carries task attribution while keeping the sentinel on the
+		// chain, so errors.Is(err, taskfabric.ErrNoCapableCandidate) still matches.
+		return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
 	}
 	// W4: capability-specific confidence. The candidate builders only know
 	// agentID; the task capability is available here, so re-resolve each
@@ -665,6 +699,19 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			}
 		}
 	})
+	// stopHeartbeat closes renewStop and waits for the heartbeat goroutine
+	// EXACTLY ONCE. sync.Once removes the double-close hazard: the normal
+	// path and the panic-recovery defer both call it, and a panic occurring
+	// AFTER the normal close (e.g. inside qg.Wait or endQuantumOutcome) must
+	// not close an already-closed channel (that panic would itself unwind,
+	// skip EndNeutral, and leak the load slot — the very bug this guards).
+	var stopOnce sync.Once
+	stopHeartbeat := func() {
+		stopOnce.Do(func() {
+			close(renewStop)
+			_ = qg.Wait()
+		})
+	}
 	// Panic guard: a panic inside the executor unwinds through RunQuantum and
 	// would skip endQuantumOutcome, leaking the winner's LoadTracker slot
 	// forever (load never decrements → Score multiplies by (1-clamp01(load))
@@ -673,27 +720,22 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// endQuantumOutcome, so there is no double-release.
 	slotReleased := false
 	defer func() {
-		if !slotReleased {
-			if r := recover(); r == nil {
-				close(renewStop)
-				_ = qg.Wait()
-				return
-			} else {
-				close(renewStop)
-				_ = qg.Wait()
+		if r := recover(); r != nil {
+			stopHeartbeat()
+			if !slotReleased {
 				// Log BEFORE releasing: the stack trace is the only forensic
 				// trail for an executor panic, and the load slot is released
 				// so the agent stays schedulable (the fabric's expired-lease
 				// requeue reclaims the stuck task separately).
 				log.Printf("kernel scheduler: panic in executor for task %q on agent %q, releasing load slot: %v", taskID, winner, r)
 				s.tracker.EndNeutral(winner)
+				slotReleased = true
 			}
 		}
 	}()
 	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta))
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
-	close(renewStop)
-	_ = qg.Wait()
+	stopHeartbeat()
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err)
 	slotReleased = true
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
@@ -773,10 +815,10 @@ func (s *Scheduler) buildQuantumStep(
 			return nil, false, stepErr
 		}
 		if out == nil {
-			return nil, false, fmt.Errorf("executor returned a nil step outcome")
+			return nil, false, apperrors.Kernel("run_quantum", "nil_step_outcome", tk.ID, executor.ID(), ErrNilStepOutcome)
 		}
 		if out.Result != nil && out.Result.Error != "" {
-			return nil, false, fmt.Errorf("%s", out.Result.Error)
+			return nil, false, apperrors.Kernel("run_quantum", "step_error", tk.ID, executor.ID(), errors.New(out.Result.Error))
 		}
 		if !out.Done {
 			// Yield (P1.1 Execution Quantum): the quantum made progress but the

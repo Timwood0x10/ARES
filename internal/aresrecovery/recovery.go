@@ -237,7 +237,6 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 		r.mu.Unlock()
 		return nil, ErrRecoveryExhausted
 	}
-	r.restarts[deadAgentID] = attempts + 1
 	r.mu.Unlock()
 	// Fusion-plan A2 arbitration: when a death snapshot exists for THIS
 	// identity, revive IN PLACE under the same id — provenance and the audit
@@ -255,6 +254,10 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	if err := r.agents.Recover(ctx, a.Identity, cognitive); err != nil {
 		return nil, fmt.Errorf("aresrecovery: restart recover for %s: %w", deadAgentID, err)
 	}
+	// B30: only charge the budget after a successful spawn+recover.
+	r.mu.Lock()
+	r.restarts[deadAgentID] = attempts + 1
+	r.mu.Unlock()
 	// The snapshot is now CONSUMED by this revival; keeping it would let a
 	// much later death of the revived body restore stale cognition.
 	r.agents.ClearSnapshot(deadAgentID)

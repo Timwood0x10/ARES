@@ -3,6 +3,7 @@ package ares_mcp
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -37,7 +38,7 @@ func (f *MCPToolFactory) Description() string {
 func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error) {
 	name, _ := config["name"].(string)
 	if name == "" {
-		return nil, fmt.Errorf("mcp server name is required")
+		return nil, errors.New("mcp server name is required")
 	}
 
 	transportType, _ := config["transport_type"].(string)
@@ -55,7 +56,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 	case TransportTypeStdio:
 		command, _ := config["command"].(string)
 		if command == "" {
-			return nil, fmt.Errorf("command is required for stdio transport")
+			return nil, errors.New("command is required for stdio transport")
 		}
 		args := toStringSlice(config["args"])
 		env := toStringMap(config["env"])
@@ -73,7 +74,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 	case TransportTypeSSE:
 		url, _ := config["url"].(string)
 		if url == "" {
-			return nil, fmt.Errorf("url is required for sse transport")
+			return nil, errors.New("url is required for sse transport")
 		}
 		headers := toStringMap(config["headers"])
 
@@ -141,7 +142,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 func (f *MCPToolFactory) ValidateConfig(config map[string]interface{}) error {
 	name, _ := config["name"].(string)
 	if name == "" {
-		return fmt.Errorf("mcp server name is required")
+		return errors.New("mcp server name is required")
 	}
 
 	transportType, _ := config["transport_type"].(string)
@@ -153,12 +154,12 @@ func (f *MCPToolFactory) ValidateConfig(config map[string]interface{}) error {
 	case TransportTypeStdio:
 		command, _ := config["command"].(string)
 		if command == "" {
-			return fmt.Errorf("command is required for stdio transport")
+			return errors.New("command is required for stdio transport")
 		}
 	case TransportTypeSSE:
 		url, _ := config["url"].(string)
 		if url == "" {
-			return fmt.Errorf("url is required for sse transport")
+			return errors.New("url is required for sse transport")
 		}
 	default:
 		return fmt.Errorf("unsupported transport type: %s", transportType)

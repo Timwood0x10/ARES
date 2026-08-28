@@ -2,6 +2,7 @@ package ares_mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
@@ -23,10 +24,10 @@ type MCPTool struct {
 // NewMCPTool creates an MCPTool from an MCP tool definition.
 func NewMCPTool(client *MCPClient, def *MCPToolDef) (*MCPTool, error) {
 	if client == nil {
-		return nil, fmt.Errorf("client is required")
+		return nil, errors.New("client is required")
 	}
 	if def == nil {
-		return nil, fmt.Errorf("tool definition is required")
+		return nil, errors.New("tool definition is required")
 	}
 
 	schema, err := ConvertJSONSchema(def.InputSchema)

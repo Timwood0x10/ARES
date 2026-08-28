@@ -468,7 +468,7 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			}
 			switch len(winners) {
 			case 0:
-				return nil, fmt.Errorf("select returned empty winners")
+				return nil, errors.New("select returned empty winners")
 			case 1:
 				parentA = winners[0]
 				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
@@ -895,7 +895,7 @@ func (p *Population) computeStatsLocked() (bestScore, avgScore, worstScore float
 
 func (p *Population) EvolveAfterScoring(ctx context.Context, scorer ScorerFunc, mutator MutatorInterface, crosser CrossoverInterface) error {
 	if scorer == nil {
-		return fmt.Errorf("scorer must not be nil; use NoopScorer to skip scoring")
+		return errors.New("scorer must not be nil; use NoopScorer to skip scoring")
 	}
 	p.ScoreAgents(scorer)
 	if err := p.EvolveOnIdle(ctx, mutator, crosser); err != nil {

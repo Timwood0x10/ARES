@@ -306,10 +306,19 @@ type mcpToolAdapter struct {
 	client *mcp.Client
 }
 
-func (a mcpToolAdapter) Name() string               { return a.name }
-func (a mcpToolAdapter) Description() string        { return a.desc }
+// a mcpToolAdapter Name returns the MCP tool name.
+func (a mcpToolAdapter) Name() string { return a.name }
+
+// a mcpToolAdapter Description returns the MCP tool description.
+func (a mcpToolAdapter) Description() string { return a.desc }
+
+// a mcpToolAdapter Parameters returns nil since MCP schemas are handled by the client.
 func (a mcpToolAdapter) Parameters() map[string]any { return nil }
-func (a mcpToolAdapter) Capabilities() []string     { return nil }
+
+// a mcpToolAdapter Capabilities returns nil since MCP tools expose no capabilities.
+func (a mcpToolAdapter) Capabilities() []string { return nil }
+
+// a mcpToolAdapter Execute calls the MCP tool with the given params.
 func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (tools.Result, error) {
 	result, err := a.client.CallTool(ctx, a.name, params)
 	if err != nil {

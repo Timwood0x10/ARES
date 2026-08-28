@@ -143,7 +143,7 @@ var _ Cognition = (*chatCognition)(nil)
 // producing a phantom execution body (code_rules_v2 §0.2: no silent no-op).
 func NewChatCognition(deps ChatCognitionDeps) (Cognition, error) {
 	if deps.ChatClient == nil && deps.LLMAdapter == nil {
-		return nil, fmt.Errorf("agentfabric: chat cognition requires ChatClient or LLMAdapter")
+		return nil, errors.New("agentfabric: chat cognition requires ChatClient or LLMAdapter")
 	}
 	maxRounds := deps.MaxToolRounds
 	if maxRounds <= 0 {
@@ -471,7 +471,7 @@ func (c *chatCognition) activeStrategy(ctx context.Context) *agents.ActiveStrate
 // executeWithLLMTextOnly performs a text-only LLM generation.
 func (c *chatCognition) executeWithLLMTextOnly(ctx context.Context, prompt string, params map[string]any) ([]*models.RecommendItem, error) {
 	if c.llmAdapter == nil {
-		return nil, fmt.Errorf("agentfabric: no text-only LLM adapter available")
+		return nil, errors.New("agentfabric: no text-only LLM adapter available")
 	}
 	c.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 		KeyAgentID: c.agentID,

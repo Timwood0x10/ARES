@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -20,10 +21,10 @@ func NewExecutionPlanner() ExecutionPlanner {
 // Plan creates an execution plan from capability requirements.
 func (p *executionPlanner) Plan(_ context.Context, intent *Intent, requirements []CapabilityRequirement) (*ExecutionPlan, error) {
 	if intent == nil {
-		return nil, fmt.Errorf("planner: intent is nil")
+		return nil, errors.New("planner: intent is nil")
 	}
 	if len(requirements) == 0 {
-		return nil, fmt.Errorf("planner: no requirements to plan")
+		return nil, errors.New("planner: no requirements to plan")
 	}
 
 	planID := uuid.New().String()
@@ -145,7 +146,7 @@ func NewMemoryEvidenceStore() EvidenceStore {
 // usage (REVIEW #15b).
 func (s *memoryEvidenceStore) Save(_ context.Context, evidence *ToolEvidence) error {
 	if evidence == nil {
-		return fmt.Errorf("planner: evidence is nil")
+		return errors.New("planner: evidence is nil")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

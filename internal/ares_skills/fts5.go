@@ -3,6 +3,7 @@ package ares_skills
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -94,7 +95,7 @@ func (f *FTS5Index) build(entries []SkillIndexEntry) error {
 func (f *FTS5Index) Search(query string, limit int, entries []SkillIndexEntry) ([]SkillIndexEntry, error) {
 	q := strings.TrimSpace(query)
 	if q == "" {
-		return nil, fmt.Errorf("ares_skills: empty fts5 query")
+		return nil, errors.New("ares_skills: empty fts5 query")
 	}
 	rows, err := f.db.QueryContext(context.Background(),
 		`SELECT rowid FROM skills_fts WHERE skills_fts MATCH ? ORDER BY rank LIMIT ?`, q, limitOrAll(limit))

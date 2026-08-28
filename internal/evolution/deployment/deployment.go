@@ -15,6 +15,7 @@ package deployment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -184,7 +185,7 @@ func (dp *DeploymentPipeline) Deploy(ctx context.Context, p patch.RuntimePatch) 
 		record.Status = DeploymentRejected
 		record.Reason = "staging or live runtime is nil"
 		dp.history = append(dp.history, *record)
-		return record, fmt.Errorf("deployment: staging or live runtime is nil")
+		return record, errors.New("deployment: staging or live runtime is nil")
 	}
 
 	// Step 2: Apply to staging.

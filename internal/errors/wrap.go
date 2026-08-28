@@ -207,7 +207,8 @@ func Wrapf(err error, format string, args ...any) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf(format+": %w", append(args, err)...)
+	msg := fmt.Sprintf(format, args...)
+	return Wrap(err, msg)
 }
 
 // wrappedError is a lightweight error wrapper.

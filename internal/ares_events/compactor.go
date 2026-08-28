@@ -2,6 +2,7 @@ package ares_events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -65,7 +66,7 @@ func (c *Compactor) WithTrimStore(ts TrimAwareStore) *Compactor {
 // Returns true if compaction was performed, along with any error.
 func (c *Compactor) CheckAndCompact(ctx context.Context, streamID string) (bool, error) {
 	if c.store == nil {
-		return false, fmt.Errorf("compactor: store is nil")
+		return false, errors.New("compactor: store is nil")
 	}
 
 	version, err := c.store.StreamVersion(ctx, streamID)
@@ -85,7 +86,7 @@ func (c *Compactor) CheckAndCompact(ctx context.Context, streamID string) (bool,
 // Useful for manual triggering or testing. Returns true if compaction was performed.
 func (c *Compactor) ForceCompact(ctx context.Context, streamID string) (bool, error) {
 	if c.store == nil {
-		return false, fmt.Errorf("compactor: store is nil")
+		return false, errors.New("compactor: store is nil")
 	}
 	return c.compactStream(ctx, streamID)
 }
@@ -325,6 +326,7 @@ func collectTool(payload map[string]any, key string, seen map[string]bool, tools
 // emitted {k} events over {duration}, bound to user request '{snippet}', result: {outcome}"
 //
 //nolint:gocyclo // Complex event summarization with multiple formats
+//nolint:gocyclo
 func DefaultSummarizer(events []*Event) string {
 	if len(events) == 0 {
 		return "(empty event window)"

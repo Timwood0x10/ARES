@@ -2,6 +2,7 @@ package context
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -118,10 +119,10 @@ func NewMemoryRetriever(
 	minScore float64,
 ) (*MemoryRetriever, error) {
 	if embedder == nil && pipeline == nil {
-		return nil, fmt.Errorf("memory retriever: embedder and pipeline are both nil")
+		return nil, errors.New("memory retriever: embedder and pipeline are both nil")
 	}
 	if expRepo == nil {
-		return nil, fmt.Errorf("memory retriever: experience repository is nil")
+		return nil, errors.New("memory retriever: experience repository is nil")
 	}
 
 	if tenantID == "" {
@@ -189,7 +190,7 @@ func (r *MemoryRetriever) Retrieve(
 		return nil, fmt.Errorf("memory retriever: embed input: %w", err)
 	}
 	if len(vec) == 0 {
-		return nil, fmt.Errorf("memory retriever: embed returned empty vector")
+		return nil, errors.New("memory retriever: embed returned empty vector")
 	}
 
 	experiences, err := r.expRepo.SearchByVector(ctx, vec, r.tenantID, topK)

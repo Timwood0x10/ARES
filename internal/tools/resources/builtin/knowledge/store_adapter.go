@@ -35,7 +35,7 @@ func NewStoreAdapter(store knowledge.KnowledgeStore) *StoreAdapter {
 // no embedding is wired). Results are ranked by FinalScore descending.
 func (a *StoreAdapter) Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	scored, err := a.store.HybridSearch(ctx, knowledge.HybridSearchRequest{
 		Query:     query,
@@ -64,7 +64,7 @@ func (a *StoreAdapter) Search(ctx context.Context, tenantID, query string) ([]*R
 // GetKnowledge implements KnowledgeService.GetKnowledge.
 func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	obj, err := a.store.Get(ctx, itemID)
 	if err != nil {
@@ -79,10 +79,10 @@ func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string
 // UpdateKnowledge implements KnowledgeService.UpdateKnowledge.
 func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	if item == nil {
-		return nil, fmt.Errorf("knowledge item is nil")
+		return nil, errors.New("knowledge item is nil")
 	}
 	obj := fromKnowledgeItem(item)
 	obj.Namespace = tenantID
@@ -95,10 +95,10 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 // AddKnowledge implements KnowledgeService.AddKnowledge.
 func (a *StoreAdapter) AddKnowledge(ctx context.Context, item *KnowledgeItem) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	if item == nil {
-		return nil, fmt.Errorf("knowledge item is nil")
+		return nil, errors.New("knowledge item is nil")
 	}
 	obj := fromKnowledgeItem(item)
 	if err := a.store.Save(ctx, obj); err != nil {
@@ -110,7 +110,7 @@ func (a *StoreAdapter) AddKnowledge(ctx context.Context, item *KnowledgeItem) (*
 // DeleteKnowledge implements KnowledgeService.DeleteKnowledge.
 func (a *StoreAdapter) DeleteKnowledge(ctx context.Context, tenantID, itemID string) error {
 	if a == nil || a.store == nil {
-		return fmt.Errorf("knowledge store adapter: store is nil")
+		return errors.New("knowledge store adapter: store is nil")
 	}
 	obj, err := a.store.Get(ctx, itemID)
 	if err != nil {

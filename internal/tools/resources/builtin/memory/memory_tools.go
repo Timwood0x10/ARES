@@ -148,6 +148,7 @@ func NewUserProfile(memoryMgr memory.MemoryManager, distilledRepo repositories.D
 // Execute retrieves user profile.
 //
 //nolint:gocyclo // Complex user profile retrieval with multiple field types
+//nolint:gocyclo
 func (t *UserProfile) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	// Get required parameters
 	userID, ok := params["user_id"].(string)

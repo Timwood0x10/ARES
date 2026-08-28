@@ -2,7 +2,7 @@ package ares_runtime
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 )
 
@@ -126,7 +126,7 @@ func (r *ExpressionRouter) Rules() []RouteRule {
 // Validate checks that the router was found and returns a clear error.
 func ValidateRouterFound(plugin RuntimePlugin) error {
 	if plugin == nil {
-		return fmt.Errorf("router plugin not found")
+		return errors.New("router plugin not found")
 	}
 	return nil
 }

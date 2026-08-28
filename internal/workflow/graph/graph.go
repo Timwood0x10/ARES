@@ -4,6 +4,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -62,7 +63,7 @@ type Graph struct {
 // Returns new graph instance or error if id is empty.
 func NewGraph(id string) (*Graph, error) {
 	if id == "" {
-		return nil, fmt.Errorf("graph ID cannot be empty")
+		return nil, errors.New("graph ID cannot be empty")
 	}
 	return &Graph{
 		id:        id,
@@ -82,10 +83,10 @@ func NewGraph(id string) (*Graph, error) {
 // Returns new graph instance or error.
 func NewGraphWithTracer(id string, tracer ares_observability.Tracer) (*Graph, error) {
 	if id == "" {
-		return nil, fmt.Errorf("graph ID cannot be empty")
+		return nil, errors.New("graph ID cannot be empty")
 	}
 	if tracer == nil {
-		return nil, fmt.Errorf("tracer cannot be nil")
+		return nil, errors.New("tracer cannot be nil")
 	}
 	return &Graph{
 		id:        id,
@@ -105,7 +106,7 @@ func NewGraphWithTracer(id string, tracer ares_observability.Tracer) (*Graph, er
 // Returns new graph instance or error.
 func NewGraphWithLimiter(id string, limiter ares_ratelimit.Limiter) (*Graph, error) {
 	if id == "" {
-		return nil, fmt.Errorf("graph ID cannot be empty")
+		return nil, errors.New("graph ID cannot be empty")
 	}
 	return &Graph{
 		id:        id,
@@ -125,16 +126,16 @@ func NewGraphWithLimiter(id string, limiter ares_ratelimit.Limiter) (*Graph, err
 // Returns graph for chaining or error.
 func (g *Graph) Node(id string, node Node) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if id == "" {
-		return nil, fmt.Errorf("node ID cannot be empty")
+		return nil, errors.New("node ID cannot be empty")
 	}
 	if node == nil {
-		return nil, fmt.Errorf("node cannot be nil")
+		return nil, errors.New("node cannot be nil")
 	}
 	if _, exists := g.nodes[id]; exists {
 		return nil, fmt.Errorf("duplicate node ID %q", id)
@@ -152,16 +153,16 @@ func (g *Graph) Node(id string, node Node) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) Edge(from, to string, cond ...Condition) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if from == "" {
-		return nil, fmt.Errorf("from node ID cannot be empty")
+		return nil, errors.New("from node ID cannot be empty")
 	}
 	if to == "" {
-		return nil, fmt.Errorf("to node ID cannot be empty")
+		return nil, errors.New("to node ID cannot be empty")
 	}
 	if _, ok := g.nodes[from]; !ok {
 		return nil, fmt.Errorf("from node %q not found: node must be added via Node() before Edge()", from)
@@ -199,13 +200,13 @@ func (g *Graph) Edge(from, to string, cond ...Condition) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) Start(id string) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if id == "" {
-		return nil, fmt.Errorf("start node ID cannot be empty")
+		return nil, errors.New("start node ID cannot be empty")
 	}
 	g.start = id
 	return g, nil
@@ -219,16 +220,16 @@ func (g *Graph) Start(id string) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) RemoveEdge(from, to string) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if from == "" {
-		return nil, fmt.Errorf("from node ID cannot be empty")
+		return nil, errors.New("from node ID cannot be empty")
 	}
 	if to == "" {
-		return nil, fmt.Errorf("to node ID cannot be empty")
+		return nil, errors.New("to node ID cannot be empty")
 	}
 
 	if edges, ok := g.edges[from]; ok {
@@ -251,13 +252,13 @@ func (g *Graph) RemoveEdge(from, to string) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) RemoveNode(id string) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if id == "" {
-		return nil, fmt.Errorf("node ID cannot be empty")
+		return nil, errors.New("node ID cannot be empty")
 	}
 
 	delete(g.nodes, id)
@@ -289,7 +290,7 @@ func (g *Graph) RemoveNode(id string) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) Clear() (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -308,13 +309,13 @@ func (g *Graph) Clear() (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) SetScheduler(scheduler Scheduler) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if scheduler == nil {
-		return nil, fmt.Errorf("scheduler cannot be nil")
+		return nil, errors.New("scheduler cannot be nil")
 	}
 	g.scheduler = scheduler
 	return g, nil
@@ -327,13 +328,13 @@ func (g *Graph) SetScheduler(scheduler Scheduler) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) SetTracer(tracer ares_observability.Tracer) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if tracer == nil {
-		return nil, fmt.Errorf("tracer cannot be nil")
+		return nil, errors.New("tracer cannot be nil")
 	}
 	g.tracer = tracer
 	return g, nil
@@ -344,7 +345,7 @@ func (g *Graph) SetTracer(tracer ares_observability.Tracer) (*Graph, error) {
 // engine's plugin system, enabling ares_observability and memory routing.
 func (g *Graph) SetPluginBus(pb *ares_runtime.PluginBus) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -356,10 +357,10 @@ func (g *Graph) SetPluginBus(pb *ares_runtime.PluginBus) (*Graph, error) {
 // and history tracking during graph execution.
 func (g *Graph) SetExecutionCollector(c *ares_runtime.ExecutionCollector) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	if c == nil {
-		return nil, fmt.Errorf("execution collector cannot be nil")
+		return nil, errors.New("execution collector cannot be nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -374,7 +375,7 @@ func (g *Graph) SetExecutionCollector(c *ares_runtime.ExecutionCollector) (*Grap
 // The target node must already exist in the graph.
 func (g *Graph) SetRouter(router NodeRouter) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -389,7 +390,7 @@ func (g *Graph) SetRouter(router NodeRouter) (*Graph, error) {
 // Returns graph for chaining or error.
 func (g *Graph) SetLimiter(limiter ares_ratelimit.Limiter) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -402,7 +403,7 @@ func (g *Graph) SetLimiter(limiter ares_ratelimit.Limiter) (*Graph, error) {
 // When set, the graph saves a checkpoint after each node execution.
 func (g *Graph) SetCheckpointStore(store ares_runtime.CheckpointStore) (*Graph, error) {
 	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+		return nil, errors.New("graph is nil")
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

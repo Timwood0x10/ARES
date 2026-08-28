@@ -3,6 +3,7 @@ package runtime
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -120,7 +121,7 @@ const maxLazyForGraph = 2000
 // Execute runs the full AKF pipeline: Plan → Load → Link → Reduce → Graph.
 func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget knowledge.TokenBudget, cfg *Config) (*knowledge.WorkingGraph, error) {
 	if r == nil {
-		return nil, fmt.Errorf("runtime: planner is not configured")
+		return nil, errors.New("runtime: planner is not configured")
 	}
 	// Snapshot the planner under planMu: SetPlanConfig swaps the interface
 	// field at runtime (KnowledgePatchExecutor.Apply), and a bare read here
@@ -129,7 +130,7 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 	planner := r.planner
 	r.planMu.RUnlock()
 	if planner == nil {
-		return nil, fmt.Errorf("runtime: planner is not configured")
+		return nil, errors.New("runtime: planner is not configured")
 	}
 	if cfg == nil {
 		cfg = &Config{MaxConcurrentProviders: 5}
@@ -153,7 +154,7 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("discover: %w", err)
 	}
 	if len(sources) == 0 {
-		return nil, fmt.Errorf("discover: no providers matched requirements")
+		return nil, errors.New("discover: no providers matched requirements")
 	}
 
 	// 3. Load & Pipeline: stream from providers, normalize, resolve, summarize.
@@ -300,7 +301,7 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 	}
 
 	if len(objects) == 0 {
-		return nil, fmt.Errorf("load: no objects loaded from any provider")
+		return nil, errors.New("load: no objects loaded from any provider")
 	}
 
 	return objects, nil

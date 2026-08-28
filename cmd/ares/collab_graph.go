@@ -143,7 +143,7 @@ func runCollabGCLoop(ctx context.Context, f *taskfabric.Fabric, every time.Durat
 // reported in the outputs map (partial results survive).
 func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []graphNodeSpec, edges []graphEdgeSpec) (outputs map[string]string, taskIDs map[string]string, err error) {
 	if k == nil || k.fabric == nil {
-		return nil, nil, fmt.Errorf("collab graph: kernel fabric not wired")
+		return nil, nil, errors.New("collab graph: kernel fabric not wired")
 	}
 	markActiveRun(runID)
 	defer unmarkActiveRun(runID)

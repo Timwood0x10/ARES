@@ -45,8 +45,11 @@ func (r *Runtime) RegisterAgent(capability string, opts ...AgentOption) *Agent {
 	if _, ok := r.agentByCapability[capability]; !ok {
 		r.agentByCapability[capability] = a
 		// H1/H2: also register the shared-scheduler executor so Submit drives
-		// the agent through the fabric, not a direct call.
-		r.sdkExecutors[capability] = &sdkAgentExecutor{agent: a}
+		// the agent through the fabric, not a direct call. P1-1: route through
+		// sched.RegisterExecutor so the write hits the scheduler's own execMu
+		// (no cross-lock race with the scheduler's reads).
+		r.ensureScheduler()
+		r.sched.RegisterExecutor(capability, &sdkAgentExecutor{agent: a})
 	}
 	return a
 }

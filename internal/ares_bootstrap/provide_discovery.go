@@ -8,7 +8,7 @@ package ares_bootstrap
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -25,8 +25,8 @@ type DiscoveryComponents struct {
 
 // ErrDiscoveryDisabled is returned by ProvideDiscovery when the discovery
 // engine is disabled in configuration. Callers should check for this sentinel
-// with errors.Is and treat it as a non-error no-op.
-var ErrDiscoveryDisabled = fmt.Errorf("discovery disabled in config")
+// ErrDiscoveryDisabled with errors.Is and treat it as a non-error no-op.
+var ErrDiscoveryDisabled = errors.New("discovery disabled in config")
 
 // ProvideDiscovery constructs the discovery engine with the default provider
 // set (ARES, Claude, Cursor, VSCode configs + PATH binary probe), starts

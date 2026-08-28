@@ -65,7 +65,7 @@ func (r *DistilledMemoryRepository) setTenantContext(ctx context.Context, tx *sq
 // The tenant context is automatically reset when the transaction commits or rolls back.
 func (r *DistilledMemoryRepository) withTenantTx(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error {
 	if r.dbPool == nil {
-		return fmt.Errorf("dbPool is required for tenant-isolated operations")
+		return errors.New("dbPool is required for tenant-isolated operations")
 	}
 
 	tx, err := r.dbPool.BeginTx(ctx, nil)
@@ -448,7 +448,7 @@ func (r *DistilledMemoryRepository) DeleteExpired(ctx context.Context) (int64, e
 // Returns error if update operation fails.
 func (r *DistilledMemoryRepository) Update(ctx context.Context, memory *DistilledMemory) error {
 	if memory.ID == "" {
-		return fmt.Errorf("memory ID is required")
+		return errors.New("memory ID is required")
 	}
 
 	metadataJSON, err := json.Marshal(memory.Metadata)
@@ -486,7 +486,7 @@ func (r *DistilledMemoryRepository) Update(ctx context.Context, memory *Distille
 		}
 
 		if rows == 0 {
-			return fmt.Errorf("memory not found")
+			return errors.New("memory not found")
 		}
 
 		return nil
@@ -501,7 +501,7 @@ func (r *DistilledMemoryRepository) Update(ctx context.Context, memory *Distille
 // Returns error if delete operation fails.
 func (r *DistilledMemoryRepository) Delete(ctx context.Context, tenantID, id string) error {
 	if id == "" {
-		return fmt.Errorf("memory ID is required")
+		return errors.New("memory ID is required")
 	}
 
 	return r.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
@@ -518,7 +518,7 @@ func (r *DistilledMemoryRepository) Delete(ctx context.Context, tenantID, id str
 		}
 
 		if rows == 0 {
-			return fmt.Errorf("memory not found")
+			return errors.New("memory not found")
 		}
 
 		return nil

@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -79,7 +78,7 @@ func NewWebScraper(getter HTTPGetter) *WebScraper {
 func (t *WebScraper) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	url, ok := params["url"].(string)
 	if !ok || url == "" {
-		return core.Result{}, fmt.Errorf("url is required")
+		return core.Result{}, errors.New("url is required")
 	}
 
 	// Parse options
@@ -95,7 +94,7 @@ func (t *WebScraper) Execute(ctx context.Context, params map[string]interface{})
 	// Validate URL format and scheme. SSRF protection (private IP blocking)
 	// is enforced at the HTTP client layer (see WebFetcher.Get).
 	if !isValidURL(url) {
-		return core.Result{}, fmt.Errorf("invalid URL format")
+		return core.Result{}, errors.New("invalid URL format")
 	}
 
 	// Create context with timeout

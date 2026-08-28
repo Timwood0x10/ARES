@@ -4,6 +4,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -39,7 +40,7 @@ func (a *genomeMutatorAdapter) Mutate(ctx context.Context, parent *mutation.Stra
 // Score population → evolve (selection/crossover/mutation) → deploy best.
 func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Context, data CallbackData) error {
 	if dc.population == nil {
-		return fmt.Errorf("GA population not initialized; ensure GA config is set")
+		return errors.New("GA population not initialized; ensure GA config is set")
 	}
 
 	gen := dc.population.CurrentGeneration()

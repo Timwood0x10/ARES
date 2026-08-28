@@ -33,6 +33,7 @@ var _ agents.StrategySource = (*evolutionStrategySource)(nil)
 // "failure" via the nil check, not the error.
 //
 //nolint:nilnil // nil value + nil error is the documented "no strategy" contract.
+//nolint:nilnil // nil value + nil error is the documented "no active strategy" contract.
 func (s *evolutionStrategySource) GetActiveStrategy(ctx context.Context) (*agents.ActiveStrategy, error) {
 	st, err := s.store.GetActive(ctx)
 	if err != nil {

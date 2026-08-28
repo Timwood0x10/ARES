@@ -112,7 +112,7 @@ func NewDashboard(ctx context.Context, cfg DashboardConfig) (*Dashboard, error) 
 	var llmAdapter output.LLMAdapter
 	var chatClient sub.ChatClient
 	if cfg.ConfigPath == "" {
-		return nil, fmt.Errorf("dashboard: ConfigPath is required (point at an ares.yaml with live LLM credentials)")
+		return nil, errors.New("dashboard: ConfigPath is required (point at an ares.yaml with live LLM credentials)")
 	}
 	acfg, err := ares_config.Load(cfg.ConfigPath)
 	if err != nil {
@@ -133,7 +133,7 @@ func NewDashboard(ctx context.Context, cfg DashboardConfig) (*Dashboard, error) 
 	}
 	chatClient = buildFailoverClient(acfg)
 	if chatClient == nil {
-		return nil, fmt.Errorf("dashboard: failover client creation failed")
+		return nil, errors.New("dashboard: failover client creation failed")
 	}
 
 	// Tool registry (built-in tools) + binder.
@@ -242,9 +242,14 @@ func buildFailoverClient(cfg *ares_config.Config) sub.ChatClient {
 // when empty, a neutral default is used.
 func (d *Dashboard) spawnAgent(ctx context.Context, spec AgentSpec, llmAdapter output.LLMAdapter, chatClient sub.ChatClient, toolBinder sub.ToolBinder) (*agentfabric.Agent, error) {
 	agentID := spec.ID
-	_ = d.bus.Register(agentID, func(ctx context.Context, msg *agentipc.Message) (*agentipc.Message, error) {
+	if err := d.bus.Register(agentID, func(ctx context.Context, msg *agentipc.Message) (*agentipc.Message, error) {
 		return &agentipc.Message{From: agentID, To: msg.From, Topic: "ack", Payload: map[string]any{"status": "ok"}}, nil
-	})
+	}); err != nil {
+		// B6: duplicate agent ID registration must not be silently
+		// swallowed; log and skip so the caller can handle the conflict.
+		log.Printf("introspect: bus register failed, skipping agent %s: %v", agentID, err)
+		return nil, fmt.Errorf("register agent %s on bus: %w", agentID, err)
+	}
 
 	prompt := spec.Instruction
 	if prompt == "" {

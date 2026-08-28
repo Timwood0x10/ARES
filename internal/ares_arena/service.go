@@ -3,6 +3,7 @@ package arena
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -236,7 +237,7 @@ func (s *Service) Reset() {
 // Returns nil channel if no event store is configured.
 func (s *Service) Subscribe(ctx context.Context) (<-chan *ares_events.Event, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("arena: event store not configured")
+		return nil, errors.New("arena: event store not configured")
 	}
 	ch, err := s.store.Subscribe(ctx, ares_events.EventFilter{
 		StreamIDs: []string{arenaStreamID},

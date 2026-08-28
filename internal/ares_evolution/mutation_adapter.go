@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -25,7 +26,7 @@ type MutationAdapter struct {
 //	error - non-nil if mutator is nil.
 func NewMutationAdapter(m *mutation.Mutator) (*MutationAdapter, error) {
 	if m == nil {
-		return nil, fmt.Errorf("mutator must not be nil")
+		return nil, errors.New("mutator must not be nil")
 	}
 	return &MutationAdapter{mutator: m}, nil
 }

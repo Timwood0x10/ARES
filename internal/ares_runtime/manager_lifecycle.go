@@ -3,7 +3,7 @@ package ares_runtime
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -17,13 +17,13 @@ import (
 // Start begins the runtime's monitoring loop and launches all registered agents.
 func (m *Manager) Start(ctx context.Context) error {
 	if ctx == nil {
-		return fmt.Errorf("runtime: context must not be nil")
+		return errors.New("runtime: context must not be nil")
 	}
 
 	m.mu.Lock()
 	if m.isStarted {
 		m.mu.Unlock()
-		return fmt.Errorf("runtime: already started")
+		return errors.New("runtime: already started")
 	}
 	if m.isStopped {
 		m.mu.Unlock()
@@ -35,6 +35,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	childCtx, childCancel := context.WithCancel(ctx)
 	m.cancel = childCancel
 	m.g, m.gctx = errgroup.WithContext(childCtx)
+	m.gPtr.Store(m.g)
+	m.gctxPtr.Store(&m.gctx)
 	m.mu.Unlock()
 
 	// Wire EventStore into MemoryManager if both are available.
@@ -54,7 +56,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	launches := make([]agentLaunch, 0, len(m.agents))
 	for id, ma := range m.agents {
 		if ma.agent != nil {
-			agentCtx, agentCancel := context.WithCancel(m.gctx)
+			agentCtx, agentCancel := context.WithCancel(m.getGctx())
 			ma.cancel = agentCancel
 			launches = append(launches, agentLaunch{id: id, agent: ma.agent, ctx: agentCtx})
 		}
@@ -69,19 +71,19 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Without this, the event store has no record of these agents starting and
 	// any downstream event consumer (evolution, flight recorder) sees a gap.
 	for _, l := range launches {
-		m.emitEvent(m.gctx, l.id, ares_events.EventAgentStarted, map[string]any{
+		m.emitEvent(m.getGctx(), l.id, ares_events.EventAgentStarted, map[string]any{
 			FieldAgentID: l.id,
 			FieldType:    string(l.agent.Type()),
 		})
 	}
 
 	// Background health check loop.
-	m.g.Go(func() error {
+	m.getG().Go(func() error {
 		ticker := time.NewTicker(m.config.HealthCheckInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-m.gctx.Done():
+			case <-m.getGctx().Done():
 				return nil
 			case <-ticker.C:
 				m.healthCheck()
@@ -115,6 +117,8 @@ func (m *Manager) Stop() error {
 		id     string
 		agent  base.Agent
 		cancel context.CancelFunc
+		// snapAgent is non-nil if a final snapshot should be captured (I/O done outside lock).
+		snapAgent base.StatefulAgent
 	}
 	var toStop []agentStopInfo
 	m.mu.Lock()
@@ -123,27 +127,43 @@ func (m *Manager) Stop() error {
 		if ma.stopped {
 			continue
 		}
-		// Capture a final snapshot for stateful agents before shutdown.
+		info := agentStopInfo{id: id, agent: ma.agent, cancel: ma.cancel}
+		// Collect StatefulAgent reference so snapshot+save I/O can run outside the lock.
 		if store != nil {
 			if sa, ok := chaosUnwrap(ma.agent).(base.StatefulAgent); ok {
-				snap, err := sa.Snapshot()
-				if err != nil {
-					log.Warn("runtime: final snapshot failed",
-						"agent_id", id, "error", err,
-					)
-				} else if snap != nil {
-					if err := store.Save(stopCtx, id, snap); err != nil {
-						log.Warn("runtime: final snapshot save failed",
-							"agent_id", id, "error", err,
-						)
-					}
-				}
+				info.snapAgent = sa
 			}
 		}
 		ma.stopped = true
-		toStop = append(toStop, agentStopInfo{id: id, agent: ma.agent, cancel: ma.cancel})
+		toStop = append(toStop, info)
 	}
 	m.mu.Unlock()
+
+	// B21: Snapshot and Save I/O moved outside the write lock to prevent
+	// blocking all other lifecycle operations when state is large.
+	if store != nil {
+		for i := range toStop {
+			info := &toStop[i]
+			if info.snapAgent == nil {
+				continue
+			}
+			snap, err := info.snapAgent.Snapshot()
+			if err != nil {
+				log.Warn("runtime: final snapshot failed",
+					"agent_id", info.id, "error", err,
+				)
+				continue
+			}
+			if snap == nil {
+				continue
+			}
+			if err := store.Save(stopCtx, info.id, snap); err != nil {
+				log.Warn("runtime: final snapshot save failed",
+					"agent_id", info.id, "error", err,
+				)
+			}
+		}
+	}
 
 	g, _ := errgroup.WithContext(stopCtx)
 	for _, info := range toStop {
@@ -169,8 +189,8 @@ func (m *Manager) Stop() error {
 	ares_ctxutil.DoneBackground("runtime:pre-start") // group drained; release the label (#47)
 
 	// Wait for all errgroup goroutines.
-	if m.g != nil {
-		_ = m.g.Wait()
+	if g := m.getG(); g != nil {
+		_ = g.Wait()
 	}
 
 	log.Info("runtime: stopped", "total_restarts", m.totalRestarts)

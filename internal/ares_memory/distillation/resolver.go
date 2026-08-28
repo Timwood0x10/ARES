@@ -3,15 +3,14 @@ package distillation
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // ErrNoConflict is a sentinel error returned by DetectConflict when no conflicting memory is found.
-// This allows callers to distinguish "no conflict" from "no error" when both the value and err would otherwise be nil.
-var ErrNoConflict = fmt.Errorf("no conflict detected")
+// ErrNoConflict This allows callers to distinguish "no conflict" from "no error" when both the value and err would otherwise be nil.
+var ErrNoConflict = errors.New("no conflict detected")
 
 // ConflictResolver detects and resolves memory conflicts.
 type ConflictResolver struct {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/compat"
 	compatllm "github.com/Timwood0x10/ares/compat/llm"
+	"github.com/Timwood0x10/ares/compat/llm/ollama"
 	"github.com/Timwood0x10/ares/compat/llm/openai"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
@@ -32,11 +33,24 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	}
 
 	// Register the LLM provider in the compat layer for ecosystem access.
-	// Skip if already registered (e.g., in tests where ProvideLLM is called multiple times).
-	if err := compat.RegisterLLM(cfg.Provider, func(config map[string]any) (compatllm.LLMProvider, error) {
-		return openai.New(config)
+	// B31: Dispatch to the correct adapter based on provider name instead of
+	// always using openai.New. For unknown providers, fall back to openai
+	// (which covers openai-compatible endpoints like openrouter/azure).
+	provider := cfg.Provider
+	if provider == "" {
+		provider = "openai"
+	}
+	if err := compat.RegisterLLM(provider, func(config map[string]any) (compatllm.LLMProvider, error) {
+		switch provider {
+		case "ollama":
+			return ollama.New(config)
+		default:
+			// openai, openrouter, anthropic (via proxy), azure — all
+			// speak the OpenAI-compatible API surface.
+			return openai.New(config)
+		}
 	}); err != nil {
-		log.Warn("bootstrap: compat LLM registration skipped", "provider", cfg.Provider, "error", err)
+		log.Warn("bootstrap: compat LLM registration skipped", "provider", provider, "error", err)
 	}
 
 	return &LLMComponents{

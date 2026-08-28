@@ -93,8 +93,14 @@ func (s *MemoryEventStore) Append(_ context.Context, streamID string, events []*
 		s.streams[streamID] = append(s.streams[streamID], event)
 		s.versions[streamID] = event.Version
 
-		// Notify matching subscribers (non-blocking).
-		s.notifySubscribers(event)
+		// B19: clone the event before notifying subscribers. The stored
+		// *Event pointer is shared across all readers and the internal
+		// streams slice; a subscriber that mutates the event would race
+		// with concurrent Read/Append callers. The clone gives each
+		// subscriber its own copy (read-only convention enforced by
+		// design — the original is never mutated after Append).
+		clone := *event
+		s.notifySubscribers(&clone)
 	}
 
 	return nil

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -81,11 +82,11 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	defer t.mu.Unlock()
 
 	if t.started {
-		return fmt.Errorf("transport already started")
+		return errors.New("transport already started")
 	}
 
 	if t.config.URL == "" {
-		return fmt.Errorf("sse url is required")
+		return errors.New("sse url is required")
 	}
 
 	ctx, t.cancel = context.WithCancel(ctx)
@@ -243,7 +244,7 @@ func (t *SSETransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	t.mu.Lock()
 	if !t.started {
 		t.mu.Unlock()
-		return fmt.Errorf("transport not started")
+		return errors.New("transport not started")
 	}
 	postURL := t.postURL
 	t.mu.Unlock()
@@ -288,7 +289,7 @@ func (t *SSETransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 		return nil, ctx.Err()
 	case msg, ok := <-t.msgCh:
 		if !ok {
-			return nil, fmt.Errorf("channel closed")
+			return nil, errors.New("channel closed")
 		}
 		return msg, nil
 	}

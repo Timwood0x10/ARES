@@ -10,6 +10,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -245,17 +246,17 @@ func (v *CandidateVerifier) Verify(candidate *Candidate) *VerifyResult {
 // staticCheck validates the candidate's structural integrity.
 func (v *CandidateVerifier) staticCheck(c *Candidate) error {
 	if c.TargetRole == "" {
-		return fmt.Errorf("target role is empty")
+		return errors.New("target role is empty")
 	}
 	if c.Diff == "" {
-		return fmt.Errorf("diff is empty")
+		return errors.New("diff is empty")
 	}
 	if c.Reason == "" {
-		return fmt.Errorf("reason is empty")
+		return errors.New("reason is empty")
 	}
 	// For instruction candidates, check for obviously dangerous patterns
 	if c.Kind == CandidateInstruction && containsDangerousPattern(c.Diff) {
-		return fmt.Errorf("dangerous pattern detected in diff")
+		return errors.New("dangerous pattern detected in diff")
 	}
 	return nil
 }
@@ -272,7 +273,7 @@ func (v *CandidateVerifier) staticCheck(c *Candidate) error {
 //	err - an error describing a missing or wrong-kind evidence record.
 func (v *CandidateVerifier) replayFailureCases(c *Candidate) error {
 	if len(c.EvidenceIDs) == 0 {
-		return fmt.Errorf("no evidence IDs referenced")
+		return errors.New("no evidence IDs referenced")
 	}
 	if v.evidenceStore == nil {
 		// No store wired: assert the reference is non-empty only.

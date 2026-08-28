@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -266,7 +267,7 @@ func WithAPIKey(key string) Option {
 func WithLLMConfig(cfg *core.LLMConfig) Option {
 	return func(c *config) error {
 		if cfg == nil {
-			return fmt.Errorf("with llm config: config is nil")
+			return errors.New("with llm config: config is nil")
 		}
 		c.llmCfg = cfg
 		return nil
@@ -502,6 +503,15 @@ func WithAKGEmbedding(model, baseURL string) Option {
 		}
 		c.knlCfg.EmbeddingModel = model
 		c.knlCfg.EmbeddingBaseURL = baseURL
+		// B32: Wire baseURL into embedCfg so buildEmbeddingClient actually
+		// uses it. Previously it was only stored in knlCfg.EmbeddingBaseURL
+		// which no reader consumed (dead parameter).
+		if baseURL != "" && c.embedCfg.ServiceURL == "" {
+			c.embedCfg.ServiceURL = baseURL
+		}
+		if c.embedCfg.Model == "" {
+			c.embedCfg.Model = model
+		}
 		return nil
 	}
 }
@@ -570,7 +580,7 @@ func WithMCP(conn MCPConn) Option {
 			conn.Name = "mcp"
 		}
 		if conn.Command == "" {
-			return fmt.Errorf("mcp: command is required")
+			return errors.New("mcp: command is required")
 		}
 		c.mcpConns = append(c.mcpConns, conn)
 		return nil

@@ -47,10 +47,11 @@ func TestSubmitGoesThroughFabricScheduler(t *testing.T) {
 	rt.RegisterAgent("coder")
 	// Replace the registered executor with a probe that counts scheduler
 	// drives. Under the merged path, Submit creates ONE fabric task and the
-	// scheduler runs the executor exactly once.
-	rt.agentMu.Lock()
-	rt.sdkExecutors["coder"] = &countingExecutor{inner: &sdkAgentExecutor{agent: rt.agentByCapability["coder"]}}
-	rt.agentMu.Unlock()
+	// scheduler runs the executor exactly once. P1-1: route through
+	// sched.RegisterExecutor so the write is execMu-guarded.
+	rt.ensureScheduler()
+	counter := &countingExecutor{inner: &sdkAgentExecutor{agent: rt.agentByCapability["coder"]}}
+	rt.sched.RegisterExecutor("coder", counter)
 
 	res, err := rt.Submit(context.Background(), Task{Capability: "coder", Input: "refactor"})
 	if err != nil {
@@ -59,7 +60,6 @@ func TestSubmitGoesThroughFabricScheduler(t *testing.T) {
 	if res.Output != "scheduled result" {
 		t.Fatalf("Output = %q, want the agent's real output", res.Output)
 	}
-	counter := rt.sdkExecutors["coder"].(*countingExecutor)
 	if got := counter.executed.Load(); got != 1 {
 		t.Fatalf("scheduler must drive the executor exactly once per submit, got %d", got)
 	}

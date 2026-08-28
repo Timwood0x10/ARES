@@ -9,6 +9,7 @@ package refine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -83,7 +84,7 @@ func NewRefiner(store Store) *Refiner {
 // mutation cannot slip between the baseline read and the write.
 func (r *Refiner) Apply(ctx context.Context, p Proposal) error {
 	if p.ID == "" || p.Target == "" {
-		return fmt.Errorf("refine: proposal ID and target must not be empty")
+		return errors.New("refine: proposal ID and target must not be empty")
 	}
 
 	r.mu.Lock()

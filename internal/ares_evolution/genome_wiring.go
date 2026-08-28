@@ -11,7 +11,7 @@ package evolution
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -122,13 +122,13 @@ func NewGenomePopulationAdapter(
 	opts ...GenomeAdapterOption,
 ) (*GenomePopulationAdapter, error) {
 	if pop == nil {
-		return nil, fmt.Errorf("population must not be nil")
+		return nil, errors.New("population must not be nil")
 	}
 	if mutator == nil {
-		return nil, fmt.Errorf("mutator must not be nil")
+		return nil, errors.New("mutator must not be nil")
 	}
 	if crosser == nil {
-		return nil, fmt.Errorf("crosser must not be nil")
+		return nil, errors.New("crosser must not be nil")
 	}
 	adapter := &GenomePopulationAdapter{
 		pop:     pop,

@@ -2,6 +2,7 @@ package ares_archive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -42,7 +43,7 @@ var (
 func NewEventArchiveSink(w ArchiveWriter) ares_events.ArchiveSink {
 	return func(ctx context.Context, round int, streamID string, events []*ares_events.Event) error {
 		if w == nil {
-			return fmt.Errorf("archive sink: writer is nil")
+			return errors.New("archive sink: writer is nil")
 		}
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("archive sink: context: %w", err)

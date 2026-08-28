@@ -583,7 +583,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 // Anthropic streaming uses Server-Sent Events (SSE) with event: content_block_delta.
 func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for Anthropic streaming")
+		return nil, errors.New("API key is required for Anthropic streaming")
 	}
 
 	// Use configured MaxTokens, fallback to reasonable default for Anthropic.
@@ -697,7 +697,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 // streamOpenRouter streams text generation using OpenRouter API.
 func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for OpenRouter streaming")
+		return nil, errors.New("API key is required for OpenRouter streaming")
 	}
 
 	// Use configured MaxTokens, fallback to defaultMaxTokens if not set or invalid.

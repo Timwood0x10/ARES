@@ -242,7 +242,7 @@ func extractFileChanges(events []*ares_events.Event) []FileChange {
 		changes = append(changes, FileChange{
 			Path:       path,
 			LinesAdded: parseDiffAdditions(output),
-			Summary:    summarizeFileChange(path, op, output),
+			Summary:    summarizeFileChange(path, op),
 		})
 	}
 	return changes
@@ -286,6 +286,14 @@ func extractToolArgs(ev *ares_events.Event) map[string]any {
 	if args, ok := ev.Payload["args"].(map[string]any); ok {
 		return args
 	}
+	// Shape 2: args as a JSON string (B17 — agentloop emitter may stringify).
+	if argsStr, ok := ev.Payload["args"].(string); ok && argsStr != "" {
+		var args map[string]any
+		if err := json.Unmarshal([]byte(argsStr), &args); err == nil {
+			return args
+		}
+	}
+	// Shape 3: input as a JSON string.
 	if input, ok := ev.Payload["input"].(string); ok && input != "" {
 		var args map[string]any
 		if err := json.Unmarshal([]byte(input), &args); err == nil {
@@ -313,7 +321,7 @@ func parseDiffAdditions(output string) int {
 }
 
 // summarizeFileChange builds a one-line description of a file operation.
-func summarizeFileChange(path, op, output string) string {
+func summarizeFileChange(path, op string) string {
 	switch op {
 	case opWrite:
 		return fmt.Sprintf("Wrote %s", path)

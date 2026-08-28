@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -171,10 +172,10 @@ func (b *DistillBridge) DistillConversation(
 	userID string,
 ) ([]*knowledge.KnowledgeObject, error) {
 	if b.distiller == nil {
-		return nil, fmt.Errorf("distill bridge: distiller is nil")
+		return nil, errors.New("distill bridge: distiller is nil")
 	}
 	if len(messages) == 0 {
-		return nil, fmt.Errorf("distill bridge: no messages to distill")
+		return nil, errors.New("distill bridge: no messages to distill")
 	}
 
 	// Phase 1: run the existing Memory Distiller.

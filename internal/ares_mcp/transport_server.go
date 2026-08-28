@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -74,7 +75,7 @@ func (t *StdioServerTransport) Start(ctx context.Context) error {
 	defer t.mu.Unlock()
 
 	if t.started.Load() {
-		return fmt.Errorf("transport already started")
+		return errors.New("transport already started")
 	}
 
 	t.ctx, t.cancel = context.WithCancel(ctx)
@@ -87,7 +88,7 @@ func (t *StdioServerTransport) Start(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("read stdin: %w", err)
 				}
-				return fmt.Errorf("stdin closed")
+				return errors.New("stdin closed")
 			}
 			data := t.scanner.Bytes()
 			msg, err := Decode(data)
@@ -116,7 +117,7 @@ func (t *StdioServerTransport) Start(ctx context.Context) error {
 //   - error: non-nil on read/decode error or context cancellation
 func (t *StdioServerTransport) Accept(ctx context.Context) (*JSONRPCMessage, error) {
 	if !t.started.Load() {
-		return nil, fmt.Errorf("transport not started")
+		return nil, errors.New("transport not started")
 	}
 	select {
 	case <-ctx.Done():
@@ -136,7 +137,7 @@ func (t *StdioServerTransport) Accept(ctx context.Context) (*JSONRPCMessage, err
 //   - error: non-nil on encode or write error
 func (t *StdioServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	if !t.started.Load() {
-		return fmt.Errorf("transport not started")
+		return errors.New("transport not started")
 	}
 
 	data, err := Encode(msg)
@@ -249,7 +250,7 @@ func (t *SSEServerTransport) Start(ctx context.Context) error {
 	defer t.mu.Unlock()
 
 	if t.started {
-		return fmt.Errorf("transport already started")
+		return errors.New("transport already started")
 	}
 
 	t.srvCtx, t.cancel = context.WithCancel(ctx)
@@ -395,7 +396,7 @@ func (t *SSEServerTransport) Accept(ctx context.Context) (*JSONRPCMessage, error
 // dropped to avoid accidentally broadcasting to other clients (P0-3).
 func (t *SSEServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	if t.closing.Load() {
-		return fmt.Errorf("transport is closing")
+		return errors.New("transport is closing")
 	}
 
 	t.sessionsMu.Lock()
@@ -504,7 +505,7 @@ func (p *pipeServerTransport) Start(ctx context.Context) error {
 	defer p.mu.Unlock()
 
 	if p.started {
-		return fmt.Errorf("transport already started")
+		return errors.New("transport already started")
 	}
 
 	_, p.cancel = context.WithCancel(ctx)

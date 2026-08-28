@@ -7,6 +7,7 @@ package actionlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -54,7 +55,7 @@ func NewStore() *Store {
 // rejected so replay can rely on stable IDs (code_rules_v2 §6.4 idempotency).
 func (s *Store) Append(ctx context.Context, e Entry) error {
 	if e.ID == "" {
-		return fmt.Errorf("actionlog: entry ID must not be empty")
+		return errors.New("actionlog: entry ID must not be empty")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

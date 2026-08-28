@@ -86,10 +86,10 @@ func (b *Bus) WithClock(now func() time.Time) *Bus {
 // previous handler (idempotent for restart/resurrection).
 func (b *Bus) Register(agentID string, h Handler) error {
 	if agentID == "" {
-		return fmt.Errorf("agentipc: agent id required")
+		return errors.New("agentipc: agent id required")
 	}
 	if h == nil {
-		return fmt.Errorf("agentipc: handler must not be nil")
+		return errors.New("agentipc: handler must not be nil")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()

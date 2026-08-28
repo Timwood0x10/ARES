@@ -4,6 +4,7 @@ package genome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -131,13 +132,13 @@ func WithTournamentSeed(seed int64) TournamentOption {
 //	error - non-nil if configuration is invalid, nil if all invariants hold.
 func (ts *TournamentSelection) Validate() error {
 	if ts == nil {
-		return fmt.Errorf("tournament selection instance is nil")
+		return errors.New("tournament selection instance is nil")
 	}
 	if ts.tournamentSize < 2 {
 		return fmt.Errorf("%w: got %d", ErrInvalidTournamentSize, ts.tournamentSize)
 	}
 	if ts.rng == nil {
-		return fmt.Errorf("tournament selection: rng must not be nil, ensure WithTournamentSeed was called or construction succeeded")
+		return errors.New("tournament selection: rng must not be nil, ensure WithTournamentSeed was called or construction succeeded")
 	}
 	return nil
 }
@@ -270,7 +271,7 @@ func effectiveScore(s *mutation.Strategy) float64 {
 // validateSelectInputs performs common input validation for all Select methods.
 func validateSelectInputs(ctx context.Context, population []*mutation.Strategy, n int) error {
 	if ctx == nil {
-		return fmt.Errorf("context must not be nil")
+		return errors.New("context must not be nil")
 	}
 	if len(population) == 0 {
 		return ErrSelectionEmptyPopulation
@@ -760,7 +761,7 @@ func PickParent(ctx context.Context, population []*mutation.Strategy, sel Select
 		return nil, err
 	}
 	if len(selected) == 0 {
-		return nil, fmt.Errorf("no parent selected")
+		return nil, errors.New("no parent selected")
 	}
 	// Apply RNG-based index selection for reproducibility in tests.
 	idx := rng.Intn(len(selected))
@@ -802,7 +803,7 @@ func NewNondominatedSortingSelection(seed int64) *NondominatedSortingSelection {
 // (more diversity) are preferred.
 func (s *NondominatedSortingSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
 	if len(population) == 0 {
-		return nil, fmt.Errorf("empty population for NSGA-II selection")
+		return nil, errors.New("empty population for NSGA-II selection")
 	}
 	if n <= 0 {
 		return nil, fmt.Errorf("invalid selection count: %d", n)

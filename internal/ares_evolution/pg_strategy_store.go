@@ -44,7 +44,7 @@ type PGStrategyStore struct {
 //	error - non-nil if table creation fails.
 func NewPGStrategyStore(db *sql.DB, tableName string, maxHistory int) (*PGStrategyStore, error) {
 	if db == nil {
-		return nil, fmt.Errorf("pg strategy store: db must not be nil")
+		return nil, errors.New("pg strategy store: db must not be nil")
 	}
 	if tableName == "" {
 		tableName = "evolution_strategies"
@@ -147,7 +147,7 @@ func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 // Marks all existing active strategies as inactive first, then inserts the new one.
 func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) error {
 	if strategy == nil {
-		return fmt.Errorf("pg strategy store: strategy must not be nil")
+		return errors.New("pg strategy store: strategy must not be nil")
 	}
 
 	paramsJSON, err := json.Marshal(strategy.Params)

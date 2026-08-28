@@ -2,6 +2,7 @@ package arena
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -83,13 +84,13 @@ func LoadScenarioFile(path string) (*Scenario, error) {
 // ValidateScenario checks that a scenario is well-formed.
 func ValidateScenario(s *Scenario) error {
 	if s == nil {
-		return fmt.Errorf("arena: scenario is nil")
+		return errors.New("arena: scenario is nil")
 	}
 	if s.Name == "" {
-		return fmt.Errorf("arena: scenario name is required")
+		return errors.New("arena: scenario name is required")
 	}
 	if len(s.Actions) == 0 {
-		return fmt.Errorf("arena: scenario must have at least one action")
+		return errors.New("arena: scenario must have at least one action")
 	}
 	for i, sa := range s.Actions {
 		if sa.Delay < 0 {
@@ -103,10 +104,10 @@ func ValidateScenario(s *Scenario) error {
 		}
 	}
 	if s.Config.MaxConcurrent < 0 {
-		return fmt.Errorf("arena: config.max_concurrent must be non-negative")
+		return errors.New("arena: config.max_concurrent must be non-negative")
 	}
 	if s.Config.Timeout < 0 {
-		return fmt.Errorf("arena: config.timeout must be non-negative")
+		return errors.New("arena: config.timeout must be non-negative")
 	}
 	return nil
 }
@@ -115,10 +116,10 @@ func ValidateScenario(s *Scenario) error {
 // It supports warmup/cooldown delays, timeout context, and stop-on-error behavior.
 func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario) (*ScenarioReport, error) {
 	if service == nil {
-		return nil, fmt.Errorf("arena: service is nil")
+		return nil, errors.New("arena: service is nil")
 	}
 	if scenario.Name == "" {
-		return nil, fmt.Errorf("arena: scenario name is empty")
+		return nil, errors.New("arena: scenario name is empty")
 	}
 
 	report := &ScenarioReport{

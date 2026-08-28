@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -115,7 +116,7 @@ func (e *KnowledgePatchExecutor) Snapshot(_ context.Context) (any, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.runtime == nil {
-		return nil, fmt.Errorf("knowledge executor: runtime is nil")
+		return nil, errors.New("knowledge executor: runtime is nil")
 	}
 	return e.runtime.PlanConfig(), nil
 }
@@ -142,25 +143,25 @@ func (e *KnowledgePatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) 
 // CanApply checks whether a patch can be applied.
 func (e *KnowledgePatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
 	if e.runtime == nil {
-		return fmt.Errorf("knowledge executor: runtime is nil")
+		return errors.New("knowledge executor: runtime is nil")
 	}
 	switch p.Type {
 	case patch.PatchChangeBudget:
 		_, ok := p.Value.(int)
 		if !ok {
-			return fmt.Errorf("knowledge executor: ChangeBudget value must be int")
+			return errors.New("knowledge executor: ChangeBudget value must be int")
 		}
 		return nil
 	case patch.PatchChangePlanner:
 		_, ok := p.Value.(string)
 		if !ok {
-			return fmt.Errorf("knowledge executor: ChangePlanner value must be string")
+			return errors.New("knowledge executor: ChangePlanner value must be string")
 		}
 		return nil
 	case patch.PatchChangeReducer:
 		_, ok := p.Value.(string)
 		if !ok {
-			return fmt.Errorf("knowledge executor: ChangeReducer value must be string")
+			return errors.New("knowledge executor: ChangeReducer value must be string")
 		}
 		return nil
 	default:
@@ -175,7 +176,7 @@ func (e *KnowledgePatchExecutor) CanApply(_ context.Context, p patch.RuntimePatc
 func (e *KnowledgePatchExecutor) applyChangeBudget(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	newBudget, ok := p.Value.(int)
 	if !ok {
-		return nil, fmt.Errorf("knowledge executor: ChangeBudget value must be int")
+		return nil, errors.New("knowledge executor: ChangeBudget value must be int")
 	}
 
 	old := e.runtime.PlanConfig()
@@ -197,7 +198,7 @@ func (e *KnowledgePatchExecutor) applyChangeBudget(p patch.RuntimePatch) (*patch
 func (e *KnowledgePatchExecutor) applyChangePlanner(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	newStrategy, ok := p.Value.(string)
 	if !ok {
-		return nil, fmt.Errorf("knowledge executor: ChangePlanner value must be string")
+		return nil, errors.New("knowledge executor: ChangePlanner value must be string")
 	}
 
 	old := e.runtime.PlanConfig()
@@ -218,7 +219,7 @@ func (e *KnowledgePatchExecutor) applyChangePlanner(p patch.RuntimePatch) (*patc
 func (e *KnowledgePatchExecutor) applyChangeReducer(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	strategy, ok := p.Value.(string)
 	if !ok {
-		return nil, fmt.Errorf("knowledge executor: ChangeReducer value must be string")
+		return nil, errors.New("knowledge executor: ChangeReducer value must be string")
 	}
 
 	old := e.runtime.PlanConfig()

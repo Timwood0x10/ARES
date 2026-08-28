@@ -2,6 +2,7 @@ package ares_mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -94,7 +95,7 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 // context, or the returned tool dies the moment Connect returns.
 func (c *MCPClient) ConnectWithLifetime(ctx, lifetimeCtx context.Context, transport Transport) error {
 	if transport == nil {
-		return fmt.Errorf("transport is required")
+		return errors.New("transport is required")
 	}
 	if lifetimeCtx == nil {
 		lifetimeCtx = ctx
@@ -268,7 +269,7 @@ func (c *MCPClient) Close() error {
 // call sends a request and waits for the correlated response.
 func (c *MCPClient) call(ctx context.Context, method string, params interface{}, result interface{}) error {
 	if !c.connected.Load() && method != MethodInitialize {
-		return fmt.Errorf("not connected")
+		return errors.New("not connected")
 	}
 
 	id := c.nextID.Next()
@@ -406,12 +407,12 @@ func NewTransportFromConfig(config TransportConfig) (Transport, error) {
 	switch config.Type {
 	case TransportTypeStdio:
 		if config.Stdio == nil {
-			return nil, fmt.Errorf("stdio config is required")
+			return nil, errors.New("stdio config is required")
 		}
 		return NewStdioTransport(*config.Stdio), nil
 	case TransportTypeSSE:
 		if config.SSE == nil {
-			return nil, fmt.Errorf("sse config is required")
+			return nil, errors.New("sse config is required")
 		}
 		return NewSSETransport(*config.SSE), nil
 	default:

@@ -254,10 +254,10 @@ type RegisterRequest struct {
 // Register passively registers a service. Emits EventServiceAdded.
 func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
 	if req.Name == "" {
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	}
 	if req.Endpoint == "" {
-		return fmt.Errorf("endpoint is required")
+		return errors.New("endpoint is required")
 	}
 	if req.Confidence == 0 {
 		req.Confidence = ConfidenceMax

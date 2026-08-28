@@ -55,12 +55,18 @@ type TimelineSummary struct {
 type Timeline struct {
 	events []TimelineEvent
 	mu     sync.RWMutex
+	cap    int
 }
+
+// maxTimelineEvents is the ring cap for timeline events, aligned with
+// introspect's 300-entry default.
+const maxTimelineEvents = 300
 
 // NewTimeline creates an empty timeline.
 func NewTimeline() *Timeline {
 	return &Timeline{
 		events: make([]TimelineEvent, 0, 64),
+		cap:    maxTimelineEvents,
 	}
 }
 
@@ -111,6 +117,10 @@ func (t *Timeline) Add(event TimelineEvent) {
 		}
 	}
 	t.events = append(t.events, event)
+	// P1-2: ring cap — drop the oldest event when the cap is exceeded.
+	if t.cap > 0 && len(t.events) > t.cap {
+		t.events = t.events[len(t.events)-t.cap:]
+	}
 }
 
 // Events returns a copy of all events.

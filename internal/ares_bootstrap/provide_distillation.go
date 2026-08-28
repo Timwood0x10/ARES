@@ -2,6 +2,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -106,7 +107,7 @@ func provideDistillation(
 //	err - repository or validation error; nil on success.
 func recordStrategyOutcome(ctx context.Context, repo repositories.ExperienceRepositoryInterface, outcome evolution.StrategyOutcome) error {
 	if repo == nil {
-		return fmt.Errorf("record strategy outcome: experience repository is nil")
+		return errors.New("record strategy outcome: experience repository is nil")
 	}
 	expType := "failure"
 	if outcome.Success {

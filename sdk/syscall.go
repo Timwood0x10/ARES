@@ -93,7 +93,10 @@ type sdkSyscallExecutor struct {
 
 var _ agentsyscall.Executor = (*sdkSyscallExecutor)(nil)
 
-func (e *sdkSyscallExecutor) ID() string             { return e.inner.ID() }
+// ID returns the wrapped executor's agent ID.
+func (e *sdkSyscallExecutor) ID() string { return e.inner.ID() }
+
+// Type returns the wrapped executor's agent type.
 func (e *sdkSyscallExecutor) Type() models.AgentType { return e.inner.Type() }
 
 func (e *sdkSyscallExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*agentsyscall.StepOutcome, error) {

@@ -3,7 +3,7 @@ package embedding
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"sync"
 )
 
@@ -164,5 +164,5 @@ func (f *FallbackClient) GetStrategy() FallbackStrategy {
 // Embedding errors
 var (
 	// ErrEmbeddingFailed indicates embedding generation failed.
-	ErrEmbeddingFailed = fmt.Errorf("embedding generation failed")
+	ErrEmbeddingFailed = errors.New("embedding generation failed")
 )

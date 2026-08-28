@@ -201,8 +201,13 @@ func (s *Sanitizer) SanitizeJSON(jsonStr string) string {
 		return jsonStr
 	}
 
+	// Use json.Number (B2): without UseNumber the decoder converts all
+	// numbers to float64, making the json.Number case in sanitizeValue
+	// unreachable and losing precision for large integers.
+	dec := json.NewDecoder(strings.NewReader(jsonStr))
+	dec.UseNumber()
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := dec.Decode(&data); err != nil {
 		// Not valid JSON; fall back to plain string sanitization.
 		return s.Sanitize(jsonStr)
 	}
@@ -443,19 +448,20 @@ func maskString(s string, preserveLength int) string {
 		return s
 	}
 
-	length := len(s)
+	runes := []rune(s)
+	length := len(runes)
 
 	if length <= preserveLength {
 		return strings.Repeat("*", length)
 	}
 
 	if length <= preserveLength*2 {
-		prefix := s[:preserveLength]
+		prefix := string(runes[:preserveLength])
 		return prefix + strings.Repeat("*", length-preserveLength)
 	}
 
-	prefix := s[:preserveLength]
-	suffix := s[length-preserveLength:]
+	prefix := string(runes[:preserveLength])
+	suffix := string(runes[length-preserveLength:])
 	maskLength := length - preserveLength*2
 
 	return prefix + strings.Repeat(string('*'), maskLength) + suffix

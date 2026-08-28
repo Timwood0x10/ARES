@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -84,7 +85,7 @@ type LLMHintProvider struct {
 // fall back to defaults.
 func NewLLMHintProvider(client LLMClient, cfg *LLMHintProviderConfig) (*LLMHintProvider, error) {
 	if client == nil {
-		return nil, fmt.Errorf("LLM client is required")
+		return nil, errors.New("LLM client is required")
 	}
 
 	config := defaultLLMHintProviderConfig()
@@ -320,7 +321,7 @@ type llmHintJSON struct {
 func (p *LLMHintProvider) parseResponse(resp string, limit int) ([]EvolutionHint, error) {
 	jsonStr := ExtractJSONBracket(resp)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("no JSON array found in response")
+		return nil, errors.New("no JSON array found in response")
 	}
 
 	var hints []llmHintJSON

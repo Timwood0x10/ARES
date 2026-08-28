@@ -120,7 +120,7 @@ func (m *Manager) ResumeAgent(ctx context.Context, agentID string) error {
 		m.mu.Unlock()
 		return nil // not paused: nothing to resume
 	}
-	agentCtx, agentCancel := context.WithCancel(m.gctx)
+	agentCtx, agentCancel := context.WithCancel(m.getGctx())
 	ma.paused = false
 	ma.operatorIntent = false // resume clears operator intent: future deaths may resurrect again
 	ma.cancel = agentCancel

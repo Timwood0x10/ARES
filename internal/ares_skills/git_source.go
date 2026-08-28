@@ -2,6 +2,7 @@ package ares_skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,7 +34,7 @@ type GitSource struct {
 //   - error: wrapped clone/pull error, or nil.
 func SyncGitSource(ctx context.Context, src GitSource) error {
 	if src.URL == "" || src.LocalDir == "" {
-		return fmt.Errorf("ares_skills: git source needs url and local_dir")
+		return errors.New("ares_skills: git source needs url and local_dir")
 	}
 	if _, err := os.Stat(filepath.Join(src.LocalDir, ".git")); err != nil {
 		// Absent or broken checkout: (re)clone shallowly.

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -53,7 +54,7 @@ Example:
 			}
 			secret := tokenEnvSecret(cfg)
 			if secret == "" {
-				return fmt.Errorf("no JWT secret configured: set security.jwt_secret or ARES_JWT_SECRET")
+				return errors.New("no JWT secret configured: set security.jwt_secret or ARES_JWT_SECRET")
 			}
 			// Lifetime precedence: explicit --ttl flag > security.jwt_expiry
 			// config > defaultTokenTTL. An empty flag leaves the config (and

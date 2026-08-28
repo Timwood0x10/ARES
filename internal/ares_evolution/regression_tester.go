@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	mathrand "math/rand"
 	"sync"
@@ -36,7 +37,7 @@ type RegressionTester struct {
 //	error - non-nil if scorer is nil.
 func NewRegressionTester(scorer func(*mutation.Strategy) float64) (*RegressionTester, error) {
 	if scorer == nil {
-		return nil, fmt.Errorf("scorer must not be nil")
+		return nil, errors.New("scorer must not be nil")
 	}
 	return &RegressionTester{
 		scorer: scorer,

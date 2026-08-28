@@ -322,8 +322,10 @@ func RunEvolutionFeedbackLoop(ctx context.Context, adapter *EvolutionFeedbackAda
 		defer func() {
 			if r := recover(); r != nil {
 				// A panic must not kill the loop (M2: kernel loops must
-				// not crash the process).
-				_ = r
+				// not crash the process), but it must be logged for
+				// observability (B29).
+				slog.Error("feedback loop panic recovered",
+					"phase", phase, "panic", r)
 			}
 		}()
 		return adapter.Apply(ctx)

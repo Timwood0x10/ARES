@@ -2,6 +2,7 @@ package aresrecovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
@@ -62,7 +63,7 @@ func NewEvolutionAwareQuotaManager(agents *agentfabric.Fabric, source QuotaPolic
 //   - error: the policy-source error, or an error when no fabric is wired.
 func (m *EvolutionAwareQuotaManager) Apply(ctx context.Context) error {
 	if m.agents == nil {
-		return fmt.Errorf("aresrecovery: evolution quota manager has no agent fabric")
+		return errors.New("aresrecovery: evolution quota manager has no agent fabric")
 	}
 	if m.source == nil {
 		return nil // no evolution source wired — leave the budget untouched

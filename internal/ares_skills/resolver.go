@@ -1,6 +1,7 @@
 package ares_skills
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -181,4 +182,4 @@ func filepathAbs(path string) (bool, error) {
 }
 
 // ErrToolUntrusted is returned when a tool declaration fails the trust gate.
-var ErrToolUntrusted = fmt.Errorf("ares_skills: tool untrusted")
+var ErrToolUntrusted = errors.New("ares_skills: tool untrusted")

@@ -5,6 +5,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
@@ -74,40 +75,40 @@ func (e *GraphPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*
 // CanApply checks whether a patch can be applied.
 func (e *GraphPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
 	if e.graph == nil {
-		return fmt.Errorf("graph executor: graph is nil")
+		return errors.New("graph executor: graph is nil")
 	}
 	switch p.Type {
 	case patch.PatchInsertNode:
 		if p.Target == "" {
-			return fmt.Errorf("graph executor: insert node requires non-empty target")
+			return errors.New("graph executor: insert node requires non-empty target")
 		}
 		return nil
 	case patch.PatchRemoveNode:
 		if p.Target == "" {
-			return fmt.Errorf("graph executor: remove node requires non-empty target")
+			return errors.New("graph executor: remove node requires non-empty target")
 		}
 		return nil
 	case patch.PatchReplaceNode:
 		if p.Target == "" {
-			return fmt.Errorf("graph executor: replace node requires non-empty target")
+			return errors.New("graph executor: replace node requires non-empty target")
 		}
 		return nil
 	case patch.PatchAddEdge:
 		if p.Target == "" {
-			return fmt.Errorf("graph executor: add edge requires non-empty from")
+			return errors.New("graph executor: add edge requires non-empty from")
 		}
 		to, ok := p.Value.(string)
 		if !ok || to == "" {
-			return fmt.Errorf("graph executor: add edge value must be non-empty string (to)")
+			return errors.New("graph executor: add edge value must be non-empty string (to)")
 		}
 		return nil
 	case patch.PatchRemoveEdge:
 		if p.Target == "" {
-			return fmt.Errorf("graph executor: remove edge requires non-empty from")
+			return errors.New("graph executor: remove edge requires non-empty from")
 		}
 		to, ok := p.Value.(string)
 		if !ok || to == "" {
-			return fmt.Errorf("graph executor: remove edge value must be non-empty string (to)")
+			return errors.New("graph executor: remove edge value must be non-empty string (to)")
 		}
 		return nil
 	case patch.PatchChangeScheduler:
@@ -208,7 +209,7 @@ func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, p patch.Runtime
 func (e *GraphPatchExecutor) applyAddEdge(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	to, ok := p.Value.(string)
 	if !ok {
-		return nil, fmt.Errorf("graph executor: add edge value must be string (to node ID)")
+		return nil, errors.New("graph executor: add edge value must be string (to node ID)")
 	}
 
 	_, err := e.graph.Edge(p.Target, to)
@@ -227,7 +228,7 @@ func (e *GraphPatchExecutor) applyAddEdge(_ context.Context, p patch.RuntimePatc
 func (e *GraphPatchExecutor) applyRemoveEdge(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	to, ok := p.Value.(string)
 	if !ok {
-		return nil, fmt.Errorf("graph executor: remove edge value must be string (to node ID)")
+		return nil, errors.New("graph executor: remove edge value must be string (to node ID)")
 	}
 
 	_, err := e.graph.RemoveEdge(p.Target, to)
@@ -249,7 +250,7 @@ func (e *GraphPatchExecutor) applyChangeScheduler(
 ) (*patch.RuntimePatch, error) {
 	newSched, ok := p.Value.(Scheduler)
 	if !ok {
-		return nil, fmt.Errorf("graph executor: change scheduler value must be a Scheduler")
+		return nil, errors.New("graph executor: change scheduler value must be a Scheduler")
 	}
 
 	// Capture old scheduler for rollback. e.graph.scheduler is guarded by

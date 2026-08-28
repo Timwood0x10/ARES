@@ -4,6 +4,7 @@ package llmservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -265,7 +266,7 @@ func (s *Service) GenerateEmbedding(ctx context.Context, request *core.Embedding
 			// Generate embedding using the embedding service
 			embeddingFloat64, err := embedder.Embed(ctx, request.Input)
 			if err != nil {
-				return nil, errors.Wrap(err, "generate embedding")
+				return nil, fmt.Errorf("%w: %v", ErrEmbeddingFailed, err)
 			}
 
 			// Convert float64 to float32
@@ -282,11 +283,11 @@ func (s *Service) GenerateEmbedding(ctx context.Context, request *core.Embedding
 			}
 		} else {
 			// Embedding client type not recognized, return error
-			return nil, fmt.Errorf("embedding client type not supported")
+			return nil, fmt.Errorf("%w: unsupported type %T", ErrEmbeddingFailed, s.embeddingClient)
 		}
 	} else {
 		// No embedding client available, return error
-		return nil, fmt.Errorf("embedding service not configured")
+		return nil, ErrLLMNotAvailable
 	}
 
 	response := &core.EmbeddingResponse{
@@ -333,11 +334,34 @@ func (s *Service) GetModel() string {
 
 // buildPrompt builds a prompt from messages.
 func (s *Service) buildPrompt(messages []*core.LLMMessage) string {
-	prompt := ""
+	var sb strings.Builder
 	for _, msg := range messages {
-		prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
+		sb.WriteByte('[')
+		sb.WriteString(sanitizeRole(msg.Role))
+		sb.WriteString("]: ")
+		sb.WriteString(msg.Content)
+		sb.WriteByte('\n')
 	}
-	return prompt
+	return sb.String()
+}
+
+// sanitizeRole strips characters that could break the [role]: prefix format
+// or inject fake message boundaries. Only alphanumeric, dash, underscore,
+// and dot are kept (B14: role separator whitelist).
+func sanitizeRole(role string) string {
+	if role == "" {
+		return "unknown"
+	}
+	var sb strings.Builder
+	for _, r := range role {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			sb.WriteRune(r)
+		}
+	}
+	if sb.Len() == 0 {
+		return "unknown"
+	}
+	return sb.String()
 }
 
 // Close releases resources held by the LLM service.

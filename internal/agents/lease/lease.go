@@ -56,10 +56,10 @@ func NewManager() *Manager {
 // owner (renewing your own lease is not allowed — call Renew instead).
 func (m *Manager) Acquire(ctx context.Context, sessionID, owner string, ttl time.Duration) (Lease, error) {
 	if sessionID == "" || owner == "" {
-		return Lease{}, fmt.Errorf("lease: session ID and owner must not be empty")
+		return Lease{}, errors.New("lease: session ID and owner must not be empty")
 	}
 	if ttl <= 0 {
-		return Lease{}, fmt.Errorf("lease: ttl must be positive")
+		return Lease{}, errors.New("lease: ttl must be positive")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -79,7 +79,7 @@ func (m *Manager) Acquire(ctx context.Context, sessionID, owner string, ttl time
 // Renew extends an existing lease owned by owner by ttl.
 func (m *Manager) Renew(ctx context.Context, sessionID, owner string, ttl time.Duration) error {
 	if ttl <= 0 {
-		return fmt.Errorf("lease: ttl must be positive")
+		return errors.New("lease: ttl must be positive")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

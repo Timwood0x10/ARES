@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -26,7 +27,7 @@ const (
 //   - error: non-nil if the strategy exceeds size limits.
 func ValidateStrategySize(s *mutation.Strategy) error {
 	if s == nil {
-		return fmt.Errorf("strategy must not be nil")
+		return errors.New("strategy must not be nil")
 	}
 
 	if len(s.PromptTemplate) > maxPromptTemplateLen {

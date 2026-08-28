@@ -4,6 +4,7 @@ package ares_mcp
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -61,11 +62,11 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	defer t.mu.Unlock()
 
 	if t.started.Load() {
-		return fmt.Errorf("transport already started")
+		return errors.New("transport already started")
 	}
 
 	if t.config.Command == "" {
-		return fmt.Errorf("command is required")
+		return errors.New("command is required")
 	}
 
 	t.cmd = exec.CommandContext(ctx, t.config.Command, t.config.Args...) // #nosec G204
@@ -145,7 +146,7 @@ func (t *StdioTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	defer t.mu.Unlock()
 
 	if !t.started.Load() {
-		return fmt.Errorf("transport not started")
+		return errors.New("transport not started")
 	}
 
 	data, err := Encode(msg)
@@ -193,7 +194,7 @@ func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 		return nil, ctx.Err()
 	}
 	if !t.started.Load() {
-		return nil, fmt.Errorf("transport not started")
+		return nil, errors.New("transport not started")
 	}
 
 	// Use a channel to make the blocking scan interruptible.

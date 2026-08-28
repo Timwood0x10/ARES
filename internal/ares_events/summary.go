@@ -115,6 +115,11 @@ func DefaultCompactionConfig() CompactionConfig {
 		KeepRecent:            100,
 		MaxSummariesPerStream: 50,
 		SummaryTTL:            30 * 24 * time.Hour, // 30 days
-		EnableTrimming:        false,               // safe default: keep raw events
+		// P1-2: enable trimming so compacted events are actually deleted from
+		// the events table. Without this, SummaryTTL is never enforced and the
+		// store grows without bound. The trimStore is wired by the caller
+		// (NewCompactableEventStore) — when nil, trimming is a no-op but the
+		// flag is correct for callers that do wire one.
+		EnableTrimming: true,
 	}
 }

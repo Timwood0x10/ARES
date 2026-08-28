@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -46,12 +47,12 @@ func NewFlightToExperienceAdapter(flight FlightRecorder, expRepo ExperienceRepos
 //	error - any error encountered during subscription or processing.
 func (a *FlightToExperienceAdapter) Run(ctx context.Context) error {
 	if a.flight == nil || a.expRepo == nil {
-		return fmt.Errorf("flight recorder and experience repo are required")
+		return errors.New("flight recorder and experience repo are required")
 	}
 
 	subscriber := a.flight.EventStore()
 	if subscriber == nil {
-		return fmt.Errorf("event store subscriber is not available")
+		return errors.New("event store subscriber is not available")
 	}
 
 	ch, err := subscriber.Subscribe(ctx, ares_events.EventFilter{

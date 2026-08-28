@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,17 +21,17 @@ const MaxHTTPResponseBytes = 10 * 1024 * 1024 // 10 MB
 const MaxHTTPRedirects = 3
 
 // ErrSSRFBlocked is returned when a URL targets a blocked address.
-var ErrSSRFBlocked = fmt.Errorf("url targets a blocked address (private/loopback/link-local)")
+var ErrSSRFBlocked = errors.New("url targets a blocked address (private/loopback/link-local)")
 
 // ErrUnsupportedScheme is returned when a URL uses a non-http(s) scheme.
-var ErrUnsupportedScheme = fmt.Errorf("only http and https schemes are allowed")
+var ErrUnsupportedScheme = errors.New("only http and https schemes are allowed")
 
 // ValidateURL checks that a URL string uses an allowed scheme and does not
 // resolve to a private, loopback, or link-local address. It defends against
 // SSRF attacks targeting cloud metadata endpoints and internal services.
 func ValidateURL(ctx context.Context, rawURL string) error {
 	if rawURL == "" {
-		return fmt.Errorf("url is required")
+		return errors.New("url is required")
 	}
 
 	parsed, err := url.Parse(rawURL)
@@ -45,7 +46,7 @@ func ValidateURL(ctx context.Context, rawURL string) error {
 
 	host := parsed.Hostname()
 	if host == "" {
-		return fmt.Errorf("url has no host")
+		return errors.New("url has no host")
 	}
 
 	return checkHost(ctx, host)

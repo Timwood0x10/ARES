@@ -31,7 +31,7 @@ func init() {
 
 func runDbMigrate() error {
 	host := getEnv("DB_HOST", "localhost")
-	port := getEnv("DB_PORT", "5433")
+	port := getEnv("DB_PORT", "5432")
 	user := getEnv("DB_USER", "postgres")
 	password := getEnv("DB_PASSWORD", "postgres")
 	dbname := getEnv("DB_NAME", "ARES")
@@ -45,6 +45,7 @@ func runDbMigrate() error {
 	portStr := parsed.Port()
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
+	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {
 		return fmt.Errorf("close admin connection: %w", err)
 	}

@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -34,10 +35,10 @@ const (
 // the best-evolved instruction.
 func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string, error) {
 	if agent == nil {
-		return "", fmt.Errorf("evolve: agent is nil")
+		return "", errors.New("evolve: agent is nil")
 	}
 	if !r.evoEnabled {
-		return "", fmt.Errorf("evolution not enabled (use WithEvolution())")
+		return "", errors.New("evolution not enabled (use WithEvolution())")
 	}
 
 	if r.trace {
@@ -104,7 +105,7 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 	// Get the best strategy.
 	best := pop.BestStrategy()
 	if best == nil {
-		return "", fmt.Errorf("evolution produced no viable strategy")
+		return "", errors.New("evolution produced no viable strategy")
 	}
 
 	if r.trace {

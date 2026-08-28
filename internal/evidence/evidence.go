@@ -90,12 +90,17 @@ type Store interface {
 type MemoryStore struct {
 	mu   sync.RWMutex
 	data []Evidence
+	cap  int
 }
+
+// maxMemoryStoreRecords is the ring cap for the in-memory evidence store.
+const maxMemoryStoreRecords = 1000
 
 // NewMemoryStore creates an in-memory evidence store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		data: make([]Evidence, 0),
+		cap:  maxMemoryStoreRecords,
 	}
 }
 
@@ -104,6 +109,10 @@ func (s *MemoryStore) Append(_ context.Context, e Evidence) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data = append(s.data, e)
+	// P1-2: ring cap — drop the oldest record when the cap is exceeded.
+	if s.cap > 0 && len(s.data) > s.cap {
+		s.data = s.data[len(s.data)-s.cap:]
+	}
 	return nil
 }
 

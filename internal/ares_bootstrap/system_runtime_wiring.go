@@ -11,6 +11,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -136,7 +137,7 @@ func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Compo
 	if cfg.Knowledge.RetrievalEnabled && comp.AKGBridge == nil {
 		knowledgeMode = system_runtime.ModeDegraded
 		knowledgeReady = func(ctx context.Context) error {
-			return fmt.Errorf("knowledge: AKG retrieval enabled but write deps missing (AKGBridge nil)")
+			return errors.New("knowledge: AKG retrieval enabled but write deps missing (AKGBridge nil)")
 		}
 	}
 	registerSystemComponent(reg, sysCompKnowledge, comp.KnowledgeRuntime != nil, nil, knowledgeMode, nil, nil, knowledgeReady)

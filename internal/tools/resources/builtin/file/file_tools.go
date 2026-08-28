@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,7 +101,7 @@ func resolveSecurePath(path string) (string, error) {
 // a symlink) is rejected.
 func (t *FileTools) isPathAllowed(targetPath string) (string, error) {
 	if t.allowedDir == "" {
-		return "", fmt.Errorf("file tools have no allowedDir configured; refusing to operate")
+		return "", errors.New("file tools have no allowedDir configured; refusing to operate")
 	}
 
 	resolvedTarget, err := resolveSecurePath(targetPath)

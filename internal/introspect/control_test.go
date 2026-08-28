@@ -147,12 +147,8 @@ func TestControlServer_Observability(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	s.ServeHTTP(rec2, req)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("feedback status %d", rec2.Code)
-	}
-	sink := s.feedback.(*fakeFeedback)
-	if sink.last == nil || sink.last.CandidateID != "c1" || sink.last.Rating != 4 {
-		t.Fatalf("feedback not recorded: %+v", sink.last)
+	if rec2.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("feedback should return 405 on read-only plane, got %d", rec2.Code)
 	}
 
 	// Unconfigured observability → 404.

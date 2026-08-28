@@ -9,6 +9,7 @@ package patch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -166,7 +167,7 @@ func (c *ExecutorComponent) CanApply(ctx context.Context, patch RuntimePatch) er
 // sentinel errors for the patch package.
 var (
 	// ErrNoSnapshot is returned by Snapshot when no snapshot is available.
-	ErrNoSnapshot = fmt.Errorf("patch: no snapshot available")
+	ErrNoSnapshot = errors.New("patch: no snapshot available")
 )
 
 // Ensure ExecutorComponent implements RuntimeComponent.
@@ -213,10 +214,10 @@ func (r *Registry) CanApply(target string) bool {
 // Register registers an executor for a target component.
 func (r *Registry) Register(target string, ex Executor) error {
 	if target == "" {
-		return fmt.Errorf("patch: target must not be empty")
+		return errors.New("patch: target must not be empty")
 	}
 	if ex == nil {
-		return fmt.Errorf("patch: executor must not be nil")
+		return errors.New("patch: executor must not be nil")
 	}
 	if _, exists := r.executors[target]; exists {
 		return fmt.Errorf("patch: executor for %q already registered", target)
@@ -229,7 +230,7 @@ func (r *Registry) Register(target string, ex Executor) error {
 // This is the preferred registration method for new code.
 func (r *Registry) RegisterComponent(comp RuntimeComponent) error {
 	if comp == nil {
-		return fmt.Errorf("patch: component must not be nil")
+		return errors.New("patch: component must not be nil")
 	}
 	return r.Register(comp.Name(), comp)
 }
@@ -240,10 +241,10 @@ func (r *Registry) RegisterComponent(comp RuntimeComponent) error {
 // bootstrap) where a component must be updated in place.
 func (r *Registry) Replace(target string, ex Executor) error {
 	if target == "" {
-		return fmt.Errorf("patch: target must not be empty")
+		return errors.New("patch: target must not be empty")
 	}
 	if ex == nil {
-		return fmt.Errorf("patch: executor must not be nil")
+		return errors.New("patch: executor must not be nil")
 	}
 	r.executors[target] = ex
 	return nil
@@ -253,7 +254,7 @@ func (r *Registry) Replace(target string, ex Executor) error {
 // overwriting any existing registration.
 func (r *Registry) ReplaceComponent(comp RuntimeComponent) error {
 	if comp == nil {
-		return fmt.Errorf("patch: component must not be nil")
+		return errors.New("patch: component must not be nil")
 	}
 	return r.Replace(comp.Name(), comp)
 }

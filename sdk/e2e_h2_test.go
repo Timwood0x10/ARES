@@ -112,9 +112,9 @@ func TestSDKH2_ChaosRecoveryChain(t *testing.T) {
 	rt.sdkFabric.WithClock(clock)
 
 	// Replace the default agent executor with a yield-checkpoint stub.
-	rt.agentMu.Lock()
-	rt.sdkExecutors["coder"] = &yieldExecutor{id: "coder", typ: "coder"}
-	rt.agentMu.Unlock()
+	// P1-1: route through sched.RegisterExecutor so the write is
+	// execMu-guarded (no cross-lock race with the scheduler's reads).
+	rt.sched.RegisterExecutor("coder", &yieldExecutor{id: "coder", typ: "coder"})
 
 	// Submit the task in a goroutine (it blocks until COMPLETED).
 	var submitErr error
@@ -146,11 +146,8 @@ func TestSDKH2_ChaosRecoveryChain(t *testing.T) {
 	}
 
 	// ── Chaos kill: remove the executor from the scheduler's static pool.
-	// The SDK scheduler's executors map is the same reference as
-	// rt.sdkExecutors, so the scheduler immediately sees the gap.
-	rt.agentMu.Lock()
-	delete(rt.sdkExecutors, "coder")
-	rt.agentMu.Unlock()
+	// P1-1: use sched.UnregisterExecutor so the write is execMu-guarded.
+	rt.sched.UnregisterExecutor("coder")
 
 	// Age the lease past the kernel scheduler's 5-minute TTL.
 	advance(7 * time.Minute)

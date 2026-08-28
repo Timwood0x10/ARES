@@ -3,6 +3,7 @@ package retriever
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -69,14 +70,14 @@ func New(rt *runtime.KnowledgeRuntime, comp compiler.Compiler) *Retriever {
 //  4. Return the compiled context + graph.
 func (r *Retriever) Retrieve(ctx context.Context, query Query) (*Result, error) {
 	if query.Text == "" {
-		return nil, fmt.Errorf("retriever: query text is required")
+		return nil, errors.New("retriever: query text is required")
 	}
 
 	if r.runtime == nil {
-		return nil, fmt.Errorf("retriever: runtime is nil")
+		return nil, errors.New("retriever: runtime is nil")
 	}
 	if r.compiler == nil {
-		return nil, fmt.Errorf("retriever: compiler is nil")
+		return nil, errors.New("retriever: compiler is nil")
 	}
 
 	// Build budget from query parameters.

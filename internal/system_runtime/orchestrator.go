@@ -251,10 +251,10 @@ func (o *Orchestrator) stopComponent(ctx context.Context, name string) error {
 					"component", name, "error", waitErr)
 			}
 		case <-time.After(stopTimeout):
-			log.Warn("system_runtime: wait timed out",
+			log.Warn("system_runtime: wait timed out (goroutine leaked)",
 				"component", name, "timeout", stopTimeout)
 		case <-ctx.Done():
-			log.Warn("system_runtime: wait aborted by shutdown context",
+			log.Warn("system_runtime: wait aborted by shutdown context (goroutine leaked)",
 				"component", name)
 		}
 	}
@@ -291,10 +291,10 @@ func (o *Orchestrator) cleanupComponent(ctx context.Context, name string) {
 					"component", name, "error", waitErr)
 			}
 		case <-time.After(stopTimeout):
-			log.Warn("system_runtime: cleanup wait timed out",
+			log.Warn("system_runtime: cleanup wait timed out (goroutine leaked)",
 				"component", name, "timeout", stopTimeout)
 		case <-ctx.Done():
-			log.Warn("system_runtime: cleanup wait aborted by context",
+			log.Warn("system_runtime: cleanup wait aborted by context (goroutine leaked)",
 				"component", name)
 		}
 	}

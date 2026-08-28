@@ -31,7 +31,7 @@ type embeddingPipeline struct {
 // NewEmbeddingPipeline creates a pipeline wrapping the given service.
 func NewEmbeddingPipeline(svc embedding.EmbeddingService) (EmbeddingPipeline, error) {
 	if svc == nil {
-		return nil, fmt.Errorf("embedding service is nil")
+		return nil, errors.New("embedding service is nil")
 	}
 	return &embeddingPipeline{
 		svc:   svc,

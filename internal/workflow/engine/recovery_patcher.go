@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -66,7 +67,7 @@ func (e *RecoveryPatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) (
 // CanApply checks whether a patch can be applied.
 func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
 	if e.dag == nil {
-		return fmt.Errorf("recovery executor: dag is nil")
+		return errors.New("recovery executor: dag is nil")
 	}
 	switch p.Type {
 	case patch.PatchChangeRecoveryStrategy:
@@ -78,7 +79,7 @@ func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 		}
 		strategy, ok := p.Value.(string)
 		if !ok {
-			return fmt.Errorf("recovery executor: ChangeRecoveryStrategy value must be string or strategy snapshot")
+			return errors.New("recovery executor: ChangeRecoveryStrategy value must be string or strategy snapshot")
 		}
 		switch RecoveryStrategy(strategy) {
 		case RecoveryRetry, RecoveryReplaceNode, RecoveryFailFast:
@@ -93,7 +94,7 @@ func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 			return nil
 		}
 		if _, ok := p.Value.(int); !ok {
-			return fmt.Errorf("recovery executor: ChangeMaxRetries value must be int or max-attempts snapshot")
+			return errors.New("recovery executor: ChangeMaxRetries value must be int or max-attempts snapshot")
 		}
 		return nil
 	case patch.PatchChangeBackoff:
@@ -103,7 +104,7 @@ func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 			return nil
 		}
 		if _, ok := p.Value.(time.Duration); !ok {
-			return fmt.Errorf("recovery executor: ChangeBackoff value must be time.Duration")
+			return errors.New("recovery executor: ChangeBackoff value must be time.Duration")
 		}
 		return nil
 	default:
@@ -164,7 +165,7 @@ func (e *RecoveryPatchExecutor) applyChangeStrategy(p patch.RuntimePatch) (*patc
 
 	strategy, ok := p.Value.(string)
 	if !ok {
-		return nil, fmt.Errorf("recovery executor: ChangeRecoveryStrategy value must be string")
+		return nil, errors.New("recovery executor: ChangeRecoveryStrategy value must be string")
 	}
 	newStrategy := RecoveryStrategy(strategy)
 
@@ -172,7 +173,7 @@ func (e *RecoveryPatchExecutor) applyChangeStrategy(p patch.RuntimePatch) (*patc
 	defer e.dag.mu.Unlock()
 
 	if len(e.dag.steps) == 0 {
-		return nil, fmt.Errorf("recovery executor: no steps in DAG to apply strategy")
+		return nil, errors.New("recovery executor: no steps in DAG to apply strategy")
 	}
 
 	snap := &recoveryStrategySnapshot{
@@ -253,14 +254,14 @@ func (e *RecoveryPatchExecutor) applyChangeMaxRetries(p patch.RuntimePatch) (*pa
 
 	newMax, ok := p.Value.(int)
 	if !ok {
-		return nil, fmt.Errorf("recovery executor: ChangeMaxRetries value must be int")
+		return nil, errors.New("recovery executor: ChangeMaxRetries value must be int")
 	}
 
 	e.dag.mu.Lock()
 	defer e.dag.mu.Unlock()
 
 	if len(e.dag.steps) == 0 {
-		return nil, fmt.Errorf("recovery executor: no steps in DAG to apply max retries")
+		return nil, errors.New("recovery executor: no steps in DAG to apply max retries")
 	}
 
 	snap := &recoveryMaxAttemptsSnapshot{
@@ -343,14 +344,14 @@ func (e *RecoveryPatchExecutor) applyChangeBackoff(p patch.RuntimePatch) (*patch
 
 	newBackoff, ok := p.Value.(time.Duration)
 	if !ok {
-		return nil, fmt.Errorf("recovery executor: ChangeBackoff value must be time.Duration")
+		return nil, errors.New("recovery executor: ChangeBackoff value must be time.Duration")
 	}
 
 	e.dag.mu.Lock()
 	defer e.dag.mu.Unlock()
 
 	if len(e.dag.steps) == 0 {
-		return nil, fmt.Errorf("recovery executor: no steps in DAG to apply backoff")
+		return nil, errors.New("recovery executor: no steps in DAG to apply backoff")
 	}
 
 	snap := &recoveryBackoffSnapshot{

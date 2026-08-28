@@ -2,11 +2,10 @@ package ares_events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
@@ -172,16 +171,6 @@ func (s *CompactableEventStore) Append(
 	// workers respect gCtx, so they return as soon as s.lctx is cancelled or the
 	// timeout fires, unblocking g.Wait and letting the waiter exit.
 	compactCtx, cancel := context.WithTimeout(s.lctx, compactionTimeout)
-	g, gCtx := errgroup.WithContext(compactCtx)
-	g.Go(func() error {
-		if hasTerminal {
-			if err := s.drainPendingRounds(gCtx, streamID); err != nil {
-				log.Warn("archive: drain pending rounds failed", "stream_id", streamID, "error", err)
-			}
-		}
-		s.maybeCompact(gCtx, streamID)
-		return nil
-	})
 
 	// Register the waiter with the store's WaitGroup so Close can join it.
 	// The closed check runs under mu against Close's closed=true assignment:
@@ -202,9 +191,12 @@ func (s *CompactableEventStore) Append(
 	go func() {
 		defer s.wg.Done()
 		defer cancel()
-		if err := g.Wait(); err != nil {
-			log.Warn("compactable store: compaction wait failed", "error", err)
+		if hasTerminal {
+			if err := s.drainPendingRounds(compactCtx, streamID); err != nil {
+				log.Warn("archive: drain pending rounds failed", "stream_id", streamID, "error", err)
+			}
 		}
+		s.maybeCompact(compactCtx, streamID)
 	}()
 
 	return nil
@@ -332,7 +324,7 @@ func (s *CompactableEventStore) CleanupSummaries(ctx context.Context) (int64, er
 // GetSummariesForStream returns all summaries for a given stream.
 func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, streamID string) ([]*EventSummary, error) {
 	if s.compactor == nil || s.compactor.repo == nil {
-		return nil, fmt.Errorf("event store: compactor not configured")
+		return nil, errors.New("event store: compactor not configured")
 	}
 	return s.compactor.repo.FindByStreamID(ctx, streamID)
 }
@@ -340,7 +332,7 @@ func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, strea
 // GetSummariesForAgent returns all summaries for an agent across all tasks.
 func (s *CompactableEventStore) GetSummariesForAgent(ctx context.Context, agentID string) ([]*EventSummary, error) {
 	if s.compactor == nil || s.compactor.repo == nil {
-		return nil, fmt.Errorf("event store: compactor not configured")
+		return nil, errors.New("event store: compactor not configured")
 	}
 	return s.compactor.repo.FindByAgentID(ctx, agentID)
 }

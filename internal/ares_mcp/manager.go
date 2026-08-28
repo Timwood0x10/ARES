@@ -3,6 +3,7 @@ package ares_mcp
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -86,7 +87,7 @@ type managedClient struct {
 // err - error if registry is nil.
 func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) (*MCPManager, error) {
 	if registry == nil {
-		return nil, fmt.Errorf("mcp: registry is required")
+		return nil, errors.New("mcp: registry is required")
 	}
 	return &MCPManager{
 		clients:  make(map[string]*managedClient),
@@ -147,7 +148,7 @@ func (m *MCPManager) Stop(_ context.Context) error {
 // error - connection, transport, or tool registration error.
 func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 	if name == "" {
-		return fmt.Errorf("server name cannot be empty")
+		return errors.New("server name cannot be empty")
 	}
 
 	m.mu.RLock()

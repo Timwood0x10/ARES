@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,7 +30,7 @@ import (
 //   - error           - non-nil if rt is nil.
 func NewServiceAdapter(rt *runtime.KnowledgeRuntime) (*ServiceAdapter, error) {
 	if rt == nil {
-		return nil, fmt.Errorf("knowledge service: KnowledgeRuntime is nil")
+		return nil, errors.New("knowledge service: KnowledgeRuntime is nil")
 	}
 	return &ServiceAdapter{rt: rt}, nil
 }

@@ -43,7 +43,7 @@ type FileWatcher struct {
 // NewFileWatcher creates a new FileWatcher.
 func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) (*FileWatcher, error) {
 	if loader == nil {
-		return nil, fmt.Errorf("loader cannot be nil")
+		return nil, errors.New("loader cannot be nil")
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

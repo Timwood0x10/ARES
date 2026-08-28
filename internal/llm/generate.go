@@ -164,7 +164,7 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 // generateOpenRouter generates text using OpenRouter API.
 func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o requestOverrides) (string, error) {
 	if c.config.APIKey == "" {
-		return "", fmt.Errorf("API key is required for OpenRouter")
+		return "", errors.New("API key is required for OpenRouter")
 	}
 
 	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
@@ -230,7 +230,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 	}
 
 	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return "", errors.New("no choices in response")
 	}
 
 	result := response.Choices[0].Message.Content
@@ -307,7 +307,7 @@ func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOve
 // Anthropic uses a different API format: /v1/messages endpoint with required max_tokens.
 func (c *Client) generateAnthropic(ctx context.Context, prompt string, o requestOverrides) (string, error) {
 	if c.config.APIKey == "" {
-		return "", fmt.Errorf("API key is required for Anthropic")
+		return "", errors.New("API key is required for Anthropic")
 	}
 
 	anthropicMaxTokens := o.applyMaxTokens(c.config.MaxTokens)

@@ -607,6 +607,9 @@ func parseArgs(raw string) map[string]any {
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		log.Warn("parseArgs: invalid JSON tool arguments",
+			"raw", raw,
+			"error", err)
 		return nil
 	}
 	return m
@@ -627,5 +630,6 @@ func FriendlyErr(scope string, provider core.LLMProvider, origErr error) error {
 	if hint, ok := hints[provider]; ok {
 		msg += "\n  " + hint
 	}
-	return fmt.Errorf("%s", msg)
+	// B10: wrap with %w so errors.Is/As can match the underlying cause.
+	return fmt.Errorf("%s: %w", msg, origErr)
 }

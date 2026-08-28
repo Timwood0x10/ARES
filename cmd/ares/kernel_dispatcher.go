@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -61,7 +62,7 @@ func (d *kernelFabricDispatcher) D(ctx context.Context, agentID, taskID string, 
 // data; absent metadata falls back to a default type.
 func taskFromPayload(taskID string, payload any) (*models.Task, error) {
 	if taskID == "" {
-		return nil, fmt.Errorf("task id required")
+		return nil, errors.New("task id required")
 	}
 	task := models.NewTask(taskID, models.AgentTypeTop, nil)
 	if m, ok := payload.(map[string]any); ok {

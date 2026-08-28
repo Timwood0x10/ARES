@@ -3,6 +3,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,7 +48,7 @@ func ProvideEvolution(
 	fr *flight.FlightRecorder,
 ) (*EvolutionComponents, error) {
 	if eventStore == nil || expRepo == nil {
-		return nil, fmt.Errorf("bootstrap: evolution skipped (missing dependencies)")
+		return nil, errors.New("bootstrap: evolution skipped (missing dependencies)")
 	}
 
 	// 1. Flight → Experience adapter (reuses the shared recorder — do NOT

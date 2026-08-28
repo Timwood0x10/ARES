@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -84,7 +85,7 @@ func createPeerAgents(
 	// full LLM + tool stack).
 	subAgents := createPeerSubAgents(cfg, peers, llmAdapter, chatClient, toolBinder, store, strategySrc)
 	if len(subAgents) == 0 {
-		return nil, nil, fmt.Errorf("peer mode: no peer agents configured (agents.peers or agents.sub)")
+		return nil, nil, errors.New("peer mode: no peer agents configured (agents.peers or agents.sub)")
 	}
 
 	// Assemble the Kernel: Task Fabric + Agent Fabric + scheduler. This
@@ -362,7 +363,7 @@ func loadExperiencePrior(ctx context.Context, expRepo repositories.ExperienceRep
 // scheduler executes it — no leader and no autopilot involved.
 func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string, payload map[string]any) (string, error) {
 	if kernel == nil || kernel.fabric == nil {
-		return "", fmt.Errorf("peer mode: kernel fabric not wired")
+		return "", errors.New("peer mode: kernel fabric not wired")
 	}
 	taskID := fmt.Sprintf("peer-task-%s-%d", capability, peerTaskSeq.Add(1))
 
@@ -399,11 +400,11 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 // skipped; killing an empty fabric is a caller-visible error.
 func chaosKillRandomFabric(ctx context.Context, k *kernelHandle) (string, error) {
 	if k == nil || k.agents == nil {
-		return "", fmt.Errorf("peer mode: kernel agent fabric not wired")
+		return "", errors.New("peer mode: kernel agent fabric not wired")
 	}
 	live := liveFabricAgents(k.agents)
 	if len(live) == 0 {
-		return "", fmt.Errorf("peer mode: no live agents in the fabric")
+		return "", errors.New("peer mode: no live agents in the fabric")
 	}
 	target := live[rand.Intn(len(live))]
 	if err := k.agents.Kill(ctx, target); err != nil {
@@ -420,7 +421,7 @@ func chaosKillRandomFabric(ctx context.Context, k *kernelHandle) (string, error)
 // "the fabric itself is not wired", mirroring chaosKillRandomFabric.
 func chaosKillAllFabric(ctx context.Context, k *kernelHandle) (killed, failed []string, err error) {
 	if k == nil || k.agents == nil {
-		return nil, nil, fmt.Errorf("peer mode: kernel agent fabric not wired")
+		return nil, nil, errors.New("peer mode: kernel agent fabric not wired")
 	}
 	killed = make([]string, 0)
 	failed = make([]string, 0)
@@ -447,7 +448,7 @@ func chaosKillAllFabric(ctx context.Context, k *kernelHandle) (killed, failed []
 // tasks are durable intent.
 func chaosRecoverSweep(k *kernelHandle) ([]string, error) {
 	if k == nil || k.recovery == nil {
-		return nil, fmt.Errorf("peer mode: kernel recovery not wired")
+		return nil, errors.New("peer mode: kernel recovery not wired")
 	}
 	requeued := k.recovery.RequeueExpiredLeases()
 	if len(requeued) > 0 {
@@ -476,7 +477,10 @@ type peerExecutorAdapter struct {
 	agent sub.Agent
 }
 
-func (a *peerExecutorAdapter) ID() string             { return a.agent.ID() }
+// ID returns the wrapped agent's ID.
+func (a *peerExecutorAdapter) ID() string { return a.agent.ID() }
+
+// Type returns the wrapped agent's type.
 func (a *peerExecutorAdapter) Type() models.AgentType { return a.agent.Type() }
 func (a *peerExecutorAdapter) ExecuteStep(ctx context.Context, task *models.Task) (*agentsyscall.StepOutcome, error) {
 	out, err := a.agent.ExecuteStep(ctx, task)

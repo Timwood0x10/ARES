@@ -3,6 +3,7 @@ package evolution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -220,7 +221,7 @@ type LLMScorer struct {
 // NewLLMScorer creates an LLMScorer from config.
 func NewLLMScorer(cfg LLMScorerConfig) (*LLMScorer, error) {
 	if cfg.Client == nil {
-		return nil, fmt.Errorf("LLM client must not be nil")
+		return nil, errors.New("LLM client must not be nil")
 	}
 	evalPrompt := cfg.EvalPrompt
 	if evalPrompt == "" {

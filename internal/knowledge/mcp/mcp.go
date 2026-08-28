@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -143,7 +144,7 @@ func (s *AKFService) handleBuildGraph(ctx context.Context, input string) (string
 		return "", fmt.Errorf("invalid params: %w", err)
 	}
 	if params.Goal == "" {
-		return "", fmt.Errorf("goal is required")
+		return "", errors.New("goal is required")
 	}
 	if params.MaxTokens <= 0 {
 		params.MaxTokens = 2000
@@ -180,7 +181,7 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 		return "", fmt.Errorf("invalid params: %w", err)
 	}
 	if params.Goal == "" {
-		return "", fmt.Errorf("goal is required")
+		return "", errors.New("goal is required")
 	}
 	if params.MaxTokens <= 0 {
 		params.MaxTokens = 5000
@@ -236,7 +237,7 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 		return "", fmt.Errorf("invalid params: %w", err)
 	}
 	if params.Content == "" {
-		return "", fmt.Errorf("content is required")
+		return "", errors.New("content is required")
 	}
 
 	objType := knowledge.ObjectMemory

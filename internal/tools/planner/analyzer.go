@@ -3,6 +3,7 @@ package planner
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -35,7 +36,7 @@ func NewRuleBasedAnalyzer() SemanticAnalyzer {
 // Returns an error if no rule matches.
 func (a *ruleBasedAnalyzer) Analyze(_ context.Context, request string) (*Intent, error) {
 	if request == "" {
-		return nil, fmt.Errorf("planner: empty request")
+		return nil, errors.New("planner: empty request")
 	}
 
 	lower := strings.ToLower(request)

@@ -3,6 +3,7 @@ package ares_mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 )
@@ -127,7 +128,7 @@ func NewErrorResponse(id int64, code int, message string, data interface{}) (*JS
 // Encode serializes a JSON-RPC message to bytes.
 func Encode(msg *JSONRPCMessage) ([]byte, error) {
 	if msg == nil {
-		return nil, fmt.Errorf("nil message")
+		return nil, errors.New("nil message")
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -139,7 +140,7 @@ func Encode(msg *JSONRPCMessage) ([]byte, error) {
 // Decode deserializes a JSON-RPC message from bytes.
 func Decode(data []byte) (*JSONRPCMessage, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("empty data")
+		return nil, errors.New("empty data")
 	}
 	var msg JSONRPCMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -171,13 +172,13 @@ func IsError(msg *JSONRPCMessage) bool {
 // DecodeResult decodes the Result field into the given target.
 func DecodeResult(msg *JSONRPCMessage, target interface{}) error {
 	if msg == nil {
-		return fmt.Errorf("nil message")
+		return errors.New("nil message")
 	}
 	if msg.Error != nil {
 		return msg.Error
 	}
 	if len(msg.Result) == 0 {
-		return fmt.Errorf("empty result")
+		return errors.New("empty result")
 	}
 	if err := json.Unmarshal(msg.Result, target); err != nil {
 		return fmt.Errorf("decode result: %w", err)
@@ -188,10 +189,10 @@ func DecodeResult(msg *JSONRPCMessage, target interface{}) error {
 // DecodeParams decodes the Params field into the given target.
 func DecodeParams(msg *JSONRPCMessage, target interface{}) error {
 	if msg == nil {
-		return fmt.Errorf("nil message")
+		return errors.New("nil message")
 	}
 	if len(msg.Params) == 0 {
-		return fmt.Errorf("empty params")
+		return errors.New("empty params")
 	}
 	if err := json.Unmarshal(msg.Params, target); err != nil {
 		return fmt.Errorf("decode params: %w", err)

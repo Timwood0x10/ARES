@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -114,7 +115,7 @@ type LLMArenaScorerConfig struct {
 //	error - when the client is nil.
 func NewLLMArenaScorer(cfg LLMArenaScorerConfig) (*LLMArenaScorer, error) {
 	if cfg.Client == nil {
-		return nil, fmt.Errorf("LLMArenaScorer: client must not be nil")
+		return nil, errors.New("LLMArenaScorer: client must not be nil")
 	}
 	execPrompt := cfg.ExecPrompt
 	if execPrompt == "" {
@@ -164,7 +165,7 @@ func (s *LLMArenaScorer) Score(ctx context.Context, input any) (float64, error) 
 		return 0, fmt.Errorf("LLMArenaScorer: strategy must be a string instruction, got %T", ti.Strategy)
 	}
 	if instructions == "" {
-		return 0, fmt.Errorf("LLMArenaScorer: instructions are empty")
+		return 0, errors.New("LLMArenaScorer: instructions are empty")
 	}
 	caseStr := caseToString(ti.TestCase)
 
@@ -178,7 +179,7 @@ func (s *LLMArenaScorer) Score(ctx context.Context, input any) (float64, error) 
 		return 0, fmt.Errorf("LLMArenaScorer: execute: %w", err)
 	}
 	if strings.TrimSpace(output) == "" {
-		return 0, fmt.Errorf("LLMArenaScorer: agent produced empty output")
+		return 0, errors.New("LLMArenaScorer: agent produced empty output")
 	}
 
 	// Step 2: grade the produced output on [0,1].
@@ -222,7 +223,7 @@ func (s *LLMArenaScorer) ScoreBatch(ctx context.Context, strategy any, count int
 		return nil, fmt.Errorf("LLMArenaScorer: strategy must be a string instruction, got %T", strategy)
 	}
 	if instructions == "" {
-		return nil, fmt.Errorf("LLMArenaScorer: instructions are empty")
+		return nil, errors.New("LLMArenaScorer: instructions are empty")
 	}
 
 	cases := make([]any, count)
@@ -343,7 +344,7 @@ func caseToString(c any) string {
 func parseArenaScore(resp string) (float64, error) {
 	resp = strings.TrimSpace(resp)
 	if resp == "" {
-		return 0, fmt.Errorf("empty grading response")
+		return 0, errors.New("empty grading response")
 	}
 	// Extract the first floating-point number that looks like a score.
 	num := extractFirstFloat(resp)

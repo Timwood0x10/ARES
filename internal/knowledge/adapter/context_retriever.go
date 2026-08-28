@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -149,7 +150,7 @@ func NewKnowledgeRetriever(
 	opts ...Option,
 ) (*KnowledgeRetriever, error) {
 	if runtime == nil {
-		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+		return nil, errors.New("knowledge retriever: runtime is nil")
 	}
 	if minScore <= 0 {
 		minScore = DefaultMinScore
@@ -203,7 +204,7 @@ func NewKnowledgeRetrieverWithStore(
 	opts ...Option,
 ) (*KnowledgeRetriever, error) {
 	if runtime == nil {
-		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+		return nil, errors.New("knowledge retriever: runtime is nil")
 	}
 	if minScore <= 0 {
 		minScore = DefaultMinScore
@@ -246,10 +247,10 @@ func (r *KnowledgeRetriever) Retrieve(
 	topK int,
 ) ([]ContextSnippet, error) {
 	if r == nil {
-		return nil, fmt.Errorf("knowledge retriever: receiver is nil")
+		return nil, errors.New("knowledge retriever: receiver is nil")
 	}
 	if r.runtime == nil {
-		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+		return nil, errors.New("knowledge retriever: runtime is nil")
 	}
 	if input == "" {
 		return []ContextSnippet{}, nil

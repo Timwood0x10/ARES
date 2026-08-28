@@ -153,6 +153,7 @@ func (s *PostgresStore) Query(ctx context.Context, filter Filter) ([]Evidence, e
 	query += " AND (ttl_seconds = 0 OR ts + make_interval(secs => ttl_seconds::double precision) > now())"
 	query += " ORDER BY ts DESC"
 	if filter.Limit > 0 {
+		//nolint:gosec // G202: LIMIT value is passed as a parameterized arg; only the $N placeholder index is dynamic.
 		query += fmt.Sprintf(" LIMIT $%d", argID)
 		args = append(args, filter.Limit)
 		// argID not incremented — no further parameter uses it.

@@ -3,6 +3,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -59,7 +60,7 @@ func WithCooldownDuration(d time.Duration) FailoverOption {
 // Returns an error if no clients could be created.
 func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, burst int, opts ...FailoverOption) (*FailoverClient, error) {
 	if len(configs) == 0 {
-		return nil, fmt.Errorf("at least one LLM config is required")
+		return nil, errors.New("at least one LLM config is required")
 	}
 
 	clients := make([]*Client, 0, len(configs))
@@ -102,7 +103,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 	}
 
 	if len(clients) == 0 {
-		return nil, fmt.Errorf("no LLM clients could be created")
+		return nil, errors.New("no LLM clients could be created")
 	}
 
 	if timeout <= 0 {
@@ -429,7 +430,7 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage,
 	}
 
 	if lastErr == nil {
-		return nil, fmt.Errorf("FailoverClient: no provider available for chat")
+		return nil, errors.New("FailoverClient: no provider available for chat")
 	}
 	return nil, fmt.Errorf("FailoverClient: all chat clients failed; last error: %w",
 		lastErr)

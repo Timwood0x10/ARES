@@ -110,7 +110,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float64, er
 // Returns embedding vector or error.
 func (c *EmbeddingClient) EmbedWithPrefix(ctx context.Context, text, prefix string) ([]float64, error) {
 	if !c.enabled.Load() {
-		return nil, fmt.Errorf("embedding client is disabled")
+		return nil, errors.New("embedding client is disabled")
 	}
 
 	// Normalize text to avoid cache miss explosion
@@ -151,7 +151,7 @@ func (c *EmbeddingClient) EmbedWithPrefix(ctx context.Context, text, prefix stri
 // EmbedBatch generates vector embeddings for multiple texts.
 func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
 	if !c.enabled.Load() {
-		return nil, fmt.Errorf("embedding client is disabled")
+		return nil, errors.New("embedding client is disabled")
 	}
 
 	// Normalize all texts
@@ -358,7 +358,7 @@ func (c *EmbeddingClient) callEmbeddingBatchService(ctx context.Context, texts [
 // HealthCheck checks if the embedding service is healthy.
 func (c *EmbeddingClient) HealthCheck(ctx context.Context) error {
 	if !c.enabled.Load() {
-		return fmt.Errorf("embedding client is disabled")
+		return errors.New("embedding client is disabled")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/health", nil)

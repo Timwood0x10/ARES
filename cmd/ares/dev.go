@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -274,7 +275,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if configPath == "" {
-		return fmt.Errorf("no ares.yaml found; use -c to specify, or create one with 'ares init'")
+		return errors.New("no ares.yaml found; use -c to specify, or create one with 'ares init'")
 	}
 
 	// Load and parse config.

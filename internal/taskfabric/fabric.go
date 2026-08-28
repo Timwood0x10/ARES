@@ -31,6 +31,12 @@ var (
 	// ErrNoCapableCandidate: no candidate scored > 0 for the task's required
 	// capability, so Schedule could not pick an executor.
 	ErrNoCapableCandidate = errors.New("taskfabric: no capable candidate")
+	// ErrTaskIDRequired: Create was called without an id.
+	ErrTaskIDRequired = errors.New("taskfabric: task id required")
+	// ErrAgentIDRequired: Acquire was called without an owning agent id.
+	ErrAgentIDRequired = errors.New("taskfabric: agent id required")
+	// ErrInvalidTTL: a lease operation was called with a non-positive TTL.
+	ErrInvalidTTL = errors.New("taskfabric: lease ttl must be positive")
 )
 
 // Fabric owns Tasks and their leases (design §6 of ares-runtime.md:
@@ -133,18 +139,32 @@ func (f *Fabric) Create(t *Task) error {
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
 	if t.ID == "" {
-		return errors.New("taskfabric: task id required")
+		return ErrTaskIDRequired
 	}
 	if _, exists := f.tasks[t.ID]; exists {
 		return ErrTaskExists
 	}
-	t.State = StateReady
-	t.Owner = ""
-	t.Lease = nil
-	t.CreatedAt = f.now()
-	t.UpdatedAt = t.CreatedAt
-	f.tasks[t.ID] = t
-	pending = append(pending, f.recordLocked(t, EventTaskCreated))
+	// P1-7: copy the caller's *Task so the fabric owns an isolated instance —
+	// the caller keeping (or reusing) its *t cannot then race the fabric's
+	// snapshot/state reads. `cp := *t` isolates every scalar field; the
+	// Dependencies slice is a reference type, so it is copied explicitly below
+	// (otherwise cp.Dependencies still aliases the caller's backing array and
+	// LeaseSnapshot/TaskSnapshot reading it would race a caller mutation).
+	// Checkpoint (any) is intentionally NOT deep-copied: it may hold arbitrary
+	// types with no generic clone, and a freshly-created task's checkpoint is
+	// nil in practice — callers must not mutate a checkpoint they have handed
+	// to Create.
+	cp := *t
+	if len(t.Dependencies) > 0 {
+		cp.Dependencies = append([]string(nil), t.Dependencies...)
+	}
+	cp.State = StateReady
+	cp.Owner = ""
+	cp.Lease = nil
+	cp.CreatedAt = f.now()
+	cp.UpdatedAt = cp.CreatedAt
+	f.tasks[t.ID] = &cp
+	pending = append(pending, f.recordLocked(&cp, EventTaskCreated))
 	return nil
 }
 
@@ -172,7 +192,7 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 		return 0, ErrTaskNotFound
 	}
 	if agentID == "" {
-		return 0, errors.New("taskfabric: agent id required")
+		return 0, ErrAgentIDRequired
 	}
 	if t.State != StateReady && t.State != StateSuspended {
 		return 0, ErrTaskNotReady
@@ -324,7 +344,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
 // longer owns the task: it was preempted, requeued after expiry, or finalized.
 func (f *Fabric) Renew(id, agentID string, epoch uint64, ttl time.Duration) error {
 	if ttl <= 0 {
-		return errors.New("taskfabric: renew ttl must be positive")
+		return ErrInvalidTTL
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -524,6 +544,16 @@ func (f *Fabric) RunningTasks() []RunningTask {
 // freely while the fabric mutates the live task (state transitions under the
 // fabric lock), so a caller that holds the result across its own reads cannot
 // race with the fabric's writes.
+//
+// `snap := *t` only isolates the scalar fields; the reference-typed fields
+// (Lease pointer, Dependencies slice) would still alias the live task, so a
+// caller reading snap.Lease.ExpiresAt off-lock would race Renew/Acquire
+// writing the SAME *Lease under f.mu. Both reference fields are therefore
+// copied explicitly so the returned snapshot shares no mutable memory with
+// the fabric. Checkpoint (any) is intentionally left aliased: it may hold
+// arbitrary un-cloneable types, and the fabric only ever replaces the whole
+// Checkpoint pointer (never mutates through it), so reading the old value
+// off-lock stays safe.
 func (f *Fabric) Task(id string) (*Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -532,6 +562,13 @@ func (f *Fabric) Task(id string) (*Task, error) {
 		return nil, ErrTaskNotFound
 	}
 	snap := *t
+	if t.Lease != nil {
+		l := *t.Lease
+		snap.Lease = &l
+	}
+	if len(t.Dependencies) > 0 {
+		snap.Dependencies = append([]string(nil), t.Dependencies...)
+	}
 	return &snap, nil
 }
 

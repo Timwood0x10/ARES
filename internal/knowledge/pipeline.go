@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -110,7 +111,7 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 	// Early nil guard — prevent panic from nil input or nil returns from
 	// upstream pipeline stages.
 	if obj == nil {
-		return nil, fmt.Errorf("pipeline: received nil object")
+		return nil, errors.New("pipeline: received nil object")
 	}
 
 	// Work on a shallow copy so concurrent Process calls never mutate the
@@ -138,7 +139,7 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 		obj = normalized
 	}
 	if obj == nil {
-		return nil, fmt.Errorf("pipeline: all normalizers returned nil")
+		return nil, errors.New("pipeline: all normalizers returned nil")
 	}
 
 	// Stage 2: Resolve (Normalized → Matched → Validated).

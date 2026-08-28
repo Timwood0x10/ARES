@@ -13,6 +13,7 @@ package diff
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -61,11 +62,11 @@ func NewRegistry() *Registry {
 // Register adds a Differ for a genome name.
 func (r *Registry) Register(d Differ) error {
 	if d == nil {
-		return fmt.Errorf("diff: cannot register nil differ")
+		return errors.New("diff: cannot register nil differ")
 	}
 	name := d.Name()
 	if name == "" {
-		return fmt.Errorf("diff: differ name must not be empty")
+		return errors.New("diff: differ name must not be empty")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

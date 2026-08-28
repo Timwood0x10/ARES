@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -230,7 +231,7 @@ var arenaServeCmd = &cobra.Command{
 		} else if arenaServeAllowAnon {
 			handler.AllowAnonymous(true)
 		} else {
-			return fmt.Errorf("arena serve requires an API key: set --api-key or ARENA_API_KEY, " +
+			return errors.New("arena serve requires an API key: set --api-key or ARENA_API_KEY, " +
 				"or pass --allow-anonymous to run without authentication (local development only)")
 		}
 

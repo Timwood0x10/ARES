@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -26,7 +27,7 @@ func NewProviderRegistry() *ProviderRegistry {
 // with the same name already exists.
 func (r *ProviderRegistry) Register(p GraphProvider) error {
 	if p == nil {
-		return fmt.Errorf("cannot register nil provider")
+		return errors.New("cannot register nil provider")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

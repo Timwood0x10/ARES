@@ -2,8 +2,10 @@ package ares_runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -54,6 +56,8 @@ type Manager struct {
 	snapshotStore base.SnapshotStore
 	g             *errgroup.Group
 	gctx          context.Context
+	gPtr          atomic.Pointer[errgroup.Group]
+	gctxPtr       atomic.Pointer[context.Context]
 	cancel        context.CancelFunc
 	config        *Config
 	totalRestarts int
@@ -100,7 +104,7 @@ func New(config *Config, eventStore ares_events.EventStore, memManager memory.Me
 	// panics even if called before Start(). Start() will re-initialize with
 	// the caller's context.
 	g, gctx := errgroup.WithContext(ares_ctxutil.WithDetachedLabel("runtime:pre-start"))
-	return &Manager{
+	m := &Manager{
 		agents:      make(map[string]*managedAgent),
 		factories:   make(map[string]AgentFactory),
 		eventStore:  eventStore,
@@ -111,6 +115,24 @@ func New(config *Config, eventStore ares_events.EventStore, memManager memory.Me
 		g:           g,
 		gctx:        gctx,
 	}
+	m.gPtr.Store(g)
+	m.gctxPtr.Store(&gctx)
+	return m
+}
+
+// getG returns the current errgroup via atomic pointer load.
+// Safe for concurrent access without holding m.mu.
+func (m *Manager) getG() *errgroup.Group {
+	return m.gPtr.Load()
+}
+
+// getGctx returns the current errgroup context via atomic pointer load.
+// Safe for concurrent access without holding m.mu.
+func (m *Manager) getGctx() context.Context {
+	if p := m.gctxPtr.Load(); p != nil {
+		return *p
+	}
+	return context.Background()
 }
 
 // WithSnapshotStore sets the snapshot store used for agent state recovery.
@@ -150,7 +172,7 @@ func (m *Manager) RegisterAgent(agent base.Agent, factory AgentFactory) {
 	// Store agent entry if not already present.
 	if _, exists := m.agents[id]; !exists {
 		m.agents[id] = &managedAgent{
-			agent:   agent,
+			agent:   &chaosWrappedAgent{Agent: agent, m: m, id: id},
 			factory: factory,
 		}
 	}
@@ -201,7 +223,7 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 
 	id := agent.ID()
 	if id == "" {
-		return fmt.Errorf("runtime: agent ID must not be empty")
+		return errors.New("runtime: agent ID must not be empty")
 	}
 
 	m.mu.Lock()
@@ -216,7 +238,7 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 		return ErrAgentAlreadyRegistered
 	}
 
-	agentCtx, agentCancel := context.WithCancel(m.gctx)
+	agentCtx, agentCancel := context.WithCancel(m.getGctx())
 
 	// Chaos engineering injections (SlowAgent, ToolTimeout, fault errors) are
 	// NOT applied to the agent lifecycle context here. They are read from
@@ -366,7 +388,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 
 	// Re-register and start.
 	m.mu.Lock()
-	agentCtx, agentCancel := context.WithCancel(m.gctx)
+	agentCtx, agentCancel := context.WithCancel(m.getGctx())
 	m.agents[agentID] = &managedAgent{
 		agent:    &chaosWrappedAgent{Agent: newAgent, m: m, id: agentID},
 		factory:  factory,
@@ -427,7 +449,7 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 		)
 		return nil // not an error: the desired state is "stopped"
 	}
-	agentCtx, agentCancel := context.WithCancel(m.gctx)
+	agentCtx, agentCancel := context.WithCancel(m.getGctx())
 	m.agents[agentID] = &managedAgent{
 		agent:    &chaosWrappedAgent{Agent: newAgent, m: m, id: agentID},
 		factory:  factory,
@@ -519,7 +541,7 @@ func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory
 
 // launchAgentGoroutine starts the agent in a managed goroutine with panic recovery.
 func (m *Manager) launchAgentGoroutine(ctx context.Context, agentID string, agent base.Agent) {
-	m.g.Go(func() error {
+	m.getG().Go(func() error {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("runtime: agent panicked",
@@ -611,7 +633,8 @@ func (m *Manager) scheduleResurrectionLocked(agentID string, factory AgentFactor
 }
 
 func (m *Manager) scheduleResurrection(agentID string, factory AgentFactory) {
-	m.g.Go(func() error {
+	gctx := m.getGctx()
+	m.getG().Go(func() error {
 		// Exponential backoff: 1s, 2s, 4s, capped at 30s.
 		backoff := time.Second
 		const maxBackoff = 30 * time.Second
@@ -619,7 +642,7 @@ func (m *Manager) scheduleResurrection(agentID string, factory AgentFactory) {
 		timer := time.NewTimer(backoff)
 		defer timer.Stop()
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
+			restoreCtx, restoreCancel := context.WithTimeout(gctx, m.config.RestoreTimeout)
 			err := m.RestoreAgent(restoreCtx, agentID, factory)
 			restoreCancel()
 			if err == nil {
@@ -636,7 +659,7 @@ func (m *Manager) scheduleResurrection(agentID string, factory AgentFactory) {
 			if attempt < maxAttempts {
 				timer.Reset(backoff)
 				select {
-				case <-m.gctx.Done():
+				case <-gctx.Done():
 					m.mu.Lock()
 					if entry, exists := m.agents[agentID]; exists {
 						entry.resurrecting = false

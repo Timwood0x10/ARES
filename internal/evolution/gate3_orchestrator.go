@@ -1,6 +1,7 @@
 package evolution
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -46,7 +47,7 @@ func BuildRegressionGate3(
 	opts ...CandidateRegressionOption,
 ) (func(c *Candidate) error, error) {
 	if client == nil {
-		return nil, fmt.Errorf("gate3: llm client must not be nil")
+		return nil, errors.New("gate3: llm client must not be nil")
 	}
 	scorer, err := evosvc.NewLLMArenaScorer(evosvc.LLMArenaScorerConfig{Client: client})
 	if err != nil {

@@ -3,7 +3,9 @@ package flight
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/evidence"
@@ -28,10 +30,16 @@ type Collector struct {
 	decisions          *DecisionLog
 	diag               *DiagnosticsEngine
 	pipelines          map[string]*MemoryPipeline
-	cancel             context.CancelFunc
-	eg                 errgroup.Group
-	mu                 sync.RWMutex
+	// agentStartIDs maps agentID → its most recent start event ID so
+	// handleAgentEnd can set ParentID for robust timeline pairing (B8).
+	agentStartIDs map[string]string
+	cancel        context.CancelFunc
+	eg            errgroup.Group
+	mu            sync.RWMutex
 }
+
+// maxPipelines is the ring cap for the pipelines map.
+const maxPipelines = 100
 
 // CollectorConfig holds dependencies for the collector.
 type CollectorConfig struct {
@@ -239,6 +247,16 @@ func (c *Collector) handleAgentStart(evt *ares_events.Event) {
 		Metadata: evt.Payload,
 	})
 
+	// B8: record the start event ID so handleAgentEnd can set ParentID,
+	// enabling robust start→end pairing in Timeline.Add even with
+	// out-of-order arrival or overlapping calls within one agent.
+	c.mu.Lock()
+	if c.agentStartIDs == nil {
+		c.agentStartIDs = make(map[string]string)
+	}
+	c.agentStartIDs[agentID] = evt.ID
+	c.mu.Unlock()
+
 	// Use agentID (evt.StreamID) as the graph node ID so handleAgentEnd can
 	// look up the node by the same agentID. Using evt.ID here caused the
 	// lookup in handleAgentEnd to always miss.
@@ -254,8 +272,18 @@ func (c *Collector) handleAgentStart(evt *ares_events.Event) {
 
 func (c *Collector) handleAgentEnd(evt *ares_events.Event) {
 	agentID := evt.StreamID
+
+	// B8: set ParentID to the agent's start event ID so Timeline.Add can
+	// pair the end event with the exact start event (not just the most
+	// recent unpaired one — robust to out-of-order arrival).
+	parentID := ""
+	c.mu.RLock()
+	parentID = c.agentStartIDs[agentID]
+	c.mu.RUnlock()
+
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
+		ParentID: parentID,
 		AgentID:  agentID,
 		Type:     EventAgentEnd,
 		Name:     string(evt.Type),
@@ -329,20 +357,35 @@ func (c *Collector) handleFailover(evt *ares_events.Event) {
 
 func (c *Collector) handleMemoryDistilled(evt *ares_events.Event) {
 	sessionID := evt.StreamID
-	inputCount := 0
-	outputCount := 0
-	if v, ok := evt.Payload["input_count"].(float64); ok {
-		inputCount = int(v)
-	}
-	if v, ok := evt.Payload["output_count"].(float64); ok {
-		outputCount = int(v)
-	}
+	inputCount := payloadInt(evt.Payload, "input_count")
+	outputCount := payloadInt(evt.Payload, "output_count")
 
 	c.mu.Lock()
 	pipeline, ok := c.pipelines[sessionID]
 	if !ok {
 		pipeline = NewMemoryPipeline(sessionID)
 		c.pipelines[sessionID] = pipeline
+		// P1-2: cap the pipelines map — evict the oldest pipeline when
+		// the cap is exceeded.
+		if maxPipelines > 0 && len(c.pipelines) > maxPipelines {
+			var oldestID string
+			var oldestTime time.Time
+			for id, p := range c.pipelines {
+				if oldestID == "" {
+					oldestID = id
+					oldestTime = p.lastActivity()
+					continue
+				}
+				t := p.lastActivity()
+				if t.Before(oldestTime) {
+					oldestID = id
+					oldestTime = t
+				}
+			}
+			if oldestID != "" && oldestID != sessionID {
+				delete(c.pipelines, oldestID)
+			}
+		}
 	}
 	c.mu.Unlock()
 
@@ -435,4 +478,30 @@ func isToolEvent(evt *ares_events.Event) bool {
 func isDecisionEvent(evt *ares_events.Event) bool {
 	s := string(evt.Type)
 	return len(s) > 9 && s[:9] == "decision."
+}
+
+// payloadInt extracts an integer from an event payload, handling int,
+// float64, int64, and string representations. Returns 0 when the key is
+// absent or the value cannot be converted.
+func payloadInt(payload map[string]any, key string) int {
+	v, ok := payload[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		var i int
+		_, err := fmt.Sscanf(n, "%d", &i)
+		if err != nil {
+			return 0
+		}
+		return i
+	}
+	return 0
 }

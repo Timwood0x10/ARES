@@ -1,7 +1,7 @@
 package mutation
 
 import (
-	"fmt"
+	"errors"
 	"math/rand"
 )
 
@@ -21,7 +21,7 @@ type MutatorOption func(*Mutator) error
 func WithParamRanges(ranges map[string]ParamRange) MutatorOption {
 	return func(m *Mutator) error {
 		if len(ranges) == 0 {
-			return fmt.Errorf("param ranges must not be empty")
+			return errors.New("param ranges must not be empty")
 		}
 		m.paramRanges = ranges
 		return nil
@@ -40,7 +40,7 @@ func WithParamRanges(ranges map[string]ParamRange) MutatorOption {
 func WithPromptPool(pool []string) MutatorOption {
 	return func(m *Mutator) error {
 		if len(pool) == 0 {
-			return fmt.Errorf("prompt pool must not be empty")
+			return errors.New("prompt pool must not be empty")
 		}
 		m.promptPool = make([]string, len(pool))
 		copy(m.promptPool, pool)
@@ -62,7 +62,7 @@ func WithPromptPool(pool []string) MutatorOption {
 func WithToolPool(tools []string) MutatorOption {
 	return func(m *Mutator) error {
 		if len(tools) == 0 {
-			return fmt.Errorf("tool pool must not be empty")
+			return errors.New("tool pool must not be empty")
 		}
 		m.toolPool = make([]string, len(tools))
 		copy(m.toolPool, tools)

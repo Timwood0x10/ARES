@@ -379,6 +379,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 		if c.Memory.EnableRAG {
 			opts = append(opts, WithRAG(c.Memory.RAGTopK, c.Memory.RAGMinScore))
 		}
+	} else {
+		opts = append(opts, WithoutMemory())
 	}
 
 	// Knowledge (optional). Without chunk_size, sdk uses default retrieval.

@@ -5,6 +5,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -298,7 +299,7 @@ type ActiveStrategyManager struct {
 //   - error: non-nil if store is nil.
 func NewActiveStrategyManager(store StrategyStore, rollbackPolicy *RollbackPolicy, opts ...ASMOption) (*ActiveStrategyManager, error) {
 	if store == nil {
-		return nil, fmt.Errorf("strategy store must not be nil")
+		return nil, errors.New("strategy store must not be nil")
 	}
 	if rollbackPolicy == nil {
 		rollbackPolicy = NewRollbackPolicy()
@@ -325,7 +326,7 @@ func NewActiveStrategyManager(store StrategyStore, rollbackPolicy *RollbackPolic
 //   - error: non-nil if strategy is nil or store operation fails.
 func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.Strategy) error {
 	if strategy == nil {
-		return fmt.Errorf("strategy must not be nil")
+		return errors.New("strategy must not be nil")
 	}
 
 	m.mu.Lock()
@@ -377,7 +378,7 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 					"previous_window_avg", m.rollbackWindowAvg(),
 				)
 			}
-			return fmt.Errorf("guardrail block deployment: critical event after deploy")
+			return errors.New("guardrail block deployment: critical event after deploy")
 		}
 	}
 
@@ -398,7 +399,7 @@ func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strateg
 	defer m.mu.Unlock()
 
 	if m.previous == nil {
-		return nil, fmt.Errorf("no previous strategy available for rollback")
+		return nil, errors.New("no previous strategy available for rollback")
 	}
 
 	previousClone := m.previous.Clone()

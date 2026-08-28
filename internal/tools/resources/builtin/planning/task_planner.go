@@ -347,7 +347,7 @@ func (t *TaskPlanner) parsePlan(response string) (*TaskPlan, error) {
 	// Extract JSON from response
 	jsonStr := extractJSON(response)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("no JSON found in response")
+		return nil, errors.New("no JSON found in response")
 	}
 
 	var plan TaskPlan
@@ -362,7 +362,7 @@ func (t *TaskPlanner) parsePlan(response string) (*TaskPlan, error) {
 func (t *TaskPlanner) parseSubtasks(response string) ([]Subtask, error) {
 	jsonStr := extractJSON(response)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("no JSON found in response")
+		return nil, errors.New("no JSON found in response")
 	}
 
 	var result struct {
@@ -379,7 +379,7 @@ func (t *TaskPlanner) parseSubtasks(response string) ([]Subtask, error) {
 func (t *TaskPlanner) parseEstimation(response string) (*TimeEstimate, error) {
 	jsonStr := extractJSON(response)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("no JSON found in response")
+		return nil, errors.New("no JSON found in response")
 	}
 
 	var estimate TimeEstimate

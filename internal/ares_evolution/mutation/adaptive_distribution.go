@@ -2,6 +2,7 @@ package mutation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -121,7 +122,7 @@ type AdaptiveDistribution struct {
 //	error - non-nil if mutator is nil or configuration is invalid.
 func NewAdaptiveDistribution(m *Mutator, cfg AdaptiveDistributionConfig) (*AdaptiveDistribution, error) {
 	if m == nil {
-		return nil, fmt.Errorf("mutator must not be nil")
+		return nil, errors.New("mutator must not be nil")
 	}
 
 	// Validate bounds.

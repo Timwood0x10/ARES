@@ -106,7 +106,13 @@ func runServe() error {
 			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
 				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
 			}
-			shutdownSystemRuntime(&compPtr, shutdownCtx)
+			// P1-3: give SystemRuntime Shutdown its own 15s budget so it
+			// is not starved by phase callbacks that consumed the shared
+			// 30s shutdownCtx. An expired context would skip MCP/Runtime/
+			// FlightRecorder Stop, leaking goroutines and connections.
+			sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer sysRuntimeCancel()
+			shutdownSystemRuntime(&compPtr, sysRuntimeCtx)
 			cancel()
 		case <-ctx.Done():
 		}
@@ -344,8 +350,13 @@ type akfToolAdapter struct {
 	fn   func(ctx context.Context, input string) (string, error)
 }
 
-func (a *akfToolAdapter) Name() string                      { return a.name }
-func (a *akfToolAdapter) Description() string               { return a.desc }
+// Name returns the tool name.
+func (a *akfToolAdapter) Name() string { return a.name }
+
+// Description returns the tool description.
+func (a *akfToolAdapter) Description() string { return a.desc }
+
+// Category returns the tool category.
 func (a *akfToolAdapter) Category() core_tools.ToolCategory { return core_tools.CategoryKnowledge }
 func (a *akfToolAdapter) Capabilities() []core_tools.Capability {
 	return []core_tools.Capability{core_tools.CapabilityKnowledge}

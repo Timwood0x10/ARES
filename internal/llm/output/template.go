@@ -195,10 +195,10 @@ func NewTemplateRegistry() *TemplateRegistry {
 // already exists.
 func (r *TemplateRegistry) Register(tmpl *PromptTemplate) error {
 	if tmpl == nil {
-		return fmt.Errorf("template must not be nil")
+		return errors.New("template must not be nil")
 	}
 	if tmpl.Name == "" {
-		return fmt.Errorf("template name must not be empty")
+		return errors.New("template name must not be empty")
 	}
 	if tmpl.Template == "" {
 		return fmt.Errorf("template source must not be empty for %q", tmpl.Name)

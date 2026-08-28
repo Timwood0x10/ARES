@@ -3,7 +3,7 @@ package ares_bootstrap
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -93,7 +93,7 @@ type eventStoreSubscriberWrapper struct {
 // Subscribe subscribes to ares_events from the underlying event store.
 func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
 	if w.store == nil {
-		return nil, fmt.Errorf("event store is nil")
+		return nil, errors.New("event store is nil")
 	}
 	return w.store.Subscribe(ctx, filter)
 }

@@ -120,23 +120,27 @@ func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, 
 		return nil, fmt.Errorf("sdk submit: %w", err)
 	}
 
-	// Wait for a terminal state. A timeout, when set, bounds the whole wait
-	// (and the execution — the executor receives the same context). The wait
-	// context propagates DeadlineExceeded so a timed-out Submit surfaces a
-	// deadline-exceeded cause, never a generic error (code_rules_v2 §3.1).
-	deadline := t.Timeout
-	if deadline <= 0 {
-		deadline = 5 * time.Minute
+	// Wait for a terminal state. A timeout, when set (> 0), bounds the
+	// whole wait (and the execution — the executor receives the same
+	// context). When <=0, no deadline is applied beyond the caller's ctx.
+	// The wait context propagates DeadlineExceeded so a timed-out Submit
+	// surfaces a deadline-exceeded cause, never a generic error
+	// (code_rules_v2 §3.1).
+	var waitCtx context.Context
+	if t.Timeout > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, t.Timeout)
+		defer cancel()
+	} else {
+		waitCtx = ctx
 	}
-	waitCtx, waitCancel := context.WithTimeout(ctx, deadline)
-	defer waitCancel()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-waitCtx.Done():
 			if waitCtx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("sdk submit: task %s timed out after %s: %w", taskID, deadline, context.DeadlineExceeded)
+				return nil, fmt.Errorf("sdk submit: task %s timed out after %s: %w", taskID, t.Timeout, context.DeadlineExceeded)
 			}
 			return nil, waitCtx.Err()
 		case <-ticker.C:
@@ -165,8 +169,18 @@ func (r *Runtime) resultFromFabric(tk *taskfabric.Task) (*Result, error) {
 	step, ok := dc.StepCheckpoint.(map[string]any)
 	if ok {
 		if md, ok := step["metadata"].(map[string]any); ok {
-			if res, ok := md[sdkResultKey].(*Result); ok && res != nil {
-				return res, nil
+			if raw, present := md[sdkResultKey]; present {
+				if res, ok := raw.(*Result); ok && res != nil {
+					return res, nil
+				}
+				// The result rode as a same-process *Result pointer (see
+				// sdkResultKey). A non-nil value that is NOT *Result means the
+				// checkpoint crossed a boundary that dropped the concrete type
+				// (e.g. a JSON round-trip once the fabric persists) — do NOT
+				// silently return an empty Result and lose the output. Surface
+				// it so the caller sees a real error instead of a blank
+				// success (code_rules_v2 §3.1: no silent degradation).
+				return nil, fmt.Errorf("sdk submit: result checkpoint has unexpected type %T (expected *Result); output lost across a serialization boundary", raw)
 			}
 		}
 		if reason, ok := step["reason"].(string); ok && reason != "" {
@@ -185,13 +199,22 @@ func (r *Runtime) ensureExecutor(capability string) kernelscheduler.CapabilityEx
 	if capability == "" {
 		capability = "agent"
 	}
-	r.agentMu.Lock()
-	defer r.agentMu.Unlock()
-	if ex, ok := r.sdkExecutors[capability]; ok {
+	// P1-1: check the scheduler's registry first (execMu-guarded). An agent
+	// added via AddNode (not RegisterAgent) is registered here by
+	// registerGraphAgents before the round starts, so we must NOT skip this
+	// check even when agentByCapability has no entry.
+	if ex, found := r.sched.LookupExecutor(capability); found {
 		return ex
 	}
-	a := r.NewAgent(capability)
-	ex := &sdkAgentExecutor{agent: a}
-	r.sdkExecutors[capability] = ex
-	return ex
+	// Auto-create on demand: a runtime never refuses a well-formed task.
+	agent := r.NewAgent(capability)
+	ex := &sdkAgentExecutor{agent: agent}
+	// P1-1: register through sched.RegisterExecutorIfAbsent so the check
+	// (already registered?) and the set happen atomically under the single
+	// execMu write lock. Two concurrent Submits for the same unregistered
+	// capability otherwise both miss LookupExecutor and double-write, silently
+	// discarding one agent; if-absent makes the first writer win and the
+	// second reuse it.
+	winner, _ := r.sched.RegisterExecutorIfAbsent(capability, ex)
+	return winner
 }

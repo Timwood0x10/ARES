@@ -239,7 +239,7 @@ func NewDAG(steps []*Step) (*DAG, error) {
 		// Normalize: trim spaces from step ID.
 		id := strings.TrimSpace(step.ID)
 		if id == "" {
-			return nil, fmt.Errorf("step ID must not be empty after trimming")
+			return nil, errors.New("step ID must not be empty after trimming")
 		}
 
 		// H4 fix: check for duplicate step IDs instead of silently overwriting.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -17,7 +18,7 @@ import (
 
 var (
 	// ErrObjectNotFound is returned when a Get call finds no matching object.
-	ErrObjectNotFound = fmt.Errorf("object not found")
+	ErrObjectNotFound = errors.New("object not found")
 )
 
 // Store is a SQLite-backed KnowledgeStore.
@@ -45,7 +46,7 @@ func New(dbPath string) (*Store, error) {
 // NewWithDB creates a new SQLite KnowledgeStore with an existing db connection.
 func NewWithDB(db *sql.DB) (*Store, error) {
 	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+		return nil, errors.New("db is nil")
 	}
 	s := &Store{db: db}
 	if err := s.initTables(context.Background()); err != nil {
@@ -105,7 +106,11 @@ func (s *Store) initTables(ctx context.Context) error {
 	}
 	for _, m := range migrations {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column") {
+			// SQLite driver returns a plain text error (no sentinel) for an
+			// ALTER TABLE that adds an existing column, so errors.Is cannot
+			// match it; the driver-text check is isolated in
+			// isDuplicateColumnError instead of being scattered inline.
+			if !isDuplicateColumnError(err) {
 				return fmt.Errorf("migrate akf_objects: %w", err)
 			}
 		}
@@ -113,10 +118,16 @@ func (s *Store) initTables(ctx context.Context) error {
 	return nil
 }
 
+// isDuplicateColumnError reports whether a SQLite migration error is a duplicate-column skip.
+func isDuplicateColumnError(err error) bool {
+	return strings.Contains(err.Error(), "duplicate column")
+}
+
+// Save upserts the given knowledge objects.
 func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject) error {
 	for _, obj := range objects {
 		if obj.ID == "" {
-			return fmt.Errorf("knowledge object ID cannot be empty")
+			return errors.New("knowledge object ID cannot be empty")
 		}
 
 		metaJSON, _ := json.Marshal(obj.Metadata)
@@ -289,7 +300,7 @@ func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([
 
 func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Representation) error {
 	if rep.ID == "" {
-		return fmt.Errorf("representation ID cannot be empty")
+		return errors.New("representation ID cannot be empty")
 	}
 	metaJSON, _ := json.Marshal(rep.Metadata)
 	now := time.Now().UTC().Format(time.RFC3339)

@@ -2,7 +2,6 @@ package planner
 
 import (
 	"fmt"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -253,6 +252,3 @@ func (pe *ParameterExtractor) extractStringOp(request string) map[string]interfa
 	}
 	return map[string]interface{}{"operation": op}
 }
-
-// math.Round is used for rounding operations.
-var _ = math.Round

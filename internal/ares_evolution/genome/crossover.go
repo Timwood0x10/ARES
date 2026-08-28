@@ -6,6 +6,7 @@ package genome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -73,10 +74,10 @@ type Crossover struct {
 //	error - non-nil if configuration is invalid, nil if all invariants hold.
 func (c *Crossover) Validate() error {
 	if c == nil {
-		return fmt.Errorf("crossover Validate: instance is nil")
+		return errors.New("crossover Validate: instance is nil")
 	}
 	if c.rng == nil {
-		return fmt.Errorf("crossover: rng must not be nil, ensure WithSeed was called or NewCrossover succeeded")
+		return errors.New("crossover: rng must not be nil, ensure WithSeed was called or NewCrossover succeeded")
 	}
 	switch c.promptMode {
 	case PromptInherit, PromptHalfSplit, PromptUniform:

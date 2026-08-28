@@ -6,6 +6,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ type GenomeMutatorAdapter struct {
 //	error - non-nil if mutator is nil.
 func NewGenomeMutatorAdapter(m genome.MutatorInterface) (*GenomeMutatorAdapter, error) {
 	if m == nil {
-		return nil, fmt.Errorf("mutator must not be nil")
+		return nil, errors.New("mutator must not be nil")
 	}
 	return &GenomeMutatorAdapter{mutator: m}, nil
 }

@@ -3,6 +3,7 @@
 package ares_config
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -125,13 +126,13 @@ func (c *Config) validateStorage() error {
 	}
 
 	if c.Storage.Host == "" {
-		return fmt.Errorf("storage enabled but host is empty")
+		return errors.New("storage enabled but host is empty")
 	}
 	if c.Storage.Port < 1 || c.Storage.Port > 65535 {
 		return fmt.Errorf("invalid storage port: %d, must be between 1 and 65535", c.Storage.Port)
 	}
 	if c.Storage.Database == "" {
-		return fmt.Errorf("storage enabled but database name is empty")
+		return errors.New("storage enabled but database name is empty")
 	}
 	return nil
 }
@@ -171,7 +172,7 @@ func (c *Config) validateMemory() error {
 	// MaxRounds are set, but validate defensively in case defaults were skipped.
 	if c.Memory.Archive.IsEnabled() {
 		if c.Memory.Archive.Dir == "" {
-			return fmt.Errorf("archive dir must be non-empty when archive is enabled")
+			return errors.New("archive dir must be non-empty when archive is enabled")
 		}
 		if c.Memory.Archive.MaxRounds <= 0 {
 			return fmt.Errorf("invalid archive max_rounds: %d, must be positive", c.Memory.Archive.MaxRounds)

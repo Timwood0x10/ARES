@@ -2,6 +2,7 @@
 package system_runtime
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -36,14 +37,14 @@ func NewRegistry() *Registry {
 // or the mode is not one of the declared Mode values.
 func (r *Registry) Register(c Component, mode Mode) error {
 	if c == nil || isNilComponent(c) {
-		return fmt.Errorf("system_runtime: cannot register nil component")
+		return errors.New("system_runtime: cannot register nil component")
 	}
 	if mode < ModeRequired || mode > ModeDegraded {
 		return fmt.Errorf("system_runtime: invalid mode %d for component %q", mode, c.Name())
 	}
 	name := c.Name()
 	if name == "" {
-		return fmt.Errorf("system_runtime: component name must not be empty")
+		return errors.New("system_runtime: component name must not be empty")
 	}
 
 	r.mu.Lock()

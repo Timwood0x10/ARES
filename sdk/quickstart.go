@@ -2,7 +2,7 @@ package sdk
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 	"time"
 
@@ -62,8 +62,7 @@ func MustNew() *Runtime {
 //     WithMCP explicitly for each MCP server.
 func buildOptsFromEnv(env *detector.Environment) ([]Option, error) {
 	if env == nil {
-		return nil, fmt.Errorf(
-			"no LLM provider detected; start Ollama on localhost:11434 or set OPENAI_API_KEY/ANTHROPIC_API_KEY")
+		return nil, errors.New("no LLM provider detected; start Ollama on localhost:11434 or set OPENAI_API_KEY/ANTHROPIC_API_KEY")
 	}
 
 	var opts []Option
@@ -84,8 +83,7 @@ func buildOptsFromEnv(env *detector.Environment) ([]Option, error) {
 			WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
 		)
 	default:
-		return nil, fmt.Errorf(
-			"no LLM provider detected; start Ollama on localhost:11434 or set OPENAI_API_KEY/ANTHROPIC_API_KEY")
+		return nil, errors.New("no LLM provider detected; start Ollama on localhost:11434 or set OPENAI_API_KEY/ANTHROPIC_API_KEY")
 	}
 
 	// Memory defaults to enabled (see defaultConfig in options.go); no

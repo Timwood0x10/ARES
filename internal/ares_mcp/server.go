@@ -4,6 +4,7 @@ package ares_mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
@@ -159,7 +160,7 @@ func (s *MCPServer) RegisterTool(name string, description string, inputSchema js
 		return ErrEmptyName
 	}
 	if handler == nil {
-		return fmt.Errorf("handler must not be nil")
+		return errors.New("handler must not be nil")
 	}
 
 	s.mu.Lock()
@@ -196,7 +197,7 @@ func (s *MCPServer) RegisterResource(uri string, description string, mimeType st
 		return fmt.Errorf("%w: resource uri", ErrEmptyName)
 	}
 	if handler == nil {
-		return fmt.Errorf("handler must not be nil")
+		return errors.New("handler must not be nil")
 	}
 
 	s.mu.Lock()
@@ -233,7 +234,7 @@ func (s *MCPServer) ResourceTemplate(uriTemplate string, description string, mim
 		return fmt.Errorf("%w: resource template", ErrEmptyName)
 	}
 	if handler == nil {
-		return fmt.Errorf("handler must not be nil")
+		return errors.New("handler must not be nil")
 	}
 
 	s.mu.Lock()
@@ -271,7 +272,7 @@ func (s *MCPServer) RegisterPrompt(name string, description string, args []Promp
 		return fmt.Errorf("%w: prompt", ErrEmptyName)
 	}
 	if handler == nil {
-		return fmt.Errorf("handler must not be nil")
+		return errors.New("handler must not be nil")
 	}
 
 	s.mu.Lock()
@@ -303,7 +304,7 @@ func (s *MCPServer) RegisterPrompt(name string, description string, args []Promp
 //   - error: non-nil if the server fails to start or encounters a fatal error
 func (s *MCPServer) Serve(ctx context.Context) error {
 	if s.transport == nil {
-		return fmt.Errorf("transport is required")
+		return errors.New("transport is required")
 	}
 
 	s.serveCtx = ctx

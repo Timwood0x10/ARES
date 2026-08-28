@@ -166,7 +166,7 @@ func (s *ControlServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/api/evolution/trajectory":
 		s.handleEvolutionTrajectory(w, r)
 	case r.Method == http.MethodPost && path == "/api/evolution/feedback":
-		s.handleEvolutionFeedback(w, r)
+		http.Error(w, `{"error":"feedback endpoint requires auth, use action API"}`, http.StatusMethodNotAllowed)
 	case r.Method == http.MethodGet && path == "/api/observability/spans":
 		s.handleObservabilitySpans(w, r)
 	// Flight-recorder read surfaces (migrated from dashboard /flight/*):
@@ -209,27 +209,6 @@ func (s *ControlServer) handleEvolutionTrajectory(w http.ResponseWriter, r *http
 		views = []map[string]any{}
 	}
 	_ = json.NewEncoder(w).Encode(views)
-}
-
-func (s *ControlServer) handleEvolutionFeedback(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if s.feedback == nil {
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "evolution feedback not configured"})
-		return
-	}
-	var fb EvolutionFeedback
-	if err := json.NewDecoder(r.Body).Decode(&fb); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "invalid request body"})
-		return
-	}
-	if err := s.feedback.SubmitFeedback(fb); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{keyError: err.Error()})
-		return
-	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 }
 
 func (s *ControlServer) handleObservabilitySpans(w http.ResponseWriter, r *http.Request) {

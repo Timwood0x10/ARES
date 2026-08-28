@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -31,10 +32,10 @@ type ToolExecutionBridge struct {
 // Returns error if registry or planner is nil.
 func NewToolExecutionBridge(registry *core.Registry, planner *Planner, evidence EvidenceStore) (*ToolExecutionBridge, error) {
 	if registry == nil {
-		return nil, fmt.Errorf("tool_bridge: registry is nil")
+		return nil, errors.New("tool_bridge: registry is nil")
 	}
 	if planner == nil {
-		return nil, fmt.Errorf("tool_bridge: planner is nil")
+		return nil, errors.New("tool_bridge: planner is nil")
 	}
 	if evidence == nil {
 		evidence = NewMemoryEvidenceStore()
@@ -134,7 +135,7 @@ func (b *ToolExecutionBridge) Execute(
 		for _, e := range errs {
 			// Hard-block on structural errors.
 			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" {
-				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %s", e.Error())
+				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %w", e)
 			}
 			// Advisory warnings only (IO incompatibility, etc).
 			log.Warn("tool_bridge: plan DAG advisory",
@@ -177,10 +178,10 @@ func (b *ToolExecutionBridge) ExecutePlan(
 	params map[string]interface{},
 ) (core.Result, error) {
 	if plan == nil {
-		return core.Result{}, fmt.Errorf("tool_bridge: plan is nil")
+		return core.Result{}, errors.New("tool_bridge: plan is nil")
 	}
 	if len(plan.Steps) == 0 {
-		return core.Result{}, fmt.Errorf("tool_bridge: plan has no steps")
+		return core.Result{}, errors.New("tool_bridge: plan has no steps")
 	}
 
 	log := b.log
@@ -190,7 +191,7 @@ func (b *ToolExecutionBridge) ExecutePlan(
 	if errs := validator.Validate(plan); len(errs) > 0 {
 		for _, e := range errs {
 			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" {
-				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %s", e.Error())
+				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %w", e)
 			}
 			log.Warn("tool_bridge: plan DAG advisory",
 				"plan_id", plan.PlanID,
@@ -414,7 +415,9 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 		if err != nil {
 			lastErr = err
 		} else if !result.Success && result.Error != "" {
-			lastErr = fmt.Errorf("%s", result.Error)
+			// result.Error is a string carried by the tool result, not an error chain;
+			// errors.New carries it directly, avoiding a pointless fmt.Errorf("%s") wrapper.
+			lastErr = errors.New(result.Error)
 		}
 	}
 

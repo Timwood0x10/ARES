@@ -107,7 +107,7 @@ func runRecallQuery(query string) error {
 		return err
 	}
 	if !cfg.Memory.Archive.IsEnabled() {
-		return fmt.Errorf("archive is disabled in config (set memory.archive.enabled: true or omit it)")
+		return errors.New("archive is disabled in config (set memory.archive.enabled: true or omit it)")
 	}
 
 	reader, err := ares_archive.NewFileArchiveReader(cfg.Memory.Archive.Dir)
@@ -147,7 +147,7 @@ func runRecallRound(arg string) error {
 		return err
 	}
 	if !cfg.Memory.Archive.IsEnabled() {
-		return fmt.Errorf("archive is disabled in config (set memory.archive.enabled: true or omit it)")
+		return errors.New("archive is disabled in config (set memory.archive.enabled: true or omit it)")
 	}
 
 	reader, err := ares_archive.NewFileArchiveReader(cfg.Memory.Archive.Dir)

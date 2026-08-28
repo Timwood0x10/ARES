@@ -2,6 +2,7 @@ package ares_runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -21,7 +22,7 @@ func NewFallbackRouter(name string, routers []RouterPlugin) (*FallbackRouter, er
 		name = "fallback-router"
 	}
 	if len(routers) == 0 {
-		return nil, fmt.Errorf("fallback router requires at least one sub-router")
+		return nil, errors.New("fallback router requires at least one sub-router")
 	}
 	return &FallbackRouter{
 		name:    name,

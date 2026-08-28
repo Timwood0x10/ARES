@@ -4,6 +4,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -50,8 +51,13 @@ func NewKnowledgeAgent(id string, rt *runtime.KnowledgeRuntime, comp compiler.Co
 	return a
 }
 
-func (a *KnowledgeAgent) ID() string                 { return a.id }
-func (a *KnowledgeAgent) Type() models.AgentType     { return AgentTypeAKF }
+// ID returns the agent identifier.
+func (a *KnowledgeAgent) ID() string { return a.id }
+
+// Type returns the AKF agent type.
+func (a *KnowledgeAgent) Type() models.AgentType { return AgentTypeAKF }
+
+// Status returns the current agent status.
 func (a *KnowledgeAgent) Status() models.AgentStatus { return a.status.Load().(models.AgentStatus) }
 func (a *KnowledgeAgent) Start(_ context.Context) error {
 	a.status.Store(models.AgentStatusBusy)
@@ -83,7 +89,7 @@ func (a *KnowledgeAgent) Process(ctx context.Context, input any) (any, error) {
 	}
 
 	if cfg.Goal == "" {
-		return nil, fmt.Errorf("akf: goal is required")
+		return nil, errors.New("akf: goal is required")
 	}
 
 	budget := knowledge.TokenBudget{

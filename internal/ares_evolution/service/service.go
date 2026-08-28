@@ -6,6 +6,7 @@ package evolution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,6 +128,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 // createWiredSystem creates a fully wired evolution system from the API config.
 //
 //nolint:gocyclo // Complex wired system creation with multiple components
+//nolint:gocyclo
 func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
 	baseStrategy := toInternalStrategy(cfg.BaseStrategy)
 
@@ -555,7 +557,7 @@ func (s *Service) BestStrategy() (*Strategy, error) {
 	if s.population != nil {
 		internalBest := s.population.BestStrategy()
 		if internalBest == nil {
-			return nil, fmt.Errorf("population has no strategies")
+			return nil, errors.New("population has no strategies")
 		}
 		return toAPIStrategy(internalBest), nil
 	}
@@ -621,7 +623,7 @@ func (s *Service) SaveBestStrategy(path string) error {
 		return fmt.Errorf("get best strategy: %w", err)
 	}
 	if best == nil {
-		return fmt.Errorf("no best strategy available")
+		return errors.New("no best strategy available")
 	}
 
 	dir := filepath.Dir(path)

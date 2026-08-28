@@ -63,7 +63,7 @@ func NewPluginBus(opts ...PluginBusOption) *PluginBus {
 // as a hook.
 func (b *PluginBus) Register(plugin RuntimePlugin) error {
 	if plugin == nil {
-		return fmt.Errorf("runtime: cannot register nil plugin")
+		return errors.New("runtime: cannot register nil plugin")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -117,6 +117,13 @@ func (b *PluginBus) Start(ctx context.Context) error {
 func (b *PluginBus) Stop(ctx context.Context) error {
 	b.mu.Lock()
 	b.started = false
+	// B22: Clean up all subscribers to prevent leaked goroutines.
+	// Close subscriber channels and clear the slice so Emit (which still
+	// holds RLock) can no longer send to stale channels after Stop.
+	for _, s := range b.subscribers {
+		close(s.ch)
+	}
+	b.subscribers = b.subscribers[:0]
 	b.mu.Unlock()
 
 	var errs []error

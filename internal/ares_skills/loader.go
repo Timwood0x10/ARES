@@ -1,6 +1,7 @@
 package ares_skills
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,4 +122,4 @@ func (l *Loader) LoadReference(id, name string) (string, error) {
 }
 
 // ErrSkillNotFound is returned when a skill ID is absent from the index.
-var ErrSkillNotFound = fmt.Errorf("ares_skills: skill not found")
+var ErrSkillNotFound = errors.New("ares_skills: skill not found")

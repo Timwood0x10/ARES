@@ -129,7 +129,7 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 	// Maximum supported dimension for pgvector is 2000.
 	const maxDimension = 2000
 	if len(embedding) == 0 {
-		return fmt.Errorf("embedding cannot be empty")
+		return errors.New("embedding cannot be empty")
 	}
 	if len(embedding) > maxDimension {
 		return fmt.Errorf("embedding dimension too large: %d (max %d)", len(embedding), maxDimension)

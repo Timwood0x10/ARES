@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -678,11 +679,11 @@ func Shutdown(system *WiredEvolutionSystem) {
 // BestStrategyFromSystem returns the highest-scoring strategy from the population.
 func BestStrategyFromSystem(system *WiredEvolutionSystem) (*mutation.Strategy, error) {
 	if system == nil || system.Population == nil {
-		return nil, fmt.Errorf("system or population is nil")
+		return nil, errors.New("system or population is nil")
 	}
 	stats := system.Population.Stats()
 	if stats.Size == 0 {
-		return nil, fmt.Errorf("population is empty")
+		return nil, errors.New("population is empty")
 	}
 	return system.Population.Best(), nil
 }
@@ -690,7 +691,7 @@ func BestStrategyFromSystem(system *WiredEvolutionSystem) (*mutation.Strategy, e
 // RunIdleEvolution runs N generations of idle evolution on the wired system.
 func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) error {
 	if system == nil || system.PopAdapter == nil || system.Population == nil {
-		return fmt.Errorf("system, pop adapter, and population must not be nil")
+		return errors.New("system, pop adapter, and population must not be nil")
 	}
 
 	for gen := 0; gen < n; gen++ {

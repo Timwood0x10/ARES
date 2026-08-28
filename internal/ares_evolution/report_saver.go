@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 //	error - non-nil if write fails or context cancelled.
 func SaveReport(ctx context.Context, r *EvolutionReport, path string) error {
 	if r == nil {
-		return fmt.Errorf("report must not be nil")
+		return errors.New("report must not be nil")
 	}
 
 	select {

@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -33,7 +34,7 @@ type ToolProvider interface {
 // Returns error if provider is nil.
 func NewToolResolver(provider ToolProvider) (ToolResolver, error) {
 	if provider == nil {
-		return nil, fmt.Errorf("planner: ToolProvider is nil")
+		return nil, errors.New("planner: ToolProvider is nil")
 	}
 	return &toolResolver{
 		provider: provider,
@@ -106,10 +107,10 @@ var toolMetadata = map[string]struct {
 // Finally, it filters to only include tools actually registered in the provider.
 func (r *toolResolver) Resolve(_ context.Context, requirement *CapabilityRequirement) ([]ToolCandidate, error) {
 	if requirement == nil {
-		return nil, fmt.Errorf("planner: requirement is nil")
+		return nil, errors.New("planner: requirement is nil")
 	}
 	if requirement.Name == "" {
-		return nil, fmt.Errorf("planner: requirement name is empty")
+		return nil, errors.New("planner: requirement name is empty")
 	}
 
 	// Collect candidate tool names from two sources:

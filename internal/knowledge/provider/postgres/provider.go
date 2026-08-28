@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ type PGProvider struct {
 // to prevent bypassing the table allowlist via "evil.public_table" style names.
 func validateIdentifier(name string) error {
 	if name == "" {
-		return fmt.Errorf("identifier cannot be empty")
+		return errors.New("identifier cannot be empty")
 	}
 	if len(name) > 63 {
 		return fmt.Errorf("identifier too long: %d bytes (max 63)", len(name))
@@ -63,13 +64,13 @@ func validateIdentifier(name string) error {
 // NewPGProvider creates a PostgreSQL provider with the given DSN and config.
 func NewPGProvider(dsn string, cfg provider.ProviderConfig, mapping provider.ColumnMapping) (*PGProvider, error) {
 	if cfg.Name == "" {
-		return nil, fmt.Errorf("provider name is required")
+		return nil, errors.New("provider name is required")
 	}
 	if dsn == "" {
-		return nil, fmt.Errorf("DSN is required")
+		return nil, errors.New("DSN is required")
 	}
 	if cfg.Table == "" {
-		return nil, fmt.Errorf("provider config Table is required")
+		return nil, errors.New("provider config Table is required")
 	}
 	if err := validateIdentifier(cfg.Table); err != nil {
 		return nil, fmt.Errorf("invalid table name %q: %w", cfg.Table, err)

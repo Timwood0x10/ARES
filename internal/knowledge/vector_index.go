@@ -2,7 +2,7 @@ package knowledge
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sort"
 	"sync"
 )
@@ -68,7 +68,7 @@ func NewInMemoryVectorIndex() *InMemoryVectorIndex {
 // would always score 0 in cosine similarity.
 func (i *InMemoryVectorIndex) Upsert(_ context.Context, objectID, model string, vec []float32) error {
 	if objectID == "" || model == "" {
-		return fmt.Errorf("vector index: objectID and model are required")
+		return errors.New("vector index: objectID and model are required")
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()

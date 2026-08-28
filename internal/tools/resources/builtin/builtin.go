@@ -103,7 +103,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_math.NewTextProcessor(), map[string]string{
-			"domain": "math", "input_type": "text", "output_type": "text",
+			"domain": "text", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 

@@ -3,6 +3,7 @@ package genome
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -87,7 +88,7 @@ func (r *LLMReflector) Reflect(ctx context.Context, history []GenerationHistoryE
 
 	jsonStr := mutation.ExtractJSONBracket(resp)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("no JSON found in LLM reflection response")
+		return nil, errors.New("no JSON found in LLM reflection response")
 	}
 
 	var ref Reflection
@@ -100,7 +101,7 @@ func (r *LLMReflector) Reflect(ctx context.Context, history []GenerationHistoryE
 		return &refs[0], nil
 	}
 
-	return nil, fmt.Errorf("unmarshal reflection: JSON did not match Reflection structure")
+	return nil, errors.New("unmarshal reflection: JSON did not match Reflection structure")
 }
 
 func (r *LLMReflector) buildReflectionPrompt(history []GenerationHistoryEntry, agents []*mutation.Strategy) string {

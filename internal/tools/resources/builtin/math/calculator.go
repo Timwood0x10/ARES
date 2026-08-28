@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -143,7 +144,7 @@ func (t *Calculator) getOrCompileProgram(expression string, env map[string]inter
 	opts = append(opts, t.getAllFunctions()...)
 	program, err := expr.Compile(expression, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("invalid expression: %v", err)
+		return nil, fmt.Errorf("invalid expression: %w", err)
 	}
 
 	// Write to cache under Lock, bounding the cache size so a long-running
@@ -281,7 +282,7 @@ func (t *Calculator) factorialFunc() func(...interface{}) (interface{}, error) {
 	return func(params ...interface{}) (interface{}, error) {
 		n := int(toFloat64(params[0]))
 		if n < 0 {
-			return nil, fmt.Errorf("factorial: n must be >= 0")
+			return nil, errors.New("factorial: n must be >= 0")
 		}
 		result := 1.0
 		for i := 2; i <= n; i++ {
@@ -296,7 +297,7 @@ func (t *Calculator) nPrFunc() func(...interface{}) (interface{}, error) {
 		n := int(toFloat64(params[0]))
 		r := int(toFloat64(params[1]))
 		if n < 0 || r < 0 || r > n {
-			return nil, fmt.Errorf("nPr: invalid arguments")
+			return nil, errors.New("nPr: invalid arguments")
 		}
 		result := 1.0
 		for i := n; i > n-r; i-- {
@@ -311,7 +312,7 @@ func (t *Calculator) nCrFunc() func(...interface{}) (interface{}, error) {
 		n := int(toFloat64(params[0]))
 		r := int(toFloat64(params[1]))
 		if n < 0 || r < 0 || r > n {
-			return nil, fmt.Errorf("nCr: invalid arguments")
+			return nil, errors.New("nCr: invalid arguments")
 		}
 		if r == 0 || r == n {
 			return 1.0, nil
@@ -375,7 +376,7 @@ func (t *Calculator) isPrimeFunc() func(...interface{}) (interface{}, error) {
 func (t *Calculator) meanFunc() func(...interface{}) (interface{}, error) {
 	return func(params ...interface{}) (interface{}, error) {
 		if len(params) == 0 {
-			return nil, fmt.Errorf("mean: no arguments")
+			return nil, errors.New("mean: no arguments")
 		}
 		sum := 0.0
 		for _, p := range params {
@@ -388,7 +389,7 @@ func (t *Calculator) meanFunc() func(...interface{}) (interface{}, error) {
 func (t *Calculator) varianceFunc() func(...interface{}) (interface{}, error) {
 	return func(params ...interface{}) (interface{}, error) {
 		if len(params) < 2 {
-			return nil, fmt.Errorf("variance: need at least 2 values")
+			return nil, errors.New("variance: need at least 2 values")
 		}
 		avg := 0.0
 		for _, p := range params {
@@ -407,7 +408,7 @@ func (t *Calculator) varianceFunc() func(...interface{}) (interface{}, error) {
 func (t *Calculator) stddevFunc() func(...interface{}) (interface{}, error) {
 	return func(params ...interface{}) (interface{}, error) {
 		if len(params) < 2 {
-			return nil, fmt.Errorf("stddev: need at least 2 values")
+			return nil, errors.New("stddev: need at least 2 values")
 		}
 		avg := 0.0
 		for _, p := range params {
@@ -426,7 +427,7 @@ func (t *Calculator) stddevFunc() func(...interface{}) (interface{}, error) {
 func (t *Calculator) medianFunc() func(...interface{}) (interface{}, error) {
 	return func(params ...interface{}) (interface{}, error) {
 		if len(params) == 0 {
-			return nil, fmt.Errorf("median: no arguments")
+			return nil, errors.New("median: no arguments")
 		}
 		vals := make([]float64, len(params))
 		for i, p := range params {
@@ -448,7 +449,7 @@ func (t *Calculator) binomialFunc() func(...interface{}) (interface{}, error) {
 		k := int(toFloat64(params[1]))
 		p := toFloat64(params[2])
 		if n < 0 || k < 0 || k > n || p < 0 || p > 1 {
-			return nil, fmt.Errorf("binomial: invalid arguments")
+			return nil, errors.New("binomial: invalid arguments")
 		}
 		coeff := 1.0
 		kr := minInt(k, n-k)
@@ -465,7 +466,7 @@ func (t *Calculator) normalPdfFunc() func(...interface{}) (interface{}, error) {
 		mu := toFloat64(params[1])
 		sigma := toFloat64(params[2])
 		if sigma <= 0 {
-			return nil, fmt.Errorf("normalPdf: sigma must be > 0")
+			return nil, errors.New("normalPdf: sigma must be > 0")
 		}
 		return (1 / (sigma * math.Sqrt(2*math.Pi))) *
 			math.Exp(-((x-mu)*(x-mu))/(2*sigma*sigma)), nil
@@ -477,7 +478,7 @@ func (t *Calculator) poissonPdfFunc() func(...interface{}) (interface{}, error) 
 		k := int(toFloat64(params[0]))
 		lambda := toFloat64(params[1])
 		if k < 0 || lambda <= 0 {
-			return nil, fmt.Errorf("poissonPdf: k >= 0, lambda > 0")
+			return nil, errors.New("poissonPdf: k >= 0, lambda > 0")
 		}
 		logFact := 0.0
 		for i := 2; i <= k; i++ {

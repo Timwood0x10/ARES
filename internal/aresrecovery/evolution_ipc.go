@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -88,7 +89,7 @@ func NewEvolutionAwareIPC(bus *agentipc.Bus, source IPCProtocolPolicySource) *Ev
 //   - error: the policy-source error, marshal error, or the bus error.
 func (i *EvolutionAwareIPC) Send(ctx context.Context, from, to, topic string, payload any) error {
 	if i.bus == nil {
-		return fmt.Errorf("aresrecovery: evolution IPC has no bus")
+		return errors.New("aresrecovery: evolution IPC has no bus")
 	}
 	policy := IPCProtocolPolicy{Encoding: WireJSON}
 	if i.source != nil {

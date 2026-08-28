@@ -2,7 +2,7 @@ package memorystore
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -13,7 +13,7 @@ import (
 
 var (
 	// ErrObjectNotFound is returned when a Get call finds no matching object.
-	ErrObjectNotFound = fmt.Errorf("object not found")
+	ErrObjectNotFound = errors.New("object not found")
 )
 
 // Store is an in-memory implementation of KnowledgeStore.
@@ -37,7 +37,7 @@ func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) e
 	defer s.mu.Unlock()
 	for _, obj := range objects {
 		if obj.ID == "" {
-			return fmt.Errorf("knowledge object ID cannot be empty")
+			return errors.New("knowledge object ID cannot be empty")
 		}
 		s.objects[obj.ID] = obj
 	}

@@ -58,14 +58,14 @@ func (s *DistillationService) ShouldDistill(ctx context.Context, task *TaskResul
 // Distill extracts a reusable experience from a task result.
 func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*Experience, error) {
 	if task == nil {
-		return nil, fmt.Errorf("task result is nil")
+		return nil, errors.New("task result is nil")
 	}
 	if task.TenantID == "" {
-		return nil, fmt.Errorf("tenant ID is required")
+		return nil, errors.New("tenant ID is required")
 	}
 
 	if !s.ShouldDistill(ctx, task) {
-		return nil, fmt.Errorf("distillation skipped: task does not meet distillation criteria")
+		return nil, errors.New("distillation skipped: task does not meet distillation criteria")
 	}
 
 	extracted, err := s.extractExperience(ctx, task)
@@ -74,7 +74,7 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 	}
 
 	if extracted.Problem == "" || extracted.Solution == "" {
-		return nil, fmt.Errorf("invalid extracted experience")
+		return nil, errors.New("invalid extracted experience")
 	}
 
 	embedding, err := s.embeddingClient.Embed(ctx, extracted.Problem)
@@ -154,7 +154,7 @@ func (s *DistillationService) DistillBatch(ctx context.Context, tasks []*TaskRes
 // extractExperience extracts experience components using LLM.
 func (s *DistillationService) extractExperience(ctx context.Context, task *TaskResult) (*ExtractedExperience, error) {
 	if s.llmClient == nil || !s.llmClient.IsEnabled() {
-		return nil, fmt.Errorf("LLM client is not available")
+		return nil, errors.New("LLM client is not available")
 	}
 
 	prompt := s.buildExtractionPrompt(task)

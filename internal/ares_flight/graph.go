@@ -42,15 +42,23 @@ type GraphNode struct {
 
 // Graph represents an agent call graph — a tree of agents, tools, and LLM calls.
 type Graph struct {
-	root  *GraphNode
-	nodes map[string]*GraphNode
-	mu    sync.RWMutex
+	root            *GraphNode
+	nodes           map[string]*GraphNode
+	pendingChildren map[string][]*GraphNode
+	mu              sync.RWMutex
+	cap             int
 }
+
+// maxGraphNodes is the ring cap for graph nodes, aligned with
+// introspect's 300-entry default.
+const maxGraphNodes = 300
 
 // NewGraph creates an empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		nodes: make(map[string]*GraphNode),
+		nodes:           make(map[string]*GraphNode),
+		pendingChildren: make(map[string][]*GraphNode),
+		cap:             maxGraphNodes,
 	}
 }
 
@@ -64,6 +72,31 @@ func (g *Graph) AddNode(node *GraphNode) {
 	}
 
 	g.nodes[node.ID] = node
+
+	// B7: if this node has pending children from earlier arrivals,
+	// attach them now.
+	if pending, ok := g.pendingChildren[node.ID]; ok {
+		node.Children = append(node.Children, pending...)
+		delete(g.pendingChildren, node.ID)
+	}
+
+	// P1-2: ring cap — evict the oldest node when the cap is exceeded.
+	// The oldest node is the one with the earliest StartAt. We evict it
+	// from the nodes map only (its children entries remain in the tree
+	// so the structural shape is not broken — only the lookup is lost).
+	if g.cap > 0 && len(g.nodes) > g.cap {
+		var oldestID string
+		var oldestStart time.Time
+		for id, n := range g.nodes {
+			if oldestID == "" || n.StartAt.Before(oldestStart) {
+				oldestID = id
+				oldestStart = n.StartAt
+			}
+		}
+		if oldestID != "" && oldestID != node.ID {
+			delete(g.nodes, oldestID)
+		}
+	}
 
 	if node.ParentID == "" {
 		g.root = node
@@ -80,6 +113,11 @@ func (g *Graph) AddNode(node *GraphNode) {
 
 	if parent, ok := g.nodes[node.ParentID]; ok {
 		parent.Children = append(parent.Children, node)
+	} else {
+		// B7: parent has not arrived yet — record a pending child so
+		// the parent can pick it up when it is added later (out-of-order
+		// event arrival is common in the flight recorder).
+		g.pendingChildren[node.ParentID] = append(g.pendingChildren[node.ParentID], node)
 	}
 }
 

@@ -2,7 +2,7 @@ package agentipc
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 )
 
@@ -10,6 +10,10 @@ import (
 // collaboration/handoff messages. cmd/ares mirrors this value on the receive
 // side (its own constant) — change both together.
 const taskIDKey = "task_id"
+
+// defaultRequestTimeout is used when Request is called with timeout <= 0
+// (B16: prevents indefinite blocking on a missing timeout).
+const defaultRequestTimeout = 30 * time.Second
 
 // Send is the fire-and-forget primitive: deliver a message to a target agent
 // without waiting for a reply. The target's handler is invoked synchronously
@@ -63,6 +67,15 @@ func (b *Bus) Send(ctx context.Context, from, to, topic string, payload any) err
 //   - *Message: the reply (nil on timeout/error).
 //   - error: ErrAgentNotRegistered / ErrNoHandler / ErrTimeout.
 func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, timeout time.Duration) (*Message, error) {
+	// B16: validate timeout — <=0 gets a sane default instead of blocking forever.
+	if timeout <= 0 {
+		timeout = defaultRequestTimeout
+	}
+	// B16: derive a child context so the handler goroutine is cancelled when
+	// the timeout fires or the caller cancels — the handler no longer leaks.
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	b.mu.RLock()
 	h, ok := b.handlers[to]
 	b.mu.RUnlock()
@@ -91,7 +104,7 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 	// returns an error, a nil reply is delivered so the caller's select wakes
 	// up and the error is surfaced.
 	go func() {
-		reply, err := h(ctx, req)
+		reply, err := h(reqCtx, req)
 		if err != nil {
 			// Surface the error: deliver a sentinel nil reply so the caller
 			// wakes up; the actual error is stashed on the pending entry.
@@ -162,7 +175,7 @@ func (b *Bus) deliverReply(corrID string, reply *Message) error {
 	ch, ok := b.pending[corrID]
 	b.mu.Unlock()
 	if !ok {
-		return nil // best-effort drop
+		return nil // best-effort drop — orphan reply for a completed request
 	}
 	select {
 	case ch <- reply:
@@ -256,10 +269,16 @@ func (b *Bus) Handoff(ctx context.Context, from, to, taskID string, contextSnaps
 //   - error: fmt.Errorf for an empty agent id.
 func (b *Bus) Subscribe(agentID, topic string) error {
 	if agentID == "" {
-		return fmt.Errorf("agentipc: agent id required")
+		return errors.New("agentipc: agent id required")
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// B16: deduplicate — don't add the same agent to the same topic twice.
+	for _, existing := range b.subscribers[topic] {
+		if existing == agentID {
+			return nil // already subscribed
+		}
+	}
 	b.subscribers[topic] = append(b.subscribers[topic], agentID)
 	return nil
 }

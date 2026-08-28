@@ -20,6 +20,7 @@ package genome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -77,11 +78,11 @@ func NewRegistry() *Registry {
 // with the same name is already registered.
 func (r *Registry) Register(g Genome) error {
 	if g == nil {
-		return fmt.Errorf("genome: cannot register nil")
+		return errors.New("genome: cannot register nil")
 	}
 	name := g.Name()
 	if name == "" {
-		return fmt.Errorf("genome: name must not be empty")
+		return errors.New("genome: name must not be empty")
 	}
 
 	r.mu.Lock()

@@ -3,6 +3,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -78,14 +79,14 @@ func (e *MemoryPatchExecutor) Name() string { return StorageMemory }
 // Snapshot returns the current memory config as a snapshot.
 func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 	if e.store == nil {
-		return nil, fmt.Errorf(errPrefix + "no config store available")
+		return nil, errors.New(errPrefix + "no config store available")
 	}
 	e.store.Lock()
 	defer e.store.Unlock()
 
 	cfg := e.store.GetConfig()
 	if cfg == nil {
-		return nil, fmt.Errorf(errPrefix + "no config available")
+		return nil, errors.New(errPrefix + "no config available")
 	}
 	// Return a copy to avoid mutation via the snapshot.
 	out := *cfg
@@ -104,7 +105,7 @@ func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 // the rollback actually restores the prior config.
 func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	if e.store == nil {
-		return nil, fmt.Errorf(errPrefix + "no config store available")
+		return nil, errors.New(errPrefix + "no config store available")
 	}
 
 	e.store.Lock()
@@ -112,7 +113,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 
 	cfg := e.store.GetConfig()
 	if cfg == nil {
-		return nil, fmt.Errorf(errPrefix + "no config available")
+		return nil, errors.New(errPrefix + "no config available")
 	}
 	// Snapshot the previous config so we can build a rollback and so a
 	// validation failure leaves the config untouched (validate-before-mutate).
@@ -122,7 +123,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 	case patch.PatchChangePlanner:
 		vals, ok := p.Value.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf(errPrefix + "PatchChangePlanner value must be map[string]any")
+			return nil, errors.New(errPrefix + "PatchChangePlanner value must be map[string]any")
 		}
 		rollback := map[string]any{}
 		if h, ok := vals["max_history"].(int); ok && h > 0 {
@@ -147,7 +148,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 	case patch.PatchChangeBudget:
 		vals, ok := p.Value.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf(errPrefix + "PatchChangeBudget value must be map[string]any")
+			return nil, errors.New(errPrefix + "PatchChangeBudget value must be map[string]any")
 		}
 		// Validate all values before mutating, so a malformed field (e.g. an
 		// unparseable session_ttl) does not partially apply the patch.
@@ -186,7 +187,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 	case patch.PatchChangeReducer:
 		vals, ok := p.Value.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf(errPrefix + "PatchChangeReducer value must be map[string]any")
+			return nil, errors.New(errPrefix + "PatchChangeReducer value must be map[string]any")
 		}
 		rollback := map[string]any{}
 		if s, ok := vals["use_structured_cleaning"].(bool); ok {

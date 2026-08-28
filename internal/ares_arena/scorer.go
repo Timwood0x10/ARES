@@ -2,6 +2,7 @@ package arena
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 )
@@ -26,7 +27,7 @@ type EnsembleScorer struct {
 //   - error: ErrNilScorer if any scorer is nil, or invalid weight.
 func NewEnsembleScorer(pairs ...any) (*EnsembleScorer, error) {
 	if len(pairs)%2 != 0 {
-		return nil, fmt.Errorf("arena: ensemble scorer requires pairs of (scorer, weight)")
+		return nil, errors.New("arena: ensemble scorer requires pairs of (scorer, weight)")
 	}
 
 	n := len(pairs) / 2

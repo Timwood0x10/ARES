@@ -33,10 +33,10 @@ type StateSnapshot struct {
 // written by an incompatible schema (code_rules_v2 §6.1/§6.2).
 func SaveStateSnapshot(ctx context.Context, store CheckpointStore, key string, state map[string]any) error {
 	if store == nil {
-		return fmt.Errorf("state snapshot: checkpoint store must not be nil")
+		return errors.New("state snapshot: checkpoint store must not be nil")
 	}
 	if key == "" {
-		return fmt.Errorf("state snapshot: key must not be empty")
+		return errors.New("state snapshot: key must not be empty")
 	}
 	data, err := json.Marshal(StateSnapshot{
 		SchemaVersion: currentStateSnapshotVersion,
@@ -59,10 +59,10 @@ func SaveStateSnapshot(ctx context.Context, store CheckpointStore, key string, s
 // key.
 func LoadStateSnapshot(ctx context.Context, store CheckpointStore, key string) (*StateSnapshot, error) {
 	if store == nil {
-		return nil, fmt.Errorf("state snapshot: checkpoint store must not be nil")
+		return nil, errors.New("state snapshot: checkpoint store must not be nil")
 	}
 	if key == "" {
-		return nil, fmt.Errorf("state snapshot: key must not be empty")
+		return nil, errors.New("state snapshot: key must not be empty")
 	}
 	data, err := store.Load(ctx, key)
 	if err != nil {

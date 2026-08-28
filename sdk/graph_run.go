@@ -55,7 +55,7 @@ func (r *Runtime) RunGraph(ctx context.Context, g *Graph) (*GraphResult, error) 
 	r.registerGraphAgents(snap)
 
 	st := newGraphRun()
-	maxIter := g.MaxIterations
+	maxIter := snap.maxIterations
 	if maxIter <= 0 {
 		maxIter = defaultGraphMaxIterations
 	}
@@ -276,7 +276,7 @@ func (r *Runtime) execGraphNode(ctx context.Context, snap graphSnapshot, st *gra
 			iter:     make(map[string]int),
 			edgeDead: make(map[[2]string]bool),
 		}
-		err := r.runGraphRounds(ctx, subSnap, child, orDefault(n.sub.MaxIterations))
+		err := r.runGraphRounds(ctx, subSnap, child, orDefault(subSnap.maxIterations))
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
@@ -310,10 +310,12 @@ func (r *Runtime) registerGraphAgents(snap graphSnapshot) {
 		if n.agent == nil {
 			continue
 		}
-		if _, ok := r.sdkExecutors[n.agentName]; ok {
+		// P1-1: check and register through the scheduler's own registry
+		// (execMu-guarded) — no direct map write.
+		if _, ok := r.sched.LookupExecutor(n.agentName); ok {
 			continue // already registered (e.g. via RegisterAgent) — keep it
 		}
-		r.sdkExecutors[n.agentName] = &sdkAgentExecutor{agent: n.agent}
+		r.sched.RegisterExecutor(n.agentName, &sdkAgentExecutor{agent: n.agent})
 	}
 }
 

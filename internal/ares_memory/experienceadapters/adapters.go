@@ -8,6 +8,7 @@ package experienceadapters
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,7 +56,7 @@ func (s *ExperienceSearcher) SearchByVector(
 	limit int,
 ) ([]distillation.Experience, error) {
 	if s == nil || s.Repo == nil {
-		return nil, fmt.Errorf("experience searcher: repository is nil")
+		return nil, errors.New("experience searcher: repository is nil")
 	}
 	storageExps, err := s.Repo.SearchByVector(ctx, vector, tenantID, limit)
 	if err != nil {
@@ -108,7 +109,7 @@ func (r *DistillationRepo) SearchByVector(
 	limit int,
 ) ([]distillation.Experience, error) {
 	if r == nil || r.Repo == nil {
-		return nil, fmt.Errorf("distillation repo: repository is nil")
+		return nil, errors.New("distillation repo: repository is nil")
 	}
 	storageExps, err := r.Repo.SearchByVector(ctx, vector, tenantID, limit)
 	if err != nil {
@@ -156,7 +157,7 @@ func (r *DistillationRepo) GetByMemoryType(
 	memoryType experience.MemoryType,
 ) ([]experience.Experience, error) {
 	if r == nil || r.Repo == nil {
-		return nil, fmt.Errorf("distillation repo: repository is nil")
+		return nil, errors.New("distillation repo: repository is nil")
 	}
 	storageExps, err := r.Repo.ListByType(ctx, memoryTypeToStorageType(memoryType), tenantID, DefaultListLimit)
 	if err != nil {
@@ -181,7 +182,7 @@ func (r *DistillationRepo) CountByMemoryType(
 	memoryType experience.MemoryType,
 ) (int, error) {
 	if r == nil || r.Repo == nil {
-		return 0, fmt.Errorf("distillation repo: repository is nil")
+		return 0, errors.New("distillation repo: repository is nil")
 	}
 	storageExps, err := r.Repo.ListByType(ctx, memoryTypeToStorageType(memoryType), tenantID, DefaultListLimit)
 	if err != nil {
@@ -201,10 +202,10 @@ func (r *DistillationRepo) CountByMemoryType(
 // in Metadata so the round-trip through SearchByVector restores it.
 func (r *DistillationRepo) Create(ctx context.Context, exp *experience.Experience) error {
 	if r == nil || r.Repo == nil {
-		return fmt.Errorf("distillation repo: repository is nil")
+		return errors.New("distillation repo: repository is nil")
 	}
 	if exp == nil {
-		return fmt.Errorf("distillation repo: experience is nil")
+		return errors.New("distillation repo: experience is nil")
 	}
 	storage := ToStorageExperience(exp, r.DefaultTenant)
 	if err := r.Repo.Create(ctx, storage); err != nil {
@@ -217,10 +218,10 @@ func (r *DistillationRepo) Create(ctx context.Context, exp *experience.Experienc
 // handling as Create.
 func (r *DistillationRepo) Update(ctx context.Context, exp *experience.Experience) error {
 	if r == nil || r.Repo == nil {
-		return fmt.Errorf("distillation repo: repository is nil")
+		return errors.New("distillation repo: repository is nil")
 	}
 	if exp == nil {
-		return fmt.Errorf("distillation repo: experience is nil")
+		return errors.New("distillation repo: experience is nil")
 	}
 	storage := ToStorageExperience(exp, r.DefaultTenant)
 	if err := r.Repo.Update(ctx, storage); err != nil {
@@ -232,7 +233,7 @@ func (r *DistillationRepo) Update(ctx context.Context, exp *experience.Experienc
 // Delete removes an experience by ID.
 func (r *DistillationRepo) Delete(ctx context.Context, id string) error {
 	if r == nil || r.Repo == nil {
-		return fmt.Errorf("distillation repo: repository is nil")
+		return errors.New("distillation repo: repository is nil")
 	}
 	if err := r.Repo.Delete(ctx, id, r.DefaultTenant); err != nil {
 		return fmt.Errorf("distillation repo delete: %w", err)
@@ -246,7 +247,7 @@ func (r *DistillationRepo) Delete(ctx context.Context, id string) error {
 // falls back to per-id deletes on batch failure.
 func (r *DistillationRepo) DeleteBatch(ctx context.Context, ids []string) error {
 	if r == nil || r.Repo == nil {
-		return fmt.Errorf("distillation repo: repository is nil")
+		return errors.New("distillation repo: repository is nil")
 	}
 	for _, id := range ids {
 		if err := r.Repo.Delete(ctx, id, r.DefaultTenant); err != nil {

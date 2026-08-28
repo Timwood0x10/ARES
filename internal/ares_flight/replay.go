@@ -2,6 +2,7 @@ package flight
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,7 +39,7 @@ type ReplaySession struct {
 // NewReplaySession creates a replay session by loading all ares_events for a task.
 func NewReplaySession(ctx context.Context, eventStore ares_events.EventStore, taskID string) (*ReplaySession, error) {
 	if eventStore == nil {
-		return nil, fmt.Errorf("event store is nil")
+		return nil, errors.New("event store is nil")
 	}
 
 	evts, err := eventStore.Read(ctx, taskID, ares_events.ReadOptions{
@@ -68,7 +69,7 @@ func (s *ReplaySession) TotalSteps() int {
 // Step advances to the next event and returns it.
 func (s *ReplaySession) Step() (*ReplayStep, error) {
 	if s.currentIdx >= len(s.ares_events)-1 {
-		return nil, fmt.Errorf("no more steps")
+		return nil, errors.New("no more steps")
 	}
 	s.currentIdx++
 	return s.currentStep(), nil

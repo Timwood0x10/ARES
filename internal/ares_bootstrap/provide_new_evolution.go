@@ -4,6 +4,7 @@ package ares_bootstrap
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apiembedding "github.com/Timwood0x10/ares/api/embedding"
@@ -325,7 +326,7 @@ func (c *NewEvolutionComponents) UpdateLiveKnowledgeRuntime(rt *knowledgeruntime
 // when the coordinator evaluates and applies patches.
 func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 	if dag == nil {
-		return fmt.Errorf("live DAG must not be nil")
+		return errors.New("live DAG must not be nil")
 	}
 	c.liveDAG = dag
 
@@ -397,7 +398,7 @@ type noopKnowledgeExecutor struct{}
 func (e *noopKnowledgeExecutor) Name() string { return "knowledge.planner" }
 
 func (e *noopKnowledgeExecutor) Snapshot(_ context.Context) (any, error) {
-	return nil, fmt.Errorf("noop: no snapshot")
+	return nil, errors.New("noop: no snapshot")
 }
 
 func (e *noopKnowledgeExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {

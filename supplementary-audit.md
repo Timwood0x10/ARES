@@ -43,7 +43,7 @@
 | WithLLMStructuredTimeout | 0 | 无人调用 | ❌ 死代码 |
 | WithDatabaseTimeout | 0 | 无人调用 | ❌ 死代码 |
 | WithDatabaseTransactionTimeout | 0 | 无人调用 | ❌ 死代码 |
-| NewTemplateEngine | 0 | 无人调用 | ❌ 死代码 |
+| NewTemplateEngine | 4 | peer_mode.go, peer_agents.go, chat_cognition.go, dashboard.go | ✅ 接线良好 — 生产真实调用4处；原报告0调用为误判，已纠正 |
 | NewTemplateRegistry | 0 | 无人调用 | ❌ 死代码 |
 | ParseOutput | 0 | 无人调用 | ❌ 死代码 |
 | NewSchema | 0 | 无人调用 | ❌ 死代码 |
@@ -66,9 +66,9 @@
 | 符号 | 生产调用者 | 判定 |
 |------|-----------|------|
 | WithDetachedLabel | manager_lifecycle.go, manager.go | ✅ 接线良好 |
-| BackgroundStats | 无人调用（仅测试） | ❌ 死代码 |
+| BackgroundStats | 被 ares_runtime/manager_lifecycle.go:202 生产调用 | ✅ 接线良好（原报告"无人调用"误判，已纠正） |
 
-**结论：接线良好。BackgroundStats 可删除或 unexport。**
+**结论：接线良好。BackgroundStats 生产在用（manager_lifecycle.go:202），保留。**
 
 ### internal/ares_protocol/ahp
 
@@ -349,7 +349,7 @@
 | WithRateLimiter | internal/llm | 0 调用 |
 | WithRetryPolicy | internal/llm | 0 调用 |
 | 全部 timeout.go 导出函数 | internal/llm/output | 全部 0 调用 |
-| NewTemplateEngine/Registry | internal/llm/output | 0 调用 |
+| NewTemplateRegistry | internal/llm/output | 0 调用（NewTemplateEngine 生产在用，勿删） |
 | ParseOutput / NewSchema / NewSchemaGenerator / NewTimeout / RenderTemplate | internal/llm/output | 全部 0 调用 |
 | DLQ / DLQProcessor / HeartbeatMonitor / MessageQueue / MessageRouter / Protocol / DynamicRouter / RateLimiter | ares_protocol/ahp | 全部 0 调用 |
 | NewAgentExecutor | workflow/engine | 0 调用 — 工作流引擎无执行器，需重新设计后才能接 |

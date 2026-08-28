@@ -108,13 +108,13 @@ func (a *SecretAdapter) parseCSV(data []byte) ([]byte, error) {
 	}
 
 	if len(records) == 0 {
-		return nil, fmt.Errorf("empty CSV data")
+		return nil, errors.New("empty CSV data")
 	}
 
 	// Extract headers
 	headers := records[0]
 	if len(headers) < 2 {
-		return nil, fmt.Errorf("CSV must have at least 2 columns (key, value)")
+		return nil, errors.New("CSV must have at least 2 columns (key, value)")
 	}
 
 	// Find column indices
@@ -134,7 +134,7 @@ func (a *SecretAdapter) parseCSV(data []byte) ([]byte, error) {
 	}
 
 	if keyIdx == -1 || valueIdx == -1 {
-		return nil, fmt.Errorf("CSV must contain 'key' and 'value' columns")
+		return nil, errors.New("CSV must contain 'key' and 'value' columns")
 	}
 
 	// Convert to JSON structure

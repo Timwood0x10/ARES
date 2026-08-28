@@ -1,9 +1,9 @@
 // Package ares_mcp ...
 package ares_mcp
 
-import "fmt"
+import "errors"
 
 var (
-	ErrDuplicateRegistration = fmt.Errorf("duplicate registration")
-	ErrEmptyName             = fmt.Errorf("name must not be empty")
+	ErrDuplicateRegistration = errors.New("duplicate registration")
+	ErrEmptyName             = errors.New("name must not be empty")
 )

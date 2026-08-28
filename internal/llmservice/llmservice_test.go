@@ -493,8 +493,8 @@ func TestService_GenerateEmbedding_NoClient(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no embedding client configured")
 	}
-	if err.Error() != "embedding service not configured" {
-		t.Errorf("expected 'embedding service not configured', got %v", err)
+	if !errors.Is(err, ErrLLMNotAvailable) {
+		t.Errorf("expected ErrLLMNotAvailable, got %v", err)
 	}
 }
 
@@ -505,8 +505,8 @@ func TestService_GenerateEmbedding_UnsupportedClient(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported embedding client")
 	}
-	if err.Error() != "embedding client type not supported" {
-		t.Errorf("expected 'embedding client type not supported', got %v", err)
+	if !errors.Is(err, ErrEmbeddingFailed) {
+		t.Errorf("expected ErrEmbeddingFailed, got %v", err)
 	}
 }
 
@@ -571,6 +571,9 @@ func TestService_GenerateEmbedding_ClientError(t *testing.T) {
 	_, err := s.GenerateEmbedding(context.Background(), &core.EmbeddingRequest{Input: "test"})
 	if err == nil {
 		t.Fatal("expected error from embedding client")
+	}
+	if !errors.Is(err, ErrEmbeddingFailed) {
+		t.Errorf("expected ErrEmbeddingFailed, got %v", err)
 	}
 }
 

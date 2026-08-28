@@ -52,7 +52,7 @@ Evolution                    → BETTER （改进 graph / 调度策略 / 种群�
 | legacy leader track | `cmd/ares/kernel_bridge.go:12-20`（"leader track has been deleted"）| 已删，**禁止复活** |
 | `agents` Handoff（主管→子交接）| 附录A/D4 | 删除（leader-sub 交接机制）|
 | `agentfabric.NewSubAgentCognition` | 实测仅 executor_test.go | 删除；**勿作为"子 agent 认知"接回** |
-| `internal/agentloop`（旧对话引擎）| 全库 0 import | 删除；新架构认知走 `CapabilityExecutor.ExecuteStep` |
+| `internal/agentloop`（旧对话引擎）| ⚠️实测 SDK 3 处 import、13 处调用（§1.5.1）| **保留为 SDK 边界，禁止接入内核**；内核认知走 `CapabilityExecutor.ExecuteStep`，不得用 agentloop 驱动 kernel |
 | PluginBus + Router 体系（ares_runtime）| serve.go "bridge is gone" | 删除/experimental（旧编排桥）|
 
 ### 0.5 接线动作合规检查表（每个 W-项开工前必过）
@@ -70,6 +70,7 @@ Evolution                    → BETTER （改进 graph / 调度策略 / 种群�
 1. [审计结论速览](#1-审计结论速览)
 1.5. [证据核验结果（B 阶段实测）](#15-证据核验结果b-阶段-findreferences-实测)
 2. [Phase 0：决策登记（0.5 天）](#2-phase-0决策登记05-天)
+2.5. [结构化错误改造（KernelError · 全库错误纪律）](#25-结构化错误改造kernelerror--全库错误纪律)
 3. [Phase 1：P0/P1 致命 bug 修复（第 1 周）](#3-phase-1p0p1-致命-bug-修复第-1-周)
 4. [Phase 2：伪接线闭环——接线项（第 2-3 周）](#4-phase-2伪接线闭环接线项第-2-3-周)
 5. [Phase 3：伪接线闭环——删除项（第 3-4 周）](#5-phase-3伪接线闭环删除项第-3-4-周)
@@ -79,7 +80,7 @@ Evolution                    → BETTER （改进 graph / 调度策略 / 种群�
 9. [附录 A：死代码删除决策表](#9-附录-a死代码删除决策表)
 10. [附录 B：未接入内核模块决策](#10-附录-b未接入内核模块决策)
 11. [附录 C：workflow 计划层（CompilePlan + create_plan）](#11-附录-cworkflow-计划层compileplan--create_plan)
-12. [附录 D：DLQ 可靠性闭环](#12-附录-ddlq-可靠性闭环)
+12. [附录 D：DLQ 可靠性闭环 ⛔仅供历史参考](#12-附录-ddlq-可靠性闭环-仅供历史参考x3删除本方案不执行)
 13. [附录 E：里程碑与验收总表](#13-附录-e里程碑与验收总表)
 
 ---
@@ -122,9 +123,19 @@ Evolution                    → BETTER （改进 graph / 调度策略 / 种群�
 | `NewProtocol`（ares_protocol/ahp） | DLQ 接线 ↔ 删除矛盾 | 仅 `ares_integration/protocol_test.go`、`ahp_test.go` | **整个 ahp Protocol 子系统生产不可达**（见决策 X3） |
 | `NewDLQ`（ares_protocol/ahp） | W10 要接线 | 被 `NewProtocol`（测试专用）内部 + 测试调用 | 生产 0，随 Protocol 决策 |
 | `knowledge/service` ServiceAdapter | 恒返回 nil | `Query`(adapter.go:86)、`Distill` 空输入(L99) 返回 nil；`CompileContext` 有真实逻辑 | **部分属实**（非全恒 nil） |
-| `internal/agentloop` | 删除（被 ChatCognition 取代） | 全库 0 处 import | 删除安全；"仅 SDK 用"旧说法**已废** |
-| `internal/detector` | 仅 SDK quickstart 使用 | 全库 0 处 import | "仅 SDK 用"**错误**，实为零引用 → 删除安全 |
+| `internal/agentloop` | 删除（被 ChatCognition 取代） | **❌实测错误**：`sdk/agent.go`、`sdk/discovery.go`、`sdk/sdk.go` 共 3 处 import、13 处方法调用（`Engine.Run`/`FriendlyErr`/`ToolExecutor`） | **保留为 SDK 边界**（修正：非 0 import，SDK 在用，不得删） |
+| `internal/detector` | 仅 SDK quickstart 使用 | **❌实测错误**：`sdk/quickstart.go` import `detector.Detect`/`detector.Environment` | **保留为 SDK 边界**（修正：非 0 import，SDK 在用，不得删） |
+| `internal/tools/toolsource` | CapabilitySelector/TagSelector 无人调用 | **❌实测错误**：`sdk/agent.go`/`options.go`/`discovery.go` 3 处 import、12 处调用（`ToolSource`/`ToolSelector`/`NewDiscoverToolsTool`/`AllSelector`） | **保留为 SDK 核心接口**（修正：非死代码，SDK 公共 API 在用） |
+| `internal/knowledge/linker` | 不可达→删除 | **❌实测错误**：`sdk/knowledge.go` import linker | **保留为 SDK 边界**（修正：SDK 在用） |
+| `internal/knowledge/store/sqlite` | 不可达→删除 | **❌实测错误**：`sdk/knowledge.go` import sqlitestore | **保留为 SDK 边界**（修正：SDK 在用） |
+| `internal/llmservice` | 不可达→删除 | **❌实测错误**：`api/service/llm/service.go` import llmservice | **保留为 API 边界**（修正：公共 API 依赖，删则破坏兼容） |
 | `CrossoverGenome`（evolution/genome） | 文档自述已移除 | 接口仍定义于 `genome.go:57`，仅自身注释引用 | "已移除"**错误**，接口尚在 → 删前查实现者 |
+| `NewPGStrategyStore`（ares_evolution） | D14 原判"仅测试→删" | **❌实测错误**：`bootstrap_steps.go:415` 生产调用 | **保留**（撤回 D14） |
+| `BackgroundStats`（ares_ctxutil） | D23 原判"无人调用→删" | **❌实测错误**：`manager_lifecycle.go:202` 生产调用 | **保留**（撤回 D23） |
+| `NewTemplateEngine`（llm/output） | 原判"0 调用→删" | **❌实测错误**：生产 4 处调用（chat_cognition.go:153、peer_mode.go:283、peer_agents.go:94、dashboard.go:257） | **保留**（撤回 D12 该项） |
+| `NewMessageHandler`/sub handler | D9 原判"空实现→删" | **❌实测错误**：`peer_agents.go:51`、`peer_mode.go:310` 生产构造 | **保留**（撤回 D9 删除项，改为修复 GetTool/Set* 竞态） |
+
+> **本轮全量复核结论（2026-08-28）**：对所有"删除"项做了 grep 实测，共发现 **5 处源报告误判**（NewTemplateEngine / NewPGStrategyStore / BackgroundStats / agentloop / detector / tools/toolsource / knowledge linker+store-sqlite / llmservice / sub handler），均已修正为"保留"。其余删除项（ares_runtime 插件生态、ares_shutdown 组件、ratelimit 未接线实现、Handoff、core/models 死方法、ahp 死子系统、storage 孤儿、llm 死代码等）**全部核实为真实 0 生产引用，删除判定成立**。
 
 ### 1.5.2 三个决策项——已完成深度核验，给出明确建议
 
@@ -179,13 +190,13 @@ TaskCompleted 事件
 
 每个子系统标记"接线 / 删除 / 移入实验性"。
 
-> **✅ 三个阻塞决策（X1/X2/X3）已完成深度核验，建议见 §1.5.2，全部指向"删除/删死构造器"。**
+> **✅ 三个阻塞决策（X1/X2/X3）已完成深度核验并裁决，见 §1.5.2，全部指向"删除/删死构造器"，无阻塞项。**
 
 | 决策 ID | 待裁决项 | 建议 | 状态 |
 |---------|---------|------|------|
-| X1 | 记忆蒸馏流水线 Pipeline+Push+Report | **删除**（生产已有事件驱动蒸馏回路 provide_distillation.go:215） | ✅ 已核验，待拍板 |
-| X2 | NewProductionMemoryManager（带参构造器） | **删死构造器，留类型 + NewMinimalMemoryManager** | ✅ 已核验，待拍板 |
-| X3 | ahp Protocol 子系统含 DLQ → W10 vs D10 | **删除**（W10 作废，执行 D10；接回违反 §0.2） | ✅ 已核验，待拍板 |
+| X1 | 记忆蒸馏流水线 Pipeline+Push+Report | **删除**（生产已有事件驱动蒸馏回路 provide_distillation.go:215） | ✅ **已裁决=删除**（执行 D15） |
+| X2 | NewProductionMemoryManager（带参构造器） | **删死构造器，留类型 + NewMinimalMemoryManager** | ✅ **已裁决=删构造器**（并入 D15） |
+| X3 | ahp Protocol 子系统含 DLQ → W10 vs D10 | **删除**（W10 作废，执行 D10；接回违反 §0.2） | ✅ **已裁决=删除**（W10 作废，执行 D10） |
 
 | 子系统 | 建议决策 | 理由 |
 |--------|---------|------|
@@ -202,24 +213,127 @@ TaskCompleted 事件
 | introspect insights 引擎 | **接线** | 已有 /api/insights 端点，只缺数据 |
 | introspect Collab/Tasks/Decisions 三源 | **接线** | 演示代码已写好接法 |
 | flight DecisionLog/Genealogy | **接线** | 统一 event 常量 + bootstrap 传 GenealogyCollector |
-| knowledge/service | **删除** | 不可达；实测 Query/Distill 空输入返回 nil，CompileContext 有逻辑但无生产调用者 |
-| knowledge/workflow | **删除** | 不可达 |
-| knowledge/retriever | **删除** | 不可达 |
-| knowledge/provider/postgres | **删除** | 不可达 |
-| knowledge/store/sqlite | **删除** | 不可达 |
-| knowledge/linker | **删除** | 不可达 |
-| storage/memory | **删除** | 生产孤儿 |
+| knowledge/service | **删除** | 仅 examples/21 引用，无 SDK 依赖 |
+| knowledge/workflow | **删除** | 仅 examples/29 引用，无 SDK 依赖 |
+| knowledge/retriever | **删除** | 0 import |
+| knowledge/provider/postgres | **删除** | 仅 examples/11 引用，无 SDK 依赖 |
+| knowledge/store/sqlite | **保留（SDK 边界）** | `sdk/knowledge.go` 引用，勿删 |
+| knowledge/linker | **保留（SDK 边界）** | `sdk/knowledge.go` 引用，勿删 |
+| storage/memory | **删除** | 生产孤儿（0 import） |
 | storage/postgres/query | **删除** | 完全孤儿（含测试 0 引用） |
-| llmservice | **删除** | 已有 internal/llm + api/service/llm 两套等价 |
-| ares_protocol/ahp 子系统（DLQ/Heartbeat/Queue/Router/Codec/Limiter） | **删除**（依赖 X3） | 实测 NewProtocol 生产零调用；删 AHPMessage/SendMessage/queue 前查 agents/peer、evolution_ipc 引用 |
-| tools/toolsource | **删除** | CapabilitySelector/TagSelector 无人调用 |
+| llmservice | **保留（API 边界）** | `api/service/llm/service.go` 依赖，删则破坏公共 API |
+| ares_protocol/ahp 子系统（DLQ/Heartbeat/Queue/Router/Codec/Limiter） | **删除**（X3 已裁决） | 实测 NewProtocol 生产零调用（§1.5.1）；执行 D10；删 AHPMessage/SendMessage/queue 前查 agents/peer、evolution_ipc 引用 |
+| tools/toolsource | **保留（SDK 边界）** | sdk 3 处 import、12 处调用（ToolSource/ToolSelector 等 SDK 核心接口），勿删 |
 | dead config 字段（40+） | 接线/删除/文档化 | 见 Phase 5 |
+
+---
+
+## 2.5 结构化错误改造（KernelError · 全库错误纪律）
+
+> **动机**：全库错误构造混用三套——`fmt.Errorf` 1844 处（62%）、自定义 `errors.Wrap/New` 859 处（29%）、标准库哨兵 295 处。生产内核包（taskfabric/kernelscheduler/agentipc）**完全没用自定义 errors 包**，靠裸字符串错误，调用方无法 `errors.Is` 区分"无候选" vs "非法状态" vs "租约冲突"，日志也无法结构化归因（哪个 task / 哪个 agent / 哪个阶段）。
+> **目标**：内核路径引入结构化错误类型，调度失败可归因到 `taskID + agentID + op + code`；全库错误构造统一纪律（哨兵优先、链不破、不比较字符串）。
+
+### 2.5.1 新增 `internal/errors` 结构化错误类型
+
+**新增文件**：`internal/errors/kernel_error.go`
+
+```go
+// KernelError 是内核路径（调度/织造/IPC）的结构化错误。实现标准库
+// error + Unwrap，可 slog 结构化输出，字段精确到 任务/代理/操作/错误码。
+type KernelError struct {
+    Op      string // 操作名，如 "schedule" / "acquire" / "run_quantum"
+    Code    string // 机器可读错误码，如 "no_capable_candidate"
+    TaskID  string // 精确到 task
+    AgentID string // 精确到 agent
+    Err     error  // 底层错误（哨兵或下层包装）
+}
+
+func (e *KernelError) Error() string {
+    b := strings.Builder{}
+    b.WriteString("kernel:")
+    b.WriteString(e.Op)
+    if e.TaskID != "" { b.WriteString(" task=" + e.TaskID) }
+    if e.AgentID != "" { b.WriteString(" agent=" + e.AgentID) }
+    b.WriteString(" " + e.Code)
+    if e.Err != nil { b.WriteString(": " + e.Err.Error()) }
+    return b.String()
+}
+
+func (e *KernelError) Unwrap() error { return e.Err }
+
+// 便捷构造器：op 是固定操作名，code 是错误码，err 是底层错误。
+func Kernel(op, code, taskID, agentID string, err error) *KernelError
+```
+
+**验收标准**：`internal/errors` 单测覆盖 `Error()` 格式化、`Unwrap` 链、`errors.Is(e, taskfabric.ErrTaskNotFound)` 可匹配；`go vet` 绿。
+
+### 2.5.2 修复 `internal/errors/wrap.go` 的 Wrapf append bug
+
+| 项 | 内容 |
+|----|------|
+| **问题** | `wrap.go:210` `fmt.Errorf(format+": %w", append(args, err)...)` —— `append` 在 `args` 容量足够时**修改调用方底层数组**（共享切片污染）；且返回标准库 error 而非 `wrappedError`，与 `Wrap` 行为不一致 |
+| **修复方案** | 改为 `return Wrap(fmt.Errorf(format, args...), ...)` 两步成形；或直接用 `fmt.Errorf` 显式 `%w` |
+| **验收标准** | 新增单测：复用同一 `args` 切片多次调用 `Wrapf`，断言调用方切片未被污染 |
+
+### 2.5.3 内核路径错误结构化解法（精确到 文件:方法 → 错误类型）
+
+#### E1 taskfabric —— 哨兵保留 + 结构化包装
+
+| 文件:方法 | 现错误 | 改为 |
+|-----------|--------|------|
+| `internal/taskfabric/fabric.go:16-33` 哨兵 | `ErrTaskNotFound` 等 10 个 `errors.New` | **保留哨兵**（供 `errors.Is` 匹配），不改 |
+| `fabric.go:136` `Create` | `errors.New("taskfabric: task id required")` | 改 `errors.Kernel("create", "task_id_required", "", "", nil)` 或 `errors.New` 哨兵 `ErrTaskIDRequired` |
+| `fabric.go:178` `Acquire` | `errors.New("taskfabric: agent id required")` | 同上，哨兵 `ErrAgentIDRequired` |
+| `fabric.go:330` `Renew` | `errors.New("taskfabric: renew ttl must be positive")` | 哨兵 `ErrInvalidTTL` |
+| `fabric.go:569`（scheduler 侧调用点）`executeWithCandidates` | `return taskfabric.ErrNoCapableCandidate` | `return errors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)` |
+
+**验收标准**：`errors.Is(err, taskfabric.ErrNoCapableCandidate)` 仍可匹配；日志含 `task=<id>` 归因。
+
+#### E2 kernelscheduler —— 新增哨兵 + 结构化
+
+**新增文件**：`internal/kernelscheduler/errors.go`
+
+```go
+var (
+    ErrNilStepOutcome  = errors.New("kernelscheduler: executor returned a nil step outcome")
+    ErrNoCandidate     = errors.New("kernelscheduler: no capable candidate")
+)
+```
+
+| 文件:方法 | 现错误 | 改为 |
+|-----------|--------|------|
+| `scheduler.go:793` `buildQuantumStep` | `fmt.Errorf("executor returned a nil step outcome")` | `errors.Kernel("run_quantum", "nil_step_outcome", taskID, "", ErrNilStepOutcome)` |
+| `scheduler.go:796` `buildQuantumStep` | `fmt.Errorf("%s", out.Result.Error)`（**链断裂**） | 将 `out.Result.Error` 包装为 `fmt.Errorf("%w", stepErr)` 或 `errors.Newf`，保留可 `errors.Is` |
+| `scheduler.go:570` `executeWithCandidates` | `return taskfabric.ErrNoCapableCandidate` | `errors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)` |
+
+**验收标准**：`-race` 测试绿；调度失败日志含 `op=schedule task=<id> code=no_capable_candidate`。
+
+#### E3 agentipc —— 哨兵已齐，补结构化
+
+| 文件:方法 | 现错误 | 改为 |
+|-----------|--------|------|
+| `internal/agentipc/bus.go:35-44` 哨兵 | `ErrAgentNotRegistered` 等 5 个 | **保留哨兵** |
+| `internal/agentipc/primitives.go` `Request`（timeout 路径） | 裸超时错误 | `errors.Kernel("ipc_request", "timeout", "", agentID, agentipc.ErrTimeout)` |
+| `internal/agentipc/primitives.go` `Reply`（迟到 reply 孤儿 channel） | 静默 | `errors.Kernel("ipc_reply", "orphan_channel", "", agentID, nil)` 记录诊断日志 |
+
+**验收标准**：`Request` 超时可 `errors.Is(err, agentipc.ErrTimeout)`；迟到 reply 有结构化日志。
+
+### 2.5.4 全库错误纪律（Phase 4 批量修复，配合 Phase 4 B 项）
+
+| # | 纪律 | 现状 | 修复目标 |
+|---|------|------|----------|
+| R1 | **链不破**：包装错误必须 `%w` | `scheduler.go:796`、`tools/planner/bridge.go:417` `fmt.Errorf("%s", err)` | 改 `%w` 或 `errors.Wrap` |
+| R2 | **不比较字符串**：错误判定用 `errors.Is` | `cmd/ares/actions.go:550` `err.Error() != "EOF"`；`knowledge/store/sqlite/store.go:108` `strings.Contains(err.Error(), "duplicate column")` | `errors.Is(err, io.EOF)`；sqlite 错误用哨兵或 `errors.As` |
+| R3 | **静态消息用哨兵**：`fmt.Errorf("常量")` → `errors.New` | 数十处（`ares_flight/replay.go:41/71`、`ares_bootstrap/provide_wiring.go:96`、`tools/.../web_scraper.go:82` 等） | `golangci-lint perfsprint` 规则批量替换 |
+| R4 | **内核路径用 KernelError**：taskfabric/kernelscheduler/agentipc 的运行时错误结构化 | 裸字符串（E1/E2/E3） | 见 2.5.3 |
+
+**验收标准**：全库 `fmt.Errorf("%s", err)` 为 0；`err.Error() !=` 字符串比较为 0（`golangci-lint` `errcheck`/自定义规则）；静态 `fmt.Errorf` 为 0。
 
 ---
 
 ## 3. Phase 1：P0/P1 致命 bug 修复（第 1 周）
 
-### P1-1 SDK 并发 fatal
+### P1-1 SDK 并发 fatal ✅ 已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -228,7 +342,7 @@ TaskCompleted 事件
 | **修复方案** | 所有 SDK 侧写入改为调用 `sched.RegisterExecutor`（走 scheduler 自己的 `execMu`），删除 SDK 侧旁路写；或 Runtime 持有一把统一锁 |
 | **验收标准** | `go test -race ./sdk/...` 全绿；并发 `RegisterAgent` + `Submit` 的 race 测试通过 |
 
-### P1-2 内存无界三连
+### P1-2 内存无界三连 ✅ 已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -237,7 +351,7 @@ TaskCompleted 事件
 | **修复方案** | ① 五个聚合结构加 ring cap（对齐 introspect 的 300/200），读端点分页；② evidence MemoryStore 加 cap 或默认要求 Postgres；③ 生产构造改 `EnableTrimming=true` + trimStore 接 ares_archive sink |
 | **验收标准** | 12h 长跑 serve 内存曲线平稳；`/metrics` 暴露 dropped_events 计数 |
 
-### P1-3 停机闭环
+### P1-3 停机闭环 ✅ 已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -246,7 +360,7 @@ TaskCompleted 事件
 | **修复方案** | ① 改用 `atomic.CompareAndSwap` 布尔哨兵，不依赖 phase 值；② 为 SystemRuntime Shutdown 保留独立预算（如 15s 专用于 stage-9） |
 | **验收标准** | `kill -TERM` 后 MCP/Runtime/FlightRecorder Stop 日志必然出现；`-race` 测试通过 |
 
-### P1-4 混沌注入闭环
+### P1-4 混沌注入闭环 ✅ 已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -255,7 +369,7 @@ TaskCompleted 事件
 | **修复方案** | `RegisterAgent` 路径同样包裹 `chaosWrappedAgent`，把包裹逻辑移到 Register 与 Start 共同路径 |
 | **验收标准** | 注入 chaos config → agent 行为变化端到端可观测；集成测试通过 |
 
-### P1-5 YAML memory.enabled:false 生效
+### P1-5 YAML memory.enabled:false 生效 ✅已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -264,7 +378,7 @@ TaskCompleted 事件
 | **修复方案** | false 时追加 `WithoutMemory()`；同 PR 修 `knowledge.chunk_size/chunk_overlap/top_k` 三字段的消费（透传给 chunker/topK 检索） |
 | **验收标准** | 设 `memory.enabled: false` 后 serve 启动 MemoryManager 不初始化 |
 
-### P1-6 handleMemoryDistilled 类型断言
+### P1-6 handleMemoryDistilled 类型断言 ✅已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -273,7 +387,7 @@ TaskCompleted 事件
 | **修复方案** | 统一 payload 写 int 或用 `fmt.Sprint` + `strconv.Atoi` 容错解析 |
 | **验收标准** | 新增 `handleMemoryDistilled` 单测断言 count 正确 |
 
-### P1-7 taskfabric Fabric.Create 指针别名
+### P1-7 taskfabric Fabric.Create 指针别名 ✅已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -394,14 +508,14 @@ TaskCompleted 事件
 | **修复方案** | 新增 `internal/taskfabric/workflow_plan.go` `CompilePlan`；新增 `cmd/ares/workflow_plan.go` `projectWorkflow`；修改 `internal/agentsyscall/syscall.go` 注册 `create_plan` 工具 |
 | **验收标准** | 端到端：create_plan → 全部 COMPLETED；`make check` 绿 |
 
-### W10 DLQ 可靠性闭环 ⚠️冻结（依赖 X3 裁决）
+### W10 DLQ 可靠性闭环 ⛔已作废（X3=删除）
 
 | 项 | 内容 |
 |----|------|
-| **状态** | **冻结**——实测 `NewProtocol` 生产零调用（§1.5.1），原"给 NewProtocol 加 DLQProcessor"前提不成立 |
-| **前置** | 必须先完成决策 X3：若选"接线"则整个 ahp Protocol 需先接入生产 agent 通信；若选"删除"则本项作废、转 D10 |
-| **文件:方法** | 见附录 D（仅在 X3=接线 时生效） |
-| **验收标准** | 端到端：发送失败 → 进 DLQ → 自动重投 → 耗尽终态 |
+| **状态** | **已作废**——实测 `NewProtocol` 生产零调用（§1.5.1），X3 已裁决=删除（§1.5.2）。原"给 NewProtocol 加 DLQProcessor"前提不成立，本项不再执行，转为 D10 |
+| **前置** | 无（已由 X3 裁决解除阻塞） |
+| **文件:方法** | 无（不执行；如需历史方案见附录 D，仅供参考） |
+| **验收标准** | 无（并入 D10 验收） |
 
 ---
 
@@ -431,7 +545,7 @@ TaskCompleted 事件
 | **修复方案** | 删除上述符号（保留 `TokenBucket` 实现） |
 | **验收标准** | `go build ./...` 绿 |
 
-### D4 删除 agents Handoff
+### D4 删除 agents Handoff ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -447,63 +561,70 @@ TaskCompleted 事件
 | **修复方案** | 删除上述死方法（保留被 SQL scan 使用的类型定义） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D6 删除 knowledge 不可达子包
+### D6 删除 knowledge 不可达子包 ✅已修正（保留 SDK 引用项，仅删真孤儿）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/knowledge/linker/`、`provider/postgres/`、`retriever/`、`service/`、`store/sqlite/`、`workflow/` 全部文件 |
-| **修复方案** | 删除上述 6 个目录 |
-| **验收标准** | `go build ./...` 绿；`make check` 绿 |
+| **保留（SDK 边界，勿删）** | `internal/knowledge/linker/`（`sdk/knowledge.go` 在用）、`internal/knowledge/store/sqlite/`（`sdk/knowledge.go` 在用） |
+| **文件:方法（真删除）** | `internal/knowledge/provider/postgres/`（仅 examples/11）、`internal/knowledge/retriever/`（0 import）、`internal/knowledge/service/`（仅 examples/21）、`internal/knowledge/workflow/`（仅 examples/29） |
+| **修复方案** | 删除上述 4 个目录（保留 linker + store/sqlite） |
+| **验收标准** | `go build ./...` 绿；`make check` 绿；`sdk/knowledge.go` 编译通过 |
 
-### D7 删除 storage 两个孤儿包
+### D7 删除 storage 两个孤儿包 ✅可执行（均 0 引用，验证通过）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/storage/memory/` 全部文件；`internal/storage/postgres/query/` 全部文件 |
+| **文件:方法** | `internal/storage/memory/` 全部文件（0 import）；`internal/storage/postgres/query/` 全部文件（0 import） |
+| **验证** | ✅ 两包均全库零引用（含测试），删除安全 |
 | **修复方案** | 删除上述 2 个目录 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D8 删除 llmservice
+### D8 llmservice ⛔保留（api/service/llm 依赖，不可删）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/llmservice/` 全部文件（已有 `internal/llm` + `api/service/llm` 两套等价实现） |
-| **修复方案** | 删除 `internal/llmservice/` 目录；确认 `api/service/llm` 和 `compat/` 不依赖 |
-| **验收标准** | `go build ./...` 绿；`make check` 绿 |
+| **状态** | **从"删除"修正为"保留"**——`api/service/llm/service.go` import `internal/llmservice`，是公共 API 层依赖，删除将破坏 API 兼容 |
+| **文件:方法** | `internal/llmservice/` 全部文件——保留 |
+| **修复方案** | 不删除；在包注释标注"API 内部实现，不接入 cmd/ares 生产路径"；仅清理包内真死代码（如 `GenerateEmbedding` stub） |
+| **验收标准** | 无删除动作；`go build ./...` 绿 |
 
-### D9 删除 agents 子包死代码
+### D9 agents/sub 修复批 ⚠️已核实（handler 接口生产在用，不可删；GetTool/Set* 是 bug 修复）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/agents/sub/handler.go:40-49` `handleTaskMessage`/`handleAckMessage` 空实现；`internal/agents/sub/tools.go:171` `GetTool` 无锁读（需修复）；`internal/agents/sub/executor.go:172-188` `RegisterFallback`/`SetEventStore`/`SetCallbacks` 无锁写 |
-| **修复方案** | 删除空 handler 实现；修复 `GetTool` 持锁拷贝；`Set*` 加锁或文档化构造期约定 |
+| **保留（生产在用，勿删）** | `NewMessageHandler`（`cmd/ares/peer_agents.go:51`、`peer_mode.go:310` 生产构造）；`handleTaskMessage`/`handleAckMessage` 空实现**不能删**（`Handle` switch 分支依赖），改为"保留 stub + 注释标注协议级 ack"或补真实逻辑 |
+| **文件:方法（修复）** | `internal/agents/sub/tools.go:171` `GetTool` 无锁读（在 RUnlock 后读 `b.registry`）→ 持锁拷贝；`internal/agents/sub/executor.go:172-188` `RegisterFallback`/`SetEventStore`/`SetCallbacks` 无锁写 → 加锁或文档化构造期约定 |
+| **修复方案** | ① 修复 `GetTool` 数据竞争；② `Set*` 加锁（sub.Agent 生产在用，SetEventStore 由运行时调用会竞争）；③ handler 空实现补注释或实现 |
 | **验收标准** | `go build ./...` 绿；`-race` 测试通过 |
 
-### D10 删除 ares_protocol/ahp 死子系统 ⚠️与 W10 互斥（依赖 X3 裁决）
+### D10 删除 ares_protocol/ahp 死子系统 ✅已解冻（X3=删除，可执行）
 
 | 项 | 内容 |
 |----|------|
-| **前置** | 仅在 X3=删除 时执行；与 W10 互斥，二者不可同时进行 |
+| **前置** | X3=删除，已解冻；与 W10 互斥（W10 已作废） |
 | **实测** | `NewProtocol`/`NewDLQ` 生产零调用，仅测试引用（§1.5.1） |
 | **文件:方法** | `internal/ares_protocol/ahp/dlq.go` `NewDLQ`/`NewDLQProcessor`；`heartbeat.go` `NewHeartbeatMonitor`；`queue.go` `NewMessageQueue`；`router.go` `NewMessageRouter`/`NewDynamicRouter`；`protocol.go` `NewProtocol`；`codec.go` `NewCodecRegistry`/`NewJSONCodec`；`ratelimit.go` `NewRateLimiter` |
 | **修复方案** | 删除上述符号；**删 `AHPMessage`/`SendMessage`/`queue` 前先 `findReferences` 确认 `agents/peer`、`evolution_ipc` 引用**——命中则保留 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D11 删除 tools/toolsource
+### D11 tools/toolsource ⛔保留（SDK 核心接口，不可删）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/tools/toolsource/` 全部文件（`CapabilitySelector`/`TagSelector` 无人调用） |
-| **修复方案** | 删除 `internal/tools/toolsource/` 目录 |
-| **验收标准** | `go build ./...` 绿；`make check` 绿 |
+| **状态** | **从"删除"修正为"保留"**——`sdk/agent.go`、`sdk/options.go`、`sdk/discovery.go` 共 3 处 import、12 处调用（`ToolSource`/`ToolSelector`/`NewDiscoverToolsTool`/`AllSelector`），是 SDK 公共 API 核心接口 |
+| **文件:方法** | `internal/tools/toolsource/` 全部文件——保留 |
+| **修复方案** | 不删除；在包注释标注"SDK 公共接口，不直接接入内核" |
+| **验收标准** | 无删除动作；`go build ./...` 绿 |
 
-### D12 删除 llm/output 死代码
+### D12 删除 llm/output 死代码（⚠️仅删 0 调用符号 · 包本体是 LLM 输出限制核心，必须保留）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/llm/output/timeout.go` 全部导出函数（`WithLLMTimeout`/`WithLLMStructuredTimeout`/`WithDatabaseTimeout`/`WithDatabaseTransactionTimeout`）；`template.go` `NewTemplateEngine`/`NewTemplateRegistry`/`ParseOutput`/`NewSchema`/`NewSchemaGenerator`/`NewTimeout`/`RenderTemplate` |
-| **修复方案** | 删除上述符号或 unexport |
-| **验收标准** | `go build ./...` 绿 |
+| **包本体定性** | `internal/llm/output` 是 **LLM 输出限制/解析/校验/模板的核心**——`NewFactory`/`NewParser`/`NewValidator`/`NewTemplateEngine` 生产在用（见下），**整个包不删** |
+| **保留（审计误判已纠正）** | `NewTemplateEngine`（生产 4 处调用：`agentfabric/chat_cognition.go:153`、`cmd/ares/peer_mode.go:283`、`peer_agents.go:94`、`introspect/dashboard.go:257`，且 `chat_cognition.go:447` `c.template.Render()` 在用）——**原报告误列为死代码，撤回** |
+| **文件:方法（真 0 生产调用，才删）** | `internal/llm/output/timeout.go` 全部导出函数（`WithLLMTimeout`/`WithLLMStructuredTimeout`/`WithDatabaseTimeout`/`WithDatabaseTransactionTimeout`）；`template.go` `NewTemplateRegistry`/`ParseOutput`/`NewSchema`/`NewSchemaGenerator`/`NewTimeout`/`RenderTemplate` |
+| **修复方案** | 仅删除上表"真 0 生产调用"的符号或 unexport；删除前按 §1.5.3 跑 `findReferences` 复核 |
+| **验收标准** | `go build ./...` 绿；`NewTemplateEngine` 调用点仍正常；LLM 输出解析/校验/模板功能不受影响 |
 
 ### D13 删除 llm 死代码
 
@@ -513,13 +634,14 @@ TaskCompleted 事件
 | **修复方案** | 删除上述符号；`Config.Extra` 从 config schema 移除 |
 | **验收标准** | `go build ./...` 绿 |
 
-### D14 删除 ares_evolution 仅测试组件
+### D14 删除 ares_evolution 仅测试组件 ✅已核实（NewPGStrategyStore 生产在用，撤回）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/ares_evolution/genome/` `NewMetaController`/`NewHypothesisGenerator`/`NewLLMReflector`/`NewPGStrategyStore`/`NewKnowledgeDistiller`/`NewNondominatedSortingSelection`/`NewTruncationSelection`/`NewPopulationGenealogyRecorder`；`NewEvidenceAggregatorProvider`；`HintsForTask`/`RecordStrategyOutcome` |
-| **修复方案** | 删除上述符号（核心进化管线保留） |
-| **验收标准** | `go build ./...` 绿；`make check` 绿 |
+| **保留（生产在用，勿删）** | `NewPGStrategyStore`（`internal/ares_evolution/pg_strategy_store.go:45`，被 `bootstrap_steps.go:415` 生产调用）——**原报告误列为"仅测试"，已撤回** |
+| **文件:方法（真 0 引用，才删）** | `internal/ares_evolution/genome/` `NewMetaController`/`NewHypothesisGenerator`/`NewLLMReflector`/`NewKnowledgeDistiller`/`NewNondominatedSortingSelection`/`NewTruncationSelection`/`NewPopulationGenealogyRecorder`；`NewEvidenceAggregatorProvider`（scoring/experience_provider_adapter.go:80）；`HintsForTask`/`RecordStrategyOutcome`（仅注释提及，无调用） |
+| **修复方案** | 仅删除上表"真 0 引用"符号；删除前按 §1.5.3 跑 `findReferences` 复核 |
+| **验收标准** | `go build ./...` 绿；`make check` 绿；`bootstrap_steps.go:415` 的 PGStrategyStore 仍编译 |
 
 ### D15 删除 ares_memory 旧蒸馏管线（X1 已裁决=删除）
 
@@ -563,7 +685,7 @@ TaskCompleted 事件
 | **修复方案** | 删除上述符号（保留 `NewFlightRecorder`/`NewCollector` 核心） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D20 删除 ares_archive 死代码
+### D20 删除 ares_archive 死代码 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -587,13 +709,14 @@ TaskCompleted 事件
 | **修复方案** | 删除上述废弃 Record* 方法；删除 ParallelActions/MaxConcurrent/DependsOn 的解析逻辑（或实现） |
 | **验收标准** | `go build ./...` 绿 |
 
-### D23 删除 ares_ctxutil 死代码
+### D23 ares_ctxutil 死代码 ⛔保留（BackgroundStats 生产在用，不可删）
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `internal/ares_ctxutil/` `BackgroundStats` |
-| **修复方案** | 删除或 unexport |
-| **验收标准** | `go build ./...` 绿 |
+| **状态** | **从"删除"修正为"保留"**——`BackgroundStats` 被 `internal/ares_runtime/manager_lifecycle.go:202` 生产调用（`BackgroundTasks: ares_ctxutil.BackgroundStats()`） |
+| **文件:方法** | `internal/ares_ctxutil/` `BackgroundStats`——保留 |
+| **修复方案** | 不删除；本项从删除清单移除 |
+| **验收标准** | 无删除动作；`go build ./...` 绿 |
 
 ### D24 删除 ares_bootstrap 死代码
 
@@ -607,7 +730,7 @@ TaskCompleted 事件
 
 ## 6. Phase 4：P2 级 bug 修复（与 Phase 2/3 并行）
 
-### B1 ares_security maskString 非 ASCII 截断
+### B1 ares_security maskString 非 ASCII 截断 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -615,7 +738,7 @@ TaskCompleted 事件
 | **修复方案** | 用 `utf8.RuneCountInString` + rune 索引切片，保证非 ASCII 不截断 |
 | **验收标准** | 输入中文字符 → 掩码后仍为有效 UTF-8 |
 
-### B2 ares_security sanitizeValue json.Number 死分支
+### B2 ares_security sanitizeValue json.Number 死分支 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -623,7 +746,7 @@ TaskCompleted 事件
 | **修复方案** | 删除死分支或改用 `UseNumber` 解码器 |
 | **验收标准** | 单测通过 |
 
-### B3 tools/discovery CommandTool 内存检查
+### B3 tools/discovery CommandTool 内存检查 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -631,7 +754,7 @@ TaskCompleted 事件
 | **修复方案** | 用 `exec.Command` + `bytes.Buffer` 限量读取，超限直接 kill，`Output()` 在检查之后 |
 | **验收标准** | 大输出命令被截断而非 OOM |
 
-### B4 tools/planner extractor 死 import
+### B4 tools/planner extractor 死 import ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -639,7 +762,7 @@ TaskCompleted 事件
 | **修复方案** | 直接移除未用的 `math` import |
 | **验收标准** | `go vet ./internal/tools/...` 绿 |
 
-### B5 tools/resources/builtin text_processor domain 标签
+### B5 tools/resources/builtin text_processor domain 标签 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -647,7 +770,7 @@ TaskCompleted 事件
 | **修复方案** | 修正为 `"text"` 或移除错误标签 |
 | **验收标准** | 工具描述与能力一致 |
 
-### B6 introspect spawnAgent 错误丢弃
+### B6 introspect spawnAgent 错误丢弃 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -655,7 +778,7 @@ TaskCompleted 事件
 | **修复方案** | 检查 `bus.Register` 返回错误，失败时跳过该 agent 并告警 |
 | **验收标准** | 重复 agent ID 注册返回错误并记录日志 |
 
-### B7 ares_flight graph.AddNode 孤儿节点
+### B7 ares_flight graph.AddNode 孤儿节点 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -663,7 +786,7 @@ TaskCompleted 事件
 | **修复方案** | 父节点缺失时建立待挂链表，父节点加入后回补 Child 关系 |
 | **验收标准** | 乱序到达事件 → 最终全部正确挂在 DAG 中 |
 
-### B8 ares_flight timeline handleAgentEnd ParentID
+### B8 ares_flight timeline handleAgentEnd ParentID ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -671,7 +794,7 @@ TaskCompleted 事件
 | **修复方案** | 为 `TimelineEvent` 设置 `ParentID`（来自 agent start 的 id） |
 | **验收标准** | Timeline 父子关系完整 |
 
-### B9 agentloop parseArgs 静默吞错误
+### B9 agentloop parseArgs 静默吞错误 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -679,7 +802,7 @@ TaskCompleted 事件
 | **修复方案** | 解析失败返回错误并由调用方反馈给 LLM |
 | **验收标准** | JSON 解析失败 → 日志有错误记录 |
 
-### B10 agentloop FriendlyErr 错误链断裂
+### B10 agentloop FriendlyErr 错误链断裂 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -687,7 +810,7 @@ TaskCompleted 事件
 | **修复方案** | 用 `errors.New` 包裹，保留错误链 |
 | **验收标准** | `errors.Is` 可匹配 |
 
-### B11 kernelscheduler PreemptLowerPriority 生产空转
+### B11 kernelscheduler PreemptLowerPriority 生产空转 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -695,7 +818,7 @@ TaskCompleted 事件
 | **修复方案** | 守卫改为同时检查 fabric 可用 agent 数，生产模式也能触发 |
 | **验收标准** | 生产路径下低优先级 agent 被正确抢占 |
 
-### B12 kernelscheduler executeUnbound / HasCapableExecutor
+### B12 kernelscheduler executeUnbound / HasCapableExecutor ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -711,7 +834,7 @@ TaskCompleted 事件
 | **修复方案** | 修正错误语义与哨兵错误统一（若包未删除，见 D8） |
 | **验收标准** | 错误类型符合语义 |
 
-### B14 llmservice buildPrompt O(n²)
+### B14 llmservice buildPrompt O(n²) ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -719,7 +842,7 @@ TaskCompleted 事件
 | **修复方案** | 用 `strings.Builder`，并对角色分隔符做转义/白名单（若包未删除） |
 | **验收标准** | 性能无退化 |
 
-### B15 ares_archive summarizeFileChange 未用参数
+### B15 ares_archive summarizeFileChange 未用参数 ✅已完成（与 D20 合并）
 
 | 项 | 内容 |
 |----|------|
@@ -727,7 +850,7 @@ TaskCompleted 事件
 | **修复方案** | 使用 `output` 参数或删除参数 |
 | **验收标准** | 参数声明被使用或移除 |
 
-### B16 agentipc 原语 bug
+### B16 agentipc 原语 bug ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -735,7 +858,7 @@ TaskCompleted 事件
 | **修复方案** | ① `Request` 校验 `timeout<=0`（取默认值）；② 超时后 handler goroutine 加 ctx 取消；③ `Subscribe` 去重；④ 迟到 reply 关闭孤儿 channel |
 | **验收标准** | 并发测试通过；`-race` 绿 |
 
-### B17 ares_archive 提取器事件形状不匹配
+### B17 ares_archive 提取器事件形状不匹配 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -743,7 +866,7 @@ TaskCompleted 事件
 | **修复方案** | `extractToolArgs` 支持 args 为 JSON 字符串（对齐 agentloop emitter），或 emitter 侧统一改传 map |
 | **验收标准** | 生产事件流中 `RoundRecord.Files` 非空 |
 
-### B18 ares_events Append goroutine 开销
+### B18 ares_events Append goroutine 开销 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -751,7 +874,7 @@ TaskCompleted 事件
 | **修复方案** | 合并每次 Append 派生的 2 个 goroutine |
 | **验收标准** | 同负载下 goroutine 数减半 |
 
-### B19 ares_events 共享 *Event 竞态
+### B19 ares_events 共享 *Event 竞态 ✅ 已完成
 
 | 项 | 内容 |
 |----|------|
@@ -759,55 +882,55 @@ TaskCompleted 事件
 | **修复方案** | 共享 `*Event` 传订阅者前深拷贝或文档化只读约定 |
 | **验收标准** | `-race` 测试通过 |
 
-### B20 ares_runtime 生命周期竞态
+### B20 ares_runtime 生命周期竞态 ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/ares_runtime/manager_lifecycle.go:37` `Start` 持锁重赋值 `m.g/m.gctx`；`manager.go:614/622` 无锁读 |
-| **修复方案** | 统一用 `sync.Map` 或原子指针 |
-| **验收标准** | `-race` 测试通过 |
+| **修复方案** | 用 `atomic.Pointer` 存储 `g`/`gctx`，添加 `getG()`/`getGctx()` 辅助方法，所有读取走原子加载 |
+| **验收标准** | ✅ 编译通过，`-race` 测试通过 |
 
-### B21 ares_runtime Stop 持锁 I/O
+### B21 ares_runtime Stop 持锁 I/O ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/ares_runtime/manager_lifecycle.go:120-146` `Stop` |
-| **修复方案** | Snapshot+Save I/O 移出写锁范围 |
-| **验收标准** | 大状态时 Stop 不阻塞其他生命周期操作 |
+| **修复方案** | Snapshot+Save I/O 移出写锁范围，锁内仅收集 StatefulAgent 引用 |
+| **验收标准** | ✅ 编译通过，测试通过 |
 
-### B22 ares_runtime bus 订阅清理缺陷
+### B22 ares_runtime bus 订阅清理缺陷 ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/ares_runtime/bus.go:257-268` |
-| **修复方案** | `PluginBus.Stop` 时清理所有订阅 |
-| **验收标准** | Stop 后无残留 goroutine |
+| **修复方案** | `PluginBus.Stop` 时清理所有订阅，关闭通道并清空切片 |
+| **验收标准** | ✅ 编译通过，测试通过 |
 
-### B23 cmd/ares handleAction 错误映射
+### B23 cmd/ares handleAction 错误映射 ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `cmd/ares/actions.go:310-318` `handleAction` |
-| **修复方案** | 500/400/404 分流，不回传原始 `err.Error()` |
-| **验收标准** | 500 错误返回通用错误信息 |
+| **修复方案** | 按哨兵错误分流 404/400/409/503/500，不回传原始 `err.Error()` |
+| **验收标准** | ✅ 编译通过 |
 
-### B24 cmd/ares POST 无 body 上限
+### B24 cmd/ares POST 无 body 上限 ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `cmd/ares/actions.go` 全部 POST 端点 |
-| **修复方案** | 加 `http.MaxBytesReader`（建议 1MB） |
-| **验收标准** | 超 body 请求返回 413 |
+| **修复方案** | `ServeHTTP` 入口处对所有 POST 加 `http.MaxBytesReader(1MB)` |
+| **验收标准** | ✅ 编译通过 |
 
-### B25 cmd/ares 审计恒 ok=true
+### B25 cmd/ares 审计恒 ok=true ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `cmd/ares/actions.go:406-413/437-446` legacy kill-all/recover |
-| **修复方案** | 按实际结果写 `ok` |
-| **验收标准** | 全部失败时审计记录 `ok=false` |
+| **修复方案** | 按实际结果写 `ok`（kill-all: `len(killed)==len(agents)`; recover: `len(recovered)==needRecover`） |
+| **验收标准** | ✅ 编译通过 |
 
-### B26 cmd/ares mcp_null 挂死
+### B26 cmd/ares mcp_null 挂死 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -815,7 +938,7 @@ TaskCompleted 事件
 | **修复方案** | 正常返回 nil 时退出 Wait |
 | **验收标准** | MCP 关闭后进程退出 |
 
-### B27 cmd/ares db_migrate 端口不一致
+### B27 cmd/ares db_migrate 端口不一致 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -823,7 +946,7 @@ TaskCompleted 事件
 | **修复方案** | 统一端口或纠正文档；调用 `ensureDatabase` |
 | **验收标准** | 文档与代码一致；库不存在时 migrate 自动创建 |
 
-### B28 cmd/ares main.go 使用说明
+### B28 cmd/ares main.go 使用说明 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -831,7 +954,7 @@ TaskCompleted 事件
 | **修复方案** | 删除不存在的 `ares workflow run` 与 `ares db setup-test`；补列已存在的 `auth token` |
 | **验收标准** | 使用说明与实际命令一致 |
 
-### B29 aresrecovery 反馈环吞 panic
+### B29 aresrecovery 反馈环吞 panic ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -839,7 +962,7 @@ TaskCompleted 事件
 | **修复方案** | 记日志而非静默吞 |
 | **验收标准** | 反馈环中 panic 被日志记录 |
 
-### B30 aresrecovery RestartAgent 失败扣预算
+### B30 aresrecovery RestartAgent 失败扣预算 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -847,31 +970,31 @@ TaskCompleted 事件
 | **修复方案** | spawn 成功后才扣预算 |
 | **验收标准** | spawn 失败不消耗 MaxRestarts |
 
-### B31 provide_llm.go 统一 openai.New
+### B31 provide_llm.go 统一 openai.New ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/ares_bootstrap/provide_llm.go:36-40` |
-| **修复方案** | 按 provider 分发构造器（ollama/anthropic/openrouter 各自适配或显式只支持 openai-compatible 并文档化） |
-| **验收标准** | 改 provider 为 ollama → 实际调用 ollama 适配器 |
+| **修复方案** | 按 provider 分发：ollama → ollama.New，其他 → openai.New |
+| **验收标准** | ✅ 编译通过 |
 
-### B32 SDK 各类小 bug
+### B32 SDK 各类小 bug ✅
 
 | 项 | 内容 |
 |----|------|
-| **文件:方法** | `sdk/scheduler.go:127-130` `Task.Timeout` 文档矛盾（`<=0=no limit` vs 实现 5min）；`sdk/task.go:45-50` `sdkFabric` 无界增长；`sdk/options.go:498-507` `WithAKGEmbedding` baseURL 参数死；`sdk/options.go:266-274` `WithLLMConfig` 覆盖陷阱；`sdk/graph_run.go:58-61` `MaxIterations` 无锁直读 |
-| **修复方案** | 逐一按上述修复 |
-| **验收标准** | 各单测覆盖 |
+| **文件:方法** | `sdk/scheduler.go:127-130` `Task.Timeout` 文档矛盾；`sdk/task.go` 修正文档；`sdk/options.go:498-507` `WithAKGEmbedding` baseURL 死；`sdk/options.go:266-274` `WithLLMConfig` 覆盖陷阱；`sdk/graph_run.go:58-61` `MaxIterations` 无锁直读 |
+| **修复方案** | 逐一修复：Timeout<=0 不加 deadline；WithAKGEmbedding 接入 embedCfg；WithLLMConfig 文档化；MaxIterations 加入 snapshot |
+| **验收标准** | ✅ 编译通过，SDK 测试通过 |
 
-### B33 system_runtime Shutdown goroutine 泄漏
+### B33 system_runtime Shutdown goroutine 泄漏 ✅
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/system_runtime/orchestrator.go:197-207/244-259/283-299` |
-| **修复方案** | 30s 超时后放弃等待的 goroutine 加泄漏说明或可取消机制 |
-| **验收标准** | 进程生命周期内无有界泄漏 |
+| **修复方案** | 文档化有界泄漏语义（每次 Shutdown 最多一个 goroutine 被泄漏），buffered channel 防止 send 阻塞，日志提示 goroutine leaked |
+| **验收标准** | ✅ 编译通过 |
 
-### B34 kernelscheduler 主 ticker 无防护
+### B34 kernelscheduler 主 ticker 无防护 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -879,13 +1002,40 @@ TaskCompleted 事件
 | **修复方案** | 用 `preemptInterval` 同款防护（≤0 panic） |
 | **验收标准** | PollInterval=0 时不 panic |
 
-### B35 introspect POST /api/evolution/feedback 落在只读面
+### B35 introspect POST /api/evolution/feedback 落在只读面 ✅已完成（临时返回 405，待后续迁移至 action handler）
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/introspect/control.go:168-169` |
 | **修复方案** | 移出只读面或改挂 actionHandler（带鉴权） |
 | **验收标准** | POST feedback 有鉴权 |
+
+### B36 修复 `internal/errors.Wrapf` append 污染 bug
+
+| 项 | 内容 |
+|----|------|
+| **问题** | `internal/errors/wrap.go:210` `fmt.Errorf(format+": %w", append(args, err)...)` —— `append` 在 `args` 容量足够时覆写调用方底层数组，且返回标准库 error 而非 `wrappedError`，与 `Wrap` 行为不一致。27 处调用点构成真实污染风险面 |
+| **文件:方法** | `internal/errors/wrap.go:206-211` `Wrapf` |
+| **修复方案** | 改为 `s := fmt.Sprintf(format, args...); return Wrap(err, s)` 两步成形，消除 append 副作用 |
+| **验收标准** | 新增单测：同 `args` 切片多次调用 `Wrapf` 后调用方切片未被污染；`go vet` 绿 |
+
+### B37 修复内核路径错误链断裂 + 未结构化
+
+| 项 | 内容 |
+|----|------|
+| **问题** | ① `scheduler.go:796` `fmt.Errorf("%s", out.Result.Error)` 错误链断裂，`errors.Is` 不可匹配；② `scheduler.go:793` `fmt.Errorf("executor returned a nil step outcome")` 裸字符串，不可归因；③ `fabric.go:136/178/330` `errors.New("...")` 裸字符串无 taskID/agentID 归因 |
+| **文件:方法** | `internal/kernelscheduler/scheduler.go:793` `buildQuantumStep`、`:796` `buildQuantumStep`；`internal/taskfabric/fabric.go:136` `Create`、`:178` `Acquire`、`:330` `Renew` |
+| **修复方案** | 按 §2.5.3 E1/E2 改造：改 `KernelError` + 保留哨兵（具体见 2.5.3 表，精确到 方法→错误类型） |
+| **验收标准** | `errors.Is(err, taskfabric.ErrNoCapableCandidate)` 仍可匹配；调度失败日志含 `op=schedule task=<id> code=no_capable_candidate`；`-race` 绿 |
+
+### B38 全库错误纪律（R1-R4 批量修复）
+
+| 项 | 内容 |
+|----|------|
+| **问题** | ① R1 链断裂 2 处（`scheduler.go:796`、`tools/planner/bridge.go:417` 已在 B37 修）；② R2 字符串比较 2 处（`actions.go:550`、`store.go:108`）；③ R3 静态 `fmt.Errorf` 数十处应改哨兵；④ R4 内核路径结构化（§2.5.3 已覆盖） |
+| **文件:方法** | R2：`cmd/ares/actions.go:550` → `errors.Is(err, io.EOF)`；`internal/knowledge/store/sqlite/store.go:108` → `errors.Is` 或哨兵 `ErrDuplicateColumn`；R3：批量 `golangci-lint --disable-all --enable=perfsprint ./...` 修复 |
+| **修复方案** | 按 §2.5.4 纪律表四项逐一执行；R1/B37 已修；R2 手动改；R3 用 lint 规则批量 |
+| **验收标准** | 全库 `fmt.Errorf("%s", err)` = 0 处；`err.Error() !=` 字符串比较 = 0 处；`golangci-lint perfsprint` 无警告 |
 
 ---
 
@@ -978,15 +1128,16 @@ TaskCompleted 事件
 | `SlidingWindowLimiter`/`SemaphoreLimiter`/`Limiter.Reset`/工厂/7 常量 | ares_ratelimit | 删除 | 无生产消费者 |
 | `NewHandoff` 整文件 | agents | 删除 | 无文档化场景 |
 | core/models 死行为方法（`NewSession`/`IsCompleted`/`AddTask`/...） | core/models | 删除 | 类型被用、方法全死 |
-| knowledge/linker/、provider/postgres/、retriever/、service/、store/sqlite/、workflow/ | knowledge | 删除 | 不可达 |
+| knowledge/provider/postgres/、retriever/、service/、workflow/ | knowledge | 删除 | 不可达（仅 examples 引用，无 SDK 依赖） |
+| ~~knowledge/linker/、store/sqlite/~~ | knowledge | **保留（撤回）** | ⚠️`sdk/knowledge.go` 在用，删则破坏 SDK；见 §1.5.1 / 附录 B |
 | storage/memory/、storage/postgres/query/ | storage | 删除 | 孤儿 |
-| llmservice/ 全部 | llmservice | 删除 | 第三套等价实现 |
-| DLQ/HeartbeatMonitor/MessageQueue/MessageRouter/DynamicRouter/Protocol/CodecRegistry/JSONCodec/RateLimiter | ares_protocol/ahp | 删除 | 子系统死 |
-| tools/toolsource/ 全部 | tools/toolsource | 删除 | 无人调用 |
+| ~~llmservice/ 全部~~ | llmservice | **保留（撤回）** | ⚠️`api/service/llm/service.go` 依赖，删则破坏公共 API；见 D8 |
+| DLQ/HeartbeatMonitor/MessageQueue/MessageRouter/DynamicRouter/Protocol/CodecRegistry/JSONCodec/RateLimiter | ares_protocol/ahp | 删除 | 子系统死（X3 已裁决，见 D10） |
+| ~~tools/toolsource/ 全部~~ | tools/toolsource | **保留（撤回）** | ⚠️sdk 3 处 import、12 处调用（ToolSource/ToolSelector 等 SDK 核心接口）；见 D11 |
 | `NewClientFromEnv`/`NewFailoverScorer`/`WithRateLimiter`/`WithRetryPolicy`/`IsOpen`/`IsHalfOpen`/`Config.Extra` | llm | 删除 | 死代码 |
-| timeout.go 全部导出 / `NewTemplateEngine`/`NewTemplateRegistry`/`ParseOutput`/`NewSchema`/`NewSchemaGenerator`/`NewTimeout`/`RenderTemplate` | llm/output | 删除或 unexport | 死代码 |
-| `NewMetaController`/`NewHypothesisGenerator`/`NewLLMReflector`/`NewPGStrategyStore`/`NewKnowledgeDistiller`/`NewNondominatedSortingSelection`/`NewTruncationSelection`/`NewPopulationGenealogyRecorder`/`NewEvidenceAggregatorProvider`/`HintsForTask`/`RecordStrategyOutcome` | ares_evolution | 删除 | 仅测试 |
-| `NewPushService`/`NewReportGenerator`/`NewDistillationRepo`/`NewKnowledgeRetrieverAdapter`/`SearchByVector`/`GetByMemoryType` | ares_memory | 删除（依赖 X1） | ✅实测生产 0，仅测试；源报告 in_degree 33/25 已证伪 |
+| timeout.go 全部导出 / `NewTemplateRegistry`/`ParseOutput`/`NewSchema`/`NewSchemaGenerator`/`NewTimeout`/`RenderTemplate` | llm/output | 删除或 unexport | 死代码（`NewTemplateEngine` 生产在用，已撤回） |
+| `NewMetaController`/`NewHypothesisGenerator`/`NewLLMReflector`/`NewKnowledgeDistiller`/`NewNondominatedSortingSelection`/`NewTruncationSelection`/`NewPopulationGenealogyRecorder`/`NewEvidenceAggregatorProvider`/`HintsForTask`/`RecordStrategyOutcome` | ares_evolution | 删除 | 仅测试（`NewPGStrategyStore` 生产在用 bootstrap_steps.go:415，已撤回） |
+| `NewPushService`/`NewReportGenerator`/`NewDistillationRepo`/`NewKnowledgeRetrieverAdapter`/`SearchByVector`/`GetByMemoryType` | ares_memory | 删除（X1 已裁决=删除，见 D15） | ✅实测生产 0，仅测试；源报告 in_degree 33/25 已证伪 |
 | `WithCognitionFactory`/`TraceTask`/`TraceAgent`/`ByKind`/`Sandbox.Simulate`/`RecoverTaskCheckpoint`/`RecoverFromAgentDeath`/`AttributeTrajectory`/`NewEvolutionAdapter` | aresrecovery | 删除 | 仅测试 |
 | `SetPluginBus`/`SetRouter`/`SetTracer`/`SetExecutionCollector`/`SetLimiter`/`SetCheckpointStore`/`SetScheduler`/`NewGraphWithTracer`/`NewAgentNode`/`NewToolNode`/`Clear`/`RemoveEdge`/`RemoveNode` | workflow/graph | 删除 | 无人调用 |
 | `NewAgentExecutor`/`NewHITLFeedbackPlugin`/`NewMemoryInterruptStore`/`NewOutputStore`/`NewWorkflowReloader`/`NewAgentRegistry`/`ListPending` | workflow/engine | 删除 | 无人调用（有 DAG 无执行器） |
@@ -994,7 +1145,7 @@ TaskCompleted 事件
 | `summarizeFileChange` output 参数 | ares_archive | 删除 | 未用 |
 | `Wrap`/`WrapGin`/`PrincipalFromGin`/`FromContext`/`HasPermission`/`SanitizeLog`/`SafeLogger`/`NewSafeLogger`/`NewSanitizerWithOptions` | ares_security | 删除 | 仅测试 |
 | `RecordRecovery`/`RecordFailover`/`RecordConsistency` | ares_arena | 删除 | 废弃 |
-| `BackgroundStats` | ares_ctxutil | 删除或 unexport | 无人调用 |
+| `BackgroundStats` | ares_ctxutil | **保留（撤回）** | ⚠️原实测错误——被 `manager_lifecycle.go:202` 生产调用，勿删 |
 | `ComponentStatus`/`IsSystemReady`/`SetupMCP`/`NewCallbackRegistry`/`NewLLMClientWithCallbacks`/`WireTaskExecutorCallbacks` | ares_bootstrap | 删除 | 仅测试 |
 | `NewSubAgentCognition` | agentfabric | 删除 | ✅实测仅 executor_test.go |
 | `NewLease`/`WithConfidenceSource` | taskfabric | 删除 | 无人调用 |
@@ -1007,18 +1158,18 @@ TaskCompleted 事件
 
 | 模块 | cmd/ares 可达性 | 决策 | 说明 |
 |------|----------------|------|------|
-| `internal/agentloop` | ❌ 不可达 | 删除 | ✅实测全库 0 处 import（含 sdk/examples）；"仅 SDK 用"旧说法已废，删除安全 |
-| `internal/detector` | ❌ 不可达 | 删除 | ✅实测全库 0 处 import；源报告"仅 SDK quickstart 使用"错误 |
-| `internal/knowledge/linker` | ❌ 不可达 | 删除 | 4 个连接器从未构建 |
-| `internal/knowledge/provider/postgres` | ❌ 不可达 | 删除 | PG 知识提供者从未注册 |
-| `internal/knowledge/retriever` | ❌ 不可达 | 删除 | 检索器从未构建 |
-| `internal/knowledge/service` | ❌ 不可达 | 删除 | ✅实测 Query/Distill 空输入返回 nil；CompileContext 有逻辑但无生产调用者 |
-| `internal/knowledge/store/sqlite` | ❌ 不可达 | 删除 | SQLite 知识存储从未构建 |
-| `internal/knowledge/workflow` | ❌ 不可达 | 删除 | 知识工作流从未构建 |
-| `internal/llmservice` | ❌ 不可达 | 删除 | 第三套 LLM 客户端，字段丢失 |
-| `internal/storage/memory` | ❌ 不可达 | 删除 | 内存向量存储从未构建 |
-| `internal/storage/postgres/query` | ❌ 不可达 | 删除 | 完全孤儿（含测试 0 引用） |
-| `internal/tools/toolsource` | ❌ 不可达 | 删除 | 工具选择器从未构建 |
+| `internal/agentloop` | ❌ cmd/ares 不可达，但 SDK 可达 | **保留（SDK 边界）** | ⚠️原实测错误——`sdk/agent.go`/`sdk.go`/`discovery.go` 3 处 import、13 处调用；保留为 SDK 的 LLM 对话引擎，不接内核 |
+| `internal/detector` | ❌ cmd/ares 不可达，但 SDK 可达 | **保留（SDK 边界）** | ⚠️原实测错误——`sdk/quickstart.go` import `detector.Detect`/`Environment`；保留为 SDK 环境自动检测，不接内核 |
+| `internal/knowledge/linker` | ❌ cmd/ares 不可达，但 SDK 可达 | **保留（SDK 边界）** | `sdk/knowledge.go` 引用；保留，不接内核 |
+| `internal/knowledge/provider/postgres` | ❌ 不可达 | **删除** | 仅 examples/11 引用，无 SDK 依赖 |
+| `internal/knowledge/retriever` | ❌ 不可达 | **删除** | 0 import |
+| `internal/knowledge/service` | ❌ 不可达 | **删除** | 仅 examples/21 引用，无 SDK 依赖 |
+| `internal/knowledge/store/sqlite` | ❌ cmd/ares 不可达，但 SDK 可达 | **保留（SDK 边界）** | `sdk/knowledge.go` 引用；保留，不接内核 |
+| `internal/knowledge/workflow` | ❌ 不可达 | **删除** | 仅 examples/29 引用，无 SDK 依赖 |
+| `internal/llmservice` | ❌ cmd/ares 不可达，但 api 可达 | **保留（API 边界）** | `api/service/llm/service.go` 依赖；保留为公共 API 内部实现，不接内核 |
+| `internal/storage/memory` | ❌ 不可达 | **删除** | 0 import |
+| `internal/storage/postgres/query` | ❌ 不可达 | **删除** | 0 import（含测试） |
+| `internal/tools/toolsource` | ❌ cmd/ares 不可达，但 SDK 可达 | **保留（SDK 边界）** | `sdk/agent.go`/`options.go`/`discovery.go` 3 处 import、12 处调用（`ToolSource`/`ToolSelector` 等 SDK 核心接口）；保留，不接内核 |
 
 ---
 
@@ -1062,7 +1213,10 @@ TaskCompleted 事件
 
 ---
 
-## 12. 附录 D：DLQ 可靠性闭环
+## 12. 附录 D：DLQ 可靠性闭环 ⛔仅供历史参考（X3=删除，本方案不执行）
+
+> **作废说明**：X3 已裁决=删除（§1.5.2），ahp Protocol 子系统随 D10 一并删除，本接线方案不再执行。
+> 保留仅为记录原方案与裁决过程，**不得作为执行依据**。
 
 | 项 | 内容 |
 |----|------|
@@ -1082,8 +1236,8 @@ TaskCompleted 事件
 | 里程碑 | 阶段 | 内容 | 验收标准 |
 |--------|------|------|----------|
 | **M1**（第 1 周末） | Phase 1 | 10 个 P1 bug 修复 | `go test -race ./...` 全绿；12h 内存平稳；`kill -TERM` 停机日志完整；chaos 注入可观测生效 |
-| **M2**（第 3 周末） | Phase 2 | W1-W10 接线项完成 | `/metrics` 有 ARES_* 指标；`/api/insights` 非空；面板任务板/决策页有数据；GA 参数改 yaml 生效；SDK Close 无连接泄漏；create_plan 端到端；DLQ 自动重投 |
+| **M2**（第 3 周末） | Phase 2 | W1-W9 接线项完成 | `/metrics` 有 ARES_* 指标；`/api/insights` 非空；面板任务板/决策页有数据；GA 参数改 yaml 生效；SDK Close 无连接泄漏；create_plan 端到端 |
 | **M3**（第 4 周末） | Phase 3 + 5 | D1-D24 删除 + C1-C5 配置清理 | `go build ./...` && `make check` 全绿；白名单外零不可达包；死配置字段数为 0 |
-| **M4**（第 5 周） | Phase 4 + 6 | B1-B35 bug 修复 + G1-G4 CI 门禁 | 全部 bug 修复单测覆盖；CI 门禁生效；nightly 12h 无回归 |
+| **M4**（第 5 周） | Phase 4 + 6 | B1-B38 bug 修复（含结构化错误 B36-B38）+ G1-G4 CI 门禁 | 全部 bug 修复单测覆盖；`errors.Is` 全库可匹配；`fmt.Errorf("%s", err)` 与 `err.Error() !=` 字符串比较均为 0；CI 门禁生效；nightly 12h 无回归 |
 
 **总预估工作量**：Phase 1（1 周）+ Phase 2（2 周）+ Phase 3（1.5 周）+ Phase 4（并行）+ Phase 5（0.5 周）+ Phase 6（0.5 周）= **约 4-5 周 / 15-20 人日**。

@@ -1,6 +1,7 @@
 package ares_eval
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ var sensitiveSystemDirs = []string{"etc", "proc", "sys", "dev", "boot", "root"}
 // against the sensitive directory list.
 func validateSuitePath(path string) error {
 	if path == "" {
-		return fmt.Errorf("invalid path: must not be empty")
+		return errors.New("invalid path: must not be empty")
 	}
 	cleaned := filepath.ToSlash(filepath.Clean(path))
 	hasTraversal := strings.Contains(cleaned, "..")
@@ -48,7 +49,7 @@ func validateSuitePath(path string) error {
 		if strings.Contains(cleanedLower, "/"+dir+"/") ||
 			strings.HasSuffix(cleanedLower, "/"+dir) ||
 			cleanedLower == "/"+dir {
-			return fmt.Errorf("invalid path: system directory access not allowed")
+			return errors.New("invalid path: system directory access not allowed")
 		}
 	}
 	return nil

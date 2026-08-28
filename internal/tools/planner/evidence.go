@@ -2,7 +2,7 @@ package planner
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"math"
 	"sort"
 	"time"
@@ -46,7 +46,7 @@ func (a *evidenceAggregator) Record(
 	errorClass string,
 ) error {
 	if toolName == "" {
-		return fmt.Errorf("planner: evidence tool name is empty")
+		return errors.New("planner: evidence tool name is empty")
 	}
 	if errorClass == "" && !success {
 		errorClass = "internal_error"

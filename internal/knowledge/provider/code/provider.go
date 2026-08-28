@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -118,10 +119,10 @@ type CodeProvider struct {
 // New creates a CodeProvider that scans rootDir for Go source files.
 func New(name, rootDir string) (*CodeProvider, error) {
 	if name == "" {
-		return nil, fmt.Errorf("provider name is required")
+		return nil, errors.New("provider name is required")
 	}
 	if rootDir == "" {
-		return nil, fmt.Errorf("root directory is required")
+		return nil, errors.New("root directory is required")
 	}
 	info, err := os.Stat(rootDir)
 	if err != nil {

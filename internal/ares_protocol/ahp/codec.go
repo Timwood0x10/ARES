@@ -2,7 +2,6 @@ package ahp
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -27,7 +26,7 @@ func NewJSONCodec() *JSONCodec {
 // Encode encodes a message to JSON bytes.
 func (c *JSONCodec) Encode(msg *AHPMessage) ([]byte, error) {
 	if msg == nil {
-		return nil, fmt.Errorf("nil message")
+		return nil, errors.New("nil message")
 	}
 	return json.Marshal(msg)
 }
@@ -48,7 +47,7 @@ func (c *JSONCodec) Decode(data []byte) (*AHPMessage, error) {
 // EncodeMultiple encodes multiple messages to JSON bytes.
 func (c *JSONCodec) EncodeMultiple(msgs []*AHPMessage) ([]byte, error) {
 	if msgs == nil {
-		return nil, fmt.Errorf("nil messages")
+		return nil, errors.New("nil messages")
 	}
 	return json.Marshal(msgs)
 }

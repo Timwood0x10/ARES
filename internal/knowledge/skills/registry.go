@@ -6,7 +6,7 @@
 package skills
 
 import (
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -48,7 +48,7 @@ func NewRegistry() *Registry {
 // Register adds or replaces a skill. Name must be non-empty.
 func (r *Registry) Register(s Skill) error {
 	if s.Name == "" {
-		return fmt.Errorf("skills: name must not be empty")
+		return errors.New("skills: name must not be empty")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

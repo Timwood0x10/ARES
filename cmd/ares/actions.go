@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -148,8 +149,15 @@ func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, 
 	return false
 }
 
+//nolint:gocyclo
 func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+
+	// B24: Limit request body on all POST endpoints to 1MB to prevent
+	// memory exhaustion from oversized payloads.
+	if r.Method == http.MethodPost && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+	}
 
 	// Agent lifecycle: POST /api/agents/:id/{kill,resume,retry}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/agents/") {
@@ -311,9 +319,26 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 	w.Header().Set("Content-Type", "application/json")
 	if err := fn(r.Context(), agentID); err != nil {
 		h.auditAction(action, agentID, princ, false)
-		w.WriteHeader(http.StatusNotFound)
+		// B23: Map error to proper HTTP status; don't leak raw err.Error().
+		status := http.StatusInternalServerError
+		msg := "internal server error"
+		switch {
+		case errors.Is(err, ares_runtime.ErrAgentNotFound):
+			status = http.StatusNotFound
+			msg = "agent not found"
+		case errors.Is(err, ares_runtime.ErrRuntimeStopped):
+			status = http.StatusServiceUnavailable
+			msg = "runtime is stopped"
+		case errors.Is(err, ares_runtime.ErrAgentAlreadyRegistered):
+			status = http.StatusConflict
+			msg = "agent already registered"
+		case errors.Is(err, ares_runtime.ErrNilAgent), errors.Is(err, ares_runtime.ErrNilFactory):
+			status = http.StatusBadRequest
+			msg = "invalid agent specification"
+		}
+		w.WriteHeader(status)
 		writeJSON(w, map[string]any{
-			"action": action, "agent": agentID, "error": err.Error(), "status": "error",
+			"action": action, "agent": agentID, "error": msg, "status": "error",
 		})
 		return
 	}
@@ -410,9 +435,10 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 				killed = append(killed, a.ID)
 			}
 		}
-		h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, true)
+		// B25: audit reflects whether ALL agents were stopped, not a blanket true.
+		h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, len(killed) == len(agents))
 		writeJSON(w, map[string]any{
-			"chaos": "kill-all", "killed": killed, "success": true,
+			"chaos": "kill-all", "killed": killed, "success": len(killed) == len(agents),
 		})
 	case "recover":
 		// Kernel semantics: what recovers is the TASK (durable intent), not
@@ -436,16 +462,20 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		}
 		agents := h.mgr.ListAgents()
 		recovered := make([]string, 0, len(agents))
+		needRecover := 0
 		for _, a := range agents {
 			if a.Status != "running" {
+				needRecover++
 				if err := h.mgr.RestartAgent(r.Context(), a.ID); err == nil {
 					recovered = append(recovered, a.ID)
 				}
 			}
 		}
-		h.auditAction("chaos-recover", strings.Join(recovered, ","), princ, true)
+		// B25: audit reflects whether ALL down agents were recovered, not a blanket true.
+		ok := needRecover == 0 || len(recovered) == needRecover
+		h.auditAction("chaos-recover", strings.Join(recovered, ","), princ, ok)
 		writeJSON(w, map[string]any{
-			"chaos": "recover", "recovered": recovered, "success": true,
+			"chaos": "recover", "recovered": recovered, "success": ok,
 		})
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -547,7 +577,7 @@ func (h *actionHandler) handleCallMCPTool(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	var args map[string]any
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&args); err != nil && err.Error() != "EOF" {
+		if err := json.NewDecoder(r.Body).Decode(&args); err != nil && !errors.Is(err, io.EOF) {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]any{"error": "invalid request body"})
 			return

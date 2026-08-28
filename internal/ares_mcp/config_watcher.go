@@ -3,6 +3,7 @@ package ares_mcp
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,10 +59,10 @@ type MCPConfigFile struct {
 // reacting to partial writes from editors.
 func NewMCPConfigWatcher(manager *MCPManager, configPath string) (*MCPConfigWatcher, error) {
 	if manager == nil {
-		return nil, fmt.Errorf("mcp manager is required")
+		return nil, errors.New("mcp manager is required")
 	}
 	if configPath == "" {
-		return nil, fmt.Errorf("config path is required")
+		return nil, errors.New("config path is required")
 	}
 
 	absPath, err := filepath.Abs(configPath)

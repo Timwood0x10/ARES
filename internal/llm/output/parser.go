@@ -475,7 +475,7 @@ func (p *Parser) extractJSONArray(output string) string {
 // It reuses extractJSON and fixJSONString for robust extraction.
 func (p *Parser) ParseStructured(output string, target interface{}) error {
 	if target == nil {
-		return fmt.Errorf("target must not be nil")
+		return errors.New("target must not be nil")
 	}
 
 	return p.ParseGeneric(output, target)

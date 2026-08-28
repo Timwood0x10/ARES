@@ -119,11 +119,11 @@ func NewProductionMemoryManager(
 	}
 
 	if dbPool == nil {
-		return nil, fmt.Errorf("database pool is required")
+		return nil, errors.New("database pool is required")
 	}
 
 	if embeddingClient == nil {
-		return nil, fmt.Errorf("embedding client is required")
+		return nil, errors.New("embedding client is required")
 	}
 
 	// Create repositories
@@ -246,7 +246,7 @@ func (m *ProductionMemoryManager) snapshotTuning() (sessionTTL time.Duration, ma
 // Returns error if tenant ID is invalid.
 func (m *ProductionMemoryManager) SetTenantID(tenantID string) error {
 	if tenantID == "" {
-		return fmt.Errorf("tenant ID cannot be empty")
+		return errors.New("tenant ID cannot be empty")
 	}
 
 	m.mu.Lock()
@@ -409,13 +409,13 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 // conversations table is for history tracking only, retrieval uses knowledge/experience tables.
 func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, role, content string) error {
 	if sessionID == "" {
-		return fmt.Errorf("session ID cannot be empty")
+		return errors.New("session ID cannot be empty")
 	}
 	if role == "" {
-		return fmt.Errorf("role cannot be empty")
+		return errors.New("role cannot be empty")
 	}
 	if content == "" {
-		return fmt.Errorf("content cannot be empty")
+		return errors.New("content cannot be empty")
 	}
 
 	// Tenant scope flows via explicit tenantID parameters on repository
@@ -516,10 +516,10 @@ func (m *ProductionMemoryManager) GetMessages(ctx context.Context, sessionID str
 // to the session. Structured fields are serialized into the metadata JSONB column.
 func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
 	if sessionID == "" {
-		return fmt.Errorf("session ID cannot be empty")
+		return errors.New("session ID cannot be empty")
 	}
 	if msg.Role == "" {
-		return fmt.Errorf("role cannot be empty")
+		return errors.New("role cannot be empty")
 	}
 
 	// Tenant scope flows via explicit tenantID parameters on repository

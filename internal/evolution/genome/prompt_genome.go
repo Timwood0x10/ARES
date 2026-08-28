@@ -2,6 +2,7 @@ package genome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -59,7 +60,7 @@ func (g *PromptGenome) Mutate(ctx context.Context, n int) ([]Genome, error) {
 		return nil, nil
 	}
 	if g.mutator == nil {
-		return nil, fmt.Errorf("prompt: no mutator configured")
+		return nil, errors.New("prompt: no mutator configured")
 	}
 
 	children, err := g.mutator.Mutate(ctx, g.strategy, n)

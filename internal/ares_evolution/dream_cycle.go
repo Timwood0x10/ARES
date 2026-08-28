@@ -234,7 +234,7 @@ func NewDreamCycle(
 	opts ...DreamCycleOption,
 ) (*DreamCycle, error) {
 	if mutator == nil {
-		return nil, fmt.Errorf("mutator is required")
+		return nil, errors.New("mutator is required")
 	}
 	// scheduler and tester may be nil at construction time and wired later
 	// via direct field assignment (e.g., in NewWiredEvolutionSystem).
@@ -816,7 +816,7 @@ func (dc *DreamCycle) findWinner(
 	taskType string,
 ) (*candidateResult, error) {
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("dream cycle: no candidates to evaluate")
+		return nil, errors.New("dream cycle: no candidates to evaluate")
 	}
 
 	// Stage 1: Quick reject — screen all candidates in parallel with small N.

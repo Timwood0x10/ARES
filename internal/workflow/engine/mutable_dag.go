@@ -629,6 +629,7 @@ func (m *MutableDAG) recalculateDegrees() {
 // consistency — no rollback logic is needed.
 //
 //nolint:gocyclo // Complex DAG node replacement with dependency updates
+//nolint:gocyclo
 func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Step) error {
 	if err := ctx.Err(); err != nil {
 		return err

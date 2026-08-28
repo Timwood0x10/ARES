@@ -3,6 +3,7 @@ package vector
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -82,7 +83,7 @@ func NewVectorProvider(store storage.VectorStore, cfg Config) (*VectorProvider, 
 		return nil, fmt.Errorf("vector provider %s: store is nil", cfg.Name)
 	}
 	if cfg.Name == "" {
-		return nil, fmt.Errorf("vector provider: name is required")
+		return nil, errors.New("vector provider: name is required")
 	}
 	if cfg.Collection == "" {
 		return nil, fmt.Errorf("vector provider %s: collection is required", cfg.Name)

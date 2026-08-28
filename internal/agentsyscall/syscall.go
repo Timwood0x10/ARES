@@ -2,6 +2,7 @@ package agentsyscall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -147,10 +148,10 @@ type SpawnAgentResult struct {
 // The LLM calls this via the tool binder; the Kernel enforces safety.
 func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAgentResult, error) {
 	if k.agents == nil {
-		return nil, fmt.Errorf("agentsyscall: agent fabric not wired")
+		return nil, errors.New("agentsyscall: agent fabric not wired")
 	}
 	if args.Capability == "" {
-		return nil, fmt.Errorf("agentsyscall: capability is required")
+		return nil, errors.New("agentsyscall: capability is required")
 	}
 
 	// Generate a unique agent ID when the LLM does not provide one.
@@ -242,10 +243,10 @@ type CreateTaskResult struct {
 // and execute it via the normal Schedule → Acquire → RunQuantum path.
 func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTaskResult, error) {
 	if k.fabric == nil {
-		return nil, fmt.Errorf("agentsyscall: task fabric not wired")
+		return nil, errors.New("agentsyscall: task fabric not wired")
 	}
 	if args.Capability == "" {
-		return nil, fmt.Errorf("agentsyscall: capability is required")
+		return nil, errors.New("agentsyscall: capability is required")
 	}
 
 	taskID := fmt.Sprintf("task-%s-%d", args.Capability, k.idSeq.Add(1))

@@ -3,6 +3,7 @@ package ares_skills
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,7 +53,7 @@ var httpClient = &http.Client{Timeout: 10 * time.Second}
 //   - error: wrapped fetch/decode error, or nil.
 func FetchHTTPManifest(ctx context.Context, src HTTPSource) ([]SkillIndexEntry, error) {
 	if src.URL == "" {
-		return nil, fmt.Errorf("ares_skills: http source needs url")
+		return nil, errors.New("ares_skills: http source needs url")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.URL, nil)
 	if err != nil {

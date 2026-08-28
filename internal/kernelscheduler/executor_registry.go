@@ -25,6 +25,37 @@ func (s *Scheduler) RegisterExecutor(agentID string, executor CapabilityExecutor
 	log.Printf("kernel scheduler: registered replacement executor %q", agentID)
 }
 
+// RegisterExecutorIfAbsent atomically registers executor under agentID only
+// when no executor is registered there yet, and reports whether it stored the
+// argument (true) or an existing one already occupied the slot (false),
+// returning the winning executor either way. It closes the check-then-act race
+// in the on-demand executor creation path (sdk ensureExecutor): two concurrent
+// Submits for the same unregistered capability would each LookupExecutor
+// (miss), build an agent, and double-write, silently discarding one. Doing the
+// check and the set under a single execMu write lock makes the first writer
+// win and the second reuse it.
+//
+// Args:
+//   - agentID: the capability/agent identity to register under.
+//   - executor: the candidate executor (must be non-nil).
+//
+// Returns:
+//   - CapabilityExecutor: the executor now occupying the slot (existing or new).
+//   - bool: true if the argument was stored, false if an existing one won.
+func (s *Scheduler) RegisterExecutorIfAbsent(agentID string, executor CapabilityExecutor) (CapabilityExecutor, bool) {
+	if agentID == "" || executor == nil {
+		return nil, false
+	}
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	if existing, ok := s.executors[agentID]; ok && existing != nil {
+		return existing, false
+	}
+	s.executors[agentID] = executor
+	log.Printf("kernel scheduler: registered executor %q (if-absent)", agentID)
+	return executor, true
+}
+
 // RegisterExecutorForTask registers an executor bound to exactly one task
 // (W1 recovery). The executor is only ever offered as a candidate for taskID
 // — execute() filters it out for every other READY task, so a replacement
@@ -111,7 +142,8 @@ func (s *Scheduler) HasCapableExecutor(taskID string) bool {
 		}
 		// C1: same single-source rule as executeUnbound — with the fabric
 		// wired, unbound static registrations are managed fabric agents.
-		if s.agents != nil && !s.isBoundToAnyTask(agentID) {
+		// (isBoundToAnyTask already checked above, so this is just s.agents != nil)
+		if s.agents != nil {
 			continue
 		}
 		cand := taskfabric.Candidate{

@@ -42,7 +42,7 @@ type AgentNode struct {
 // Returns new agent node or error.
 func NewAgentNode(agent base.Agent) (*AgentNode, error) {
 	if agent == nil {
-		return nil, fmt.Errorf("agent cannot be nil")
+		return nil, errors.New("agent cannot be nil")
 	}
 	return &AgentNode{agent: agent}, nil
 }
@@ -50,7 +50,7 @@ func NewAgentNode(agent base.Agent) (*AgentNode, error) {
 // Execute runs the agent node.
 func (n *AgentNode) Execute(ctx context.Context, state *State) error {
 	if n == nil || n.agent == nil {
-		return fmt.Errorf("agent node is not initialized")
+		return errors.New("agent node is not initialized")
 	}
 
 	input, exists := state.Get("input")
@@ -108,7 +108,7 @@ func (n *ToolNode) WithExecutionID(id string) *ToolNode {
 // Returns new tool node or error.
 func NewToolNode(tool core.Tool) (*ToolNode, error) {
 	if tool == nil {
-		return nil, fmt.Errorf("tool cannot be nil")
+		return nil, errors.New("tool cannot be nil")
 	}
 	return &ToolNode{tool: tool}, nil
 }
@@ -140,7 +140,7 @@ func (n *ToolNode) WithBridge(bridge interface {
 // The event payload includes correlation IDs for ReAct Runtime Trace.
 func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 	if n == nil || n.tool == nil {
-		return fmt.Errorf("tool node is not initialized")
+		return errors.New("tool node is not initialized")
 	}
 
 	startTime := time.Now()
@@ -245,10 +245,10 @@ type FuncNode struct {
 // Returns new function node or error.
 func NewFuncNode(id string, fn func(context.Context, *State) error) (*FuncNode, error) {
 	if id == "" {
-		return nil, fmt.Errorf("node id cannot be empty")
+		return nil, errors.New("node id cannot be empty")
 	}
 	if fn == nil {
-		return nil, fmt.Errorf("function cannot be nil")
+		return nil, errors.New("function cannot be nil")
 	}
 	return &FuncNode{id: id, fn: fn}, nil
 }
@@ -256,7 +256,7 @@ func NewFuncNode(id string, fn func(context.Context, *State) error) (*FuncNode, 
 // Execute runs the function node.
 func (n *FuncNode) Execute(ctx context.Context, state *State) error {
 	if n == nil || n.fn == nil {
-		return fmt.Errorf("function node is not initialized")
+		return errors.New("function node is not initialized")
 	}
 
 	err := n.fn(ctx, state)

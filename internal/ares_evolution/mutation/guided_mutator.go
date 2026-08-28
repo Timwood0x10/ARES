@@ -2,6 +2,7 @@ package mutation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -194,10 +195,10 @@ func NewExperienceGuidedMutator(
 	opts ...GuidedMutatorOption,
 ) (*ExperienceGuidedMutator, error) {
 	if base == nil {
-		return nil, fmt.Errorf("base mutator must not be nil")
+		return nil, errors.New("base mutator must not be nil")
 	}
 	if provider == nil {
-		return nil, fmt.Errorf("hint provider must not be nil")
+		return nil, errors.New("hint provider must not be nil")
 	}
 
 	m := &ExperienceGuidedMutator{

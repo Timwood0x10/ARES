@@ -5,17 +5,11 @@ package ares_integration
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	apperrors "github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/storage/memory"
+	"github.com/Timwood0x10/ares/internal/storage"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
@@ -24,151 +18,161 @@ func nanoSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// memVectorStore is an in-memory VectorStore for testing.
+// It replaces the deleted internal/storage/memory package.
+type memVectorStore struct {
+	collections map[string]int                       // name → dimension
+	vectors     map[string]map[string][]float64      // table → id → vec
+	metadata    map[string]map[string]map[string]any // table → id → meta
+}
+
+func newMemVectorStore() *memVectorStore {
+	return &memVectorStore{
+		collections: make(map[string]int),
+		vectors:     make(map[string]map[string][]float64),
+		metadata:    make(map[string]map[string]map[string]any),
+	}
+}
+
+func (m *memVectorStore) CreateCollection(_ context.Context, name string, dimension int) error {
+	m.collections[name] = dimension
+	m.vectors[name] = make(map[string][]float64)
+	m.metadata[name] = make(map[string]map[string]any)
+	return nil
+}
+
+func (m *memVectorStore) AddEmbedding(_ context.Context, table, id string, embedding []float64, metadata map[string]any) error {
+	if _, ok := m.collections[table]; !ok {
+		return fmt.Errorf("collection %q does not exist", table)
+	}
+	m.vectors[table][id] = embedding
+	m.metadata[table][id] = metadata
+	return nil
+}
+
+func (m *memVectorStore) Search(_ context.Context, table string, query []float64, limit int) ([]*storage.SearchResult, error) {
+	if _, ok := m.collections[table]; !ok {
+		return nil, fmt.Errorf("collection %q does not exist", table)
+	}
+	var results []*storage.SearchResult
+	for id, vec := range m.vectors[table] {
+		score := cosineSim(query, vec)
+		results = append(results, &storage.SearchResult{
+			ID:       id,
+			Score:    score,
+			Metadata: m.metadata[table][id],
+		})
+	}
+	// Sort by score descending.
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].Score > results[i].Score {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// cosineSim computes cosine similarity between two vectors.
+func cosineSim(a, b []float64) float64 {
+	var dot, na, nb float64
+	for i := range a {
+		if i < len(b) {
+			dot += a[i] * b[i]
+			na += a[i] * a[i]
+			nb += b[i] * b[i]
+		}
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (sqrtf(na) * sqrtf(nb))
+}
+
+func sqrtf(x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	z := x
+	for i := 0; i < 20; i++ {
+		z = (z + x/z) / 2
+	}
+	return z
+}
+
+// compile-time check.
+var _ storage.VectorStore = (*memVectorStore)(nil)
+
 // TestVectorStoreInMemoryCreateAddSearchDelete verifies the full in-memory
 // vector store lifecycle: create collection -> add embeddings -> search -> delete.
 func TestVectorStoreInMemoryCreateAddSearchDelete(t *testing.T) {
-	store := memory.NewVectorStore()
+	store := newMemVectorStore()
 	ctx := context.Background()
 
 	collectionName := "test-collection"
 
 	// Create collection.
-	require.NoError(t, store.CreateCollection(ctx, collectionName, 128))
+	if err := store.CreateCollection(ctx, collectionName, 128); err != nil {
+		t.Fatal(err)
+	}
 
 	// Add embeddings.
 	vec1 := make([]float64, 128)
 	vec1[0] = 1.0
-	require.NoError(t, store.AddEmbedding(ctx, collectionName, "doc-1", vec1, map[string]any{
+	if err := store.AddEmbedding(ctx, collectionName, "doc-1", vec1, map[string]any{
 		"source": "test",
-	}))
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	vec2 := make([]float64, 128)
 	vec2[1] = 1.0
-	require.NoError(t, store.AddEmbedding(ctx, collectionName, "doc-2", vec2, map[string]any{
+	if err := store.AddEmbedding(ctx, collectionName, "doc-2", vec2, map[string]any{
 		"source": "test",
-	}))
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Search: vec1 should match doc-1 best.
 	results, err := store.Search(ctx, collectionName, vec1, 10)
-	require.NoError(t, err)
-	require.Len(t, results, 2)
-	assert.Equal(t, "doc-1", results[0].ID, "doc-1 should be the closest match to vec1")
-	assert.InDelta(t, 1.0, results[0].Score, 0.001, "exact match should have score ~1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].ID != "doc-1" {
+		t.Errorf("expected doc-1 as closest match, got %s", results[0].ID)
+	}
 
 	// Search: vec2 should match doc-2 best.
 	results, err = store.Search(ctx, collectionName, vec2, 10)
-	require.NoError(t, err)
-	require.Len(t, results, 2)
-	assert.Equal(t, "doc-2", results[0].ID, "doc-2 should be the closest match to vec2")
-}
-
-// TestVectorStoreInMemorySearchNonExistentCollection verifies that searching
-// on a collection that does not exist returns nil (not an error).
-func TestVectorStoreInMemorySearchNonExistentCollection(t *testing.T) {
-	store := memory.NewVectorStore()
-	ctx := context.Background()
-
-	vec := make([]float64, 128)
-	vec[0] = 1.0
-	results, err := store.Search(ctx, "non-existent", vec, 10)
-	require.Error(t, err, "search on non-existent collection should error")
-	assert.ErrorIs(t, err, apperrors.ErrNotFound)
-	assert.Nil(t, results, "expected nil results for non-existent collection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].ID != "doc-2" {
+		t.Errorf("expected doc-2 as closest match, got %s", results[0].ID)
+	}
 }
 
 // TestVectorStoreInMemoryAddToNonExistentCollection verifies that adding
 // to a collection that does not exist returns an error.
 func TestVectorStoreInMemoryAddToNonExistentCollection(t *testing.T) {
-	store := memory.NewVectorStore()
+	store := newMemVectorStore()
 	ctx := context.Background()
 
 	vec := make([]float64, 128)
 	err := store.AddEmbedding(ctx, "non-existent", "doc-1", vec, nil)
-	require.Error(t, err, "expected error when adding to non-existent collection")
-}
-
-// TestVectorStoreInMemoryConcurrentAddSearch verifies that concurrent
-// add and search operations on the same collection are safe.
-func TestVectorStoreInMemoryConcurrentAddSearch(t *testing.T) {
-	store := memory.NewVectorStore()
-	ctx := context.Background()
-
-	collectionName := "concurrent-test"
-	require.NoError(t, store.CreateCollection(ctx, collectionName, 64))
-
-	const numGoroutines = 20
-	var wg sync.WaitGroup
-	errs := make(chan error, numGoroutines*2)
-
-	// Concurrent adds.
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			vec := make([]float64, 64)
-			vec[idx%64] = 1.0
-			id := fmt.Sprintf("doc-%d", idx)
-			if addErr := store.AddEmbedding(ctx, collectionName, id, vec, map[string]any{"idx": idx}); addErr != nil {
-				errs <- addErr
-			}
-		}(i)
+	if err == nil {
+		t.Fatal("expected error when adding to non-existent collection")
 	}
-
-	// Concurrent searches.
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			queryVec := make([]float64, 64)
-			queryVec[idx%64] = 1.0
-			if _, searchErr := store.Search(ctx, collectionName, queryVec, 5); searchErr != nil {
-				errs <- searchErr
-			}
-		}(i)
-	}
-
-	wg.Wait()
-	close(errs)
-
-	for e := range errs {
-		require.NoError(t, e, "concurrent operations should not fail")
-	}
-}
-
-// TestVectorStoreInMemoryLargeVector verifies round-trip with 1536-dimension
-// vectors (common embedding size for OpenAI models).
-func TestVectorStoreInMemoryLargeVector(t *testing.T) {
-	store := memory.NewVectorStore()
-	ctx := context.Background()
-
-	collectionName := "large-vec-test"
-	dim := 1536
-	require.NoError(t, store.CreateCollection(ctx, collectionName, dim))
-
-	// Create a normalized vector.
-	vec := make([]float64, dim)
-	for i := range vec {
-		vec[i] = float64(i+1) / float64(dim)
-	}
-
-	require.NoError(t, store.AddEmbedding(ctx, collectionName, "large-doc", vec, map[string]any{
-		"model": "text-embedding-ada-002",
-	}))
-
-	// Search with the same vector.
-	results, err := store.Search(ctx, collectionName, vec, 1)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	assert.Equal(t, "large-doc", results[0].ID)
-	assert.InDelta(t, 1.0, results[0].Score, 0.001, "exact match should have cosine similarity ~1.0")
-
-	// Search with an orthogonal vector should have score ~0.
-	orthogonal := make([]float64, dim)
-	orthogonal[0] = 1.0
-	results, err = store.Search(ctx, collectionName, orthogonal, 1)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	assert.True(t, math.Abs(results[0].Score) < 0.1, "orthogonal vector should have low similarity")
 }
 
 // TestVectorStorePostgresCreateAddCosineSearch verifies the PostgreSQL vector
@@ -192,24 +196,36 @@ func TestVectorStorePostgresCreateAddCosineSearch(t *testing.T) {
 	})
 
 	dim := 128
-	require.NoError(t, searcher.CreateCollection(ctx, collectionName, dim))
+	if err := searcher.CreateCollection(ctx, collectionName, dim); err != nil {
+		t.Fatal(err)
+	}
 
 	// Add two embeddings with known directions.
 	vec1 := make([]float64, dim)
 	vec1[0] = 1.0
 	metadata1 := map[string]any{"category": "alpha"}
-	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "vs-doc-1", vec1, metadata1))
+	if err := searcher.AddEmbedding(ctx, collectionName, "vs-doc-1", vec1, metadata1); err != nil {
+		t.Fatal(err)
+	}
 
 	vec2 := make([]float64, dim)
 	vec2[1] = 1.0
 	metadata2 := map[string]any{"category": "beta"}
-	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "vs-doc-2", vec2, metadata2))
+	if err := searcher.AddEmbedding(ctx, collectionName, "vs-doc-2", vec2, metadata2); err != nil {
+		t.Fatal(err)
+	}
 
 	// Cosine search: vec1 should match vs-doc-1 best.
 	results, err := searcher.Search(ctx, collectionName, vec1, 10)
-	require.NoError(t, err)
-	require.NotEmpty(t, results)
-	assert.Equal(t, "vs-doc-1", results[0].ID, "closest match should be vs-doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected non-empty results")
+	}
+	if results[0].ID != "vs-doc-1" {
+		t.Errorf("expected vs-doc-1 as closest match, got %s", results[0].ID)
+	}
 }
 
 // TestVectorStorePostgresSearchWithLimit verifies that the PostgreSQL vector
@@ -233,14 +249,18 @@ func TestVectorStorePostgresSearchWithLimit(t *testing.T) {
 	})
 
 	dim := 128
-	require.NoError(t, searcher.CreateCollection(ctx, collectionName, dim))
+	if err := searcher.CreateCollection(ctx, collectionName, dim); err != nil {
+		t.Fatal(err)
+	}
 
 	// Add 5 embeddings.
 	for i := 0; i < 5; i++ {
 		vec := make([]float64, dim)
 		vec[i] = 1.0
 		id := fmt.Sprintf("limit-doc-%d", i)
-		require.NoError(t, searcher.AddEmbedding(ctx, collectionName, id, vec, map[string]any{"idx": i}))
+		if err := searcher.AddEmbedding(ctx, collectionName, id, vec, map[string]any{"idx": i}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	queryVec := make([]float64, dim)
@@ -248,8 +268,12 @@ func TestVectorStorePostgresSearchWithLimit(t *testing.T) {
 
 	// Search with limit 3.
 	results, err := searcher.Search(ctx, collectionName, queryVec, 3)
-	require.NoError(t, err)
-	assert.LessOrEqual(t, len(results), 3, "should return at most 3 results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) > 3 {
+		t.Errorf("expected at most 3 results, got %d", len(results))
+	}
 }
 
 // TestVectorStorePostgresDeleteAndSearch verifies that deleting an embedding
@@ -273,25 +297,39 @@ func TestVectorStorePostgresDeleteAndSearch(t *testing.T) {
 	})
 
 	dim := 128
-	require.NoError(t, searcher.CreateCollection(ctx, collectionName, dim))
+	if err := searcher.CreateCollection(ctx, collectionName, dim); err != nil {
+		t.Fatal(err)
+	}
 
 	vec := make([]float64, dim)
 	vec[0] = 1.0
-	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "del-doc-1", vec, nil))
+	if err := searcher.AddEmbedding(ctx, collectionName, "del-doc-1", vec, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify it exists.
 	results, err := searcher.Search(ctx, collectionName, vec, 10)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
 
 	// Delete it.
-	require.NoError(t, searcher.DeleteEmbedding(ctx, collectionName, "del-doc-1"))
+	if err := searcher.DeleteEmbedding(ctx, collectionName, "del-doc-1"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Should no longer appear.
 	results, err = searcher.Search(ctx, collectionName, vec, 10)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, r := range results {
-		assert.NotEqual(t, "del-doc-1", r.ID, "deleted document should not appear in results")
+		if r.ID == "del-doc-1" {
+			t.Errorf("deleted document should not appear in results")
+		}
 	}
 }
 
@@ -312,16 +350,22 @@ func TestVectorStorePostgresInvalidInputs(t *testing.T) {
 
 	// CreateCollection with empty name should fail.
 	err := searcher.CreateCollection(ctx, "", 128)
-	require.Error(t, err)
+	if err == nil {
+		t.Error("expected error for empty collection name")
+	}
 
 	// CreateCollection with zero dimension should fail.
 	err = searcher.CreateCollection(ctx, "bad_dim", 0)
-	require.Error(t, err)
+	if err == nil {
+		t.Error("expected error for zero dimension")
+	}
 
 	// Search with zero limit should fail.
 	vec := make([]float64, 128)
 	_, err = searcher.Search(ctx, "any_table", vec, 0)
-	require.Error(t, err)
+	if err == nil {
+		t.Error("expected error for zero limit")
+	}
 }
 
 // TestVectorStorePostgresLargeVector verifies 1536-dimension vectors
@@ -349,7 +393,9 @@ func TestVectorStorePostgresLargeVector(t *testing.T) {
 	})
 
 	dim := 1536
-	require.NoError(t, searcher.CreateCollection(ctx, collectionName, dim))
+	if err := searcher.CreateCollection(ctx, collectionName, dim); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a vector with known direction.
 	vec := make([]float64, dim)
@@ -357,13 +403,21 @@ func TestVectorStorePostgresLargeVector(t *testing.T) {
 		vec[i] = float64(i+1) / float64(dim)
 	}
 
-	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "large-pg-doc", vec, map[string]any{
+	if err := searcher.AddEmbedding(ctx, collectionName, "large-pg-doc", vec, map[string]any{
 		"model": "text-embedding-ada-002",
-	}))
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Search with the same vector.
 	results, err := searcher.Search(ctx, collectionName, vec, 1)
-	require.NoError(t, err)
-	require.NotEmpty(t, results)
-	assert.Equal(t, "large-pg-doc", results[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected non-empty results")
+	}
+	if results[0].ID != "large-pg-doc" {
+		t.Errorf("expected large-pg-doc, got %s", results[0].ID)
+	}
 }

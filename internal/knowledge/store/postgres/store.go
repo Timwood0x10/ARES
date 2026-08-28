@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -16,7 +17,7 @@ import (
 
 var (
 	// ErrObjectNotFound is returned when a Get call finds no matching object.
-	ErrObjectNotFound = fmt.Errorf("object not found")
+	ErrObjectNotFound = errors.New("object not found")
 )
 
 // Store is a PostgreSQL-backed KnowledgeStore.
@@ -27,7 +28,7 @@ type Store struct {
 // New creates a new PostgreSQL KnowledgeStore with the given connection.
 func New(db *sql.DB) (*Store, error) {
 	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+		return nil, errors.New("db is nil")
 	}
 	s := &Store{db: db}
 	if err := s.initTables(context.Background()); err != nil {
@@ -89,7 +90,7 @@ func (s *Store) initTables(ctx context.Context) error {
 func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject) error {
 	for _, obj := range objects {
 		if obj.ID == "" {
-			return fmt.Errorf("knowledge object ID cannot be empty")
+			return errors.New("knowledge object ID cannot be empty")
 		}
 
 		metaJSON, _ := json.Marshal(obj.Metadata)
@@ -330,7 +331,7 @@ func scanRepresentation(row scanner) (*knowledge.Representation, error) {
 
 func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Representation) error {
 	if rep.ID == "" {
-		return fmt.Errorf("representation ID cannot be empty")
+		return errors.New("representation ID cannot be empty")
 	}
 	metaJSON, _ := json.Marshal(rep.Metadata)
 	_, err := s.db.ExecContext(ctx, `

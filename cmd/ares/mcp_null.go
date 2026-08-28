@@ -70,6 +70,10 @@ var mcpNullServeCmd = &cobra.Command{
 		if err := server.Serve(ctx); err != nil {
 			return fmt.Errorf("serve: %w", err)
 		}
+		// server.Serve returned nil (clean shutdown); cancel the signal
+		// context so sigEg.Wait() does not block forever waiting for a
+		// signal that will never arrive.
+		cancel()
 		if err := sigEg.Wait(); err != nil {
 			return fmt.Errorf("signal handler: %w", err)
 		}

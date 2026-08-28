@@ -4,6 +4,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -133,7 +134,7 @@ func WithScoringStats(stats map[string]int64, budgetUsage ...int) ReportOption {
 }
 
 // ErrNilSystem is returned when a nil WiredEvolutionSystem is passed to GenerateReport.
-var ErrNilSystem = fmt.Errorf("system must not be nil")
+var ErrNilSystem = errors.New("system must not be nil")
 
 // GenerateReport builds a data-driven evolution report from a wired system.
 // It collects real statistics from the population, genealogy, and optionally

@@ -3,7 +3,7 @@ package evolution
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/logger"
@@ -57,7 +57,7 @@ func (s *MemoryStrategyStore) GetActive(_ context.Context) (*Strategy, error) {
 //	error - non-nil if strategy is nil.
 func (s *MemoryStrategyStore) SetActive(ctx context.Context, strategy *Strategy) error {
 	if strategy == nil {
-		return fmt.Errorf("strategy must not be nil")
+		return errors.New("strategy must not be nil")
 	}
 
 	s.mu.Lock()

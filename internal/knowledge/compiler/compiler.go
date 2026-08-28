@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -61,7 +62,7 @@ func NewDefaultCompiler() *DefaultCompiler {
 // Compile converts the graph into the requested output formats.
 func (c *DefaultCompiler) Compile(_ context.Context, graph *knowledge.WorkingGraph, cfg CompileConfig) (*CompiledContext, error) {
 	if graph == nil {
-		return nil, fmt.Errorf("graph cannot be nil")
+		return nil, errors.New("graph cannot be nil")
 	}
 
 	formats := make(map[Format]string)

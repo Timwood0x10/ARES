@@ -233,7 +233,7 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 //	error - request or decode error.
 func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for OpenAI/OpenRouter chat")
+		return nil, errors.New("API key is required for OpenAI/OpenRouter chat")
 	}
 
 	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
@@ -320,7 +320,7 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in openai chat response")
+		return nil, errors.New("no choices in openai chat response")
 	}
 
 	choice := chatResp.Choices[0]
@@ -417,7 +417,7 @@ func buildOpenAIChatTools(tools []core.Tool) []map[string]any {
 //	error - request or decode error.
 func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for Anthropic chat")
+		return nil, errors.New("API key is required for Anthropic chat")
 	}
 
 	maxTokens := o.applyMaxTokens(c.config.MaxTokens)

@@ -237,6 +237,9 @@ type graphSnapshot struct {
 	conds          map[[2]string]func(map[string]any) bool
 	buildErr       error
 	timeout        time.Duration
+	// B32: maxIterations is snapshotted under RLock to prevent the data
+	// race when RunGraph reads it without holding the lock.
+	maxIterations int
 }
 
 // snapshot copies the current structure under RLock.
@@ -253,6 +256,7 @@ func (g *Graph) snapshot() graphSnapshot {
 		conds:          make(map[[2]string]func(map[string]any) bool),
 		buildErr:       g.buildErr,
 		timeout:        g.Timeout,
+		maxIterations:  g.MaxIterations,
 	}
 	for id, n := range g.nodes {
 		snap.nodes[id] = n

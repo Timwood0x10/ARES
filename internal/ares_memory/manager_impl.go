@@ -103,7 +103,7 @@ func (m *memoryManager) AcquireSessionLease(ctx context.Context, sessionID, owne
 	mgr := m.leaseMgr
 	m.mu.RUnlock()
 	if mgr == nil {
-		return lease.Lease{}, fmt.Errorf("memory: session leasing not configured")
+		return lease.Lease{}, errors.New("memory: session leasing not configured")
 	}
 	return mgr.Acquire(ctx, sessionID, owner, ttl)
 }
@@ -115,7 +115,7 @@ func (m *memoryManager) ReleaseSessionLease(ctx context.Context, sessionID, owne
 	mgr := m.leaseMgr
 	m.mu.RUnlock()
 	if mgr == nil {
-		return fmt.Errorf("memory: session leasing not configured")
+		return errors.New("memory: session leasing not configured")
 	}
 	return mgr.Release(ctx, sessionID, owner)
 }

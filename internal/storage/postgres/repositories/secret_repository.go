@@ -319,7 +319,7 @@ func (r *SecretRepository) decrypt(ciphertext []byte) ([]byte, error) {
 
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, errors.New("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
@@ -355,7 +355,7 @@ func (r *SecretRepository) decrypt(ciphertext []byte) ([]byte, error) {
 // Returns number of updated secrets or error if operation fails.
 func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKey []byte) (int64, error) {
 	if len(newKey) != 32 {
-		return 0, fmt.Errorf("new key must be 32 bytes for AES-256-GCM")
+		return 0, errors.New("new key must be 32 bytes for AES-256-GCM")
 	}
 
 	// Start transaction for atomic operation (per design standard)
@@ -522,11 +522,11 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []byte, format string) (int64, error) {
 	// Validate input
 	if len(data) == 0 {
-		return 0, fmt.Errorf("import data cannot be empty")
+		return 0, errors.New("import data cannot be empty")
 	}
 
 	if tenantID == "" {
-		return 0, fmt.Errorf("tenant ID cannot be empty")
+		return 0, errors.New("tenant ID cannot be empty")
 	}
 
 	// Use adapter layer to parse input format
@@ -544,7 +544,7 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	}
 
 	if len(items) == 0 {
-		return 0, fmt.Errorf("no secrets found in import data")
+		return 0, errors.New("no secrets found in import data")
 	}
 
 	// Start transaction for atomic import operation (per design standard)
@@ -730,7 +730,7 @@ func (r *SecretRepository) decryptSecret(ciphertext []byte) ([]byte, error) {
 
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, errors.New("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]

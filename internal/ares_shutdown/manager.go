@@ -2,8 +2,10 @@ package ares_shutdown
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -49,6 +51,11 @@ type Manager struct {
 	mu           sync.RWMutex
 	timeout      time.Duration
 	wg           sync.WaitGroup
+	// shutdownStarted is a CAS guard ensuring StartShutdown runs exactly
+	// once (P1-3: the old currentPhase != 0 guard was bypassed during
+	// PhasePreShutdown because PhasePreShutdown == 0 is iota's first
+	// value, so a second call during phase 1 could re-enter).
+	shutdownStarted atomic.Bool
 }
 
 // PhaseHandler handles a specific shutdown phase.
@@ -114,12 +121,13 @@ func (m *Manager) AddCallback(phase Phase, callback Callback) error {
 // Returns:
 // error - error if shutdown fails or is already in progress.
 func (m *Manager) StartShutdown(ctx context.Context) error {
-	m.mu.Lock()
-	if m.currentPhase != 0 {
-		m.mu.Unlock()
-		return fmt.Errorf("shutdown already in progress")
+	// P1-3: use a CAS boolean guard instead of checking currentPhase != 0.
+	// The old guard was bypassed during PhasePreShutdown because
+	// PhasePreShutdown == 0 (iota first value), so currentPhase was 0
+	// during phase 1 and a second call could re-enter.
+	if !m.shutdownStarted.CompareAndSwap(false, true) {
+		return errors.New("shutdown already in progress")
 	}
-	m.mu.Unlock()
 
 	// Execute phases in order
 	phases := []Phase{PhasePreShutdown, PhaseGraceful, PhaseForce, PhaseDone}
@@ -221,7 +229,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 		}
 
 		if len(errs) > 0 {
-			return fmt.Errorf("%d callback(s) failed during shutdown phase %s: %v", len(errs), phase, errs)
+			return stderrors.Join(errs...)
 		}
 
 		return nil
@@ -269,7 +277,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 			return fmt.Errorf("%d callback(s) panicked during shutdown phase %s", panicCount, phase)
 		}
 		if len(errs) > 0 {
-			return fmt.Errorf("%d callback(s) failed during shutdown phase %s: %v", len(errs), phase, errs)
+			return stderrors.Join(errs...)
 		}
 		return phaseCtx.Err()
 	}

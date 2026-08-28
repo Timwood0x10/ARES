@@ -401,10 +401,10 @@ CandidateVerifier / CandidatePipeline / Diagnoser / GAGenerator / ProfileStore /
 
 | 符号 | 判定 |
 |------|------|
-| NewFactory / CreateAdapter / NewParser / NewValidator / NewTemplate | ✅ serve_routine/dashboard/sub/agentfabric |
+| NewFactory / CreateAdapter / NewParser / NewValidator / **NewTemplateEngine** | ✅ serve_routine/dashboard/sub/agentfabric/chat_cognition/peer_mode/peer_agents（NewTemplateEngine 生产 4 处调用，原报告误判，已纠正） |
 | NewOpenAIAdapter/Ollama/OpenRouter | ✅ 工厂模式注册 |
 | **timeout.go 全部导出函数（WithLLMTimeout 等 5 个）** | ❌ 死代码 |
-| **NewTemplateEngine / NewTemplateRegistry / ParseOutput / NewSchema / NewSchemaGenerator / NewTimeout / RenderTemplate** | ❌ 死代码 |
+| **NewTemplateRegistry / ParseOutput / NewSchema / NewSchemaGenerator / NewTimeout / RenderTemplate** | ❌ 死代码 |
 
 ### ares_protocol/ahp ⚠️ 核心用，子系统死
 

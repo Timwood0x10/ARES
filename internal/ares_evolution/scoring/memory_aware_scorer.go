@@ -5,6 +5,7 @@ package scoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -222,7 +223,7 @@ type MemoryAwareScorer struct {
 //	error - non-nil if tiered scorer is nil or configuration is invalid.
 func NewMemoryAwareScorer(ts *TieredScorer, exp ExperienceProvider, cfg MemoryAwareScoringConfig) (*MemoryAwareScorer, error) {
 	if ts == nil {
-		return nil, fmt.Errorf("tiered scorer must not be nil")
+		return nil, errors.New("tiered scorer must not be nil")
 	}
 	if cfg.MemoryWeight < 0 {
 		return nil, fmt.Errorf("memory weight must be non-negative, got %f", cfg.MemoryWeight)
