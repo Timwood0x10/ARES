@@ -46,6 +46,12 @@ func (l *Loader) Load(id string) (string, error) {
 	if !ok {
 		return "", ErrSkillNotFound
 	}
+	// P1-8: Remote skills (from HTTP manifest) have a Path that is a URL.
+	// SKILL.md is not available locally; return a clear error instead of
+	// trying to read from CWD.
+	if strings.HasPrefix(entry.Path, "http://") || strings.HasPrefix(entry.Path, "https://") {
+		return "", fmt.Errorf("ares_skills: skill %s is remote (source: %s); body not available locally", id, entry.Path)
+	}
 	path := filepath.Join(entry.Path, "SKILL.md")
 	data, err := os.ReadFile(path) //nolint:gosec // skill path comes from the declared-source index
 	if err != nil {
@@ -80,6 +86,9 @@ func (l *Loader) ListReferences(id string) ([]string, error) {
 	if !ok {
 		return nil, ErrSkillNotFound
 	}
+	if strings.HasPrefix(entry.Path, "http://") || strings.HasPrefix(entry.Path, "https://") {
+		return nil, nil
+	}
 	refDir := filepath.Join(entry.Path, "references")
 	entries, err := os.ReadDir(refDir)
 	if err != nil {
@@ -110,6 +119,9 @@ func (l *Loader) LoadReference(id, name string) (string, error) {
 	entry, ok := l.index[id]
 	if !ok {
 		return "", ErrSkillNotFound
+	}
+	if strings.HasPrefix(entry.Path, "http://") || strings.HasPrefix(entry.Path, "https://") {
+		return "", fmt.Errorf("ares_skills: skill %s is remote; references not available locally", id)
 	}
 	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || name == ".." {
 		return "", fmt.Errorf("ares_skills: invalid reference name %q", name)

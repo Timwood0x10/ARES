@@ -3,7 +3,6 @@ package ares_shutdown
 
 import (
 	"context"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -75,68 +74,6 @@ func TestPhase(t *testing.T) {
 	})
 }
 
-func TestPhaseExecutor(t *testing.T) {
-	t.Run("create executor", func(t *testing.T) {
-		executor := NewPhaseExecutor(PhaseGraceful, 3)
-
-		if executor.Phase() != PhaseGraceful {
-			t.Errorf("expected graceful phase")
-		}
-		if executor.Retries() != 0 {
-			t.Errorf("expected 0 retries")
-		}
-	})
-
-	t.Run("state", func(t *testing.T) {
-		executor := NewPhaseExecutor(PhaseGraceful, 3)
-
-		if executor.State() != PhaseStatePending {
-			t.Errorf("expected pending state")
-		}
-	})
-}
-
-func TestSignalHandler(t *testing.T) {
-	t.Run("create signal handler", func(t *testing.T) {
-		manager := NewManager(10 * time.Second)
-		handler := NewSignalHandler(manager)
-
-		if handler == nil {
-			t.Errorf("handler should not be nil")
-		}
-	})
-
-	t.Run("start handler", func(t *testing.T) {
-		manager := NewManager(10 * time.Second)
-		handler := NewSignalHandler(manager)
-
-		err := handler.Start(t.Context())
-		if err != nil {
-			t.Errorf("start error: %v", err)
-		}
-
-		// Stop the handler
-		handler.Stop()
-	})
-
-	t.Run("add signal", func(t *testing.T) {
-		manager := NewManager(10 * time.Second)
-		handler := NewSignalHandler(manager)
-
-		// Add SIGTERM (available on all platforms)
-		handler.AddSignal(syscall.SIGTERM)
-		// Just verify no panic
-	})
-
-	t.Run("set context", func(t *testing.T) {
-		manager := NewManager(10 * time.Second)
-		handler := NewSignalHandler(manager)
-
-		ctx, cancel := context.WithCancel(t.Context())
-		handler.SetContext(ctx)
-		cancel()
-		// Just verify no panic
-	})
-}
+// D2: TestPhaseExecutor and TestSignalHandler removed (tested deleted components).
 
 // nolint: errcheck // Test code may ignore return values

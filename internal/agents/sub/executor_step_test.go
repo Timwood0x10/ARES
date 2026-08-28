@@ -8,6 +8,7 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	resources_core "github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -204,6 +205,37 @@ func (b *emptySchemasBinder) GetToolSchemas() []resources_core.ToolSchema {
 // executor must still call the Chat API (the tool loop degrades internally
 // when no schemas reach the model), instead of silently dropping to
 // text-only and starving plan_tasks of available_tools.
+// TestSubTaskResultEmit_ConcurrentEventStore is a data-race regression test for
+// the emitSubTaskResult read of e.agentID. emitSubTaskResult builds its payload
+// before calling emitEvent (which takes the read lock itself), so a direct,
+// unlocked e.agentID read would race with the write in SetEventStore. Run with
+// -race to tie the D9-style snapshot in emitSubTaskResult to a real detector.
+func TestSubTaskResultEmit_ConcurrentEventStore(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	e := newStepExecutor(t, &scriptedChatClient{rounds: []func(messages []*core.LLMMessage) *core.GenerateResponse{
+		func(messages []*core.LLMMessage) *core.GenerateResponse {
+			return &core.GenerateResponse{Content: `{"category":"general","item_id":"x","name":"R","description":"ok"}`}
+		},
+	}}, 3)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_, _ = e.Execute(t.Context(), &models.Task{TaskID: "t-concurrent", AgentType: models.AgentTypeTop})
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			e.SetEventStore(store, "sub-concurrent")
+		}
+	}()
+	wg.Wait()
+}
+
 func TestExecuteWithLLMSingle_UsesChatWhenToolsRegisteredButSchemasEmpty(t *testing.T) {
 	client := &scriptedChatClient{rounds: []func(messages []*core.LLMMessage) *core.GenerateResponse{
 		func(messages []*core.LLMMessage) *core.GenerateResponse {

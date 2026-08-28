@@ -52,31 +52,7 @@ func (p *UserProfile) Validate() error {
 	return nil
 }
 
-// HasStyle checks if user has the specified style tag.
-func (p *UserProfile) HasStyle(tag StyleTag) bool {
-	if p == nil {
-		return false
-	}
-	for _, s := range p.Style {
-		if s == tag {
-			return true
-		}
-	}
-	return false
-}
-
-// HasOccasion checks if user has the specified occasion.
-func (p *UserProfile) HasOccasion(occ Occasion) bool {
-	if p == nil {
-		return false
-	}
-	for _, o := range p.Occasions {
-		if o == occ {
-			return true
-		}
-	}
-	return false
-}
+// D5: HasStyle, HasOccasion removed as dead code (only tests referenced them).
 
 // UserFeedback represents user feedback on recommendations.
 type UserFeedback struct {
@@ -90,14 +66,4 @@ func (f *UserFeedback) IsValid() bool {
 	return f != nil && f.Rating >= 1 && f.Rating <= 5
 }
 
-// SetRating sets the rating with validation.
-func (f *UserFeedback) SetRating(rating int) bool {
-	if f == nil {
-		return false
-	}
-	if rating < 1 || rating > 5 {
-		return false
-	}
-	f.Rating = rating
-	return true
-}
+// D5: SetRating removed as dead code (only tests referenced it).

@@ -2,7 +2,6 @@ package ares_security
 
 import (
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,15 +67,9 @@ type SensitivePattern struct {
 
 // NewSanitizer creates a new sanitizer with default patterns.
 func NewSanitizer() *Sanitizer {
-	options := DefaultSanitizeOptions()
-	return NewSanitizerWithOptions(options)
-}
-
-// NewSanitizerWithOptions creates a new sanitizer with custom options.
-func NewSanitizerWithOptions(options SanitizeOptions) *Sanitizer {
 	return &Sanitizer{
 		patterns: defaultSensitivePatterns(),
-		options:  options,
+		options:  DefaultSanitizeOptions(),
 	}
 }
 
@@ -465,52 +458,4 @@ func maskString(s string, preserveLength int) string {
 	maskLength := length - preserveLength*2
 
 	return prefix + strings.Repeat(string('*'), maskLength) + suffix
-}
-
-// SanitizeLog sanitizes a log message, removing sensitive information.
-func SanitizeLog(message string) string {
-	sanitizer := NewSanitizer()
-	return sanitizer.Sanitize(message)
-}
-
-// SafeLogger wraps a logging function to automatically sanitize messages.
-type SafeLogger struct {
-	underlying func(string)
-	sanitizer  *Sanitizer
-}
-
-// NewSafeLogger creates a new safe logger.
-func NewSafeLogger(underlying func(string)) *SafeLogger {
-	return &SafeLogger{
-		underlying: underlying,
-		sanitizer:  NewSanitizer(),
-	}
-}
-
-// Log logs a message with sensitive information sanitized.
-func (l *SafeLogger) Log(message string) {
-	sanitized := l.sanitizer.Sanitize(message)
-	l.underlying(sanitized)
-}
-
-// Logf logs a formatted message with sensitive information sanitized.
-func (l *SafeLogger) Logf(format string, args ...interface{}) {
-	// Sanitize format string first to catch sensitive data in format
-	sanitizedFormat := l.sanitizer.Sanitize(format)
-
-	// Convert args to strings and sanitize them
-	sanitizedArgs := make([]interface{}, len(args))
-	for i, arg := range args {
-		if s, ok := arg.(string); ok {
-			sanitizedArgs[i] = l.sanitizer.Sanitize(s)
-		} else {
-			sanitizedArgs[i] = arg
-		}
-	}
-
-	// Format the message with sanitized format and args, then sanitize
-	// the final result to catch sensitive data that emerges only after
-	// format substitution (e.g., "api_key: sk-xxx" from Logf("api_key: %s", key)).
-	message := fmt.Sprintf(sanitizedFormat, sanitizedArgs...)
-	l.underlying(l.sanitizer.Sanitize(message))
 }

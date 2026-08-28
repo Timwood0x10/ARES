@@ -199,6 +199,10 @@ var arenaServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start arena HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// P1-9: Injector currently passes nil for both providers — all chaos
+		// injection APIs return ErrRuntimeNil/ErrDAGNil. To wire: construct
+		// a RuntimeProvider adapter from the kernel handle's runtime and a
+		// DAGProvider adapter from the live mutable DAG, then pass them here.
 		inj := arena.NewInjector(nil, nil)
 		// Share the evolution components' evidence store so chaos failures land
 		// in the same store the GA genomes consume for fitness evaluation.

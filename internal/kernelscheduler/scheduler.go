@@ -96,6 +96,11 @@ type Scheduler struct {
 	// in executeWithCandidates and read via DecisionsSnapshot — the panel
 	// explains WHY a task went to a particular agent.
 	decisions *DecisionRecorder
+	// quantumHook is the optional observational extension at the quantum
+	// boundary (see quantum_hook.go). Nil = no hook (backward compatible).
+	// Guarded by execMu alongside the executor registry so runtime
+	// registration races with the drain loop stay safe.
+	quantumHook QuantumHook
 }
 
 // noCandidateLogInterval throttles "no capable candidate" logs to one per
@@ -671,6 +676,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		return nil
 	}
 	s.tracker.Begin(winner)
+	// Quantum boundary hooks (observational): before the quantum runs and
+	// after it finalizes. See quantum_hook.go for the contract.
+	s.beforeQuantum(ctx, taskID, winner)
 	// Lease heartbeat: renew the winner's lease while the quantum runs so a
 	// long step (> TTL) is not requeued by lease expiry and executed a second
 	// time concurrently. The heartbeat goroutine is managed by an errgroup
@@ -736,6 +744,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta))
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	stopHeartbeat()
+	s.afterQuantum(ctx, taskID, winner, err)
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err)
 	slotReleased = true
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool

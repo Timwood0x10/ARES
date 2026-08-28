@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -301,37 +300,7 @@ func (c *Client) GetModel() string {
 	return ""
 }
 
-// NewClientFromEnv creates an LLM client from environment variables.
-func NewClientFromEnv() (*Client, error) {
-	config := &Config{
-		Provider: os.Getenv("LLM_PROVIDER"),
-		APIKey:   os.Getenv("LLM_API_KEY"),
-		BaseURL:  os.Getenv("LLM_BASE_URL"),
-		Model:    os.Getenv("LLM_MODEL"),
-	}
-
-	// Set defaults
-	if config.Provider == "" {
-		config.Provider = "ollama"
-	}
-	if config.BaseURL == "" {
-		if config.Provider == "openrouter" || config.Provider == "openai" {
-			config.BaseURL = DefaultOpenRouterBaseURL
-		} else {
-			config.BaseURL = DefaultOllamaBaseURL
-		}
-	}
-	if config.Model == "" {
-		if config.Provider == "ollama" {
-			config.Model = DefaultOllamaModel
-		} else {
-			config.Model = DefaultOpenRouterModel
-		}
-	}
-
-	return NewClient(config)
-}
-
+// D13: NewClientFromEnv removed (0 production calls — use NewClient with Config directly).
 // StreamChunk represents a single chunk in a streaming response.
 type StreamChunk struct {
 	Content string

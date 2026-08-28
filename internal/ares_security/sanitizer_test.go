@@ -21,25 +21,6 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
-func TestSanitizeLog(t *testing.T) {
-	result := SanitizeLog("password: secret123")
-	if strings.Contains(result, "secret123") {
-		t.Error("Expected password to be masked")
-	}
-}
-
-func TestSafeLogger(t *testing.T) {
-	var loggedMessages []string
-	logger := NewSafeLogger(func(msg string) {
-		loggedMessages = append(loggedMessages, msg)
-	})
-
-	logger.Log("User logged in with password secret123")
-	if strings.Contains(loggedMessages[0], "secret123") {
-		t.Error("Expected password to be masked")
-	}
-}
-
 func TestSanitizeMultipleSensitiveFields(t *testing.T) {
 	sanitizer := NewSanitizer()
 
@@ -102,11 +83,13 @@ func TestSanitizeCreditCard(t *testing.T) {
 }
 
 func TestSanitizeWithKeepLength(t *testing.T) {
-	options := SanitizeOptions{
-		KeepLength: true,
-		MaskChar:   '*',
+	sanitizer := &Sanitizer{
+		patterns: defaultSensitivePatterns(),
+		options: SanitizeOptions{
+			KeepLength: true,
+			MaskChar:   '*',
+		},
 	}
-	sanitizer := NewSanitizerWithOptions(options)
 
 	input := "api_key=sk-1234567890abcdef"
 	result := sanitizer.Sanitize(input)
@@ -144,14 +127,16 @@ func TestSanitizeNoSensitiveData(t *testing.T) {
 }
 
 func TestSanitizeWithOptions(t *testing.T) {
-	options := SanitizeOptions{
-		KeepLength: true,
-		MaskChar:   '#',
-		PreserveLengthFor: map[SensitiveFieldType]int{
-			SensitiveFieldTypeAPIKey: 4,
+	sanitizer := &Sanitizer{
+		patterns: defaultSensitivePatterns(),
+		options: SanitizeOptions{
+			KeepLength: true,
+			MaskChar:   '#',
+			PreserveLengthFor: map[SensitiveFieldType]int{
+				SensitiveFieldTypeAPIKey: 4,
+			},
 		},
 	}
-	sanitizer := NewSanitizerWithOptions(options)
 
 	input := "api_key=sk-1234567890abcdef"
 	result := sanitizer.Sanitize(input)
@@ -304,7 +289,10 @@ func TestMaskToken(t *testing.T) {
 // of being silently ignored.
 func TestSanitizeOptionsAreEffective(t *testing.T) {
 	t.Run("mask_char_replaces_star", func(t *testing.T) {
-		s := NewSanitizerWithOptions(SanitizeOptions{MaskChar: '#'})
+		s := &Sanitizer{
+			patterns: defaultSensitivePatterns(),
+			options:  SanitizeOptions{MaskChar: '#'},
+		}
 		got := s.Sanitize("password=hunter2secret")
 		if strings.Contains(got, "*") {
 			t.Errorf("expected no '*' with MaskChar='#', got %q", got)
@@ -315,11 +303,14 @@ func TestSanitizeOptionsAreEffective(t *testing.T) {
 	})
 
 	t.Run("preserve_length_for_overrides_prefix", func(t *testing.T) {
-		s := NewSanitizerWithOptions(SanitizeOptions{
-			PreserveLengthFor: map[SensitiveFieldType]int{
-				SensitiveFieldTypeEmail: 1,
+		s := &Sanitizer{
+			patterns: defaultSensitivePatterns(),
+			options: SanitizeOptions{
+				PreserveLengthFor: map[SensitiveFieldType]int{
+					SensitiveFieldTypeEmail: 1,
+				},
 			},
-		})
+		}
 		got := s.Sanitize("contact alice@example.com now")
 		if !strings.Contains(got, "a") {
 			t.Errorf("expected first char preserved, got %q", got)
@@ -330,7 +321,10 @@ func TestSanitizeOptionsAreEffective(t *testing.T) {
 	})
 
 	t.Run("keep_length_pads_masked_output", func(t *testing.T) {
-		s := NewSanitizerWithOptions(SanitizeOptions{KeepLength: true})
+		s := &Sanitizer{
+			patterns: defaultSensitivePatterns(),
+			options:  SanitizeOptions{KeepLength: true},
+		}
 		in := "token=abcdefghij"
 		got := s.Sanitize(in)
 		inLen := len([]rune(in))

@@ -11,7 +11,6 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
-	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // Edge represents a connection between two nodes with optional condition.
@@ -42,18 +41,15 @@ type NodeRouter func(ctx context.Context, currentNodeID string, state *State) st
 // mutation (Node, Edge, Start, RemoveEdge, RemoveNode, Clear, etc.)
 // from multiple goroutines requires external synchronization.
 type Graph struct {
-	mu              sync.RWMutex
-	id              string
-	nodes           map[string]Node
-	edges           map[string][]*Edge
-	start           string
-	scheduler       Scheduler
-	tracer          ares_observability.Tracer        // ares_observability tracer for execution tracking
-	limiter         ares_ratelimit.Limiter           // rate limiter for execution throttling
-	pluginBus       *ares_runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
-	router          NodeRouter                       // optional dynamic routing callback
-	collector       *ares_runtime.ExecutionCollector // optional collector for route recording
-	checkpointStore ares_runtime.CheckpointStore     // optional checkpoint store for state persistence
+	mu        sync.RWMutex
+	id        string
+	nodes     map[string]Node
+	edges     map[string][]*Edge
+	start     string
+	scheduler Scheduler
+	tracer    ares_observability.Tracer // ares_observability tracer for execution tracking
+	limiter   ares_ratelimit.Limiter    // rate limiter for execution throttling
+	router    NodeRouter                // optional dynamic routing callback
 }
 
 // NewGraph creates a new graph with the given ID.
@@ -75,28 +71,7 @@ func NewGraph(id string) (*Graph, error) {
 	}, nil
 }
 
-// NewGraphWithTracer creates a new graph with a custom tracer.
-//
-// Args:
-// id - unique graph identifier, must not be empty.
-// tracer - ares_observability tracer, must not be nil.
-// Returns new graph instance or error.
-func NewGraphWithTracer(id string, tracer ares_observability.Tracer) (*Graph, error) {
-	if id == "" {
-		return nil, errors.New("graph ID cannot be empty")
-	}
-	if tracer == nil {
-		return nil, errors.New("tracer cannot be nil")
-	}
-	return &Graph{
-		id:        id,
-		nodes:     make(map[string]Node),
-		edges:     make(map[string][]*Edge),
-		scheduler: NewDefaultScheduler(),
-		tracer:    tracer,
-		limiter:   nil, // default to no rate limiting
-	}, nil
-}
+// D17: NewGraphWithTracer removed (dead code — use NewGraph + SetScheduler).
 
 // NewGraphWithLimiter creates a new graph with a custom rate limiter.
 //
@@ -212,12 +187,10 @@ func (g *Graph) Start(id string) (*Graph, error) {
 	return g, nil
 }
 
+// D17: Clear removed (dead code — only tests).
+
 // RemoveEdge removes an edge from one node to another.
-//
-// Args:
-// from - source node ID, must not be empty.
-// to - target node ID, must not be empty.
-// Returns graph for chaining or error.
+// Retained: used by patcher.go applyRemoveEdge.
 func (g *Graph) RemoveEdge(from, to string) (*Graph, error) {
 	if g == nil {
 		return nil, errors.New("graph is nil")
@@ -246,10 +219,7 @@ func (g *Graph) RemoveEdge(from, to string) (*Graph, error) {
 }
 
 // RemoveNode removes a node and all its associated edges from the graph.
-//
-// Args:
-// id - node identifier, must not be empty.
-// Returns graph for chaining or error.
+// Retained: used by patcher.go applyRemoveNode.
 func (g *Graph) RemoveNode(id string) (*Graph, error) {
 	if g == nil {
 		return nil, errors.New("graph is nil")
@@ -285,23 +255,6 @@ func (g *Graph) RemoveNode(id string) (*Graph, error) {
 	return g, nil
 }
 
-// Clear removes all nodes and edges from the graph.
-//
-// Returns graph for chaining or error.
-func (g *Graph) Clear() (*Graph, error) {
-	if g == nil {
-		return nil, errors.New("graph is nil")
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	g.nodes = make(map[string]Node)
-	g.edges = make(map[string][]*Edge)
-	g.start = ""
-
-	return g, nil
-}
-
 // SetScheduler sets a custom scheduler for the graph.
 //
 // Args:
@@ -321,58 +274,11 @@ func (g *Graph) SetScheduler(scheduler Scheduler) (*Graph, error) {
 	return g, nil
 }
 
-// SetTracer sets a custom tracer for the graph.
-//
-// Args:
-// tracer - custom tracer instance, must not be nil.
-// Returns graph for chaining or error.
-func (g *Graph) SetTracer(tracer ares_observability.Tracer) (*Graph, error) {
-	if g == nil {
-		return nil, errors.New("graph is nil")
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if tracer == nil {
-		return nil, errors.New("tracer cannot be nil")
-	}
-	g.tracer = tracer
-	return g, nil
-}
-
-// SetPluginBus attaches a PluginBus for BeforeStep/AfterStep hooks and
-// event emission. This aligns the graph execution path with the workflow
-// engine's plugin system, enabling ares_observability and memory routing.
-func (g *Graph) SetPluginBus(pb *ares_runtime.PluginBus) (*Graph, error) {
-	if g == nil {
-		return nil, errors.New("graph is nil")
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.pluginBus = pb
-	return g, nil
-}
-
-// SetExecutionCollector attaches an ExecutionCollector for route recording
-// and history tracking during graph execution.
-func (g *Graph) SetExecutionCollector(c *ares_runtime.ExecutionCollector) (*Graph, error) {
-	if g == nil {
-		return nil, errors.New("graph is nil")
-	}
-	if c == nil {
-		return nil, errors.New("execution collector cannot be nil")
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.collector = c
-	return g, nil
-}
+// D17: SetTracer, SetPluginBus, SetExecutionCollector, SetLimiter, SetCheckpointStore removed (dead code).
+// SetScheduler retained (used by patcher.go).
 
 // SetRouter sets a dynamic routing callback that is invoked after each
-// successfully completed node. The callback receives the just-executed node ID
-// and the current state, and returns the ID of the node to route to next.
-// Return "" to let the graph continue with normal BFS in-degree traversal.
-// The target node must already exist in the graph.
+// successfully completed node. Retained: used by SDK tests.
 func (g *Graph) SetRouter(router NodeRouter) (*Graph, error) {
 	if g == nil {
 		return nil, errors.New("graph is nil")
@@ -380,34 +286,6 @@ func (g *Graph) SetRouter(router NodeRouter) (*Graph, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.router = router
-	return g, nil
-}
-
-// SetLimiter sets a custom rate limiter for the graph.
-//
-// Args:
-// limiter - custom rate limiter instance (can be nil for no limiting).
-// Returns graph for chaining or error.
-func (g *Graph) SetLimiter(limiter ares_ratelimit.Limiter) (*Graph, error) {
-	if g == nil {
-		return nil, errors.New("graph is nil")
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	g.limiter = limiter
-	return g, nil
-}
-
-// SetCheckpointStore attaches a checkpoint store for state persistence.
-// When set, the graph saves a checkpoint after each node execution.
-func (g *Graph) SetCheckpointStore(store ares_runtime.CheckpointStore) (*Graph, error) {
-	if g == nil {
-		return nil, errors.New("graph is nil")
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.checkpointStore = store
 	return g, nil
 }
 
@@ -506,35 +384,8 @@ func (g *Graph) RuntimeScheduler() Scheduler {
 	return g.scheduler
 }
 
-// RuntimePluginBus returns the configured lifecycle plugin bus.
-func (g *Graph) RuntimePluginBus() *ares_runtime.PluginBus {
-	if g == nil {
-		return nil
-	}
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.pluginBus
-}
-
-// RuntimeCollector returns the configured execution collector.
-func (g *Graph) RuntimeCollector() *ares_runtime.ExecutionCollector {
-	if g == nil {
-		return nil
-	}
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.collector
-}
-
-// RuntimeCheckpointStore returns the configured checkpoint store.
-func (g *Graph) RuntimeCheckpointStore() ares_runtime.CheckpointStore {
-	if g == nil {
-		return nil
-	}
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.checkpointStore
-}
+// D17: RuntimePluginBus, RuntimeCollector, RuntimeCheckpointStore removed (dead code).
+// RuntimeRouter retained for graph execution.
 
 // RuntimeNodes returns executable node bindings for unified compilation.
 func (g *Graph) RuntimeNodes() map[string]Node {

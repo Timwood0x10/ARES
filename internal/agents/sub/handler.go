@@ -38,12 +38,15 @@ func (h *messageHandler) Handle(ctx context.Context, msg *ahp.AHPMessage) error 
 }
 
 func (h *messageHandler) handleTaskMessage(ctx context.Context, msg *ahp.AHPMessage) error {
-	// Task handling is done by executor
-	// This is for ares_protocol-level message acknowledgment
+	// Protocol-level acknowledgment only: actual task execution is driven
+	// by the Kernel scheduler via taskfabric → ExecuteStep. This stub
+	// acknowledges receipt so the sender can mark delivery; the executor
+	// picks up the task from the shared queue / fabric.
 	return nil
 }
 
 func (h *messageHandler) handleAckMessage(ctx context.Context, msg *ahp.AHPMessage) error {
-	// Handle acknowledgment
+	// Protocol-level ACK: no-op in the Kernel-scheduled model. The task
+	// fabric tracks completion via TaskCompleted events, not message ACKs.
 	return nil
 }

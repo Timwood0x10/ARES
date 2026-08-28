@@ -15,8 +15,12 @@ type FlightRecorder struct {
 	collector  *Collector
 	eventStore ares_events.EventStore
 	genealogy  *Genealogy
-	mu         sync.RWMutex
-	started    bool
+	// genealogyCollector populates genealogy from the event stream. It is
+	// created only when the caller did not supply a pre-built Genealogy, so
+	// an explicitly injected tree (tests) is never silently overwritten.
+	genealogyCollector *GenealogyCollector
+	mu                 sync.RWMutex
+	started            bool
 }
 
 // FlightRecorderConfig holds dependencies for the flight recorder.
@@ -28,17 +32,29 @@ type FlightRecorderConfig struct {
 }
 
 // NewFlightRecorder creates a new flight recorder.
+//
+// When cfg.Genealogy is nil but an EventStore is present, the recorder builds
+// its own GenealogyCollector and drives it from the event stream. Without
+// this, Genealogy() stays nil for every production caller (bootstrap passes
+// only EventStore + EvidenceStore), and the /flight/genealogy control endpoint
+// degrades to the "No agents" placeholder forever — the lineage tree would be
+// write-only code that nothing ever populates.
 func NewFlightRecorder(cfg FlightRecorderConfig) *FlightRecorder {
 	collector := NewCollector(CollectorConfig{
 		EventStore:    cfg.EventStore,
 		EvidenceStore: cfg.EvidenceStore,
 	})
 
-	return &FlightRecorder{
+	fr := &FlightRecorder{
 		collector:  collector,
 		eventStore: cfg.EventStore,
 		genealogy:  cfg.Genealogy,
 	}
+	if cfg.Genealogy == nil && cfg.EventStore != nil {
+		fr.genealogyCollector = NewGenealogyCollector(cfg.EventStore)
+		fr.genealogy = fr.genealogyCollector.Genealogy()
+	}
+	return fr
 }
 
 // Start begins collecting flight data.
@@ -52,6 +68,15 @@ func (fr *FlightRecorder) Start(ctx context.Context) error {
 
 	if err := fr.collector.Start(ctx); err != nil {
 		return err
+	}
+
+	// The genealogy collector subscribes to the same event store. A failure
+	// here must not abort flight recording: the timeline/graph/diagnostics
+	// data is the primary payload and stays valid without the lineage tree.
+	if fr.genealogyCollector != nil {
+		if err := fr.genealogyCollector.Start(ctx); err != nil {
+			log.Warn("flight recorder: genealogy collector start failed (lineage tree disabled)", "error", err)
+		}
 	}
 
 	fr.started = true
@@ -69,6 +94,9 @@ func (fr *FlightRecorder) Stop() {
 	}
 
 	fr.collector.Stop()
+	if fr.genealogyCollector != nil {
+		fr.genealogyCollector.Stop()
+	}
 	fr.started = false
 	log.Info("flight recorder stopped")
 }

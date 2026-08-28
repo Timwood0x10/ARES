@@ -4,6 +4,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
@@ -45,5 +46,8 @@ type kernelHandle struct {
 	// reachable for agent messaging / capability discovery instead of being
 	// discarded (N4: peer registry return value was dropped).
 	peerRegistry *peer.Registry
-	flipped      bool
+	// pluginBus is the runtime plugin ecosystem hooked to the scheduler's
+	// quantum boundary (runtime_bridge.go). Nil when the scheduler is absent.
+	pluginBus *ares_runtime.PluginBus
+	flipped   bool
 }

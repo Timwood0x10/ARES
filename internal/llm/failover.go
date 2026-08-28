@@ -131,12 +131,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 	return fc, nil
 }
 
-// NewFailoverScorer is a backward-compatible alias for NewFailoverClient.
-//
-// Deprecated: Use NewFailoverClient instead.
-func NewFailoverScorer(configs []*Config, timeout time.Duration, rate float64, burst int) (*FailoverClient, error) {
-	return NewFailoverClient(configs, timeout, rate, burst)
-}
+// D13: NewFailoverScorer removed (deprecated alias, 0 production calls).
 
 // clientKey returns a unique key for cooldown tracking.
 func (fc *FailoverClient) clientKey(c *Client) string {
@@ -501,10 +496,7 @@ func (fc *FailoverClient) ActiveProviders() []string {
 	return active
 }
 
-// FailoverScorer is a backward-compatible alias for FailoverClient.
-//
-// Deprecated: Use FailoverClient instead.
-type FailoverScorer = FailoverClient
+// D13: FailoverScorer deprecated alias removed (use FailoverClient directly).
 
 // Ensure FailoverClient satisfies the common Generate and Chat interfaces.
 var _ interface {

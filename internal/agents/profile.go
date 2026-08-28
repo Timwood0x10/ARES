@@ -154,6 +154,13 @@ Rules:
 
 // ApplyToContext switches the active profile in the context.
 // Called by the runtime when a Handoff transitions to a new role.
+//
+// P1-10/W4: This method has zero production callers. To wire: register
+// ProfileRegistry in bootstrap, then call ApplyToContext in the agent
+// spawn path (e.g. agentfabric or kernelscheduler) to inject the
+// selected profile into the context before the first Execute call.
+// The consumer (activeRoleInstructions in sub/executor.go) already
+// reads it via GetFromContext — only the write side is missing.
 func (r *ProfileRegistry) ApplyToContext(ctx context.Context, profileID string) (context.Context, *AgentProfile, error) {
 	profile := r.Get(profileID)
 	if profile == nil {

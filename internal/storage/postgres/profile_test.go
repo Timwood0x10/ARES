@@ -53,7 +53,7 @@ func TestProfileRepository_Create(t *testing.T) {
 				models.StyleTag("casual"),
 				models.StyleMinimalist,
 			},
-			Budget: models.NewPriceRange(50.0, 200.0),
+			Budget: &models.PriceRange{Min: 50.0, Max: 200.0},
 			Colors: []string{"black", "white", "blue", "gray"},
 			Occasions: []models.Occasion{
 				models.OccasionWork,
@@ -186,7 +186,7 @@ func TestProfileRepository_Update(t *testing.T) {
 				models.StyleTag("casual"),
 				models.StyleMinimalist,
 			},
-			Budget: models.NewPriceRange(75.0, 250.0),
+			Budget: &models.PriceRange{Min: 75.0, Max: 250.0},
 			Colors: []string{"black", "white", "navy", "beige"},
 			Occasions: []models.Occasion{
 				models.OccasionWork,

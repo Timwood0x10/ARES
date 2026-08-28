@@ -86,11 +86,15 @@ func FetchHTTPManifest(ctx context.Context, src HTTPSource) ([]SkillIndexEntry, 
 			desc = s.ID
 		}
 		entries = append(entries, SkillIndexEntry{
-			ID:           s.ID,
-			Name:         name,
-			Description:  desc,
-			Keywords:     s.Keywords,
-			Source:       SourceRegistered,
+			ID:          s.ID,
+			Name:        name,
+			Description: desc,
+			Keywords:    s.Keywords,
+			Source:      SourceRegistered,
+			// P1-8: Set Path to the manifest URL so Load() can detect remote
+			// skills and return a clear error instead of trying to read
+			// SKILL.md from CWD (which produced a silent wrong-file load).
+			Path:         src.URL,
 			Version:      s.Version,
 			Capabilities: s.Capabilities,
 			ToolTypes:    s.ToolTypes,

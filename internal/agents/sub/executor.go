@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -61,6 +62,7 @@ type chatStepState struct {
 
 // taskExecutor executes recommendation tasks.
 type taskExecutor struct {
+	mu               sync.RWMutex // protects eventStore, agentID, ares_callbacks, fallbackHandlers
 	toolBinder       ToolBinder
 	llmAdapter       output.LLMAdapter
 	chatClient       ChatClient            // Optional: enables native tool calling via Chat API
@@ -173,34 +175,77 @@ func (e *taskExecutor) RegisterFallback(agentType models.AgentType, handler Fall
 	if handler == nil {
 		return
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.fallbackHandlers == nil {
+		e.fallbackHandlers = make(map[models.AgentType]FallbackHandler)
+	}
 	e.fallbackHandlers[agentType] = handler
 }
 
 // SetEventStore configures the executor to emit ares_events for tool/LLM calls.
 func (e *taskExecutor) SetEventStore(store ares_events.EventStore, agentID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.eventStore = store
 	e.agentID = agentID
 }
 
 // SetCallbacks configures the callback emitter for lifecycle event emission.
 func (e *taskExecutor) SetCallbacks(emitter ares_callbacks.Emitter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.ares_callbacks = emitter
 }
 
 // emitCallback emits a lifecycle callback event if the emitter is set.
 func (e *taskExecutor) emitCallback(ctx *ares_callbacks.Context) {
-	if e.ares_callbacks == nil {
+	e.mu.RLock()
+	emitter := e.ares_callbacks
+	e.mu.RUnlock()
+	if emitter == nil {
 		return
 	}
-	e.ares_callbacks.Emit(ctx)
+	emitter.Emit(ctx)
 }
 
 // emitEvent appends a single event using the canonical ares_events.Emit helper.
 // No-op if eventStore is nil.
 func (e *taskExecutor) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if !ares_events.Emit(ctx, e.eventStore, e.agentID, eventType, "sub", payload) {
-		log.Warn("failed to emit event", "event_type", eventType, "stream_id", e.agentID)
+	e.mu.RLock()
+	store, agentID := e.eventStore, e.agentID
+	e.mu.RUnlock()
+	if !ares_events.Emit(ctx, store, agentID, eventType, "sub", payload) {
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", agentID)
 	}
+}
+
+// emitSubTaskResult publishes a sub_task.result event when a task completes,
+// so consumers (SkillOutcomeRecorder, experience distillation) observe the
+// outcome. No-op when the event store is nil or the task carries no id.
+func (e *taskExecutor) emitSubTaskResult(ctx context.Context, task *models.Task, result *models.TaskResult) {
+	if task == nil || task.TaskID == "" || result == nil {
+		return
+	}
+	status := "success"
+	if !result.Success || result.Error != "" {
+		status = "failure"
+	}
+	// Snapshot the agent ID under the read lock. emitSubTaskResult runs on every
+	// completion path (including the deferred one in Execute), and its payload is
+	// built before emitEvent takes the lock, so a direct e.agentID read here can
+	// race with the write in SetEventStore (same class as the D9 fix).
+	e.mu.RLock()
+	agentID := e.agentID
+	e.mu.RUnlock()
+	e.emitEvent(ctx, ares_events.EventSubTaskResult, map[string]any{
+		"task_id":     task.TaskID,
+		"agent_id":    agentID,
+		"status":      status,
+		"capability":  string(task.AgentType),
+		"result":      result.Reason,
+		"duration_ms": result.Duration.Milliseconds(),
+	})
 }
 
 // Execute executes a task and returns result.
@@ -211,13 +256,25 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		return result, nil
 	}
 
+	// W2: emit the sub_task.result event on every completion path so skill
+	// outcome recording and experience distillation observe the outcome.
+	defer func() {
+		e.emitSubTaskResult(ctx, task, result)
+	}()
+
+	// Snapshot the agent ID under the read lock so concurrent SetEventStore
+	// calls cannot race with the emit paths below (D9: data-race fix).
+	e.mu.RLock()
+	agentID := e.agentID
+	e.mu.RUnlock()
+
 	result = models.NewTaskResult(task.TaskID, task.AgentType)
 	startTime := time.Now()
 
 	// Emit tool start event.
 	e.emitCallback(&ares_callbacks.Context{
 		Event:   ares_callbacks.EventToolStart,
-		AgentID: e.agentID,
+		AgentID: agentID,
 		Input:   task.TaskID,
 	})
 
@@ -228,7 +285,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 			result.SetError(err.Error())
 			e.emitCallback(&ares_callbacks.Context{
 				Event:    ares_callbacks.EventToolError,
-				AgentID:  e.agentID,
+				AgentID:  agentID,
 				Error:    err,
 				Duration: time.Since(startTime),
 			})
@@ -238,7 +295,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		result.Duration = time.Since(startTime)
 		e.emitCallback(&ares_callbacks.Context{
 			Event:    ares_callbacks.EventToolEnd,
-			AgentID:  e.agentID,
+			AgentID:  agentID,
 			Duration: time.Since(startTime),
 		})
 		return result, nil
@@ -261,7 +318,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 			result.SetError(err.Error())
 			e.emitCallback(&ares_callbacks.Context{
 				Event:    ares_callbacks.EventToolError,
-				AgentID:  e.agentID,
+				AgentID:  agentID,
 				Error:    err,
 				Duration: time.Since(startTime),
 			})
@@ -271,7 +328,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		result.Duration = time.Since(startTime)
 		e.emitCallback(&ares_callbacks.Context{
 			Event:    ares_callbacks.EventToolEnd,
-			AgentID:  e.agentID,
+			AgentID:  agentID,
 			Duration: time.Since(startTime),
 		})
 		return result, nil
@@ -288,7 +345,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 			result.SetError(err.Error())
 			e.emitCallback(&ares_callbacks.Context{
 				Event:    ares_callbacks.EventToolError,
-				AgentID:  e.agentID,
+				AgentID:  agentID,
 				Error:    err,
 				Duration: time.Since(startTime),
 			})
@@ -299,7 +356,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		result.Duration = time.Since(startTime)
 		e.emitCallback(&ares_callbacks.Context{
 			Event:    ares_callbacks.EventToolEnd,
-			AgentID:  e.agentID,
+			AgentID:  agentID,
 			Duration: time.Since(startTime),
 		})
 		return result, nil
@@ -309,7 +366,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 	result.Duration = time.Since(startTime)
 	e.emitCallback(&ares_callbacks.Context{
 		Event:    ares_callbacks.EventToolEnd,
-		AgentID:  e.agentID,
+		AgentID:  agentID,
 		Duration: time.Since(startTime),
 	})
 	return result, nil
@@ -332,6 +389,12 @@ func (e *taskExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*Ste
 	if task == nil {
 		return nil, errors.ErrInvalidInput
 	}
+
+	// Snapshot agent ID for the duration of this quantum (D9: data-race fix).
+	e.mu.RLock()
+	agentID := e.agentID
+	e.mu.RUnlock()
+
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	start := time.Now()
 
@@ -345,14 +408,14 @@ func (e *taskExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*Ste
 	if !found {
 		e.emitCallback(&ares_callbacks.Context{
 			Event:   ares_callbacks.EventToolStart,
-			AgentID: e.agentID,
+			AgentID: agentID,
 			Input:   task.TaskID,
 		})
 	}
 
 	// Non-LLM and profile-less paths are single-quantum by construction.
 	if e.llmAdapter == nil || profileFromTask(task) == nil {
-		return e.singleQuantum(ctx, task, result, start, func() ([]*models.RecommendItem, string, error) {
+		return e.singleQuantum(ctx, task, result, start, agentID, func() ([]*models.RecommendItem, string, error) {
 			return e.executeByType(ctx, task)
 		})
 	}
@@ -372,7 +435,8 @@ func (e *taskExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*Ste
 			}
 			result.SetSuccess(items, "LLM recommendation completed")
 			result.Duration = time.Since(start)
-			e.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: e.agentID, Duration: time.Since(start)})
+			e.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: agentID, Duration: time.Since(start)})
+			e.emitSubTaskResult(ctx, task, result)
 			return &StepOutcome{Done: true, Result: result}, nil
 		}
 		st = &chatStepState{
@@ -416,32 +480,35 @@ func (e *taskExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*Ste
 	}
 	result.SetSuccess(items, "LLM recommendation completed")
 	result.Duration = time.Since(start)
-	e.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: e.agentID, Duration: time.Since(start)})
+	e.emitCallback(&ares_callbacks.Context{Event: ares_callbacks.EventToolEnd, AgentID: agentID, Duration: time.Since(start)})
+	e.emitSubTaskResult(ctx, task, result)
 	return &StepOutcome{Done: true, Result: result}, nil
 }
 
 // singleQuantum wraps a one-shot (non-yieldable) execution path — the
 // type-specific fallback — in a completed StepOutcome with the same event and
 // result shape as Execute's tail.
-func (e *taskExecutor) singleQuantum(ctx context.Context, task *models.Task, result *models.TaskResult, start time.Time, run func() ([]*models.RecommendItem, string, error)) (*StepOutcome, error) {
+func (e *taskExecutor) singleQuantum(ctx context.Context, task *models.Task, result *models.TaskResult, start time.Time, agentID string, run func() ([]*models.RecommendItem, string, error)) (*StepOutcome, error) {
 	items, reason, err := run()
 	if err != nil {
 		result.SetError(err.Error())
 		e.emitCallback(&ares_callbacks.Context{
 			Event:    ares_callbacks.EventToolError,
-			AgentID:  e.agentID,
+			AgentID:  agentID,
 			Error:    err,
 			Duration: time.Since(start),
 		})
+		e.emitSubTaskResult(ctx, task, result)
 		return &StepOutcome{Done: true, Result: result}, nil
 	}
 	result.SetSuccess(items, reason)
 	result.Duration = time.Since(start)
 	e.emitCallback(&ares_callbacks.Context{
 		Event:    ares_callbacks.EventToolEnd,
-		AgentID:  e.agentID,
+		AgentID:  agentID,
 		Duration: time.Since(start),
 	})
+	e.emitSubTaskResult(ctx, task, result)
 	return &StepOutcome{Done: true, Result: result}, nil
 }
 
@@ -755,6 +822,11 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 //	                    state for the next round / quantum
 //	nil, false, err   — a hard failure (LLM or tool execution error)
 func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*models.RecommendItem, bool, error) {
+	// Snapshot agent ID for thread-safe event emission (D9: data-race fix).
+	e.mu.RLock()
+	agentID := e.agentID
+	e.mu.RUnlock()
+
 	schemas := e.toolBinder.GetToolSchemas()
 	llmTools := make([]core.Tool, 0, len(schemas))
 	for _, s := range schemas {
@@ -762,7 +834,7 @@ func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*mode
 	}
 
 	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-		KeyAgentID:   e.agentID,
+		KeyAgentID:   agentID,
 		"round":      st.Round + 1,
 		"max_rounds": st.MaxRounds,
 		"tool_count": len(llmTools),
@@ -793,19 +865,19 @@ func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*mode
 	})
 	for _, tc := range resp.ToolCalls {
 		e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
-			KeyAgentID:     e.agentID,
+			KeyAgentID:     agentID,
 			"tool_name":    tc.Function.Name,
 			"tool_call_id": tc.ID,
 		})
 
-		result, err := e.executeToolCall(ctx, tc)
+		result, err := e.executeToolCall(ctx, tc, agentID)
 		if err != nil {
 			log.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
 			result = fmt.Sprintf("error: %s", err.Error())
 		}
 
 		e.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
-			KeyAgentID:     e.agentID,
+			KeyAgentID:     agentID,
 			"tool_name":    tc.Function.Name,
 			"tool_call_id": tc.ID,
 		})
@@ -820,7 +892,7 @@ func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*mode
 }
 
 // executeToolCall parses arguments and calls the tool via toolBinder.
-func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall) (string, error) {
+func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall, agentID string) (string, error) {
 	var args map[string]any
 	if tc.Function.Arguments != "" {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -831,7 +903,7 @@ func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall) (s
 	// Stamp the caller identity into the tool context BEFORE invoking the
 	// tool, so Kernel syscalls (agentsyscall) can enforce provenance
 	// (Task.Origin / ParentID) from the context, never from LLM args.
-	result, err := e.toolBinder.CallTool(kernelctx.WithCallerID(ctx, e.agentID), tc.Function.Name, args)
+	result, err := e.toolBinder.CallTool(kernelctx.WithCallerID(ctx, agentID), tc.Function.Name, args)
 	if err != nil {
 		return "", err
 	}
@@ -846,14 +918,19 @@ func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall) (s
 // executeWithLLMTextOnly performs a text-only LLM generation (original behavior).
 // params carries optional per-call LLM overrides from the active strategy.
 func (e *taskExecutor) executeWithLLMTextOnly(ctx context.Context, prompt string, params map[string]any) ([]*models.RecommendItem, error) {
+	// Snapshot agent ID for thread-safe event emission (D9: data-race fix).
+	e.mu.RLock()
+	agentID := e.agentID
+	e.mu.RUnlock()
+
 	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-		KeyAgentID: e.agentID,
+		KeyAgentID: agentID,
 		"prompt":   prompt[:min(200, len(prompt))],
 	})
 	response, err := e.llmAdapter.GenerateWithParams(ctx, prompt, params)
 	if err != nil {
 		e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-			KeyAgentID: e.agentID,
+			KeyAgentID: agentID,
 			KeyError:   err.Error(),
 			KeyStatus:  "failed",
 		})
@@ -880,8 +957,11 @@ func (e *taskExecutor) parseRecommendResult(response string) ([]*models.Recommen
 	// gap in the serve path. Only a truly empty answer is an error.
 	if trimmed := strings.TrimSpace(response); trimmed != "" {
 		log.Debug("Strict parse failed, wrapping prose", "error", err)
+		e.mu.RLock()
+		agentID := e.agentID
+		e.mu.RUnlock()
 		item := &models.RecommendItem{
-			ItemID:      fmt.Sprintf("prose-%s-%d", e.agentID, time.Now().UnixNano()),
+			ItemID:      fmt.Sprintf("prose-%s-%d", agentID, time.Now().UnixNano()),
 			Category:    "general",
 			Name:        "Agent output",
 			Description: trimmed[:min(500, len(trimmed))],
@@ -919,7 +999,10 @@ func (e *taskExecutor) listNonIdempotentTools() []string {
 // If no handler is registered for the agent type, returns an empty result
 // with a warning (graceful degradation instead of hard error).
 func (e *taskExecutor) executeByType(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error) {
-	if handler, ok := e.fallbackHandlers[task.AgentType]; ok {
+	e.mu.RLock()
+	handler, ok := e.fallbackHandlers[task.AgentType]
+	e.mu.RUnlock()
+	if ok {
 		log.Debug("executeByType: using registered fallback", "agent_type", task.AgentType)
 		return handler(ctx, task)
 	}

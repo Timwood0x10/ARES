@@ -163,8 +163,8 @@ func (b *toolBinder) WithPlannerBridge(bridge interface {
 // If not found locally, it falls back to the bridged registry (if any).
 func (b *toolBinder) GetTool(name string) (func(ctx context.Context, args map[string]any) (any, error), bool) {
 	b.mu.RLock()
+	defer b.mu.RUnlock()
 	entry, ok := b.tools[name]
-	b.mu.RUnlock()
 	if ok {
 		return entry.fn, true
 	}
@@ -190,10 +190,9 @@ func (b *toolBinder) ToolIdempotent(name string) bool {
 // Returns nil if no registry is bridged.
 func (b *toolBinder) GetToolSchemas() []core.ToolSchema {
 	b.mu.RLock()
-	reg := b.registry
-	b.mu.RUnlock()
-	if reg == nil {
+	defer b.mu.RUnlock()
+	if b.registry == nil {
 		return nil
 	}
-	return reg.GetSchemas()
+	return b.registry.GetSchemas()
 }

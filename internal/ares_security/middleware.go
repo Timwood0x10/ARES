@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 // AuthMiddleware enforces Bearer-token JWT authentication on the wrapped
@@ -75,48 +73,6 @@ type principalKey struct{}
 func FromContext(ctx context.Context) *Principal {
 	if p, ok := ctx.Value(principalKey{}).(*Principal); ok {
 		return p
-	}
-	return nil
-}
-
-// Wrap returns an http.Handler that authenticates requests before delegating
-// to next. Suitable for net/http ServeMux wrapping and for gin via
-// gin.WrapH.
-func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		princ, status := m.authenticate(r)
-		if status != http.StatusOK {
-			http.Error(w, http.StatusText(status), status)
-			return
-		}
-		ctx := context.WithValue(r.Context(), principalKey{}, princ)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-// WrapGin returns a gin.HandlerFunc enforcing the same policy. It aborts with
-// 401 when authentication fails and 403 when the role lacks the required
-// permission. gin is a first-party dependency of the repository, so importing
-// it here keeps the two adapters sharing one enforcement core.
-func (m *AuthMiddleware) WrapGin() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		princ, status := m.authenticate(c.Request)
-		if status != http.StatusOK {
-			c.AbortWithStatusJSON(status, gin.H{"error": http.StatusText(status)})
-			return
-		}
-		c.Set("ares.principal", princ)
-		c.Next()
-	}
-}
-
-// PrincipalFromGin reads the principal stored by WrapGin. Returns nil on
-// routes that did not run WrapGin (e.g. public routes).
-func PrincipalFromGin(c *gin.Context) *Principal {
-	if v, ok := c.Get("ares.principal"); ok {
-		if p, ok := v.(*Principal); ok {
-			return p
-		}
 	}
 	return nil
 }

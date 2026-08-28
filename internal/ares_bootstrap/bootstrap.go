@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_skills "github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
@@ -300,6 +301,16 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 					log.Warn("bootstrap: cleanup skills catalog close error", "error", err)
 				}
 			})
+			// W8: start the skill outcome recorder so skill usage/results are
+			// observed from the EventSubTaskResult stream (emitted by the sub
+			// executor on task completion) and persisted for experience-guided
+			// selection. Best-effort: a nil catalog/store is a no-op.
+			recorder := ares_skills.NewSkillOutcomeRecorder(catalog)
+			if serr := recorder.Start(ctx, comp.EventStore); serr != nil {
+				log.Warn("bootstrap: skill outcome recorder start failed", "error", serr)
+			} else {
+				log.Info("bootstrap: skill outcome recorder started (EventSubTaskResult)")
+			}
 		}
 	}
 

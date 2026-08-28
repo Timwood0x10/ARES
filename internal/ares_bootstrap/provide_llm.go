@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/llm"
 )
@@ -31,6 +32,15 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: LLM client: %w", err)
 	}
+
+	// W1 observability wiring: register the Prometheus ARES_* metrics so the
+	// /metrics scrape endpoint (serveIntrospect) returns real counters, and
+	// attach a tracer so every LLM call records a span. Registration is
+	// idempotent (AlreadyRegisteredError returns the cached instance).
+	if _, merr := ares_observability.NewPrometheusMetrics(); merr != nil {
+		log.Warn("bootstrap: prometheus metrics registration skipped", "error", merr)
+	}
+	client.SetTracer(ares_observability.NewNoopTracer())
 
 	// Register the LLM provider in the compat layer for ecosystem access.
 	// B31: Dispatch to the correct adapter based on provider name instead of
@@ -59,17 +69,21 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	}, nil
 }
 
-// NewCallbackRegistry creates a callback registry — kept for backward compatibility.
+// NewCallbackRegistry creates a callback registry. Kept as a convenience
+// alias over ares_callbacks.NewRegistry for callers that prefer the
+// bootstrap-level entry point.
 func NewCallbackRegistry() *ares_callbacks.Registry {
 	return ares_callbacks.NewRegistry()
 }
 
-// NewLLMClientWithCallbacks creates an LLM client with callbacks — kept for backward compatibility.
+// NewLLMClientWithCallbacks creates an LLM client with the given callback
+// registry attached. Convenience wrapper over llm.NewClient.
 func NewLLMClientWithCallbacks(cfg *llm.Config, reg *ares_callbacks.Registry) (*llm.Client, error) {
 	return llm.NewClient(cfg, llm.WithCallbacks(reg))
 }
 
-// WireTaskExecutorCallbacks returns a TaskExecutorOption that injects a callback emitter.
+// WireTaskExecutorCallbacks wraps the given registry as a sub executor option.
+// A nil registry yields a nil option (no callbacks wired).
 func WireTaskExecutorCallbacks(reg *ares_callbacks.Registry) sub.TaskExecutorOption {
 	if reg == nil {
 		return nil

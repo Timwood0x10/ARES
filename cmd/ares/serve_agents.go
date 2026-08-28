@@ -150,11 +150,18 @@ func createAndServeAgents(
 	chaosStatus := introspect.NewChaosReporter()
 	if peerKernel.scheduler != nil && peerKernel.fabric != nil && peerKernel.agents != nil {
 		store := &introspect.Store{}
+		collabReporter := introspect.NewCollabReporter()
 		collector := introspect.NewCollector(introspect.Sources{
-			Kernel: peerKernel.scheduler.Snapshot,
-			Fabric: peerKernel.fabric.LeaseSnapshot,
-			Agents: peerKernel.agents.AgentsView,
-			Chaos:  chaosStatus.Snapshot,
+			Kernel:    peerKernel.scheduler.Snapshot,
+			Fabric:    peerKernel.fabric.LeaseSnapshot,
+			Agents:    peerKernel.agents.AgentsView,
+			Chaos:     chaosStatus.Snapshot,
+			Tasks:     peerKernel.fabric.TaskSnapshot,
+			Decisions: peerKernel.scheduler.DecisionsSnapshot,
+			// Collab: no producer records collaboration edges today; the
+			// reporter yields an empty graph. Wire a producer (e.g. the
+			// spawn/collaboration IPC path) before enabling the panel tab.
+			Collab: collabReporter.Snapshot,
 		})
 		peerKernel.intro = introspect.NewHandler(store).WithEventStore(comp.EventStore)
 		sink := introspect.NewSink(store)

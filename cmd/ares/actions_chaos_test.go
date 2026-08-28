@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
@@ -75,6 +76,10 @@ func newChaosTestKernel(t *testing.T, ctx context.Context, withRecoveryLoop bool
 	handler := &actionHandler{
 		kernel: kh,
 		apiKey: "test-key",
+		// W5 RBAC: chaos operations now require RoleAdmin. Wire the JWT
+		// middleware (PermWrite) so admin/operator roles are distinguished —
+		// chaos tests mint an admin token via postChaos.
+		auth: ares_security.NewAuthMiddleware([]byte(testActionJWTSecret), ares_security.PermWrite),
 	}
 	return handler, kh, fabric, agentSink
 }
@@ -84,7 +89,8 @@ func newChaosTestKernel(t *testing.T, ctx context.Context, withRecoveryLoop bool
 func postChaos(t *testing.T, h *actionHandler, chaosType string) (int, map[string]any) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/chaos/"+chaosType, bytes.NewReader([]byte("{}")))
-	req.Header.Set("Authorization", "Bearer test-key")
+	// W5: chaos requires RoleAdmin; mint an admin JWT on the shared test secret.
+	req.Header.Set("Authorization", "Bearer "+testActionJWT(t, ares_security.RoleAdmin))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	var body map[string]any

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -282,6 +283,10 @@ func (c *Catalog) ResolveTools(id string) ([]ResolvedTool, error) {
 	entry, ok := c.entryByIDLocked(id)
 	if !ok {
 		return nil, ErrSkillNotFound
+	}
+	// P1-8: Remote skills (from HTTP manifest) don't have a local skill.yaml.
+	if strings.HasPrefix(entry.Path, "http://") || strings.HasPrefix(entry.Path, "https://") {
+		return nil, nil
 	}
 	manifest, err := loadManifest(filepath.Join(entry.Path, "skill.yaml"))
 	if err != nil {

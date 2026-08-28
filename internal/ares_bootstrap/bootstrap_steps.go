@@ -162,6 +162,8 @@ const (
 // builds the GA system, attaches the coordinator bridge to the population
 // adapter, and starts the background evolution ticker. Extracted from Bootstrap
 // to keep its cyclomatic complexity within lint limits.
+//
+//nolint:gocyclo // it is a complex wiring hub with many config fields.
 func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Components, newEvol *NewEvolutionComponents, guidanceProvider evolution.GuidanceProvider) error {
 	// Create a persistent strategy store when PostgreSQL is configured,
 	// falling back to the in-memory store when no database is available.
@@ -198,6 +200,38 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	gaCfg.EventStore = comp.EventStore
 	gaCfg.StrategyStore = memStore
 	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
+
+	// W3: honor the YAML evolution tuning. Non-zero cfg.Evolution fields
+	// override the DefaultSystemConfig values so operators can tune the GA
+	// without touching code (previously these fields were dead config).
+	// Only fields with a matching SystemConfig slot are wired; the rest of the
+	// YAML GA knobs (Generations/TournamentSize/CrossoverType/TargetFitness/
+	// SteadyState*) are registered as dead config pending a SystemConfig slot.
+	ec := &cfg.Evolution
+	if ec.PopulationSize > 0 {
+		gaCfg.PopulationSize = ec.PopulationSize
+	}
+	if ec.EliteCount > 0 {
+		gaCfg.EliteCount = ec.EliteCount
+	}
+	if ec.SurvivalRate > 0 {
+		gaCfg.SurvivalRate = ec.SurvivalRate
+	}
+	if ec.MutationRate > 0 {
+		gaCfg.MutationRate = ec.MutationRate
+	}
+	if ec.MinMutationRate > 0 {
+		gaCfg.MinMutationRate = ec.MinMutationRate
+	}
+	if ec.MaxMutationRate > 0 {
+		gaCfg.MaxMutationRate = ec.MaxMutationRate
+	}
+	if ec.BreedingPoolRatio > 0 {
+		gaCfg.BreedingPoolRatio = ec.BreedingPoolRatio
+	}
+	if ec.SelectionStrategy != "" {
+		gaCfg.SelectionStrategy = ec.SelectionStrategy
+	}
 	// Track A closure: feed distilled experiences back into the GA's
 	// experience-guided mutation. guidanceProvider is non-nil only when
 	// distillation was successfully wired above (PG + embedding configured).

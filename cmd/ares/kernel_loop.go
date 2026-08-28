@@ -1,5 +1,9 @@
 package main
 
+// TODO(tech-debt): agentipc has no retry/dead-letter semantics (the legacy ahp
+// DLQProcessor was removed with the leader-sub protocol). Wire IPC retry or a
+// dead-letter path when multi-agent messaging scales (repair plan GAP-3).
+
 import (
 	"context"
 	"fmt"
@@ -352,4 +356,26 @@ func runKernelRecoveryLoop(
 			sweep()
 		}
 	}
+}
+
+// parseKernelPollInterval parses the YAML kernel.poll_interval duration,
+// returning 0 when unset/invalid so the scheduler keeps its 500ms default.
+//
+// Args:
+//
+//	raw - the raw YAML duration string (may be empty).
+//
+// Returns:
+//
+//	time.Duration - the parsed interval, or 0 when empty/invalid.
+func parseKernelPollInterval(raw string) time.Duration {
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("kernel: invalid poll_interval %q, using scheduler default", raw)
+		return 0
+	}
+	return d
 }

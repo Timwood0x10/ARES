@@ -133,6 +133,11 @@ func createPeerAgents(
 		sched.WithEventStore(store)
 	}
 	sched.WithMaxConcurrent(0)
+	// W7: honor the YAML kernel.poll_interval. Previously the config field was
+	// never injected — the scheduler always drained on the 500ms default.
+	if d := parseKernelPollInterval(cfg.Kernel.PollInterval); d > 0 {
+		sched.PollInterval = d
+	}
 	// Optional snappier leases for chaos/recovery demos (#panel): a dead
 	// agent's tasks requeue after lease_ttl instead of the 5-minute default.
 	if ttl := parseKernelLoopConfig(cfg).LeaseTTL; ttl > 0 {
@@ -248,6 +253,12 @@ func createPeerAgents(
 	// (RegisterExecutorForTask), so a dead agent's task is resumed by a real
 	// cognitive process — not a canned-success stub, and never at the expense
 	// of a brand-new task.
+	// Runtime plugin ecosystem closure: the PluginBus hooks the scheduler's
+	// quantum boundary (observer/checkpoint/tool plugins observe every
+	// Schedule→Acquire→RunQuantum). The adapter lives in runtime_bridge.go —
+	// the kernel stays free of any runtime import (§0.3 dependency rule).
+	kernel.pluginBus = startPluginBus(ctx, store, sched)
+
 	go sched.Run(ctx)
 	go runKernelRecoveryLoop(ctx, store, kernel.recovery, parseKernelLoopConfig(cfg),
 		func(taskID, agentID string, executor CapabilityExecutor) {

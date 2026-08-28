@@ -894,15 +894,21 @@ func TestSubAgent_ProcessStream_EmitsTaskEvents(t *testing.T) {
 	// Events: EventAgentStarted (from Start), EventTaskCreated, EventTaskCompleted.
 	evts, err := store.Read(context.Background(), "sub1", ares_events.ReadOptions{})
 	require.NoError(t, err)
-	require.Len(t, evts, 3)
+	require.Len(t, evts, 4)
 
 	assert.Equal(t, ares_events.EventAgentStarted, evts[0].Type)
 	assert.Equal(t, ares_events.EventTaskCreated, evts[1].Type)
 	assert.Equal(t, "task-stream-1", evts[1].Payload["task_id"])
 	assert.Equal(t, "sub1", evts[1].Payload["agent_id"])
 
-	assert.Equal(t, ares_events.EventTaskCompleted, evts[2].Type)
+	// W2: the executor's defer emits EventSubTaskResult before the agent layer
+	// publishes the terminal EventTaskCompleted.
+	assert.Equal(t, ares_events.EventSubTaskResult, evts[2].Type)
 	assert.Equal(t, "task-stream-1", evts[2].Payload["task_id"])
+	assert.Equal(t, "success", evts[2].Payload["status"])
+
+	assert.Equal(t, ares_events.EventTaskCompleted, evts[3].Type)
+	assert.Equal(t, "task-stream-1", evts[3].Payload["task_id"])
 }
 
 func TestSubAgent_ProcessStream_Failure_EmitsTaskFailedEvent(t *testing.T) {
@@ -973,12 +979,17 @@ func TestSubAgent_FullLifecycle_EmitsAllEvents(t *testing.T) {
 
 	evts, err := store.Read(context.Background(), "sub1", ares_events.ReadOptions{})
 	require.NoError(t, err)
-	require.Len(t, evts, 4)
+	require.Len(t, evts, 5)
 
 	assert.Equal(t, ares_events.EventAgentStarted, evts[0].Type)
 	assert.Equal(t, ares_events.EventTaskCreated, evts[1].Type)
-	assert.Equal(t, ares_events.EventTaskCompleted, evts[2].Type)
-	assert.Equal(t, ares_events.EventAgentStopped, evts[3].Type)
+	// W2: the executor's defer emits EventSubTaskResult before the agent layer
+	// publishes the terminal EventTaskCompleted.
+	assert.Equal(t, ares_events.EventSubTaskResult, evts[2].Type)
+	assert.Equal(t, "task-lifecycle", evts[2].Payload["task_id"])
+	assert.Equal(t, "success", evts[2].Payload["status"])
+	assert.Equal(t, ares_events.EventTaskCompleted, evts[3].Type)
+	assert.Equal(t, ares_events.EventAgentStopped, evts[4].Type)
 }
 
 // nolint: errcheck // Test code may ignore return values

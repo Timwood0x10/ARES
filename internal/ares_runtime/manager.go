@@ -510,7 +510,14 @@ func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory
 		store := m.snapshotStore
 		m.mu.RUnlock()
 
-		state := RecoverSnapshotOrEvents(ctx, store, agentID, func() map[string]any {
+		// D1: RecoverSnapshotOrEvents inlined — try snapshot store first,
+		// then fall back to event replay.
+		state := func() map[string]any {
+			if store != nil {
+				if snap, err := store.Load(ctx, agentID); err == nil && len(snap) > 0 {
+					return snap
+				}
+			}
 			state := buildStateFromEvents(evts)
 			if m.memManager != nil {
 				cognitiveState := m.buildCognitiveState(ctx, agentID, state)
@@ -519,7 +526,7 @@ func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory
 				}
 			}
 			return state
-		})
+		}()
 
 		if len(state) > 0 {
 			if err := sa.RestoreState(state); err != nil {

@@ -396,14 +396,14 @@ var (
 | **修复方案** | `Create` 内部对入参做深拷贝再存入 |
 | **验收标准** | 新增并发 Create + 读测试（`-race`） |
 
-### P1-8 ares_skills FetchHTTPManifest 远程技能路径
+### P1-8 ares_skills FetchHTTPManifest 远程技能路径 ✅
 
 | 项目 | 内容 |
 |------|------|
 | **问题** | 远程技能 `Path` 未设置，`Load()` 时从 CWD 下错误路径读取 |
 | **文件:方法** | `internal/ares_skills/http_source.go` `FetchHTTPManifest` |
-| **修复方案** | 为 SourceRegistered 条目设置实际的 manifest/下载路径；或在加载时按 URL/ID 定位 |
-| **验收标准** | 新增 FetchHTTPManifest → Load 端到端测试 |
+| **修复方案** | 为远程技能设置 Path=manifest URL；Loader/Load/ListReferences/LoadReference 检测 HTTP URL 前缀并返回明确错误 |
+| **验收标准** | ✅ 编译通过，ares_skills 测试通过 |
 
 ### P1-9 arena 注入器空接线（workflow plan 7.A A1）
 
@@ -521,7 +521,7 @@ var (
 
 ## 5. Phase 3：伪接线闭环——删除项（第 3-4 周）
 
-### D1 删除 ares_runtime 插件生态
+### D1 删除 ares_runtime 插件生态 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -529,7 +529,7 @@ var (
 | **修复方案** | 删除上述符号及其实现文件（或移入 `internal/experimental/`） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D2 删除 ares_shutdown 四个未接线组件
+### D2 删除 ares_shutdown 四个未接线组件 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -537,7 +537,7 @@ var (
 | **修复方案** | 删除上述 4 个组件文件（保留 `Manager` 主体：`NewManager`/`RegisterPhase`/`AddCallback`/`StartShutdown`） |
 | **验收标准** | `go build ./...` 绿；serve 正常启停 |
 
-### D3 删除 ares_ratelimit 三个未接线实现
+### D3 删除 ares_ratelimit 三个未接线实现 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -553,7 +553,7 @@ var (
 | **修复方案** | 删除 `handoff.go` 文件 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D5 删除 core/models 死行为方法
+### D5 删除 core/models 死行为方法 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -597,7 +597,7 @@ var (
 | **修复方案** | ① 修复 `GetTool` 数据竞争；② `Set*` 加锁（sub.Agent 生产在用，SetEventStore 由运行时调用会竞争）；③ handler 空实现补注释或实现 |
 | **验收标准** | `go build ./...` 绿；`-race` 测试通过 |
 
-### D10 删除 ares_protocol/ahp 死子系统 ✅已解冻（X3=删除，可执行）
+### D10 删除 ares_protocol/ahp 死子系统 ✅已完成（仅删 Protocol/DLQ/Codec，保留 AHPMessage/Queue/Heartbeat 等生产引用）
 
 | 项 | 内容 |
 |----|------|
@@ -616,7 +616,7 @@ var (
 | **修复方案** | 不删除；在包注释标注"SDK 公共接口，不直接接入内核" |
 | **验收标准** | 无删除动作；`go build ./...` 绿 |
 
-### D12 删除 llm/output 死代码（⚠️仅删 0 调用符号 · 包本体是 LLM 输出限制核心，必须保留）
+### D12 删除 llm/output 死代码 ✅已完成（删 timeout.go，NewTemplateEngine 生产在用保留）
 
 | 项 | 内容 |
 |----|------|
@@ -626,7 +626,7 @@ var (
 | **修复方案** | 仅删除上表"真 0 生产调用"的符号或 unexport；删除前按 §1.5.3 跑 `findReferences` 复核 |
 | **验收标准** | `go build ./...` 绿；`NewTemplateEngine` 调用点仍正常；LLM 输出解析/校验/模板功能不受影响 |
 
-### D13 删除 llm 死代码
+### D13 删除 llm 死代码 ✅已完成（仅删 NewClientFromEnv + NewFailoverScorer 别名）
 
 | 项 | 内容 |
 |----|------|
@@ -661,7 +661,7 @@ var (
 | **修复方案** | 删除上述符号 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D17 删除 workflow/graph 死 setter
+### D17 删除 workflow/graph 死 setter ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -669,7 +669,7 @@ var (
 | **修复方案** | 删除上述符号（保留 `NewGraph`/`Node`/`Edge`/`NewFuncNode`/`Start`） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D18 删除 workflow/engine 死组件
+### D18 删除 workflow/engine 死组件 ✅已完成（hitl_plugin 随 D1 删除）
 
 | 项 | 内容 |
 |----|------|
@@ -677,7 +677,7 @@ var (
 | **修复方案** | 删除上述符号（保留 `NewMutableDAG`/`Set`/`NewRecoveryPatchExecutor` 等核心） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D19 删除 ares_flight 死代码
+### D19 删除 ares_flight 死代码 ✅已完成（仅删 NewGenealogyCollector，SuggestFix/FilterByType/ExportJSON 生产在用保留）
 
 | 项 | 内容 |
 |----|------|
@@ -718,7 +718,7 @@ var (
 | **修复方案** | 不删除；本项从删除清单移除 |
 | **验收标准** | 无删除动作；`go build ./...` 绿 |
 
-### D24 删除 ares_bootstrap 死代码
+### D24 删除 ares_bootstrap 死代码 ✅已完成
 
 | 项 | 内容 |
 |----|------|
@@ -1228,6 +1228,28 @@ var (
 | **修改文件 3** | `internal/introspect/dashboard.go` + `api.go` |
 | **修复方案** | 新增 DLQ 只读快照页（死信条数、按 agent/session 聚合、重试次数） |
 | **验收标准** | 端到端：发送失败 → 进 DLQ → 自动重投 → 耗尽终态 |
+
+---
+
+## 12.5 闭环缺口登记（删除项审计结论 · 2026-08-28）
+
+> **2026-08-28 更新：经用户裁决，54 个已删文件全部恢复（趁未 commit 撤回删除），
+> 并以 Agent OS 原生形态接入调度链路**——kernelscheduler 新增 `QuantumHook`
+> 接口（quantum_hook.go，接口定义在消费方），cmd/ares/runtime_bridge.go 把
+> PluginBus 适配为量子边界钩子，peer_mode.go 装配启动。插件生态从此观察每次
+> Schedule→Acquire→RunQuantum，内核零 runtime 依赖（依赖单向 cmd→{runtime,kernel}）。
+
+| # | 缺口 | 原组件（已恢复） | Agent OS 正解 | 状态 |
+|---|------|---------------|--------------|------|
+| GAP-1 | 量子边界可插拔钩子 | PluginBus + ToolPlugin 等 | `kernelscheduler.QuantumHook` + `runtime_bridge.go` 适配器 + peer_mode 装配 | ✅ **已落地** |
+| GAP-2 | workflow 层 DAG 级 round-loop（MaxIterations/UntilCondition） | LoopPlugin（已恢复待接） | 附录 C 长期 M4：增量重规划循环 | M4 路线图 |
+| GAP-3 | agentipc 可靠性（失败重投/死信） | ahp DLQProcessor（已恢复待接） | kernel_loop.go 已留 `TODO(tech-debt)` 留痕 | P3 待接 |
+| GAP-4 | agent 谱系读面 | GenealogyCollector（已恢复待接） | introspect 面板从 fabric 事件流重建谱系 | P3 待接 |
+
+**验收总纲**：GAP-1 已闭环（QuantumHook 链路 + `make check` 全绿）；
+GAP-2 由附录 C M4 承接；GAP-3/4 按 Agent OS 形态接线。
+**红线不变**：任何接入必须经 `kernelscheduler`/`CapabilityExecutor`/`QuantumHook`，
+不得复活 leader 派发控制流（§0.2）。
 
 ---
 

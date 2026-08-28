@@ -353,6 +353,19 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 
 func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal, chaosType string) {
 	w.Header().Set("Content-Type", "application/json")
+
+	// W5 RBAC: destructive chaos (random-kill/kill-all/recover) requires the
+	// admin permission; the emergency stop is guarded by its own X-Chaos-Token
+	// below and is exempt. Previously every authenticated principal (operator
+	// JWT or API key) could trigger them — the declared "chaos is RoleAdmin
+	// only" policy was never enforced.
+	if chaosType != "stop" && !ares_security.HasPermission(princ.Role, ares_security.PermAdmin) {
+		h.auditAction("chaos-"+chaosType, "denied", princ, false)
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(w, map[string]any{"error": "insufficient role: chaos operations require admin permission"})
+		return
+	}
+
 	switch chaosType {
 	case "stop":
 		// Emergency stop for the live chaos loop (REVIEW #12 Phase 2). The
