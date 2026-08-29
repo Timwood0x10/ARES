@@ -24,7 +24,6 @@ func (e *panickingExecutor) RegisterFallback(_ models.AgentType, _ FallbackHandl
 // TestSubAgent_ProcessStream_PanicDoesNotCrash verifies that a panic inside
 // the ProcessStream goroutine is recovered, emits EventSubAgentFailed, and
 // delivers an error AgentEvent on the channel without crashing the process
-// (code_rules_v2 §4.2).
 func TestSubAgent_ProcessStream_PanicDoesNotCrash(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
 	exec := &panickingExecutor{}

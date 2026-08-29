@@ -166,6 +166,16 @@ test-tools:
 # All checks
 check: lint test
 
+# G1-G3 repair-plan gates: reachability, config contract, event contract.
+gate: 
+	@./scripts/g1_reachability_gate.sh
+	@bash scripts/g2_config_contract_gate.sh
+	@go test -run TestEventContract ./internal/ares_events/...
+
+# G4: nightly race + soak baseline (cron target).
+nightly: test-race
+	@echo "nightly: race suite passed; 12h soak is a separate scheduled job"
+
 # Combined check with coverage
 check-all: lint test-race test-core test-tools
 

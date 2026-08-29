@@ -2,10 +2,12 @@ package agentfabric
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -209,7 +211,7 @@ func TestChatCognitionTextOnly(t *testing.T) {
 
 // TestNewChatCognitionRejectsNoExecutionPath verifies the fail-loud contract:
 // a cognition with neither a chat client nor an adapter is a construction
-// error, never a phantom execution body (code_rules_v2 §0.2).
+// error, never a phantom execution body .
 func TestNewChatCognitionRejectsNoExecutionPath(t *testing.T) {
 	if _, err := NewChatCognition(ChatCognitionDeps{}); err == nil {
 		t.Fatal("construction without any execution path must fail")
@@ -219,3 +221,112 @@ func TestNewChatCognitionRejectsNoExecutionPath(t *testing.T) {
 // compile-time check: the fake binder satisfies the minimal ToolBinder shape
 // used by the cognition (not asserted elsewhere).
 var _ ToolBinder = (*fakeToolBinder)(nil)
+
+// capturingLLMAdapter records the prompt it was asked to generate from, so a
+// test can assert the W4 role instructions actually reached the LLM call.
+type capturingLLMAdapter struct {
+	prompt string
+}
+
+func (a *capturingLLMAdapter) Generate(_ context.Context, prompt string) (string, error) {
+	a.prompt = prompt
+	return `{"items":[{"item_id":"i1","name":"r","content":"text only"}]}`, nil
+}
+func (a *capturingLLMAdapter) GenerateWithParams(_ context.Context, prompt string, _ map[string]any) (string, error) {
+	a.prompt = prompt
+	return `{"items":[{"item_id":"i1","name":"r","content":"text only"}]}`, nil
+}
+func (a *capturingLLMAdapter) GenerateStructured(_ context.Context, _ string, _ string) (*models.RecommendResult, error) {
+	return nil, nil
+}
+func (a *capturingLLMAdapter) GenerateStream(_ context.Context, _ string) (<-chan output.StreamChunk, error) {
+	return nil, nil
+}
+func (a *capturingLLMAdapter) GetModel() string { return "mock" }
+
+// w4TestProfile is a minimal construction-time role for the W4 tests.
+func w4TestProfile() *agents.AgentProfile {
+	return &agents.AgentProfile{ID: "w4-test", Instructions: "W4-ROLE-INSTRUCTIONS"}
+}
+
+// TestChatCognitionConstructionProfilePinsRole is the W4 acceptance for the
+// fabric execution body (the production peer path): a cognition built with a
+// construction-time Profile prepends the profile instructions to the worker
+// prompt even though no Handoff switch ever ran — the config-pinned role
+// reaches the LLM through renderPromptAndParams's activeRoleInstructions.
+func TestChatCognitionConstructionProfilePinsRole(t *testing.T) {
+	adapter := &capturingLLMAdapter{}
+	cog, err := NewChatCognition(ChatCognitionDeps{
+		LLMAdapter:     adapter,
+		Template:       output.NewTemplateEngine(),
+		PromptTemplate: "do {{.input}}",
+		AgentID:        "w4-agent",
+		Profile:        w4TestProfile(),
+	})
+	if err != nil {
+		t.Fatalf("NewChatCognition: %v", err)
+	}
+	task := models.NewTask("t-w4", models.AgentType("code"), nil)
+	task.Payload = map[string]any{"task_desc": "work"}
+	if _, err := cog.ExecuteStep(context.Background(), task); err != nil {
+		t.Fatalf("ExecuteStep: %v", err)
+	}
+	if !strings.Contains(adapter.prompt, "W4-ROLE-INSTRUCTIONS") {
+		t.Fatalf("W4: construction-time profile instructions must reach the prompt, got %q", adapter.prompt)
+	}
+}
+
+// TestChatCognitionHandoffOverridesConstructionProfile pins the priority
+// contract: an explicit Handoff switch (profile in ctx, P0-3) wins over the
+// construction-time profile — the runtime role transition must stay
+// authoritative (code_rules: the pinned role is only a fallback).
+func TestChatCognitionHandoffOverridesConstructionProfile(t *testing.T) {
+	adapter := &capturingLLMAdapter{}
+	cog, err := NewChatCognition(ChatCognitionDeps{
+		LLMAdapter:     adapter,
+		Template:       output.NewTemplateEngine(),
+		PromptTemplate: "do {{.input}}",
+		AgentID:        "w4-agent",
+		Profile:        w4TestProfile(),
+	})
+	if err != nil {
+		t.Fatalf("NewChatCognition: %v", err)
+	}
+	handoff := &agents.AgentProfile{ID: "handoff", Instructions: "HANDOFF-INSTRUCTIONS"}
+	ctx := agents.WithProfile(context.Background(), handoff)
+	task := models.NewTask("t-w4h", models.AgentType("code"), nil)
+	task.Payload = map[string]any{"task_desc": "work"}
+	if _, err := cog.ExecuteStep(ctx, task); err != nil {
+		t.Fatalf("ExecuteStep: %v", err)
+	}
+	if strings.Contains(adapter.prompt, "W4-ROLE-INSTRUCTIONS") {
+		t.Fatal("Handoff profile must override the construction-time profile")
+	}
+	if !strings.Contains(adapter.prompt, "HANDOFF-INSTRUCTIONS") {
+		t.Fatalf("P0-3: Handoff instructions must reach the prompt, got %q", adapter.prompt)
+	}
+}
+
+// TestChatCognitionRolelessWhenNoProfile guards the default: without a
+// construction-time profile and without a Handoff switch the prompt carries no
+// role instructions block (no phantom role text).
+func TestChatCognitionRolelessWhenNoProfile(t *testing.T) {
+	adapter := &capturingLLMAdapter{}
+	cog, err := NewChatCognition(ChatCognitionDeps{
+		LLMAdapter:     adapter,
+		Template:       output.NewTemplateEngine(),
+		PromptTemplate: "do {{.input}}",
+		AgentID:        "plain-agent",
+	})
+	if err != nil {
+		t.Fatalf("NewChatCognition: %v", err)
+	}
+	task := models.NewTask("t-plain", models.AgentType("code"), nil)
+	task.Payload = map[string]any{"task_desc": "work"}
+	if _, err := cog.ExecuteStep(context.Background(), task); err != nil {
+		t.Fatalf("ExecuteStep: %v", err)
+	}
+	if strings.Contains(adapter.prompt, "W4-ROLE-INSTRUCTIONS") || strings.Contains(adapter.prompt, "HANDOFF-INSTRUCTIONS") {
+		t.Fatalf("roleless cognition must not carry role instructions, got %q", adapter.prompt)
+	}
+}

@@ -14,11 +14,14 @@
 //	ARES evolution status              Show evolution system status
 //	ARES flight inspect <taskID>       Inspect flight data
 //	ARES flight replay <taskID>        Replay flight data
-//	ARES workflow run <id> <input>     Execute a workflow
 //	ARES knowledge build <goal>        Build a knowledge graph (via HTTP API)
+//	ARES recall query <text>           Recall archived rounds by text
+//	ARES recall round <N>              Recall one archived round
+//	ARES evolution run [flags]         Run the GA evolution loop
+//	ARES status                        Show runtime status
+//	ARES init / run / bench            Scaffold, start dev runtime, run benchmarks
 //	ARES mcp-null serve                Start minimal MCP null server (stdio)
 //	ARES db migrate                    Run full DB migration
-//	ARES db setup-test                 Setup test database
 //	ARES db create-table               Create distilled_memories table
 //	ARES db check-rls                  Check RLS policies
 //	ARES version                       Show version

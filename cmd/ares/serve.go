@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
+	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -54,6 +55,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveLLMModel, "llm-model", "", "LLM model name (optional, provider default when empty)")
 }
 
+//nolint:gocyclo // runServe is the serve assembly hub; each step is extracted.
 func runServe() error {
 	// --- Config ---
 	cfg, err := loadServeConfig()
@@ -256,6 +258,19 @@ func runServe() error {
 	if err := registerCapabilitySearch(internalReg, comp.SkillsRegistry); err != nil {
 		return fmt.Errorf("register capability search: %w", err)
 	}
+
+	// W8 closure: expose the skill catalog as first-class agent tools
+	// (skill_search / skill_load / ...) so the LLM can drive progressive
+	// disclosure itself instead of only receiving the resident prompt block.
+	if comp.SkillCatalog != nil {
+		for _, t := range ares_skills.CatalogTools(comp.SkillCatalog) {
+			if err := internalReg.Register(t); err != nil {
+				log.Printf("serve: register skill tool %q skipped: %v", t.Name(), err)
+			}
+		}
+		log.Printf("serve: skill catalog tools registered (progressive disclosure active)")
+	}
+
 	toolBinder := newToolBinder(internalReg)
 	log.Printf("tools registered: %d", len(toolBinder.ListTools()))
 
@@ -306,7 +321,7 @@ func runServe() error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
-	// Sub-agents are execution units only (ares-runtime.md: agents are not
+	// Sub-agents are execution units only (ares-runtime: agents are not
 	// orchestrated, they are scheduled). The Kernel owns dispatch: the
 	// kernelScheduler drives each task through RunQuantum →
 	// sub.Agent.ExecuteStep; agents never subscribe to the event stream and
@@ -325,7 +340,7 @@ func runServe() error {
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	// A context cancellation (SIGINT/SIGTERM → graceful shutdown) surfaces as
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
-	// normalized to nil so `ares serve` exits 0 on Ctrl-C (code_rules_v2 §3.1).
+	// normalized to nil so `ares serve` exits 0 on Ctrl-C.
 	return normalizeShutdownErr(g.Wait())
 }
 

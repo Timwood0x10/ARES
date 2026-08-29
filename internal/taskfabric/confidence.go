@@ -1,7 +1,7 @@
 package taskfabric
 
 // ConfidenceSource supplies the experience-derived confidence for a task
-// pattern (design §8 of ares-runtime.md: Skill-first — the Experience
+// pattern (design  ares-runtime: Skill-first — the Experience
 // BestMatch SuccessRate is the natural confidence source feeding the
 // scheduler score: capability_overlap × (1-load) × confidence). The
 // interface is defined here on the consumer side (code_rules §5.2);

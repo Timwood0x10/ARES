@@ -10,7 +10,7 @@ import (
 // subsystem needs to revive an EQUIVALENT execution body in place:
 //
 //   - Cognitive: the agent's last CognitiveState, already carrying its
-//     SchemaVersion (the versioned-envelope requirement of code_rules_v2 §6.1
+//     SchemaVersion (the versioned-envelope requirement of code_rules
 //     — a bare map is forbidden here).
 //   - Capabilities: the declared capability set, so a revived body matches
 //     the scheduler's candidate scoring exactly as the dead one did.
@@ -95,7 +95,7 @@ func (s *snapshotStore) findByCapability(capability string) (string, AgentSnapsh
 // captureFromAgent copies the revivable facts off an agent about to be
 // removed by Kill. Callers must hold Fabric.mu; the cognitive field itself is
 // additionally guarded by the agent's own lock, so we take it briefly to get
-// a consistent copy (code_rules_v2 §4.3: shared-state ownership documented at
+// a consistent copy (code_rules: shared-state ownership documented at
 // the field).
 func captureFromAgent(a *Agent, diedAt time.Time) AgentSnapshot {
 	a.mu.RLock()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents"
@@ -12,6 +13,29 @@ import (
 	llm "github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
+
+// resolveRoleProfile returns the built-in AgentProfile for a role id, or nil
+// when the role is empty or unknown. The default profile set (agents.
+// DefaultProfiles) is a pure map keyed by profile ID, so a direct lookup
+// replaces the per-executor ProfileRegistry rebuild the W4 write side used to
+// do — no goroutine-unsafe shared registry, no O(n) re-registration in a hot
+// constructor loop. An unknown role is logged and resolves to nil so the peer
+// runs roleless rather than failing startup over a config typo (the same
+// degrade contract as the old registry.Get path). Shared by the static
+// createExecutor and the fabric ChatCognition body (newPeerChatCognition), so
+// both execution paths resolve a config role identically .
+func resolveRoleProfile(role string) *agents.AgentProfile {
+	if role == "" {
+		return nil
+	}
+	profiles := agents.DefaultProfiles()
+	profile, ok := profiles[role]
+	if !ok {
+		log.Printf("peer mode: unknown role %q, running roleless", role)
+		return nil
+	}
+	return profile
+}
 
 // createPeerSubAgents builds the sub.Agent executors for the C1 flat peer
 // population (cfg.Agents.Peers). Each peer's first capability is its primary
@@ -47,7 +71,7 @@ func createPeerSubAgents(
 			Priority:      p.Priority,
 			MaxToolRounds: p.MaxToolRounds,
 		}
-		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
+		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc, p.Role)
 		handler := sub.NewMessageHandler(p.ID)
 		agent := sub.New(
 			p.ID,
@@ -77,6 +101,7 @@ func createExecutor(
 	cfg *ares_config.Config,
 	subCfg ares_config.SubAgentConfig,
 	strategySrc agents.StrategySource,
+	role string,
 ) sub.TaskExecutor {
 	opts := []sub.TaskExecutorOption{
 		sub.WithChatClient(chatClient),
@@ -84,9 +109,16 @@ func createExecutor(
 	}
 	// Configurable tool-loop depth: max_tool_rounds per sub-agent overrides the
 	// executor default (5). 0/unset keeps the library default (config over
-	// magic constants, code_rules_v2).
+	// magic constants).
 	if subCfg.MaxToolRounds > 0 {
 		opts = append(opts, sub.WithMaxToolRounds(subCfg.MaxToolRounds))
+	}
+	// W4 write side: pin the configured role so every task context carries the
+	// profile instructions (consumed by activeRoleInstructions in the executor).
+	// Unknown role ids are logged and skipped — the agent runs roleless rather
+	// than failing startup over a config typo.
+	if profile := resolveRoleProfile(role); profile != nil {
+		opts = append(opts, sub.WithProfile(profile))
 	}
 	return sub.NewTaskExecutorWithValidation(
 		toolBinder,

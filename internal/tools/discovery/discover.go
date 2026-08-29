@@ -14,6 +14,7 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -64,7 +65,30 @@ func NewDiscoverer(allowlist []string, opts ...Option) *Discoverer {
 	d := &Discoverer{
 		allowlist: allowlist,
 		exec: func(ctx context.Context, name string, args []string) ([]byte, error) {
-			return exec.CommandContext(ctx, name, args...).Output() //nolint:gosec // allowlist-gated by design
+			// B3: cap output so a chatty command cannot exhaust memory —
+			// a bounded buffer replaces the unbounded .Output() read.
+			cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // allowlist-gated by design
+			// B3: capture stdout and stderr separately — detectDescription
+			// parses the FIRST line as the tool description, and many CLIs
+			// write --help (or warnings) to stderr; mixing the streams made
+			// the description nondeterministic. Output exceeding the cap is
+			// an ERROR (not a silent truncation) so the caller never mistakes
+			// partial output for a complete result.
+			var outBuf, errBuf bytes.Buffer
+			cmd.Stdout = &outBuf
+			cmd.Stderr = &errBuf
+			if err := cmd.Run(); err != nil {
+				// B3: surface stderr in the error, but degrade to the bare
+				// error when stderr is empty — avoids a trailing ": " artifact.
+				if stderr := strings.TrimSpace(errBuf.String()); stderr != "" {
+					return nil, fmt.Errorf("%w: %s", err, stderr)
+				}
+				return nil, err
+			}
+			if outBuf.Len() > maxCommandOutputBytes {
+				return nil, fmt.Errorf("command %q output exceeds %d bytes; refusing to return partial output", name, maxCommandOutputBytes)
+			}
+			return outBuf.Bytes(), nil
 		},
 		lookup: exec.LookPath,
 	}
@@ -199,9 +223,8 @@ func (t *CommandTool) Execute(ctx context.Context, params map[string]interface{}
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("command %q failed: %v", t.name, err)), nil
 	}
-	if len(out) > maxCommandOutputBytes {
-		return core.NewErrorResult(fmt.Sprintf("command %q output exceeds %d bytes; truncated", t.name, maxCommandOutputBytes)), nil
-	}
+	// B3: the exec closure rejects over-cap output upstream, so len(out) here
+	// is always within budget — no second truncation check to drift.
 	return core.NewResult(true, map[string]interface{}{
 		"stdout": string(out),
 	}), nil

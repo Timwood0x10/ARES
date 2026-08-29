@@ -308,7 +308,7 @@ func main() {
 }
 
 // mustRegisterGenome registers a genome and panics on failure (fatal during
-// setup, which code_rules_v2 allows for initialization errors).
+// setup, which code_rules allows for initialization errors).
 func mustRegisterGenome(r *genome.Registry, g genome.Genome) {
 	if err := r.Register(g); err != nil {
 		panic(fmt.Sprintf("register genome: %v", err))

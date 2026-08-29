@@ -42,8 +42,11 @@ func NewCompactableStoreWithArchive(cfg ares_config.ArchiveConfig) (
 ) {
 	mem := ares_events.NewMemoryEventStore()
 	repo := ares_events.NewMemorySummaryRepository()
+	// P1-2③: wire mem as the trim target so the compaction loop actually
+	// reclaims raw events (summarize → archive → trim). Passing nil left the
+	// in-memory store growing without bound even with EnableTrimming=true.
 	ces, err := ares_events.NewCompactableEventStore(
-		mem, repo, nil, ares_events.DefaultCompactionConfig(),
+		mem, repo, mem, ares_events.DefaultCompactionConfig(),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create compactable event store: %w", err)

@@ -30,11 +30,43 @@ const (
 // the two consumers independent (monitoring.md Phase 4).
 type Sink struct {
 	store *Store
+	// collab is the optional collaboration-edge producer (W2 closure). When
+	// set, lifecycle/task events are projected into agent→task edges so the
+	// panel's Collab tab shows the real work distribution instead of an
+	// always-empty graph.
+	collab *CollabReporter
 }
 
 // NewSink builds a sink feeding the given store.
 func NewSink(store *Store) *Sink {
 	return &Sink{store: store}
+}
+
+// WithCollab attaches the collaboration-edge producer. Returns the sink for
+// chaining. Nil is a no-op (Collab stays empty).
+func (s *Sink) WithCollab(c *CollabReporter) *Sink {
+	s.collab = c
+	return s
+}
+
+// recordCollab projects one event into a collaboration edge: the acting
+// agent (payload agent_id) connected to the affected task (payload task_id).
+// Events without an agent_id are not edges (system ticks, store internals).
+func (s *Sink) recordCollab(evt *ares_events.Event) {
+	if s.collab == nil || evt == nil {
+		return
+	}
+	agentID := str(evt.Payload["agent_id"])
+	if agentID == "" {
+		return
+	}
+	s.collab.Record(CollabEdge{
+		From:   agentID,
+		To:     str(evt.Payload["task_id"]),
+		Topic:  string(evt.Type),
+		TaskID: str(evt.Payload["task_id"]),
+		TS:     evt.Timestamp,
+	})
 }
 
 // Run subscribes and maps events until ctx is cancelled. Intended for
@@ -60,6 +92,7 @@ func (s *Sink) Run(ctx context.Context, eventStore ares_events.EventStore) error
 			if entry, mapped := MapTimelineEvent(evt); mapped {
 				s.store.PushEvent(entry)
 			}
+			s.recordCollab(evt)
 		}
 	}
 }

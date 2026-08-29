@@ -25,9 +25,9 @@ import (
 // not re-written, ported and stripped of the leader dependency. A fabric
 // agent spawned with a ChatCognition is a fully self-contained cognitive
 // process: it holds its LLM client and tool binder directly, no sub.Agent
-// wrapper. (code_rules_v2 §5.1: in the peer mode this is the single
+// wrapper. (code_rules: in the peer mode this is the single
 // production execution path; the legacy leader runtime was removed in
-// v0.4.0/C1.)
+// v0.3.1/C1.)
 
 // Event payload keys shared with the ares_events pipeline. They mirror the
 // sub executor's key names so both execution paths emit identical events.
@@ -42,12 +42,12 @@ const (
 // executor's default).
 const defaultMaxToolRounds = 5
 
-// stepSchemaVersion is the chatStepState schema version (code_rules_v2 §6.1:
+// stepSchemaVersion is the chatStepState schema version (code_rules:
 // snapshot structs carry a version; decodeChatStepState rejects unknown ones).
 const stepSchemaVersion = 1
 
 // ChatClient sends chat messages with tool support to the LLM (interface at
-// the consumer, code_rules_v2 §5.2). It is the minimal surface the tool-loop
+// the consumer, code_rules). It is the minimal surface the tool-loop
 // needs; *llm.FailoverClient and the sub executor's ChatClient both satisfy
 // it.
 type ChatClient interface {
@@ -55,7 +55,7 @@ type ChatClient interface {
 }
 
 // ToolBinder is the minimal tool execution surface the tool-loop needs
-// (interface at the consumer, code_rules_v2 §5.2). It mirrors the sub
+// (interface at the consumer, code_rules). It mirrors the sub
 // executor's binding contract so the same binder wires both paths.
 type ToolBinder interface {
 	CallTool(ctx context.Context, name string, args map[string]any) (any, error)
@@ -71,7 +71,7 @@ type ToolBinder interface {
 // final answer to completion. It is JSON round-trippable so it can ride the
 // fabric's opaque checkpoint slot across a yield→resume cycle, and the resume
 // path always decodes into a fresh copy so a stored checkpoint is never
-// mutated in place across quanta (code_rules_v2 §6.3).
+// mutated in place across quanta (code_rules).
 //
 // TaskID is the resume identity check (§6.2): a checkpoint that does not
 // belong to the task being resumed is refused instead of executed.
@@ -115,6 +115,13 @@ type ChatCognitionDeps struct {
 	Callbacks ares_callbacks.Emitter
 	// AgentID is the identity used for event emission.
 	AgentID string
+	// Profile is the construction-time agent role (W4). When set, its
+	// Instructions are prepended to the worker prompt as the default role
+	// instructions. It is the fallback for a peer pinned to a role via config
+	// (createPeerSubAgents / newPeerChatCognition); an explicit Handoff switch
+	// (a role carved into the execution context, P0-3) still takes precedence.
+	// Nil = no role instructions (the roleless peer).
+	Profile *agents.AgentProfile
 }
 
 // chatCognition is the A1.4 default Cognition: the tool-loop execution body
@@ -133,6 +140,7 @@ type chatCognition struct {
 	eventStore     ares_events.EventStore
 	callbacks      ares_callbacks.Emitter
 	agentID        string
+	profile        *agents.AgentProfile
 	logger         *slog.Logger
 }
 
@@ -140,7 +148,7 @@ var _ Cognition = (*chatCognition)(nil)
 
 // NewChatCognition constructs the default tool-loop Cognition (A1.4).
 // A nil deps is rejected so a mis-wired spawn fails loudly instead of
-// producing a phantom execution body (code_rules_v2 §0.2: no silent no-op).
+// producing a phantom execution body (code_rules: no silent no-op).
 func NewChatCognition(deps ChatCognitionDeps) (Cognition, error) {
 	if deps.ChatClient == nil && deps.LLMAdapter == nil {
 		return nil, errors.New("agentfabric: chat cognition requires ChatClient or LLMAdapter")
@@ -163,6 +171,7 @@ func NewChatCognition(deps ChatCognitionDeps) (Cognition, error) {
 		eventStore:     deps.EventStore,
 		callbacks:      deps.Callbacks,
 		agentID:        deps.AgentID,
+		profile:        deps.Profile,
 		logger:         slog.Default(),
 	}, nil
 }
@@ -259,8 +268,8 @@ func (c *chatCognition) ExecuteStep(ctx context.Context, task *models.Task) (*St
 // decodeChatStepState restores a resumable chatStepState from a task's
 // payload["checkpoint"] entry. It always decodes into a fresh copy via JSON
 // so the fabric's stored checkpoint is never mutated across quanta
-// (code_rules_v2 §6.3). Resume is refused when the checkpoint belongs to
-// another task (§6.2) or carries an unknown schema version (§6.1).
+// (code_rules). Resume is refused when the checkpoint belongs to
+// another task or carries an unknown schema version (§6.1).
 func (c *chatCognition) decodeChatStepState(task *models.Task) (*chatStepState, bool, error) {
 	if task == nil || task.Payload == nil {
 		return nil, false, nil
@@ -288,8 +297,7 @@ func (c *chatCognition) decodeChatStepState(task *models.Task) (*chatStepState, 
 
 // chatStep advances a tool-calling execution by exactly one ReAct round: one
 // Chat API call, every requested tool call executed, and the resulting
-// messages appended to the state. It is the single loop body of the cognition
-// (code_rules_v2 §5.1).
+// messages appended to the state. It is the single loop body of the cognition.
 //
 // Contract: the caller has verified st.Round < st.MaxRounds.
 func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*models.RecommendItem, bool, error) {
@@ -404,7 +412,7 @@ func (c *chatCognition) renderPromptAndParams(ctx context.Context, task *models.
 	// P0-3: prepend the active role's system instructions when the execution
 	// was switched to a specialized role via Handoff (Ch.10 multi-stage role
 	// transition).
-	if instructions := activeRoleInstructions(ctx); instructions != "" {
+	if instructions := c.activeRoleInstructions(ctx); instructions != "" {
 		prompt = instructions + "\n\n" + prompt
 	}
 	c.logger.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
@@ -537,11 +545,18 @@ func formatBudget(budget *models.PriceRange) string {
 	return fmt.Sprintf("%.0f - %.0f", budget.Min, budget.Max)
 }
 
-// activeRoleInstructions returns the system instructions of the role that the
-// leader switched to via Handoff (see agents.GetFromContext), or an empty
-// string when no role is active in the context.
-func activeRoleInstructions(ctx context.Context) string {
+// activeRoleInstructions returns the system instructions to prepend to the
+// worker prompt. An explicit Handoff switch (a role carved into the execution
+// context via agents.GetFromContext, P0-3) wins; otherwise it falls back to
+// the cognition's construction-time profile (Profile from ChatCognitionDeps,
+// W4). Empty string = no role instructions. The ctx-first order keeps P0-3
+// runtime role transitions authoritative while a config-pinned peer still gets
+// its role instructions without an explicit Handoff.
+func (c *chatCognition) activeRoleInstructions(ctx context.Context) string {
 	profile := agents.GetFromContext(ctx)
+	if profile == nil {
+		profile = c.profile
+	}
 	if profile == nil {
 		return ""
 	}

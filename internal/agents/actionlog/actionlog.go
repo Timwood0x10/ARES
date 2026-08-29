@@ -52,7 +52,7 @@ func NewStore() *Store {
 }
 
 // Append records an action. The entry's ID must be non-empty; duplicates are
-// rejected so replay can rely on stable IDs (code_rules_v2 §6.4 idempotency).
+// rejected so replay can rely on stable IDs (code_rules idempotency).
 func (s *Store) Append(ctx context.Context, e Entry) error {
 	if e.ID == "" {
 		return errors.New("actionlog: entry ID must not be empty")

@@ -135,7 +135,7 @@ func TestExecuteStepTextOnlySingleQuantum(t *testing.T) {
 }
 
 // TestExecuteStepRefusesForeignCheckpoint verifies the resume identity check
-// (code_rules_v2 §6.2): a checkpoint recorded for another task must be refused.
+// code_rules: a checkpoint recorded for another task must be refused.
 func TestExecuteStepRefusesForeignCheckpoint(t *testing.T) {
 	e := newStepExecutor(t, &scriptedChatClient{rounds: []func(messages []*core.LLMMessage) *core.GenerateResponse{
 		func(messages []*core.LLMMessage) *core.GenerateResponse {
@@ -151,7 +151,7 @@ func TestExecuteStepRefusesForeignCheckpoint(t *testing.T) {
 }
 
 // TestExecuteStepRejectsUnknownSchema verifies the checkpoint schema guard
-// (code_rules_v2 §6.1): an unsupported schema version must be refused on resume.
+// code_rules: an unsupported schema version must be refused on resume.
 func TestExecuteStepRejectsUnknownSchema(t *testing.T) {
 	e := newStepExecutor(t, &scriptedChatClient{rounds: []func(messages []*core.LLMMessage) *core.GenerateResponse{
 		func(messages []*core.LLMMessage) *core.GenerateResponse {

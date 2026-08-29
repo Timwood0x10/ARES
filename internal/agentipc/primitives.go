@@ -34,6 +34,8 @@ func (b *Bus) Send(ctx context.Context, from, to, topic string, payload any) err
 	h, ok := b.handlers[to]
 	b.mu.RUnlock()
 	if !ok {
+		// GAP-3: the target does not exist — the message is undeliverable.
+		b.deadLetters.Record(from, to, topic, payload, ErrAgentNotRegistered.Error())
 		return ErrAgentNotRegistered
 	}
 	msg := &Message{
@@ -45,6 +47,10 @@ func (b *Bus) Send(ctx context.Context, from, to, topic string, payload any) err
 		At:      b.allocNow(),
 	}
 	_, err := h(ctx, msg)
+	if err != nil {
+		// GAP-3: record undelivered/failed fire-and-forget sends.
+		b.deadLetters.Record(from, to, topic, payload, err.Error())
+	}
 	return err
 }
 
@@ -134,14 +140,18 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 		if reply == nil {
 			// A nil reply signals a handler error — pull it from the stash.
 			if err := b.popError(corrID); err != nil {
+				b.deadLetters.Record(from, to, topic, payload, err.Error())
 				return nil, err
 			}
+			b.deadLetters.Record(from, to, topic, payload, ErrTimeout.Error())
 			return nil, ErrTimeout
 		}
 		return reply, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timer.C:
+		// GAP-3: preserve the failed request for observability/redelivery.
+		b.deadLetters.Record(from, to, topic, payload, ErrTimeout.Error())
 		return nil, ErrTimeout
 	}
 }

@@ -9,14 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -199,11 +203,11 @@ var arenaServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start arena HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// P1-9: Injector currently passes nil for both providers — all chaos
-		// injection APIs return ErrRuntimeNil/ErrDAGNil. To wire: construct
-		// a RuntimeProvider adapter from the kernel handle's runtime and a
-		// DAGProvider adapter from the live mutable DAG, then pass them here.
-		inj := arena.NewInjector(nil, nil)
+		// P1-9 closure: real providers — chaos injections now operate on the
+		// arena process's own agent pool and mutable DAG (see
+		// buildArenaInjector / arenaRuntimeProvider / arenaDAGProvider).
+		inj, arenaMgr := buildArenaInjector()
+		defer func() { _ = arenaMgr.Stop() }()
 		// Share the evolution components' evidence store so chaos failures land
 		// in the same store the GA genomes consume for fitness evaluation.
 		ev, err := getNewEvolution()
@@ -662,4 +666,108 @@ func stringOr(m map[string]any, key, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// arenaRuntimeProvider adapts the arena process's own ares_runtime.Manager to
+// arena.RuntimeProvider. Manager implements the chaos methods natively
+// (manager_chaos.go); the explicit delegation keeps the adapter decoupled
+// from interface drift on either side.
+type arenaRuntimeProvider struct{ mgr *ares_runtime.Manager }
+
+func (p *arenaRuntimeProvider) StopAgent(ctx context.Context, agentID string) error {
+	return p.mgr.StopAgent(ctx, agentID)
+}
+
+func (p *arenaRuntimeProvider) ListAgents() []ares_runtime.AgentInfo {
+	return p.mgr.ListAgents()
+}
+
+func (p *arenaRuntimeProvider) PauseAgent(ctx context.Context, agentID string) error {
+	return p.mgr.PauseAgent(ctx, agentID)
+}
+
+func (p *arenaRuntimeProvider) ResumeAgent(ctx context.Context, agentID string) error {
+	return p.mgr.ResumeAgent(ctx, agentID)
+}
+
+func (p *arenaRuntimeProvider) SlowAgent(ctx context.Context, agentID string, delay time.Duration) error {
+	return p.mgr.SlowAgent(ctx, agentID, delay)
+}
+
+func (p *arenaRuntimeProvider) PartitionNetwork(ctx context.Context, agentID string) error {
+	return p.mgr.PartitionNetwork(ctx, agentID)
+}
+
+func (p *arenaRuntimeProvider) ToolTimeout(ctx context.Context, agentID string, timeout time.Duration) error {
+	return p.mgr.ToolTimeout(ctx, agentID, timeout)
+}
+
+func (p *arenaRuntimeProvider) CorruptMemory(ctx context.Context, agentID string) error {
+	return p.mgr.CorruptMemory(ctx, agentID)
+}
+
+func (p *arenaRuntimeProvider) DisconnectMCP(ctx context.Context, agentID string) error {
+	return p.mgr.DisconnectMCP(ctx, agentID)
+}
+
+func (p *arenaRuntimeProvider) InjectLLMFailure(ctx context.Context, agentID string, errType string) error {
+	return p.mgr.InjectLLMFailure(ctx, agentID, errType)
+}
+
+// arenaDAGProvider adapts a workflow engine MutableDAG to arena.DAGProvider.
+// The DAG snapshot supplies node/edge listings; mutations delegate to the
+// live mutable DAG so evolution patches and chaos removals share one graph.
+type arenaDAGProvider struct{ dag *engine.MutableDAG }
+
+// ListNodes implements arena.DAGProvider.
+func (p *arenaDAGProvider) ListNodes(_ context.Context) []string {
+	snap := p.dag.Snapshot()
+	ids := make([]string, 0, len(snap.Nodes))
+	for id := range snap.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ListEdges implements arena.DAGProvider.
+func (p *arenaDAGProvider) ListEdges(_ context.Context) [][2]string {
+	snap := p.dag.Snapshot()
+	var edges [][2]string
+	for from, tos := range snap.Edges {
+		for _, to := range tos {
+			edges = append(edges, [2]string{from, to})
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i][0] != edges[j][0] {
+			return edges[i][0] < edges[j][0]
+		}
+		return edges[i][1] < edges[j][1]
+	})
+	return edges
+}
+
+// RemoveNode implements arena.DAGProvider.
+func (p *arenaDAGProvider) RemoveNode(ctx context.Context, id string) error {
+	return p.dag.RemoveNode(ctx, id)
+}
+
+// RemoveEdge implements arena.DAGProvider.
+func (p *arenaDAGProvider) RemoveEdge(ctx context.Context, from, to string) error {
+	return p.dag.RemoveEdge(ctx, from, to)
+}
+
+// buildArenaInjector assembles the arena fault injector against REAL runtime
+// and DAG providers (P1-9 closure). The arena process owns its own Manager
+// (chaos demo agents register here) and its own mutable DAG (evolution
+// genomes may reshape it during the run).
+func buildArenaInjector() (*arena.Injector, *ares_runtime.Manager) {
+	mgr := ares_runtime.New(nil, nil, nil)
+	dag, err := engine.NewMutableDAG(nil)
+	if err != nil {
+		log.Printf("arena serve: mutable DAG unavailable (%v); DAG injections disabled", err)
+		return arena.NewInjector(&arenaRuntimeProvider{mgr: mgr}, nil), mgr
+	}
+	return arena.NewInjector(&arenaRuntimeProvider{mgr: mgr}, &arenaDAGProvider{dag: dag}), mgr
 }

@@ -8,7 +8,7 @@ import (
 )
 
 // TestCognitiveStateSchemaVersionMigration is the A2 schema migration test
-// (code_rules_v2 §6.1): DecodeCognitiveState accepts the current version and
+// code rules : DecodeCognitiveState accepts the current version and
 // legacy v0 (pre-A2 zero value), and rejects a future version instead of
 // silently misinterpreting it.
 func TestCognitiveStateSchemaVersionMigration(t *testing.T) {

@@ -15,7 +15,7 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 //	err   → FAILED (or requeued to READY per retry policy)
 //	!done → SUSPENDED with the checkpoint preserved
 //
-// SUSPENDED semantics (2026-08-16 lock, ares-runtime.md §SUSPENDED 语义锁定):
+// SUSPENDED semantics:
 // the agent's execution quantum ended, but the task's durable intent is NOT
 // yet complete — this is not "the agent was suspended". Task suspended ≠
 // Agent suspended ≠ Execution yielded. Continue is the Scheduler's decision

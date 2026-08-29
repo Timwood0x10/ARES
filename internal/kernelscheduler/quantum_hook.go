@@ -8,7 +8,7 @@ import (
 // QuantumHook is the extension contract at the quantum boundary. The scheduler
 // invokes it around every RunQuantum so observational plugins (metrics,
 // audit, tool allowlist) can participate in scheduling without the kernel
-// depending on any concrete plugin package (code_rules_v2 §5.2: the interface
+// depending on any concrete plugin package (code_rules: the interface
 // lives with the consumer).
 //
 // Contract:

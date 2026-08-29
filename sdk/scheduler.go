@@ -12,8 +12,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
-// This file implements the H1/H2 merge (aresos-agentos-plan H1/H2: 合并 SDK
-// 和 kernel 两条路径 — sdk.Runtime.Submit goes through the Task Fabric and the
+// This file implements the H1/H2 merge (aresos-agentos-plan H1/H2: merge SDK
+// and kernel two paths — sdk.Runtime.Submit goes through the Task Fabric and the
 // shared kernelscheduler, not a divergent direct-run path). The SDK is a
 // peer-runtime facade over the SAME scheduling engine the kernel uses:
 //
@@ -119,13 +119,19 @@ func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, 
 	}); err != nil {
 		return nil, fmt.Errorf("sdk submit: %w", err)
 	}
+	// B32: reclaim the task on EVERY exit path. The two terminal branches
+	// below delete explicitly (to read the result first); this defer covers
+	// timeout / ctx cancellation / unexpected returns so a long-lived SDK
+	// session cannot leak abandoned tasks in the fabric.
+	defer func() {
+		_ = r.sdkFabric.Delete(taskID)
+	}()
 
 	// Wait for a terminal state. A timeout, when set (> 0), bounds the
 	// whole wait (and the execution — the executor receives the same
 	// context). When <=0, no deadline is applied beyond the caller's ctx.
 	// The wait context propagates DeadlineExceeded so a timed-out Submit
-	// surfaces a deadline-exceeded cause, never a generic error
-	// (code_rules_v2 §3.1).
+	// surfaces a deadline-exceeded cause, never a generic error.
 	var waitCtx context.Context
 	if t.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -150,6 +156,7 @@ func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, 
 			}
 			switch tk.State {
 			case taskfabric.StateCompleted:
+				// B32: the deferred Delete reclaims the task on every path.
 				return r.resultFromFabric(tk)
 			case taskfabric.StateFailed:
 				return nil, fmt.Errorf("sdk submit: task %s failed", taskID)
@@ -179,7 +186,7 @@ func (r *Runtime) resultFromFabric(tk *taskfabric.Task) (*Result, error) {
 				// (e.g. a JSON round-trip once the fabric persists) — do NOT
 				// silently return an empty Result and lose the output. Surface
 				// it so the caller sees a real error instead of a blank
-				// success (code_rules_v2 §3.1: no silent degradation).
+				// success (code_rules: no silent degradation).
 				return nil, fmt.Errorf("sdk submit: result checkpoint has unexpected type %T (expected *Result); output lost across a serialization boundary", raw)
 			}
 		}

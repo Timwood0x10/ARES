@@ -63,8 +63,7 @@ func (a *evolutionTrajectoryAdapter) EvolutionTrajectory() []map[string]any {
 			changes, _ := views[i+1]["changes"].([]map[string]any)
 			for _, c := range changes {
 				// Guard every decode: TrajectoryViews owns this shape today,
-				// but a malformed entry must not panic the dashboard handler
-				// (code_rules_v2 §4.2).
+				// but a malformed entry must not panic the dashboard handler.
 				sid, _ := c["strategy_id"].(string)
 				if sid == "" {
 					continue

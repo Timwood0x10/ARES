@@ -14,7 +14,7 @@ import (
 var ErrStateSnapshotNotFound = errors.New("state snapshot: not found")
 
 // currentStateSnapshotVersion is the schema version of StateSnapshot payloads.
-// Bump it when StateSnapshot's serialized shape changes (code_rules_v2 §6.1).
+// Bump it when StateSnapshot's serialized shape changes.
 const currentStateSnapshotVersion = 1
 
 // StateSnapshot is a versioned, serializable snapshot of runtime state,
@@ -30,7 +30,7 @@ type StateSnapshot struct {
 
 // SaveStateSnapshot serializes and durably writes a state snapshot under key.
 // The snapshot carries SchemaVersion so a future Load can reject payloads
-// written by an incompatible schema (code_rules_v2 §6.1/§6.2).
+// written by an incompatible schema version.
 func SaveStateSnapshot(ctx context.Context, store CheckpointStore, key string, state map[string]any) error {
 	if store == nil {
 		return errors.New("state snapshot: checkpoint store must not be nil")
@@ -54,7 +54,7 @@ func SaveStateSnapshot(ctx context.Context, store CheckpointStore, key string, s
 
 // LoadStateSnapshot reads a snapshot from the store and validates its schema
 // version. A payload with an unknown/newer schema version is rejected rather
-// than blindly restored (code_rules_v2 §6.2: identity/version check before
+// than blindly restored (code_rules: identity/version check before
 // recovery). Returns ErrStateSnapshotNotFound when no snapshot exists under
 // key.
 func LoadStateSnapshot(ctx context.Context, store CheckpointStore, key string) (*StateSnapshot, error) {

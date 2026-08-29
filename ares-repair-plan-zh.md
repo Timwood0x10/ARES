@@ -405,7 +405,7 @@ var (
 | **修复方案** | 为远程技能设置 Path=manifest URL；Loader/Load/ListReferences/LoadReference 检测 HTTP URL 前缀并返回明确错误 |
 | **验收标准** | ✅ 编译通过，ares_skills 测试通过 |
 
-### P1-9 arena 注入器空接线（workflow plan 7.A A1）
+### P1-9 arena 注入器空接线 ✅已完成（buildArenaInjector：真实 RuntimeProvider 代理 Manager + DAGProvider 适配 MutableDAG）
 
 | 项目 | 内容 |
 |------|------|
@@ -414,7 +414,7 @@ var (
 | **修复方案** | 为 `RuntimeProvider`/`DAGProvider` 提供生产实现，把 kernelHandle 的 runtime 与 live DAG 适配进去 |
 | **验收标准** | 至少一个注入动作（如 KillAgent）端到端生效 |
 
-### P1-10 profile 注入断裂（workflow plan 7.A A2）
+### P1-10 profile 注入断裂（workflow plan 7.A A2）✅ 已完成
 
 | 项目 | 内容 |
 |------|------|
@@ -422,12 +422,13 @@ var (
 | **文件:方法** | `internal/agents/profile.go:157` `ApplyToContext`；`chat_cognition.go:544`、`sub/executor.go:562` 消费端 |
 | **修复方案** | 在 agent spawn / cognition 初始化处调用 `ApplyToContext` 写入选定 profile；把 `ProfileRegistry` 接入生产依赖 |
 | **验收标准** | 端到端测试：生产路径下 `activeRoleInstructions` 非空 |
+| **落地** | 双执行体写侧已接通：sub executor 走 `sub.WithProfile`（`createExecutor`，peer_agents.go）；fabric ChatCognition（peer 生产执行体）新增 `ChatCognitionDeps.Profile`，由 `newPeerChatCognition` 按 peers 配置的 `role` 经共享 `resolveRoleProfile` 解析注入。优先级：ctx 内 Handoff 切换（P0-3）> 构造期固定 role；未知 role 降级为 roleless 并记日志。测试：`TestChatCognitionConstructionProfilePinsRole`（prompt 实携指令）、`TestChatCognitionHandoffOverridesConstructionProfile`（P0-3 优先）、`TestResolveRoleProfile*` |
 
 ---
 
 ## 4. Phase 2：伪接线闭环——接线项（第 2-3 周）
 
-### W1 可观测性接线
+### W1 可观测性接线 ✅已完成（Prometheus+/metrics/Tracer/CostDashboard 三端点已挂）
 
 | 项 | 内容 |
 |----|------|
@@ -436,7 +437,7 @@ var (
 | **修复方案** | ① `api/service/llm.Config` 增 Tracer 字段；② `cmd/ares serve` 构造 `NewPrometheusMetrics` 并注册；③ CostDashboard 三端点挂到 introspect 路由 |
 | **验收标准** | `curl /metrics` 出现 `ares_llm_calls_total` 等自定义指标 |
 
-### W2 事件对齐 + 面板数据闭环
+### W2 事件对齐 + 面板数据闭环 ✅已完成（EventSubTaskResult 发布+订阅、FeedIntel、flight 映射、Tasks/Decisions/Collab 三 Source 全接——Collab 由 Sink 从事件流投影协作边）
 
 | 项 | 内容 |
 |----|------|
@@ -454,7 +455,7 @@ var (
 | **修复方案** | 读 `cfg.Evolution` 的 14 个参数构造 `SystemConfig`，ticker 读 `MinInterval` |
 | **验收标准** | 改 yaml → 参数生效的等价性测试通过 |
 
-### W4 ProfileRegistry 写侧
+### W4 ProfileRegistry 写侧 ✅ 已完成（同 P1-10，见上方「落地」）
 
 | 项 | 内容 |
 |----|------|
@@ -472,7 +473,7 @@ var (
 | **修复方案** | chaos kill-all/random-kill/recover 路由 require `PermAdmin`；API key 保持 read/write 分级 |
 | **验收标准** | operator JWT 调 kill-all 返回 403；admin JWT 通过 |
 
-### W6 SDK Close 闭环
+### W6 SDK Close 闭环 ✅已完成（sdk.go Close 全路径释放；B32 Submit 终态+超时均 Delete）
 
 | 项 | 内容 |
 |----|------|
@@ -481,7 +482,7 @@ var (
 | **修复方案** | Bootstrap 成功路径的 cleanups 存到 Runtime，Close 顺序执行（先 `eg.Wait` 再 cleanups 再 SDK 侧资源） |
 | **验收标准** | `WithPostgres` 场景 Close 后连接池归零；无连接泄漏 |
 
-### W7 Kernel.PollInterval / Server.Host 接线
+### W7 Kernel.PollInterval / Server.Host 接线 ✅PollInterval 已注入；Server.Host 定为 display-only（C4 决策，改绑定地址属行为变更另行立项）
 
 | 项 | 内容 |
 |----|------|
@@ -490,7 +491,7 @@ var (
 | **修复方案** | kernel_loop/serve_routine 读 cfg 注入；或从 config 删除并从 yaml 示例移除 |
 | **验收标准** | 改 yaml 的 `kernel.poll_interval` → 调度器 ticker 间隔变化 |
 
-### W8 技能反馈闭环
+### W8 技能反馈闭环 ✅已完成（Recorder 订阅 sub_task.result + CatalogTools 注册进 internalReg + ExperienceConfidenceSource→fabric.WithConfidenceSource）
 
 | 项 | 内容 |
 |----|------|
@@ -521,7 +522,7 @@ var (
 
 ## 5. Phase 3：伪接线闭环——删除项（第 3-4 周）
 
-### D1 删除 ares_runtime 插件生态 ✅已完成
+### D1 ares_runtime 插件生态 ✅已恢复并接入（QuantumHook 链路，见 §12.5 GAP-1）
 
 | 项 | 内容 |
 |----|------|
@@ -529,7 +530,7 @@ var (
 | **修复方案** | 删除上述符号及其实现文件（或移入 `internal/experimental/`） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D2 删除 ares_shutdown 四个未接线组件 ✅已完成
+### D2 ares_shutdown 组件 ✅已恢复（保留双轨：内联链 + SignalHandler 待选型）
 
 | 项 | 内容 |
 |----|------|
@@ -537,7 +538,7 @@ var (
 | **修复方案** | 删除上述 4 个组件文件（保留 `Manager` 主体：`NewManager`/`RegisterPhase`/`AddCallback`/`StartShutdown`） |
 | **验收标准** | `go build ./...` 绿；serve 正常启停 |
 
-### D3 删除 ares_ratelimit 三个未接线实现 ✅已完成
+### D3 ares_ratelimit 实现 ✅已恢复（TokenBucket 生产主用，SlidingWindow/Semaphore 备用）
 
 | 项 | 内容 |
 |----|------|
@@ -597,7 +598,7 @@ var (
 | **修复方案** | ① 修复 `GetTool` 数据竞争；② `Set*` 加锁（sub.Agent 生产在用，SetEventStore 由运行时调用会竞争）；③ handler 空实现补注释或实现 |
 | **验收标准** | `go build ./...` 绿；`-race` 测试通过 |
 
-### D10 删除 ares_protocol/ahp 死子系统 ✅已完成（仅删 Protocol/DLQ/Codec，保留 AHPMessage/Queue/Heartbeat 等生产引用）
+### D10 ares_protocol/ahp ⛔已恢复（X3 裁决被用户全量恢复推翻；DLQ 能力待 GAP-3 原生接入）
 
 | 项 | 内容 |
 |----|------|
@@ -616,7 +617,7 @@ var (
 | **修复方案** | 不删除；在包注释标注"SDK 公共接口，不直接接入内核" |
 | **验收标准** | 无删除动作；`go build ./...` 绿 |
 
-### D12 删除 llm/output 死代码 ✅已完成（删 timeout.go，NewTemplateEngine 生产在用保留）
+### D12 llm/output ✅已恢复全量（timeout.go 亦恢复；NewTemplateEngine 生产在用）
 
 | 项 | 内容 |
 |----|------|
@@ -669,7 +670,7 @@ var (
 | **修复方案** | 删除上述符号（保留 `NewGraph`/`Node`/`Edge`/`NewFuncNode`/`Start`） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D18 删除 workflow/engine 死组件 ✅已完成（hitl_plugin 随 D1 删除）
+### D18 workflow/engine 组件 ✅已恢复（hitl_plugin 待 M5 HITL 接线）
 
 | 项 | 内容 |
 |----|------|
@@ -677,7 +678,7 @@ var (
 | **修复方案** | 删除上述符号（保留 `NewMutableDAG`/`Set`/`NewRecoveryPatchExecutor` 等核心） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D19 删除 ares_flight 死代码 ✅已完成（仅删 NewGenealogyCollector，SuggestFix/FilterByType/ExportJSON 生产在用保留）
+### D19 ares_flight ✅已恢复（GenealogyCollector 已自动接线，GAP-4 闭环）
 
 | 项 | 内容 |
 |----|------|
@@ -693,7 +694,7 @@ var (
 | **修复方案** | 删除未使用的 `output` 参数 |
 | **验收标准** | `go build ./...` 绿 |
 
-### D21 删除 ares_security 死代码
+### D21 ares_security 死代码 ✅已自然消解（Wrap/WrapGin/SanitizeLog 已不存在；HasPermission 被 W5 RBAC 收编为生产代码——标记作废）
 
 | 项 | 内容 |
 |----|------|
@@ -701,7 +702,7 @@ var (
 | **修复方案** | 删除上述符号（保留 `Verify`/`checkAuth`/`NewAuthMiddleware`/`NewAuditLogger` 核心） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
 
-### D22 删除 ares_arena 死代码
+### D22 ares_arena ✅已恢复（CalculateScore 3 参数签名 + MetricsSnapshot 完整版）
 
 | 项 | 内容 |
 |----|------|
@@ -1010,7 +1011,7 @@ var (
 | **修复方案** | 移出只读面或改挂 actionHandler（带鉴权） |
 | **验收标准** | POST feedback 有鉴权 |
 
-### B36 修复 `internal/errors.Wrapf` append 污染 bug
+### B36 修复 `internal/errors.Wrapf` append 污染 bug ✅已完成（wrap.go 已是 Sprintf+Wrap，回归测试 TestWrapfDoesNotMutateArgs 在）
 
 | 项 | 内容 |
 |----|------|
@@ -1243,8 +1244,8 @@ var (
 |---|------|---------------|--------------|------|
 | GAP-1 | 量子边界可插拔钩子 | PluginBus + ToolPlugin 等 | `kernelscheduler.QuantumHook` + `runtime_bridge.go` 适配器 + peer_mode 装配 | ✅ **已落地** |
 | GAP-2 | workflow 层 DAG 级 round-loop（MaxIterations/UntilCondition） | LoopPlugin（已恢复待接） | 附录 C 长期 M4：增量重规划循环 | M4 路线图 |
-| GAP-3 | agentipc 可靠性（失败重投/死信） | ahp DLQProcessor（已恢复待接） | kernel_loop.go 已留 `TODO(tech-debt)` 留痕 | P3 待接 |
-| GAP-4 | agent 谱系读面 | GenealogyCollector（已恢复待接） | introspect 面板从 fabric 事件流重建谱系 | P3 待接 |
+| GAP-3 | agentipc 可靠性（失败重投/死信） | ahp DLQProcessor（已恢复） | **agentipc 原生 DeadLetterStore**（deadletter.go）：Send/Request 失败自动入环形容器，`bus.DeadLetters()` 可观测；超预算自动驱逐最旧 | ✅ **已落地** |
+| GAP-4 | agent 谱系读面 | GenealogyCollector（已恢复） | `NewFlightRecorder` 在 EventStore 存在时自动构建 GenealogyCollector（recorder.go:51），bootstrap 已传 EventStore——谱系随飞行记录自动填充 | ✅ **已闭环** |
 
 **验收总纲**：GAP-1 已闭环（QuantumHook 链路 + `make check` 全绿）；
 GAP-2 由附录 C M4 承接；GAP-3/4 按 Agent OS 形态接线。

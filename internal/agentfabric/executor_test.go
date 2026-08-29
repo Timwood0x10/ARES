@@ -110,7 +110,7 @@ func TestSpawnedAgentYieldCarriesCheckpoint(t *testing.T) {
 // TestSpawnedAgentWithoutCognitionNotExecutable verifies the negative case:
 // an agent spawned without a CognitionFactory is managed but not executable —
 // ExecuteStep fails with ErrAgentNotExecutable instead of panicking or
-// silently returning an empty success (code_rules_v2 §0.2: 禁止假实现).
+// silently returning an empty success.
 func TestSpawnedAgentWithoutCognitionNotExecutable(t *testing.T) {
 	f := NewFabric()
 	a, err := f.Spawn(context.Background(), SpawnSpec{

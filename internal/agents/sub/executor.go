@@ -35,7 +35,7 @@ type ChatClient interface {
 
 const defaultMaxToolRounds = 5
 
-// stepSchemaVersion is the current chatStepState schema (code_rules_v2 §6.1:
+// stepSchemaVersion is the current chatStepState schema (code_rules:
 // snapshot structs carry a version; decodeChatStepState rejects unknown ones).
 const stepSchemaVersion = 1
 
@@ -46,9 +46,9 @@ const stepSchemaVersion = 1
 // final answer to completion. It is JSON round-trippable so it can ride the
 // fabric's opaque checkpoint slot across a yield→resume cycle, and the resume
 // path always decodes into a fresh copy so a stored checkpoint is never
-// mutated in place across quanta (code_rules_v2 §6.3).
+// mutated in place across quanta .
 //
-// TaskID is the resume identity check (§6.2): a checkpoint that does not
+// TaskID is the resume identity check: a checkpoint that does not
 // belong to the task being resumed is refused instead of executed.
 type chatStepState struct {
 	SchemaVersion int                `json:"schema_version"`
@@ -79,6 +79,10 @@ type taskExecutor struct {
 	agentID          string                 // Agent ID for event emission
 	ares_callbacks   ares_callbacks.Emitter // Optional: emits lifecycle callback ares_events.
 	fallbackHandlers map[models.AgentType]FallbackHandler
+	// profile is the agent role (W4). When set, Execute/ExecuteStep apply it
+	// into the task context so activeRoleInstructions reads the role's
+	// instructions — closing the read-side contract in agents/profile.go.
+	profile *agents.AgentProfile
 }
 
 // TaskExecutorOption configures a taskExecutor instance during construction.
@@ -87,10 +91,28 @@ type TaskExecutorOption func(*taskExecutor)
 // WithTaskExecutorCallbacks returns a TaskExecutorOption that sets the callback emitter.
 // The emitter will receive lifecycle ares_events (tool.start, tool.end, tool.error)
 // during task execution.
+// WithTaskExecutorCallbacks returns a TaskExecutorOption that wires the given
+// emitter as the lifecycle callback sink.
 func WithTaskExecutorCallbacks(emitter ares_callbacks.Emitter) TaskExecutorOption {
 	return func(e *taskExecutor) {
 		e.ares_callbacks = emitter
 	}
+}
+
+// WithProfile returns a TaskExecutorOption that pins the agent role. The
+// profile is applied into every task context (W4 write side), so the read
+// side — agents.GetFromContext via activeRoleInstructions — finally receives
+// the role instructions in production.
+func WithProfile(p *agents.AgentProfile) TaskExecutorOption {
+	return func(e *taskExecutor) {
+		e.profile = p
+	}
+}
+
+// profileCtx applies the executor's role into the task context. No-op when no
+// profile is configured.
+func (e *taskExecutor) profileCtx(ctx context.Context) context.Context {
+	return agents.WithProfile(ctx, e.profile)
 }
 
 // WithChatClient returns a TaskExecutorOption that enables native tool calling
@@ -262,6 +284,10 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		e.emitSubTaskResult(ctx, task, result)
 	}()
 
+	// W4 write side: pin the agent role into the task context so the prompt
+	// pipeline (activeRoleInstructions) reads the role instructions.
+	ctx = e.profileCtx(ctx)
+
 	// Snapshot the agent ID under the read lock so concurrent SetEventStore
 	// calls cannot race with the emit paths below (D9: data-race fix).
 	e.mu.RLock()
@@ -390,6 +416,9 @@ func (e *taskExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*Ste
 		return nil, errors.ErrInvalidInput
 	}
 
+	// W4 write side: pin the agent role into the quantum context.
+	ctx = e.profileCtx(ctx)
+
 	// Snapshot agent ID for the duration of this quantum (D9: data-race fix).
 	e.mu.RLock()
 	agentID := e.agentID
@@ -516,8 +545,8 @@ func (e *taskExecutor) singleQuantum(ctx context.Context, task *models.Task, res
 // payload["checkpoint"] entry — what the scheduler writes on yield (fabric
 // checkpoint → fabricTaskMeta.StepCheckpoint → payload["checkpoint"]) and
 // surfaces on resume. It always decodes into a fresh copy via JSON so the
-// fabric's stored checkpoint is never mutated across quanta (code_rules_v2
-// §6.3: the checkpoint a quantum returns is final; the next quantum works on
+// fabric's stored checkpoint is never mutated across quanta (code_rules
+// : the checkpoint a quantum returns is final; the next quantum works on
 // its own copy). Resume is refused when the checkpoint belongs to another task
 // (§6.2) or carries an unknown schema version (§6.1).
 //
@@ -768,7 +797,7 @@ func (e *taskExecutor) activeStrategy(ctx context.Context) *agents.ActiveStrateg
 // result → LLM → final answer. It drives the same chatStep primitive as the
 // quantum entry (ExecuteStep) — the only difference is how many rounds run in
 // one call: all of them here, exactly one per fabric quantum there
-// (code_rules_v2 §5.1: one loop body, two entry points).
+// (code_rules: one loop body, two entry points).
 func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt string, params map[string]any) ([]*models.RecommendItem, error) {
 	maxRounds := e.toolRounds()
 	st := &chatStepState{
@@ -810,7 +839,7 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 // chatStep advances a tool-calling execution by exactly one ReAct round: one
 // Chat API call, every requested tool call executed, and the resulting
 // messages appended to the state. It is the single loop body of the executor
-// (code_rules_v2 §5.1): the full-run path and the quantum path both drive it.
+// code_rules: the full-run path and the quantum path both drive it.
 //
 // Contract: the caller has verified st.Round < st.MaxRounds (the round budget
 // is enforced by the loop, not by this method).

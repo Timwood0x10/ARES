@@ -387,7 +387,7 @@ func TestP3_4_ParentDeathChildrenContinueTasks(t *testing.T) {
 }
 
 // TestP3_4_ConcurrentSpawnSynthesis exercises the concurrent spawn + IPC
-// scenario with goroutines (code_rules_v2 §4: managed goroutines).
+// scenario with goroutines (code_rules: managed goroutines).
 // Multiple children work in parallel, report via a channel, and the parent
 // synthesises.
 func TestP3_4_ConcurrentSpawnSynthesis(t *testing.T) {

@@ -52,7 +52,7 @@ func createAndServeAgents(
 			log.Printf("serve: evolution strategy source wired into agents (GA deploy → runtime read)")
 		}
 	}
-	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, llmAdapter, chatClient, toolBinder, comp.EventStore, strategySrc, comp.ExpRepo)
+	subAgents, peerKernel, err := createPeerAgents(ctx, cfg, comp, llmAdapter, chatClient, toolBinder, comp.EventStore, strategySrc, comp.ExpRepo)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create peer agents: %w", err)
 	}
@@ -164,7 +164,7 @@ func createAndServeAgents(
 			Collab: collabReporter.Snapshot,
 		})
 		peerKernel.intro = introspect.NewHandler(store).WithEventStore(comp.EventStore)
-		sink := introspect.NewSink(store)
+		sink := introspect.NewSink(store).WithCollab(collabReporter)
 		comp.GoBackground(ctx, "introspect-sink", func(ctx context.Context) error {
 			return sink.Run(ctx, comp.EventStore)
 		})

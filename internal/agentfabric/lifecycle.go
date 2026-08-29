@@ -35,14 +35,13 @@ type SpawnSpec struct {
 	// capability and cannot run a quantum (it can still be managed by
 	// lifecycle operations). The factory is called once at spawn time, under
 	// the fabric lock, and the result is stored in Agent.cognition.
-	// (A1: 执行能力注入统一 Agent.)
+	// (A1: Unified Injection of Execution Capabilities Agent.)
 	CognitionFactory CognitionFactory
 	// ExperiencePrior is the distilled prior experience (aresos-agentos-plan
-	// G1: Memory Distill 挂到 agent 生命周期) loaded as the agent's initial
+	// G1: Memory Distill Hook into the agent lifecycle) loaded as the agent's initial
 	// cognitive context at spawn time. It is written into
 	// CognitiveState.Context so the agent starts with relevant distilled
-	// experience instead of a blank slate. Nil = no prior (zero-value usable,
-	// code_rules_v2 §5.4).
+	// experience instead of a blank slate. Nil = no prior (zero-value usable).
 	ExperiencePrior any
 }
 
@@ -82,7 +81,7 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		return nil, ErrAgentExists
 	}
 	// P5 resource admission: reject before mutating any state so a failed
-	// spawn leaves the fabric untouched (code_rules_v2 §3.6: validate first,
+	// spawn leaves the fabric untouched (code_rules: validate first,
 	// then mutate).
 	if !f.canAllocateLocked(claim) {
 		f.mu.Unlock()

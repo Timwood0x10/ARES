@@ -359,7 +359,7 @@ func TestSpawnedAgentIDsAreUnique(t *testing.T) {
 // TestToolSchemasReturnsBoth verifies ToolSchemas returns both tool schemas.
 func TestToolSchemasReturnsBoth(t *testing.T) {
 	schemas := ToolSchemas()
-	if len(schemas) != 2 {
+	if len(schemas) != 3 { // spawn_agent, create_task, create_plan (W9)
 		t.Fatalf("expected 2 schemas, got %d", len(schemas))
 	}
 	names := make(map[string]bool)
@@ -377,5 +377,75 @@ func TestToolSchemasReturnsBoth(t *testing.T) {
 	}
 	if !names[CreateTaskTool] {
 		t.Fatalf("missing %s schema", CreateTaskTool)
+	}
+}
+
+// TestCreatePlanCompilesBatchIntoFabric verifies the W9 create_plan syscall:
+// a valid multi-step plan compiles into an all-READY batch with dependencies
+// intact and Kernel-stamped origins.
+func TestCreatePlanCompilesBatchIntoFabric(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+	kernel := NewKernel(nil, fabric, nil, nil)
+
+	result, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{
+			{ID: "plan-a", Capability: "coder"},
+			{ID: "plan-b", Capability: "reviewer", DependsOn: []string{"plan-a"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	if result.Count != 2 || len(result.TaskIDs) != 2 {
+		t.Fatalf("batch = %v, want 2 tasks", result.TaskIDs)
+	}
+	b, terr := fabric.Task("plan-b")
+	if terr != nil {
+		t.Fatalf("task plan-b: %v", terr)
+	}
+	if len(b.Dependencies) != 1 || b.Dependencies[0] != "plan-a" {
+		t.Fatalf("plan-b deps = %v, want [plan-a]", b.Dependencies)
+	}
+	if b.State != taskfabric.StateReady {
+		t.Fatalf("state = %s, want READY", b.State)
+	}
+}
+
+// TestCreatePlanRejectsEmptySteps verifies the empty-batch gate.
+func TestCreatePlanRejectsEmptySteps(t *testing.T) {
+	kernel := NewKernel(nil, taskfabric.NewFabric(), nil, nil)
+	if _, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{}); err == nil {
+		t.Fatal("empty plan must be rejected")
+	}
+}
+
+// TestCreatePlanRejectsMissingCapability verifies per-step validation.
+func TestCreatePlanRejectsMissingCapability(t *testing.T) {
+	kernel := NewKernel(nil, taskfabric.NewFabric(), nil, nil)
+	_, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{{ID: "s1"}},
+	})
+	if err == nil {
+		t.Fatal("missing capability must be rejected")
+	}
+}
+
+// TestCreatePlanAtomicRejectsCycle verifies a cyclic plan creates nothing.
+func TestCreatePlanAtomicRejectsCycle(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+	kernel := NewKernel(nil, fabric, nil, nil)
+	_, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{
+			{ID: "x", Capability: "coder", DependsOn: []string{"y"}},
+			{ID: "y", Capability: "coder", DependsOn: []string{"x"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("cyclic plan must be rejected")
+	}
+	for _, id := range []string{"x", "y"} {
+		if _, terr := fabric.Task(id); terr == nil {
+			t.Fatalf("task %q must not exist after failed plan", id)
+		}
 	}
 }

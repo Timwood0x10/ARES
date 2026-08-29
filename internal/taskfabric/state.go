@@ -1,6 +1,6 @@
 package taskfabric
 
-// TaskState is the lifecycle state of a Task (design §4 of docs/zh/architecture/ares-runtime.md).
+// TaskState is the lifecycle state of a Task (design of docs/zh/architecture/ares-runtime.md).
 type TaskState string
 
 const (

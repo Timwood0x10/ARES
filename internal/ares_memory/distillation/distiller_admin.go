@@ -67,8 +67,7 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 
 	// Lifecycle is ctx-driven: the goroutine exits on ctx cancellation or
 	// channel close. The errgroup holds it so a panic in the subscription
-	// loop surfaces through the group instead of killing the process
-	// (code_rules_v2 §4.2).
+	// loop surfaces through the group instead of killing the process.
 	d.distillEg.Go(func() error {
 		var roundCounter int
 		for {

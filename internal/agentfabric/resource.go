@@ -2,7 +2,7 @@ package agentfabric
 
 import "errors"
 
-// Resource admission control (P5 of ares-runtime.md): the Kernel validates
+// Resource admission control : the Kernel validates
 // resource quotas at spawn — a syscall-style gate. The Fabric keeps a named
 // budget (e.g. {"cpu": 8, "memory": 4096}) and rejects a spawn whose requested
 // resources would exceed the remaining quota. Claims are released when the

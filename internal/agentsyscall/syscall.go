@@ -19,8 +19,7 @@ const SpawnAgentTool = "spawn_agent"
 // CreateTaskTool is the tool name exposed to the LLM for creating sub-tasks.
 const CreateTaskTool = "create_task"
 
-// goconst: these strings appear ≥3 times in ToolSchemas, so they must be
-// constants (code_rules_v2 §8.1).
+// goconst: these strings appear ≥3 times in ToolSchemas,
 const (
 	paramType        = "type"
 	paramTypeString  = "string"
@@ -28,6 +27,11 @@ const (
 	paramTypeArray   = "array"
 	paramDescription = "description"
 	paramCapability  = "capability"
+
+	// Schema object keys reused across tool schemas (goconst).
+	paramProperties = "properties"
+	paramItems      = "items"
+	paramRequired   = "required"
 )
 
 // ExecutorFactory creates a sub.Agent executor for a dynamically spawned agent.
@@ -37,7 +41,7 @@ type ExecutorFactory func(agentID, capability string) Executor
 
 // Executor is the minimal contract a spawned agent's executor must satisfy.
 // In production this is sub.Agent; the interface keeps this package decoupled
-// from the sub package (code_rules_v2 §5.2: interface at the consumer).
+// from the sub package (code_rules: interface at the consumer).
 type Executor interface {
 	ID() string
 	Type() models.AgentType
@@ -54,7 +58,7 @@ type StepOutcome struct {
 // cognitionFunc adapts an Executor to the agentfabric.Cognition contract
 // (aresos-agentos-plan C1: spawn 的 agent 带执行体). It converts the syscall
 // StepOutcome shape to the fabric one — the underlying quantum is the same
-// executor, so semantics are preserved by construction (code_rules_v2 §5.1).
+// executor, so semantics are preserved by construction.
 func cognitionFunc(executor Executor) agentfabric.Cognition {
 	return agentfabric.CognitionFunc(func(ctx context.Context, task *models.Task) (*agentfabric.StepOutcome, error) {
 		out, err := executor.ExecuteStep(ctx, task)
@@ -161,7 +165,7 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	// and inject it as the agent's CognitionFactory so the spawned agent is a
 	// REAL executable body (not just a provenance record) from birth. The
 	// factory is called exactly once — the same executor instance is reused
-	// for the scheduler registration below (code_rules_v2 §5.1: no second
+	// for the scheduler registration below (code_rules: no second
 	// executor copy).
 	var executor Executor
 	if k.factory != nil {
@@ -324,6 +328,45 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 		}
 		return kernel.CreateTask(ctx, ct)
 	})
+	// W9: the whole-DAG planning entry. See plan.go.
+	binder.BindTool(CreatePlanTool, func(ctx context.Context, args map[string]any) (any, error) {
+		var cp CreatePlanArgs
+		rawSteps, ok := args["steps"].([]any)
+		if !ok || len(rawSteps) == 0 {
+			return nil, errors.New("agentsyscall: create_plan requires a non-empty steps array")
+		}
+		for _, raw := range rawSteps {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				return nil, errors.New("agentsyscall: create_plan step must be an object")
+			}
+			var step PlanStepArgs
+			if v, ok := m["id"].(string); ok {
+				step.ID = v
+			}
+			if v, ok := m[paramCapability].(string); ok {
+				step.Capability = v
+			}
+			if deps, ok := m["depends_on"].([]any); ok {
+				for _, d := range deps {
+					if s, ok := d.(string); ok {
+						step.DependsOn = append(step.DependsOn, s)
+					}
+				}
+			}
+			if v, ok := m["priority"].(float64); ok {
+				step.Priority = int(v)
+			}
+			if v, ok := m["max_retries"].(float64); ok {
+				step.MaxRetries = int(v)
+			}
+			if v, ok := m["payload"].(map[string]any); ok {
+				step.Payload = v
+			}
+			cp.Steps = append(cp.Steps, step)
+		}
+		return kernel.CreatePlan(ctx, cp)
+	})
 }
 
 // ToolBinder is the minimal interface BindTools needs. It matches
@@ -343,7 +386,7 @@ func ToolSchemas() []ToolSchema {
 			Description: "Spawn a new peer agent with a declared capability. The Kernel validates quota and registers the agent as a schedulable executor. Use this when you decide a task should be split and worked on by another agent.",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
-				"properties": map[string]any{
+				paramProperties: map[string]any{
 					paramCapability: map[string]any{
 						paramType:        paramTypeString,
 						paramDescription: "The declared capability of the new agent (e.g. 'coder', 'reviewer', 'researcher').",
@@ -357,7 +400,7 @@ func ToolSchemas() []ToolSchema {
 						paramDescription: "Shared task state to pass to the new agent (goal, constraints). Never include private reasoning.",
 					},
 				},
-				"required": []string{paramCapability},
+				paramRequired: []string{paramCapability},
 			},
 		},
 		{
@@ -365,14 +408,14 @@ func ToolSchemas() []ToolSchema {
 			Description: "Create a new task in the Task Fabric. The task enters READY state and the scheduler will assign it to a capable agent. Use this to decompose work into sub-tasks.",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
-				"properties": map[string]any{
+				paramProperties: map[string]any{
 					paramCapability: map[string]any{
 						paramType:        paramTypeString,
 						paramDescription: "The required capability for this task (e.g. 'coder', 'reviewer').",
 					},
 					"dependencies": map[string]any{
 						paramType:        paramTypeArray,
-						"items":          map[string]any{paramType: paramTypeString},
+						paramItems:       map[string]any{paramType: paramTypeString},
 						paramDescription: "Prerequisite task IDs that must complete before this task runs.",
 					},
 					"payload": map[string]any{
@@ -380,9 +423,10 @@ func ToolSchemas() []ToolSchema {
 						paramDescription: "Opaque task data (e.g. task_desc, parameters).",
 					},
 				},
-				"required": []string{paramCapability},
+				paramRequired: []string{paramCapability},
 			},
 		},
+		CreatePlanToolSchema(),
 	}
 }
 

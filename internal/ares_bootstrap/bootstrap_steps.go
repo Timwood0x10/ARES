@@ -34,6 +34,12 @@ import (
 func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) (evolution.GuidanceProvider, *embedding.EmbeddingClient) {
 	var guidanceProvider evolution.GuidanceProvider
 	var embClient *embedding.EmbeddingClient
+	// C1: honor memory.enable_distillation — an explicit false disables the
+	// distillation wiring entirely (previously this YAML field was dead and
+	// the gate was Storage+Embedding alone).
+	if !cfg.Memory.EnableDistillation {
+		return nil, nil
+	}
 	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Embedding.Enabled {
 		pool, client, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
 		if wireErr != nil {
@@ -201,37 +207,12 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	gaCfg.StrategyStore = memStore
 	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
 
-	// W3: honor the YAML evolution tuning. Non-zero cfg.Evolution fields
-	// override the DefaultSystemConfig values so operators can tune the GA
-	// without touching code (previously these fields were dead config).
-	// Only fields with a matching SystemConfig slot are wired; the rest of the
-	// YAML GA knobs (Generations/TournamentSize/CrossoverType/TargetFitness/
-	// SteadyState*) are registered as dead config pending a SystemConfig slot.
+	// W3: honor the YAML evolution tuning. Only fields with a matching
+	// SystemConfig slot are wired; the rest of the YAML GA knobs
+	// (Generations/TournamentSize/CrossoverType/TargetFitness/SteadyState*)
+	// are registered as dead config pending a SystemConfig slot.
 	ec := &cfg.Evolution
-	if ec.PopulationSize > 0 {
-		gaCfg.PopulationSize = ec.PopulationSize
-	}
-	if ec.EliteCount > 0 {
-		gaCfg.EliteCount = ec.EliteCount
-	}
-	if ec.SurvivalRate > 0 {
-		gaCfg.SurvivalRate = ec.SurvivalRate
-	}
-	if ec.MutationRate > 0 {
-		gaCfg.MutationRate = ec.MutationRate
-	}
-	if ec.MinMutationRate > 0 {
-		gaCfg.MinMutationRate = ec.MinMutationRate
-	}
-	if ec.MaxMutationRate > 0 {
-		gaCfg.MaxMutationRate = ec.MaxMutationRate
-	}
-	if ec.BreedingPoolRatio > 0 {
-		gaCfg.BreedingPoolRatio = ec.BreedingPoolRatio
-	}
-	if ec.SelectionStrategy != "" {
-		gaCfg.SelectionStrategy = ec.SelectionStrategy
-	}
+	applyGATuning(&gaCfg, ec)
 	// Track A closure: feed distilled experiences back into the GA's
 	// experience-guided mutation. guidanceProvider is non-nil only when
 	// distillation was successfully wired above (PG + embedding configured).
@@ -363,6 +344,53 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 // budget. The caller then leaves gaCfg.Scorer unset, causing
 // buildAdapterOptions to fall back to ConstantScorer(50.0). This keeps
 // scoring best-effort: bootstrap never fails due to scorer wiring.
+// applyGATuning copies operator tuning from the YAML evolution section onto the
+// GA engine config, so operators can tune the GA without touching code
+// (previously these fields were dead config).
+//
+// A field overrides the engine default only when it differs from the
+// config-layer default (ares_config.DefaultEvolution*): cfg arrives from
+// LoadConfig with setDefaults already applied, so every field is non-zero and a
+// plain `> 0` guard would always fire, silently replacing the GA engine's own
+// tuned defaults from DefaultSystemConfig (e.g. EliteCount 3 with the
+// config-layer default 2). The `> 0` half of each guard keeps programmatic
+// configs that skip setDefaults from clobbering the engine with zero values.
+//
+// Known tradeoff: an operator who explicitly sets a field equal to the
+// config-layer default is indistinguishable from an unset field and keeps the
+// GA engine default (locked by TestApplyGATuningExplicitDefaultValues).
+//
+// Args:
+//
+//	gaCfg - the GA engine config to mutate; starts from DefaultSystemConfig.
+//	ec    - the YAML evolution section of the loaded config.
+func applyGATuning(gaCfg *evolution.SystemConfig, ec *ares_config.EvolutionConfig) {
+	if ec.PopulationSize > 0 && ec.PopulationSize != ares_config.DefaultEvolutionPopulationSize {
+		gaCfg.PopulationSize = ec.PopulationSize
+	}
+	if ec.EliteCount > 0 && ec.EliteCount != ares_config.DefaultEvolutionEliteCount {
+		gaCfg.EliteCount = ec.EliteCount
+	}
+	if ec.SurvivalRate > 0 && ec.SurvivalRate != ares_config.DefaultEvolutionSurvivalRate {
+		gaCfg.SurvivalRate = ec.SurvivalRate
+	}
+	if ec.MutationRate > 0 && ec.MutationRate != ares_config.DefaultEvolutionMutationRate {
+		gaCfg.MutationRate = ec.MutationRate
+	}
+	if ec.MinMutationRate > 0 && ec.MinMutationRate != ares_config.DefaultEvolutionMinMutationRate {
+		gaCfg.MinMutationRate = ec.MinMutationRate
+	}
+	if ec.MaxMutationRate > 0 && ec.MaxMutationRate != ares_config.DefaultEvolutionMaxMutationRate {
+		gaCfg.MaxMutationRate = ec.MaxMutationRate
+	}
+	if ec.BreedingPoolRatio > 0 && ec.BreedingPoolRatio != ares_config.DefaultEvolutionBreedingPoolRatio {
+		gaCfg.BreedingPoolRatio = ec.BreedingPoolRatio
+	}
+	if ec.SelectionStrategy != "" && ec.SelectionStrategy != ares_config.DefaultEvolutionSelectionStrategy {
+		gaCfg.SelectionStrategy = ec.SelectionStrategy
+	}
+}
+
 func wireLLMScorer(cfg *ares_config.Config, comp *Components) (genome.ScorerFunc, genome.ScorerFunc, int) {
 	if cfg == nil || !cfg.Evolution.LLMScoring.Enabled {
 		return nil, nil, 0

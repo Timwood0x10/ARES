@@ -1,7 +1,7 @@
 // Package agentipc implements the ARES Kernel IPC pillar (P4 of
 // docs/zh/architecture/ares-runtime.md): peer-to-peer agent communication primitives.
 //
-// Design invariants (ares-runtime.md §13):
+// Design invariants (ares-runtime):
 //   - Agents are same-level cognitive processes — A ≡ B ≡ C; parent/child
 //     does NOT restrict communication.
 //   - IPC is the third context layer (Task Shared / Agent Private / IPC

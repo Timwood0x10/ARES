@@ -178,6 +178,17 @@ func GetFromContext(ctx context.Context) *AgentProfile {
 	return nil
 }
 
+// WithProfile returns a context carrying the given profile directly. It is
+// the no-registry form of ProfileRegistry.ApplyToContext for executors that
+// hold their role at construction time (W4 write side: the sub executor pins
+// its profile via WithProfile and applies it at every task entry).
+func WithProfile(ctx context.Context, p *AgentProfile) context.Context {
+	if p == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyProfile, p)
+}
+
 // ctxKeyProfile is the context key for the active agent profile.
 type ctxKey string
 

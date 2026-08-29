@@ -26,6 +26,27 @@ const (
 // duplicating the literal, keeping the two wiring paths in sync.
 const DefaultArchiveDir = ".context/rounds"
 
+// DefaultEvolution* are the config-layer defaults setDefaults applies when the
+// YAML leaves an evolution field unset. Exported so the bootstrap GA wiring can
+// tell "operator tuned this field" apart from "setDefaults filled it in": every
+// field is non-zero by the time Bootstrap runs, so a plain non-zero guard
+// cannot make that distinction (see applyGATuning).
+//
+// These deliberately differ from the GA engine's own defaults in
+// ares_evolution.DefaultSystemConfig (e.g. EliteCount 2 vs 3, BreedingPoolRatio
+// 0.5 vs 0.6); fields the operator did not tune must keep the engine values.
+const (
+	DefaultEvolutionPopulationSize    = 20
+	DefaultEvolutionEliteCount        = 2
+	DefaultEvolutionSurvivalRate      = 0.6
+	DefaultEvolutionMutationRate      = 0.2
+	DefaultEvolutionMinMutationRate   = 0.05
+	DefaultEvolutionMaxMutationRate   = 0.5
+	DefaultEvolutionGenerations       = 15
+	DefaultEvolutionBreedingPoolRatio = 0.5
+	DefaultEvolutionSelectionStrategy = "tournament"
+)
+
 // NewMinimalConfig builds a fully-runnable Config from only the LLM endpoint
 // details, so a user does not need a YAML file to start the runtime: everything
 // else (agents, memory, tools, storage, kernel policy) falls back to the
@@ -231,34 +252,34 @@ func (c *Config) setDefaults() {
 	}
 	// Evolution defaults
 	if c.Evolution.PopulationSize == 0 {
-		c.Evolution.PopulationSize = 20
+		c.Evolution.PopulationSize = DefaultEvolutionPopulationSize
 	}
 	if c.Evolution.EliteCount == 0 {
-		c.Evolution.EliteCount = 2
+		c.Evolution.EliteCount = DefaultEvolutionEliteCount
 	}
 	if c.Evolution.SurvivalRate == 0 {
-		c.Evolution.SurvivalRate = 0.6
+		c.Evolution.SurvivalRate = DefaultEvolutionSurvivalRate
 	}
 	if c.Evolution.MutationRate == 0 {
-		c.Evolution.MutationRate = 0.2
+		c.Evolution.MutationRate = DefaultEvolutionMutationRate
 	}
 	if c.Evolution.MinMutationRate == 0 {
-		c.Evolution.MinMutationRate = 0.05
+		c.Evolution.MinMutationRate = DefaultEvolutionMinMutationRate
 	}
 	if c.Evolution.MaxMutationRate == 0 {
-		c.Evolution.MaxMutationRate = 0.5
+		c.Evolution.MaxMutationRate = DefaultEvolutionMaxMutationRate
 	}
 	if c.Evolution.Generations == 0 {
-		c.Evolution.Generations = 15
+		c.Evolution.Generations = DefaultEvolutionGenerations
 	}
 	if c.Evolution.BreedingPoolRatio == 0 {
-		c.Evolution.BreedingPoolRatio = 0.5
+		c.Evolution.BreedingPoolRatio = DefaultEvolutionBreedingPoolRatio
 	}
 	if c.Evolution.MinInterval == "" {
 		c.Evolution.MinInterval = "5m"
 	}
 	if c.Evolution.SelectionStrategy == "" {
-		c.Evolution.SelectionStrategy = "tournament"
+		c.Evolution.SelectionStrategy = DefaultEvolutionSelectionStrategy
 	}
 	if c.Evolution.TournamentSize == 0 {
 		c.Evolution.TournamentSize = 3

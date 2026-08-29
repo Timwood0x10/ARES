@@ -44,8 +44,8 @@ type Snapshot struct {
 	Decisions []kernelscheduler.ScheduleDecision `json:"decisions,omitempty"`
 }
 
-// Sources abstract the three subsystems so tests can fake them (code_rules_v2
-// §5.2: interfaces defined at the consumer).
+// Sources abstract the three subsystems so tests can fake them
+// (code_rules: interfaces defined at the consumer).
 type Sources struct {
 	Kernel func() kernelscheduler.SchedulerSnapshot
 	Fabric func() []taskfabric.LeaseEntry

@@ -51,7 +51,7 @@ type governanceState struct {
 
 // CheckResource reports whether the agent may consume the given token/tool
 // amounts in the NEXT quantum WITHOUT recording consumption. It is the
-// scheduler's pre-quantum gate (validate before execute, code_rules_v2 §3.6).
+// scheduler's pre-quantum gate (validate before execute, code_rules).
 // ok=false means at least one budget would be exceeded.
 func (f *Fabric) CheckResource(agentID string, token, tool int) (ok bool, err error) {
 	f.mu.Lock()

@@ -24,7 +24,7 @@ const (
 )
 
 // Agent represents the Sub Agent interface. Agents are execution units only
-// (ares-runtime.md: agents are not orchestrated, they are scheduled): the
+// (ares-runtime: agents are not orchestrated, they are scheduled): the
 // Kernel owns dispatch and drives each task quantum-by-quantum via
 // ExecuteStep (taskfabric.RunQuantum). There is deliberately no self-dispatch
 // entry point here — an agent never subscribes to events and runs tasks on
@@ -52,7 +52,7 @@ type StepOutcome struct {
 
 // stepExecutor is the optional quantum-capable contract implemented by the
 // production taskExecutor. The interface lives at the consumer (sub.Agent)
-// per code_rules_v2 §5.2; executors that predate quantum execution simply do
+// per code_rules; executors that predate quantum execution simply do
 // not implement it and subAgent falls back to one-shot Execute.
 type stepExecutor interface {
 	ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error)
@@ -510,7 +510,7 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		defer a.streamWg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				// Capture panic to prevent process crash (code_rules_v2 §4.2).
+				// Capture panic to prevent process crash .
 				// Emit failure event and send error on channel so consumers don't hang.
 				panicErr := fmt.Errorf("sub agent %s panic: %v", a.id, r)
 				a.emitEvent(ctx, ares_events.EventSubAgentFailed, map[string]any{

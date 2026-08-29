@@ -59,6 +59,9 @@ type Bus struct {
 	pendingErr map[string]error
 	idSeq      uint64
 	now        func() time.Time
+	// deadLetters records failed requests (undeliverable / timed out) for
+	// observability and redelivery (GAP-3). Never nil after NewBus.
+	deadLetters *DeadLetterStore
 }
 
 // NewBus creates an empty IPC bus.
@@ -69,7 +72,14 @@ func NewBus() *Bus {
 		pending:     make(map[string]chan *Message),
 		pendingErr:  make(map[string]error),
 		now:         time.Now,
+		deadLetters: NewDeadLetterStore(0),
 	}
+}
+
+// DeadLetters returns the bounded store of failed requests (GAP-3): callers
+// (introspect panel, ops tooling) can read and redeliver them.
+func (b *Bus) DeadLetters() *DeadLetterStore {
+	return b.deadLetters
 }
 
 // WithClock injects a controllable clock for deterministic tests.

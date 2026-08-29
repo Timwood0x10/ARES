@@ -50,7 +50,7 @@ func TestSpawnLoadsExperiencePrior(t *testing.T) {
 }
 
 // TestSpawnWithoutPriorStartsBlank verifies the zero-value contract
-// (code_rules_v2 §5.4): an ExperiencePrior of nil leaves the agent with an
+// code_rules: an ExperiencePrior of nil leaves the agent with an
 // empty cognitive state — the pre-G1 behavior is unchanged.
 func TestSpawnWithoutPriorStartsBlank(t *testing.T) {
 	ctx := context.Background()

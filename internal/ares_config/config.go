@@ -197,6 +197,8 @@ type EmbeddingConfig struct {
 
 // ServerConfig holds server configuration.
 type ServerConfig struct {
+	// Host is display-only: serve binds ":<port>" (C4); changing the bind
+	// address is a behavior change tracked separately.
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
 }
@@ -270,6 +272,10 @@ type PeerAgentConfig struct {
 	// MaxToolRounds caps the tool-calling iterations per task execution
 	// (default 5 when 0/unset).
 	MaxToolRounds int `yaml:"max_tool_rounds"`
+	// Role is the agent profile id (W4) applied into every task context so the
+	// LLM prompt carries the role instructions (agents.DefaultProfiles:
+	// planner/researcher/critic/...). Empty = no role pinning.
+	Role string `yaml:"role"`
 }
 
 // SubAgentConfig holds Sub Agent configuration.
@@ -283,8 +289,12 @@ type SubAgentConfig struct {
 	Model      string   `yaml:"model"`    // Model for this agent (overrides global LLM model)
 	Provider   string   `yaml:"provider"` // Provider for this agent (overrides global LLM provider)
 	// Dependencies lists other sub-agent IDs whose tasks must COMPLETE before
-	// this sub-agent's task runs (Task Fabric DAG gate, ares-runtime.md §9).
+	// this sub-agent's task runs (Task Fabric DAG gate, ares-runtime).
 	Dependencies []string `yaml:"dependencies"`
+	// Role is the agent profile id (W4) applied into every task context so the
+	// LLM prompt carries the role instructions (agents.DefaultProfiles:
+	// planner/researcher/critic/...). Empty = no role pinning.
+	Role string `yaml:"role"`
 	// Priority is the scheduling priority of this sub-agent (>= 0; 0 =
 	// normal). It mirrors OS-thread priority: the kernel scheduler boosts
 	// higher-priority agents when choosing among capable candidates. Read by
@@ -293,7 +303,7 @@ type SubAgentConfig struct {
 	// MaxToolRounds caps the tool-calling iterations per task execution for
 	// this agent (default 5 when 0/unset — see sub.defaultMaxToolRounds).
 	// Exposed so operators can tune tool-loop depth without code changes
-	// (code_rules_v2: config over magic constants).
+	// (code_rules: config over magic constants).
 	MaxToolRounds int `yaml:"max_tool_rounds"`
 }
 

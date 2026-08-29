@@ -356,3 +356,50 @@ func (s *MemoryEventStore) unsubscribe(id int64) {
 
 // timeNow returns the current time. Extracted for testability.
 var timeNow = time.Now
+
+// TrimBefore removes all events with version <= endVersion from the given
+// stream (P1-2③: the memory half of the compaction-trim loop). It implements
+// TrimAwareStore so NewCompactableStoreWithArchive can wire it as the trim
+// target: compaction summarizes a round, the archive sink persists it, and
+// this call reclaims the raw events — without it the in-memory store grows
+// without bound in long-running serve processes.
+//
+// The global events slice is rebuilt without the trimmed entries so replay /
+// Read stay consistent with the per-stream view.
+//
+// Args:
+//   - ctx: unused (memory operations are synchronous and unbounded-time).
+//   - streamID: the stream to trim.
+//   - endVersion: remove events with version <= this value.
+//
+// Returns:
+//   - int64: the number of events removed.
+//   - error: nil (unknown streams remove nothing).
+func (m *MemoryEventStore) TrimBefore(ctx context.Context, streamID string, endVersion int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	removed := int64(0)
+	if keep, ok := m.streams[streamID]; ok {
+		filtered := keep[:0]
+		for _, ev := range keep {
+			if ev.Version <= endVersion {
+				removed++
+				continue
+			}
+			filtered = append(filtered, ev)
+		}
+		m.streams[streamID] = filtered
+	}
+	if removed > 0 {
+		global := make([]*Event, 0, len(m.events)-int(removed))
+		for _, ev := range m.events {
+			if ev.StreamID == streamID && ev.Version <= endVersion {
+				continue
+			}
+			global = append(global, ev)
+		}
+		m.events = global
+	}
+	return removed, nil
+}

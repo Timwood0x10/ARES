@@ -13,7 +13,7 @@ import (
 // fails.
 //
 // The interface is defined in the consumer package (agentfabric), per
-// code_rules_v2 §5.2. Implementations live in agentfabric or are injected via
+// code_rules. Implementations live in agentfabric or are injected via
 // CognitionFactory at spawn time.
 type Cognition interface {
 	// ExecuteStep runs one quantum and returns the outcome. The task carries
@@ -56,7 +56,7 @@ type CognitionFactory func(capabilities []string) Cognition
 // executor with the right signature (e.g. an agentsyscall.Executor, or a
 // bound sub.Agent) can be injected as an agent's execution body without a
 // new concrete type (aresos-agentos-plan C1: spawn 的 agent 带执行体).
-// code_rules_v2 §5.2: the adapter lives in the owner package (agentfabric).
+// code_rules: the adapter lives in the owner package (agentfabric).
 type CognitionFunc func(ctx context.Context, task *models.Task) (*StepOutcome, error)
 
 // ExecuteStep implements Cognition.

@@ -85,7 +85,7 @@ func (t *syscallTool) Capabilities() []string { return nil }
 // sdkSyscallExecutor adapts a CapabilityExecutor (the sdkAgentExecutor shape)
 // to the agentsyscall.Executor contract so a spawned agent is a real
 // executable body — the same quantum, different outcome envelope (mirrors
-// peerExecutorAdapter in peer mode; code_rules_v2 §5.1: no second executor
+// peerExecutorAdapter in peer mode; code_rules: no second executor
 // copy).
 type sdkSyscallExecutor struct {
 	inner kernelscheduler.CapabilityExecutor

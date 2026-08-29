@@ -18,7 +18,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Scheduler is the "no leader" execution engine (ares-runtime.md
+// Scheduler is the "no leader" execution engine (
 // Agents are not orchestrated. They are scheduled). It repeatedly drains
 // the fabric's ReadyTasks — the work source — and for each ready task:
 //
@@ -253,8 +253,8 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// wg.Wait() until every dispatched quantum finishes, so preemption
 	// checked only at drain entry could never observe a RUNNING task — the
 	// branch was unreachable through the production loop. This managed worker
-	// (deterministic exit on ctx.Done, per-sweep recover per code_rules_v2
-	// §4.1/§4.2) scans independently of the blocking drain. Preemption stays
+	// (deterministic exit on ctx.Done, per-sweep recover per code_rules)
+	// scans independently of the blocking drain. Preemption stays
 	// cooperative: it only mutates durable state; the stale holder's late
 	// completion is rejected by the fencing token.
 	preemptTicker := time.NewTicker(s.preemptInterval())
@@ -359,7 +359,7 @@ func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 // work-stealing substrate at the scheduler side. Panics from one task's
 // execution are recovered so a single bad step cannot kill the loop.
 // TODO(tech-debt): the per-agent local ready-queue design
-// (taskfabric.AgentQueue/Steal, ares-runtime.md §5) was removed as unused
+// (taskfabric.AgentQueue/Steal) was removed as unused
 // (v0.3.0 review P1: Steal idled unused — wire it or delete it); the shared ReadyTasks()
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.

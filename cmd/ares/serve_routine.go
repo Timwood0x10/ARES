@@ -187,7 +187,11 @@ func startServeHTTPAndHooks(
 			ares_security.WithAudit(auditLogger))
 	}
 	handler := &actionHandler{
-		inner:  controlServer,
+		inner: controlServer,
+		// W1: LLM cost dashboard — the SAME instance the client's
+		// MetricsTracer records into, so /api/v1/observability/* reflects
+		// real LLM cost attribution (single source of truth).
+		cost:   comp.LLM.CostDashboard,
 		mgr:    mgr,
 		tools:  registry,
 		apiKey: serveAPIKey,
@@ -371,5 +375,5 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 // resort) fails to produce an adapter. Callers that need to distinguish "no
 // LLM available" from other serve failures should use errors.Is(err,
 // ErrNoLLMAdapter) — e.g. to surface a degraded-mode warning instead of a hard
-// crash. (code_rules_v2 §3: prefer typed errors over string matching.)
+// crash. (code_rules: prefer typed errors over string matching.)
 var ErrNoLLMAdapter = errors.New("serve: no LLM adapter available")

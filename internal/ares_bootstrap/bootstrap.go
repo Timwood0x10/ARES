@@ -16,6 +16,7 @@ import (
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	ares_skills "github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
@@ -55,6 +56,10 @@ type Components struct {
 	// serve, which exposes skills as searchable tool capabilities. Nil when
 	// memory is disabled or skill wiring was skipped.
 	SkillsRegistry *skills.Registry
+	// SkillCatalog is the live catalog handle (W8): serve registers its
+	// CatalogTools into the agent tool registry and wires the experience
+	// confidence source from it. Nil when skills are disabled.
+	SkillCatalog *ares_skills.Catalog
 	// Discovery holds the optional service discovery engine. It is nil when
 	// cfg.Discovery.Enabled is false (the default), preserving prior behavior.
 	Discovery *DiscoveryComponents
@@ -211,6 +216,9 @@ func (c *Components) IsSystemReady() bool {
 type LLMComponents struct {
 	Client      interface{}
 	CallbackReg *ares_callbacks.Registry
+	// CostDashboard is the W1 cost surface served at
+	// /api/v1/observability/cost*; fed by the LLM client's MetricsTracer.
+	CostDashboard *ares_observability.CostDashboard
 }
 
 // BootstrapDeps holds optional external dependencies for full wiring.
@@ -296,6 +304,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	if comp.Memory != nil {
 		if catalog, reg := wireSkills(ctx, comp.Memory, mcp); catalog != nil {
 			comp.SkillsRegistry = reg
+			comp.SkillCatalog = catalog
 			cleanups = append(cleanups, func() {
 				if err := catalog.Close(); err != nil {
 					log.Warn("bootstrap: cleanup skills catalog close error", "error", err)

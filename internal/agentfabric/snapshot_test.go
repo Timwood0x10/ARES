@@ -50,7 +50,7 @@ func TestKillCapturesLastCognitiveSnapshot(t *testing.T) {
 		t.Fatalf("snapshot fields incomplete: %+v", snap.Cognitive)
 	}
 	if snap.Cognitive.SchemaVersion != CognitiveStateSchemaVersion {
-		t.Fatalf("snapshot schema version = %d, want %d (code_rules_v2 §6.1)",
+		t.Fatalf("snapshot schema version = %d, want %d (code_rules)",
 			snap.Cognitive.SchemaVersion, CognitiveStateSchemaVersion)
 	}
 	// Revival needs the declared capabilities and provenance to rebuild an

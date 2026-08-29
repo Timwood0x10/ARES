@@ -14,8 +14,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/agentsyscall"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
@@ -68,6 +70,7 @@ func normalizedPeers(cfg *ares_config.Config) []ares_config.PeerAgentConfig {
 func createPeerAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,
+	comp *ares_bootstrap.Components,
 	llmAdapter output.LLMAdapter,
 	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
@@ -84,6 +87,16 @@ func createPeerAgents(
 	// Build sub-agents from the flat peer population (each agent gets the
 	// full LLM + tool stack).
 	subAgents := createPeerSubAgents(cfg, peers, llmAdapter, chatClient, toolBinder, store, strategySrc)
+
+	// W4: index the configured role by agent id so both the static executor
+	// (createExecutor, inside createPeerSubAgents) and the fabric execution
+	// body (newPeerChatCognition, in the spawn loop below) resolve the SAME
+	// role for an agent — the fabric body is the production path, so a
+	// config-pinned role must reach it too .
+	roleByID := make(map[string]string, len(peers))
+	for _, p := range peers {
+		roleByID[p.ID] = p.Role
+	}
 	if len(subAgents) == 0 {
 		return nil, nil, errors.New("peer mode: no peer agents configured (agents.peers or agents.sub)")
 	}
@@ -95,6 +108,13 @@ func createPeerAgents(
 	if store != nil {
 		kernel.fabric = kernel.fabric.WithEventStore(store)
 	}
+	// W8: experience-derived confidence prior — recorded skill/task outcomes
+	// sharpen scheduling when the same pattern recurs. Nil (skills disabled)
+	// keeps declared confidences.
+	if expSrc := resolveExperienceConfidence(comp); expSrc != nil {
+		kernel.fabric = kernel.fabric.WithConfidenceSource(expSrc)
+	}
+
 	kernel.executors = make(map[string]CapabilityExecutor, len(subAgents))
 	for _, a := range subAgents {
 		if a != nil {
@@ -187,7 +207,7 @@ func createPeerAgents(
 		// loop-scoped binding local for the CognitionFactory below)
 		// N10: build the cognition upfront so a nil-CognitionFactory error
 		// surfaces at spawn time, not silently swallowed in a closure.
-		cog, err := newPeerChatCognition(sa.ID(), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
+		cog, err := newPeerChatCognition(sa.ID(), llmAdapter, chatClient, toolBinder, cfg, strategySrc, roleByID[sa.ID()])
 		if err != nil {
 			return nil, nil, fmt.Errorf("peer mode: create chat cognition for %q: %w", sa.ID(), err)
 		}
@@ -286,6 +306,7 @@ func newPeerChatCognition(
 	toolBinder sub.ToolBinder,
 	cfg *ares_config.Config,
 	strategySrc agents.StrategySource,
+	role string,
 ) (agentfabric.Cognition, error) {
 	return agentfabric.NewChatCognition(agentfabric.ChatCognitionDeps{
 		ChatClient:     chatClient, // sub.ChatClient satisfies agentfabric.ChatClient
@@ -296,6 +317,10 @@ func newPeerChatCognition(
 		PromptTemplate: cfg.Prompts.Recommendation,
 		EventStore:     nil, // the fabric publishes via its own event store wiring
 		AgentID:        agentID,
+		// W4 write side: pin the configured role so the fabric execution body
+		// (the actual production path) carries the role instructions, matched to
+		// the static createExecutor. Unknown role → nil → roleless peer.
+		Profile: resolveRoleProfile(role),
 	})
 }
 
@@ -318,7 +343,7 @@ func newPeerExecutor(
 		MaxRetries: 3,
 		Timeout:    60,
 	}
-	executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
+	executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc, "")
 	handler := sub.NewMessageHandler(agentID)
 	agent := sub.New(
 		agentID,
@@ -346,7 +371,7 @@ func newPeerExecutor(
 // reusable distilled experience as its cognitive context instead of a blank
 // slate. Returns nil when the repo is unavailable, the agent has no distilled
 // experience yet, or the query fails — a nil prior is the zero-value contract
-// (code_rules_v2 §5.4), never a startup error.
+// , never a startup error.
 func loadExperiencePrior(ctx context.Context, expRepo repositories.ExperienceRepositoryInterface, agentID string) any {
 	if expRepo == nil {
 		return nil
@@ -482,8 +507,8 @@ func liveFabricAgents(agents *agentfabric.Fabric) []string {
 
 // peerExecutorAdapter wraps a sub.Agent to satisfy the agentsyscall.Executor
 // interface. The adapter translates sub.StepOutcome to agentsyscall.StepOutcome
-// so the syscall package stays decoupled from the sub package (code_rules_v2
-// §5.2: interface at the consumer).
+// so the syscall package stays decoupled from the sub package (
+// : interface at the consumer).
 type peerExecutorAdapter struct {
 	agent sub.Agent
 }
@@ -544,4 +569,20 @@ func (f *fabricEventSink) Emit(ctx context.Context, ev agentfabric.AgentEvent) e
 		Payload:    payload,
 		Timestamp:  ev.At,
 	}}, 0)
+}
+
+// resolveExperienceConfidence wires the skill catalog's experience store as
+// the task fabric's confidence prior (W8 second half). A nil catalog (skills
+// disabled) keeps the fabric's declared confidences untouched.
+//
+// Args:
+//   - comp: the bootstrap components carrying the live skill catalog.
+//
+// Returns:
+//   - taskfabric.ConfidenceSource: the catalog-backed prior, or nil.
+func resolveExperienceConfidence(comp *ares_bootstrap.Components) taskfabric.ConfidenceSource {
+	if comp == nil || comp.SkillCatalog == nil {
+		return nil
+	}
+	return ares_skills.NewExperienceConfidenceSource(comp.SkillCatalog.Experience())
 }

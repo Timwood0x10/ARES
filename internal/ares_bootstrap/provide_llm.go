@@ -35,12 +35,16 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 
 	// W1 observability wiring: register the Prometheus ARES_* metrics so the
 	// /metrics scrape endpoint (serveIntrospect) returns real counters, and
-	// attach a tracer so every LLM call records a span. Registration is
-	// idempotent (AlreadyRegisteredError returns the cached instance).
-	if _, merr := ares_observability.NewPrometheusMetrics(); merr != nil {
+	// attach a REAL recording tracer (MetricsTracer) so every LLM call
+	// increments counters and attributes cost — a NoopTracer here left all
+	// ARES_* counters at zero. Registration is idempotent
+	// (AlreadyRegisteredError returns the cached instance).
+	metrics, merr := ares_observability.NewPrometheusMetrics()
+	if merr != nil {
 		log.Warn("bootstrap: prometheus metrics registration skipped", "error", merr)
 	}
-	client.SetTracer(ares_observability.NewNoopTracer())
+	dashboard := ares_observability.NewCostDashboard()
+	client.SetTracer(ares_observability.NewMetricsTracer(metrics, dashboard))
 
 	// Register the LLM provider in the compat layer for ecosystem access.
 	// B31: Dispatch to the correct adapter based on provider name instead of
@@ -64,8 +68,9 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	}
 
 	return &LLMComponents{
-		Client:      client,
-		CallbackReg: reg,
+		Client:        client,
+		CallbackReg:   reg,
+		CostDashboard: dashboard,
 	}, nil
 }
 

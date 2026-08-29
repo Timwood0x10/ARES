@@ -1,5 +1,5 @@
 // Package kernelscheduler provides the "no leader" execution engine
-// (ares-runtime.md §13: Agents are not orchestrated. They are scheduled).
+// (ares-runtime: Agents are not orchestrated. They are scheduled).
 //
 // The Scheduler repeatedly drains the Task Fabric's ReadyTasks — the work
 // source — and for each ready task runs:
@@ -33,7 +33,7 @@ import (
 // sub.Agent already satisfies this interface (it has ID, Type, and ExecuteStep),
 // so all existing executors — production sub-agents, test stubs, replacement
 // executors — are CapabilityExecutors without any adapter. The interface lives
-// at the consumer (code_rules_v2 §5.2: interface at the consumer).
+// at the consumer (code_rules: interface at the consumer).
 type CapabilityExecutor interface {
 	// ID returns the executor's unique identity (used for lease ownership,
 	// load tracking, and provenance).

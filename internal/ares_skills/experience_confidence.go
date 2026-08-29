@@ -10,7 +10,7 @@ import (
 var _ taskfabric.ConfidenceSource = (*ExperienceConfidenceSource)(nil)
 
 // ExperienceConfidenceSource adapts the learned-source Experience to the
-// taskfabric.ConfidenceSource interface (design §8 of ares-runtime.md: Score's
+// taskfabric.ConfidenceSource interface (design of ares-runtime: Score's
 // Confidence comes from Experience BestMatch SuccessRate — the Skill-first
 // final landing point: the capability-aware scheduler is driven by real
 // learned priors, not constants).

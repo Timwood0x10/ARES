@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Candidate is an agent competing to acquire a task (design §8 of
+// Candidate is an agent competing to acquire a task (design  of
 // docs/zh/architecture/ares-runtime.md). Load and Confidence are expected in [0,1].
 type Candidate struct {
 	AgentID      string

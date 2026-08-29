@@ -91,7 +91,7 @@ func (b *blockingLLM) Close()                        {}
 
 // TestSubmit_TimeoutPropagates verifies that Task.Timeout bounds the
 // execution: a blocked LLM surfaces a deadline-exceeded cause from Submit
-// (code_rules_v2 §3.1: context cancellation propagates, never swallowed).
+// (code_rules: context cancellation propagates, never swallowed).
 func TestSubmit_TimeoutPropagates(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()

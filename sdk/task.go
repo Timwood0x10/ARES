@@ -67,7 +67,7 @@ func (r *Runtime) RegisterAgent(capability string, opts ...AgentOption) *Agent {
 // Timeout, when > 0, bounds the whole dispatch (and the execution — the
 // executor receives the same context). The returned error wraps the agent's
 // execution error; context cancellation surfaces as
-// context.Canceled/DeadlineExceeded (code_rules_v2 §3.1).
+// context.Canceled/DeadlineExceeded .
 func (r *Runtime) Submit(ctx context.Context, t Task) (*Result, error) {
 	return r.submitThroughScheduler(ctx, t)
 }

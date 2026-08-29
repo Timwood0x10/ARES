@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -134,8 +135,10 @@ func TestCommandTool_ExecuteOversizedOutput(t *testing.T) {
 	for i := range bigOutput {
 		bigOutput[i] = 'x'
 	}
-	bigExec := func(_ context.Context, _ string, _ []string) ([]byte, error) {
-		return bigOutput, nil
+	// B3 contract: the exec closure itself rejects over-cap output with an
+	// error (single-point enforcement) — it never returns partial bytes.
+	bigExec := func(_ context.Context, name string, _ []string) ([]byte, error) {
+		return nil, fmt.Errorf("command %q output exceeds %d bytes; refusing to return partial output", name, maxCommandOutputBytes)
 	}
 	tool := NewCommandTool("git", "usage: git", bigExec, func(string) bool { return true })
 

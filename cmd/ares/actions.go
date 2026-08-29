@@ -63,6 +63,9 @@ type actionHandler struct {
 	// /api/v1/introspect/*. Nil (panel not wired) yields 404, matching any
 	// other unknown path.
 	intro *introspect.Handler
+	// cost serves the LLM cost dashboard API (W1): /api/v1/observability/cost*
+	// and the HTML dashboard. Nil disables the routes (404).
+	cost *ares_observability.CostDashboard
 }
 
 // checkAuth enforces authentication on destructive endpoints: the legacy API
@@ -141,6 +144,13 @@ func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, 
 		// dashboard server mounted /metrics; re-mounted here so scraping the
 		// ARES runtime survives the dashboard deletion).
 		ares_observability.MetricsHTTPHandler().ServeHTTP(w, r)
+		return true
+	case h.cost != nil && (strings.HasPrefix(path, "/api/v1/observability/cost") ||
+		path == "/api/v1/observability/dashboard"):
+		// W1: LLM cost dashboard (read-only GET).
+		mux := http.NewServeMux()
+		h.cost.RegisterCostRoutes(mux)
+		mux.ServeHTTP(w, r)
 		return true
 	case path == "/":
 		http.Redirect(w, r, "/introspect", http.StatusFound)

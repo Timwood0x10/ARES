@@ -60,7 +60,7 @@ const kernelDispatchTimeout = 300 * time.Second
 // kernelLoopConfig carries the tunable intervals/timeouts for the kernel
 // background loops (quota, recovery, dispatch). Zero durations fall back to
 // the package defaults, so an absent kernel loop config section keeps prior
-// behavior (zero-value usable, code_rules_v2 §5.4).
+// behavior (zero-value usable, code_rules).
 type kernelLoopConfig struct {
 	// LeaseTTL is the scheduler task-lease duration (0 = scheduler default).
 	LeaseTTL time.Duration
@@ -187,7 +187,7 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 }
 
 // runKernelRecoveryLoop is the Kernel-level event-driven recovery loop
-// (ares-runtime.md §13 + P5, code-review-2025-01-16 #2). It reacts to task
+// . It reacts to task
 // lifecycle events (TaskExpired / TaskFailed / TaskAcquired / TaskYielded) on
 // the shared EventStore and, on each, runs the recovery chain
 // (RequeueExpiredLeases → checkpoint resume → agent restart). A slow periodic
@@ -210,7 +210,7 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 // buffered semaphore (capacity 1) drops a sweep trigger while the previous
 // one is still running. The sweep goroutine is bounded by sweepCtx (derived
 // from the loop ctx, so a shutdown cancels it) and releases the semaphore on
-// exit (code_rules_v2 §4.1: managed worker with a stop signal).
+// exit (code_rules: managed worker with a stop signal).
 //
 // Args:
 //   - ctx: stops the loop.

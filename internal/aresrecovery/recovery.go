@@ -201,7 +201,7 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 	// it resumes from where the dead agent left off. A failure to install the
 	// checkpoint must not be silent: the task is acquired by a replacement
 	// that cannot resume, so surface it for the recovery loop instead of
-	// pretending recovery succeeded (code_rules_v2 §3.1).
+	// pretending recovery succeeded.
 	if t.Checkpoint != nil {
 		if err := r.agents.SetCognitiveState(agentID, agentfabric.CognitiveState{
 			Checkpoint: t.Checkpoint,
@@ -311,7 +311,7 @@ func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 			// checkpoint resume failed (spawn/acquire/SetCognitiveState).
 			// The task is still READY and will be picked up by the scheduler
 			// on the next drain, but surface the failure instead of
-			// silently dropping it (code_rules_v2 §3.1).
+			// silently dropping it.
 			slog.Error("aresrecovery: recover task failed",
 				slog.String("task_id", taskID),
 				slog.Any("error", err))
