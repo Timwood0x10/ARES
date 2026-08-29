@@ -1243,12 +1243,12 @@ var (
 | # | 缺口 | 原组件（已恢复） | Agent OS 正解 | 状态 |
 |---|------|---------------|--------------|------|
 | GAP-1 | 量子边界可插拔钩子 | PluginBus + ToolPlugin 等 | `kernelscheduler.QuantumHook` + `runtime_bridge.go` 适配器 + peer_mode 装配 | ✅ **已落地** |
-| GAP-2 | workflow 层 DAG 级 round-loop（MaxIterations/UntilCondition） | LoopPlugin（已恢复待接） | 附录 C 长期 M4：增量重规划循环 | M4 路线图 |
+| GAP-2 | workflow 层 DAG 级 round-loop（MaxIterations/UntilCondition） | LoopPlugin（已恢复待接） | **taskfabric.PlanLoop**（plan_loop.go）：计划级 round-loop，每轮经 CompilePlan 原子重编译（round 命名空间 `planID#rN#stepID`），执行全归调度器 Schedule→Acquire→RunQuantum；`UntilCondition(RoundOutcome)` / 可选 `Replan` 增量重规划钩子（可增删改步骤，loop 追踪实际编译出的任务集而非基线步骤）/ `RoundOutcome.Succeeded()` 声明式退出；`RoundOutcome.Output` 只报步骤自身执行产出（提交期 payload 不冒充结果），round 任务被外部删除按终态 FAILED 处理而非无限等待；`create_plan` 新增 `loop{max_rounds,until}` 参数暴露给认知层（until 限定枚举 `all_succeeded`，不执行模型逻辑），loop goroutine 由 serve 生命周期 ctx 经 `agentsyscall.WithLoopLifetime` 约束（peer_mode 装配），Kernel 侧 loop 注册表提供并发上限（`WithMaxPlanLoops`，默认 16）、错误 watcher 与 `LivePlanLoops`/`StopPlanLoop`。测试：taskfabric/agentsyscall 两层，`-race` 绿 | ✅ **已落地** |
 | GAP-3 | agentipc 可靠性（失败重投/死信） | ahp DLQProcessor（已恢复） | **agentipc 原生 DeadLetterStore**（deadletter.go）：Send/Request 失败自动入环形容器，`bus.DeadLetters()` 可观测；超预算自动驱逐最旧 | ✅ **已落地** |
 | GAP-4 | agent 谱系读面 | GenealogyCollector（已恢复） | `NewFlightRecorder` 在 EventStore 存在时自动构建 GenealogyCollector（recorder.go:51），bootstrap 已传 EventStore——谱系随飞行记录自动填充 | ✅ **已闭环** |
 
-**验收总纲**：GAP-1 已闭环（QuantumHook 链路 + `make check` 全绿）；
-GAP-2 由附录 C M4 承接；GAP-3/4 按 Agent OS 形态接线。
+**验收总纲**：GAP-1/GAP-2 已闭环（QuantumHook 链路；PlanLoop round-loop，均 `make check` 全绿）；
+GAP-3/4 按 Agent OS 形态接线。
 **红线不变**：任何接入必须经 `kernelscheduler`/`CapabilityExecutor`/`QuantumHook`，
 不得复活 leader 派发控制流（§0.2）。
 

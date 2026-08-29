@@ -256,6 +256,9 @@ func createPeerAgents(
 				sched.RegisterExecutor(agentID, se.agent)
 			}
 		},
+		// GAP-2: plan loops started via the create_plan loop option must be
+		// bounded by the serve lifetime, not the individual tool call.
+		agentsyscall.WithLoopLifetime(ctx),
 	)
 	agentsyscall.BindTools(toolBinder, kernelSyscall)
 	log.Printf("peer mode: spawn_agent / create_task syscalls wired into tool binder")

@@ -5,7 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1]
+
+### Added
+
+- **DAG-level plan round loops (GAP-2 / appendix C M4)**: `taskfabric.PlanLoop`
+  re-executes a whole plan DAG for up to `MaxRounds` rounds — each round is
+  recompiled atomically under round-namespaced task IDs
+  (`<planID>#r<N>#<stepID>`) and scheduled through the normal kernel pipeline.
+  Rounds end when every task is terminal; an optional `UntilCondition` over the
+  round outcome (or the declarative `RoundOutcome.Succeeded()`) stops the loop
+  early, and an optional `Replan` hook derives the next round's steps from the
+  previous outcome (incremental replanning) — including adding, dropping or
+  renaming steps, since the loop tracks the tasks it actually compiled rather
+  than the base step list. `RoundOutcome.Output` reports each step's own
+  execution checkpoint only, so a step's submission payload never masquerades
+  as a result, and a round task deleted behind the loop's back counts as
+  terminal-FAILED instead of stalling the plan. The loop owns one ctx-bounded,
+  recover-guarded worker; execution never bypasses the scheduler. The
+  `create_plan` syscall gains an optional `loop {max_rounds, until}` argument
+  (until is the enum `all_succeeded`; model-supplied logic is never executed),
+  with loop goroutines bounded by the serve lifetime via
+  `agentsyscall.WithLoopLifetime` (wired in peer_mode). Started loops are
+  registered on the Kernel: live loops are capped (`WithMaxPlanLoops`, default
+  16) so repeated LLM calls cannot fan out unbounded background work, a fatal
+  loop error is logged by a watcher instead of being recorded and never read,
+  and `LivePlanLoops` / `StopPlanLoop` expose per-plan inspection and shutdown.
 
 ### Changed
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
@@ -26,6 +27,7 @@ const (
 	paramTypeString  = "string"
 	paramTypeObject  = "object"
 	paramTypeArray   = "array"
+	paramTypeInteger = "integer"
 	paramDescription = "description"
 	paramCapability  = "capability"
 
@@ -87,8 +89,46 @@ type Kernel struct {
 	fabric   *taskfabric.Fabric
 	factory  ExecutorFactory
 	register RegisterExecutorFn
+	// loopCtx is the lifetime context for plan loops started via the
+	// create_plan loop option. A syscall Kernel is a long-lived managed
+	// object (it backs every agent's tool binder for the whole serve
+	// lifetime), so holding a context here is the sanctioned exception to
+	// the "no ctx in struct" rule (code_rules §4.5); it is injected at
+	// assembly with WithLoopLifetime and bounds every loop goroutine.
+	loopCtx context.Context
 	// idSeq generates unique agent IDs for auto-named spawns.
 	idSeq atomic.Int64
+	// maxPlanLoops caps concurrently live plan loops. create_plan is an
+	// LLM-callable syscall, so an unbounded loop count is an unbounded
+	// goroutine count; the cap is the plan-loop analogue of the spawn quota.
+	maxPlanLoops int
+	// loopMu guards planLoops.
+	loopMu sync.Mutex
+	// planLoops tracks live plan loops by plan ID so their errors have a
+	// reader, they can be stopped individually, and the cap is enforceable.
+	planLoops map[string]*taskfabric.PlanLoop
+}
+
+// KernelOption configures a syscall Kernel at construction time.
+type KernelOption func(*Kernel)
+
+// WithLoopLifetime injects the context that bounds plan-loop goroutines
+// started through the create_plan loop option. Without it, a create_plan
+// call carrying a loop spec fails loudly instead of leaking an unmanaged
+// goroutine (production: the serve lifetime ctx, wired in peer_mode).
+func WithLoopLifetime(ctx context.Context) KernelOption {
+	return func(k *Kernel) { k.loopCtx = ctx }
+}
+
+// WithMaxPlanLoops overrides the cap on concurrently live plan loops started
+// through create_plan. Non-positive values are ignored so the default cap can
+// never be disabled by a bad config value.
+func WithMaxPlanLoops(n int) KernelOption {
+	return func(k *Kernel) {
+		if n > 0 {
+			k.maxPlanLoops = n
+		}
+	}
 }
 
 // NewKernel creates a syscall Kernel over the given fabrics. The factory and
@@ -101,13 +141,20 @@ func NewKernel(
 	fabric *taskfabric.Fabric,
 	factory ExecutorFactory,
 	register RegisterExecutorFn,
+	opts ...KernelOption,
 ) *Kernel {
-	return &Kernel{
-		agents:   agents,
-		fabric:   fabric,
-		factory:  factory,
-		register: register,
+	k := &Kernel{
+		agents:       agents,
+		fabric:       fabric,
+		factory:      factory,
+		register:     register,
+		maxPlanLoops: defaultMaxPlanLoops,
+		planLoops:    make(map[string]*taskfabric.PlanLoop),
 	}
+	for _, opt := range opts {
+		opt(k)
+	}
+	return k
 }
 
 // SpawnAgentArgs carries the LLM-provided arguments for the spawn_agent tool.
