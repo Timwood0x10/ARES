@@ -444,7 +444,10 @@ type MemoryConfig struct {
 
 	// EnableDistillation mirrors v0.2.4 memory.enable_distillation: when true,
 	// the closed loop distills task experiences into long-term memory.
-	EnableDistillation bool `yaml:"enable_distillation"`
+	// EnableDistillation gates the experience distillation wiring (C1).
+	// Pointer tri-state: nil (unset) defaults to true — an explicit
+	// `enable_distillation: false` in YAML is the only way to disable.
+	EnableDistillation *bool `yaml:"enable_distillation"`
 
 	// DistillationThreshold is the number of conversation rounds that must
 	// accumulate before distillation fires. Defaults to 3 when zero (only
@@ -469,6 +472,12 @@ type MemoryConfig struct {
 	// Archive holds round-archive settings. Enabled by default: a nil or true
 	// Enabled field turns archiving on; explicit false opts out.
 	Archive ArchiveConfig `yaml:"archive"`
+}
+
+// DistillationEnabled reports whether distillation should be wired (C1):
+// unset (nil) defaults to true; only an explicit YAML false disables it.
+func (m *MemoryConfig) DistillationEnabled() bool {
+	return m.EnableDistillation == nil || *m.EnableDistillation
 }
 
 // ArchiveConfig holds round-archive settings. Enabled by default: a nil or

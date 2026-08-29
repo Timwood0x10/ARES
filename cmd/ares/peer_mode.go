@@ -370,8 +370,8 @@ func newPeerExecutor(
 // The prior is injected as SpawnSpec.ExperiencePrior so the agent starts with
 // reusable distilled experience as its cognitive context instead of a blank
 // slate. Returns nil when the repo is unavailable, the agent has no distilled
-// experience yet, or the query fails — a nil prior is the zero-value contract
-// , never a startup error.
+// experience yet, or the query fails — a nil prior is the zero-value
+// contract, never a startup error.
 func loadExperiencePrior(ctx context.Context, expRepo repositories.ExperienceRepositoryInterface, agentID string) any {
 	if expRepo == nil {
 		return nil
@@ -507,8 +507,8 @@ func liveFabricAgents(agents *agentfabric.Fabric) []string {
 
 // peerExecutorAdapter wraps a sub.Agent to satisfy the agentsyscall.Executor
 // interface. The adapter translates sub.StepOutcome to agentsyscall.StepOutcome
-// so the syscall package stays decoupled from the sub package (
-// : interface at the consumer).
+// so the syscall package stays decoupled from the sub package
+// (interface defined at the consumer, code_rules_v2 5.2).
 type peerExecutorAdapter struct {
 	agent sub.Agent
 }

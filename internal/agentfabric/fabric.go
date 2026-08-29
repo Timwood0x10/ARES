@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Fabric owns the Agent registry, Process Tree, and lifecycle primitives
-// . It is the Kernel's Lifecycle pillar: spawn / suspend /
+// Fabric owns the Agent registry, Process Tree, and lifecycle primitives.
+// It is the Kernel's Lifecycle pillar: spawn / suspend /
 // resume / retire / kill / recover. It does NOT schedule (that is
 // taskfabric's job) and does NOT do IPC (that is P4).
 //

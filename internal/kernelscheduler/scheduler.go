@@ -18,8 +18,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Scheduler is the "no leader" execution engine (
-// Agents are not orchestrated. They are scheduled). It repeatedly drains
+// Scheduler is the "no leader" execution engine (ares-runtime.md:
+// "Agents are not orchestrated. They are scheduled."). It repeatedly drains
 // the fabric's ReadyTasks — the work source — and for each ready task:
 //
 //	Schedule (capability-aware) → Acquire (lease + fencing) → RunQuantum (one

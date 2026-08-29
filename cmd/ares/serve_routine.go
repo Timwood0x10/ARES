@@ -190,13 +190,16 @@ func startServeHTTPAndHooks(
 		inner: controlServer,
 		// W1: LLM cost dashboard — the SAME instance the client's
 		// MetricsTracer records into, so /api/v1/observability/* reflects
-		// real LLM cost attribution (single source of truth).
-		cost:   comp.LLM.CostDashboard,
-		mgr:    mgr,
-		tools:  registry,
-		apiKey: serveAPIKey,
-		auth:   authMW,
-		audit:  auditLogger,
+		// real LLM cost attribution (single source of truth). The mux is
+		// built here too: serveIntrospect dereferences costMux whenever
+		// cost is set, so the pair must be wired atomically.
+		cost:    comp.LLM.CostDashboard,
+		costMux: buildCostMux(comp.LLM.CostDashboard),
+		mgr:     mgr,
+		tools:   registry,
+		apiKey:  serveAPIKey,
+		auth:    authMW,
+		audit:   auditLogger,
 		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
 		// (submitPeerTask).
 		kernel: peerKernel,

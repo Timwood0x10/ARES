@@ -135,23 +135,37 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	// GAP-3: single dead-letter exit — replyErr captures the failure reason
+	// from whichever select arm fires, and exactly one Record happens below
+	// (the two timeout arms race; without the flag a message could be
+	// recorded twice).
+	var replyErr error
+	defer func() {
+		if replyErr != nil {
+			b.deadLetters.Record(from, to, topic, payload, replyErr.Error())
+		}
+	}()
 	select {
 	case reply := <-replyCh:
 		if reply == nil {
 			// A nil reply signals a handler error — pull it from the stash.
 			if err := b.popError(corrID); err != nil {
-				b.deadLetters.Record(from, to, topic, payload, err.Error())
+				replyErr = err
 				return nil, err
 			}
-			b.deadLetters.Record(from, to, topic, payload, ErrTimeout.Error())
+			replyErr = ErrTimeout
 			return nil, ErrTimeout
 		}
 		return reply, nil
 	case <-ctx.Done():
+		// Caller-side cancellation / deadline propagation is NOT a delivery
+		// failure: the request may well have been delivered and handled. The
+		// dead-letter queue is a bounded FIFO reserved for genuine delivery
+		// failures, so recording cancellations here would evict them. Leave
+		// replyErr nil.
 		return nil, ctx.Err()
 	case <-timer.C:
-		// GAP-3: preserve the failed request for observability/redelivery.
-		b.deadLetters.Record(from, to, topic, payload, ErrTimeout.Error())
+		replyErr = ErrTimeout
 		return nil, ErrTimeout
 	}
 }

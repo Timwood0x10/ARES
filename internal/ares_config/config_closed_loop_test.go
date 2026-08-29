@@ -19,7 +19,7 @@ func TestSetDefaults_ClosedLoopMemory(t *testing.T) {
 
 	t.Run("distillation_threshold_default_only_when_enabled", func(t *testing.T) {
 		// Disabled: threshold stays zero.
-		cfg := &Config{Memory: MemoryConfig{EnableDistillation: false}}
+		cfg := &Config{Memory: MemoryConfig{EnableDistillation: boolPtr(false)}}
 		cfg.setDefaults()
 		if cfg.Memory.DistillationThreshold != 0 {
 			t.Errorf("DistillationThreshold should stay 0 when disabled, got %d",
@@ -27,14 +27,14 @@ func TestSetDefaults_ClosedLoopMemory(t *testing.T) {
 		}
 
 		// Enabled with zero threshold: defaults to 3.
-		cfg = &Config{Memory: MemoryConfig{EnableDistillation: true}}
+		cfg = &Config{Memory: MemoryConfig{EnableDistillation: boolPtr(true)}}
 		cfg.setDefaults()
 		if cfg.Memory.DistillationThreshold != 3 {
 			t.Errorf("DistillationThreshold default = %d, want 3", cfg.Memory.DistillationThreshold)
 		}
 
 		// Enabled with explicit threshold: preserved.
-		cfg = &Config{Memory: MemoryConfig{EnableDistillation: true, DistillationThreshold: 7}}
+		cfg = &Config{Memory: MemoryConfig{EnableDistillation: boolPtr(true), DistillationThreshold: 7}}
 		cfg.setDefaults()
 		if cfg.Memory.DistillationThreshold != 7 {
 			t.Errorf("DistillationThreshold should be preserved as 7, got %d",

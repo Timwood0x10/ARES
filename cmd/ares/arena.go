@@ -15,10 +15,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents/base"
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	"github.com/spf13/cobra"
@@ -758,16 +761,79 @@ func (p *arenaDAGProvider) RemoveEdge(ctx context.Context, from, to string) erro
 	return p.dag.RemoveEdge(ctx, from, to)
 }
 
-// buildArenaInjector assembles the arena fault injector against REAL runtime
-// and DAG providers (P1-9 closure). The arena process owns its own Manager
-// (chaos demo agents register here) and its own mutable DAG (evolution
-// genomes may reshape it during the run).
+// buildArenaInjector assembles the arena fault injector against the arena
+// process's own runtime and DAG (P1-9 closure, demo positioning): the Manager
+// starts with a small pool of registered demo agents so every chaos injection
+// has a real target immediately, and the mutable DAG gives the node/edge
+// removals a live graph to operate on.
+//
+// Args:
+//
+//	none.
+//
+// Returns:
+//   - *arena.Injector: the wired injector. A provider is nil only when its
+//     backing component failed to construct, in which case the corresponding
+//     injections fail loudly (ErrRuntimeNil / ErrDAGNil) instead of silently
+//     reporting success against a pool that never started.
+//   - *ares_runtime.Manager: the demo agent pool (stopped by the caller).
 func buildArenaInjector() (*arena.Injector, *ares_runtime.Manager) {
 	mgr := ares_runtime.New(nil, nil, nil)
+	for _, id := range []string{"arena-worker-1", "arena-worker-2", "arena-worker-3"} {
+		mgr.RegisterAgent(newArenaDemoAgent(id, "coder"), nil)
+	}
+	// A pool that failed to start has no live agents: hand the injector a nil
+	// RuntimeProvider so kill/pause/slow return ErrRuntimeNil rather than
+	// appearing to act on agents that are not running.
+	var rt arena.RuntimeProvider
+	if err := mgr.Start(context.Background()); err != nil {
+		log.Printf("arena serve: demo agent pool start failed (%v); agent injections disabled", err)
+	} else {
+		rt = &arenaRuntimeProvider{mgr: mgr}
+	}
 	dag, err := engine.NewMutableDAG(nil)
 	if err != nil {
 		log.Printf("arena serve: mutable DAG unavailable (%v); DAG injections disabled", err)
-		return arena.NewInjector(&arenaRuntimeProvider{mgr: mgr}, nil), mgr
+		return arena.NewInjector(rt, nil), mgr
 	}
-	return arena.NewInjector(&arenaRuntimeProvider{mgr: mgr}, &arenaDAGProvider{dag: dag}), mgr
+	return arena.NewInjector(rt, &arenaDAGProvider{dag: dag}), mgr
+}
+
+// arenaDemoAgent is a minimal base.Agent standing in for a real executor in
+// the arena drill process: its only job is to exist so kill/pause/slow/
+// partition injections have a lifecycle to act on.
+type arenaDemoAgent struct {
+	id     string
+	typ    models.AgentType
+	status atomic.Value // models.AgentStatus
+}
+
+func newArenaDemoAgent(id, typ string) *arenaDemoAgent {
+	a := &arenaDemoAgent{id: id, typ: models.AgentType(typ)}
+	a.status.Store(models.AgentStatusOffline)
+	return a
+}
+
+func (a *arenaDemoAgent) ID() string                 { return a.id }
+func (a *arenaDemoAgent) Type() models.AgentType     { return a.typ }
+func (a *arenaDemoAgent) Status() models.AgentStatus { return a.status.Load().(models.AgentStatus) }
+func (a *arenaDemoAgent) Start(context.Context) error {
+	a.status.Store(models.AgentStatusReady)
+	return nil
+}
+func (a *arenaDemoAgent) Stop(context.Context) error {
+	a.status.Store(models.AgentStatusOffline)
+	return nil
+}
+func (a *arenaDemoAgent) Process(context.Context, any) (any, error) {
+	return map[string]any{"demo": "arena agent processed input"}, nil
+}
+func (a *arenaDemoAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	ch := make(chan base.AgentEvent, 1)
+	go func() {
+		defer close(ch)
+		out, _ := a.Process(ctx, input)
+		ch <- base.AgentEvent{Source: a.id, Data: out}
+	}()
+	return ch, nil
 }

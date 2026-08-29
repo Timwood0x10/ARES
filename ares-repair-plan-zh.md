@@ -1,6 +1,6 @@
 # ARES 全量修复开发计划（合并版）
 
-> 合并自：`code-audit-report.md`、`development-plan.md`、`full-audit-report.md`、`pseudo-wiring-audit-plan-zh.md`、`supplementary-audit.md`、`workflow-engine-wiring-plan-zh.md`
+> 合并自（原文件已在合并后删除，内容全部并入本文）：`code-audit-report.md`、`development-plan.md`、`full-audit-report.md`、`pseudo-wiring-audit-plan-zh.md`、`supplementary-audit.md`、`workflow-engine-wiring-plan-zh.md`
 > 审计日期：2026-08-28 | 项目：`github.com/Timwood0x10/ares`（Go, `internal/` + `cmd/ares/` + `sdk/`）
 > 每一修复项均标注：**问题 → 文件:方法 → 修复方案 → 验收标准**
 > 原则：每个"建而未接"的子系统必须二选一——接线（wire it）或删除（kill it），不允许"挂着但没用"。

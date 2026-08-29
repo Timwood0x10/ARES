@@ -66,6 +66,24 @@ type actionHandler struct {
 	// cost serves the LLM cost dashboard API (W1): /api/v1/observability/cost*
 	// and the HTML dashboard. Nil disables the routes (404).
 	cost *ares_observability.CostDashboard
+	// costMux routes the cost endpoints; built once at handler construction
+	// via buildCostMux. Non-nil iff cost is non-nil — serveIntrospect
+	// dereferences it whenever cost is set, so a nil here panics on the
+	// first dashboard request.
+	costMux *http.ServeMux
+}
+
+// buildCostMux registers the cost dashboard routes on a dedicated mux, once
+// at handler construction. The result is assigned to actionHandler.costMux
+// in the same literal that sets cost, so the two can never drift apart
+// (an earlier per-request rebuild hid exactly that drift until it panicked).
+func buildCostMux(dash *ares_observability.CostDashboard) *http.ServeMux {
+	if dash == nil {
+		return nil
+	}
+	mux := http.NewServeMux()
+	dash.RegisterCostRoutes(mux)
+	return mux
 }
 
 // checkAuth enforces authentication on destructive endpoints: the legacy API
@@ -147,10 +165,10 @@ func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, 
 		return true
 	case h.cost != nil && (strings.HasPrefix(path, "/api/v1/observability/cost") ||
 		path == "/api/v1/observability/dashboard"):
-		// W1: LLM cost dashboard (read-only GET).
-		mux := http.NewServeMux()
-		h.cost.RegisterCostRoutes(mux)
-		mux.ServeHTTP(w, r)
+		// W1: LLM cost dashboard (read-only GET). The mux is built once via
+		// buildCostMux in the construction literal — rebuilding per request
+		// was pure waste.
+		h.costMux.ServeHTTP(w, r)
 		return true
 	case path == "/":
 		http.Redirect(w, r, "/introspect", http.StatusFound)

@@ -80,7 +80,7 @@ func TestLoadExperiencePrior_ReturnsDistilledExperience(t *testing.T) {
 }
 
 // TestLoadExperiencePrior_ZeroValueOnNoRepo verifies the zero-value contract
-// : a nil repo (distillation not wired) yields a nil
+// a nil repo (distillation not wired) yields a nil
 // prior — never an error or a panic.
 func TestLoadExperiencePrior_ZeroValueOnNoRepo(t *testing.T) {
 	if prior := loadExperiencePrior(context.Background(), nil, "any"); prior != nil {

@@ -24,7 +24,7 @@ for pkg in $all_pkgs; do
   if ! grep -qx "$pkg" <<< "$prod_deps"; then
     skip=false
     for w in "${WHITELIST[@]}"; do
-      if [[ "$pkg" == *"$w"* ]]; then skip=true; break; fi
+      if [[ "$pkg" == "github.com/Timwood0x10/ares$w" || "$pkg" == "github.com/Timwood0x10/ares/$w" ]]; then skip=true; break; fi
     done
     if [[ "$skip" == false ]]; then
       unreachable+=("$pkg")

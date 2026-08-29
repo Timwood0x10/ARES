@@ -68,7 +68,7 @@ func NewDiscoverer(allowlist []string, opts ...Option) *Discoverer {
 			// B3: cap output so a chatty command cannot exhaust memory —
 			// a bounded buffer replaces the unbounded .Output() read.
 			cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // allowlist-gated by design
-			// B3: capture stdout and stderr separately — detectDescription
+			// B3: capture stdout and stderr separately — describe
 			// parses the FIRST line as the tool description, and many CLIs
 			// write --help (or warnings) to stderr; mixing the streams made
 			// the description nondeterministic. Output exceeding the cap is

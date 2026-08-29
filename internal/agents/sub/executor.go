@@ -546,9 +546,10 @@ func (e *taskExecutor) singleQuantum(ctx context.Context, task *models.Task, res
 // checkpoint → fabricTaskMeta.StepCheckpoint → payload["checkpoint"]) and
 // surfaces on resume. It always decodes into a fresh copy via JSON so the
 // fabric's stored checkpoint is never mutated across quanta (code_rules
-// : the checkpoint a quantum returns is final; the next quantum works on
+// the checkpoint a quantum returns is final; the next quantum works on
 // its own copy). Resume is refused when the checkpoint belongs to another task
-// (§6.2) or carries an unknown schema version (§6.1).
+// (resume identity mismatch) or carries an unknown schema version
+// (checkpoint protocol guards, see taskfabric/checkpoint_schema.go).
 //
 // Returns:
 //

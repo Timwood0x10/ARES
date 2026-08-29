@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -50,6 +51,9 @@ type PlanStep struct {
 //   - []string: the created task IDs, in input order.
 //   - error: ErrTaskExists / ErrTaskIDRequired / validation errors, wrapped.
 func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("taskfabric: compile plan: %w", err)
+	}
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("taskfabric: compile plan: empty step batch")
 	}
@@ -93,12 +97,24 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			t.Checkpoint = &CheckpointEnvelope{Payload: s.Payload}
 		}
 		if err := f.Create(t); err != nil {
+			// Roll back EVERY created id even if some Deletes fail: a partial
+			// rollback must not shadow the original error, and the leftovers
+			// must be reported so the operator can clean them up.
+			var delErrs []error
 			for _, id := range created {
 				if delErr := f.Delete(id); delErr != nil {
-					return nil, fmt.Errorf("taskfabric: compile plan rollback %q: %w (original error: %v)", id, delErr, err)
+					delErrs = append(delErrs, fmt.Errorf("rollback %q: %w", id, delErr))
 				}
 			}
-			return nil, fmt.Errorf("taskfabric: compile plan create %q: %w", s.ID, err)
+			rollErr := fmt.Errorf("taskfabric: compile plan create %q: %w", s.ID, err)
+			if len(delErrs) > 0 {
+				// Join instead of %v-formatting so both the original create
+				// error and every rollback failure stay reachable via
+				// errors.Is/As on the returned error.
+				return nil, errors.Join(rollErr,
+					fmt.Errorf("rollback incomplete: %w", errors.Join(delErrs...)))
+			}
+			return nil, rollErr
 		}
 		created = append(created, s.ID)
 	}

@@ -186,8 +186,8 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 	}
 }
 
-// runKernelRecoveryLoop is the Kernel-level event-driven recovery loop
-// . It reacts to task
+// runKernelRecoveryLoop is the Kernel-level event-driven recovery loop. It
+// reacts to task
 // lifecycle events (TaskExpired / TaskFailed / TaskAcquired / TaskYielded) on
 // the shared EventStore and, on each, runs the recovery chain
 // (RequeueExpiredLeases → checkpoint resume → agent restart). A slow periodic

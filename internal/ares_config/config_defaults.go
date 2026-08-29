@@ -198,10 +198,15 @@ func (c *Config) setDefaults() {
 	if c.Memory.MaxHistory == 0 {
 		c.Memory.MaxHistory = 10
 	}
-	// Distillation defaults: only apply threshold default when distillation
-	// is opted in. When EnableDistillation is false, leave threshold at zero
-	// so the closed loop treats it as "do not distill".
-	if c.Memory.EnableDistillation && c.Memory.DistillationThreshold == 0 {
+	// Distillation defaults (P0-3 decision: default TRUE). EnableDistillation
+	// is a *bool: nil (unset) → true, so deployments relying on
+	// Storage+Embedding alone keep distillation after the C1 gate landed — an
+	// explicit `false` in YAML is the only way to disable it.
+	if c.Memory.EnableDistillation == nil {
+		t := true
+		c.Memory.EnableDistillation = &t
+	}
+	if c.Memory.DistillationEnabled() && c.Memory.DistillationThreshold == 0 {
 		c.Memory.DistillationThreshold = 3
 	}
 	// RAG defaults: only apply TopK/MinScore defaults when RAG is opted in.

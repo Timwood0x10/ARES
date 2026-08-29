@@ -63,11 +63,13 @@ type ConfigFile struct {
 // MemoryFileConfig carries all memory subsystem knobs. Fields left at their
 // zero value cause the sdk to fall back to the component default.
 type MemoryFileConfig struct {
-	Enabled               bool `yaml:"enabled"`
-	MaxHistory            int  `yaml:"max_history"`
-	MaxSessions           int  `yaml:"max_sessions"`
-	EnableDistillation    bool `yaml:"enable_distillation"`
-	DistillationThreshold int  `yaml:"distillation_threshold"`
+	Enabled     bool `yaml:"enabled"`
+	MaxHistory  int  `yaml:"max_history"`
+	MaxSessions int  `yaml:"max_sessions"`
+	// EnableDistillation tri-state: nil defaults to true (P0-3 decision),
+	// mirroring ares_config.MemoryConfig so SDK yaml and serve yaml agree.
+	EnableDistillation    *bool `yaml:"enable_distillation"`
+	DistillationThreshold int   `yaml:"distillation_threshold"`
 	// EnableRAG enables retrieval-augmented generation: past experiences and
 	// distilled memories are retrieved and injected into the LLM prompt.
 	// Default: false (opt-in).
@@ -78,6 +80,13 @@ type MemoryFileConfig struct {
 	// RAGMinScore is the minimum similarity score for a retrieved snippet to
 	// be included. Must be in [0, 1] when EnableRAG is true.
 	RAGMinScore float64 `yaml:"rag_min_score"`
+}
+
+// DistillationEnabled reports the tri-state: nil defaults to true (P0-3
+// decision), mirroring ares_config.MemoryConfig so SDK yaml and serve yaml
+// agree.
+func (m *MemoryFileConfig) DistillationEnabled() bool {
+	return m.EnableDistillation == nil || *m.EnableDistillation
 }
 
 // DatabaseFileConfig declares PostgreSQL connection parameters. When the
@@ -369,7 +378,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Memory. Each unset field falls back to the component default.
 	if c.Memory.Enabled {
 		opts = append(opts, WithMemoryConfig(c.Memory.MaxHistory, c.Memory.MaxSessions))
-		if c.Memory.EnableDistillation {
+		if c.Memory.DistillationEnabled() {
 			// DistillationThreshold 0 means "ungated": fire on every event,
 			// matching every downstream component's contract. We pass it
 			// straight through instead of substituting a default, so users

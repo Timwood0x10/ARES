@@ -381,7 +381,9 @@ func (m *MemoryEventStore) TrimBefore(ctx context.Context, streamID string, endV
 
 	removed := int64(0)
 	if keep, ok := m.streams[streamID]; ok {
-		filtered := keep[:0]
+		// Fresh backing array: keep[:0] would rewrite the shared slice in
+		// place, polluting results callers still hold from earlier Reads.
+		filtered := make([]*Event, 0, len(keep))
 		for _, ev := range keep {
 			if ev.Version <= endVersion {
 				removed++

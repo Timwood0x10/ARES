@@ -23,11 +23,6 @@ type DeadLetter struct {
 	At time.Time
 }
 
-// RedeliverFunc re-sends the dead letter through the bus. It is the write
-// half of the dead-letter loop: a caller (or an introspect action) can drain
-// failures once the target agent is back.
-type RedeliverFunc func(ctx interface{ Done() <-chan struct{} }) error
-
 // DeadLetterStore is a bounded FIFO of failed IPC requests. Thread-safe.
 // Capacity is capped so a long-running process cannot grow it without limit
 // (N8: bounded aggregation — same ring policy as the flight aggregates).

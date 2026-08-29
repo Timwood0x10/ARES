@@ -2,6 +2,7 @@ package agentsyscall
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -328,42 +329,20 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 		}
 		return kernel.CreateTask(ctx, ct)
 	})
-	// W9: the whole-DAG planning entry. See plan.go.
+	// W9: the whole-DAG planning entry. See plan.go. JSON round-trip keeps
+	// the parse strict: type mismatches surface as errors instead of silently
+	// dropping fields (e.g. a string "3" for priority).
 	binder.BindTool(CreatePlanTool, func(ctx context.Context, args map[string]any) (any, error) {
-		var cp CreatePlanArgs
-		rawSteps, ok := args["steps"].([]any)
-		if !ok || len(rawSteps) == 0 {
-			return nil, errors.New("agentsyscall: create_plan requires a non-empty steps array")
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return nil, fmt.Errorf("agentsyscall: create_plan re-marshal: %w", err)
 		}
-		for _, raw := range rawSteps {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				return nil, errors.New("agentsyscall: create_plan step must be an object")
-			}
-			var step PlanStepArgs
-			if v, ok := m["id"].(string); ok {
-				step.ID = v
-			}
-			if v, ok := m[paramCapability].(string); ok {
-				step.Capability = v
-			}
-			if deps, ok := m["depends_on"].([]any); ok {
-				for _, d := range deps {
-					if s, ok := d.(string); ok {
-						step.DependsOn = append(step.DependsOn, s)
-					}
-				}
-			}
-			if v, ok := m["priority"].(float64); ok {
-				step.Priority = int(v)
-			}
-			if v, ok := m["max_retries"].(float64); ok {
-				step.MaxRetries = int(v)
-			}
-			if v, ok := m["payload"].(map[string]any); ok {
-				step.Payload = v
-			}
-			cp.Steps = append(cp.Steps, step)
+		var cp CreatePlanArgs
+		if err := json.Unmarshal(raw, &cp); err != nil {
+			return nil, fmt.Errorf("agentsyscall: create_plan args: %w", err)
+		}
+		if len(cp.Steps) == 0 {
+			return nil, errors.New("agentsyscall: create_plan requires a non-empty steps array")
 		}
 		return kernel.CreatePlan(ctx, cp)
 	})

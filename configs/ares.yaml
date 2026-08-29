@@ -47,7 +47,6 @@ memory:
   # max_sessions: 100
   # enable_distillation: when true, raw conversation is distilled into structured
   #   Experience records after each dialogue round
-  enable_distillation: false
   # distillation_threshold: fire distillation every N rounds. 3 = every 3rd
   #   conversation round. 0 = fire on every event (legacy ungated behaviour)
   distillation_threshold: 3

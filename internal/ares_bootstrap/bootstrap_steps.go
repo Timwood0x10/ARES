@@ -34,10 +34,10 @@ import (
 func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) (evolution.GuidanceProvider, *embedding.EmbeddingClient) {
 	var guidanceProvider evolution.GuidanceProvider
 	var embClient *embedding.EmbeddingClient
-	// C1: honor memory.enable_distillation — an explicit false disables the
-	// distillation wiring entirely (previously this YAML field was dead and
-	// the gate was Storage+Embedding alone).
-	if !cfg.Memory.EnableDistillation {
+	// C1: honor memory.enable_distillation — tri-state gate (nil defaults to
+	// true, P0-3 decision), so deployments relying on Storage+Embedding keep
+	// distillation; only an explicit YAML false disables the wiring.
+	if !cfg.Memory.DistillationEnabled() {
 		return nil, nil
 	}
 	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Embedding.Enabled {
@@ -263,7 +263,15 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// agents are running (event-driven scheduler won't fire without agents).
 	// This ensures the GA continuously evolves over time.
 	comp.bgGroup.Go(func() error {
-		evoTicker := time.NewTicker(5 * time.Minute)
+		// W3: honor evolution.min_interval from yaml (audit: the 5-minute
+		// ticker was hardcoded, leaving MinInterval dead config).
+		tick := 5 * time.Minute
+		if raw := cfg.Evolution.MinInterval; raw != "" {
+			if d, perr := time.ParseDuration(raw); perr == nil && d > 0 {
+				tick = d
+			}
+		}
+		evoTicker := time.NewTicker(tick)
 		defer evoTicker.Stop()
 		for {
 			select {

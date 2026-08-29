@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Experience distillation now defaults to ON** (P0-3): `memory.enable_distillation`
+  became a tri-state (`*bool`) in both `internal/ares_config` and the SDK
+  `ConfigFile`. Unset (the common case — the key absent from yaml) now resolves
+  to enabled via `MemoryConfig.DistillationEnabled()`; setting
+  `enable_distillation: false` explicitly is the only way to turn it off.
+  Deployments with `memory.enabled: true` but no embedding/storage backend take
+  the existing `ErrDistillDepsMissing` fallback to compression-only memory and
+  emit one additional warning at startup — behaviour is unchanged, the log line
+  is new. `distillation_threshold: 0` means "ungated" (fire on every event) and
+  is passed through verbatim rather than replaced by a default.
+- **G2 config-contract gate moved from shell to Go test**: `scripts/g2_config_contract_gate.sh`
+  is replaced by `TestG2ConfigContract` in `internal/ares_config/contract_test.go`,
+  and `make gate` invokes it via `go test -run`. The new gate resolves each
+  config leaf's full access path (`.Memory.Archive.Dir`) instead of grepping a
+  bare field name, requires matches to end at the accessed field (`.Memory` no
+  longer matches `.MemoryStore`), and only credits a wholesale sub-struct pass
+  when the receiver is a config value — so `exp.Output` can no longer exempt
+  every leaf of `OutputConfig`.
+- **G1 reachability gate whitelist matches full package paths** instead of bare
+  substrings, so an entry can no longer silently exempt unrelated packages.
+
+### Fixed
+
+- **Cost dashboard routes panicked on every request** (`cmd/ares`): `actionHandler.costMux`
+  was never assigned while `cost` was, and `serveIntrospect` dereferences the
+  mux whenever `cost` is non-nil — so the first request to
+  `/api/v1/observability/cost*` or `/api/v1/observability/dashboard` hit a nil
+  `*http.ServeMux`. The mux is now built by `buildCostMux` in the same struct
+  literal that sets `cost`, with a regression test covering both routes.
+- **`make gate` was broken**: the target still invoked the deleted
+  `scripts/g2_config_contract_gate.sh` and failed with exit 127.
+- **Event store compaction corrupted previously-returned slices**
+  (`internal/ares_events`): retention filtering reused the input slice's
+  backing array via `keep[:0]`, overwriting elements that earlier `Read` calls
+  had handed to callers. Compaction now allocates a fresh slice.
+- **Context cancellation no longer pollutes the IPC dead-letter queue**
+  (`internal/agentipc`): the unified dead-letter exit recorded `ctx.Err()`,
+  so caller-side cancellation and upstream deadline propagation evicted genuine
+  delivery failures from the bounded FIFO. Only handler errors and timeouts are
+  recorded now.
+- **Arena chaos injections no longer report success against a dead pool**
+  (`cmd/ares`): when the demo agent pool fails to start, `buildArenaInjector`
+  now passes a nil `RuntimeProvider` so agent injections fail with
+  `ErrRuntimeNil`, matching how a failed DAG construction is already handled.
+- **Agent syscall argument decoding no longer drops fields silently**
+  (`internal/agentsyscall`): hand-rolled `map[string]any` extraction is replaced
+  by a JSON round-trip into the typed arg structs, turning malformed or
+  unexpected payloads into explicit errors.
+- **Plan compilation rollback preserves the original error**
+  (`internal/taskfabric`): `CompilePlan` checks `ctx.Err()` before each create,
+  rolls back every created task even when individual deletes fail, and joins the
+  create error with all rollback failures so each stays reachable through
+  `errors.Is`/`errors.As`.
+
 ## [0.3.0] - 2026-08-25
 
 > **Agent OS (AgentOS) release**: the kernel becomes an agent operating system —
