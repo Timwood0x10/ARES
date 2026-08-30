@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XXIII): Quant Trading Module — The Experiment We Keep Honest About
+# ares Architecture Deep Dive (XXIII): Quant Trading Module — The Experiment We Keep Honest About (0.3.x)
 
 Every project has that one module. The one that started as "just a quick experiment" and grew into 9,768 lines of code. For ares, that module is `internal/ares_quant/` — the quantitative trading system.
 

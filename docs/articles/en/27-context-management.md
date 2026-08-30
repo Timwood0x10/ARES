@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XXVII): Context Management — Three Lines of Defense for the Token Budget
+# ares Architecture Deep Dive (XXVII): Context Management — Three Lines of Defense for the Token Budget (0.3.x)
 
 > Note: This article is grounded in the actual code (`internal/ares_memory/context/cleaner.go`, `internal/ares_memory/manager_impl.go`, `internal/knowledge/skills`) — the dedicated context-management article in the docs series.
 

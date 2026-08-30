@@ -1,4 +1,4 @@
-# ares 架构拆解 (XX)：LLM 客户端层——Failover、DeepSeek 与多 Provider 抽象
+# ares 架构拆解 (XX)：LLM 客户端层——Failover、DeepSeek 与多 Provider 抽象（0.3.x）
 
 第 V 篇（工具系统）讲的是工具怎么被调用——四条路径。但是*谁*在调用 LLM？那就是 `internal/llm/` 层：两个包共 5,799 行代码，让 ares 能和 OpenAI、Anthropic、Ollama、OpenRouter 对话而不关心是谁在回答。
 

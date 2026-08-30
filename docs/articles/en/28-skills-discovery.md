@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (XXVIII): Skills Discovery — A Capability Catalog That Never Scans the Disk
+# ares Architecture Deep Dive (XXVIII): Skills Discovery — A Capability Catalog That Never Scans the Disk (0.3.x)
+
+> 0.3.x update: Skills discovery has been upgraded to **Capability Fabric** — the framework-native skill discovery, indexing, and loading system. SkillCatalog with SourceManager aggregates multiple skill sources (MCP servers, git repos, local executables, HTTP manifests). The five-piece catalog toolset (skill_search/load/activate/list/experience) implements Level-0/1/2 progressive disclosure. The Experience module learns relevance priors from historical usage. Capability Fabric directly serves as the capability-aware scoring source for the Kernel Scheduler.
 
 > Note: This article is grounded in the actual code (all of `internal/ares_skills`: source.go / indexer.go / discovery.go / loader.go / resolver.go / experience.go / fts5.go / git_source.go / http_source.go / catalog.go) — the dedicated Capability-Fabric discovery-chain article in the docs series.
 

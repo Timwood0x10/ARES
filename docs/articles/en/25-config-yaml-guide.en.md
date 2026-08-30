@@ -1,4 +1,4 @@
-# ARES config.yaml Guide (English)
+# ARES config.yaml Guide (English) (0.3.x)
 
 > Version: 0.2.9 · Last updated: 2026-08-05
 > 中文版见 [Chinese Version](./25-config-yaml-guide.zh.md)

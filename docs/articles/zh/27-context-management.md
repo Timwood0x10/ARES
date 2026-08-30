@@ -1,4 +1,4 @@
-# ares 架构深度解析（二十七）：上下文管理 — token 预算的三道防线
+# ares 架构深度解析（二十七）：上下文管理 — token 预算的三道防线（0.3.x）
 
 > 说明：本文基于实际代码（`internal/ares_memory/context/cleaner.go`、`internal/ares_memory/manager_impl.go`、`internal/knowledge/skills`），是 docs 系列中上下文管理层的专门篇。
 

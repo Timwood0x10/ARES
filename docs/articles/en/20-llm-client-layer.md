@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XX): LLM Client Layer — Failover, DeepSeek, and Multi-Provider Abstraction
+# ares Architecture Deep Dive (XX): LLM Client Layer — Failover, DeepSeek, and Multi-Provider Abstraction (0.3.x)
 
 Article V (Tool System) showed how tools get called — the four paths. But *who* calls the LLM in the first place? That's the `internal/llm/` layer: 5,799 lines across two packages, the abstraction that lets ares talk to OpenAI, Anthropic, Ollama, and OpenRouter without caring which one is answering.
 

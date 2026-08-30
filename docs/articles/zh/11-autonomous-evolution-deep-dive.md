@@ -1,4 +1,6 @@
-# ares 架构深度解析（十一）：自主进化 — 当 Agent 学会自己变强
+# ares 架构深度解析（十一）：自主进化 — 当 Agent 学会自己变强（0.3.x）
+
+> 0.3.x 更新：进化引擎主力模式从 GA 变为 **Failure → Diagnosis → Patch → Verify**。0.3.0 候选发布闭环：Candidate → 三层验证（门1 静态 + 门2 证据 + 门3 LLM 回归）→ Release 发布门禁（门3 再确认）→ SetStable → Promoted。GA 降级为可选高级功能。Evidence 不再返回标量分数，而是带证据链的结构化诊断。记忆蒸馏归位到进化管道：Trace → Experience → Memory。
 
 > 你有没有想过…… Agent 为什么不能越用越聪明？
 > 它每次犯错后还是犯同样的错，每次解决完一个问题下次又从头开始。

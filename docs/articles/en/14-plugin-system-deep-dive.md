@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (XIV): Plugin System — Extending Without Touching
+# ares Architecture Deep Dive (XIV): Plugin System — Extending Without Touching (0.3.x)
+
+> 0.3.x update: The plugin system is deeply integrated with the Capability Fabric. The ToolExpander interface lets runtime-discovered skill names be resolved into LLM tool definitions on the fly, so agents can pick up new skills without a restart.
 
 > I had a checkpoint plugin, a memory router, and a tool recorder — all wired directly into the executor. Every time I wanted to add a new behavior, I was editing the same 400-line file, adding another `if` branch, another goroutine, another channel. The executor was becoming a junk drawer.
 > That's when I realized: the problem isn't that we need more features. The problem is that every feature lives in the same place. **What if the executor didn't know about any of them?**

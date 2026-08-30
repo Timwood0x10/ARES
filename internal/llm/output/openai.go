@@ -230,7 +230,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
 
 	// Timeout is controlled via the request context, not the client.
-	resp, err := a.streamClient.Do(req)
+	resp, err := a.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}

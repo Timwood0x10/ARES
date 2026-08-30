@@ -1,4 +1,4 @@
-# ares 系列开篇：无聊自己搓一个 Agent 框架
+# ares 系列开篇：无聊自己搓一个 Agent 框架（0.3.x）
 
 > 我一直觉得，最好的学习方式就是自己造一个轮子。
 > 不是因为轮子不够用——是因为造完之后，你再也不会被轮子卡住了。
@@ -69,23 +69,24 @@ Go 的简洁、极致性能和天生的并发支持让我眼前一亮。于是�
 
 ## 核心特性
 
-随着项目发展，我逐步加入了最想要的特性：
+随着项目发展，我逐步加入了最想要的特性。从 0.2.x 到 0.3.x，架构经历了一次大幅升级——从"Agent 编排框架"（Leader + Sub）演进为**"面向 Agent 的动态计算运行时"**——Agents are not orchestrated. They are scheduled.
 
 | 特性 | 说明 |
 |------|------|
-| **Dynamic DAG Workflows** | 执行流可以在运行时动态构建和修改，再也不用硬编码 |
-| **Memory Distillation** | 长时记忆自动总结压缩，Agent 不会淹死在上下文里，甚至可以跨对话复现记忆 |
-| **AHP (Agent Hierarchical Protocol)** | 代理之间清晰的通信、委托和协作协议 |
-| **Leader + Sub-Agent with Failover** | Leader 挂了，子代理能无缝接管 |
+| **ARES Kernel（0.3.x）** | 三支柱架构：Task Fabric（持久任务意图 + DAG 依赖 + 租约 + 检查点）、Agent Fabric（一次性 Agent 生命周期：spawn/suspend/resume/retire/kill/recover）、Scheduler（capability-aware 调度 + work stealing + cooperative preemption）。**Agent 死亡 ≠ Task 死亡** |
+| **Execution Quantum** | Agent 不一口气跑完任务——每个 quantum 结束 `yield()` 交回执行权，Scheduler 决定 continue/suspend/preempt/handoff。LLM Agent 无法在任意 instruction 上被打断，只在 quantum 边界切换 |
+| **Dynamic DAG Workflows** | 执行流可以在运行时动态构建和修改，再也不用硬编码；MutableDAG 支持运行时增删替换节点，配合 GraphPatchExecutor 和 RecoveryReplaceNode 实现节点级故障自愈 |
+| **Memory Distillation → Experience Distillation** | 0.3.x 将记忆蒸馏归位到进化管道：Trace（发生了什么）→ Experience（说明了什么）→ Memory（正式知识）。候选知识与正式知识分库存放，一条经验须 ≥2 条非失败轨迹支持才能转正 |
+| **Agent IPC（0.3.x）** | Peer-mesh 消息总线替代旧 AHP：Send / Request / Reply / Delegate / Handoff / Subscribe 六原语。Agent 是同级认知进程（A ≡ B ≡ C），父子只有 spawn provenance，不构成权限层级 |
 | **可插拔向量存储** | 支持 PostgreSQL pgvector、Qdrant 等，核心操作 <1µs，零分配热路径 |
 | **MCP 协议集成** | 原生支持 Model Context Protocol，动态发现和调用外部工具 |
-| **事件系统与飞行记录器** | 每一个 Agent 动作都变成不可变记录，支持状态恢复和审计追踪 |
-| **SkillCatalog & Capability Fabric** | 框架原生技能发现、索引和加载能力 — MCP 服务器、Git 仓库、本地可执行文件和 HTTP 清单作为一等公民来源；支持经验学习相关性先验 |
-| **点对点 Agent 消息** | Agent 之间可以直接发送消息，无需经过 Leader 路由 — 补充了 Leader 分发任务路径 |
-| **会话租赁 (Session Leases)** | 基于 TTL 的独占会话访问控制 — 防止并发写入者在长生命周期会话上互相覆盖 |
+| **事件系统与飞行记录器** | 每一个 Agent 动作都变成不可变记录，支持状态恢复和审计追踪。0.3.x 事件类型升级为完整 Task 生命周期（Created/Ready/Acquired/Started/Yielded/Checkpointed/Preempted/Released/Completed/Failed/Expired/Stolen）|
+| **SkillCatalog & Capability Fabric** | 框架原生技能发现、索引和加载能力 — MCP 服务器、Git 仓库、本地可执行文件和 HTTP 清单作为一等公民来源；支持经验学习相关性先验。五件套 catalog 工具（skill_search/load/activate/list/experience）实现 Level-0/1/2 渐进披露 |
+| **会话租赁 → 通用 Lease（0.3.x）** | SessionLease 抽象为 TaskLease / ResourceLease / CapabilityLease。所有带所有权的操作携带 fencing token（epoch），防止"A 过期 → B acquire → A 迟到 Release"误杀 B |
 | **操作日志 (Action Logs)** | 每个 Agent 操作记录为不可变审计轨迹 — 与事件存储配合支持回放和恢复 |
 | **混沌工程 (Chaos Engineering)** | 14 种混沌动作随意注入（kill_leader、network_partition、tool_timeout 等），随机暗杀生产级 Agent，验证系统反脆弱性；支持生存模式（30 分钟高压随机故障）和场景编排（YAML 定义多步混沌实验）；三维加权评分（可用性 40%、恢复 30%、一致性 30%）配合 Welch's t-test 回归检测 |
-| **遗传算法 (Autonomous Evolution)** | Agent 策略可自主进化，双路径设计：DreamCycle 路径通过 Arena 回归测试（两阶段：Quick Reject 5 轮 → Full Eval 50 轮）评估变异候选，选出最优策略；Genome GA 路径零 token 成本，直接在预计算分数上执行选择（截断/锦标赛/轮盘赌）、交叉（均匀/多点/半句）和变异（70% 参数 / 15% Prompt / 15% 工具），支持分数退化自动触发（15% 阈值） |
+| **候选发布闭环（0.3.0）** | 进化从"策略进化"升级为**分层发布门禁**：Candidate → 三层验证（静态 + 证据 + LLM 回归）→ Release 发布门禁（门3 再确认）→ SetStable → Promoted。**候选生成容易，上线难——发布这道门禁决定进化系统的安全性**。BatchScorer 把 LLM 请求合并以应对低 rpm 限流 |
+| **遗传算法 (Autonomous Evolution)** | 0.3.x 中 GA 降级为可选高级功能，主力进化模式变为 Failure → Diagnosis → Patch → Verify。DreamCycle 和 Genome GA 仍保留但不作为主力 |
 
 ## 一个比较颠儿的功能：Agent 暗杀测试
 
@@ -98,8 +99,22 @@ Go 的简洁、极致性能和天生的并发支持让我眼前一亮。于是�
 2026/06/14 19:46:29 INFO orchestrator: resuming agent from step id=agent-6 resume_from=agent-1 start_step=4 total_steps=3
 ```
 
-5 个 Agent 同时在跑，随机杀掉其中几个——Orchestrator 自动复活并恢复进度，MCP 数据、对话上下文、执行步骤全部无缝衔接。这个功能目前还是 Beta，没有 merge 到 master，但效果已经让人很满意了。
+5 个 Agent 同时在跑，随机杀掉其中几个——Kernel Scheduler 自动复活并恢复进度，MCP 数据、对话上下文、执行步骤全部无缝衔接。0.3.x 之后这个能力不再只是 Beta——Task Fabric 的检查点恢复 + Agent Fabric 的生命周期管理 + lease 过期自动 requeue 组成了完整的 Runtime Recovery 链路。
 
 ## 最后
 
 如果你在低谷期，希望这个故事能激励你。**要善待自己，持续输出，拥抱变化。**
+
+---
+
+## 0.3.x 更新说明
+
+这篇文章最初写于 0.2.x 时代。项目已经演进到了 0.3.x，架构进行了大幅升级：
+
+- **Leader/Sub 模式被 ARES Kernel 替代**——不再有中央编排者，Agent 是同级认知进程，由 Scheduler 调度
+- **AHP 进化为 Agent IPC**——从 Leader 分发变成 peer-mesh 六原语（Send/Request/Reply/Delegate/Handoff/Subscribe）
+- **记忆蒸馏归位为 Experience Distillation**——成为进化管道的一部分，不再是孤立模块
+- **进化系统引入候选发布闭环**——三层验证 + Release 门禁，安全第一
+- **引入 Execution Quantum 和 Cooperative Preemption**——Agent 在 quantum 边界 yield，不做 OS 硬抢占
+
+核心哲学没变：**Agent 是一次性的，Task 是持久的。Agent 死亡 ≠ Task 死亡。**

@@ -1,4 +1,4 @@
-# ares 架构拆解 (XV)：MCP 集成——教 Agent 用工具
+# ares 架构拆解 (XV)：MCP 集成——教 Agent 用工具（0.3.x）
 
 > 最早给 Agent 加工具的时候，我是这么干的：写一个 Go struct，实现 `core.Tool` 接口，注册到 `Registry`，完事。
 > 每加一个工具，改一次代码，编译一次，部署一次。22 个内置工具写了我一礼拜。

@@ -1,4 +1,6 @@
-# ares 架构拆解 (XIII)：Bootstrap 与 API 层——无痛接线
+# ares 架构拆解 (XIII)：Bootstrap 与 API 层——无痛接线（0.3.x）
+
+> 0.3.x 更新：Bootstrap 新增 `system_runtime.Orchestrator` 管理组件生命周期（Construct → Bind → Start → Ready，逆序 Stop → Wait → Close）。Bootstrap 现在连接 Kernel（Task Fabric + Agent Fabric + Scheduler + IPC）、Memory、Knowledge/AKG、Evolution、Storage、Embedding、MCP、Flight Recorder、EventStore。
 
 每个框架都有那么一个时刻，用户的问题从"怎么调 LLM"变成了"怎么把这些东西接在一起"。那一刻，你需要 bootstrap。
 

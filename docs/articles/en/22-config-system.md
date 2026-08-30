@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XXII): Config System — One YAML, Twelve Modules
+# ares Architecture Deep Dive (XXII): Config System — One YAML, Twelve Modules (0.3.x)
 
 Every module needs configuration. LLM needs provider and model. Memory needs history size. Evolution needs population size. Storage needs host and port. When you have twelve modules, you have twelve config files — unless you have a config system.
 

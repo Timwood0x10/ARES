@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XV): MCP Integration — Teaching Agents to Use Tools
+# ares Architecture Deep Dive (XV): MCP Integration — Teaching Agents to Use Tools (0.3.x)
 
 I broke the tool system on a Tuesday afternoon.
 

@@ -1,4 +1,4 @@
-# ares 架构拆解 (XIX)：存储层——一切的基石
+# ares 架构拆解 (XIX)：存储层——一切的基石（0.3.x）
 
 ares 里的每个模块——Memory、Evolution、Knowledge、Events——最终都要落地到存储。这是 `internal/storage/` 的故事：57 个文件，14,112 行代码，所有其他模块都站在它上面。
 

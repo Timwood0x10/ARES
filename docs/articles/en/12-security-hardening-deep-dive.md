@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XII): Security Hardening — When Agents Learn to Defend Themselves
+# ares Architecture Deep Dive (XII): Security Hardening — When Agents Learn to Defend Themselves (0.3.x)
 
 > Have you ever watched an AI agent write SQL and felt a chill run down your spine?
 > Not because it's smart — but because it's **dangerously naive**.

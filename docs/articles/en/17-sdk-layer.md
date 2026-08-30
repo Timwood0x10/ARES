@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XVII): SDK Layer — One Line of Code to Start an Agent
+# ares Architecture Deep Dive (XVII): SDK Layer — One Line of Code to Start an Agent (0.3.x)
 
 Every framework has the same last-mile problem. The internals are beautiful — clean interfaces, pluggable providers, composable pipelines. Then the user shows up and asks: "How do I make it go?"
 

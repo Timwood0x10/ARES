@@ -1,376 +1,244 @@
-# ares 架构深度解析（二）：Agent Harmony Protocol — 多智能体的通信基石
+# ares 架构深度解析（二）：Agent IPC — Peer-Mesh 通信原语（0.3.x）
 
 > 聊到多 Agent 系统，很多人第一反应是："Agent 之间怎么说话？用 HTTP 还是 WebSocket？走消息队列？"
-> 我的回答比较粗暴：**同一个进程里跑着，聊个天还要走网络？直接用 Go channel 干不就完了。**
-> 于是就有了 AHP——一个不走网线的通信协议。
+> 0.2.x 的回答是 AHP——一个纯进程内的 channel 通信协议。0.3.x 的回答变了：**Agent 是同级认知进程，通信不需要 Leader 中转。**
+> 于是就有了 Agent IPC——一个 peer-mesh 消息总线，六原语，不走 Leader。
 
 ## 写在前面
 
 做多 Agent 系统最烦的一件事是什么？不是 Agent 不够聪明——是 Agent 之间不说话。
 
-Leader 派了个活给 Sub，Sub 干完了想汇报，结果发现 Leader 已经超时了。Sub 想说自己干到哪一步了，发现没地方说。Leader 想知道 Sub 还活着吗，发现没有心跳机制。
+0.2.x 的时候，Leader 派了个活给 Sub，Sub 干完了想汇报，结果发现 Leader 已经超时了。Sub 想说自己干到哪一步了，发现没地方说。Leader 想知道 Sub 还活着吗，发现没有心跳机制。所有通信都经过 Leader——Leader 挂了，整个通信网就断了。
+
+0.3.x 改了这个。**Agent 是同级认知进程（A ≡ B ≡ C）**——父子只有 spawn provenance，不构成权限层级。Process Tree ≠ Scheduling Graph。这意味着任何 Agent 可以直接和任何 Agent 通信，不需要 Leader 中转。
 
 我刚开始用 Python 搭的时候，用的是 Redis 队列。后来换 Go，想找个更正式的方案，花了整整两天折腾 RabbitMQ——第一天装 Erlang、配 vhost、建 exchange、画 binding key 的映射关系，第二天写了 200 多行胶水代码才把一条消息从 Agent A 送到 Agent B。
 
 测完一看，端到端延迟从 channel 的 <1μs 涨到了 2ms+——这个 2000 倍的差距还不是网络导致的，因为两个 Agent 在同一个进程里跑。纯纯的序列化+消息路由开销。我就想：**同一个进程，两个 goroutine，发条消息还要经过网络？脑子有病吧。**
 
-所以我写了一个纯进程内的通信协议：不走网络、不序列化、不依赖中间件。就是 channel + 共享内存。
+所以我写了一个纯进程内的通信协议：不走网络、不序列化、不依赖中间件。就是 channel + 共享内存。0.2.x 叫 AHP。0.3.x 把它升级为 **Agent IPC**——peer-mesh 消息总线，六原语。
 
-## 一、为什么自己造轮子？
+## 一、从 AHP 到 Agent IPC：变了什么？
 
-ares 里有两种角色：Leader Agent（管分活的）和 Sub Agent（管干活的）。它俩之间通信需要搞定的破事：
+| 维度 | AHP（0.2.x） | Agent IPC（0.3.x） |
+|------|-------------|-------------------|
+| 拓扑 | Leader → Sub（星型） | peer-mesh（任意 Agent → 任意 Agent） |
+| 原语数 | 5（Task/Result/Progress/ACK/Heartbeat） | 6（Send/Request/Reply/Delegate/Handoff/Subscribe） |
+| 语义 | 消息类型驱动（method 字段） | 通信意图驱动（原语即 API） |
+| 广播 | 无（Leader for 循环） | Subscribe + Broadcast（原生 fan-out） |
+| 任务转移 | 无 | Handoff（peer-to-peer 任务所有权转移） |
+| 请求转交 | 无 | Delegate（"我处理不了，帮你转给能处理的人"） |
+| 死信 | DLQ（固定间隔重试） | DeadLetterStore（有界 FIFO，可观测+可重投） |
+| 兼容 | — | 旧 AHP 路径保留（peer.Registry 并行运行） |
 
-- **异步发消息**：Leader 把任务丢出去就能干别的，不用等 Sub 搞完
-- **进度反馈**：Sub 干到 50% 了，得让 Leader 知道
-- **心跳检测**：Leader 得知道 Sub 是不是挂了
-- **容错处理**：消息发失败了得有个兜底
-
-我当时调研了一圈，发现要么太重（RabbitMQ），要么太慢（Redis 走网络），要么和 Go 的哲学不对付。最后决定：**自己搓一个。**
-
-理由其实特简单：
-
-1. **快**：channel 传东西 vs 网络 RTT——这差距大到不用比
-2. **简单**：不用管序列化、网络抖动、分区容错那些分布式噩梦
-3. **好改**：以后真要上微服务了，把底层从 channel 换成 gRPC 就行，上面业务代码一行不用动
+核心区别：AHP 的五种消息类型是"发什么消息"，Agent IPC 的六个原语是"做什么通信动作"。**你不需要在 payload 里塞一个 method 字段来表达意图——你调用的原语本身就是意图。**
 
 ## 二、全局架构
 
-AHP 的整体架构可以概括为一张图：
+Agent IPC 的整体架构：
 
 ```mermaid
-sequenceDiagram
-    participant LA as Leader Agent
-    participant SA as Sub Agent
-    participant HM as HeartbeatMonitor
-    participant DLQ as Dead Letter Queue
+graph TB
+    subgraph Bus ["Agent IPC Bus（internal/agentipc）"]
+        Handlers["Handlers 注册表<br/>agentID → Handler"]
+        Pending["Pending 请求表<br/>correlationID → reply channel"]
+        Subs["Subscribers<br/>topic → []agentID"]
+        DL["DeadLetterStore<br/>有界 FIFO（默认 1024）"]
+    end
 
-    LA->>SA: SendMessage(Enqueue)
-    SA-->>LA: ReceiveMessage(Dequeue)
-    SA->>HM: RecordHeartbeat
-    HM->>HM: CheckTimeouts
-    HM->>SA: TimeoutCallback
-    LA->>DLQ: Failed messages
+    A1["Agent A"] -->|"Send(from, to, topic, payload)"| Handlers
+    A2["Agent B"] -->|"Request(from, to, topic, payload, timeout)"| Handlers
+    Handlers -->|"Reply(corrID, reply)"| Pending
+    Pending -->|"reply → replyCh"| A2
+    A3["Agent C"] -->|"Delegate(delegator, to, topic, payload)"| Handlers
+    A4["Agent D"] -->|"Handoff(from, to, taskID, snapshot)"| Handlers
+    A5["Agent E"] -->|"Subscribe(agentID, topic)"| Subs
+    A6["Agent F"] -->|"Broadcast(from, topic, payload)"| Subs
+    Subs -->|"fan-out → 每个 subscriber"| Handlers
+    Handlers -.->|"失败/超时 → Record"| DL
 ```
 
-核心组件包括：
+核心组件：
 
 | 组件 | 职责 | 实现亮点 |
 |------|------|----------|
-| `Protocol` | 统一门面，组合所有子组件 | Facade 模式，提供一站式接口 |
-| `MessageQueue` | 每个 Agent 独立的消息队列 | 基于 buffered channel + backup buffer + atomic.Bool |
-| `HeartbeatMonitor` | 心跳检测 + 超时回调 | 共享实例，分布式系统无需额外组件 |
-| `DLQ` | 死信消息存储与重试 | 支持自定义处理器和自动重试 |
-| `QueueRegistry` | 管理所有 Agent 的队列 | 懒加载 + 双检锁 |
-| `Codec` | 消息序列化 | JSON 实现，CodecRegistry 可扩展 |
+| `Bus` | peer-mesh 消息总线，持有所有状态 | `sync.RWMutex` 保护 handlers/subscribers/pending |
+| `Handler` | 消息处理函数，`func(ctx, *Message) (*Message, error)` | 返回 reply 或 error |
+| `Message` | 通信单元，携带 topic/payload/correlationID | 轻量结构体，无 JSON 序列化 |
+| `DeadLetterStore` | 失败请求的有界存储 | 环形 FIFO，默认 1024 条，可观测+可重投 |
+| `PolicyFlag` | 双轨调度标志（legacy vs task fabric） | `atomic.Int64`，运行时翻转不需重启 |
 
-## 三、消息模型
+## 三、六原语
 
-### 3.1 五种消息类型
+### 3.1 Send — 发了就忘
 
-AHP 定义了 5 种消息类型，覆盖 Agent 间通信的全部场景：
+```go
+func (b *Bus) Send(ctx context.Context, from, to, topic string, payload any) error
+```
+
+最简单的原语：把消息投递给目标 Agent，不等回复。目标不存在或 handler 失败时，记录到 DeadLetterStore。**Send 不配对 Reply**——如果需要请求/回复语义，用 Request。
+
+### 3.2 Request — 请求/回复
+
+```go
+func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, timeout time.Duration) (*Message, error)
+```
+
+同步请求/回复原语：发送消息并等待回复。Bus 分配 correlationID，注册 pending reply channel。目标 handler 可以：
+- **同步回复**：handler 直接返回 `(*Message, error)`，Bus 在 managed goroutine 里 stamping 后投递
+- **异步回复**：handler 返回 `(nil, nil)`，稍后调用 `Reply(corrID, reply)` 完成回复
+
+超时或 context 取消时，pending entry 被清理，返回 `ErrTimeout`。B16 修复：timeout ≤ 0 时使用 30s 默认值，不再无限阻塞。
+
+### 3.3 Reply — 异步回复
+
+```go
+func (b *Bus) Reply(corrID string, reply *Message) error
+```
+
+当 handler 不能立即返回回复时，可以稍后调用 Reply。correlationID 把回复和原始请求配对。对于已超时/取消的请求，Reply 是 best-effort drop——不会阻塞或 panic。
+
+### 3.4 Delegate — 请求转交
+
+```go
+func (b *Bus) Delegate(ctx context.Context, delegator, to, topic string, payload any, timeout time.Duration) (*Message, error)
+```
+
+"I can't handle this — let me ask someone who can." 委托者把自己的 ID 作为 From 发起 Request。原始请求者的 correlationID 端到端保留，回复可以链式返回。**这是 Agent 之间协作转交的原语——不需要 Leader 中转。**
+
+### 3.5 Handoff — 任务转移
+
+```go
+func (b *Bus) Handoff(ctx context.Context, from, to, taskID string, contextSnapshot map[string]any, timeout time.Duration) (*Message, error)
+```
+
+Peer-to-peer 任务所有权转移。与 Send 不同，Handoff 携带结构化的转移 payload（task id + context snapshot + artifacts），接收方确认接受。**发送方让出任务，接收方接手。这是 Agent 之间直接转移任务的原语——不经过 Scheduler。**
+
+### 3.6 Subscribe / Broadcast — 订阅/广播
+
+```go
+func (b *Bus) Subscribe(agentID, topic string) error
+func (b *Bus) Broadcast(ctx context.Context, from, topic string, payload any) int
+```
+
+"I found X — anyone interested in X should know." Agent 订阅感兴趣的 topic，任何 Agent 可以向某个 topic 广播。Broadcast 是 fire-and-forget fan-out：每个 subscriber 的 handler 被调用，单个 handler 失败不中断 fan-out，返回成功投递数。B16 修复：Subscribe 去重，同一 agent 不会重复加入同一 topic。
+
+## 四、Message 模型
+
+```go
+type Message struct {
+    ID            string    // Bus 生成的唯一 ID
+    From          string    // 发送者 agent id
+    To            string    // 目标 agent id（"" = 广播给 subscribers）
+    Topic         string    // 消息主题（如 "verify-conclusion", "handoff-task"）
+    CorrelationID string    // 请求/回复配对 ID（fire-and-forget 时为空）
+    Payload       any       // 消息体
+    At            time.Time  // 发送时间戳
+}
+```
+
+对比 AHP 的 `AHPMessage`：没有 `Method` 字段了——**原语本身就是 method**。调用 `Send` 就是 fire-and-forget，调用 `Request` 就是请求/回复，不需要在 payload 里塞一个 `"method": "TASK"` 来表达意图。
+
+## 五、DeadLetterStore：有界可观测
+
+0.3.x 把 AHP 的 DLQ 升级为 `DeadLetterStore`：
+
+```go
+type DeadLetterStore struct {
+    mu       sync.Mutex
+    next     uint64
+    capacity int       // 默认 1024
+    entries  []DeadLetter
+}
+```
+
+关键变化：
+- **有界 FIFO**：满了就踢最老的（环形策略，与 flight aggregates 一致）
+- **原生可观测**：introspect 面板和 ops 工具可以直接 `Snapshot()` 读取
+- **可重投**：失败请求保留 From/To/Topic/Payload/Reason，可以手动重投
+- **不记录 context 取消**：`ctx.Done()` 不是投递失败——请求可能已被投递和处理，只是调用方取消了等待。把取消记进 DLQ 会挤掉真正的投递失败
+
+对比 AHP 的 DLQ：没有自动重试了。0.2.x 的 DLQ 有固定间隔重试，打了下游更惨。0.3.x 改为记录 + 可观测 + 手动重投——让人决定，不自动打。
+
+## 六、双轨调度：PolicyFlag
+
+0.3.x 的 `agentipc` 包里有一个 `PolicyFlag`——双轨调度标志：
 
 ```go
 const (
-    AHPMethodTask      AHPMethod = "TASK"      // 任务分配
-    AHPMethodResult    AHPMethod = "RESULT"     // 任务结果
-    AHPMethodProgress  AHPMethod = "PROGRESS"   // 进度反馈
-    AHPMethodACK       AHPMethod = "ACK"        // 确认回复
-    AHPMethodHeartbeat AHPMethod = "HEARTBEAT"  // 心跳信号
+    PolicyLegacy     ExecutionPolicy = iota  // 旧 leader+sub 路径
+    PolicyTaskFabric                          // Kernel 路径：Task Fabric → Scheduler → Agent
 )
 ```
 
-### 3.2 消息结构
+`DualTrackDispatcher` 持有两条路径的 dispatcher，flag 选择哪条是 active。当 shadow 模式开启时，inactive 路径也跑，对比结果——**这是"双轨等价"验证：同一个 task 走两条路，结果必须一致**。
+
+生产环境只有 `PolicyTaskFabric`——Leader 运行时已移除。但保留 legacy 常量是为了双轨验证的 shadow 模式。
+
+## 七、旧 AHP 兼容
+
+Agent IPC 不替代旧的 AHP——两者并行运行：
+
+- **`internal/ares_protocol/ahp`**：旧的 AHP 协议，channel + MessageQueue + HeartbeatMonitor + DLQ
+- **`internal/agents/peer/Registry`**：peer-to-peer 直投 Send（基于 AHP 消息）
+- **`internal/agentipc/Bus`**：新的 peer-mesh 六原语总线
+
+`peer.Registry` 的 Send 路径仍然使用 `ahp.AHPMessage`，直接调用目标 Agent 的 `SendFunc`。这跟 `agentipc.Bus` 的 Send 互补：旧路径处理 Leader 分发的遗留场景，新路径处理 peer-mesh 协作。
+
+**坦诚反思**：两套通信系统并行运行是迁移期的必要代价。长期目标是 AHP 退化到只做兼容层，所有新通信走 Agent IPC。但短期内，leader-dispatched 路径和 peer IPC 并行 + feature flag gradual cutover 是最安全的方式。
+
+## 八、Context 三层分离
+
+Agent IPC 是 0.3.x Context 三层分离的第三层：
+
+| 层 | 内容 | 生命周期 |
+|----|------|---------|
+| Task Shared | 任务上下文（DAG、检查点、lease） | Task 级别——Agent 死了 Task 不死 |
+| Agent Private | Agent 私有状态（LLM 对话、中间结果） | Agent 级别——Agent 死了就没了 |
+| IPC Messages | Agent 间消息（Send/Request/Handoff...） | 消息级别——投递完就完事 |
+
+这个分离意味着：Agent 死了，它的 Agent Private context 丢了，但 Task Shared context 还在（在 Task Fabric 的检查点里），IPC Messages 也在（Bus 的 pending/dead letters 里）。新 Agent 被 spawn 出来，从检查点恢复 Task context，继续干活。
+
+## 九、关键设计决策
+
+### 9.1 为什么 Request 用 managed goroutine？
+
+Request 的 handler 在一个独立 goroutine 里执行：
 
 ```go
-type AHPMessage struct {
-    MessageID   string         `json:"message_id"`
-    Method      AHPMethod      `json:"method"`
-    AgentID     string         `json:"agent_id"`
-    TargetAgent string         `json:"target_agent"`
-    TaskID      string         `json:"task_id"`
-    SessionID   string         `json:"session_id"`
-    Payload     map[string]any `json:"payload"`
-    Timestamp   time.Time      `json:"timestamp"`
-}
+go func() {
+    reply, err := h(reqCtx, req)
+    // ...
+}()
 ```
 
-### 3.3 MessageID 生成
+原因：handler 可能很慢（调 LLM、查数据库），如果在调用方 goroutine 里同步执行，调用方无法被 timeout 或 context 取消。managed goroutine + child context 意味着 timeout 到了 handler 会被 cancel——**handler 不再泄漏**（B16 修复）。
 
-MessageID 的设计是一个三段式 ID：
+### 9.2 为什么 Reply 是 best-effort drop？
 
-```go
-func generateMessageID() string {
-    id := atomic.AddUint64(&messageIDCounter, 1)
-    randSuffix := getRandomSuffix()
-    return fmt.Sprintf("%s.%d.%s",
-        time.Now().Format("20060102150405.000000"), id, randSuffix)
-}
-```
+如果 correlationID 已不在 pending 表里（说明请求已超时/取消），Reply 直接返回 nil，不报错不 panic。原因：在分布式系统里，"回复到达时请求已超时"是常态不是异常。如果 Reply 报错，调用方还得处理这个错误——但调用方大概率已经不关心了。
 
-- **时间戳前缀**：可读性强，方便排查问题
-- **原子计数器**：同一纳秒内多个消息的序号递增
-- **随机后缀**：多进程场景下避免冲突
+### 9.3 为什么 Handoff 不经过 Scheduler？
 
-这个方案不依赖全局协调器，在进程内就能保证唯一性。
+Handoff 是 peer-to-peer 任务转移——Agent 之间直接交接。原因：有些场景下 Agent 知道谁适合接手（比如"我做不了验证，但 Agent C 擅长验证"），不需要 Scheduler 重新调度。Scheduler 是"我不知道谁该干"时的路径，Handoff 是"我知道谁该干"时的路径。
 
-### 3.4 辅助构造函数
+## 十、还差什么？（坦诚环节）
 
-AHP 提供了一系列构造函数，屏蔽消息构建的细节：
+说实话，Agent IPC 也不是完美的：
 
-```go
-NewMessage(method, agentID, targetAgent, taskID, sessionID)
-NewTaskMessage(agentID, targetAgent, taskID, sessionID, payload)
-NewResultMessage(agentID, targetAgent, taskID, sessionID, result)
-NewProgressMessage(agentID, targetAgent, taskID, sessionID, progress)
-NewACKMessage(agentID, targetAgent, taskID, sessionID)
-NewHeartbeatMessage(agentID)
-```
+1. **纯进程内**：跟 AHP 一样，跨不了进程。真要上分布式，Bus 的 `map[string]Handler` 得换成某种分布式服务发现 + 网络传输。这个"换一层实现"的难度比看起来大——pending reply channel 的同步语义在网络环境下要重新设计
+2. **没有背压**：Broadcast 是 fire-and-forget fan-out，如果 subscriber 处理慢，handler 调用会阻塞在那个 subscriber 上。目前没有 per-subscriber 的队列做缓冲——Broadcast 的 handler 是同步调用的
+3. **DeadLetterStore 没有自动重投**：0.2.x 的 DLQ 至少有自动重试（虽然打得更惨了）。0.3.x 改为纯记录——但如果你不主动去看 DeadLetterStore，失败的消息就永远丢了。需要一个告警机制：DeadLetter count 超过阈值时通知
+4. **Subscribe 没有模式匹配**：只支持 exact topic match。不支持通配符或模式订阅（如 `task.*` 匹配所有 task 相关 topic）。当前够用，但长期可能需要
 
-值得注意的是 `NewResultMessage`：它将 `*models.TaskResult` 封装到 `Payload["result"]` 中，而 `GetResult()` 方法需要处理 JSON 反序列化后类型丢失的问题——`TaskResult` 会变为 `map[string]any`。`GetResult()` 内部实现了 `reconstructTaskResult` 函数，通过反射和字段映射来重建原始结构体。
+还有一个不太明显的设计代价：**六个原语看起来简单，但组合使用时的边界情况很多。** 比如 Delegate + Handoff 的组合——Agent A 委托 Agent B 处理，B 处理到一半发现需要 C 接手，B 能不能把 A 委托给自己的任务 Handoff 给 C？correlationID 怎么链式传递？这些场景的语义目前是清楚的，但缺乏充分的测试覆盖。
 
-## 四、消息队列：MessageQueue
-
-### 4.1 核心实现
-
-`MessageQueue` 基于 buffered Go channel 实现：
-
-```go
-type MessageQueue struct {
-    messages     chan *AHPMessage
-    agentID      string
-    opts         *QueueOptions
-    backupBuffer []*AHPMessage
-    backupMu     sync.Mutex
-    closed       atomic.Bool
-    closeOnce    sync.Once
-}
-```
-
-### 4.2 入队：非阻塞写入
-
-```go
-func (q *MessageQueue) Enqueue(ctx context.Context, msg *AHPMessage) (retErr error) {
-    if q.closed.Load() { return errors.ErrQueueClosed }
-    defer func() {
-        if r := recover(); r != nil { retErr = errors.ErrQueueClosed }
-    }()
-    select {
-    case q.messages <- msg:
-        return nil
-    default:
-        return errors.ErrQueueFull
-    }
-}
-```
-
-设计亮点：
-
-1. **非阻塞**：channel 满时立即返回 `ErrQueueFull`，不阻塞调用方
-2. **atomic.Bool 判断关闭**：无锁检查关闭标志
-3. **defer recover 兜底**：`send on closed channel` 的 panic 被优雅捕获
-4. **context 参数未使用**：`default` 分支永远不会选择 `ctx.Done()`，这里的 context 形同虚设
-
-### 4.3 出队：阻塞读取
-
-```go
-func (q *MessageQueue) Dequeue(ctx context.Context) (*AHPMessage, error) {
-    q.backupMu.Lock()
-    if len(q.backupBuffer) > 0 {
-        msg := q.backupBuffer[0]
-        q.backupBuffer = q.backupBuffer[1:]
-        q.backupMu.Unlock()
-        return msg, nil
-    }
-    q.backupMu.Unlock()
-    select {
-    case msg, ok := <-q.messages:
-        if !ok { return nil, errors.ErrQueueClosed }
-        return msg, nil
-    case <-ctx.Done():
-        return nil, ctx.Err()
-    }
-}
-```
-
-出队支持 context 取消，这是 Go 标准的可取消阻塞模式。
-
-### 4.4 Peek 与 Backup Buffer
-
-`Peek()` 允许在不移除消息的情况下查看队首。核心难题是：从 channel 取出消息后，如果 channel 已满就无法放回。解决方案是有 `backupBuffer` 作为溢出存储，`Dequeue` 优先从 backupBuffer 读取。
-
-### 4.5 QueueRegistry：队列管理器
-
-`QueueRegistry` 的 `GetOrCreate` 方法使用**双检锁**（Double-Checked Locking）模式:
-
-```go
-func (r *QueueRegistry) GetOrCreate(agentID string) *MessageQueue {
-    r.mu.RLock()
-    q, ok := r.queues[agentID]
-    r.mu.RUnlock()
-    if ok { return q }
-    r.mu.Lock()
-    defer r.mu.Unlock()
-    if q, ok := r.queues[agentID]; ok { return q } // 双检
-    q = NewMessageQueue(agentID, r.defaultOpts)
-    r.queues[agentID] = q
-    return q
-}
-```
-
-## 五、心跳检测：HeartbeatMonitor
-
-### 5.1 核心流程
-
-- 各 Agent 按固定间隔（默认 5s）发送心跳
-- HeartbeatMonitor 记录最近一次心跳时间
-- 超过超时时间（默认 30s）且连续错过次数达到阈值（默认 3 次），标记为离线
-
-### 5.2 超时检测算法
-
-```go
-func (m *HeartbeatMonitor) CheckTimeouts() []string {
-    timedOut := m.checkAndMarkOffline()  // 写锁下检测
-    for _, agentID := range timedOut {
-        m.notifyCallbacks(agentID)        // 锁外执行回调
-    }
-    return timedOut
-}
-```
-
-关键边界条件处理：
-
-1. **渐进式超时**：错过 3 次心跳才判定离线，避免网络偶发延迟导致误杀
-2. **避免重复回调**：已 Offline 的 Agent 不会再次触发回调
-3. **回调在锁外执行**：`notifyCallbacks` 复制回调列表后释放锁再执行，这是防止死锁的关键
-
-### 5.3 两种 HeartbeatSender
-
-1. **`ahp.HeartbeatSender`**：发送 `AHPMethodHeartbeat` 消息到目标的 `MessageQueue`，属于**带内**心跳
-2. **`heartbeatSender`**（在 `internal/agents/sub/`）：直接调用 `HeartbeatMonitor.RecordHeartbeat`，属于**带外**心跳
-
-目前 Sub Agent 使用第二种方式，在单体部署下更高效。
-
-## 六、死信队列：DLQ
-
-当 `Enqueue` 返回错误时，`Protocol.SendMessage` 将失败消息路由到 DLQ：
-
-```go
-func classifyEnqueueError(err error) string {
-    switch {
-    case errors.Is(err, apperrors.ErrQueueClosed):  return "queue_closed"
-    case errors.Is(err, apperrors.ErrQueueFull):    return "queue_full"
-    case errors.Is(err, context.Canceled):          return "context_canceled"
-    case errors.Is(err, context.DeadlineExceeded):  return "context_deadline"
-    default:                                        return "unknown"
-    }
-}
-```
-
-`DLQProcessor` 支持按错误类型注册自定义处理器，并支持自动重试：
-
-- `MaxRetries = 0`：无限重试
-- `MaxRetries > 0`：达到次数后标记为 exhausted
-- 当前无指数退避，这是可改进点
-
-## 七、Protocol 门面
-
-```go
-type Protocol struct {
-    registry  *QueueRegistry
-    dlq       *DLQ
-    codec     Codec
-    heartbeat *HeartbeatMonitor
-    config    *ProtocolConfig
-}
-```
-
-| 方法 | 功能 |
-|------|------|
-| `SendMessage(ctx, msg)` | 发送消息，失败自动入 DLQ |
-| `ReceiveMessage(ctx, agentID)` | 接收消息，阻塞等待 |
-| `SendTask/SendResult` | 便捷发送 |
-| `RecordHeartbeat(agentID)` | 记录心跳 |
-| `CheckTimeouts()` | 检查超时 |
-| `Stats()` | 运行状态快照 |
-| `Close()` | 关闭所有资源 |
-
-## 八、Agent 中的 AHP 集成
-
-### 8.1 Messenger 接口
-
-```go
-type Messenger interface {
-    SendMessage(ctx context.Context, msg *ahp.AHPMessage) error
-    ReceiveMessage(ctx context.Context) (*ahp.AHPMessage, error)
-}
-```
-
-Leader Agent 和 Sub Agent 都实现了此接口。构造时通过依赖注入传入 `MessageQueue` 和 `HeartbeatMonitor`。
-
-### 8.2 Dispatcher 的任务分发
-
-`taskDispatcher` 同时支持**本地执行**和**分布式分发**两种模式，核心逻辑在 `executeTask` 中：
-
-```go
-if executor, ok := d.executorFuncs[task.Type]; ok {
-    return executor(ctx, task, agentAddr, sessionID)  // 本地执行
-}
-if d.messageSender == nil { /* return error */ }
-msg := ahp.NewTaskMessage(...)                        // 通过 AHP 发送
-d.messageSender.Send(ctx, agentAddr, msg)
-return d.waitForResult(ctx, task.TaskID)              // 阻塞等待结果
-```
-
-这种设计使得 Agent 通信模式可以在单体部署和分布式部署间无缝切换。
-
-## 九、设计模式总结
-
-| 模式 | 位置 | 说明 |
-|------|------|------|
-| **Facade** | `Protocol` | 统一接口，组合所有组件 |
-| **Registry** | `QueueRegistry`, `CodecRegistry` | 具名实例管理，懒加载 |
-| **Strategy** | `Codec` 接口 | 可替换的序列化策略 |
-| **Observer** | `TimeoutCallback` | 心跳超时回调 |
-| **Dead Letter Queue** | `DLQ` + `DLQProcessor` | 失败消息存储与重试 |
-| **Double-Checked Locking** | `GetOrCreate` | 兼顾性能与正确性 |
-| **Panic Recovery** | `Enqueue` | `defer recover()` 应对并发关闭 |
-| **Lock-Free Read** | `atomic.Bool` | 无锁读取关闭状态 |
-
-## 十、关键设计决策
-
-### 10.1 为什么非阻塞 Enqueue？
-
-- Agent 是多线程环境，阻塞可能导致级联等待
-- DLQ 提供了更好的容错语义，失败消息可重试
-- 调用方有更大的控制权：立即重试、稍后重试、或舍弃
-
-### 10.2 TOCTOU 避免
-
-`SendMessage` 有一个关键设计：**不先检查 IsFull 再入队**。如果先检查再入队，检查到入队之间队列可能从不满变为满（TOCTOU 竞态），导致消息丢失。直接执行操作并处理错误更健壮。
-
-### 10.3 序列化预留扩展
-
-当前 AHP 是纯进程内通信，JSON 够用。但 Codec 接口预留了两个方向的扩展：
-1. **跨进程通信**：protobuf/msgpack 可提供更小的载荷
-2. **持久化**：DLQ 消息若落盘，二进制格式更有优势
-
-## 十一、还差什么？（坦诚环节）
-
-说实话，AHP 不是完美的。我自己用的时候也踩过一些坑，有的坑还挺疼：
-
-1. **纯进程内**：跨不了进程，真要上分布式得换 MessageQueue 实现。这不是"换个实现"四个字就能解决的——channel 的同步语义和网络消息队列的异步语义有本质区别，切换的时候有不少边界情况要处理
-2. **没有广播**：要给多个 Sub 发消息，就得老老实实在 Leader 里 for 循环逐个发。有一次我需要同时通知 6 个 Sub 执行任务，Leader 发完第 3 个的时候第 1 个 Sub 已经跑完了——串行发送成了整个工作流的瓶颈
-3. **重试策略太憨**：DLQ 重试间隔是固定的，没做指数退避。有次下游 API 挂了 10 分钟，DLQ 在这 10 分钟里以固定间隔疯狂重试，把本来就脆弱的下游打得更惨了。事后我才加的熔断判断——应该一开始就做了
-4. **路由太死板**：不支持基于内容的动态路由或者 Topic 订阅。当前的路由就是"发给这个 AgentID"，偶尔想根据消息类型做分流，得自己在业务层写 if-else
-
-还有一个不太明显的代价：**"以后换底层就行"这个假设，在短期内可能是错的。** 因为 AHP 用的很多语义（非阻塞 Enqueue、backup buffer、共享内存方式的 Heartbeat）都依赖 channel 的同步特性。真要切到 gRPC 或 RabbitMQ 的时候，这些行为的移植难度比表面上大得多——你需要重新实现一整套"看起来像 channel"的异步语义。抽象层能隔离接口，但隔离不了语义差异。
-
-不过话说回来，这些 limitation 在单体阶段都是**可以接受的取舍**——channel 方案帮我省掉了 90% 的分布式复杂度。如果一开始上了 RabbitMQ，可能 Agent 之间的通信也稳定了，但项目启动时间会多花一到两周，还不算后面的运维成本。对于创业阶段的项目，这个账怎么算都是划算的。
+不过话说回来，相比 0.2.x 的 AHP，Agent IPC 解决了两个核心问题：**不再依赖 Leader 中转，以及原生支持任务转移和广播**。这两个能力是 peer-mesh 协作的基础——没有它们，"同级认知进程"就是空话。
 
 ## 总结
 
-AHP 是我给 ares 搓的通信轮子。channel 传消息、DLQ 兜底、HeartbeatMonitor 看死活——三个东西加一起，多 Agent 通信的基础设施就齐活了。
+Agent IPC 是 0.3.x 给 ares 造的新通信轮子。六原语覆盖 peer-mesh 协作的全部场景：Send 发了就忘，Request/Reply 请求回复，Delegate 请求转交，Handoff 任务转移，Subscribe/Broadcast 订阅广播。DeadLetterStore 有界可观测。双轨调度并行运行 + feature flag 渐进切换。
 
-代码里留的那些接口（Codec、DLQ handler、MessageSender），说白了就是给自己留的后路：以后要上 gRPC 还是 RabbitMQ，换一层实现就完事，上面业务代码不用动。这种设计在创业项目里特别重要——你永远不知道明天架构要改成啥样。
+旧 AHP 保留为兼容层——leader-dispatched 路径和 peer IPC 并行运行，慢慢切换。这种"双轨等价"的方式在大型重构里特别重要——你不能一次性切，只能并行跑、对比结果、慢慢切换。
 
 下一篇聊聊**记忆蒸馏**——Agent 怎么从几百条对话历史里把有用的经验提炼出来，下次遇到类似问题直接复用。

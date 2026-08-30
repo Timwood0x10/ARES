@@ -1,4 +1,6 @@
-# ares 架构深度解析（八）：事件系统 — 状态恢复与审计追踪的事件溯源基石
+# ares 架构深度解析（八）：事件系统 — 状态恢复与审计追踪的事件溯源基石（0.3.x）
+
+> 0.3.x 更新：事件类型升级为完整 Task 生命周期（Created/Ready/Acquired/Started/Yielded/Checkpointed/Preempted/Released/Completed/Failed/Expired/Stolen）。EventStore 与 Task Fabric 深度集成，Task 生命周期事件直接驱动调度（Task completed → 依赖变 Ready）。
 
 > Agent 启动是个事件、任务分配是个事件、工具调用是个事件、LLM 返回是个事件、Agent 挂了也是个事件。
 > 我当时就在想：**如果我把 Agent 干的每一件事都记下来，是不是就能在它挂了之后完全重建它的状态？**

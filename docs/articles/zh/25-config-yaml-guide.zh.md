@@ -1,4 +1,4 @@
-# ARES config.yaml 配置指南（中文版）
+# ARES config.yaml 配置指南（中文版）（0.3.x）
 
 > 版本：0.2.9 · 最后更新：2026-08-05
 > 英文版见 [English Version](./25-config-yaml-guide.en.md)

@@ -1,4 +1,4 @@
-# ares Series: Building Your Own Agent Framework When You're Bored
+# ares Series: Building Your Own Agent Framework When You're Bored (0.3.x)
 
 > I've always believed the best way to learn is to build your own wheel.
 > Not because the wheels out there aren't good enough — but because once you've built one, you'll never get stuck by one again.
@@ -69,23 +69,24 @@ I started with the basics: LLM calls, simple RAG. But this time, everything felt
 
 ## Key Features
 
-As the project matured, I added the features I always wanted:
+As the project matured, I added the features I always wanted. From 0.2.x to 0.3.x, the architecture underwent a major upgrade — from an "Agent Orchestration Framework" (Leader + Sub) to a **"dynamic compute runtime for agents"** — Agents are not orchestrated. They are scheduled.
 
 | Feature | Description |
 |---------|-------------|
-| **Dynamic DAG Workflows** | Execution graphs built and modified at runtime — no more hardcoding |
-| **Memory Distillation** | Long-term memory auto-summarized and compressed — agents don't drown in context |
-| **AHP (Agent Hierarchical Protocol)** | Clear communication, delegation, and collaboration between agents |
-| **Leader + Sub-Agent with Failover** | If the Leader dies, sub-agents pick up seamlessly |
+| **ARES Kernel (0.3.x)** | Three-pillar architecture: Task Fabric (durable task intent + DAG dependencies + leases + checkpoints), Agent Fabric (disposable agent lifecycle: spawn/suspend/resume/retire/kill/recover), Scheduler (capability-aware scheduling + work stealing + cooperative preemption). **Agent death ≠ Task death** |
+| **Execution Quantum** | Agents don't run tasks to completion — each quantum ends with `yield()`, returning control to the Scheduler which decides continue/suspend/preempt/handoff. LLM agents cannot be interrupted at arbitrary instructions — only at quantum boundaries |
+| **Dynamic DAG Workflows** | Execution graphs built and modified at runtime — no more hardcoding; MutableDAG supports runtime add/remove/replace nodes, with GraphPatchExecutor and RecoveryReplaceNode for node-level fault self-healing |
+| **Memory Distillation → Experience Distillation** | 0.3.x relocates memory distillation into the evolution pipeline: Trace (what happened) → Experience (what it means) → Memory (formal knowledge). Candidate and formal knowledge stored separately; an experience needs ≥2 non-failure trajectory support to graduate |
+| **Agent IPC (0.3.x)** | Peer-mesh message bus replaces legacy AHP: Send / Request / Reply / Delegate / Handoff / Subscribe — six primitives. Agents are same-level cognitive processes (A ≡ B ≡ C); parent/child only carries spawn provenance, not a permission hierarchy |
 | **Pluggable Vector Stores** | PostgreSQL pgvector, Qdrant, etc. Core ops <1µs with zero-alloc hot paths |
 | **MCP Protocol** | Native Model Context Protocol support for dynamic tool discovery |
-| **Event System & Flight Recorder** | Every agent action becomes an immutable record — state recovery, audit trails |
-| **SkillCatalog & Capability Fabric** | Framework-native skill discovery, indexing, and loading — MCP servers, git repos, local executables, and HTTP manifests as first-class sources; learned relevance priors from experience |
-| **Peer-to-Peer Agent Messaging** | Agents can send messages directly to each other without routing through the leader — complements the leader-dispatched task path |
-| **Session Leases** | Exclusive session access control with TTL-based expiration — prevents concurrent writers from clobbering each other on long-lived sessions |
+| **Event System & Flight Recorder** | Every agent action becomes an immutable record — state recovery, audit trails. 0.3.x event types upgraded to full Task lifecycle (Created/Ready/Acquired/Started/Yielded/Checkpointed/Preempted/Released/Completed/Failed/Expired/Stolen) |
+| **SkillCatalog & Capability Fabric** | Framework-native skill discovery, indexing, and loading — MCP servers, git repos, local executables, and HTTP manifests as first-class sources; learned relevance priors from experience. Five catalog tools (skill_search/load/activate/list/experience) implement Level-0/1/2 progressive disclosure |
+| **Session Leases → Universal Lease (0.3.x)** | SessionLease abstracted into TaskLease / ResourceLease / CapabilityLease. All ownership-carrying operations carry a fencing token (epoch) to prevent "A expired → B acquire → A late Release" from killing B's ownership |
 | **Action Logs** | Every agent action recorded as an immutable audit trail — pairs with the event store for replay and recovery |
 | **Chaos Engineering** | 14 chaos actions (kill_leader, network_partition, tool_timeout, etc.) randomly injected into production agents to validate anti-fragility; support for survival mode (30 min sustained random failures) and scenario orchestration (YAML-defined multi-step chaos experiments); 3D weighted scoring (Availability 40%, Recovery 30%, Consistency 30%) with Welch's t-test regression |
-| **Autonomous Evolution** | Agent strategies self-evolve via a dual-path design: the DreamCycle path evaluates mutated candidates through Arena regression testing (two-stage: Quick Reject 5 rounds → Full Eval 50 rounds) to select optimal strategies; the Genome GA path operates at zero token cost on pre-computed scores — selection (truncation/tournament/roulette), crossover (uniform/multi-point/half-split), and mutation (70% parameter / 15% prompt / 15% tool), with automatic score degradation triggering (15% threshold) |
+| **Candidate Release Closed-Loop (0.3.0)** | Evolution upgraded from "strategy evolution" to **tiered release gating**: Candidate → three-layer verification (static + evidence + LLM regression) → Release gate (gate-3 reconfirmation) → SetStable → Promoted. **Candidates are easy to generate, hard to ship — the release gate determines the safety of the evolution system**. BatchScorer merges LLM requests to handle low-rpm rate limits |
+| **Autonomous Evolution** | In 0.3.x, GA is demoted to an optional advanced feature; the primary evolution mode is now Failure → Diagnosis → Patch → Verify. DreamCycle and Genome GA are retained but not the main path |
 
 ## The Craziest Feature: Agent Assassination
 
@@ -98,8 +99,22 @@ I built something a little unhinged — **a feature that randomly assassinates a
 2026/06/14 19:46:29 INFO orchestrator: resuming agent from step id=agent-6 resume_from=agent-1 start_step=4 total_steps=3
 ```
 
-Five agents running in parallel. Randomly kill a few of them. The Orchestrator automatically resurrects them and resumes progress — MCP data, conversation context, execution steps all seamlessly restored. This is still Beta (not merged to master), but the results are already impressive.
+Five agents running in parallel. Randomly kill a few of them. The Kernel Scheduler automatically resurrects them and resumes progress — MCP data, conversation context, execution steps all seamlessly restored. Post-0.3.x, this capability is no longer just Beta — the Task Fabric's checkpoint recovery + Agent Fabric's lifecycle management + lease-expiry auto-requeue form a complete Runtime Recovery chain.
 
 ## Final Thoughts
 
 If you're going through a rough patch, I hope this story encourages you. **Be kind to yourself, keep shipping, embrace change.**
+
+---
+
+## 0.3.x Update Notes
+
+This article was originally written during the 0.2.x era. The project has since evolved to 0.3.x with major architectural upgrades:
+
+- **Leader/Sub model replaced by ARES Kernel** — no more central orchestrator; agents are same-level cognitive processes scheduled by the Scheduler
+- **AHP evolved into Agent IPC** — from leader-dispatched to peer-mesh six primitives (Send/Request/Reply/Delegate/Handoff/Subscribe)
+- **Memory Distillation relocated as Experience Distillation** — now part of the evolution pipeline, no longer a standalone module
+- **Evolution system introduced Candidate Release Closed-Loop** — three-layer verification + Release gate, safety first
+- **Execution Quantum and Cooperative Preemption introduced** — agents yield at quantum boundaries, no OS-style hard preemption
+
+The core philosophy hasn't changed: **Agents are disposable, Tasks are durable. Agent death ≠ Task death.**

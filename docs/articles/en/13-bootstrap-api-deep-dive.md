@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (XIII): Bootstrap & API Layer — Wiring Without the Pain
+# ares Architecture Deep Dive (XIII): Bootstrap & API Layer — Wiring Without the Pain (0.3.x)
+
+> 0.3.x update: Bootstrap adds `system_runtime.Orchestrator` to manage component lifecycle (Construct → Bind → Start → Ready, reverse-order Stop → Wait → Close). Bootstrap now wires the Kernel (Task Fabric + Agent Fabric + Scheduler + IPC), Memory, Knowledge/AKG, Evolution, Storage, Embedding, MCP, Flight Recorder, EventStore.
 
 There's a moment in every framework's life when the user's first question shifts from "how do I call an LLM?" to "how do I wire all this together?" That's the moment you need a bootstrap.
 

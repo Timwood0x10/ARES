@@ -1,9 +1,71 @@
-# ares Architecture Deep Dive (IV): Workflow Engine -- From DAG to Dynamic Orchestration
+# ares Architecture Deep Dive (IV): Workflow Engine -- From DAG to Dynamic Orchestration (0.3.x)
 
 > I used to hardcode workflows. If step 1 finishes, run step 2. If step 2 finishes, run step 3.
 > Then requirements changed. Logic got tangled. Code turned into spaghetti.
 > I thought: **workflows shouldn't be hardcoded. They should be like LEGO — snap together, pull apart, swap pieces at runtime.**
 > That's why ares has two workflow systems. Yes, two. I built one, found it wasn't enough, then built another.
+>
+> 0.3.x update: The DAG directly serves as the scheduling source. Task A completed → B ready / C ready → Scheduler, no Leader dispatch needed. Task Fabric holds durable task intent + DAG dependencies + leases + checkpoints. Execution Quantum boundary yield; if the Agent dies, recovery from checkpoint.
+
+## 0. The New Role in 0.3.x: Task Fabric
+
+Before diving into the two workflow systems, let's cover the core 0.3.x change.
+
+In 0.2.x, the workflow engine's DAG defined task dependencies and the DynamicExecutor ran them in topological order, but **scheduling itself was Leader-dispatched** — the Leader decided which Sub did which task.
+
+0.3.x changed this. The DAG directly serves as the scheduling source:
+
+```mermaid
+graph LR
+    A["Task A<br/>State: Completed"] --> B["Task B<br/>State: Ready"]
+    A --> C["Task C<br/>State: Ready"]
+    B --> D["Task D<br/>State: Pending"]
+    C --> D
+    B -.->|"ReadyTasks()"| S["Kernel Scheduler"]
+    C -.->|"ReadyTasks()"| S
+    S -->|"Acquire"| E["Agent E"]
+```
+
+The core is in `internal/taskfabric/dag.go`:
+
+```go
+// ReadyTasks returns the ids of every task whose dependencies are satisfied
+// and that is currently READY — the scheduler's work source. No leader
+// decides "B is done, now run C"; the completed states make C ready.
+func (f *Fabric) ReadyTasks() []string {
+    // iterate all tasks, State == Ready and all deps Completed
+}
+```
+
+**No Leader decides "B is done, now it's C's turn"** — the Task's Completed state makes C Ready, and the Scheduler picks from ReadyTasks. This is the core 0.3.x philosophy: **Agents are not orchestrated. They are scheduled.**
+
+Task Fabric core primitives (`internal/taskfabric/fabric.go`):
+
+| Primitive | Description |
+|-----------|-------------|
+| `Create(task)` | Create durable task intent, carrying capability/state/lease/checkpoint |
+| `Acquire(taskID, agentID)` | Agent competes to acquire the task's lease (CAS ownership, not Leader dispatch) |
+| `Release(taskID, agentID, epoch)` | Release lease; all operations carry a fencing token (epoch) |
+| `Yield(taskID, checkpoint)` | Yield at Execution Quantum boundary; checkpoint persisted |
+| `Checkpoint(taskID, data)` | Persist progress to Task.Checkpoint |
+| `Steal(taskID)` | Work stealing: take the task from an expired lease holder |
+| `Preempt(taskID)` | Cooperative preemption (not OS hard preemption) |
+
+Task state machine (`internal/taskfabric/state.go`):
+
+```
+Created → Ready → Acquired → Started → Yielded → Suspended → (re-acquire) → Started ...
+                                       ↓          ↓
+                                   Completed   Completed
+                                       ↓          ↓
+                                   Released   Released
+                                       ↓
+                                      Failed (if retry exhausted)
+```
+
+Key design: **Agent death ≠ Task death**. Agents are disposable; Tasks are durable. When an Agent yields at the Execution Quantum boundary, the checkpoint is persisted. Even if the Agent dies, the Task Fabric restores progress from the checkpoint, and a new Agent is created to continue.
+
+**Honest reflection**: Task Fabric replaces the 0.2.x Leader's scheduling role. This replacement isn't a simple "swap the implementation" — the Leader's synchronous semantics (the Leader knows what every Sub is doing) and the Task Fabric's asynchronous semantics (Task state drives scheduling, no central coordinator) are fundamentally different. The migration used dual-track dispatch (PolicyFlag) + shadow mode to verify equivalence.
 
 ## Why Two?
 

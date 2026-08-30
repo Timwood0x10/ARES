@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XXI): Evaluation Framework — How We Know If an Agent Is Actually Good
+# ares Architecture Deep Dive (XXI): Evaluation Framework — How We Know If an Agent Is Actually Good (0.3.x)
 
 "How do you know your agent improved?" This question haunted v0.2.5. The evolution engine was generating new strategies, the arena was running battles — but we had no objective way to say "strategy A is 12% better than strategy B."
 

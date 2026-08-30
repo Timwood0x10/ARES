@@ -1,4 +1,6 @@
-# ares 架构深度解析（六）：安全与可观测性 — 纵深防御与透明追踪
+# ares 架构深度解析（六）：安全与可观测性 — 纵深防御与透明追踪（0.3.x）
+
+> 0.3.x 更新：包路径从 `internal/security/` → `internal/ares_security/`，`internal/observability/` → `internal/ares_observability/`。安全模块与 Agent Fabric 的 spawn/kill/recover 生命周期深度集成。Scheduling Observatory 记录调度决策。
 
 > Agent 越强大，搞破坏的能力也越强。你给 Agent 装了代码执行器、文件读写、网络请求——然后它被 prompt injection 骗了……
 > 我在设计工具系统的时候就一直在想一个问题：**怎么让 Agent 输出敏感信息时不翻车？**
@@ -20,9 +22,9 @@
 
 | 模块 | 文件路径 |
 |------|----------|
-| 安全（脱敏） | `internal/security/sanitizer.go` |
-| 可观测性（Tracer） | `internal/observability/tracer.go`、`noop.go`、`log.go` |
-| 限流（Limiter） | `internal/ratelimit/` 目录下四个源文件 |
+| 安全（脱敏） | `internal/ares_security/sanitizer.go`（0.2.x: `internal/security/`） |
+| 可观测性（Tracer） | `internal/ares_observability/tracer.go`、`noop.go`、`log.go`（0.2.x: `internal/observability/`） |
+| 限流（Limiter） | `internal/ares_ratelimit/` 目录下源文件（0.2.x: `internal/ratelimit/`） |
 | 优雅关闭 | `internal/ares_shutdown/` 目录下四个源文件 |
 | 中间件模式 | `internal/dashboard/api.go`、`internal/arena/http.go` |
 | 端到端集成 | `internal/workflow/graph/graph.go`、`.../executor.go` |

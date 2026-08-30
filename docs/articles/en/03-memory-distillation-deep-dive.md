@@ -1,9 +1,11 @@
-# ares Architecture Deep Dive (III): Memory Distillation — When the Agent Learns to Forget and Refine
+# ares Architecture Deep Dive (III): Memory Distillation — When the Agent Learns to Forget and Refine (0.3.x)
 
 > Ever used one of those chatbots? After 50 rounds it starts rambling because the context window is bursting at the seams.
 > What's more frustrating is: it just helped you solve one problem, and the next time you encounter something similar — it starts reasoning from scratch all over again.
 > I thought to myself: **When in doubt, add a middle layer. One layer not enough, add another. What about giving term frequency analysis a try?**
 > And so Memory Distillation was born — teaching the Agent to forget and refine.
+>
+> 0.3.x update: Memory distillation relocated to the evolution pipeline. The data flow is now **Trace (what happened) → Experience (what it means) → Memory (formal knowledge)**. Candidate knowledge and formal knowledge are stored separately. An experience requires ≥2 non-failure trajectory supports to graduate.
 
 ---
 
@@ -162,7 +164,7 @@ Each layer performs a transformation of **getting smaller, getting better, getti
 
 ## 4. MemoryManager Interface: Unified Abstraction
 
-The three layers of memory functionality are abstracted into the `MemoryManager` interface, defined in `internal/memory/manager.go`:
+The three layers of memory functionality are abstracted into the `MemoryManager` interface, defined in `internal/ares_memory/manager.go` (0.2.x was `internal/memory/`, 0.3.x relocated to `ares_memory`):
 
 ```go
 type MemoryManager interface {
@@ -214,7 +216,7 @@ This interface has two implementations:
 
 Session Memory is the thinnest layer. When an Agent starts a conversation, it creates a Session and appends messages one by one.
 
-Implementation in the `internal/memory/context` package:
+Implementation in the `internal/ares_memory/context` package:
 
 ```go
 type SessionMemory struct {
@@ -349,7 +351,7 @@ func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models
 
 This is the most valuable part of the entire memory system. After distillation, the data is no longer raw messages, but structured `Experience`.
 
-Defined in `internal/memory/distillation/service.go`:
+Defined in `internal/ares_memory/distillation/distiller.go`:
 
 ```go
 type Experience struct {
@@ -645,13 +647,11 @@ The purpose of events is not just auditing. In ares, they form the foundation of
 
 ---
 
-## 13. Runtime Cognitive Recovery
+## 13. Agent Fabric Cognitive Recovery (0.3.x Upgrade)
 
-This is the most valuable orchestration scenario for the memory system. When an Agent crashes, the Runtime Manager executes `RestoreAgent`, recovering memory in two steps.
+This is the most valuable orchestration scenario for the memory system. In 0.3.x, when an Agent crashes, **Agent Fabric** (replacing 0.2.x's Runtime Manager) performs recovery in two steps.
 
-**Step One: Operational Recovery**
-
-`recoverAgentState` reads events from the EventStore and calls `StatefulAgent.RestoreState` to rebuild key state such as session_id:
+The core 0.3.x change: **Agent death ≠ Task death**. Agents are disposable; Tasks are durable. When an Agent dies, Agent Fabric creates a new one, and Task Fabric restores progress from the checkpoint. Cognitive recovery is the key link — the new Agent needs to know
 
 ```go
 func (m *Manager) recoverAgentState(
@@ -992,15 +992,22 @@ ares's memory system isn't a simple matter of stuffing data into PostgreSQL. It'
 Raw Messages → Sliding Window (Session) → Execution Records (Task) → Structured Experiences (Experience) → Vector Index (pgvector)
 ```
 
-Each layer does the same thing: **get smaller, get better, get more persistent.**
+0.3.x adds a Pipeline coordinator (`internal/ares_memory/pipeline.go`) that wires **ExperienceStore → Distiller → ReportGenerator → PushService** into an end-to-end flow. The Pipeline pulls conversation batches from `ConversationSource`, distills them, optionally generates reports and pushes, supporting batch processing and periodic reports.
+
+Each layer does the same thing: **get smaller, get better, get more persistent.** The core 0.3.x change is relocation — memory distillation moved from a standalone module to the evolution pipeline:
+
+- **Trace** (what happened): Conversations and execution traces, stored in the Session/Task layer
+- **Experience** (what it means): Distilled structured experiences, requiring ≥2 non-failure trajectory supports to graduate
+- **Memory** (formal knowledge): Graduated experiences enter the formal knowledge base; candidate knowledge is stored separately
 
 - **Session**: Remember the current conversation → sliding window keeps only the latest N messages
 - **Task**: Record a single task → Distill extracts key information
 - **Experience**: Refine reusable experience → LLM summarization + vectorized storage
+- **Pipeline** (new in 0.3.x): End-to-end coordination, ExperienceStore → Distiller → Report → Push
 - **Dashboard**: Flight Recorder visualizes memory status
 
-What I'm most satisfied with isn't "distillation" itself — it's the closed loop: the experiences distilled not only allow future tasks to retrieve and reuse them, but can also restore conversation context after an Agent crashes. In other words, **the Agent not only gets smarter while alive, but can come back with its memories intact after dying.**
+What I'm most satisfied with isn't "distillation" itself — it's the closed loop: the experiences distilled not only allow future tasks to retrieve and reuse them, but can also restore conversation context after an Agent crashes. 0.3.x upgraded this: **Agent death ≠ Task death**. Agents are disposable; Task Fabric holds checkpoints; Agent Fabric creates a new Agent and restores progress from the checkpoint while the memory system restores conversation context. In other words, **the Agent not only gets smarter while alive, but can come back with its memories intact after dying.**
 
 ---
 
-**Next Article Preview**: Workflow Engine — I wrote this because I was tired of hard-coded workflows. Changing a flow meant changing code and redeploying, which was way too annoying. So I built a MutableDAG that supports dynamically adding and removing nodes at runtime — you can now change a flow with a single mouse click on the dashboard. There's also thread-safe cycle detection, semaphore-based concurrent scheduling, and a 5-second timeout deadlock protection. Human-in-the-Loop is pluggable too.
+**Next Article Preview**: Workflow Engine — In 0.3.x, the DAG directly serves as the scheduling source. Task A completed → B ready / C ready → Scheduler, no Leader dispatch needed. MutableDAG supports dynamically adding and removing nodes at runtime — GraphPatchExecutor inserts/removes/replaces nodes at runtime. There's also thread-safe cycle detection, semaphore-based concurrent scheduling, and checkpoint recovery.

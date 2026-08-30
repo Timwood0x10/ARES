@@ -1,4 +1,4 @@
-# ares 架构拆解 (XXII)：配置系统——一个 YAML，十二个模块
+# ares 架构拆解 (XXII)：配置系统——一个 YAML，十二个模块（0.3.x）
 
 每个模块都需要配置。LLM 需要 provider 和 model。Memory 需要历史长度。Evolution 需要种群规模。Storage 需要 host 和 port。当你有十二个模块时，你就有十二个配置文件——除非你有配置系统。
 

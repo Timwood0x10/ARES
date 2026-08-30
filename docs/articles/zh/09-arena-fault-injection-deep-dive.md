@@ -1,4 +1,6 @@
-# ares 架构深度解析（九）：Arena / 故障注入 — 故意破坏，见证自愈
+# ares 架构深度解析（九）：Arena / 故障注入 — 故意破坏，见证自愈（0.3.x）
+
+> 0.3.x 更新：Arena 与 Agent Fabric 的 spawn/kill/recover 生命周期深度集成。故障注入不再只测试 Agent 复活，而是测试 **Agent 死亡 ≠ Task 死亡**——杀掉 Agent 后，Task Fabric 从检查点恢复进度，Agent Fabric 创建新 Agent 继续执行。
 
 > 别的 Agent 框架给你展示的是 Agent 有多聪明：对话流利、推理能力强、工具用得溜。
 > ares 展示的是另一件事：**当你故意杀死它的 Agent 时，它能不能活下来。**

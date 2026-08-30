@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XVIII): Knowledge Graph Build — From Markdown to 27K Edges (AKG)
+# ares Architecture Deep Dive (XVIII): Knowledge Graph Build — From Markdown to 27K Edges (AKG) (0.3.x)
 
 Article X covered *retrieval* — how to find relevant memories. This article covers *construction* — how those memories become a knowledge graph in the first place.
 

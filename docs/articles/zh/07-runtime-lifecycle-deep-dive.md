@@ -1,10 +1,11 @@
-# ares 架构深度解析（七）：运行时与生命周期 — 出生、死亡与复活
+# ares 架构深度解析（七）：运行时与生命周期 — 出生、死亡与复活（0.3.x）
 
 > 别的 Agent 框架比谁的功能多、比谁的花哨。我只有一个执念：**菜能接受，坏是绝对不能接受的。**
 > 有一天我突然在想，如果现在随便 `kill -9` 一个正在跑的 Agent，怎么把它拉起来？
 > 手动拉？先定位是哪个进程，再翻日志分析原因，打补丁，然后 `go run main.go --args`……看着就烦。
 > 那有没有一种机制，能让 Agent 死后带着记忆自己爬起来？我管这个叫 **秽土转生**。
-> 这就是 Runtime 子系统的核心 —— Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
+>
+> 0.3.x 更新：Runtime Manager 演进为 **Agent Fabric**。核心理念从"Agent 复活"升级为 **"Agent 死亡 ≠ Task 死亡"**——Agent 是一次性的，Task Fabric 持有检查点。Agent 死了不是"复活旧 Agent"，而是"spawn 新 Agent + 从检查点恢复 Task 进度"。Execution Quantum 边界 yield 保证检查点已落盘。Agent 生命周期：spawn → suspend → resume → retire → kill → recover。
 
 ## 一、纠结的坑
 

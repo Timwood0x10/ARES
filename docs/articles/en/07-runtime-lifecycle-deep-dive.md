@@ -1,12 +1,13 @@
-# ares Architecture Deep Dive (VII): Runtime & Lifecycle — Birth, Death, and Resurrection
+# ares Architecture Deep Dive (VII): Runtime & Lifecycle — Birth, Death, and Resurrection (0.3.x)
 
-What happens when an Agent dies? Every framework has to answer this, but few do it well. This article walks through the Runtime subsystem's design journey — from "how to prevent crashes" to "how to resurrect with memories intact" and "how to resume interrupted work without wasting tokens." You'll see the concurrency trap behind the Resurrection Guard, the fault-tolerance philosophy of two-phase state recovery, the detached-context distillation pattern, and the honest trade-offs behind every decision. Written for developers working on agent reliability, distributed orchestration, or stateful service auto-recovery.
+What happens when an Agent dies? Every framework has to answer this, but few do it well. This article walks through the design journey — from "how to prevent crashes" to "how to resurrect with memories intact" and "how to resume interrupted work without wasting tokens." You'll see the concurrency trap behind the Resurrection Guard, the fault-tolerance philosophy of two-phase state recovery, the detached-context distillation pattern, and the honest trade-offs behind every decision.
 
 > Other Agent frameworks compete on features and flashiness. I have only one obsession: **Bugs I can accept. Crashes I absolutely cannot.**
 > One day I started thinking — what if I just `kill -9` a running Agent right now? How would I bring it back?
 > Manually? First locate which process, dig through logs to find the cause, write a patch, then `go run main.go --args`… I'm already annoyed just thinking about it.
 > So what if there's a mechanism where an Agent can die and then **get back up on its own, with its memories intact**? I call this **resurrection**.
-> This is the core of the Runtime subsystem — Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
+>
+> 0.3.x update: The Runtime Manager evolved into **Agent Fabric**. The core philosophy upgraded from "Agent resurrection" to **"Agent death ≠ Task death"** — Agents are disposable; Task Fabric holds checkpoints. When an Agent dies, it's not "resurrect the old Agent" but "spawn a new Agent + restore Task progress from checkpoint." Execution Quantum boundary yield ensures the checkpoint is persisted. Agent lifecycle: spawn → suspend → resume → retire → kill → recover.
 
 ## 1. The Rabbit Hole
 

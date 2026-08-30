@@ -36,6 +36,7 @@ linters:
     - staticcheck
     - unused
     - ineffassign
+    - bodyclose
     - whitespace
     - misspell
     - gocyclo
@@ -46,6 +47,13 @@ linters:
     - nilnil
     - prealloc
     - noctx
+    # Potential additions evaluated 2026-08-30, deferred:
+    #   nilerr       — 48 issues, ~90% are intentional Result{Data: err.Error()}, nil
+    #                  pattern (business error wrapped in result struct, nil error).
+    #   contextcheck — 50 issues across examples/ and internal packages; needs
+    #                  a dedicated context-propagation cleanup pass.
+    #   nilaway      — not available as a golangci-lint v2 linter; would need
+    #                  to run as a separate binary in CI.
   exclusions:
     rules:
       - path: _test\.go$

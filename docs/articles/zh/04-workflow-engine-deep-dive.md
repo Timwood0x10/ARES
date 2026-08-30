@@ -1,9 +1,71 @@
-# ares 架构深度解析（四）：工作流引擎 -- ares 世界的 ReAct，从 DAG 到动态响应式编排
+# ares 架构深度解析（四）：工作流引擎 -- ares 世界的 ReAct，从 DAG 到动态响应式编排（0.3.x）
 
 > 最早写工作流的时候，我用的是硬编码——if step1 done then step2, if step2 done then step3……
 > 后来需求越来越多、逻辑越来越绕，代码变成了一坨 spaghetti。
 > 我当时就一个想法：**工作流不应该写死在代码里。它应该像乐高一样——随时可以拼、可以拆、可以换。**
 > 于是就有了两套工作流系统。你没看错，两套。因为我试了第一种发现不够用，又搞了第二种。
+>
+> 0.3.x 更新：DAG 直接作为调度源。Task A completed → B ready / C ready → Scheduler，不需要 Leader 分发。Task Fabric 持有持久任务意图 + DAG 依赖 + 租约 + 检查点。Execution Quantum 边界 yield，Agent 死了从检查点恢复。
+
+## 〇、0.3.x 的新角色：Task Fabric
+
+在深入两套工作流系统之前，先说 0.3.x 的核心变化。
+
+0.2.x 中，工作流引擎的 DAG 定义了任务依赖，DynamicExecutor 按拓扑序执行，但**调度本身是由 Leader 分发的**——Leader 决定哪个 Sub 干哪个任务。
+
+0.3.x 改了这个。DAG 直接作为调度源：
+
+```mermaid
+graph LR
+    A["Task A<br/>State: Completed"] --> B["Task B<br/>State: Ready"]
+    A --> C["Task C<br/>State: Ready"]
+    B --> D["Task D<br/>State: Pending"]
+    C --> D
+    B -.->|"ReadyTasks()"| S["Kernel Scheduler"]
+    C -.->|"ReadyTasks()"| S
+    S -->|"Acquire"| E["Agent E"]
+```
+
+核心在 `internal/taskfabric/dag.go`：
+
+```go
+// ReadyTasks returns the ids of every task whose dependencies are satisfied
+// and that is currently READY — the scheduler's work source. No leader
+// decides "B is done, now run C"; the completed states make C ready.
+func (f *Fabric) ReadyTasks() []string {
+    // 遍历所有 task，State == Ready 且 deps 全部 Completed
+}
+```
+
+**没有 Leader 决定"B 做完了，现在轮到 C"**——Task 的 Completed 状态让 C 变 Ready，Scheduler 从 ReadyTasks 里拿。这是 0.3.x 的核心哲学：**Agents are not orchestrated. They are scheduled.**
+
+Task Fabric 的核心原语（`internal/taskfabric/fabric.go`）：
+
+| 原语 | 说明 |
+|------|------|
+| `Create(task)` | 创建持久任务意图，携带 capability/state/lease/checkpoint |
+| `Acquire(taskID, agentID)` | Agent 竞争获取 task 的 lease（CAS 所有权，非 Leader 分发） |
+| `Release(taskID, agentID, epoch)` | 释放 lease，所有操作携带 fencing token（epoch） |
+| `Yield(taskID, checkpoint)` | 在 Execution Quantum 边界 yield，检查点落盘 |
+| `Checkpoint(taskID, data)` | 持久化进度到 Task.Checkpoint |
+| `Steal(taskID)` | Work stealing：从过期的 lease holder 偷走 task |
+| `Preempt(taskID)` | 协作式抢占（不是 OS 硬抢占） |
+
+Task 的状态机（`internal/taskfabric/state.go`）：
+
+```
+Created → Ready → Acquired → Started → Yielded → Suspended → (re-acquire) → Started ...
+                                       ↓          ↓
+                                   Completed   Completed
+                                       ↓          ↓
+                                   Released   Released
+                                       ↓
+                                      Failed (if retry exhausted)
+```
+
+关键设计：**Agent 死亡 ≠ Task 死亡**。Agent 是一次性的，Task 是持久的。Agent 在 Execution Quantum 边界 yield 时检查点已落盘，即使 Agent 死了，Task Fabric 从检查点恢复进度，新 Agent 被创建后继续执行。
+
+**坦诚反思**：Task Fabric 替代了 0.2.x 中 Leader 的调度角色。这个替代不是简单的"换个实现"——Leader 的同步语义（Leader 知道每个 Sub 在干什么）和 Task Fabric 的异步语义（Task 状态驱动调度，没有中央协调者）有本质区别。迁移期用了双轨调度（PolicyFlag）+ shadow 模式验证等价性。
 
 ## 一、为什么会有两套工作流？
 

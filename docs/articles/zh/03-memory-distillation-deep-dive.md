@@ -1,9 +1,11 @@
-# ares 架构深度解析（三）：记忆蒸馏 — 当 Agent 学会遗忘与提炼
+# ares 架构深度解析（三）：记忆蒸馏 — 当 Agent 学会遗忘与提炼（0.3.x）
 
 > 你用过那种 chatbot 吗？聊了 50 轮之后它开始胡言乱语，因为 context window 被塞爆了。
 > 更气人的是，它刚帮你解决完一个问题，下次遇到类似的——它又从头开始推理。
 > 我当时就在想：**遇事不决加中间层，一层不够，继续加，那么搞个词频分析试试？**
 > 于是就有了 Memory Distillation——让 Agent 学会遗忘和提炼。
+>
+> 0.3.x 更新：记忆蒸馏归位到进化管道。数据流变成 **Trace（发生了什么）→ Experience（说明了什么）→ Memory（正式知识）**。候选知识与正式知识分库存放。一条经验须 ≥2 条非失败轨迹支持才能转正。
 
 ---
 
@@ -163,7 +165,7 @@ graph LR
 
 ## 四、MemoryManager 接口：统一抽象
 
-三层记忆功能被抽象为 `MemoryManager` 接口，定义在 `internal/memory/manager.go`：
+三层记忆功能被抽象为 `MemoryManager` 接口，定义在 `internal/ares_memory/manager.go`（0.2.x 是 `internal/memory/`，0.3.x 归位到 `ares_memory`）：
 
 ```go
 type MemoryManager interface {
@@ -216,7 +218,7 @@ type MemoryManager interface {
 
 Session Memory 是最薄的一层。当 Agent 开始一次对话，它创建一个 Session，然后逐条追加消息。
 
-在 `internal/memory/context` 包下的实现：
+在 `internal/ares_memory/context` 包下的实现：
 
 ```go
 type SessionMemory struct {
@@ -351,7 +353,7 @@ func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models
 
 这是整个记忆系统最具价值的部分。蒸馏后的数据不再是原始消息，而是结构化的 `Experience`。
 
-定义在 `internal/memory/distillation/service.go`：
+定义在 `internal/ares_memory/distillation/distiller.go`：
 
 ```go
 type Experience struct {
@@ -650,13 +652,11 @@ m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
 
 ---
 
-## 十三、Runtime 的认知恢复
+## 十三、Agent Fabric 的认知恢复（0.3.x 升级）
 
-这是记忆系统最有价值的联动场景。当 Agent 崩溃后，Runtime Manager 执行 `RestoreAgent`，分两步恢复记忆。
+这是记忆系统最有价值的联动场景。0.3.x 中，当 Agent 崩溃后，**Agent Fabric**（替代 0.2.x 的 Runtime Manager）执行恢复，分两步重建记忆。
 
-**第一步：操作恢复**
-
-`recoverAgentState` 从 EventStore 读取事件，调用 `StatefulAgent.RestoreState` 重建 session_id 等关键状态：
+0.3.x 的核心变化：**Agent 死亡 ≠ Task 死亡**。Agent 是一次性的，Task 是持久的。Agent 死了，Agent Fabric 创建新的，Task Fabric 从检查点恢复进度。认知恢复是其中的关键环节——新 Agent 需要知道
 
 ```go
 func (m *Manager) recoverAgentState(
@@ -998,15 +998,22 @@ ares 的记忆系统不是简单地把数据塞进 PostgreSQL，而是构建了�
 原始消息 → 滑动窗口(Session) → 执行记录(Task) → 结构化经验(Experience) → 向量索引(pgvector)
 ```
 
-每一层都在做同一件事：**变少、变精、变持久**。
+0.3.x 新增了 Pipeline 协调器（`internal/ares_memory/pipeline.go`），将 **ExperienceStore → Distiller → ReportGenerator → PushService** 串联为端到端流程。Pipeline 从 `ConversationSource` 拉取对话批次，蒸馏后可选生成报告和推送，支持批量处理和周期性报告。
+
+每一层都在做同一件事：**变少、变精、变持久**。0.3.x 的核心变化是归位——记忆蒸馏从独立模块归位到进化管道：
+
+- **Trace**（发生了什么）：对话和执行轨迹，保存在 Session/Task 层
+- **Experience**（说明了什么）：蒸馏出的结构化经验，≥2 条非失败轨迹支持才能转正
+- **Memory**（正式知识）：转正的经验进入正式知识库，候选知识分库存放
 
 - **Session**：记住当前会话 → 滑动窗口只留最新的 N 条
 - **Task**：记录单次任务 → Distill 提取关键信息
 - **Experience**：提炼可复用经验 → LLM 总结 + 向量化存储
+- **Pipeline**（0.3.x 新增）：端到端协调，ExperienceStore → Distiller → Report → Push
 - **Dashboard**：Flight Recorder 可视化记忆状态
 
-这套管线最让我满意的不是"蒸馏"本身——是那个闭环：蒸馏出的经验不仅能让未来的任务检索复用，还能在 Agent 挂了之后用来恢复对话上下文。换句话说，**Agent 不仅在活着的时候变聪明，死了复活也能带着记忆回来。**
+这套管线最让我满意的不是"蒸馏"本身——是那个闭环：蒸馏出的经验不仅能让未来的任务检索复用，还能在 Agent 挂了之后用来恢复对话上下文。0.3.x 把它升级了：**Agent 死亡 ≠ Task 死亡**。Agent 是一次性的，Task Fabric 持有检查点，Agent Fabric 创建新 Agent 后从检查点恢复进度，记忆系统恢复对话上下文。换句话说，**Agent 不仅在活着的时候变聪明，死了复活也能带着记忆回来。**
 
 ---
 
-**下一篇预告**：Workflow Engine——当时写这个是因为我受够了硬编码工作流。改一个流程要改代码、重新部署，太TM烦了。所以搞了一个 MutableDAG，运行时可以动态增删节点——你现在可以在仪表盘上点一下鼠标就改流程。另外还有线程安全的环检测、信号量并发调度、以及 5 秒超时死锁保护。Human-in-the-Loop 也可插拔。
+**下一篇预告**：Workflow Engine——0.3.x 中 DAG 直接作为调度源。Task A completed → B ready / C ready → Scheduler，不需要 Leader 分发。MutableDAG 运行时可以动态增删节点——GraphPatchExecutor 在运行时增删替换节点。另外还有线程安全的环检测、信号量并发调度、以及检查点恢复。

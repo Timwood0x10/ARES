@@ -56,6 +56,7 @@ func TestSmokeServePanel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer func() { _ = resp.Body.Close() }()
 		body := make([]byte, 0, 1<<16)
 		n, _ := resp.Body.Read(body)
 		_ = n

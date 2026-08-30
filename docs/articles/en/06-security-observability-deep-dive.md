@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing
+# ares Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing (0.3.x)
+
+> 0.3.x update: Package paths changed from `internal/security/` → `internal/ares_security/`, `internal/observability/` → `internal/ares_observability/`. The security module is deeply integrated with Agent Fabric's spawn/kill/recover lifecycle. Scheduling Observatory records scheduling decisions.
 
 > The more powerful an Agent gets, the more damage it can do. You give your Agent a code executor, file read/write, network requests — and then it gets tricked by a prompt injection...
 > I kept asking myself one question while designing the tool system: **How do I prevent sensitive information from leaking when the Agent outputs?**
@@ -20,9 +22,9 @@ Core file list:
 
 | Module | File Path |
 |------|----------|
-| Security (Sanitizer) | `internal/security/sanitizer.go` |
-| Observability (Tracer) | `internal/observability/tracer.go`, `noop.go`, `log.go` |
-| Rate Limiting (Limiter) | `internal/ratelimit/` (four source files) |
+| Security (Sanitizer) | `internal/ares_security/sanitizer.go` (0.2.x: `internal/security/`) |
+| Observability (Tracer) | `internal/ares_observability/tracer.go`, `noop.go`, `log.go` (0.2.x: `internal/observability/`) |
+| Rate Limiting (Limiter) | `internal/ares_ratelimit/` (0.2.x: `internal/ratelimit/`) |
 | Graceful Shutdown | `internal/ares_shutdown/` (four source files) |
 | Middleware Pattern | `internal/dashboard/api.go`, `internal/arena/http.go` |
 | End-to-End Integration | `internal/workflow/graph/graph.go`, `.../executor.go` |

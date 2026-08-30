@@ -1,4 +1,6 @@
-# ares 架构拆解（XIV）：插件系统——不改代码就能扩展
+# ares 架构拆解（XIV）：插件系统——不改代码就能扩展（0.3.x）
+
+> 0.3.x 更新：插件系统与 Capability Fabric 深度集成。ToolExpander 接口让运行时发现的技能名称即时解析为 LLM 工具定义，Agent 无需重启即可获取新技能。
 
 > 有一天我在 executor 里写了第四个 `if` 分支来处理"执行完一步之后要不要记录 checkpoint"这件事，突然意识到：这坨代码已经没法看了。
 > 每加一个功能，executor 就膨胀一圈。记录日志？加个 if。路由决策？加个 switch。记忆预取？加个 goroutine。

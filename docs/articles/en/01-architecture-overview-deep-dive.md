@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (I): The Big Picture — Why Another Agent Framework?
+# ares Architecture Deep Dive (I): The Big Picture — Why Another Agent Framework? (0.3.x)
 
 I didn't set out to build a framework. I set out to solve a problem: **Agents kept dying, and I couldn't figure out why.**
 
@@ -6,7 +6,7 @@ It started with a simple chatbot. One Leader, two Subs, a handful of tools. Work
 
 After three days of debugging, I found it: a goroutine leak in the LLM client. One leaked goroutine per request, eventually hitting the OS thread limit. The fix was one line. But finding it took 72 hours because I had **zero visibility** into what the Agent was doing.
 
-That's when I realized: the problem isn't "how to build an Agent." The problem is "how to keep an Agent alive in production."
+That's when I realized: the problem isn't "how to make an Agent call an LLM." The problem is "how to keep an Agent alive in production."
 
 ---
 
@@ -18,11 +18,11 @@ Every Agent framework answers one question: "How do I make an Agent call an LLM?
 2. **How does it remember what it was doing?** (State Recovery)
 3. **How do I know what went wrong?** (Observability)
 
-ares is built around these three questions. Everything else — the DAG engine, the memory system, the evolution engine — exists because answering these questions properly requires a lot of infrastructure.
+ares is built around these three questions. The core shift in 0.3.x: **no longer asking "how to make an Agent call an LLM," but asking "how to keep an Agent alive at runtime."** ARES evolved from an "Agent orchestration framework" (Leader + Sub) into a **"dynamic compute runtime for Agents"** — Agents are not orchestrated. They are scheduled.
 
 ---
 
-## The Architecture: Six Layers
+## The Architecture: Seven Layers (0.3.x)
 
 ```mermaid
 graph TB
@@ -31,12 +31,11 @@ graph TB
         Interfaces["AgentService / Runtime / Evolution / Arena / MemoryService / LLMService"]
     end
 
-    subgraph Runtime ["Layer 2: Runtime"]
-        RT["Runtime Manager"]
-        Leader["Leader Agent"]
-        Sub["Sub Agents"]
-        PluginBus["PluginBus"]
-        Strategy["Active Strategy<br/>evolved params"]
+    subgraph Kernel ["Layer 2: ARES Kernel (new in 0.3.x)"]
+        TaskFabric["Task Fabric<br/>Durable task intent + DAG deps<br/>Leases + Checkpoints"]
+        AgentFabric["Agent Fabric<br/>Disposable agent lifecycle<br/>spawn/suspend/resume/retire/kill/recover"]
+        Scheduler["Kernel Scheduler<br/>capability-aware scheduling<br/>work stealing + cooperative preemption"]
+        IPC["Agent IPC<br/>peer-mesh six primitives<br/>Send/Request/Reply/Delegate/Handoff/Subscribe"]
     end
 
     subgraph Workflow ["Layer 3: Workflow"]
@@ -46,91 +45,100 @@ graph TB
         GraphPatch["GraphPatchExecutor<br/>insert/remove/replace nodes"]
     end
 
-    subgraph Memory ["Layer 4: Memory"]
+    subgraph Memory ["Layer 4: Memory → Experience"]
         Session["Session Memory"]
-        Distilled["Distilled Memory"]
+        Distilled["Experience Distillation<br/>0.3.x relocated to evolution pipeline"]
         Retrieval["Vector Retrieval"]
         MemConfig["Memory Config<br/>max_history, session_ttl..."]
-        MemPatch["MemoryPatchExecutor<br/>runtime config evolution"]
     end
 
     subgraph Evolution ["Layer 5: Evolution Engine"]
-        GA["GA Population<br/>N individuals, 7 selectors<br/>3 crossover, 6 mutation"]
-        Tick["Background Ticker<br/>5min interval"]
-        Sched["Scheduler<br/>OnAgentEnd callback"]
-        Adapter["GenomePopulationAdapter<br/>Run()"]
-        Genomes["6 Genomes<br/>Workflow / Scheduler / Knowledge<br/>Recovery / Planner / Memory"]
-        Diff["Diff Engine<br/>4 Differs"]
-        Coord["Coordinator<br/>Apply / Reject / Delay"]
-        Execs["5 Executors<br/>Graph / Recovery / Knowledge<br/>Memory + StrategyStore"]
+        Candidate["Candidate Pipeline<br/>0.3.0 candidate release closed-loop"]
+        Verifier["Three-tier verification<br/>Static + Evidence + LLM Regression"]
+        Release["Release gate<br/>Gate 3 reconfirmation"]
+        GA["GA Population (optional)<br/>demoted to advanced feature"]
+        Evidence["Evidence<br/>structured diagnostics with evidence chains"]
     end
 
-    subgraph Infra ["Layer 6: Infrastructure"]
-        Events["EventStore"]
+    subgraph Skills ["Layer 6: Capability Fabric"]
+        Catalog["SkillCatalog"]
+        SourceMgr["SourceManager"]
+        Indexer["Indexer"]
+        Discovery["Discovery Engine"]
+        Loader["Loader / Resolver"]
+        ExpPrior["Experience relevance priors"]
+    end
+
+    subgraph Infra ["Layer 7: Infrastructure"]
+        Events["EventStore<br/>full Task lifecycle events"]
         Storage["VectorStore"]
         LLM["LLM Adapters"]
         Tools["Tool Registry"]
-        Evidence["Evidence Store"]
+        ActionLog["ActionLog"]
+        Chaos["Chaos / Arena"]
     end
 
-    Bootstrap --> RT
-    RT --> Leader
-    Leader --> Sub
-    Leader --> DAG
+    Bootstrap --> TaskFabric
+    Bootstrap --> AgentFabric
+    TaskFabric --> Scheduler
+    AgentFabric --> Scheduler
+    Scheduler --> IPC
+    Scheduler --> DAG
     DAG --> Exec
-    Exec --> PluginBus
     Exec --> GraphPatch
     Session --> Distilled
     Distilled --> Retrieval
-    RT --> Events
+    Scheduler --> Events
     DAG --> Events
-    Leader --> LLM
-    Sub --> Tools
 
-    Tick --> Adapter
-    Sched --> Adapter
-    Adapter --> GA
-    GA --> Genomes
-    Genomes --> Diff
-    Diff --> Coord
-    Coord --> Execs
-    Execs --> DAG
-    Execs --> MemConfig
-    Adapter --> Strategy
-    Strategy --> RT
-    DAG --> Events
-    Exec --> Events
+    Candidate --> Verifier
+    Verifier --> Release
+    Evidence --> Verifier
+    GA -.->|optional| Candidate
+
+    Catalog --> SourceMgr
+    SourceMgr --> Indexer
+    Indexer --> Discovery
+    Discovery --> Loader
+    ExpPrior --> Discovery
+    Scheduler -.->|capability scoring| ExpPrior
 ```
 
-**Layer 1: API Contract** — What the outside world sees. Interfaces only, no implementations. The Bootstrap factory wires everything together. You call `ares_bootstrap.Bootstrap()` and get a fully connected system — LLM, Memory, Knowledge/AKG, Evolution, Storage, Embedding, MCP, Flight Recorder, EventStore, and the Agent Runtime — all assembled from a single config struct. The SDK reuses this same Bootstrap kernel through `sdk.newBootstrapCore()`, so `serve`, `start`, and the SDK all share the same component graph.
+**Layer 1: API Contract** — What the outside world sees. Interfaces only, no implementations. The Bootstrap factory wires everything together. You call `ares_bootstrap.Bootstrap()` and get a fully connected system — Kernel, Memory, Knowledge/AKG, Evolution, Storage, Embedding, MCP, Flight Recorder, EventStore — all assembled from a single config struct. 0.3.x adds `system_runtime.Orchestrator` to manage component lifecycle (Construct → Bind → Start → Ready, reverse-order Stop → Wait → Close).
 
-**Layer 2: Runtime** — Who does the work. The Runtime Manager owns agent lifecycles: birth, death, resurrection. The Leader plans and delegates. Sub Agents execute. The PluginBus connects everything. The **Active Strategy** carries evolved parameters (tool selection, search depth, scheduler strategy) that the GA engine produces.
+**Layer 2: ARES Kernel (new in 0.3.x)** — The heart of the system. Replaces the 0.2.x Leader/Sub runtime. Three pillars + IPC:
+- **Task Fabric** (`internal/taskfabric`): Durable task intent, holding capability/state/lease/checkpoint. Six core primitives: Acquire / Release / Yield / Checkpoint / Steal / Preempt. All ownership operations carry a fencing token (epoch), preventing stale-holder late writes.
+- **Agent Fabric** (`internal/agentfabric`): Disposable agent lifecycle management. Agents are peer cognitive processes (A ≡ B ≡ C); parent-child has only spawn provenance, no authority hierarchy. Process Tree ≠ Scheduling Graph.
+- **Kernel Scheduler** (`internal/kernelscheduler`): Capability-aware scheduling. `score = capability_overlap × (1 - load) × confidence`. Execution Quantum boundary yield; cooperative preemption, not OS hard preemption. Supports event-driven drain (GAP 6).
+- **Agent IPC** (`internal/agentipc`): Peer-mesh message bus, six primitives: Send / Request / Reply / Delegate / Handoff / Subscribe. Three-layer context separation: Task Shared / Agent Private / IPC Messages.
 
-**Layer 3: Workflow** — How work flows. The MutableDAG defines task dependencies. The DynamicExecutor runs them in topological order. The **GraphPatchExecutor** can insert, remove, or replace nodes at runtime — this is how DAG topology evolution works. Checkpoint Resume lets you pick up where you left off after a crash.
+**Layer 3: Workflow** — How work flows. The MutableDAG defines task dependencies, and the topology itself is evolvable. The DynamicExecutor runs them in topological order. The **GraphPatchExecutor** can insert, remove, or replace nodes at runtime — this is how DAG topology evolution works. Checkpoint Resume lets you pick up where you left off after a crash. In 0.3.x, the DAG directly serves as the scheduling source — Task A completed → B ready / C ready → Scheduler — no leader dispatch needed.
 
-**Layer 4: Memory** — What agents remember. Session memory is short-term. Distilled memory is long-term compressed knowledge. Retrieval finds relevant memories via vector search. The **MemoryPatchExecutor** adjusts memory configuration (max_history, session_ttl, etc.) at runtime via coordinator patches.
+**Layer 4: Memory → Experience** — What agents remember. 0.3.x relocates memory distillation to the evolution pipeline: Trace (what happened) → Experience (what it means) → Memory (formal knowledge). Candidate knowledge and formal knowledge are stored separately. An experience requires ≥2 non-failure trajectory supports to graduate. Conversations are not vector-embedded — conversation history is linear narrative, experience is networked knowledge.
 
-**Layer 5: Evolution Engine** — How agents improve themselves. The GA Population holds N individuals with different strategy parameters. A background ticker (5-minute interval) and an agent-completion scheduler both trigger evolution cycles. The adapter runs selection → crossover → mutation → scoring, then submits the best strategies to **6 Genomes** (Workflow, Scheduler, Knowledge, Recovery, Planner, Memory). The Diff Engine compares old vs new snapshots, producing patches. The Coordinator decides Apply/Reject/Delay. **5 Executors** apply the approved patches to the live system, and the **Strategy Store** makes the evolved strategy available to running agents.
+**Layer 5: Evolution Engine** — How agents improve themselves. The 0.3.x primary mode: **Failure → Diagnosis → Patch → Verify**. 0.3.0 candidate release closed-loop: Candidate → three-tier verification (Gate 1 Static + Gate 2 Evidence + Gate 3 LLM Regression) → Release gate (Gate 3 reconfirmation) → SetStable → Promoted. **Candidate generation is easy; shipping is hard — the release gate is what makes evolution safe.** GA is demoted to an optional advanced feature. Evidence no longer returns scalar scores but structured diagnostics with evidence chains.
 
-**Layer 6: Infrastructure** — What holds it all up. EventStore records everything. VectorStore indexes memories. LLM Adapters talk to providers. Tool Registry manages capabilities. Evidence Store feeds evolution decisions.
+**Layer 6: Capability Fabric** — The framework-native skill discovery, indexing, and loading system. It's cross-cutting — the runtime (agents need skills), the workflow layer (tasks invoke skills), and the evolution engine (strategies can optimize skill selection) all use it. SkillCatalog with SourceManager aggregates multiple skill sources; the five-piece catalog toolset (skill_search/load/activate/list/experience) implements Level-0/1/2 progressive disclosure. The Experience module learns relevance priors from historical usage, so frequently used skills rank higher in discovery results.
 
-### Cross-Cutting Layer: Skills / Capability Fabric
+**Layer 7: Infrastructure** — What holds it all up. EventStore records everything — 0.3.x event types upgraded to full Task lifecycle (Created/Ready/Acquired/Started/Yielded/Checkpointed/Preempted/Released/Completed/Failed/Expired/Stolen). VectorStore indexes memories. LLM Adapters talk to providers. Tool Registry manages capabilities. ActionLog records execution-fact audit. Chaos/Arena does Failure Injection + Recovery Verification.
 
-Between the layers above sits the **Skills / Capability Fabric** — the framework-native skill discovery, indexing, and loading system. It's cross-cutting because it's used by the Runtime (agents need skills), the Workflow layer (tasks invoke skills), and the Evolution Engine (strategies can optimize skill selection).
+### Cross-Cutting Layer: SkillCatalog / Capability Fabric
 
-The core is the **SkillCatalog**, which aggregates skill sources through a **SourceManager** — treating MCP servers, git repos, local executables, and HTTP manifests as first-class citizens. An **Indexer** builds searchable skill indexes, a **Discovery** engine finds relevant skills at runtime, a **Loader** resolves and instantiates them, and a **Resolver** handles dependency resolution. The **Experience** module learns relevance priors from past usage, so frequently invoked skills rank higher in discovery results.
+In 0.3.x, the Capability Fabric's importance rose — it directly became the capability-aware scoring source for the Kernel Scheduler (`score = capability_overlap × (1 - load) × confidence`). This makes skill-first design actually work.
 
-This is what makes the "Plugins, not hardcoding" principle from Layer 2 concrete — instead of hardcoding tool registrations, agents discover capabilities dynamically through the fabric. The **ToolExpander** interface in the AgentLoop engine (see Layer 2) lets runtime-discovered tool names be resolved into LLM tool definitions on the fly, so agents can pick up new skills without a restart.
+The core is the **SkillCatalog**, which aggregates skill sources through a **SourceManager** — MCP servers, git repos, local executables, and HTTP manifests are all first-class citizens. An **Indexer** builds searchable skill indexes, a **Discovery** engine finds relevant skills at runtime, a **Loader** resolves and instantiates them, and a **Resolver** handles dependency resolution. The **Experience** module learns relevance priors from past usage, so frequently invoked skills rank higher in discovery results.
+
+The five-piece catalog toolset (`skill_search`/`skill_load`/`skill_activate`/`skill_list`/`skill_experience`) implements Level-0/1/2 progressive disclosure: even with 1000 tools, none enter context; `skill_activate` is the only moment an MCP server connection is established. The **ToolExpander** interface in the AgentLoop engine lets runtime-discovered skill names be resolved into LLM tool definitions on the fly, so agents can pick up new skills without a restart.
 
 ---
 
 ## The Design Principles
 
-**1. Agents are disposable.**
+**1. Agents are disposable. Tasks are durable.**
 
-This is the most important principle. An Agent is not a precious snowflake — it's a goroutine with a heartbeat. If it dies, the Runtime creates a new one and restores its state from the EventStore. This sounds wasteful until you realize it's the only way to guarantee recovery.
+This is the most important principle. 0.3.x upgrades it to: **Agent death ≠ Task death.** An Agent is not a precious snowflake — it's a goroutine with a heartbeat. If it dies, the Agent Fabric creates a new one, and the Task Fabric restores progress from the checkpoint. This sounds wasteful until you realize it's the only way to guarantee recovery.
 
-**Honest reflection**: We considered making Agents long-lived and resilient. Tried circuit breakers, retry loops, graceful degradation. It worked — until it didn't. The problem is that you can't predict every failure mode. A goroutine leak, a deadlock, an OOM kill — no amount of defensive coding covers all of them. Making Agents disposable means any failure is recoverable, because you always have a fresh start point.
+**Honest reflection**: We considered making Agents long-lived and resilient. Tried circuit breakers, retry loops, graceful degradation. It worked — until it didn't. The problem is that you can't predict every failure mode. A goroutine leak, a deadlock, an OOM kill — no amount of defensive coding covers all of them. Making Agents disposable means any failure is recoverable, because you always have a fresh start point. The 0.3.x Execution Quantum further reinforces this: at the end of each quantum, the agent yields, the checkpoint is persisted, and even if the agent dies, the next quantum resumes from the checkpoint.
 
 **2. Record everything, replay anything.**
 
@@ -148,19 +156,22 @@ The PluginBus lets you extend behavior without modifying core code. Checkpoint s
 
 ## What Makes This Different
 
-Most Agent frameworks are "LLM orchestration engines" — they focus on prompt chains and tool calling. ares is an **Agent operating system** — it focuses on keeping Agents alive in production.
+Most Agent frameworks are "LLM orchestration engines" — they focus on prompt chains and tool calling. ares 0.3.x is an **Agent runtime** — it focuses on keeping Agents alive in production. The core proposition shifted from "how to orchestrate Agents" to "how to schedule Agents": **Agents are not orchestrated. They are scheduled.**
 
-| Capability | Typical Framework | ares |
+| Capability | Typical Framework | ares 0.3.x |
 |-----------|------------------|------|
-| Agent lifecycle | Start and hope | Birth → Death → Resurrection |
-| State management | In-memory struct | Event Sourcing + Checkpoint |
-| Failure handling | Try/catch | Automatic resurrection with state recovery |
-| Observability | Logs | Logs + Events + Metrics + Traces |
+| Agent lifecycle | Start and hope | Agent Fabric: spawn → suspend → resume → retire → kill → recover; **Agent death ≠ Task death** |
+| Scheduling model | Leader dispatch / central orchestration | **Agents are not orchestrated. They are scheduled.** Kernel Scheduler + capability-aware work stealing + cooperative preemption |
+| State management | In-memory struct | Event sourcing + checkpoints + fencing token (epoch) |
+| Failure handling | Try/catch | Execution Quantum + checkpoint recovery + lease expiry auto-requeue |
+| Observability | Logs | Logs + Events + Metrics + Traces + Scheduling Observatory (decision records) |
 | Extensibility | Subclass | Plugin system + Capability Fabric with dynamic skill discovery |
-| Self-improvement | None | GA engine with 7 selectors, 3 crossover, 6 mutation operators, 6 evolvable genomes (Workflow/Scheduler/Knowledge/Recovery/Planner/Memory), multi-objective scoring, and background ticker-driven evolution cycles |
-| Agent communication | HTTP/gRPC/Message Queue | In-process AHP (channels) + peer-to-peer registry for direct messaging |
-| Skill discovery | Hardcoded tool registrations | SkillCatalog with SourceManager, Indexer, Discovery, Loader, and learned relevance priors |
-| Concurrency control | None or external locks | Session leases with TTL-based exclusive access |
+| Self-improvement | None | Candidate release closed-loop: Candidate → three-tier verification → Release gate → SetStable. GA demoted to optional. Evidence carries evidence chains, not scalar scores |
+| Agent communication | HTTP/gRPC/Message Queue | Agent IPC peer-mesh six primitives (Send/Request/Reply/Delegate/Handoff/Subscribe) + legacy AHP compat |
+| Skill discovery | Hardcoded tool registrations | SkillCatalog with SourceManager, Indexer, Discovery, Loader, and learned relevance priors; five-piece catalog toolset progressive disclosure |
+| Concurrency control | None or external locks | General Lease (TaskLease/ResourceLease/CapabilityLease) + fencing token |
+| Agent architecture | Hierarchical (Leader/Sub) | Peer cognitive processes (A ≡ B ≡ C), spawn is a syscall not an orchestration API |
+| Lifecycle management | Manual | system_runtime.Orchestrator: Construct → Bind → Start → Ready, reverse-order Shutdown |
 
 ---
 
@@ -170,9 +181,9 @@ This project started as a chatbot and grew into something I didn't plan. The evo
 
 Each feature was born from a real problem, not a feature checklist. That's why the architecture looks the way it does — it's not designed top-down, it's evolved bottom-up.
 
-**Honest reflection**: The codebase is bigger than it needs to be. The quant trading module, the interview demo, the MCP dashboard — these are experiments that should probably live in separate repos. The core (Runtime + Workflow + Memory + Events) is solid. The periphery is still finding its shape.
+**Honest reflection**: The codebase is bigger than it needs to be. The quant trading module, the interview demo, the MCP dashboard — these are experiments that should probably live in separate repos. The core (Kernel + Workflow + Memory + Events) is solid. The periphery is still finding its shape.
 
-But that's how real projects work. You don't design the perfect architecture on day one. You solve problems, accumulate code, and occasionally stop to refactor. The refactoring we did in v0.2.4 — unified naming, API layer thinning, module logging — was one of those "stop and clean up" moments.
+But that's how real projects work. You don't design the perfect architecture on day one. You solve problems, accumulate code, and occasionally stop to refactor. The refactoring we did in v0.3.x — Leader/Sub → Kernel, AHP → Agent IPC, memory distillation relocation, candidate release closed-loop — was one of those "stop and clean up" moments. The core philosophy of 0.3.x shifted from "Agent orchestration" to "Agent runtime" — this wasn't planned, it was forced by real problems.
 
 ---
 

@@ -491,7 +491,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.streamClient.Do(req)
+	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}
@@ -584,7 +584,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 	req.Header.Set("x-api-key", c.config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := c.streamClient.Do(req)
+	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send anthropic stream request")
 	}
@@ -699,7 +699,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set("X-Title", "ARES")
 
-	resp, err := c.streamClient.Do(req)
+	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}

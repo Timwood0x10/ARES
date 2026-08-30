@@ -164,7 +164,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	req.Header.Set("Content-Type", "application/json")
 
 	// Timeout is controlled via the request context, not the client.
-	resp, err := a.streamClient.Do(req)
+	resp, err := a.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, gerr.Wrap(err, "send stream request")
 	}

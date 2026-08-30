@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XIX): Storage Layer — The Foundation Under Everything
+# ares Architecture Deep Dive (XIX): Storage Layer — The Foundation Under Everything (0.3.x)
 
 Every module in ares — Memory, Evolution, Knowledge, Events — eventually hits storage. This is the story of `internal/storage/`: 14,112 lines across 57 files, the layer that everything else stands on.
 

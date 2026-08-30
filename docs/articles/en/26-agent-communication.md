@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (XXVI): Agent Communication — How the Primitive Layer Lets Agents Talk
+# ares Architecture Deep Dive (XXVI): Agent Communication — How the Primitive Layer Lets Agents Talk (0.3.x)
+
+> 0.3.x update: AHP (Agent Harmony Protocol) evolved into **Agent IPC** — a peer-mesh message bus. Six primitives: Send / Request / Reply / Delegate / Handoff / Subscribe. Replaces the 0.2.x five message types (Task/Result/Progress/ACK/Heartbeat). Agents are peer cognitive processes (A ≡ B ≡ C); communication doesn't need a Leader relay. The legacy AHP is retained as a compatibility layer. See article (II) in this series for details.
 
 > Note: This article is grounded in the actual code (`internal/agents/peer`, `internal/agents/leader`, `internal/ares_protocol/ahp`, `internal/agents/actionlog`, `internal/agents/lease`) — the dedicated Agent-OS communication-primitive article in the docs series.
 

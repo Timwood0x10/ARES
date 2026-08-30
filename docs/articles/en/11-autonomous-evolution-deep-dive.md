@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (XI): Autonomous Evolution — When Agents Learn to Improve Themselves
+# ares Architecture Deep Dive (XI): Autonomous Evolution — When Agents Learn to Improve Themselves (0.3.x)
+
+> 0.3.x update: The evolution engine's primary mode shifted from GA to **Failure → Diagnosis → Patch → Verify**. 0.3.0 candidate release closed-loop: Candidate → three-tier verification (Gate 1 Static + Gate 2 Evidence + Gate 3 LLM Regression) → Release gate (Gate 3 reconfirmation) → SetStable → Promoted. GA is demoted to an optional advanced feature. Evidence no longer returns scalar scores but structured diagnostics with evidence chains. Memory distillation is relocated to the evolution pipeline: Trace → Experience → Memory.
 
 > Have you ever wondered why agents can't get smarter with use?
 > They make the same mistake twice. Every time they solve a problem, next time they start from scratch.

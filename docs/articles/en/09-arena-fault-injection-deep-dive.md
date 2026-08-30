@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (IX): Arena / Fault Injection — Break It Deliberately, Watch It Self-Heal
+# ares Architecture Deep Dive (IX): Arena / Fault Injection — Break It Deliberately, Watch It Self-Heal (0.3.x)
+
+> 0.3.x update: Arena is deeply integrated with Agent Fabric's spawn/kill/recover lifecycle. Fault injection no longer tests only Agent resurrection, but tests **Agent death ≠ Task death** — after killing an Agent, Task Fabric restores progress from the checkpoint, and Agent Fabric creates a new Agent to continue.
 
 > Other agent frameworks show you how smart the agent is: fluent conversations, strong reasoning, smooth tool usage.
 > ares shows you something else: **when you deliberately kill its agents, can it survive?**

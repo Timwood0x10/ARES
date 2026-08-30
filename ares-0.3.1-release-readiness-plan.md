@@ -94,8 +94,10 @@ make cover
 | T8 | **P2** | 明文弱口令入库 | `configs/query_rewrite_config.yaml` | 0.1 人日 |
 | T9 | **P2** | 覆盖率补齐至 ≥65%（重点 `ares_events`） | `internal/ares_events/*_test.go` | 1–2 人日 |
 | T10 | **P2** | 定版前长跑与租户隔离确认 | soak 脚本、`internal/storage/postgres` | 1 人日 |
+| K1–K5 | **P1** | 内核六大件纳入 System Runtime 统一编排（含裸 `go` 收敛） | `internal/system_runtime/*`、`internal/ares_bootstrap/system_runtime_wiring.go`、`cmd/ares/{kernel,serve_agents,peer_mode,serve_chaos,serve_routine}.go` | 2–3 人日 |
+| K6 | P2 | SDK / arena 路径编排同构（可延后，须登记） | `sdk/*`、`cmd/ares/arena.go` | 1 人日 |
 
-**关键路径**：T1 → T3 → T2 →（T4、T5 并行）→ `v0.3.1-rc` → T6–T10 → GA。
+**关键路径**：T1 → T3 → T2 →（T4、T5 并行）→ `v0.3.1-rc` → K1–K5 → T6–T10 → GA。
 
 ---
 
@@ -624,6 +626,128 @@ T2 方案 A 的恢复正确性完全依赖它。`compat/` 19 个文件 0% 覆盖
 
 ---
 
+## K 组（P1）内核组件纳入统一调度：System Runtime 编排闭环
+
+> 追加自 2026-08-30 复审。K1–K5 为 `v0.3.1` 必做，K6 可延后但须在 CHANGELOG
+> 的 Known limitations 显式登记。
+
+### 问题证据
+
+**证据 1：内核六大件不在编排图内。**
+`internal/ares_bootstrap/system_runtime_wiring.go:22-33` 的组件名只有 10 个，
+全部是 Bootstrap 构造的**基础设施**层：
+
+```go
+sysCompEventStore / sysCompRuntime / sysCompMemory / sysCompMCP / sysCompLLM
+sysCompEvidenceStore / sysCompFlightRecorder / sysCompKnowledge
+sysCompNewEvolution / sysCompDiscovery
+```
+
+而 `cmd/ares/kernel.go:24-53` 的 `kernelHandle` 持有的六个 Kernel 支柱——
+`scheduler`（`kernelScheduler`）、`fabric`（`taskfabric.Fabric`）、
+`agents`（`agentfabric.Fabric`）、`recovery`（`aresrecovery.Recovery`）、
+`dual`（`agentipc.DualTrackDispatcher`）、`pluginBus`（`ares_runtime.PluginBus`）
+——**一个都没注册**。后果：`orch.Snapshot()` 报告「全部 Ready」时，调度器可能根本
+没起来；`Orchestrator.Shutdown`（`orchestrator.go:166`）的反拓扑停机也完全绕过内核。
+文档说内核是「统一编排的组件图」，实测编排图里没有内核。
+
+**证据 2：时序错配是根因，不是遗漏。**
+`wireSystemRuntime`（同文件 `:116`）在 Bootstrap 构造完成时就跑完并 `orch.Start`；
+而内核在**更晚**的 `createAndServeAgents`（`cmd/ares/serve_agents.go:31`）里才装配。
+注册表当前只有一次性的 `Register`，没有「启动后追加组件」的入口——所以这不是加几行
+`registerSystemComponent` 能解决的，需要先给 Registry/Orchestrator 补延迟纳管能力。
+
+**证据 3：生产路径存在游离裸 `go`。**
+`cmd/ares` 非测试文件中的裸 `go`（`go func` / `go xxxLoop`）至少 20 处，
+集中在 `peer_mode.go:182,187,292,293`、`serve_agents.go:100,134`、
+`serve_chaos.go:184-225`（8 处）、`serve.go:101`、`kernel_loop.go:269`、
+`arena.go:834`。它们的生命周期只由传入的 `ctx` 隐式约束，既不进
+`Orchestrator.Go`（`orchestrator.go:320`，带 errgroup 语义），也没有统一的
+panic recover——单个 loop panic 会直接带崩整个进程，且 `Shutdown` 无法等待它们退出。
+
+### 怎么做
+
+**K1（P1）Registry/Orchestrator 补延迟纳管入口**
+- 在 `internal/system_runtime` 增加 `Orchestrator.Adopt(c Component, mode Mode) error`：
+  在 `Start` 之后注册并**立即驱动该组件的启动状态记录**，纳入后续
+  `Shutdown` 的反拓扑序。
+- 依赖校验：`Adopt` 的 `Dependencies()` 必须已存在且非 `Failed`，否则返回错误
+  （不可静默降级——静默会重演证据 1 的「假 Ready」）。
+- 幂等：同名重复 `Adopt` 返回明确错误，不覆盖已有状态。
+- 并发安全：`Adopt` 与 `Shutdown` 竞态时以 `Shutdown` 优先，`Adopt` 返回
+  `ErrShuttingDown`。
+
+**K2（P1）注册六大内核组件**
+- 在 `system_runtime_wiring.go` 增加常量：`sysCompScheduler`、`sysCompTaskFabric`、
+  `sysCompAgentFabric`、`sysCompRecovery`、`sysCompDispatcher`、`sysCompPluginBus`。
+- 依赖边（决定停机顺序，必须准确）：
+
+| 组件 | 依赖 | Stop 语义 |
+|------|------|----------|
+| `taskfabric` | `eventstore` | 停止发放租约；drain 在途 quantum |
+| `agentfabric` | `eventstore` | 停止 spawn；退回 retire |
+| `dispatcher` | `taskfabric`、`agentfabric` | 停止投递，剩余进死信（T6） |
+| `scheduler` | `taskfabric`、`agentfabric`、`dispatcher` | 取消 drain 循环并等待退出 |
+| `recovery` | `taskfabric`、`agentfabric` | 停止 requeue / restart 循环 |
+| `pluginbus` | `scheduler` | 已有 `PluginBus.Stop(ctx)`（`ares_runtime/bus.go:117`） |
+
+- 现状确认：除 `PluginBus` 外，其余五者**没有** `Stop`/`Wait` 方法
+  （已全库搜索 `func (f *Fabric) Stop/Close/Wait` 等，仅命中 `bus.go:117`）。
+  因此 K2 需要为它们提供停机 hook——**优先用现有 `context.CancelFunc` +
+  goroutine 退出信号包装**（`stopFn` 里 cancel、`waitFn` 里等 done channel），
+  不要为了注册而给内核类型硬加 `Stop()` 方法污染其 API。
+- 在 `createAndServeAgents` 完成内核装配后调用 `orch.Adopt(...)`，逐个纳管。
+  `kernelHandle` 增补一个 `adopt(orch *system_runtime.Orchestrator) error` 方法，
+  把六个 Adopt 收在一处，避免散落在 serve 流程里。
+- nil 保护：部分路径（partial kernel、SDK）某些支柱为 nil，沿用
+  `registerSystemComponent` 的 `present` 语义跳过，不报错。
+
+**K3（P1）裸 `go` 收敛**
+- 新增统一入口 `GoBackground(orch, name string, fn func(ctx context.Context) error)`：
+  内部 `recover()` → 记录 panic 到日志与 FlightRecorder → 把组件标记为 `Failed`
+  → 不再传播 panic；正常返回则记录退出原因。
+- 逐个迁移 `cmd/ares` 生产路径的裸 `go`（清单见证据 3）。**测试文件不动**。
+- `arena.go:834` 与 `serve.go:101` 若属于一次性短任务而非长驻 loop，可保留裸 `go`
+  但**必须**加 recover；在注释中写明为何不纳管。
+
+**K4（P1）停机由 Orchestrator 单点驱动**
+- `shutdownSystemRuntime`（`cmd/ares/serve_routine.go:269`）已是唯一入口，
+  但当前只覆盖 Bootstrap 组件。K2 完成后它自动覆盖内核——需**核查并删除**
+  entry-point 中对内核的重复 teardown，避免双重 Stop。
+- 给 `Shutdown` 加整体超时（沿用 HTTP graceful 的超时配置），超时后记录哪些组件
+  未退出，而不是无限等待。
+
+**K5（P1）内核状态可观测**
+- `orch.Snapshot()` 输出内核六件的 `State` 与 `reason`。
+- introspect `snapshot` 端点带上该段（**受 T7 读鉴权保护**，不得新开无鉴权面）。
+- 调度器 `Ready` 判定要有实义：drain 循环真正在跑才算 Ready，否则
+  `Degraded` + reason，避免重演「假 Ready」。
+
+**K6（可延后）SDK 路径同构**
+- `sdk` 与 `arena` / `peer` 非 serve 路径目前不建 Orchestrator。延后处理，
+  但须在 CHANGELOG 的 Known limitations 写明「统一编排目前仅覆盖 `ares serve`」。
+
+### 验收标准
+
+- [ ] `orch.Snapshot()` 在 `ares serve` 启动后包含 scheduler / taskfabric /
+      agentfabric / recovery / dispatcher / pluginbus 六项，状态为 `Ready`。
+- [ ] `kill -TERM` 后停机日志显示六项均转为 `Stopped`，且顺序满足 K2 依赖表的
+      **反拓扑**（pluginbus/recovery/scheduler 先于 dispatcher，dispatcher 先于两个
+      fabric，fabric 先于 eventstore）。
+- [ ] `Adopt` 单测：依赖缺失被拒、同名重复被拒、`Shutdown` 期间返回
+      `ErrShuttingDown`、正常纳管后进入 Shutdown 序列。
+- [ ] 调度器未启动时 snapshot 报 `Degraded` 且 reason 可读（不得为 `Ready`）。
+- [ ] 注入一个 panic 的后台 loop：进程**不崩**，该组件被标记 `Failed`，
+      日志/FlightRecorder 有记录。
+- [ ] `cmd/ares` 生产路径（排除 `*_test.go`）无游离裸 `go`；保留的例外均有
+      recover + 注释说明（可用
+      `grep -rn '^\s*go ' cmd/ares --include='*.go' | grep -v _test.go` 复核）。
+- [ ] `Shutdown` 超时路径有测试：卡住的组件不阻塞进程退出，且被记录。
+- [ ] `go test -race -count=5 ./internal/system_runtime/... ./cmd/ares/...` 绿。
+- [ ] `make check` && `make gate` 绿。
+
+---
+
 ## 3. 发布节奏
 
 ```
@@ -631,10 +755,15 @@ T2 方案 A 的恢复正确性完全依赖它。`compat/` 19 个文件 0% 覆盖
               ↓ 全部验收通过
            打 tag v0.3.1-rc，发布 Release Notes（含 Known limitations）
 
-阶段二（GA）：T6 → T7 → T8 →（T9 ∥ T10）
+阶段二（GA）：K1–K5 → T6 → T7 → T8 →（T9 ∥ T10）
               ↓ 全部验收通过 + 总覆盖率 ≥65% + 12h soak 基线
            打 tag v0.3.1（GA）
 ```
+
+**为何 K 组放在阶段二起点**：K1 要动 `system_runtime` 的注册语义，K3 要迁移
+20 处后台 goroutine，风险高于纯文档/鉴权类修复；但它是 12h soak（T10）的前置——
+在裸 `go` 未收敛、内核不在停机序列里的状态下跑长跑，goroutine 泄漏与停机残留
+无法归因。所以必须在 T10 之前完成。
 
 **为何 T1/T3 先于 T2**：两者都是小改动、零架构风险，先合掉可以立刻消除最严重的
 默认暴露面；T2 无论走 A 还是 B 都需要决策与讨论，不应阻塞安全修复上线。
@@ -685,6 +814,10 @@ T2 方案 A 的恢复正确性完全依赖它。`compat/` 19 个文件 0% 覆盖
 - [ ] `VERSION` 与 tag 一致
 - [ ] 仓库内无自相矛盾的状态记录（重点：`ares-repair-plan-zh.md` 的 GAP 表
       与代码 TODO）
+- [ ] K1–K5 完成并验收通过（统一调度闭环；K6 可延后但须显式登记）
+- [ ] `orch.Snapshot()` 中出现内核组件（scheduler / taskfabric / agentfabric /
+      recovery / dispatcher / pluginbus），且 `kill -TERM` 后全部为 `Stopped`
+- [ ] `cmd/ares` 生产路径无游离裸 `go`（除 `orch.Go` / `GoBackground` 包装内部）
 
 ---
 

@@ -1,4 +1,6 @@
-# ares 架构深度解析（二十八）：Skills 发现 — 不扫盘的能力目录
+# ares 架构深度解析（二十八）：Skills 发现 — 不扫盘的能力目录（0.3.x）
+
+> 0.3.x 更新：Skills 发现已升级为 **Capability Fabric**——框架原生的技能发现、索引和加载系统。SkillCatalog 配合 SourceManager 聚合多种技能来源（MCP 服务器、Git 仓库、本地可执行文件、HTTP 清单）。五件套 catalog 工具（skill_search/load/activate/list/experience）实现 Level-0/1/2 渐进披露。Experience 模块从历史使用中学习相关性先验。Capability Fabric 直接成为 Kernel Scheduler 的 capability-aware 评分来源。
 
 > 说明：本文基于实际代码（`internal/ares_skills` 全部实现：source.go / indexer.go / discovery.go / loader.go / resolver.go / experience.go / fts5.go / git_source.go / http_source.go / catalog.go），是 docs 系列中 Capability Fabric 发现链路的专门篇。
 

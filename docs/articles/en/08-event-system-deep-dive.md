@@ -1,4 +1,6 @@
-# ares Architecture Deep Dive (VIII): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
+# ares Architecture Deep Dive (VIII): Event System — Event Sourcing Foundation for State Recovery and Audit Trails (0.3.x)
+
+> 0.3.x update: Event types upgraded to full Task lifecycle (Created/Ready/Acquired/Started/Yielded/Checkpointed/Preempted/Released/Completed/Failed/Expired/Stolen). EventStore is deeply integrated with Task Fabric — Task lifecycle events directly drive scheduling (Task completed → dependencies become Ready).
 
 > Agent startup is an event, task assignment is an event, tool call is an event, LLM response is an event, Agent crash is an event too.
 > I thought at the time: **If I record every single thing the Agent does, can I fully reconstruct its state after it crashes?**

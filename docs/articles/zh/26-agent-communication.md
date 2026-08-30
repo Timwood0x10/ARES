@@ -1,4 +1,6 @@
-# ares 架构深度解析（二十六）：Agent 通信 — 原语层如何让 Agent 互相说话
+# ares 架构深度解析（二十六）：Agent 通信 — 原语层如何让 Agent 互相说话（0.3.x）
+
+> 0.3.x 更新：AHP（Agent Harmony Protocol）演进为 **Agent IPC**——peer-mesh 消息总线。六原语：Send / Request / Reply / Delegate / Handoff / Subscribe。替代了 0.2.x 的五种消息类型（Task/Result/Progress/ACK/Heartbeat）。Agent 是同级认知进程（A ≡ B ≡ C），通信不需要 Leader 中转。旧 AHP 保留为兼容层。详见本系列文章（二）。
 
 > 说明：本文基于实际代码（`internal/agents/peer`、`internal/agents/leader`、`internal/ares_protocol/ahp`、`internal/agents/actionlog`、`internal/agents/lease`），是 docs 系列中 Agent OS 通信原语的专门篇。
 
