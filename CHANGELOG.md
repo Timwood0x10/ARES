@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-restart task-state rebuild (release-readiness T2)**:
+  `taskfabric.Fabric.RestoreFromStore` folds the durable `task.*` event log
+  back into in-memory tasks, closing the process-crash gap (previously only
+  in-process agent death was recovered). Must-persist events (created /
+  checkpointed / completed / failed / expired) now carry the full rebuild
+  payload (capability, priority, dependencies, deadline, retry budget,
+  creation time, versioned checkpoint JSON through `MarshalCheckpoint`), and
+  the fencing epoch rides on *every* persisted event. Leases are never
+  restored — every non-terminal task folds to READY unowned with its
+  checkpoint intact and resumes through the ordinary acquire path; the fencing
+  epoch is restored monotonically (max-in-log + 1, never shrinking) so
+  pre-crash tokens stay rejected. Review fix: the epoch scan spans all events,
+  not just must-persist ones — `Acquire` is the only epoch bump and it records
+  the observability-only `task.acquired`, so restricting the scan lost every
+  token granted after the last checkpoint, and the rebuilt fabric re-issued
+  them (a stale pre-crash holder then passed the ownership epoch check).
+  `ares serve` (peer kernel) calls the restore before the scheduler drains,
+  failing startup loudly on a store-read error; a fabric without an event
+  store (SDK default) treats restore as a no-op. Idempotent by contract:
+  repeated restores reset-and-refold and converge to the same state (the epoch
+  may skip ahead across restores — only monotonicity matters for fencing).
+
 - **DAG-level plan round loops (GAP-2 / appendix C M4)**: `taskfabric.PlanLoop`
   re-executes a whole plan DAG for up to `MaxRounds` rounds — each round is
   recompiled atomically under round-namespaced task IDs
@@ -131,6 +153,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (post-release hardening)
 
+- **Event package coverage raised 51% → 71.7% (release-readiness T9)**:
+  `internal/ares_events` was the lowest-coverage contract core. New offline
+  tests (no test Postgres needed) exercise the pure logic that had been
+  untested: the in-memory summary repository (save/index/move-on-collision,
+  all finders, delete, delete-older-than), the PG query builders
+  (`buildStreamReadQuery`/`buildAllReadQuery`/`buildSubscribeQuery`),
+  `scanSummary`, `pgSubscription.markDelivered` overflow, the
+  `CompactableEventStore.Read` summary-fallback, `VerifyStreamIntegrity` and
+  `StreamHash`, `MemoryEventStore.Stats` and `Compactor.WithTrimStore`.
+  All pass `-race -count=5` clean.
+
+- **No live credentials in tracked configs (release-readiness T8)**: the
+  tracked example configs no longer carry an operable default password.
+  `configs/query_rewrite_config.yaml` and
+  `examples/11-knowledge-import/config_example.yaml` now use
+  `REPLACE_WITH_YOUR_PASSWORD` placeholders (the real `configs/ares.local.yaml`
+  key was already gitignored); commented defaults in `configs/ares.yaml` were
+  placeholder-ized too. A CI-traceable scan
+  (`git ls-files 'configs/*' 'examples/**' | xargs grep password:/api_key:`)
+  now returns no active plaintext credential.
+
+- **Read surfaces gated by auth (release-readiness T7)**: with
+  `security.auth_enabled: true`, the JSON read endpoints now require READ
+  credentials (`PermRead` — a RoleAgent JWT suffices) instead of being open:
+  the introspect feed (`/api/v1/introspect/*` task payloads & event stream),
+  the tool inventories (`GET /api/tools`, `GET /api/mcp/tools`), the cost
+  dashboard API, and — review fix — every `/api/*` route of the pass-through
+  `introspect.ControlServer` (`/api/agents` live agent topology,
+  `/api/flight/timeline`, `/api/flight/decisions` scheduling decisions,
+  `/api/observability/spans`, `/api/runtime/config`, `/api/insights`,
+  `/api/anomalies`), which previously fell through the handler tail ungated
+  while the introspect feed was closed. A new `PermRead` AuthMiddleware is
+  wired in `serve_routine` alongside the existing `PermWrite` one. The panel
+  HTML UI (`/introspect`), the root redirect, `/metrics` and non-`/api` paths
+  stay open (the UI carries no data; metrics follow the scraper convention;
+  a mistyped URL should not need a token to learn it is a 404). With auth
+  unconfigured the read routes remain open — safe only because serve defaults
+  to a loopback bind (T1).
+
+- **SDK `create_plan` loop parity (release-readiness T4)**: the SDK path's
+  syscall kernel is now built with `agentsyscall.WithLoopLifetime` bound to
+  the runtime's lifecycle ctx (cancelled in `Close`), so an SDK agent's
+  `create_plan` accepts the `loop {max_rounds, until}` option — previously
+  the shared tool schema advertised the parameter but every SDK call failed
+  loudly with "plan loop requires a kernel loop lifetime". Mirrors the serve
+  path wiring. Loop control is reachable from embedding programs via the new
+  exported `Runtime.LivePlanLoops()` / `Runtime.StopPlanLoop(planID)` (review
+  fix: the kernel was held on a private field, so a `loop` plan was a
+  goroutine the caller could neither list nor cancel before `Close`); both are
+  safe no-ops before the first `Submit` wires the kernel.
+
 - **Leader residual symbols de-leaderized** (aresos-hardening-plan H3): the
   `AresMemoryManager` checkpoint lookup is renamed
   `GetLatestSessionForLeader` → `GetLatestSessionForAgent` (interface,
@@ -161,6 +234,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/fusion-convergence.md`.
 
 ### Breaking changes
+
+- **Removed `run_js` operation from `code_runner`** (release-readiness T3):
+  the code validator is Python-oriented (import allowlist, dangerous-pattern
+  scan) and cannot understand CommonJS `require`, so `EnableJS(true)` handed
+  the model an unsandboxed `node -e` shell (`require('child_process')` was
+  invisible to every check). The `run_js` operation, `EnableJS`/`IsJSEnabled`
+  methods, the `enableJS` parameter of `NewCodeRunnerWithOptions`, and the
+  `javascript` entry of `GetSupportedLanguages` are removed; the tool schema
+  now enumerates only `run_python`. Python execution keeps its existing
+  protections (allowlist + denylist + process-group isolation + PATH-only
+  env). Re-introduce JS only together with a JS-specific validator.
+
+- **Default HTTP bind address narrowed from `0.0.0.0` to `localhost`**
+  (release-readiness T1): `ares serve` now honors `server.host` as the real
+  bind address (previously display-only; serve always bound `:<port>`, i.e.
+  all interfaces). The introspect read API (`/api/v1/introspect/*`) is
+  unauthenticated, so the default loopback bind closes that exposure.
+  Deployments that must accept remote connections (e.g. docker) need
+  `server.host: 0.0.0.0` (or `SERVER_HOST` env, or the new `--host` flag) plus
+  `security.auth_enabled: true`; starting with a wildcard host and auth
+  disabled prints a loud exposure warning. `ares status` / `ares dashboard`
+  already resolve wildcard hosts to localhost for probing and are unaffected.
+  `serve` gained `--host` for symmetry with `--port`; precedence is
+  flag > env > YAML. The `examples/09-full-app` demo server (which has no auth
+  at all) follows the same rule — loopback by default, `SERVER_HOST` to widen —
+  so the `SERVER_HOST=0.0.0.0` in `docker-compose.yml` is what makes its
+  published port reachable.
 
 - **Removed legacy public API packages and CLI** (fusion plan Phases A/B):
   `api/graph`, `api/service/workflow`, `api/client` (13 files), and the

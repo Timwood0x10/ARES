@@ -35,7 +35,6 @@ import (
 // field names, what callers write (cfg.Memory.X) — NOT type names. Adding an
 // entry requires a reason comment.
 var knownDead = map[string]string{
-	"Server.Host":               "display-only (C4)",
 	"Tools.Defaults":            "C4 backlog",
 	"Tools.Agents":              "C4 backlog",
 	"Memory.SessionMemory":      "C4 backlog (subtree)",

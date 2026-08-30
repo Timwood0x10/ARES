@@ -388,7 +388,7 @@ result, _ := registry.Execute(ctx, "data_validation", map[string]interface{}{
 |--------|------|------------|
 | `file_tools` | 文件操作 | `read`, `write`, `list` |
 | `id_generator` | ID 生成 | `generate_uuid`, `generate_short_id` |
-| `code_runner` | 代码执行 | `run_python`, `run_js` |
+| `code_runner` | 代码执行 | `run_python` |
 
 #### file_tools 支持的 Operations
 
@@ -409,8 +409,10 @@ result, _ := registry.Execute(ctx, "data_validation", map[string]interface{}{
 
 | Operation | 说明 | 必需参数 | 备注 |
 |-----------|------|----------|------|
-| `run_python` | 执行 Python 代码 | `code` | 默认启用 |
-| `run_js` | 执行 JavaScript | `code` | 默认禁用 |
+| `run_python` | 执行 Python 代码 | `code` | 默认禁用，需 `EnablePython(true)` |
+
+> 注：JavaScript 执行（`run_js`）已在 0.3.1 移除——Python 校验器不理解
+> CommonJS `require`，无法为 node 提供沙箱约束。
 
 #### file_tools 示例
 
@@ -465,8 +467,8 @@ result, _ := registry.Execute(ctx, "id_generator", map[string]interface{}{
 #### code_runner 示例
 
 ```go
-// code_runner 支持的操作: run_python, run_js
-// 注意: 默认禁用 JS，仅启用 Python
+// code_runner 支持的操作: run_python
+// 注意: Python 默认禁用，需调用 EnablePython(true) 启用
 
 // 执行 Python
 result, _ := registry.Execute(ctx, "code_runner", map[string]interface{}{

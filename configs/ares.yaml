@@ -10,6 +10,15 @@
 # Override config path via the ARES_YAML environment variable.
 # ═══════════════════════════════════════════════════════════════
 
+# ── HTTP server ──────────────────────────────────────────────
+server:
+  # host: actual HTTP bind address (default "localhost").
+  # The introspect read API (/api/v1/introspect/*) is unauthenticated, so
+  # serve binds loopback by default. To accept connections from other hosts
+  # (e.g. inside docker), set host: 0.0.0.0 AND enable security.auth_enabled.
+  # host: localhost
+  # port: 8080
+
 # ── LLM provider ─────────────────────────────────────────────
 llm:
   # provider: openai | ollama | anthropic | openrouter
@@ -138,7 +147,7 @@ database:
   # host: localhost
   # port: 5432
   # user: postgres
-  # password: postgres
+  # password: REPLACE_WITH_YOUR_PASSWORD
   # database: ares
   # ssl_mode: disable | require | verify-full
   # ssl_mode: disable
@@ -199,7 +208,7 @@ embedding:
 #     host: localhost
 #     port: 5432
 #     user: postgres
-#     password: postgres
+#     password: REPLACE_WITH_YOUR_PASSWORD
 #     database: ares
 #
 #   embedding:

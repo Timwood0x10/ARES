@@ -107,6 +107,13 @@ func createPeerAgents(
 	kernel.fabric = taskfabric.NewFabric()
 	if store != nil {
 		kernel.fabric = kernel.fabric.WithEventStore(store)
+		// Rebuild in-memory tasks from the durable task.* log BEFORE the
+		// scheduler starts draining: restoring after the first Acquire would
+		// reset tasks created in this process lifetime. Fail-loud — silently
+		// continuing would drop tasks the log says exist (T2).
+		if err := kernel.fabric.RestoreFromStore(ctx); err != nil {
+			return nil, nil, fmt.Errorf("peer mode: restore task fabric from event store: %w", err)
+		}
 	}
 	// W8: experience-derived confidence prior — recorded skill/task outcomes
 	// sharpen scheduling when the same pattern recurs. Nil (skills disabled)

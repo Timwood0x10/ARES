@@ -197,8 +197,10 @@ type EmbeddingConfig struct {
 
 // ServerConfig holds server configuration.
 type ServerConfig struct {
-	// Host is display-only: serve binds ":<port>" (C4); changing the bind
-	// address is a behavior change tracked separately.
+	// Host is the actual HTTP bind address (default "localhost" from
+	// setDefaults): the introspect read side (/api/v1/introspect/*) is
+	// unauthenticated, so serve must never default to a wildcard bind.
+	// "0.0.0.0" opts into all interfaces and requires security.auth_enabled.
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
 }

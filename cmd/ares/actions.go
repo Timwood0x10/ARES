@@ -71,6 +71,13 @@ type actionHandler struct {
 	// dereferences it whenever cost is set, so a nil here panics on the
 	// first dashboard request.
 	costMux *http.ServeMux
+	// readAuth verifies JWTs at READ permission for the JSON read surfaces
+	// (/api/v1/introspect/*, /api/tools, /api/mcp/tools, cost API). Nil when
+	// auth is not configured: those surfaces then stay unauthenticated, which
+	// is safe only because serve defaults to a loopback bind (T1). The panel
+	// HTML UI (/introspect) and /metrics stay open regardless — the UI
+	// carries no data itself, and metrics follow the scraper convention.
+	readAuth *ares_security.AuthMiddleware
 }
 
 // buildCostMux registers the cost dashboard routes on a dedicated mux, once
@@ -143,18 +150,62 @@ func (h *actionHandler) auditAction(action, target string, princ *ares_security.
 	h.audit.Action(action, subject, target, ok)
 }
 
+// checkAuthRead gates the JSON read surfaces at READ permission (T7): a valid
+// JWT with read permission or the legacy API key (a write key may read).
+// When auth is not configured at all it allows the request — the same policy
+// the introspect surface documented before T7, safe only under the loopback
+// default bind (T1). Returns false after writing the 401/403 response.
+func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bool {
+	if h.readAuth == nil && h.apiKey == "" {
+		// Auth not configured: unauthenticated read access, loopback by default.
+		return true
+	}
+	// JWT path first: a valid token with READ permission (agent role qualifies).
+	if h.readAuth != nil {
+		if _, status := h.readAuth.Verify(r); status == http.StatusOK {
+			return true
+		}
+	}
+	// Legacy API key path: a write credential may also read.
+	if h.apiKey != "" {
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if strings.HasPrefix(auth, prefix) {
+			token := strings.TrimPrefix(auth, prefix)
+			if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1 {
+				return true
+			}
+		}
+	}
+	w.WriteHeader(http.StatusUnauthorized)
+	writeJSON(w, map[string]any{"error": "invalid credentials"})
+	return false
+}
+
 // serveIntrospect handles the read-only introspection surface: the panel UI,
 // its JSON feed under /api/v1/introspect/*, and a root redirect to the panel.
-// Returns true when it handled the request. These routes are intentionally
-// unauthenticated — they expose no secrets and mutate nothing; every control
-// endpoint stays behind checkAuth.
+// Returns true when it handled the request.
+//
+// Auth policy (T7): the JSON feed — task payloads, raw events, live
+// scheduler state — requires READ credentials whenever auth is configured
+// (checkAuthRead); the panel HTML (/introspect), the root redirect and
+// /metrics stay open (the UI carries no data itself; metrics follow the
+// scraper convention). With auth unconfigured every read route is open,
+// which is safe only under the loopback default bind (T1).
 func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, path string) bool {
 	if h.intro == nil || r.Method != http.MethodGet {
 		return false
 	}
 	switch {
-	case path == "/introspect" || strings.HasPrefix(path, "/introspect/") ||
-		strings.HasPrefix(path, "/api/v1/introspect/"):
+	case path == "/introspect" || strings.HasPrefix(path, "/introspect/"):
+		// Panel UI: static HTML shell, no data — stays open.
+		h.intro.ServeHTTP(w, r)
+		return true
+	case strings.HasPrefix(path, "/api/v1/introspect/"):
+		// JSON feed: task payloads and raw events — read-gated (T7).
+		if !h.checkAuthRead(w, r) {
+			return true
+		}
 		h.intro.ServeHTTP(w, r)
 		return true
 	case path == "/metrics":
@@ -167,7 +218,10 @@ func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, 
 		path == "/api/v1/observability/dashboard"):
 		// W1: LLM cost dashboard (read-only GET). The mux is built once via
 		// buildCostMux in the construction literal — rebuilding per request
-		// was pure waste.
+		// was pure waste. Cost data is read-gated too (T7).
+		if !h.checkAuthRead(w, r) {
+			return true
+		}
 		h.costMux.ServeHTTP(w, r)
 		return true
 	case path == "/":
@@ -235,17 +289,25 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tool API: GET /api/tools
+	// Tool API: GET /api/tools — read-gated (T7): the tool inventory is
+	// reconnaissance surface, so it requires READ credentials when auth is
+	// configured (same policy as the introspect JSON feed).
 	if r.Method == "GET" && path == "/api/tools" {
+		if !h.checkAuthRead(w, r) {
+			return
+		}
 		h.handleListTools(w)
 		return
 	}
 
 	// MCP tool API (monitoring.md Phase 4: migrated from the old gin server
 	// into the actionHandler so the control plane stays unified):
-	//   GET  /api/mcp/tools           → list available tools
+	//   GET  /api/mcp/tools           → list available tools (read-gated, T7)
 	//   POST /api/mcp/tools/:name/call → invoke a tool (requires auth)
 	if r.Method == "GET" && path == "/api/mcp/tools" {
+		if !h.checkAuthRead(w, r) {
+			return
+		}
 		h.handleListMCPTools(w)
 		return
 	}
@@ -284,7 +346,17 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pass through to monitoring server
+	// Pass through to the read-only control server (introspect.ControlServer:
+	// /api/agents, /api/health, /api/runtime/config, /api/flight/*,
+	// /api/observability/spans, /api/insights, /api/anomalies,
+	// /api/evolution/trajectory). These are read-gated for the same reason as
+	// the introspect feed (T7 demands ONE policy across equally sensitive read
+	// surfaces): the flight recorder carries scheduling decisions and
+	// diagnostics, /api/agents the live agent topology. Non-/api paths (the
+	// 404 tail) are left ungated so probing a wrong URL does not need a token.
+	if strings.HasPrefix(path, "/api/") && !h.checkAuthRead(w, r) {
+		return
+	}
 	h.inner.ServeHTTP(w, r)
 }
 

@@ -650,6 +650,48 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 		return nil
 	}
 	f.flushSeq++
+	// Rebuild payload (release-readiness T2): must-persist events carry every
+	// field RestoreFromStore needs to fold the task back (capability,
+	// priority, dependencies, deadline, retry budget, creation time and the
+	// versioned checkpoint JSON). Observability-only events keep the minimal
+	// provenance payload.
+	payload := map[string]any{
+		restoreKeyTaskID:  t.ID,
+		restoreKeyAgentID: t.Owner,
+		restoreKeyOrigin:  t.Origin,
+		restoreKeyState:   string(t.State),
+		// The fencing epoch rides on EVERY persisted event, not just the
+		// must-persist ones: Acquire bumps f.epoch and records the
+		// observability-only task.acquired, so restricting the epoch to
+		// must-persist events would lose every token granted after the last
+		// checkpoint — the rebuilt fabric would then RE-ISSUE those tokens
+		// and a stale pre-crash holder would pass ownerLocked's epoch check.
+		restoreKeyEpoch: f.epoch,
+	}
+	if isMustPersistEvent(typ) {
+		payload[restoreKeyCapability] = t.Capability
+		payload[restoreKeyPriority] = t.Priority
+		if len(t.Dependencies) > 0 {
+			deps := make([]string, len(t.Dependencies))
+			copy(deps, t.Dependencies)
+			payload[restoreKeyDependencies] = deps
+		}
+		if !t.Deadline.IsZero() {
+			payload[restoreKeyDeadline] = t.Deadline.Format(time.RFC3339)
+		}
+		payload[restoreKeyRetryAttempts] = t.RetryPolicy.Attempts
+		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries
+		payload[restoreKeyCreatedAt] = t.CreatedAt.Format(time.RFC3339)
+		if t.Checkpoint != nil {
+			if b, err := MarshalCheckpoint(t.Checkpoint); err == nil {
+				payload[restoreKeyCheckpointJSON] = string(b)
+			} else {
+				// The rebuilt task will resume without this checkpoint. Log
+				// so the divergence is detectable; do not fail the transition.
+				log.Printf("taskfabric: checkpoint marshal failed for task %s (restore will lose progress): %v", t.ID, err)
+			}
+		}
+	}
 	return &pendingAppend{
 		store:  f.store,
 		typ:    typ,
@@ -658,13 +700,8 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 			Type:       et,
 			StreamID:   t.ID,
 			ModuleName: "taskfabric",
-			Payload: map[string]any{
-				"task_id":  t.ID,
-				"agent_id": t.Owner,
-				"origin":   t.Origin,
-				"state":    string(t.State),
-			},
-			Timestamp: ev.At,
+			Payload:    payload,
+			Timestamp:  ev.At,
 		},
 		seq: f.flushSeq,
 	}

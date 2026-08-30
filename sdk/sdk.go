@@ -41,6 +41,7 @@ import (
 	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentloop"
+	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
@@ -190,6 +191,11 @@ type Runtime struct {
 	// decompose tasks. Populated by wireSyscalls; nil before the first
 	// Submit.
 	syscallTools []core.Tool
+	// syscallKernel is the agentsyscall kernel built by wireSyscalls, kept so
+	// the loop lifetime (WithLoopLifetime) wiring is observable and plan-loop
+	// control (LivePlanLoops/StopPlanLoop) is reachable from the runtime. Nil
+	// before the first Submit.
+	syscallKernel *agentsyscall.Kernel
 }
 
 // ---- constructors ----

@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
@@ -123,6 +124,16 @@ func (r *Runtime) wireSyscalls() {
 	if r.agentsFabric == nil {
 		r.agentsFabric = agentfabric.NewFabric()
 	}
+	// Parity with the serve path (T4): bind the loop lifetime so the
+	// create_plan `loop` option works on the SDK path too. The runtime ctx is
+	// cancelled in Close, so SDK plan loops cannot outlive the Runtime — the
+	// same lifecycle the serve path gets from its own ctx. Without this, the
+	// schema advertises a loop parameter that always failed loudly. A nil ctx
+	// (never expected: New always wires rtCtx) keeps the fail-loud behavior.
+	var opts []agentsyscall.KernelOption
+	if r.ctx != nil {
+		opts = append(opts, agentsyscall.WithLoopLifetime(r.ctx))
+	}
 	kernelSyscall := agentsyscall.NewKernel(
 		r.agentsFabric,
 		r.sdkFabric,
@@ -140,9 +151,35 @@ func (r *Runtime) wireSyscalls() {
 				r.sched.RegisterExecutor(agentID, se.inner)
 			}
 		},
+		opts...,
 	)
 	agentsyscall.BindTools(&syscallBinder{reg: r.toolReg}, kernelSyscall)
 	r.syscallTools = syscallLLMTools()
+	r.syscallKernel = kernelSyscall
+}
+
+// LivePlanLoops returns the plan IDs of the loops currently running on this
+// Runtime, sorted. Empty before the first Submit (the syscall kernel is wired
+// lazily by ensureScheduler) and after every loop has finished.
+//
+// T4 parity: the serve path exposes loop observability through its kernel, so
+// the SDK must too — otherwise a `loop` plan started via create_plan would be
+// unobservable and unstoppable from the embedding program.
+func (r *Runtime) LivePlanLoops() []string {
+	if r.syscallKernel == nil {
+		return nil
+	}
+	return r.syscallKernel.LivePlanLoops()
+}
+
+// StopPlanLoop cancels a live plan loop by plan ID and waits for its driver to
+// exit. Unknown or already-finished plans report agentsyscall.ErrPlanLoopNotFound;
+// so does a Runtime whose syscall kernel was never wired (no Submit yet).
+func (r *Runtime) StopPlanLoop(planID string) error {
+	if r.syscallKernel == nil {
+		return fmt.Errorf("sdk: stop plan loop %q: %w", planID, agentsyscall.ErrPlanLoopNotFound)
+	}
+	return r.syscallKernel.StopPlanLoop(planID)
 }
 
 // syscallLLMTools converts the syscall schemas to the LLM-facing api/core.Tool

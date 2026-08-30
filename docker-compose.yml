@@ -24,6 +24,12 @@ services:
       - "8080:8080"
     environment:
       - OLLAMA_HOST=http://ollama:11434
+      # The demo binds 127.0.0.1 by default (0.3.1 hardening), which a
+      # published port cannot reach from outside the container. Widen it here.
+      # The dashboard has no auth, so this container must stay on a private
+      # network; production deployments use `ares serve` with
+      # security.auth_enabled instead.
+      - SERVER_HOST=0.0.0.0
     depends_on:
       ollama:
         condition: service_healthy

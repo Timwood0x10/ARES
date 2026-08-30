@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -162,13 +164,23 @@ func startServeHTTPAndHooks(
 	comp *ares_bootstrap.Components,
 	peerKernel *kernelHandle,
 ) (*http.Server, error) {
-	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	addr := serverBindAddr(cfg.Server.Host, cfg.Server.Port)
 	fmt.Println("=== ARES Console — Live Runtime ===")
-	fmt.Printf("Console:  http://localhost%s/introspect\n", addr)
+	fmt.Printf("Console:  http://%s/introspect\n", displayServeHost(cfg.Server.Host, addr))
 	fmt.Printf("LLM:      %s / %s\n", cfg.LLM.Provider, cfg.LLM.Model)
 	fmt.Printf("Tools:    %v\n", toolBinder.ListTools())
 	fmt.Println("Press Ctrl+C to stop.")
 	fmt.Println()
+
+	// The introspect read side (/api/v1/introspect/*) carries task payloads
+	// with no auth of its own; a wildcard bind exposes it to the network.
+	// Fail-safe posture: warn loudly (do not block startup) so operators who
+	// deliberately opt into 0.0.0.0 without auth still see the exposure.
+	if isWildcardHost(cfg.Server.Host) && !cfg.Security.AuthEnabled {
+		log.Printf("WARNING: server.host %q binds all interfaces while security.auth_enabled is false — "+
+			"the unauthenticated introspect read API (/api/v1/introspect/*) is reachable from the network; "+
+			"set security.auth_enabled or bind localhost", cfg.Server.Host)
+	}
 
 	// API key for destructive endpoints (agents/chaos/tools). When empty,
 	// all destructive requests are denied (deny-by-default). Configure via
@@ -181,9 +193,15 @@ func startServeHTTPAndHooks(
 	// The actionHandler intercepts agent/chaos/tool/MCP routes BEFORE the
 	// read-only control server (introspect.ControlServer), so it must carry
 	// the same credentials and audit sink. JWT is enabled when configured.
+	// authMW enforces WRITE on destructive endpoints; readAuthMW enforces
+	// READ on the JSON read surfaces (T7: introspect feed, tool inventories,
+	// cost API) so enabling auth closes those too — not just the mutators.
 	var authMW *ares_security.AuthMiddleware
+	var readAuthMW *ares_security.AuthMiddleware
 	if cfg.Security.AuthEnabled && cfg.Security.JWTSecret != "" {
 		authMW = ares_security.NewAuthMiddleware([]byte(cfg.Security.JWTSecret), ares_security.PermWrite,
+			ares_security.WithAudit(auditLogger))
+		readAuthMW = ares_security.NewAuthMiddleware([]byte(cfg.Security.JWTSecret), ares_security.PermRead,
 			ares_security.WithAudit(auditLogger))
 	}
 	handler := &actionHandler{
@@ -193,13 +211,14 @@ func startServeHTTPAndHooks(
 		// real LLM cost attribution (single source of truth). The mux is
 		// built here too: serveIntrospect dereferences costMux whenever
 		// cost is set, so the pair must be wired atomically.
-		cost:    comp.LLM.CostDashboard,
-		costMux: buildCostMux(comp.LLM.CostDashboard),
-		mgr:     mgr,
-		tools:   registry,
-		apiKey:  serveAPIKey,
-		auth:    authMW,
-		audit:   auditLogger,
+		cost:     comp.LLM.CostDashboard,
+		costMux:  buildCostMux(comp.LLM.CostDashboard),
+		mgr:      mgr,
+		tools:    registry,
+		apiKey:   serveAPIKey,
+		auth:     authMW,
+		readAuth: readAuthMW,
+		audit:    auditLogger,
 		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
 		// (submitPeerTask).
 		kernel: peerKernel,
@@ -263,6 +282,9 @@ func loadServeConfig() (*ares_config.Config, error) {
 	// config file is required.
 	if serveLLMURL != "" {
 		cfg := ares_config.NewMinimalConfig(serveLLMURL, serveLLMKey, serveLLMModel)
+		if serveHost != "" {
+			cfg.Server.Host = serveHost
+		}
 		if servePort > 0 {
 			cfg.Server.Port = servePort
 		}
@@ -296,6 +318,11 @@ func loadServeConfig() (*ares_config.Config, error) {
 	}
 	if err := ares_config.LoadFromEnv(cfg); err != nil {
 		return nil, fmt.Errorf("load env: %w", err)
+	}
+	// CLI flags win over env (SERVER_HOST/SERVER_PORT) and YAML: the explicit
+	// argument is the most specific intent.
+	if serveHost != "" {
+		cfg.Server.Host = serveHost
 	}
 	if servePort > 0 {
 		cfg.Server.Port = servePort
@@ -380,3 +407,51 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 // ErrNoLLMAdapter) — e.g. to surface a degraded-mode warning instead of a hard
 // crash. (code_rules: prefer typed errors over string matching.)
 var ErrNoLLMAdapter = errors.New("serve: no LLM adapter available")
+
+// defaultServeHost is the fallback bind host when the config leaves
+// server.host empty (a hand-built Config may skip setDefaults).
+const defaultServeHost = "localhost"
+
+// serverBindAddr resolves the HTTP listen address from the server config.
+// The host is the real bind address (default "localhost"); empty falls back
+// rather than silently widening to a wildcard bind.
+func serverBindAddr(host string, port int) string {
+	if host == "" {
+		host = defaultServeHost
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// isWildcardHost reports whether host selects all network interfaces
+// (the "0.0.0.0" wildcard; IPv6's "::" is also a wildcard form).
+func isWildcardHost(host string) bool {
+	switch host {
+	case "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+// displayServeHost picks the host to print on the startup console: a wildcard
+// bind prints the loopback probe address, because connecting to 0.0.0.0
+// directly does not work on every platform and the panel URL must be usable.
+func displayServeHost(host, addr string) string {
+	if isWildcardHost(host) {
+		return "localhost:" + strconv.Itoa(portOf(addr))
+	}
+	return addr
+}
+
+// portOf extracts the numeric port from a host:port address.
+func portOf(addr string) int {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return port
+}

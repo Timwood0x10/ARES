@@ -268,7 +268,7 @@ result, _ := registry.Execute(ctx, "json_tools", map[string]interface{}{
 |------|-------------|------------|
 | `file_tools` | File operations | `read`, `write`, `list` |
 | `id_generator` | ID generation | `generate_uuid`, `generate_short_id` |
-| `code_runner` | Code execution | `run_python`, `run_js` |
+| `code_runner` | Code execution | `run_python` |
 
 #### file_tools Operations
 
@@ -289,8 +289,11 @@ result, _ := registry.Execute(ctx, "json_tools", map[string]interface{}{
 
 | Operation | Description | Required Params | Note |
 |-----------|-------------|-----------------|------|
-| `run_python` | Execute Python code | `code` | Enabled by default |
-| `run_js` | Execute JavaScript | `code` | Disabled by default |
+| `run_python` | Execute Python code | `code` | Disabled by default; opt in via `EnablePython(true)` |
+
+> Note: JavaScript execution (`run_js`) was removed in 0.3.1 — the
+> Python-oriented validator does not understand CommonJS `require`, so no
+> sandbox constraints could be enforced for `node -e`.
 
 #### file_tools Example
 

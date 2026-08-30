@@ -26,13 +26,17 @@
 //
 // Then open http://localhost:8080 in a browser.
 //
+// The server binds 127.0.0.1 by default — this demo dashboard has no auth, so
+// it stays off the network unless you opt in. Set SERVER_HOST=0.0.0.0 to bind
+// every interface (needed inside a container to reach a published port).
+//
 // Expected output:
 //
-//	🌐 Open http://localhost:8080
+//	🌐 Open http://localhost:8080 (listening on 127.0.0.1:8080)
 //	(followed by HTTP request logs as you chat in the browser)
 //
 // Try modifying:
-//   - The addr variable to listen on a different port.
+//   - SERVER_HOST / the port in the addr construction to listen elsewhere.
 //   - The appTools slice to add or replace custom tools.
 //   - The instruction passed to WithInstruction to change agent persona.
 package main
@@ -42,7 +46,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -95,8 +101,20 @@ func main() {
 	http.HandleFunc("/api/chat", app.handleChat) // POST a user message
 	http.HandleFunc("/api/stats", app.handleStats)
 
-	addr := ":8080"
-	fmt.Printf("🌐 Open http://localhost%s\n", addr)
+	// Bind loopback by default (0.3.1 hardening): this dashboard has no
+	// authentication at all, so binding every interface would expose the chat
+	// endpoint — and through it the configured LLM credentials' spend — to the
+	// whole network. SERVER_HOST opts into a wider bind for containers, where
+	// reaching the process through a published port requires 0.0.0.0.
+	host := os.Getenv("SERVER_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	addr := net.JoinHostPort(host, "8080")
+	fmt.Printf("🌐 Open http://localhost:8080 (listening on %s)\n", addr)
+	if host == "0.0.0.0" {
+		log.Printf("WARNING: SERVER_HOST=0.0.0.0 exposes this UNAUTHENTICATED demo dashboard on every interface")
+	}
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Printf("server: %v", err)
 	}

@@ -25,9 +25,6 @@ func TestNewCodeRunner(t *testing.T) {
 	if runner.enablePython {
 		t.Error("Python should be disabled by default")
 	}
-	if runner.enableJS {
-		t.Error("JavaScript should be disabled by default")
-	}
 	if runner.timeout != 30*time.Second {
 		t.Errorf("Default timeout = %v, want 30s", runner.timeout)
 	}
@@ -36,54 +33,60 @@ func TestNewCodeRunner(t *testing.T) {
 	}
 }
 
+// TestNoJSExecution asserts the T3 removal contract: the code_runner tool must
+// not offer or execute JavaScript. The Python-oriented validator (import
+// allowlist + dangerous-pattern scan) does not understand CommonJS `require`,
+// so `node -e` with require('child_process') would be an unsandboxed shell.
+func TestNoJSExecution(t *testing.T) {
+	runner := NewCodeRunner()
+
+	// Schema must not advertise run_js.
+	operationParam, exists := runner.Parameters().Properties["operation"]
+	require.True(t, exists)
+	for _, v := range operationParam.Enum {
+		if v == "run_js" {
+			t.Error("schema must not advertise the run_js operation")
+		}
+	}
+
+	// Execute must reject run_js even when Python is enabled.
+	runner.EnablePython(true)
+	result, err := runner.Execute(context.Background(), map[string]interface{}{
+		"operation": "run_js",
+		"code":      "console.log('hello')",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success, "run_js must never execute")
+}
+
 // TestNewCodeRunnerWithOptions tests creating a CodeRunner with custom options.
 func TestNewCodeRunnerWithOptions(t *testing.T) {
 	tests := []struct {
 		name          string
 		enablePython  bool
-		enableJS      bool
 		timeout       time.Duration
 		maxOutputSize int
 	}{
 		{
-			name:          "both enabled",
+			name:          "python enabled",
 			enablePython:  true,
-			enableJS:      true,
 			timeout:       60 * time.Second,
 			maxOutputSize: 20480,
 		},
 		{
-			name:          "only python",
-			enablePython:  true,
-			enableJS:      false,
+			name:          "python disabled",
+			enablePython:  false,
 			timeout:       15 * time.Second,
 			maxOutputSize: 5120,
-		},
-		{
-			name:          "only js",
-			enablePython:  false,
-			enableJS:      true,
-			timeout:       45 * time.Second,
-			maxOutputSize: 8192,
-		},
-		{
-			name:          "none enabled",
-			enablePython:  false,
-			enableJS:      false,
-			timeout:       30 * time.Second,
-			maxOutputSize: 10240,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runner := NewCodeRunnerWithOptions(tt.enablePython, tt.enableJS, tt.timeout, tt.maxOutputSize)
+			runner := NewCodeRunnerWithOptions(tt.enablePython, tt.timeout, tt.maxOutputSize)
 			require.NotNil(t, runner)
 			if runner.enablePython != tt.enablePython {
 				t.Errorf("enablePython = %v, want %v", runner.enablePython, tt.enablePython)
-			}
-			if runner.enableJS != tt.enableJS {
-				t.Errorf("enableJS = %v, want %v", runner.enableJS, tt.enableJS)
 			}
 			if runner.timeout != tt.timeout {
 				t.Errorf("timeout = %v, want %v", runner.timeout, tt.timeout)
@@ -416,32 +419,6 @@ func TestCodeRunnerExecute_PythonDisabled(t *testing.T) {
 	}
 }
 
-// TestCodeRunnerExecute_JSDisabled tests JavaScript disabled scenario.
-func TestCodeRunnerExecute_JSDisabled(t *testing.T) {
-	runner := NewCodeRunner()
-	runner.EnableJS(false)
-	ctx := context.Background()
-
-	params := map[string]interface{}{
-		"operation": "run_js",
-		"code":      "console.log('hello')",
-	}
-
-	result, err := runner.Execute(ctx, params)
-	if err != nil {
-		t.Errorf("Execute() unexpected error: %v", err)
-		return
-	}
-
-	if result.Success {
-		t.Error("Execute() should fail when JavaScript is disabled")
-	}
-
-	if !strings.Contains(result.Error, "JavaScript execution is disabled") {
-		t.Errorf("Error message should mention JavaScript is disabled, got: %s", result.Error)
-	}
-}
-
 // TestCodeRunnerExecute_TimeoutParameters tests timeout parameter handling.
 func TestCodeRunnerExecute_TimeoutParameters(t *testing.T) {
 	runner := NewCodeRunner()
@@ -569,18 +546,9 @@ func TestCodeRunnerExecute_MaxOutputSize(t *testing.T) {
 func TestCodeRunnerEnableDisable(t *testing.T) {
 	runner := NewCodeRunner()
 
-	// Test initial state — both disabled by default for safety.
+	// Test initial state — disabled by default for safety.
 	if runner.IsPythonEnabled() {
 		t.Error("Python should be disabled initially")
-	}
-	if runner.IsJSEnabled() {
-		t.Error("JavaScript should be disabled initially")
-	}
-
-	// Enable JS
-	runner.EnableJS(true)
-	if !runner.IsJSEnabled() {
-		t.Error("JavaScript should be enabled after EnableJS(true)")
 	}
 
 	// Enable Python
@@ -593,12 +561,6 @@ func TestCodeRunnerEnableDisable(t *testing.T) {
 	runner.EnablePython(false)
 	if runner.IsPythonEnabled() {
 		t.Error("Python should be disabled after EnablePython(false)")
-	}
-
-	// Disable JS
-	runner.EnableJS(false)
-	if runner.IsJSEnabled() {
-		t.Error("JavaScript should be disabled after EnableJS(false)")
 	}
 }
 
@@ -694,28 +656,11 @@ func TestCodeRunnerGetSupportedLanguages(t *testing.T) {
 		t.Errorf("Language with Python enabled = %s, want 'python'", languages[0])
 	}
 
-	// Enable JS
-	runner.EnableJS(true)
-	languages = runner.GetSupportedLanguages()
-	if len(languages) != 2 {
-		t.Errorf("Languages count with both enabled = %d, want 2", len(languages))
-	}
-
 	// Disable Python
 	runner.EnablePython(false)
 	languages = runner.GetSupportedLanguages()
-	if len(languages) != 1 {
-		t.Errorf("Languages count with Python disabled = %d, want 1", len(languages))
-	}
-	if len(languages) > 0 && languages[0] != "javascript" {
-		t.Errorf("Language with Python disabled = %s, want 'javascript'", languages[0])
-	}
-
-	// Disable both
-	runner.EnableJS(false)
-	languages = runner.GetSupportedLanguages()
 	if len(languages) != 0 {
-		t.Errorf("Languages count with both disabled = %d, want 0", len(languages))
+		t.Errorf("Languages count with Python disabled = %d, want 0", len(languages))
 	}
 }
 
@@ -766,7 +711,7 @@ func TestCodeRunnerCapabilities(t *testing.T) {
 		t.Errorf("operation parameter Type = %q, want 'string'", operationParam.Type)
 	}
 
-	if operationParam.Enum == nil || len(operationParam.Enum) != 2 {
-		t.Error("operation parameter should have exactly 2 enum values")
+	if operationParam.Enum == nil || len(operationParam.Enum) != 1 {
+		t.Error("operation parameter should have exactly 1 enum value (run_python)")
 	}
 }

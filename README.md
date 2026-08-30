@@ -236,7 +236,7 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
 | Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
-| Task Fabric | `internal/taskfabric` | Durable Task state machine + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
+| Task Fabric | `internal/taskfabric` | Durable Task state machine (cross-restart rebuild from the event log via `RestoreFromStore`; non-terminal tasks resume from checkpoint unowned) + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
 | Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
 | Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + policy-gated dispatch (single-track taskfabric; legacy leader path removed) (0.3.0 Kernel IPC pillar) |
 | Runtime Recovery | `internal/aresrecovery` | lease-expiry requeue / checkpoint resume / agent restart / Chaos fault-injection validation (**Agent death ≠ Task death**) |

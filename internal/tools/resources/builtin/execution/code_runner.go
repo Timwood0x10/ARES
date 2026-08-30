@@ -24,11 +24,17 @@ import (
 // default. Operators must explicitly enable it via EnablePython(true) after
 // reviewing the sandbox constraints. The allowlist mode is the primary defense
 // — only the modules listed in allowedImports are permitted.
+//
+// JavaScript execution is intentionally NOT supported: the Python-oriented
+// validator (import allowlist + dangerous-pattern scan) does not understand
+// CommonJS `require`, so enabling node -e would hand the model an unsandboxed
+// shell (require('child_process')). Re-introduce JS only together with a
+// JS-specific validator (e.g. literal-argument require allowlist plus the
+// node --permission model). See release-readiness T3.
 type CodeRunner struct {
 	*base.BaseTool
 	mu                sync.RWMutex
 	enablePython      bool
-	enableJS          bool
 	timeout           time.Duration
 	maxOutputSize     int
 	dangerousPatterns []string
@@ -48,7 +54,7 @@ var allowedPythonImports = []string{
 // NewCodeRunner creates a new CodeRunner tool.
 //
 // By default both Python and JavaScript execution are DISABLED. Operators must
-// call EnablePython(true) or EnableJS(true) after evaluating the security
+// call EnablePython(true) after evaluating the security
 // implications. The strict allowlist mode is enabled by default so that only
 // the modules in allowedImports can be used.
 func NewCodeRunner() *CodeRunner {
@@ -57,8 +63,8 @@ func NewCodeRunner() *CodeRunner {
 		Properties: map[string]*core.Parameter{
 			"operation": {
 				Type:        "string",
-				Description: "Operation to perform (run_python, run_js)",
-				Enum:        []interface{}{"run_python", "run_js"},
+				Description: "Operation to perform (run_python)",
+				Enum:        []interface{}{"run_python"},
 			},
 			"code": {
 				Type:        "string",
@@ -79,9 +85,8 @@ func NewCodeRunner() *CodeRunner {
 	}
 
 	return &CodeRunner{
-		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
+		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
 		enablePython:    false,
-		enableJS:        false,
 		timeout:         30 * time.Second,
 		maxOutputSize:   10240,
 		strictAllowlist: true,
@@ -98,14 +103,14 @@ func NewCodeRunner() *CodeRunner {
 //
 // Operators are strongly encouraged to keep enablePython=false unless they
 // understand the risks. The strict allowlist remains enabled.
-func NewCodeRunnerWithOptions(enablePython, enableJS bool, timeout time.Duration, maxOutputSize int) *CodeRunner {
+func NewCodeRunnerWithOptions(enablePython bool, timeout time.Duration, maxOutputSize int) *CodeRunner {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
 			"operation": {
 				Type:        "string",
-				Description: "Operation to perform (run_python, run_js)",
-				Enum:        []interface{}{"run_python", "run_js"},
+				Description: "Operation to perform (run_python)",
+				Enum:        []interface{}{"run_python"},
 			},
 			"code": {
 				Type:        "string",
@@ -126,9 +131,8 @@ func NewCodeRunnerWithOptions(enablePython, enableJS bool, timeout time.Duration
 	}
 
 	return &CodeRunner{
-		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
+		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
 		enablePython:    enablePython,
-		enableJS:        enableJS,
 		timeout:         timeout,
 		maxOutputSize:   maxOutputSize,
 		strictAllowlist: true,
@@ -204,11 +208,6 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 			return core.NewErrorResult("Python execution is disabled"), nil
 		}
 		return t.runPython(execCtx, code, maxOutputSize)
-	case "run_js":
-		if !t.IsJSEnabled() {
-			return core.NewErrorResult("JavaScript execution is disabled"), nil
-		}
-		return t.runJavaScript(execCtx, code, maxOutputSize)
 	default:
 		return core.NewErrorResult(fmt.Sprintf("unsupported operation: %s", operation)), nil
 	}
@@ -461,78 +460,11 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 	}), nil
 }
 
-// runJavaScript executes JavaScript code.
-func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSize int) (core.Result, error) {
-	cmd := exec.CommandContext(ctx, "node", "-e", code) // #nosec G204
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-	workDir, err := os.MkdirTemp("", "code-runner-*")
-	if err != nil {
-		return core.NewErrorResult(fmt.Sprintf("failed to create temp dir: %v", err)), nil
-	}
-	cmd.Dir = workDir
-	defer func() {
-		if rmErr := os.RemoveAll(workDir); rmErr != nil {
-			log.Error("failed to clean up temp dir", "path", workDir, "error", rmErr)
-		}
-	}()
-
-	stdout := newLimitedWriter(maxOutputSize)
-	stderr := newLimitedWriter(maxOutputSize)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	startTime := time.Now()
-	runErr := cmd.Run()
-	executionTime := time.Since(startTime)
-
-	if runErr != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			if cmd.Process != nil {
-				// Best-effort kill of the whole process group; the child
-				// processes spawned by the script must not outlive the
-				// timeout. Ignore errors on this cleanup path.
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
-			return core.NewResult(false, map[string]interface{}{
-				"operation":      "run_js",
-				"success":        false,
-				"error":          "execution timeout",
-				"stderr":         stderr.String(),
-				"execution_time": executionTime.Milliseconds(),
-			}), nil
-		}
-
-		return core.NewResult(false, map[string]interface{}{
-			"operation":      "run_js",
-			"success":        false,
-			"error":          runErr.Error(),
-			"stderr":         stderr.String(),
-			"execution_time": executionTime.Milliseconds(),
-		}), nil
-	}
-
-	return core.NewResult(true, map[string]interface{}{
-		"operation":      "run_js",
-		"success":        true,
-		"output":         stdout.String(),
-		"stderr":         stderr.String(),
-		"execution_time": executionTime.Milliseconds(),
-	}), nil
-}
-
 // EnablePython enables or disables Python execution.
 func (t *CodeRunner) EnablePython(enabled bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.enablePython = enabled
-}
-
-// EnableJS enables or disables JavaScript execution.
-func (t *CodeRunner) EnableJS(enabled bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.enableJS = enabled
 }
 
 // SetTimeout sets the execution timeout.
@@ -556,13 +488,6 @@ func (t *CodeRunner) IsPythonEnabled() bool {
 	return t.enablePython
 }
 
-// IsJSEnabled returns whether JavaScript execution is enabled.
-func (t *CodeRunner) IsJSEnabled() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.enableJS
-}
-
 // AddAllowedImport adds a module name to the Python import allowlist.
 func (t *CodeRunner) AddAllowedImport(module string) {
 	t.mu.Lock()
@@ -577,16 +502,14 @@ func (t *CodeRunner) AddDangerousPattern(pattern string) {
 	t.dangerousPatterns = append(t.dangerousPatterns, pattern)
 }
 
-// GetSupportedLanguages returns the list of supported languages.
+// GetSupportedLanguages returns the list of supported languages. Only Python
+// is supported since the JavaScript path was removed (T3: no JS validator).
 func (t *CodeRunner) GetSupportedLanguages() []string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	languages := []string{}
 	if t.enablePython {
 		languages = append(languages, "python")
-	}
-	if t.enableJS {
-		languages = append(languages, "javascript")
 	}
 	return languages
 }
