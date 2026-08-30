@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Timwood0x10/ares/internal/knowledge"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
 // Sentinel errors for config validation. Wrap with %w to preserve chain.

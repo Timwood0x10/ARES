@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestWiredSystem_ShadowEvaluatorBlocksLowWinRate verifies that the shadow

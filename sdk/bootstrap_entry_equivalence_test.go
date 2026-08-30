@@ -11,10 +11,11 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	"github.com/Timwood0x10/ares/internal/system_runtime"
 )
 
 // sdkGraphEdge captures one graph edge (name, mode, sorted deps) for

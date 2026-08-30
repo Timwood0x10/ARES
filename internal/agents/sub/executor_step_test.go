@@ -6,14 +6,15 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	resources_core "github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // scriptedChatClient returns a fixed sequence of Chat responses, recording the

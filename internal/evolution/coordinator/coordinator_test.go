@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 // ── PatchSource constants ───────────────────

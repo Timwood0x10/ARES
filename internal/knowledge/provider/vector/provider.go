@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage"
-	"golang.org/x/sync/errgroup"
 )
 
 // VectorProvider implements GraphProvider by querying a VectorStore for

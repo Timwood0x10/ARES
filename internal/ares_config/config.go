@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
-
-	"gopkg.in/yaml.v3"
 )
 
 // allowedConfigDir and its guard mutex restrict where Load may read config

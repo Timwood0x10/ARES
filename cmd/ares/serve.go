@@ -12,6 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -20,8 +23,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 )
 
 var serveCmd = &cobra.Command{

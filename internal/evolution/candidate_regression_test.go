@@ -5,11 +5,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agents"
 	ares_arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/evidence"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // strategyAwareScorer returns a fixed score based on which strategy

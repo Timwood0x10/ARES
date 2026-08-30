@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // TestRestoreFromStoreResumesSuspendedTask is the T2 integration contract: a

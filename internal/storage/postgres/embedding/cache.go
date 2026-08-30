@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	"golang.org/x/crypto/blake2b"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // RedisClient defines the interface for Redis operations.

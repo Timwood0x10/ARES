@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	_ "github.com/lib/pq" // postgres driver registration for the AKG store
+	"golang.org/x/sync/errgroup"
+
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -18,8 +21,6 @@ import (
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
-	_ "github.com/lib/pq" // postgres driver registration for the AKG store
-	"golang.org/x/sync/errgroup"
 )
 
 // akgNamespace is the namespace assigned to every AKG-distilled fact so the

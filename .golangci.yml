@@ -6,7 +6,21 @@ run:
 formatters:
   enable:
     - gofmt
-    - goimports
+    - gci
+  settings:
+    gci:
+      custom-order: true
+      sections:
+        - standard
+        - default
+        - prefix(github.com/Timwood0x10/ares)
+# NOTE: goimports was replaced by gci. golangci-lint v2.13.x embeds
+# golang.org/x/tools v0.49.0 whose imports.Process calls modindex.Read()
+# per file with NO caching. With a ~25MB modindex payload and 14-way
+# parallel analysis, this caused 800%+ CPU and multi-minute hangs.
+# gci uses a completely different implementation (daixiang0/gci) that
+# does not scan GOMODCACHE, making it orders of magnitude faster.
+# See: docs/bug@ques/zh/goimports-modindex-cpu-spike.md
 
 # NOTE: the old v1 top-level `linters-settings` block (gocyclo=15,
 # goconst 3/5, gocritic tags) was silently IGNORED by golangci-lint v2.
@@ -17,24 +31,19 @@ formatters:
 linters:
   default: none
   enable:
-    # 代码正确性
     - errcheck
     - govet
     - staticcheck
     - unused
     - ineffassign
-    # 代码风格
     - whitespace
     - misspell
-    # 代码复杂度
     - gocyclo
     - gocritic
     - goconst
     - unconvert
-    # 安全性
     - gosec
     - nilnil
-    # 性能
     - prealloc
     - noctx
   exclusions:
@@ -215,10 +224,6 @@ linters:
           - goconst
       # Text tool schema definitions.
       - path: internal/tools/resources/builtin/text/
-        linters:
-          - goconst
-      # Quant research graph/schema field names.
-      - path: internal/ares_quant/research/
         linters:
           - goconst
       # Discovery binary provider metadata field names.

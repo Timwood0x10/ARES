@@ -12,11 +12,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestMCPStatus_EmptyConfig_Observable verifies that an MCP manager built with

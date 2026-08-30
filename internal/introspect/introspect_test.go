@@ -8,9 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
-
 	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/kernelscheduler"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )

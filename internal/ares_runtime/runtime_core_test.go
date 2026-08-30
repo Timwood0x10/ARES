@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
 func TestRuntimeRegisterAgent(t *testing.T) {

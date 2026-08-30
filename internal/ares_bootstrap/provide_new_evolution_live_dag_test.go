@@ -4,11 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestUpdateLiveDAG_DoesNotFailOnRegisteredExecutors verifies the fix for the

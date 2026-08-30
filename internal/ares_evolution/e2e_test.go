@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // TestE2E_FullEvolutionCycle verifies the complete evolution lifecycle:

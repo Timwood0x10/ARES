@@ -5,8 +5,9 @@ package promotion
 import (
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 )
 
 func TestStrategyState_IsValid(t *testing.T) {

@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // mockRuntime implements RuntimeProvider for testing.

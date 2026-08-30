@@ -8,11 +8,11 @@ import (
 	"sync"
 	"text/template"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // TemplateEngine handles prompt templates.

@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // appendFitness appends a fitness evidence record under the given source and

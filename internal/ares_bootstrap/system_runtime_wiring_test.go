@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/system_runtime"
 )
 
 // newBootstrapForSnapshot builds a minimal Components instance through the real

@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
-	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 )
 
 // TestConvertRawToToolCalls is a table-driven contract for the JSON-metadata

@@ -7,8 +7,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/introspect"
-
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
@@ -18,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
+	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )

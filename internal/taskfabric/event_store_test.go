@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // TestFabricEventsPersistToStore verifies P2-C: with an event store attached,

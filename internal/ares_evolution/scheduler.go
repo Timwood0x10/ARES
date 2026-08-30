@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
-
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // contextKey is a custom type for context value keys to avoid collisions.

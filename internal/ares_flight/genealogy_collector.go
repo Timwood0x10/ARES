@@ -3,8 +3,9 @@ package flight
 import (
 	"context"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // GenealogyCollector subscribes to EventStore and populates a Genealogy tree.

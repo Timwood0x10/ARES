@@ -4,8 +4,9 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // assertDAGEdgeConsistency verifies the invariant the mutation operators must

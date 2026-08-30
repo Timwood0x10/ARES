@@ -12,13 +12,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
-	"golang.org/x/sync/errgroup"
 )
 
 const (

@@ -3,9 +3,10 @@ package outputguard
 import (
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 func TestGuard_ValidateResult_ValidSuccess(t *testing.T) {

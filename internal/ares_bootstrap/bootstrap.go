@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"golang.org/x/sync/errgroup"
+
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -31,8 +33,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // DAG step identifiers used in the minimal evolution graph.

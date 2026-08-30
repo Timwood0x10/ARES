@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/knowledge"
 	_ "modernc.org/sqlite"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
 func newTestStore(t *testing.T) *Store {

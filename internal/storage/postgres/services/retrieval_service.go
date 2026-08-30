@@ -9,10 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"unicode/utf8"
-
-	"github.com/Timwood0x10/ares/internal/truncate"
 
 	"golang.org/x/sync/errgroup"
 
@@ -23,6 +20,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // allowedSynonymDirMu protects allowedSynonymDir from concurrent access.

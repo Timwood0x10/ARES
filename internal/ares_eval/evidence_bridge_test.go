@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/eval"
-	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/eval"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // ── ToEvidence verdict derivation ───────────

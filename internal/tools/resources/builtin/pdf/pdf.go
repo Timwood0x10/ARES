@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ledongthuc/pdf"
+
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/ledongthuc/pdf"
 )
 
 const (

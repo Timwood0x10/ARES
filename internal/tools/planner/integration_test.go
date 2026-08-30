@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // ── End-to-End: User Request → Planner → Bridge → Tool Execution ──────────

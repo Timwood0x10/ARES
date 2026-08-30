@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Timwood0x10/ares/internal/errors"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
-	"gopkg.in/yaml.v3"
 )
 
 // SecretFormat defines supported import/export formats.

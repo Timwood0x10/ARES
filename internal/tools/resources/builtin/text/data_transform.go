@@ -5,11 +5,10 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
-
-	"strings"
 )
 
 // DataTransform provides data transformation capabilities.

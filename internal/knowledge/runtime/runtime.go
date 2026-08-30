@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
 )
 
 // KnowledgeRuntime is the central execution engine of AKF.

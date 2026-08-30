@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 type mockKnowledgeRepo struct {

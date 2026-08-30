@@ -10,9 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 )
 
 func TestNewDefaultPromoter(t *testing.T) {

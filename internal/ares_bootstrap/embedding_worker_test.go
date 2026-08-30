@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // fakeQueue implements embeddingQueueClient for testing.

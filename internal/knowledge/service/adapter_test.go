@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
-	apiknowledge "github.com/Timwood0x10/ares/api/knowledge"
-	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	apiknowledge "github.com/Timwood0x10/ares/api/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
 )
 
 // TestNewServiceAdapter_NilRuntimeReturnsError verifies the nil guard.

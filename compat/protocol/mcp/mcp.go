@@ -17,7 +17,6 @@ import (
 	"fmt"
 
 	"github.com/Timwood0x10/ares/compat/protocol"
-
 	aresmcp "github.com/Timwood0x10/ares/internal/ares_mcp"
 )
 

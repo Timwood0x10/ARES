@@ -73,8 +73,11 @@ ci-security:
 	@echo "Security scan: OK"
 
 # Format code
+# Uses golangci-lint --fix to auto-format with the same gci version it checks
+# with, plus gofmt -s for final cleanup. gci replaces goimports which caused
+# 800%+ CPU via modindex re-reads (see docs/bug@ques/zh/goimports-modindex-cpu-spike.md).
 fmt:
-	goimports -w .
+	golangci-lint run --fix --timeout=5m
 	gofmt -s -w .
 
 # Lint targets

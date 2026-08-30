@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // ObserverPlugin subscribes to workflow lifecycle ares_events and writes them

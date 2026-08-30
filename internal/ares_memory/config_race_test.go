@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	patch "github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/stretchr/testify/require"
+
+	patch "github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 // TestMemoryConfigPatch_RacesWithHotPaths pins the config race fix: the

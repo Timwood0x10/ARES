@@ -6,9 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // recordingSender captures delivered messages for assertions.

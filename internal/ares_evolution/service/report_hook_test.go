@@ -7,10 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 )
 
 // mockGenomeMutator implements genome.MutatorInterface for testing.

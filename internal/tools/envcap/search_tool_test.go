@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/knowledge/skills"
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/knowledge/skills"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // fakeRegistry is a minimal toolRegistry: a name→tool map exposing List + Get.

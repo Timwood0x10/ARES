@@ -8,8 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/logger"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/logger"
 )
 
 var log = logger.Module("system_runtime")

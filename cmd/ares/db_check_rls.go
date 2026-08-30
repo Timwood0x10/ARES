@@ -6,8 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/spf13/cobra"
+
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // errStdout is used by check-rls for warning messages.

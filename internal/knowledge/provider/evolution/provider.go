@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
 )
 
 // StrategyStore is the interface we need from the evolution system.

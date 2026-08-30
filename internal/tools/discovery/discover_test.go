@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // fakeLookup implements LookupFunc with an install map: a command name is

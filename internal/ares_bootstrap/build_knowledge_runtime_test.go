@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	"github.com/Timwood0x10/ares/internal/storage"
-	"github.com/stretchr/testify/require"
 )
 
 // TestBuildKnowledgeRuntime_NoVectorDeps verifies the runtime is created

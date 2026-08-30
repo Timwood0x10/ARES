@@ -7,9 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/evidence"
-	"golang.org/x/sync/errgroup"
 )
 
 // keyFitnessValue is the JSON payload key that carries the normalized fitness

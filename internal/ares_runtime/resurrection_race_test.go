@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/stretchr/testify/require"
 )
 
 // recordingAgent is a minimal base.Agent double that counts Start calls.

@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"time"
 
+	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
 	evolve "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	internalmutation "github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
-
-	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
 )
 
 const paramKeyTemperature = "temperature"

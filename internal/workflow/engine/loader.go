@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	"gopkg.in/yaml.v3"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // WorkflowLoader loads workflow definitions from various sources.

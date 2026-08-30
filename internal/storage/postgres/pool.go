@@ -4,13 +4,12 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	stderrors "errors"
 	"runtime"
 	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-
-	stderrors "errors"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )

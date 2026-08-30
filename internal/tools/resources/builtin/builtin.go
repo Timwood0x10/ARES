@@ -1,12 +1,11 @@
 package builtin
 
 import (
+	stderrors "errors"
 	"fmt"
 	"log"
 	"os"
 	"time"
-
-	stderrors "errors"
 
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -26,7 +25,6 @@ import (
 	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
 	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
 	builtin_text "github.com/Timwood0x10/ares/internal/tools/resources/builtin/text"
-
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 

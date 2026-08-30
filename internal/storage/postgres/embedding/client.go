@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	"golang.org/x/crypto/blake2b"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // HTTPError represents an HTTP request error.

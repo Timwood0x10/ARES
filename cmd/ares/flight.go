@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	"github.com/spf13/cobra"
 )
 
 var flightCmd = &cobra.Command{

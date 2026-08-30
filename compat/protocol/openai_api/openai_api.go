@@ -26,9 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/compat/protocol"
-
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/compat/protocol"
 )
 
 const (

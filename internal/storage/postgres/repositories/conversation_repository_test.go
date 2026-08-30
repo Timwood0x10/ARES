@@ -10,11 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/Timwood0x10/ares/internal/errors"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestConversationRepository_Create tests creating a conversation message.

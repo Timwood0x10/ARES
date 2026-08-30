@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/api/experience"
 	"github.com/Timwood0x10/ares/internal/ares_memory/embedding"
-	"golang.org/x/sync/errgroup"
 )
 
 // ──────────────────────────── Test doubles ────────────────────────────

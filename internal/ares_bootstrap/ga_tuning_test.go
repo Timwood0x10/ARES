@@ -3,10 +3,11 @@ package ares_bootstrap
 import (
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 )
 
 // defaultFilledEvolution returns an EvolutionConfig exactly as LoadConfig hands

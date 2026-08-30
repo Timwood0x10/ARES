@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
-	"golang.org/x/sync/errgroup"
 )
 
 // TaskSearcher is the minimal interface needed to query historical tasks.

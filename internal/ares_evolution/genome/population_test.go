@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // mockMutator implements MutatorInterface for testing.

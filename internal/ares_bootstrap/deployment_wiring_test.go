@@ -9,11 +9,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestDeploymentStaging_NoEvidence_ReturnsZero verifies that with no fitness

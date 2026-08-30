@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
 )
 
 // defaultPGReliability is the Confidence assigned to every postgres-recalled

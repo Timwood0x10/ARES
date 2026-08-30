@@ -9,13 +9,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
-	"golang.org/x/sync/errgroup"
 )
 
 // Scheduler is the "no leader" execution engine (ares-runtime.md:

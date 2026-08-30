@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // appendFitnessEvidence writes a fitness evidence record with the given value

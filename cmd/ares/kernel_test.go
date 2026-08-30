@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -16,7 +18,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
-	"github.com/stretchr/testify/require"
 )
 
 // TestTaskFromPayload verifies payload decoding: agent_type is honored, absent

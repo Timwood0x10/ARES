@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -20,8 +23,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
-	_ "github.com/lib/pq"
-	"golang.org/x/sync/errgroup"
 )
 
 // wireDistillation conditionally wires experience distillation (Track A) and

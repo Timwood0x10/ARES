@@ -9,11 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/errors"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 // ReloadCallback is called when workflows are reloaded.

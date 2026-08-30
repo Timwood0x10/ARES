@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
@@ -25,7 +27,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"golang.org/x/sync/errgroup"
 )
 
 // setupServeControlPlane builds the runtime introspection control plane

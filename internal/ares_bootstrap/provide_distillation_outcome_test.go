@@ -10,10 +10,11 @@ import (
 	"errors"
 	"testing"
 
-	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // mockExpRepo records created experiences and can inject a failure.

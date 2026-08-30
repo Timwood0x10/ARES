@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 // fakeCleaner counts CleanupExpired invocations and can be made to fail.

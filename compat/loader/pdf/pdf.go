@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Timwood0x10/ares/compat/loader"
-
 	pdflib "github.com/ledongthuc/pdf"
+
+	"github.com/Timwood0x10/ares/compat/loader"
 )
 
 // Loader satisfies compat/loader.DocumentLoader for PDF files.

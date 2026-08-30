@@ -4,9 +4,8 @@ package services
 import (
 	"context"
 
-	"github.com/Timwood0x10/ares/internal/truncate"
-
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // getEmbedding retrieves embedding for a query with caching.

@@ -12,9 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
 )
 
 // Object type constants used by CodeProvider.

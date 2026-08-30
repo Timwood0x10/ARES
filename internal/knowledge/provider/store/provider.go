@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
 )
 
 // StoreProvider adapts a KnowledgeStore into a GraphProvider. It is the read

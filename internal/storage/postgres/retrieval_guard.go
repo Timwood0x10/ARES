@@ -5,9 +5,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	"golang.org/x/time/rate"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // RetrievalGuard provides protection mechanisms for retrieval operations.

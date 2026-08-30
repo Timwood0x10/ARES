@@ -5,13 +5,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // seedFailureEvidence writes n failing dimension_eval records for a role.

@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/stretchr/testify/require"
 )
 
 // TestE2EMCPHelperProcess is the re-exec'd real MCP server subprocess: it
