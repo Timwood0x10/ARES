@@ -621,23 +621,6 @@ type RecoveryPolicy struct {
     MaxAttempts      int
     ReplacementAgent string
 }
-
-type StepFailure struct {
-    ExecutionID string
-    WorkflowID  string
-    StepID      string
-    Error       string
-    Input       string
-}
-
-type RecoveryDecision struct {
-    Strategy RecoveryStrategy
-    NewStep  *Step
-}
-
-type StepRecoveryHandler interface {
-    RecoverStep(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error)
-}
 ```
 
 三种策略的含义：
@@ -648,53 +631,47 @@ type StepRecoveryHandler interface {
 | `RecoveryReplaceNode` | 用新 Step 替换失败的节点 | 逻辑性故障（换模型、换工具） |
 | `RecoveryFailFast` | 不恢复，让工作流失败 | 不可恢复的错误（认证失败、参数错误） |
 
-`StepRecoveryHandler` 是恢复决策的入口。它接收失败上下文和 MutableDAG 引用，返回一个恢复决策。典型的实现可以是 LLM 决策：用 Agent 来分析失败原因，判断是重试还是换方案。
+> **0.3.x 演进说明**：早期设计里的 `StepRecoveryHandler` 回调接口（引擎在步骤失败时回调改图）在 0.3.x 中已删除——引擎没有执行器，回调永远等不到触发方；真实的节点替换由 `recovery_patcher` 直接改写 `Step.RecoveryPolicy.Strategy`，跨执行体的恢复闭环则归属 Kernel（见 5.3）。`RecoveryDecision` / `StepFailure` 一并移除。
 
-### 5.3 RecoveryReplaceNode 的流程
+### 5.3 恢复闭环的真实归属：Kernel 恢复循环
 
-当 `recoveryHandler.RecoverStep` 返回 `RecoveryReplaceNode` 策略时，DynamicExecutor 执行以下流程：
+0.3.x 的步骤恢复不再走"回调改图"，而是 Kernel 侧的事件驱动闭环——恢复的是**任务**（durable intent），不是 agent（disposable cognition）：
 
 ```mermaid
 sequenceDiagram
-    participant S as Scheduler
-    participant E as DynamicExecutor
-    participant D as MutableDAG
-    participant H as StepRecoveryHandler
+    participant S as Kernel Scheduler
+    participant K as runKernelRecoveryLoop
+    participant F as Agent Fabric
+    participant T as Task Fabric
 
-    E->>E: 发现 Step 失败
-    E->>H: RecoverStep(failure, dag)
-    H->>D: 读取当前拓扑和失败上下文
-    H-->>E: 返回 RecoveryDecision{ReplaceNode, NewStep}
-    E->>D: ReplaceNode(oldID, newStep)
-    D->>D: 构建模拟邻接表
-    D->>D: 三色 DFS 环检测
-    alt 有环
-        D-->>E: 返回错误
-    else 无环
-        D->>D: 迁移边 + 更新 steps
-        D->>D: 发布 ChangeReplaceNode 事件
+    Note over T: 执行体死亡（chaos kill / 崩溃）
+    T->>K: task.expired / task.failed 事件（或周期 sweep）
+    K->>T: RequeueExpiredLeases() — 任务回 READY，checkpoint 保留
+    K->>F: 查询可复活快照（RevivableSnapshot）
+    alt 有认知快照
+        K->>F: RestartAgent 原位复活（继承认知）
+    else 无快照
+        K->>F: 按 capability spawn 替换执行体
     end
-    E->>E: recomputeOrder() 刷新执行顺序
-    E->>S: 唤醒调度循环
+    K->>S: RegisterExecutorForTask — 替换体绑定该任务
+    S->>T: Acquire → RunQuantum → 从 checkpoint 续跑
 ```
 
-关键实现细节：
+关键语义：
 
-**handleStepFailure** 是 DynamicExecutor 的方法。当收集到 `StepStatusFailed` 结果时，它检查 Step 是否配置了 `RecoveryPolicy`。如果有，调用 `recoveryHandler.RecoverStep`。如果返回 `RecoveryReplaceNode`，调用 `mutableDAG.ReplaceNode` 执行替换。
-
-替换成功后，调用 `recomputeOrder()` —— 注意这里不再是前文描述的"追加"，而是**直接替换整个执行顺序**。这是因为新节点可能位于旧顺序中不存在的拓扑位置，追加语义无法保证新节点出现在正确的位置。
-
-**recoveryCh 信号量**：替换完成后，通过 `recoveryCh` 唤醒调度器主循环。调度器检测到新节点后，重置 `stepIndex = 0` 并重新派发。已经执行完成的 Step 通过 `processed` map 跳过，最多支持 5 轮恢复（防止无限循环）。
+- **绑定不劫持**：替换执行体通过 `RegisterExecutorForTask` 绑定到*恰好那一个*恢复任务，不会抢占其他 READY 任务；任务到达终态后绑定自动解除。
+- **预算封顶**：`MaxRestarts`（默认 5）限制同一 agent 的重启次数，耗尽后返回 `ErrRecoveryExhausted`，改走通用替身。
+- **checkpoint 续跑**：任务重排队时保留 checkpoint，替换体从上次进度继续，不是从零再来。
 
 ### 5.4 记忆蒸馏融合："秽土转生"
 
-RecoveryReplaceNode 最强大的场景是在节点替换时结合记忆蒸馏（Memory Distillation）。
+RecoveryReplaceNode 最强大的场景是在恢复时结合记忆蒸馏（Memory Distillation）。
 
-传统的 ReAct 里，Agent 挂了就是挂了——上下文丢失，记忆清零。但在 ares 中，当故障触发 RecoveryReplaceNode 时：
+传统的 ReAct 里，Agent 挂了就是挂了——上下文丢失，记忆清零。但在 ares 中，恢复链路天然携带记忆：
 
-1. 原节点的执行结果和失败上下文被封装为 `StepFailure`
-2. `StepRecoveryHandler` 可以读取原节点的 Input、Output 和 Error
-3. 新节点可以继承原节点的执行轨迹，**把失败经验提炼为记忆**
+1. agent 执行的历史被异步蒸馏为结构化经验（Memory Distillation）
+2. 每次 spawn 都会加载该 agent 最近一次蒸馏经验作为 **G1 经验先验**（`loadExperiencePrior` → `SpawnSpec.ExperiencePrior`）
+3. 认知快照可用的场景下，`RestartAgent` 原位复活同一身份——**继承完整认知状态**，而不是空白重启
 
 这就像《火影忍者》里的"秽土转生"——Agent 虽然挂了，但它的记忆被蒸馏提炼，注入到新的节点里，让它带着经验从头再来：
 
@@ -706,13 +683,6 @@ graph LR
     D --> E[Agent_B 继承记忆]
     E --> F[带经验恢复执行]
 ```
-
-具体来说，`StepRecoveryHandler` 的实现可以：
-
-- 将原节点的执行记录写入 Memory 系统
-- 调用 `DistillationService` 将失败经验提炼为结构化的记忆
-- 在新节点的 Step 配置中挂载这些记忆
-- 让新节点复用原节点的部分输出，减少重复计算
 
 这种"失败即经验"的设计，使得每一次故障都不是白费的——它们成为 DAG 不断迭代自己的养料。
 
@@ -1003,7 +973,7 @@ g.Go(func() error {
 | **HITL** | 原生支持 (InterruptConfig + InterruptStore) | 不支持 |
 | **重试** | RetryPolicy (指数退避) | 不支持（需自行包装） |
 | **热重载** | FileWatcher + WorkflowReloader | 不支持 |
-| **恢复** | RecoveryReplaceNode + StepRecoveryHandler + 记忆蒸馏融合 | 不支持 |
+| **恢复** | RecoveryPolicy + Kernel 恢复循环（重排队 → 替换执行体绑定 → checkpoint 续跑）+ 记忆蒸馏融合 | 不支持 |
 | **动态拓扑** | MutableDAG + DynamicExecutor（含 ReplaceNode） | 不支持 |
 | **条件边** | 不支持（依赖关系是静态的） | Condition 函数 |
 | **可观测性** | 仅日志 | Tracer 接口 |

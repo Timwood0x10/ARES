@@ -54,6 +54,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop error is logged by a watcher instead of being recorded and never read,
   and `LivePlanLoops` / `StopPlanLoop` expose per-plan inspection and shutdown.
 
+- **Kernel pillars adopted into System Runtime orchestration (release-readiness
+  K1–K5)**: the six kernel pillars (scheduler, taskfabric, agentfabric,
+  recovery, dispatcher, pluginbus) — previously invisible to the component
+  graph — now join the orchestrator through the new
+  `system_runtime.Orchestrator.Adopt` (late registration after `Start`, with
+  fail-loud dependency validation, duplicate rejection and
+  `ErrShuttingDown` during teardown). Dependency edges give `orch.Snapshot()`
+  real kernel states and give Shutdown a reverse-topological teardown that
+  covers the kernel: the scheduler and recovery loops hand their lifecycle to
+  managed stop/wait hooks (cancel + join), PluginBus stops through its own
+  `Stop(ctx)`. Scheduler readiness now means "drain loop alive" (K5): the
+  component reports `Ready` only while the loop runs, otherwise `Degraded`
+  with a readable reason — never a false Ready. Long-lived cmd/ares loops
+  (chaos shadow/live, quota, population, feedback, collab GC, scheduler,
+  recovery) moved to the unified `Orchestrator.GoBackground` entry (K3): a
+  panicking loop is recovered, logged, recorded as a `component.failed` event
+  (visible on the FlightRecorder timeline) and marks its component `Failed`
+  instead of killing the process or faking Ready. Shutdown gained an overall
+  budget (caller deadline wins, otherwise 30s) and names every component that
+  did not reach `Stopped` (K4). The introspect snapshot endpoint carries the
+  full component graph under `system_runtime` (read-gated like the rest of
+  the JSON feed, T7). The three remaining bare `go` sites in cmd/ares
+  production paths are documented exceptions with recover boundaries
+  (second-signal force-exit watcher, bounded recovery sweep, one-shot arena
+  stream).
+
 ### Changed
 
 - **Experience distillation now defaults to ON** (P0-3): `memory.enable_distillation`
@@ -76,6 +102,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every leaf of `OutputConfig`.
 - **G1 reachability gate whitelist matches full package paths** instead of bare
   substrings, so an entry can no longer silently exempt unrelated packages.
+
+### Known limitations
+
+- **Unified orchestration covers only `ares serve`** (release-readiness K6):
+  the `sdk` runtime and the `arena` / non-serve peer paths do not build a
+  System Runtime orchestrator; their background loops keep the bootstrap
+  errgroup lifecycle (panic-recovered, joined at shutdown) but are not
+  visible in a component-graph snapshot and their kernel pillars are not
+  adopted. Registering them is deferred to 0.4.x.
 
 ### Fixed
 

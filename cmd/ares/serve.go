@@ -98,7 +98,18 @@ func runServe() error {
 			// A second SIGINT/SIGTERM during the graceful shutdown forces an
 			// immediate exit — a hung shutdown phase (or a stuck component)
 			// must never trap the operator in an unstoppable process (N1).
+			// NOT adopted into the orchestrator (K3 exception): this watcher
+			// must stay alive while the managed pools are being drained —
+			// exactly the window when adopted loops are being torn down.
+			// One-shot short task with its own recover boundary per the K3
+			// exception rule.
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(os.Stderr, "force-exit watcher panicked: %v\n", r)
+						os.Exit(1)
+					}
+				}()
 				<-sigCh
 				fmt.Fprintln(os.Stderr, "\nSecond signal received: forcing immediate exit")
 				os.Exit(1)

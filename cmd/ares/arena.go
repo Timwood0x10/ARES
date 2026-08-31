@@ -831,8 +831,17 @@ func (a *arenaDemoAgent) Process(context.Context, any) (any, error) {
 }
 func (a *arenaDemoAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	ch := make(chan base.AgentEvent, 1)
+	// K3 exception: one-shot short task (feed one result, close), not a
+	// long-lived loop — adoption would outlive the per-request stream it
+	// serves. Carries its own recover boundary so a panic cannot kill the
+	// arena process; the channel closes either way.
 	go func() {
-		defer close(ch)
+		defer func() {
+			close(ch)
+			if r := recover(); r != nil {
+				log.Printf("arena: demo agent stream panicked (recovered): %v", r)
+			}
+		}()
 		out, _ := a.Process(ctx, input)
 		ch <- base.AgentEvent{Source: a.id, Data: out}
 	}()

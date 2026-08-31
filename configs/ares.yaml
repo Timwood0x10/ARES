@@ -126,6 +126,24 @@ agents:
     - id: researcher
       capabilities: ["research"]
 
+# ── Kernel (no-leader scheduler) ─────────────────────────────
+# The kernel scheduler drives every execution via
+# Schedule → Acquire → RunQuantum → finalize. The knobs below only affect the
+# loop CLOCK (the evolution round boundary); they never gate the task flow, so
+# an exhausted round budget still leaves the scheduler draining tasks.
+kernel:
+  # loop_round_quanta: how many scheduler quanta constitute one loop round.
+  #   0 or unset → 1 (every quantum closes a round). Raise it to amortise
+  #   round-end work (checkpoint flush / memory advise / evolution record)
+  #   over more quanta. Negative is a config error.
+  # loop_round_quanta: 1
+  #
+  # loop_max_iterations: cap on how many rounds the clock advances.
+  #   0 or unset → unlimited. When the budget is exhausted the round clock
+  #   stops and logs once; task scheduling is unaffected. Negative is a
+  #   config error.
+  # loop_max_iterations: 0
+
 # ── Tool system ──────────────────────────────────────────────
 tools:
   # builtin: load built-in tools (calculator, web_search, file, etc.)

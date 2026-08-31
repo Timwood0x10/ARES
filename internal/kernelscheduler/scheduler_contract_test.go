@@ -163,8 +163,20 @@ func TestRecoveryBindingExclusiveAndAutoRelease(t *testing.T) {
 	if coder.executed != 1 {
 		t.Fatalf("static executor must serve only the free task once, got %d", coder.executed)
 	}
-	if _, ok := sched.LookupExecutor("replacement-a"); ok {
-		t.Fatal("binding must auto-release: replacement unregistered after terminal state")
+	// The unregister runs in the drain goroutine right AFTER the fabric
+	// state flips to COMPLETED, so waitForTaskState can return one step
+	// before the release lands. Poll for the release instead of racing it
+	// (the contract is "released automatically after terminal state", not
+	// "released before the state is observable").
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, ok := sched.LookupExecutor("replacement-a"); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("binding must auto-release: replacement unregistered after terminal state")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

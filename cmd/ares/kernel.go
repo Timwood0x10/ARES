@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
@@ -49,5 +51,13 @@ type kernelHandle struct {
 	// pluginBus is the runtime plugin ecosystem hooked to the scheduler's
 	// quantum boundary (runtime_bridge.go). Nil when the scheduler is absent.
 	pluginBus *ares_runtime.PluginBus
-	flipped   bool
+	// schedulerStop / schedulerDone drive the scheduler drain loop's managed
+	// teardown (K2): Stop cancels the loop context, Wait joins the goroutine.
+	// Nil on partial paths — the adopt adapter skips those hooks.
+	schedulerStop context.CancelFunc
+	schedulerDone chan struct{}
+	// recoveryStop / recoveryDone do the same for the kernel recovery loop.
+	recoveryStop context.CancelFunc
+	recoveryDone chan struct{}
+	flipped      bool
 }

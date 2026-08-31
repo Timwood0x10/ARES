@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
@@ -154,13 +155,14 @@ func runShadowSandbox(ctx context.Context, status *introspect.ChaosReporter) {
 // — but only for dedicated testing environments. Production deployments should
 // never enable live mode.
 //
-// The shadow sandbox loop is attached to the provided context and runs in a
-// background goroutine. It is best-effort: a panic in the sandbox is recovered
-// and logged, never crashing the process.
+// The shadow sandbox loop is attached to the provided context and runs as a
+// managed background loop (K3: runBackground — panic-recovered, joined by the
+// orchestrator/bootstrap on shutdown, never a bare `go`). It is best-effort:
+// a panic in the sandbox is recovered and logged, never crashing the process.
 //
 // status (Phase 3) bridges the loops into the introspection panel; it may be
 // nil when the panel is not wired — the loops then only log.
-func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelHandle, gaActive func() bool, status *introspect.ChaosReporter) {
+func wireChaos(ctx context.Context, comp *ares_bootstrap.Components, cfg *ares_config.Config, peerKernel *kernelHandle, gaActive func() bool, status *introspect.ChaosReporter) {
 	if status != nil {
 		if cfg.Kernel.Chaos.Enabled {
 			status.SetConfig(true, effectiveChaosMode(cfg))
@@ -178,16 +180,22 @@ func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelH
 		mode = "shadow"
 	}
 
+	startShadow := func() {
+		interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
+		runBackground(ctx, comp, "chaos-shadow", func(loopCtx context.Context) error {
+			shadowSandboxLoop(loopCtx, interval, status)
+			return nil
+		})
+	}
+
 	switch mode {
 	case "shadow":
-		interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-		go shadowSandboxLoop(ctx, interval, status)
+		startShadow()
 
 	case "live":
 		if !cfg.Kernel.Chaos.AllowLive {
 			log.Printf("serve: chaos mode=live but allow_live=false — falling back to shadow mode")
-			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go shadowSandboxLoop(ctx, interval, status)
+			startShadow()
 			return
 		}
 		// Live chaos is dangerous: it kills real production agents.
@@ -197,32 +205,31 @@ func wireChaos(ctx context.Context, cfg *ares_config.Config, peerKernel *kernelH
 		// than default to "everything is a target".
 		if len(cfg.Kernel.Chaos.EligibleCapabilities) == 0 {
 			log.Printf("serve: live chaos requested but eligible_capabilities is empty — refusing to arm (falling back to shadow)")
-			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go shadowSandboxLoop(ctx, interval, status)
+			startShadow()
 			return
 		}
 		if peerKernel != nil && peerKernel.agents != nil && peerKernel.recovery != nil {
 			if cfg.Kernel.Chaos.StopToken == "" {
 				log.Printf("serve: live chaos requested but stop_token is empty — refusing to arm without an emergency-stop credential")
-				interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-				go shadowSandboxLoop(ctx, interval, status)
+				startShadow()
 				return
 			}
 			chaos := aresrecovery.NewChaos(peerKernel.agents, peerKernel.recovery)
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go liveChaosLoop(ctx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive, status)
+			runBackground(ctx, comp, "chaos-live", func(loopCtx context.Context) error {
+				liveChaosLoop(loopCtx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive, status)
+				return nil
+			})
 			log.Printf("serve: LIVE chaos mode enabled — agents WILL be killed (interval=%s, rate=%d/min enforced, whitelist=%v)",
 				interval.String(), cfg.Kernel.Chaos.RatePerMin, cfg.Kernel.Chaos.EligibleCapabilities)
 		} else {
 			log.Printf("serve: live chaos requested but kernel handle incomplete — falling back to shadow")
-			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			go shadowSandboxLoop(ctx, interval, status)
+			startShadow()
 		}
 
 	default:
 		log.Printf("serve: unknown chaos mode %q — defaulting to shadow", mode)
-		interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-		go shadowSandboxLoop(ctx, interval, status)
+		startShadow()
 	}
 }
 

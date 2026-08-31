@@ -33,6 +33,12 @@ type Handler struct {
 	// /api/v1/introspect/eventstream endpoint (dashboard.md §9 Event Stream).
 	// Nil disables that endpoint (503).
 	eventStore ares_events.EventStore
+	// systemRuntime is the optional provider for the System Runtime component
+	// graph (K5): when set, /api/v1/introspect/snapshot carries a
+	// "system_runtime" section with every managed component's state and
+	// reason, so a kernel pillar that failed to reach Ready is visible on the
+	// read surface. Nil keeps the legacy snapshot shape.
+	systemRuntime func() any
 }
 
 // NewHandler builds a Handler over the given store (must be non-nil).
@@ -46,6 +52,15 @@ func NewHandler(store *Store) *Handler {
 // timeline/events pages fall back to the distilled Store.Events feed.
 func (h *Handler) WithEventStore(store ares_events.EventStore) *Handler {
 	h.eventStore = store
+	return h
+}
+
+// WithSystemRuntime attaches the System Runtime snapshot provider (K5). The
+// provider must be a read-only, JSON-marshalable value (typically a
+// system_runtime.Snapshot). Optional — without it the snapshot endpoint keeps
+// its legacy shape.
+func (h *Handler) WithSystemRuntime(provider func() any) *Handler {
+	h.systemRuntime = provider
 	return h
 }
 
@@ -74,10 +89,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveEventStream(w, r)
 	case "/api/v1/introspect/snapshot":
 		snap := h.store.Latest()
-		w.Header().Set("Content-Type", "application/json")
 		if snap == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"collector has not produced a snapshot yet"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// K5: embed the System Runtime component graph alongside the kernel
+		// snapshot. The embedded pointer inlines the legacy fields, so the
+		// panel keeps parsing the old shape and the new section is additive.
+		if h.systemRuntime != nil {
+			_ = json.NewEncoder(w).Encode(struct {
+				*Snapshot
+				SystemRuntime any `json:"system_runtime,omitempty"`
+			}{snap, h.systemRuntime()})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(snap)

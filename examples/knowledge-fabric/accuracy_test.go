@@ -38,9 +38,15 @@ var keyFacts = map[string][]string{
 		"Path4", "MCP", "确定性引擎兜底",
 	},
 	"dag-conditional": {
-		"条件跳过", "Condition", "动态路由", "Router",
-		"受控循环", "LoopConfig", "MaxIterations",
-		"子图嵌套", "SubWorkflow",
+		// 0.3.1 真相口径：条件跳过/动态路由由 Graph System（条件边 +
+		// SetRouter）承担；受控循环由 Kernel 侧 LoopPlugin 轮次节拍承担；
+		// 引擎侧的 ConditionFunc/NodeRouter/LoopConfig 已删除。关键词与
+		// 文案同步收敛，禁止再引用已删除的引擎符号。
+		//
+		// 子图嵌套（Step.SubWorkflow）同样已删除：该字段从未有执行器消费，
+		// graph 侧也没有任何子图实现，属于与 LoopConfig 同性质的死声明。
+		"条件跳过", "动态路由", "条件边",
+		"受控循环", "LoopPlugin",
 	},
 	"dag-checkpoint": {
 		"检查点", "WithCheckpointStore", "StepResult",

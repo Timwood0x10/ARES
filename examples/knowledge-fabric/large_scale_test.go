@@ -81,9 +81,9 @@ func generateLargeCorpus(n int) ([]*knowledge.KnowledgeObject, *provider.Provide
 func generateRawContent(id, domain string, objType knowledge.ObjectType, rng *rand.Rand) string {
 	templates := map[string][]string{
 		"wf": {
-			"工作流引擎 %s 实现了基于 DAG 的任务编排系统。核心组件包括 WorkflowLoader（YAML 配置加载）、StepExecutor（步骤执行器）、ConditionRouter（条件路由）。支持热重载和 HITL 人工介入。数据流：YAML → WorkflowLoader → Workflow+Step → DAG → Executor → WorkflowResult。所有步骤通过 errgroup 管理并发生命周期。",
-			"Graph System 是第二套工作流方案，使用 Fluent Builder API 在代码中构建 DAG。支持 Condition（条件跳过）、Router（动态路由）、LoopConfig（受控循环 MaxIterations=%d）。子图嵌套（SubWorkflow）让工作流可递归组合。两套系统共享底层 DAG 执行引擎。",
-			"DAG 增强功能：Step.Condition 在步骤前做条件判断，Step.Router 在步骤后做动态路由。CheckpointStore 每步持久化 StepResult。后端支持 PostgreSQL/SQLite/Redis。非阻塞写入。",
+			"工作流引擎 %s 实现了基于 DAG 的任务编排载体。核心组件包括 WorkflowLoader（YAML 配置加载）、MutableDAG（可变拓扑）、RecoveryPolicy（恢复策略）。支持热重载和 HITL 人工介入。数据流：YAML → WorkflowLoader → Workflow+Step → DAG。拓扑变更通过 ChangeEvent 事件同步。",
+			"Graph System 是第二套工作流方案，使用 Fluent Builder API 在代码中构建 DAG。支持条件跳过（条件边）、动态路由（SetRouter）；受控循环由 Kernel 侧 LoopPlugin 承担（轮次预算=%d）。两套系统共享底层 DAG 语义，执行编排归属 Kernel。",
+			"DAG 载体能力：条件边在运行时做条件判断，SetRouter 做动态路由。CheckpointStore 每步持久化 StepResult。后端支持 PostgreSQL/SQLite/Redis。非阻塞写入。",
 		},
 		"mem": {
 			"Memory Distillation 架构：三层设计。Raw 层保留原始对话历史（含工具调用结果和运行时数据）。Normalizer 层统一格式，支持来自不同渠道的记忆。Summary 层通过 LLM 压缩为知识摘要。核心原则：提炼可复用的经验模式，不是简单存储聊天记录。",
@@ -125,7 +125,7 @@ func generateSummary(id, domain string, objType knowledge.ObjectType, rng *rand.
 	summaries := map[string][]string{
 		"wf": {
 			"工作流 DAG 编排引擎，配置驱动+代码驱动双系统",
-			"Fluent Builder DAG，条件边/循环/子图嵌套",
+			"Fluent Builder DAG，条件边 + SetRouter 动态路由",
 			"CheckpointStore 状态持久化，三后端支持",
 		},
 		"mem": {

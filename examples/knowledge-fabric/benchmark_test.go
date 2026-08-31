@@ -23,18 +23,18 @@ import (
 // Each Raw is ~300-600 chars of realistic Chinese technical documentation.
 var rawArticles = map[string]string{
 	"wf-engine":       `工作流引擎是ARES系统的核心编排组件，负责将用户请求转化为可执行的步骤序列。系统目前维护两套工作流系统：第一套是Workflow Engine，采用配置驱动方式，通过YAML文件定义工作流结构，支持热重载和人工介入（HITL）。第二套是Graph System，使用代码驱动的Fluent Builder API，支持条件边和可插拔调度器。两套系统的数据流基本一致：YAML配置文件通过WorkflowLoader加载，转换为Workflow和Step结构体，然后由DAG引擎创建有向无环图，最终通过Executor执行并返回WorkflowResult。两套并存的原因是配置驱动的灵活性在某些场景下不够，需要代码方式支持运行时动态加减节点。`,
-	"wf-dag":          `为什么ARES需要两套工作流系统？这是一个经过深思熟虑的设计决策。最初我们只有Workflow Engine，它通过YAML配置定义工作流，优点是声明式、可读性强、适合运维人员使用。但随着使用场景的复杂化，我们发现配置驱动的方式存在固有局限：无法根据运行时条件动态调整拓扑结构、难以实现条件分支和循环、不支持子图嵌套。因此我们开发了第二套Graph System，它使用Fluent Builder API在代码中构建工作流，支持条件边（Condition）、动态路由（Router）、受控循环（LoopConfig）和子图嵌套（SubWorkflow）。两套系统并行运行，服务不同用户群体，底层共享相同的DAG执行引擎。`,
+	"wf-dag":          `为什么ARES需要两套工作流系统？这是一个经过深思熟虑的设计决策。最初我们只有Workflow Engine，它通过YAML配置定义工作流，优点是声明式、可读性强、适合运维人员使用。但随着使用场景的复杂化，我们发现配置驱动的方式存在固有局限：无法根据运行时条件动态调整拓扑结构、难以实现条件分支。因此我们开发了第二套Graph System，它使用Fluent Builder API在代码中构建工作流，支持条件边和动态路由（SetRouter）；受控循环由Kernel侧LoopPlugin轮次节拍承担。两套系统并行运行，服务不同用户群体，底层共享相同的DAG语义。`,
 	"mem-distill":     `记忆蒸馏是ARES实现自主学习的核心技术。Agent在工作过程中会产生大量对话历史、工具调用结果和运行时数据，如果不加筛选地全部保留，记忆会迅速膨胀到无法管理。记忆蒸馏借鉴了人类遗忘和提炼的机制：不是简单存储原始记录，而是从中提取可复用的经验。整个蒸馏架构分为三层：第一层是原始数据（Raw），保留完整的对话历史；第二层是标准化层（Normalizer），将不同格式的原始数据统一为标准化文本；第三层是摘要层（Summary），通过LLM压缩为简洁的知识摘要。关键设计原则是：提炼可复用的经验模式，而不是简单存储聊天记录。`,
 	"mem-normalizer":  `Memory Distillation的标准化层是整个管线的第一个重要环节。标准化层的职责是将来自不同渠道的原始记忆——包括对话文本、工具调用日志、运行时状态快照——统一为结构化的标准化表达。标准化的流程分为四个步骤：第一步是Normalizer，对原始文本进行清洗和格式化；第二步是Classifier，根据内容类型进行分类（决策类、架构类、问题类等）；第三步是Scorer，根据重要性和置信度打分；第四步是Distiller，将评分后的记忆压缩为最终的KnowledgeObject。标准化的核心目标是让来自不同渠道的记忆可以被同一套Distiller处理，实现知识处理的统一化。`,
 	"tool-calling":    `工具调用是ARES Agent与外部世界交互的主要方式。系统支持四条工具调用路径，根据场景自动选择最优方案。Path1是LLM驱动调用：Agent通过parseToolCalls解析LLM返回的工具调用请求，然后通过CallTool执行，最终由Registry.Execute完成实际调用。Path2是Planner兜底：当LLM选错工具或传错参数时，Planner通过语义分析重新规划工具调用序列，Bridge.Execute作为入口，经过Planner.Plan生成新的执行计划，通过executeStepWithFallback确保异常情况下有兜底逻辑。Path3是Workflow Graph：通过ToolNode.Execute在工作流中执行工具调用，支持前置和后置事件钩子。Path4是MCP外部工具：通过MCP协议调用外部注册的工具服务。四路径的设计原则是：当LLM不靠谱时用确定性引擎兜底。`,
 	"tool-planner":    `Planner兜底策略是ARES工具调用可靠性的最后一道防线。当LLM在工具选择或参数传递上出现错误时，Planner不会直接失败，而是启动重规划流程。具体流程是：Bridge.Execute检测到LLM返回的工具调用异常后，调用Planner.Plan重新生成工具调用计划，然后通过executeStepWithFallback分步骤执行。Fallback机制包括：参数修正（自动补全或纠正参数）、工具替换（选择功能相近的替代工具）、步骤回退（回退到上一步重新决策）。Planner的另一个重要功能是语义分析：它能够理解用户请求的深层意图，而不仅仅是工具名称的匹配。例如用户说'查天气'，Planner能自动匹配到weather.query工具，即使LLM没有正确返回工具名称。`,
-	"dag-conditional": `DAG条件边与动态路由是ARES工作流系统v2版本新增的三大能力。第一是条件跳过（Condition）：Step.Condition属性在步骤执行前进行条件判断，如果条件不满足则跳过当前步骤，直接进入下一步。第二是动态路由（Router）：Step.Router属性在步骤执行后进行动态路由选择，根据步骤的执行结果决定下一步走向哪个节点。第三是受控循环（LoopConfig）：支持LoopConfig.MaxIterations设置最大迭代次数，LoopConfig.UntilCondition设置循环终止条件，确保循环最终会停止。此外还支持子图嵌套（Step.SubWorkflow），让工作流可以递归组合，一个步骤可以展开为一个完整的工作流子图。`,
+	"dag-conditional": `DAG条件拓扑是ARES工作流系统的核心能力，分工明确。第一是条件跳过：条件边（Edge条件谓词）在运行时决定边是否可走，条件不满足的分支被剪掉——这由Graph System承担。第二是动态路由（SetRouter）：节点完成后根据执行结果决定下一步走向哪个节点。第三是受控循环：由Kernel侧LoopPlugin轮次节拍承担，kernel.loop_round_quanta把调度quantum聚合为轮次，kernel.loop_max_iterations限制轮次预算，轮次结束触发OnRoundEnd做checkpoint flush、记忆路由与演化记录。`,
 	"dag-checkpoint":  `状态检查点是ARES工作流系统的容错机制。通过WithCheckpointStore方法配置持久化后端，系统会在每个步骤执行完成后自动保存StepResult到检查点存储。检查点存储支持多种后端：PostgreSQL（生产环境推荐），SQLite（单机开发测试），Redis（缓存加速）。检查点的写入采用非阻塞方式，写入失败不会中断工作流的正常执行。除了Workflow Engine外，Graph包也支持检查点功能：在每个节点执行完成后，保存已执行节点集合（executed set）和完整State快照到检查点。这样即使系统崩溃重启，也能从最近的检查点恢复执行，不需要重新运行整个工作流。`,
 	"evol-intro":      `自主进化是ARES Agent实现持续自我改进的核心机制。进化管线基于遗传算法（GA）实现，包含五个关键组件：TournamentSelection（锦标赛选择：从种群中选择表现优异的个体作为父代），UniformCrossover（均匀交叉：将两个父代的策略参数进行混合重组），Mutation（五类变异操作：参数扰动、结构变异、Prompt重写、工具重选、策略替换），TieredScorer（分层评分器：从正确性、效率、鲁棒性、可解释性四个维度综合评分），DreamCycle（梦想周期：定期触发进化流程，生成并测试候选策略）。进化管线与记忆蒸馏紧密配合：蒸馏出的KnowledgeObject作为经验知识影响GA的适应度评分，让进化方向更接近实际使用场景。`,
 	"chaos-intro":     `混沌工程（Arena）是ARES验证Agent鲁棒性的测试框架。Arena支持13种故障注入类型，涵盖网络分区、内存损坏、MCP断连、LLM超时、工具异常等。测试分为两种模式：Survival Mode（生存模式）在Agent运行期间随机注入故障，计算ResilienceScore（鲁棒性评分），评估Agent在持续干扰下的稳定运行能力。Scenario Mode（场景模式）通过YAML文件定义有序的故障序列，模拟真实生产环境的故障演进。Chaos与市场做市模块的故障注入集成，让量化交易策略也能在混沌环境下验证鲁棒性。`,
-	"cross-wf-mem":    `工作流引擎与记忆蒸馏的集成是ARES知识闭环的重要组成部分。当DAG步骤执行失败时，工作流引擎的StepRecoveryHandler会触发记忆查询流程：首先将失败信息格式化为查询请求，然后通过Memory Distillation的SearchSimilarTasks在经验库中搜索类似历史，匹配成功后从历史经验中提取恢复策略，自动调整当前步骤的配置参数。这种模式让工作流引擎不仅能执行预设的流程，还能从历史经验中学习，不断提升故障恢复的成功率。`,
+	"cross-wf-mem":    `工作流引擎与记忆蒸馏的集成是ARES知识闭环的重要组成部分。当执行失败时，Kernel恢复循环会触发记忆查询流程：执行体死亡或租约到期使任务重新排队，恢复循环查询经验库搜索类似历史，从历史经验中提取恢复策略，为任务绑定替换执行体并从checkpoint续跑，spawn时注入蒸馏出的经验先验。这种模式让系统能从历史经验中学习，不断提升故障恢复的成功率。`,
 	"cross-tool-mem":  `工具调用与记忆蒸馏的集成实现了工具层面的知识复用。每次工具执行完成后，执行结果会被自动蒸馏为KnowledgeObject存入知识库。当Agent后续遇到类似的请求时，Tool Execution Bridge会在调用LLM之前先查询相关记忆，从历史经验中直接获取工具选择方案和参数配置。这显著减少了LLM调用次数，降低了Token消耗和响应延迟。集成链路是：ToolExecution → 结果蒸馏 → KnowledgeObject → 后续查询匹配 → 经验复用。`,
-	"wf-engine-ext":   `工作流引擎的扩展机制允许通过Plugin接口注册自定义步骤处理器。内置处理器包括：LLMStep（调用LLM生成回复）、ToolStep（执行工具调用）、SubWorkflowStep（执行子工作流）、ConditionStep（条件判断）、RouterStep（动态路由）。处理器通过Step.Type字段匹配，支持按需加载和热替换。工作流执行的生命周期包括：初始化（Init）、前置检查（PreExecute）、执行（Execute）、后置处理（PostExecute）、结果持久化（Persist）五个阶段。`,
+	"wf-engine-ext":   `工作流引擎的扩展机制建立在PluginBus之上：插件实现RuntimePlugin接口（Name、Capabilities、Start、Stop），并可选实现WorkflowHook接口在步骤边界拦截（BeforeStep、AfterStep）。能力位由Capability常量声明：CapObserver、CapCheckpoint、CapRouter、CapLoop、CapMemory、CapEvolution、CapTool、CapRecovery、CapInterrupt，总线按能力做服务发现（PluginsByCap）。内置插件包括ObserverPlugin（事件镜像）、CheckpointPlugin（检查点持久化）、ToolPlugin（工具执行）、LoopPlugin（轮次时钟）、EvolutionPlugin（演化建议）、ArenaPlugin（故障注入）、InterruptPlugin（人工介入）、BasicRecoveryPlugin（恢复）。生命周期顺序是载荷性的：Register必须先于Start——Start之后Register返回ErrBusAlreadyStarted，且只有Start才把EventBus引用交给插件，注册晚了插件的服务发现永远为空。`,
 }
 
 func TestAKFSavings(t *testing.T) {
@@ -200,7 +200,7 @@ func allObjects() []*knowledge.KnowledgeObject {
 		},
 		{
 			ID: "dag-conditional", Type: knowledge.ObjectArchitecture,
-			Summary:    "DAG 条件边与动态路由（新增）：Step.Condition 在步骤执行前做条件跳过，Step.Router 在步骤执行后做动态路由。受控循环（LoopConfig）支持 MaxIterations/UntilCondition 有限次迭代。子图嵌套（Step.SubWorkflow）让工作流可递归组合。",
+			Summary:    "DAG 条件拓扑：条件分支与动态路由由 Graph System 承担——条件边（Edge 条件谓词）实现条件跳过，SetRouter 做动态路由。受控循环由 Kernel 侧 LoopPlugin 轮次节拍承担：kernel.loop_round_quanta 聚合轮次，kernel.loop_max_iterations 限制预算。",
 			Confidence: 0.91,
 			Tags:       []string{"dag", "conditional", "router", "loop", "new-feature"},
 		},
@@ -224,7 +224,7 @@ func allObjects() []*knowledge.KnowledgeObject {
 		},
 		{
 			ID: "cross-wf-mem", Type: knowledge.ObjectMemory,
-			Summary:    "工作流引擎调用记忆蒸馏：当 DAG 步骤失败时，通过 Memory Distillation 查询类似历史，用蒸馏出的经验指导恢复策略。Workflow Executor 的 StepRecoveryHandler 会查询经验库，匹配成功后自动调整步骤配置。",
+			Summary:    "工作流引擎调用记忆蒸馏：当 DAG 步骤执行失败时，Kernel 恢复循环查询经验库——执行体死亡或租约到期触发任务重排队，恢复循环为任务绑定替换执行体并从 checkpoint 续跑，spawn 时注入蒸馏出的经验先验，匹配成功后自动调整恢复策略。",
 			Confidence: 0.80,
 			Tags:       []string{"workflow", "memory", "recovery", "cross-ref"},
 		},
@@ -236,7 +236,7 @@ func allObjects() []*knowledge.KnowledgeObject {
 		},
 		{
 			ID: "wf-engine-ext", Type: knowledge.ObjectCode,
-			Summary:    "工作流引擎扩展：Plugin 接口注册自定义步骤处理器，内置 LLMStep/ToolStep/SubWorkflowStep/ConditionStep/RouterStep，支持按需加载和热替换。生命周期：Init→PreExecute→Execute→PostExecute→Persist。",
+			Summary:    "工作流引擎扩展：PluginBus 上注册 RuntimePlugin（Name/Capabilities/Start/Stop），可选实现 WorkflowHook（BeforeStep/AfterStep）拦截步骤边界。按 Capability 做服务发现（PluginsByCap）。Register 必须先于 Start，否则插件拿不到 EventBus。",
 			Confidence: 0.78,
 			Tags:       []string{"workflow", "plugin", "extension", "code"},
 		},

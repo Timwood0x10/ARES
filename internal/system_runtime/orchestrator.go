@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -22,6 +24,17 @@ const stopTimeout = 30 * time.Second
 // ignore the cancelled root context are reported instead of blocking forever.
 const waitTimeout = 30 * time.Second
 
+// overallShutdownTimeout bounds the WHOLE Shutdown sequence when the caller
+// provides no deadline of its own (K4). Per-component timeouts already bound
+// each Stop/Wait; this cap keeps the total teardown finite even when many
+// components are registered.
+const overallShutdownTimeout = 30 * time.Second
+
+// ErrShuttingDown is returned by Adopt when the orchestrator has already
+// begun (or completed) its shutdown sequence: late registration must fail
+// loudly instead of silently joining a graph that is being torn down.
+var ErrShuttingDown = errors.New("system_runtime: orchestrator is shutting down")
+
 // Orchestrator drives the component lifecycle: Construct → Bind → Start → Ready
 // on startup, and Stop → Wait → Close on shutdown, in topological order.
 type Orchestrator struct {
@@ -29,6 +42,10 @@ type Orchestrator struct {
 	rootCtx  context.Context
 	cancel   context.CancelFunc
 	eg       *errgroup.Group
+	// events is the optional event sink for background-loop failure records
+	// (K3). Nil disables event emission; the loop panic is always logged and
+	// reflected in the component status regardless.
+	events ares_events.EventStore
 
 	mu      sync.Mutex
 	started bool
@@ -163,6 +180,11 @@ func (o *Orchestrator) startComponent(ctx context.Context, name string) error {
 // errgroup with a bounded timeout. Stop/Wait/errgroup errors are aggregated
 // and returned. Shutdown is idempotent and safe to call concurrently: only
 // the first call runs the sequence.
+//
+// K4: the whole sequence runs under an overall budget — the caller's context
+// deadline when it has one, otherwise overallShutdownTimeout. Components that
+// did not reach Stopped when the budget expires are named in the returned
+// error (and logged) instead of blocking the process exit forever.
 func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	o.mu.Lock()
 	if o.stopped {
@@ -171,6 +193,18 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	}
 	o.stopped = true
 	o.mu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Apply the overall cap only when the caller did not impose a deadline:
+	// an operator-provided budget (e.g. the serve graceful-shutdown window)
+	// is the tighter contract and must win.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, overallShutdownTimeout)
+		defer cancel()
+	}
 
 	// Signal all managed goroutines first so they stop accepting work
 	// before we Stop the components that feed them.
@@ -187,9 +221,29 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	// Reverse order for shutdown.
 	for i := len(order) - 1; i >= 0; i-- {
 		name := order[i]
+		if ctx.Err() != nil {
+			errs = append(errs, fmt.Errorf(
+				"system_runtime: shutdown budget expired before stopping %q", name))
+			break
+		}
 		if err := o.stopComponent(ctx, name); err != nil {
 			errs = append(errs, fmt.Errorf("system_runtime: stop %q: %w", name, err))
 		}
+	}
+
+	// Report every component that did not reach a terminal stopped state so
+	// a truncated teardown is visible instead of silent (K4).
+	var notStopped []string
+	for _, st := range o.registry.AllStatuses() {
+		if st.State != StateStopped && st.State != StateDisabled {
+			notStopped = append(notStopped, fmt.Sprintf("%s=%s", st.Name, st.State))
+		}
+	}
+	if len(notStopped) > 0 {
+		errs = append(errs, fmt.Errorf(
+			"system_runtime: components did not reach Stopped: %s", strings.Join(notStopped, ", ")))
+		log.Warn("system_runtime: shutdown left components unstopped",
+			"components", strings.Join(notStopped, ", "))
 	}
 
 	// Wait for all errgroup goroutines, bounded so a misbehaving component
@@ -319,6 +373,202 @@ func (o *Orchestrator) rollback(ctx context.Context, started []string) {
 // Use this instead of bare `go` for all managed background work.
 func (o *Orchestrator) Go(fn func() error) {
 	o.eg.Go(fn)
+}
+
+// Adopt registers a component AFTER Start has already run (K1: late
+// admission, e.g. the kernel pillars assembled later in the serve flow) and
+// drives its startup state record so the component joins the status snapshot
+// and the reverse-topological Shutdown sequence.
+//
+// Adopt does NOT call Start: the component's active work (goroutines,
+// tickers) is owned by the adopter and must already be running. Adopt runs
+// Bind (for components that need wiring) and the Ready gate:
+//   - Required mode: a Ready failure marks the component Failed and returns
+//     an error — a late component that claims readiness falsely must fail
+//     loudly, never silently degrade the graph (the "false Ready" trap).
+//   - Degraded mode: a Ready failure marks the component Degraded with the
+//     reason and returns nil.
+//
+// Validation runs BEFORE registration so a rejected component never
+// pollutes the graph: every declared dependency must already be registered
+// and not Failed; a duplicate name is rejected (existing state is never
+// overwritten). Adopt during or after Shutdown returns ErrShuttingDown —
+// the teardown always wins the race.
+func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error {
+	o.mu.Lock()
+	stopped := o.stopped
+	o.mu.Unlock()
+	if stopped {
+		return ErrShuttingDown
+	}
+	// The errgroup root context is cancelled at the top of Shutdown, so it
+	// is the authoritative in-flight signal for a shutdown that started
+	// between the flag check above and now.
+	select {
+	case <-o.rootCtx.Done():
+		return ErrShuttingDown
+	default:
+	}
+
+	if c == nil || isNilComponent(c) {
+		return errors.New("system_runtime: cannot adopt nil component")
+	}
+	name := c.Name()
+	// Fail-loud dependency validation before registration: a missing or
+	// failed dependency means the adopted component would join the graph in
+	// a state that can never become Ready.
+	for _, dep := range c.Dependencies() {
+		st, ok := o.registry.GetStatus(dep)
+		if !ok {
+			return fmt.Errorf("system_runtime: adopt %q: dependency %q is not registered", name, dep)
+		}
+		if st.State == StateFailed {
+			return fmt.Errorf("system_runtime: adopt %q: dependency %q is Failed: %s",
+				name, dep, st.Reason)
+		}
+	}
+	if err := o.registry.Register(c, mode); err != nil {
+		return err
+	}
+
+	comp := o.registry.GetComponent(name)
+	// Bind phase: wiring-only; adopters own their own Start.
+	if binder, ok := comp.(Binder); ok {
+		if err := binder.Bind(ctx, o.registry); err != nil {
+			o.setStatus(name, StateFailed, err.Error())
+			return fmt.Errorf("system_runtime: adopt %q bind: %w", name, err)
+		}
+	}
+	// The component is already running (adoption implies started work);
+	// record the started timestamp so Snapshot shows a real instance.
+	o.setStatusStarted(name, StateStarted)
+
+	if checker, ok := comp.(ReadinessChecker); ok {
+		if err := checker.Ready(ctx); err != nil {
+			if mode == ModeDegraded {
+				o.setStatus(name, StateDegraded, err.Error())
+				log.Warn("system_runtime: adopted component degraded",
+					"component", name, "reason", err)
+				return nil
+			}
+			o.setStatus(name, StateFailed, err.Error())
+			return fmt.Errorf("system_runtime: adopt %q ready: %w", name, err)
+		}
+	}
+	current, _ := o.registry.GetStatus(name)
+	if current.State != StateDegraded {
+		o.setStatus(name, StateReady, "")
+	}
+	final, _ := o.registry.GetStatus(name)
+	log.Info("system_runtime: component adopted",
+		"component", name, "state", final.State)
+	return nil
+}
+
+// GoBackground runs fn as an errgroup-managed background loop (K3: the
+// unified entry for cmd/ares long-lived loops, replacing bare `go`).
+//
+// The name identifies the owning component: a loop that panics is recovered,
+// logged, recorded on the event sink (FlightRecorder timeline) and marks
+// that component Failed — the process survives, the damage is visible. A
+// normal error return records the exit reason and marks the component Failed
+// too, because a dead loop must never keep showing Ready. Neither a panic
+// nor an error is propagated into the errgroup: one misbehaving loop must
+// not cancel every other managed goroutine (the process-wide teardown is
+// driven by Shutdown, not by a single loop's death).
+//
+// Status marking is skipped while the orchestrator is shutting down: loops
+// exiting on the cancelled root context is the normal teardown path, not a
+// failure. Loops whose name matches no registered component still get the
+// panic recovery and logging — only the status mark is skipped.
+func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) error) {
+	o.mu.Lock()
+	stopped := o.stopped
+	o.mu.Unlock()
+	if stopped {
+		log.Warn("system_runtime: background loop not started (orchestrator shutting down)",
+			"component", name)
+		return
+	}
+	o.eg.Go(func() error {
+		err := o.runBackground(o.rootCtx, name, fn)
+		select {
+		case <-o.rootCtx.Done():
+			// Teardown exit: the shutdown report covers the component, and
+			// marking Failed here would corrupt the final snapshot.
+		default:
+			if err != nil {
+				log.Warn("system_runtime: background loop exited with error",
+					"component", name, "error", err)
+				o.markBackgroundFailed(name, err.Error())
+			} else {
+				log.Info("system_runtime: background loop exited",
+					"component", name)
+			}
+		}
+		return nil
+	})
+}
+
+// runBackground invokes fn with a recover boundary so a panicking loop is
+// contained: logged, recorded, marked Failed, never propagated.
+func (o *Orchestrator) runBackground(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("system_runtime: background loop panicked",
+				"component", name, "panic", r)
+			o.markBackgroundFailed(name, fmt.Sprintf("panic: %v", r))
+			err = nil // contained: do not crash the process (K3)
+		}
+	}()
+	return fn(ctx)
+}
+
+// markBackgroundFailed marks the named component Failed with the given
+// reason and emits a component.failed event on the configured sink (K3/K5:
+// the FlightRecorder subscribes to the whole event stream, so the panic
+// lands on the flight timeline). Best-effort: an unwired sink or missing
+// component only skips that part of the record; the log line is the
+// always-present trace.
+func (o *Orchestrator) markBackgroundFailed(name, reason string) {
+	select {
+	case <-o.rootCtx.Done():
+		return
+	default:
+	}
+	if st, ok := o.registry.GetStatus(name); ok {
+		st.State = StateFailed
+		st.Reason = reason
+		o.registry.SetStatus(name, st)
+	}
+	if o.events == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	evt := &ares_events.Event{
+		Type:       ares_events.EventComponentFailed,
+		ModuleName: "system_runtime",
+		Payload:    map[string]any{"component": name, "reason": reason},
+		Timestamp:  time.Now(),
+	}
+	if err := o.events.Append(ctx, "system_runtime/"+name, []*ares_events.Event{evt}, 0); err != nil {
+		log.Warn("system_runtime: component failure event not recorded",
+			"component", name, "error", err)
+	}
+}
+
+// SetEventSink attaches the optional event store used to record background
+// component failures (K3). Nil (the default) disables event emission.
+func (o *Orchestrator) SetEventSink(store ares_events.EventStore) {
+	o.events = store
+}
+
+// Snapshot returns a point-in-time status view of all managed components
+// (K5: the introspect panel and startup logs consume this instead of
+// reaching into the registry).
+func (o *Orchestrator) Snapshot() Snapshot {
+	return o.registry.Snapshot()
 }
 
 // RootContext returns the managed root context. Components should use

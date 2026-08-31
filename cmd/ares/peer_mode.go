@@ -179,12 +179,18 @@ func createPeerAgents(
 	attribution := aresrecovery.NewExecutionAttribution()
 	sched.WithAttribution(attribution)
 	feedback := aresrecovery.NewEvolutionFeedbackAdapter(attribution, tracker)
-	go aresrecovery.RunEvolutionFeedbackLoop(ctx, feedback, 10*time.Second)
+	runBackground(ctx, comp, "evolution-feedback", func(loopCtx context.Context) error {
+		aresrecovery.RunEvolutionFeedbackLoop(loopCtx, feedback, 10*time.Second)
+		return nil
+	})
 
 	// Collaboration-graph janitor: reclaim terminal residue left by fail-fast
 	// / timeout submissions off the hot path (per-submission cleanup handles
 	// the common case; this catches siblings that were in-flight then).
-	go runCollabGCLoop(ctx, kernel.fabric, 60*time.Second)
+	runBackground(ctx, comp, "collab-gc", func(loopCtx context.Context) error {
+		runCollabGCLoop(loopCtx, kernel.fabric, 60*time.Second)
+		return nil
+	})
 
 	// Assemble the Lifecycle pillar (agentfabric + aresrecovery).
 	// Wire the agent-fabric lifecycle sink into the shared event bus (#panel
@@ -287,18 +293,44 @@ func createPeerAgents(
 	// quantum boundary (observer/checkpoint/tool plugins observe every
 	// Schedule→Acquire→RunQuantum). The adapter lives in runtime_bridge.go —
 	// the kernel stays free of any runtime import (§0.3 dependency rule).
-	kernel.pluginBus = startPluginBus(ctx, store, sched)
+	// The loop knobs are parsed ONCE here and shared with the recovery loop
+	// below (a second parse would waste work and risk drift).
+	kernelLoopCfg := parseKernelLoopConfig(cfg)
+	kernel.pluginBus = startPluginBus(ctx, store, sched, kernelLoopCfg)
 
-	go sched.Run(ctx)
-	go runKernelRecoveryLoop(ctx, store, kernel.recovery, parseKernelLoopConfig(cfg),
-		func(taskID, agentID string, executor CapabilityExecutor) {
-			sched.RegisterExecutorForTask(taskID, agentID, executor)
-		},
-		func(agentID, capability string) CapabilityExecutor {
-			return newPeerExecutor(agentID, models.AgentType(capability), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
-		},
-		sched.HasCapableExecutor,
-	)
+	// K2/K3: the scheduler drain loop and the recovery loop run as managed
+	// background loops and hand their lifecycle to the System Runtime
+	// adapter (stop = cancel, wait = join the goroutine). The loop context
+	// is pre-derived from the serve ctx — NOT from the context runBackground
+	// passes — so the adopt-time Stop hook owns a cancel that works
+	// independently of which managed pool ended up running the goroutine.
+	schedCtx, schedCancel := context.WithCancel(ctx)
+	schedDone := make(chan struct{})
+	runBackground(ctx, comp, sysCompScheduler, func(context.Context) error {
+		defer close(schedDone)
+		sched.Run(schedCtx)
+		return nil
+	})
+	kernel.schedulerStop = schedCancel
+	kernel.schedulerDone = schedDone
+
+	recCtx, recCancel := context.WithCancel(ctx)
+	recDone := make(chan struct{})
+	runBackground(ctx, comp, sysCompRecovery, func(context.Context) error {
+		defer close(recDone)
+		runKernelRecoveryLoop(recCtx, store, kernel.recovery, kernelLoopCfg,
+			func(taskID, agentID string, executor CapabilityExecutor) {
+				sched.RegisterExecutorForTask(taskID, agentID, executor)
+			},
+			func(agentID, capability string) CapabilityExecutor {
+				return newPeerExecutor(agentID, models.AgentType(capability), llmAdapter, chatClient, toolBinder, cfg, strategySrc)
+			},
+			sched.HasCapableExecutor,
+		)
+		return nil
+	})
+	kernel.recoveryStop = recCancel
+	kernel.recoveryDone = recDone
 
 	log.Printf("peer mode: %d peer agents registered, Kernel scheduler started (no leader)", len(subAgents))
 	return subAgents, kernel, nil

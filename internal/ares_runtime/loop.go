@@ -10,7 +10,11 @@ import (
 // Unlike a fixed ReAct loop, the LoopConfig drives the outer round loop
 // that re-executes the entire DAG with mutations applied between rounds.
 type LoopConfig struct {
-	MaxIterations  int                            // max rounds/iterations (0 = run once)
+	// MaxIterations caps the number of rounds. 0 (or negative) means
+	// UNLIMITED — ShouldExecuteRound only consults it when > 0, so a zero
+	// value falls through to UntilCondition (and to "always true" when that
+	// is nil as well). Note round 1 is always allowed regardless.
+	MaxIterations  int
 	UntilCondition func(vars map[string]any) bool // exit condition; nil means max rounds
 }
 
@@ -32,7 +36,8 @@ type LoopPlugin struct {
 }
 
 // NewLoopPlugin creates a LoopPlugin with the given configuration.
-// MaxRounds of 0 means the loop runs until UntilCondition is met.
+// MaxIterations of 0 means unlimited rounds (bounded only by UntilCondition,
+// or unbounded when that is nil too).
 func NewLoopPlugin(name string, config LoopConfig) *LoopPlugin {
 	if name == "" {
 		name = "loop"
@@ -87,7 +92,7 @@ func (p *LoopPlugin) Config() LoopConfig { return p.config }
 // given round. Called BEFORE the round starts. Round numbering is 1-based.
 // Conditions are:
 // - Always execute round 1
-// - Stop when MaxRounds > 0 and nextRound > MaxRounds
+// - Stop when MaxIterations > 0 and nextRound > MaxIterations (0 = unlimited)
 // - Stop when UntilCondition(vars) returns true (checked before the round)
 func (p *LoopPlugin) ShouldExecuteRound(nextRound int, vars map[string]any) bool {
 	if nextRound < 1 {

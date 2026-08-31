@@ -32,6 +32,12 @@ const (
 	sysCompDiscovery      = "discovery"
 )
 
+// SysCompEventStore is the System Runtime registry name of the shared event
+// store. Exported for the kernel-side adoption (cmd/ares K2): the kernel
+// pillar adapters declare it as their dependency edge so Shutdown stops them
+// before the store.
+const SysCompEventStore = sysCompEventStore
+
 // runtimeComponentAdapter adapts an already-constructed Bootstrap component
 // to the System Runtime Component interface. Identity and dependency metadata
 // drive registry ordering; optional stop/wait hooks let the orchestrator's
@@ -146,6 +152,10 @@ func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Compo
 	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
 
 	orch := system_runtime.NewOrchestrator(reg, ctx)
+	// K3: background component failures are recorded on the shared event
+	// store so the flight recorder timeline (which subscribes to the whole
+	// stream) shows them. Best-effort: a nil store only disables the record.
+	orch.SetEventSink(comp.EventStore)
 	if err := orch.Start(ctx); err != nil {
 		return orch, reg, fmt.Errorf("system_runtime: observe startup: %w", err)
 	}

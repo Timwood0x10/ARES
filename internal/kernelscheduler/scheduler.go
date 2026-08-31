@@ -102,7 +102,16 @@ type Scheduler struct {
 	// Guarded by execMu alongside the executor registry so runtime
 	// registration races with the drain loop stay safe.
 	quantumHook QuantumHook
+	// running reports whether the drain loop is actually running (K5: the
+	// System Runtime readiness gate must mean "drain loop alive", not
+	// "object exists"). Set at Run entry, cleared on exit.
+	running atomic.Bool
 }
+
+// Running reports whether the scheduler's drain loop is currently running.
+// K5 readiness semantics: a constructed-but-not-running scheduler must never
+// report Ready — the System Runtime gate polls this before adoption.
+func (s *Scheduler) Running() bool { return s.running.Load() }
 
 // noCandidateLogInterval throttles "no capable candidate" logs to one per
 // window — the condition is a waiting state, not an error worth per-poll noise.
@@ -240,6 +249,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 		log.Printf("kernel scheduler: fabric nil, scheduler disabled")
 		return
 	}
+	// K5: the readiness flag goes up before the loop blocks so an Adopt-time
+	// Ready gate observes "drain loop alive" as soon as Run begins, and goes
+	// down when the loop exits so a crashed scheduler never keeps reporting
+	// Ready.
+	s.running.Store(true)
+	defer s.running.Store(false)
 	// Guard against zero or negative PollInterval which would panic
 	// in time.NewTicker (B34). Fall back to preemptInterval which
 	// applies the same safe default.

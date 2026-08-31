@@ -4,6 +4,7 @@ package ares_config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -943,4 +944,71 @@ func TestSetAllowedConfigDir_PathTraversal(t *testing.T) {
 	if _, err := Load(outConfig); err != nil {
 		t.Errorf("Load(%q) after clearing allowed dir failed: %v", outConfig, err)
 	}
+}
+
+// validKernelTestConfig returns a config that passes every validator, so a
+// kernel-specific assertion cannot be satisfied by an unrelated earlier error
+// (validateKernel runs last in Validate).
+func validKernelTestConfig() *Config {
+	return &Config{
+		Server: ServerConfig{Host: "localhost", Port: 8080},
+		LLM: LLMConfig{
+			Provider:  defaultLLMProvider,
+			Model:     "llama3",
+			Timeout:   60,
+			MaxTokens: 4096,
+		},
+		Output:     OutputConfig{Format: "simple"},
+		Validation: ValidationConfig{MaxRetries: 3},
+		Memory: MemoryConfig{
+			SessionMemory: SessionConfig{MaxHistory: 50},
+			Archive:       ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
+		},
+	}
+}
+
+// TestValidateKernelLoopKnobs covers the loop-clock knobs' validation contract:
+// zero/unset is legal (0 = unlimited rounds, 0 = default 1 quantum per round)
+// because both are zero-value-safe, while negatives are rejected rather than
+// silently normalized — a negative is always an operator mistake.
+func TestValidateKernelLoopKnobs(t *testing.T) {
+	t.Run("zero values are legal", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with unset kernel loop knobs error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative loop_max_iterations rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.LoopMaxIterations = -1
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative loop_max_iterations = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "loop_max_iterations") {
+			t.Errorf("error %q must name the offending key loop_max_iterations", err)
+		}
+	})
+
+	t.Run("negative loop_round_quanta rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.LoopRoundQuanta = -3
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative loop_round_quanta = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "loop_round_quanta") {
+			t.Errorf("error %q must name the offending key loop_round_quanta", err)
+		}
+	})
+
+	t.Run("positive values pass through", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.LoopMaxIterations = 10
+		cfg.Kernel.LoopRoundQuanta = 4
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with positive kernel loop knobs error = %v, want nil", err)
+		}
+	})
 }

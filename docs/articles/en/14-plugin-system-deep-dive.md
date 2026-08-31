@@ -430,6 +430,8 @@ Manages the evolutionary loop lifecycle. Does NOT drive the loop — the executo
 
 Three different plugin types, discovered by capability, coordinated at a single boundary point. No direct references between them.
 
+> **0.3.1 wiring status**: `ares serve` registers the LoopPlugin via `startPluginBus` (**Register must come BEFORE `bus.Start`** — `Register` returns `ErrBusAlreadyStarted` after Start, and only `Start` hands the plugin its bus reference; registering late leaves OnRoundEnd's service discovery permanently empty). Rounds are driven by the scheduler's QuantumHook at quantum boundaries: `kernel.loop_round_quanta` quanta make one round, `kernel.loop_max_iterations` caps the round budget; the boundary test uses the `atomic.AddInt64` return value (no skipped or double-fired rounds under concurrent drains), and the order is **settle first (`OnRoundEnd(round)`), then gate (`ShouldExecuteRound(round+1)`)**.
+
 ### BasicRecoveryPlugin
 
 Allowlist-based recovery policy. Steps whose IDs are in the allowlist are eligible for recovery. `ShouldRecover` checks the allowlist. `AllowStep` and `RevokeStep` manage it at runtime.

@@ -78,6 +78,13 @@ type kernelLoopConfig struct {
 	RecoverySweepTimeout time.Duration
 	// DispatchTimeout bounds Dispatch's wait for a worker completion event.
 	DispatchTimeout time.Duration
+	// LoopMaxIterations caps the kernel loop clock's round count (0 =
+	// unlimited). Past the budget the round clock stops advancing; the
+	// scheduler's task flow is never gated by it.
+	LoopMaxIterations int
+	// LoopRoundQuanta is how many quanta constitute one loop round (>=1;
+	// 0/absent falls back to 1).
+	LoopRoundQuanta int
 }
 
 // withDefaults fills any zero-valued knob with the package default so a
@@ -104,6 +111,9 @@ func (c kernelLoopConfig) withDefaults() kernelLoopConfig {
 	}
 	if c.DispatchTimeout <= 0 {
 		c.DispatchTimeout = kernelDispatchTimeout
+	}
+	if c.LoopRoundQuanta <= 0 {
+		c.LoopRoundQuanta = 1
 	}
 	return c
 }
@@ -140,6 +150,8 @@ func parseKernelLoopConfig(cfg *ares_config.Config) kernelLoopConfig {
 		RecoverySweepInterval:  parse(cfg.Kernel.RecoverySweepInterval, recoverySweepInterval),
 		RecoverySweepTimeout:   parse(cfg.Kernel.RecoverySweepTimeout, recoverySweepTimeout),
 		DispatchTimeout:        parse(cfg.Kernel.DispatchTimeout, kernelDispatchTimeout),
+		LoopMaxIterations:      cfg.Kernel.LoopMaxIterations,
+		LoopRoundQuanta:        cfg.Kernel.LoopRoundQuanta,
 	}.withDefaults()
 }
 

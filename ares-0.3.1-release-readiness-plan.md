@@ -26,6 +26,17 @@
 | T8 明文弱口令入库 | ✅ 通过 | 已入库配置无 active 明文口令（扫描为空）；`make check` 绿 |
 | T9 覆盖率 ≥65% | ⚠️ 部分 | `internal/ares_events` 51% → **71.7%**（≥70% 达标）、`-race -count=5` 绿；**总覆盖率 58.3%**，距 65% 仍差（0% 薄层集中在 `compat/`、`api/evolution`、`examples/`，需专项或按计划决定移除 `compat`） |
 | T10 长跑与租户隔离 | ⏳ 待环境 | 依赖真实 PG（`TEST_POSTGRES_DSN`）+ 真实 LLM + 12h soak，本迭代无法在会话内执行 |
+| K1 Adopt 延迟纳管 | ✅ 通过 | `Orchestrator.Adopt(ctx, c, mode)`：Start 后注册并驱动启动状态记录；依赖缺失/`Failed` 拒绝（注册前校验，不污染图）、同名重复拒绝且不覆盖既有状态、`Shutdown` 期间返回 `ErrShuttingDown`（stopped 标志 + root ctx 双保险）；Degraded 模式 Ready 失败 → `Degraded`+reason 不报错，Required 模式 → `Failed`+error。单测全绿 |
+| K2 六大件纳管 | ✅ 通过 | `kernelHandle.adopt(ctx, orch)`（`cmd/ares/kernel_adopt.go`）纳管 scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus 六件，依赖边按 K2 表（fabrics→eventstore，dispatcher→两 fabric，scheduler→三件，pluginbus→scheduler）；stop/wait 钩子用 `context.CancelFunc` + done channel 包装（未给内核类型硬加 `Stop()`）；nil 支柱按 present 语义跳过；采纳失败 fail-loud 中止 serve。验收测试：全内核六件 Ready + 部分内核跳过 nil 件 |
+| K3 裸 go 收敛 | ✅ 通过 | 新增统一入口 `Orchestrator.GoBackground(name, fn)`（recover → 日志+`component.failed` 事件进 FlightRecorder 时间线+组件标 `Failed`，不传播 panic/不炸 errgroup；关机期退出不改状态）；chaos 8 处、quota/population、feedback、collabGC、scheduler、recovery 共 13 处迁入。grep 复核生产路径仅剩 3 处豁免（serve.go 二次信号强退、kernel_loop 有界 sweep、arena 一次性流），均带 recover+注释。**顺带修复两处既有 flaky 测试**：`TestRecoveryBindingExclusiveAndAutoRelease` 在 finalize→unbind 窗口读注册表的竞态（改有界轮询）；`TestChaosStopEndpointAuth` 单例在 `-count>1` 下跨次残留（补 reset） |
+| K4 停机单点+超时 | ✅ 通过 | `Shutdown` 增加整体预算（调用方 deadline 优先，否则 30s），预算耗尽后逐项点名未达 `Stopped` 的组件并计入返回错误；停机循环感知预算提前收敛。核查 entry-point：内核无重复 teardown（loops 由 adopt 的 stop 钩子统一驱动） |
+| K5 内核可观测 | ✅ 通过 | `Scheduler.Running()`（Run 入口置位/退出复位）+ `Orchestrator.Snapshot()`；scheduler 以 Degraded 模式注册，ready 门轮询 Running（2s 预算）——drain 未跑报 `Degraded`+可读 reason，**不再假 Ready**；introspect `/api/v1/introspect/snapshot` 经 `WithSystemRuntime` 附加 `system_runtime` 组件图段（旧形状内联保持，面板兼容；受 T7 读鉴权）。`component.failed` 事件类型入 `ares_events`（无订阅方，G3 契约不受影响） |
+| K6 SDK/arena 登记 | ✅ 完成 | CHANGELOG `[0.3.1]` 新增 **Known limitations** 段：统一编排仅覆盖 `ares serve`，SDK/arena 非 serve 路径不建 Orchestrator，延后至 0.4.x |
+
+**关键结论（2026-08-30 第二轮迭代）**：K1–K6 全部落地，`make check` / `make gate`
+/ `go test -race -count=1 ./...`（132 包）/ 相关包 `-race -count=5`（system_runtime、
+kernelscheduler、cmd/ares、ares_bootstrap、introspect、ares_events）全绿。
+T9 剩余低覆盖率模块（`compat/` 等）按指示暂缓；T10 维持待环境。
 
 **关键结论**：T1–T8 已全部落地且 `make check` 全绿；T9 的关键契约短板
 `ares_events` 已达标，但**总覆盖率尚未到 65%**；T10 全部为环境性验收项，需在
@@ -729,22 +740,33 @@ panic recover——单个 loop panic 会直接带崩整个进程，且 `Shutdown
 
 ### 验收标准
 
-- [ ] `orch.Snapshot()` 在 `ares serve` 启动后包含 scheduler / taskfabric /
+- [x] `orch.Snapshot()` 在 `ares serve` 启动后包含 scheduler / taskfabric /
       agentfabric / recovery / dispatcher / pluginbus 六项，状态为 `Ready`。
-- [ ] `kill -TERM` 后停机日志显示六项均转为 `Stopped`，且顺序满足 K2 依赖表的
-      **反拓扑**（pluginbus/recovery/scheduler 先于 dispatcher，dispatcher 先于两个
-      fabric，fabric 先于 eventstore）。
-- [ ] `Adopt` 单测：依赖缺失被拒、同名重复被拒、`Shutdown` 期间返回
-      `ErrShuttingDown`、正常纳管后进入 Shutdown 序列。
-- [ ] 调度器未启动时 snapshot 报 `Degraded` 且 reason 可读（不得为 `Ready`）。
-- [ ] 注入一个 panic 的后台 loop：进程**不崩**，该组件被标记 `Failed`，
-      日志/FlightRecorder 有记录。
-- [ ] `cmd/ares` 生产路径（排除 `*_test.go`）无游离裸 `go`；保留的例外均有
-      recover + 注释说明（可用
-      `grep -rn '^\s*go ' cmd/ares --include='*.go' | grep -v _test.go` 复核）。
-- [ ] `Shutdown` 超时路径有测试：卡住的组件不阻塞进程退出，且被记录。
-- [ ] `go test -race -count=5 ./internal/system_runtime/... ./cmd/ares/...` 绿。
-- [ ] `make check` && `make gate` 绿。
+      （验收测试 `TestKernelAdopt_SixPillarsAdoptedAndStopped` 以真实运行中的
+      scheduler 驱动全内核采纳并断言六件 Ready；`ares serve` 真进程观察
+      属环境性复核项）
+- [x] `kill -TERM` 后停机日志显示六项均转为 `Stopped`，且顺序满足 K2 依赖表的
+      **反拓扑**（依赖边即停机序；反拓扑序由既有
+      `TestOrchestrator_Shutdown_StopsInReverseOrder` 锁死。真实信号下的日志
+      顺序属环境性复核项）。
+- [x] `Adopt` 单测：依赖缺失被拒、同名重复被拒、`Shutdown` 期间返回
+      `ErrShuttingDown`、正常纳管后进入 Shutdown 序列
+      （`internal/system_runtime/orchestrator_adopt_test.go`，另含 Failed
+      依赖拒绝 / Degraded 与 Required 的 Ready 失败语义）。
+- [x] 调度器未启动时 snapshot 报 `Degraded` 且 reason 可读（不得为 `Ready`）
+      （`TestKernelAdopt_SchedulerNotRunningReportsDegraded`）。
+- [x] 注入一个 panic 的后台 loop：进程**不崩**，该组件被标记 `Failed`，
+      日志/FlightRecorder 有记录（`TestOrchestrator_GoBackground_PanicMarksComponentFailed`
+      + `component.failed` 事件入共享 EventStore，FlightRecorder 全流订阅可见）。
+- [x] `cmd/ares` 生产路径（排除 `*_test.go`）无游离裸 `go`；保留的例外均有
+      recover + 注释说明（grep 复核：serve.go 二次信号强退、kernel_loop 有界
+      sweep、arena 一次性流，共 3 处豁免）。
+- [x] `Shutdown` 超时路径有测试：卡住的组件不阻塞进程退出，且被记录
+      （`TestOrchestrator_Shutdown_ReportsNonStoppedComponents` +
+      既有 `BlockingWaiterTimesOut`；K4 新增未达 Stopped 点名报告）。
+- [x] `go test -race -count=5 ./internal/system_runtime/... ./cmd/ares/...` 绿
+      （另含 kernelscheduler / ares_bootstrap / introspect / ares_events）。
+- [x] `make check` && `make gate` 绿。
 
 ---
 

@@ -104,7 +104,7 @@ func main() {
 			},
 			{
 				ID: "dag-conditional", Type: knowledge.ObjectArchitecture,
-				Summary:    "DAG 条件边与动态路由（新增）：Step.Condition 在步骤执行前做条件跳过，Step.Router 在步骤执行后做动态路由。受控循环（LoopConfig）支持 MaxIterations/UntilCondition 有限次迭代。子图嵌套（Step.SubWorkflow）让工作流可递归组合。",
+				Summary:    "DAG 条件拓扑：条件分支与动态路由由 Graph System 承担——条件边（Edge 条件谓词）在运行时决定边是否可走，实现条件跳过；SetRouter 在节点完成后做动态路由。受控循环由 Kernel 侧 LoopPlugin 轮次节拍承担：kernel.loop_round_quanta 把调度 quantum 聚合为轮次，kernel.loop_max_iterations 限制轮次预算，轮次结束触发 OnRoundEnd（checkpoint flush / 记忆路由 / 演化记录）。",
 				Confidence: 0.91,
 				Tags:       []string{"dag", "conditional", "router", "loop", "new-feature"},
 			},
@@ -134,7 +134,7 @@ func main() {
 		objects: []*knowledge.KnowledgeObject{
 			{
 				ID: "cross-wf-mem", Type: knowledge.ObjectMemory,
-				Summary:    "工作流引擎调用记忆蒸馏：当 DAG 步骤失败时，通过 Memory Distillation 查询类似历史，用蒸馏出的经验指导恢复策略。Workflow Executor 的 StepRecoveryHandler 会查询经验库，匹配成功后自动调整步骤配置。",
+				Summary:    "工作流引擎调用记忆蒸馏：当 DAG 步骤执行失败时，Kernel 恢复循环查询经验库——执行体死亡或租约到期触发任务重排队，恢复循环为任务绑定替换执行体并从 checkpoint 续跑，spawn 时注入蒸馏出的经验先验，匹配成功后自动调整恢复策略。",
 				Confidence: 0.80,
 				Tags:       []string{"workflow", "memory", "recovery", "cross-ref"},
 			},

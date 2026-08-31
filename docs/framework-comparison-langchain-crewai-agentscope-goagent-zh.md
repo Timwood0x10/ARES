@@ -128,7 +128,7 @@ flowchart TD
 | **条件边** | `add_conditional_edges` | 无 | Pipeline 条件节点 | 运行时路由（内核派发） | ConditionalFunc 路由 |
 | **循环/环** | 原生 | 不支持 | 不支持 | 不支持（无任意环） | CycleAgent（循环 + EscalationFunc） |
 | **并行执行** | 同层节点 | `async_execution=True` | Pipeline 并行 | 调度器 maxConcurrent（goroutine） | sync.WaitGroup 并发 |
-| **子图嵌套** | 支持（节点=子图） | Flow 包裹 Crews | 不支持 | 生产路径无 | 支持 |
+| **子图嵌套** | 支持（节点=子图） | Flow 包裹 Crews | 不支持 | 不支持 | 支持 |
 | **热更新** | 不支持 | 不支持 | 不支持 | 配置热加载（仅 cfgStore） | 未文档化 |
 | **运行时图变更** | 不支持 | 不支持 | 不支持 | 生产路径无 | 不支持 |
 | **人机交互** | `interrupt()` | `human_input=True` | 支持 | 生产路径无 | 支持（会话式） |

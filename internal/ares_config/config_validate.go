@@ -49,6 +49,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateKernel(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -292,6 +296,24 @@ func (c *Config) validateDiscovery() error {
 	}
 	if c.Discovery.Interval < 0 {
 		return fmt.Errorf("discovery: interval must be non-negative, got %s", c.Discovery.Interval)
+	}
+	return nil
+}
+
+// validateKernel validates the kernel loop-clock knobs.
+//
+// Both are zero-value-safe (0 = unlimited rounds / 0 = "every quantum closes a
+// round"), so only negatives are rejected. The runtime does normalize negatives
+// defensively, but a negative here is always a config mistake — reporting it
+// beats silently substituting a default the operator did not ask for.
+func (c *Config) validateKernel() error {
+	if c.Kernel.LoopMaxIterations < 0 {
+		return fmt.Errorf("kernel: loop_max_iterations must be non-negative (0 = unlimited), got %d",
+			c.Kernel.LoopMaxIterations)
+	}
+	if c.Kernel.LoopRoundQuanta < 0 {
+		return fmt.Errorf("kernel: loop_round_quanta must be non-negative (0 = default 1), got %d",
+			c.Kernel.LoopRoundQuanta)
 	}
 	return nil
 }

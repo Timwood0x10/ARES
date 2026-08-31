@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
@@ -41,7 +42,7 @@ func TestWireChaos_Disabled(t *testing.T) {
 	defer cancel()
 
 	// Should not panic or start any goroutines
-	wireChaos(ctx, cfg, nil, nil, nil)
+	wireChaos(ctx, &ares_bootstrap.Components{}, cfg, nil, nil, nil)
 }
 
 func TestWireChaos_ShadowDefault(t *testing.T) {
@@ -58,7 +59,7 @@ func TestWireChaos_ShadowDefault(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	wireChaos(ctx, cfg, nil, nil, nil)
+	wireChaos(ctx, &ares_bootstrap.Components{}, cfg, nil, nil, nil)
 
 	// Let it tick once
 	time.Sleep(200 * time.Millisecond)
@@ -81,7 +82,7 @@ func TestWireChaos_LiveWithoutAllowLive_FallsBackToShadow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	wireChaos(ctx, cfg, nil, nil, nil)
+	wireChaos(ctx, &ares_bootstrap.Components{}, cfg, nil, nil, nil)
 
 	// Let it tick once — should be shadow, not live
 	time.Sleep(200 * time.Millisecond)

@@ -493,6 +493,8 @@ sequenceDiagram
 
 三个 companion 插件全靠 `PluginsByCap` 发现。
 
+> **0.3.1 接线状态**：`ares serve` 通过 `startPluginBus` 注册 LoopPlugin（**Register 必须先于 `bus.Start`**——`Register` 在 Start 后返回 `ErrBusAlreadyStarted`，且插件的 `Start` 才会把 bus 引用交给插件，注册晚了 OnRoundEnd 的服务发现永远为空）。轮次由 scheduler 的 QuantumHook 在 quantum 边界驱动：`kernel.loop_round_quanta` 个 quantum 记为一轮，`kernel.loop_max_iterations` 限制轮次预算；边界判定用 `atomic.AddInt64` 的返回值取模（并发 drain 下不漏轮不重复），结算顺序是**先 `OnRoundEnd(round)` 再 `ShouldExecuteRound(round+1)`**。
+
 ### 10.9 BasicRecoveryPlugin——基于白名单的恢复
 
 ```go

@@ -284,6 +284,9 @@ func TestChaosStopEndpointAuth(t *testing.T) {
 	}
 
 	t.Run("disabled_when_token_empty", func(t *testing.T) {
+		// Reset the process-level singleton so repeated runs (-count>1)
+		// don't inherit the switch tripped by trips_switch_with_valid_token.
+		liveChaosCtl = &chaosStopControl{}
 		h := newHandler("")
 		code, body := postChaosWithToken(t, h, "stop", "whatever")
 		if code != http.StatusServiceUnavailable {

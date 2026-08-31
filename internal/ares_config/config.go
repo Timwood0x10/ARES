@@ -121,8 +121,17 @@ type KernelConfig struct {
 	EvolutionApplyTimeout string `yaml:"evolution_apply_timeout"`
 	// LeaseTTL is the task-lease duration granted by the kernel scheduler
 	// (e.g. "5m" default, "45s" for snappy chaos/recovery demos). Empty keeps
-	// the scheduler default.
+	// the scheduler default; invalid durations are ignored with a warning.
 	LeaseTTL string `yaml:"lease_ttl"`
+	// LoopMaxIterations caps how many rounds the kernel loop clock advances
+	// (0 = unlimited). When the budget is exhausted the round clock stops
+	// advancing — the scheduler's task flow is never gated by it.
+	LoopMaxIterations int `yaml:"loop_max_iterations"`
+	// LoopRoundQuanta is how many scheduler quanta constitute one loop round
+	// (default 1: every quantum closes a round). The boundary is decided by
+	// the atomic increment's return value, so concurrent drains cannot skip
+	// or double-fire a boundary.
+	LoopRoundQuanta int `yaml:"loop_round_quanta"`
 	// Chaos controls the fault injection subsystem (REVIEW #12). By default
 	// chaos runs in "shadow" mode — a scratch Sandbox verifies recovery
 	// without touching production agents. "live" mode (requires

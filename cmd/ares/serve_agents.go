@@ -97,7 +97,10 @@ func createAndServeAgents(
 		quotaSrc := ares_bootstrap.NewQuotaPolicySource(comp.NewEvolution.StrategyStore, cfg.Kernel.Resources)
 		if quotaSrc != nil {
 			quotaMgr := aresrecovery.NewEvolutionAwareQuotaManager(peerKernel.agents, quotaSrc)
-			go runKernelQuotaLoop(ctx, quotaMgr, parseKernelLoopConfig(cfg))
+			runBackground(ctx, comp, "evolution-quota", func(loopCtx context.Context) error {
+				runKernelQuotaLoop(loopCtx, quotaMgr, parseKernelLoopConfig(cfg))
+				return nil
+			})
 			log.Printf("serve: evolution quota loop wired (GA budget → fabric P5 admission)")
 		}
 
@@ -131,7 +134,10 @@ func createAndServeAgents(
 		popSrc := ares_bootstrap.NewPopulationPolicySource(comp.NewEvolution.StrategyStore)
 		if popSrc != nil {
 			popAdapter := aresrecovery.NewPopulationAdapter(peerKernel.agents, popSrc)
-			go aresrecovery.RunKernelEvolutionLoop(ctx, popAdapter, 0, 0)
+			runBackground(ctx, comp, "evolution-population", func(loopCtx context.Context) error {
+				aresrecovery.RunKernelEvolutionLoop(loopCtx, popAdapter, 0, 0)
+				return nil
+			})
 			log.Printf("serve: evolution population loop wired (GA topology → fabric spawn/retire)")
 		}
 	}
@@ -162,7 +168,13 @@ func createAndServeAgents(
 			// spawn/collaboration IPC path) before enabling the panel tab.
 			Collab: collabReporter.Snapshot,
 		})
-		peerKernel.intro = introspect.NewHandler(store).WithEventStore(comp.EventStore)
+		peerKernel.intro = introspect.NewHandler(store).WithEventStore(comp.EventStore).
+			// K5: the panel snapshot also carries the System Runtime
+			// component graph (kernel pillars + bootstrap infrastructure),
+			// so a "false Ready" kernel is visible on the read surface. The
+			// provider is read-only; the endpoint is read-gated like the
+			// rest of the JSON feed (T7).
+			WithSystemRuntime(func() any { return comp.Snapshot() })
 		sink := introspect.NewSink(store).WithCollab(collabReporter)
 		comp.GoBackground(ctx, "introspect-sink", func(ctx context.Context) error {
 			return sink.Run(ctx, comp.EventStore)
@@ -186,12 +198,20 @@ func createAndServeAgents(
 	// (production zero-impact); live mode requires explicit config plus the
 	// wired GA generation probe for the quiet window. The shared chaos status
 	// reporter bridges the loops into the introspection panel (Phase 3).
-	wireChaos(ctx, cfg, peerKernel, func() bool {
+	// comp is passed so the chaos loops run as managed background loops (K3).
+	wireChaos(ctx, comp, cfg, peerKernel, func() bool {
 		if comp.NewEvolution == nil {
 			return false
 		}
 		return comp.NewEvolution.GAGenerationActive()
 	}, chaosStatus)
+
+	// K2: adopt the six kernel pillars into the System Runtime so the
+	// component graph, the readiness snapshot and the reverse-topological
+	// shutdown cover the kernel too — not just the Bootstrap infrastructure.
+	if err := peerKernel.adopt(ctx, comp.SystemRuntime); err != nil {
+		return nil, nil, err
+	}
 
 	return subAgents, peerKernel, nil
 }

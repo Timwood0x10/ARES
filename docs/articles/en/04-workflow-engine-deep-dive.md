@@ -664,38 +664,18 @@ graph LR
 Types in `internal/workflow/engine/types.go`:
 
 ```go
-type RecoveryStrategy int
+type RecoveryStrategy string
 
 const (
-    RecoveryRetry       RecoveryStrategy = iota
-    RecoveryReplaceNode
-    RecoveryFailFast
+    RecoveryRetry       RecoveryStrategy = "retry"
+    RecoveryReplaceNode RecoveryStrategy = "replace_node"
+    RecoveryFailFast    RecoveryStrategy = "fail_fast"
 )
 
 type RecoveryPolicy struct {
-    MaxRetries int
-    RetryDelay time.Duration
-}
-
-type StepFailure struct {
-    StepID    string
-    StepName  string
-    Error     string
-    Input     string
-    Output    string
-    Attempts  int
-    ExecTime  time.Duration
-}
-
-type RecoveryDecision struct {
-    Strategy RecoveryStrategy
-    NewStep  *Step   // used only for RecoveryReplaceNode
-    Delay    time.Duration
-    Reason   string
-}
-
-type StepRecoveryHandler interface {
-    RecoverStep(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error)
+    Strategy         RecoveryStrategy
+    MaxAttempts      int
+    ReplacementAgent string
 }
 ```
 
@@ -705,41 +685,41 @@ type StepRecoveryHandler interface {
 | `RecoveryReplaceNode` | Semantic failure (wrong LLM output, logic error) | Swap the failed step via `ReplaceNode` |
 | `RecoveryFailFast` | Fatal errors (invalid config, auth failure) | Propagate error up, abort workflow |
 
-#### 5.7.2 RecoveryReplaceNode Flow
+> **0.3.x evolution note**: the earlier `StepRecoveryHandler` callback interface (engine calls back into a handler on step failure) was removed in 0.3.x — the engine has no executor, so the callback could never have a caller; real node replacement is done by `recovery_patcher` mutating `Step.RecoveryPolicy.Strategy` directly, and the cross-executor recovery loop belongs to the Kernel (see 5.7.2). `RecoveryDecision` / `StepFailure` were removed with it.
 
-The `DynamicExecutor` integrates recovery via the `handleStepFailure` method:
+#### 5.7.2 Recovery Loop: It Lives in the Kernel
+
+In 0.3.x, step recovery is not a callback into the engine — it is an event-driven Kernel loop. What recovers is the **task** (durable intent), not the agent (disposable cognition):
 
 ```mermaid
 sequenceDiagram
-    participant S as Scheduler
-    participant E as DynamicExecutor
-    participant D as MutableDAG
-    participant H as StepRecoveryHandler
+    participant S as Kernel Scheduler
+    participant K as runKernelRecoveryLoop
+    participant F as Agent Fabric
+    participant T as Task Fabric
 
-    E->>E: Step failure detected
-    E->>H: RecoverStep(failure, dag)
-    H->>D: Read current topology & failure context
-    H-->>E: Return RecoveryDecision{ReplaceNode, NewStep}
-    E->>D: ReplaceNode(oldID, newStep)
-    D->>D: Build simulated adjacency list
-    D->>D: Three-color DFS cycle detection
-    D-->>E: OK / error
-    Note over E,S: recoveryCh signal
-    E->>S: Signal recovery channel
-    S->>E: Reset stepIndex = 0
-    E->>E: Fetch fresh execution order
+    Note over T: executor dies (chaos kill / crash)
+    T->>K: task.expired / task.failed event (or periodic sweep)
+    K->>T: RequeueExpiredLeases() — task back to READY, checkpoint kept
+    K->>F: look up revivable snapshot (RevivableSnapshot)
+    alt cognitive snapshot available
+        K->>F: RestartAgent — revive the same identity in place
+    else no snapshot
+        K->>F: spawn replacement by capability
+    end
+    K->>S: RegisterExecutorForTask — bind replacement to that task
+    S->>T: Acquire → RunQuantum → resume from checkpoint
 ```
 
-Key implementation details:
+Key semantics:
 
-- **`handleStepFailure`** checks if a `StepRecoveryHandler` is configured and the step still exists in the DAG (not already replaced by a concurrent recovery)
-- **`recoveryCh`** is a dedicated channel that wakes the scheduler loop, which then resets `stepIndex = 0` and re-fetches the full execution order via `GetExecutionOrder()`
-- **5-round cap**: The `processed` map prevents infinite recovery loops — each step ID can be recovered at most once (with 5 total recovery rounds as a safety limit)
-- **`recomputeOrder` now replaces the entire order**: Instead of appending new steps, it re-fetches the full topological sort from `GetExecutionOrder()`, critical for ensuring the replacement node is correctly positioned before downstream steps
+- **Bound, never hijacking**: the replacement executor is bound to *exactly the one* recovered task via `RegisterExecutorForTask`; it is never offered other READY tasks, and the binding auto-releases at terminal state.
+- **Budget-capped**: `MaxRestarts` (default 5) bounds per-agent restarts; past the budget the loop falls through to a generic replacement.
+- **Checkpoint resume**: requeued tasks keep their checkpoint — the replacement resumes from where the previous executor left off, not from zero.
 
 #### 5.7.3 Memory Distillation Integration
 
-When `RecoveryReplaceNode` fires, the failed node's execution record is fed into the Memory/Distillation system:
+When recovery fires, the failed execution feeds the Memory/Distillation system:
 
 ```mermaid
 flowchart LR
@@ -754,7 +734,7 @@ flowchart LR
     I --> J[Agent_B aware of Agent_A's mistakes]
 ```
 
-The `WithRecoveryEventSink` option on `DynamicExecutor` connects recovery events to the distillation pipeline. This is what the user calls "秽土转生" (Edo Tensei / reincarnation from impure soil):
+Every spawn loads the agent's most recent distilled experience as a **G1 experience prior** (`loadExperiencePrior` → `SpawnSpec.ExperiencePrior`); when a cognitive snapshot is available, `RestartAgent` revives the same identity in place — inheriting the full cognitive state instead of a blank restart. This is what the user calls "秽土转生" (Edo Tensei / reincarnation from impure soil):
 
 > "如果你的 Agent 挂了……Runtime Manager 能够带着刚才的认知记忆，瞬间在 DAG 图上秽土转生"
 
@@ -940,7 +920,7 @@ The "C7 fix" ensures correct in-degree decrement semantics for conditional edges
 | **Retry** | Native (exponential backoff) | Not supported |
 | **Hot Reload** | Native (fsnotify + polling) | Not supported |
 | **Runtime Mutation** | MutableDAG.ReplaceNode + DynamicExecutor | Not supported |
-| **Recovery** | RecoveryReplaceNode + StepRecoveryHandler + Memory Distillation | Not supported |
+| **Recovery** | RecoveryPolicy + Kernel recovery loop (requeue → replacement binding → checkpoint resume) + Memory Distillation | Not supported |
 | **Template Variables** | `{{.input}}` + `{{.step_id}}` | Not supported |
 | **State Passing** | OutputStore (key-value) | State (key-value) |
 | **Observability** | Basic logging | Integrated tracer |
@@ -1105,10 +1085,10 @@ The concurrency model (errgroup + WaitGroup + semaphore + stepDone channels), th
 
 ### File Reference Index
 
-- Core types (incl. RecoveryStrategy, StepRecoveryHandler): `internal/workflow/engine/types.go`
-- Executor: `internal/workflow/engine/executor.go`
-- Dynamic Executor (incl. handleStepFailure): `internal/workflow/engine/dynamic_executor.go`
+- Core types (incl. RecoveryStrategy, RecoveryPolicy): `internal/workflow/engine/types.go`
 - Mutable DAG (incl. ReplaceNode): `internal/workflow/engine/mutable_dag.go`
+- Recovery patcher: `internal/workflow/engine/recovery_patcher.go`
+- Kernel recovery loop: `cmd/ares/kernel_loop.go` (`runKernelRecoveryLoop`)
 - HITL support: `internal/workflow/engine/hitl.go`
 - File loading: `internal/workflow/engine/loader.go`
 - Hot reload: `internal/workflow/engine/reloader.go`

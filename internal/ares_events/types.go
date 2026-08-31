@@ -83,6 +83,14 @@ const (
 	EventDiscoveryServiceUpdated EventType = "discovery.service.updated"
 	EventDiscoveryHealthChanged  EventType = "discovery.health.changed"
 	EventDiscoveryCycleCompleted EventType = "discovery.cycle.complete"
+
+	// EventComponentFailed reports a managed background component loop that
+	// panicked or died while the system was running (system_runtime
+	// GoBackground, K3). Stream ID is "system_runtime/<component>"; payload
+	// carries the component name and the failure reason. Consumed read-only
+	// by the flight recorder / introspection feed — nothing subscribes with
+	// a filter on it, so the G3 emitter contract is unaffected.
+	EventComponentFailed EventType = "component.failed"
 )
 
 // Event payload keys for enriched task-lifecycle events.
