@@ -33,6 +33,11 @@ type fakeSpans struct{ views []map[string]any }
 
 func (f *fakeSpans) Spans() []map[string]any { return f.views }
 
+// fakeLifecycleSnapshot is a fixed LifecycleSnapshotProvider for tests.
+type fakeLifecycleSnapshot struct{ snap map[string]any }
+
+func (f *fakeLifecycleSnapshot) LifecycleSnapshot() map[string]any { return f.snap }
+
 // doGet performs a GET against the server and returns the recorder.
 func doGet(t *testing.T, s *ControlServer, path string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -156,4 +161,54 @@ func TestControlServer_Observability(t *testing.T) {
 	if rec := doGet(t, s3, "/api/observability/spans"); rec.Code != http.StatusNotFound {
 		t.Fatalf("unconfigured spans: status %d", rec.Code)
 	}
+}
+
+func TestControlServer_LifecycleSnapshot(t *testing.T) {
+	t.Run("returns snapshot when configured", func(t *testing.T) {
+		s := NewControlServer(nil,
+			WithLifecycleSnapshot(&fakeLifecycleSnapshot{snap: map[string]any{
+				"active_id":  "s1",
+				"state":      "active",
+				"generation": 5,
+			}}),
+		)
+		rec := doGet(t, s, "/api/evolution/lifecycle")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"active_id":"s1"`) {
+			t.Fatalf("expected active_id in body: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"state":"active"`) {
+			t.Fatalf("expected state in body: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"generation":5`) {
+			t.Fatalf("expected generation in body: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("returns 404 when not configured", func(t *testing.T) {
+		s := NewControlServer(nil)
+		rec := doGet(t, s, "/api/evolution/lifecycle")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for unconfigured lifecycle, got %d", rec.Code)
+		}
+	})
+
+	t.Run("returns empty object when snapshot is nil", func(t *testing.T) {
+		s := NewControlServer(nil,
+			WithLifecycleSnapshot(&fakeLifecycleSnapshot{snap: nil}),
+		)
+		rec := doGet(t, s, "/api/evolution/lifecycle")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("expected empty object, got %v", body)
+		}
+	})
 }

@@ -91,8 +91,15 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		a.submitToCoordinator(ctx)
 	}
 
-	// Deploy the best-evolved strategy so the live agent can consume it.
-	if a.activeStrategyMgr != nil {
+	// Submit the best-evolved strategy to the lifecycle orchestrator (B2 fix).
+	// When a StrategyLifecycle is wired, it runs the verify-gate pipeline
+	// before promoting to ACTIVE. When no lifecycle is wired, fall back to
+	// the legacy direct-deploy path (backward compatible).
+	if a.lifecycle != nil {
+		if best := a.pop.BestStrategy(); best != nil {
+			a.lifecycle.Submit(ctx, best, a.pop.Stats().Generation)
+		}
+	} else if a.activeStrategyMgr != nil {
 		a.deployBestStrategy(ctx)
 	}
 

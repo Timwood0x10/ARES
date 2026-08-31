@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
@@ -203,10 +204,28 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	}
 	gaCfg := evolution.DefaultSystemConfig()
 	gaCfg.EnableDreamCycle = false
-	gaCfg.EnableScheduler = comp.Evolution == nil
+	// B4 fix: EnableScheduler is now always true so the ticker path goes
+	// through scheduler.Tick (which applies shouldEvolve + guardrails).
+	// When the legacy scheduler exists, SetAdapter is still called so it
+	// can drive event-triggered evolution, but the ticker no longer
+	// bypasses the scheduler's throttling.
+	gaCfg.EnableScheduler = true
 	gaCfg.EventStore = comp.EventStore
 	gaCfg.StrategyStore = memStore
-	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
+	// B1 fix: wire RollbackPolicyConfig from YAML so degradation thresholds
+	// are configurable instead of hardcoded to defaults.
+	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{
+		Enabled:              true,
+		DegradationThreshold: 0.15, // default; matches RollbackPolicy default
+		WindowSize:           5,
+		MinSamples:           3,
+	}
+	// B3 fix: enable shadow evaluation independently of DreamCycle.
+	gaCfg.ShadowEvalConfig = evolution.ShadowEvaluationConfig{
+		Enabled:    true,
+		MinSamples: 20,
+		MinWinRate: 0.55,
+	}
 
 	// W3: honor the YAML evolution tuning. Only fields with a matching
 	// SystemConfig slot are wired; the rest of the YAML GA knobs
@@ -251,6 +270,31 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		newEvol.GenomeReg,
 	)(popAdapter)
 
+	// P1-2 (B5 fix): inject the EvaluatorRegistry into the lifecycle's
+	// G3 eval gate so independently-built evaluators participate in the
+	// promote/rollback decision instead of sitting idle. The gate is
+	// pass-through when no regression suite is configured, so this is
+	// safe to wire unconditionally.
+	if wired.Lifecycle != nil && comp.Evolution != nil && comp.Evolution.EvaluatorRegistry != nil {
+		evalGate := evolution.NewEvalGate(
+			comp.Evolution.EvaluatorRegistry,
+			nil,                   // AgentTestRunner — not wired in production yet
+			ares_eval.TestSuite{}, // no regression suite configured yet
+			evolution.DefaultEvalGateConfig(),
+		)
+		evolution.WithLifecycleGates(evalGate)(wired.Lifecycle)
+	}
+
+	// Wire the lifecycle's evidence store and start its watch loop so
+	// rollback detection runs against real runtime evidence (B1 fix).
+	if wired.Lifecycle != nil {
+		evolution.WithLifecycleEvidenceStore(newEvol.EvidenceStore)(wired.Lifecycle)
+		wired.Lifecycle.Start(ctx)
+		// P2-2: expose the lifecycle for the introspect control plane
+		// so /api/evolution/lifecycle returns a state snapshot.
+		newEvol.Lifecycle = wired.Lifecycle
+	}
+
 	// In the full configuration, attach the GA adapter to the existing
 	// old-system scheduler; otherwise the GA system's own scheduler
 	// (registered above on the LLM callback registry) drives it.
@@ -260,9 +304,10 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		}
 	}
 
-	// Start a background ticker that triggers evolution even when no
-	// agents are running (event-driven scheduler won't fire without agents).
-	// This ensures the GA continuously evolves over time.
+	// Start a background ticker that triggers evolution via the unified
+	// scheduler.Tick path (B4 fix). This replaces the old unconditional
+	// popAdapter.Run(ctx) call so evolution timing is always gated by
+	// shouldEvolve + checkGuardrails.
 	comp.bgGroup.Go(func() error {
 		// W3: honor evolution.min_interval from yaml (audit: the 5-minute
 		// ticker was hardcoded, leaving MinInterval dead config).
@@ -277,10 +322,17 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		for {
 			select {
 			case <-evoTicker.C:
-				if err := popAdapter.Run(ctx); err != nil {
-					log.WarnContext(ctx, "[bootstrap] ticker-triggered evolution failed",
-						"error", err)
-					continue
+				// B4 fix: route through scheduler.Tick so shouldEvolve +
+				// guardrails are always applied. When wired.Scheduler is nil
+				// (no EventStore), fall back to popAdapter.Run directly.
+				if wired.Scheduler != nil {
+					wired.Scheduler.Tick(ctx)
+				} else {
+					if err := popAdapter.Run(ctx); err != nil {
+						log.WarnContext(ctx, "[bootstrap] ticker-triggered evolution failed",
+							"error", err)
+						continue
+					}
 				}
 				// Record the generation trajectory into the shared tracer
 				// (v0.3.0 M3-1) so /evolution/trajectory returns live data

@@ -134,14 +134,19 @@ const scoreWindowSize = 50
 // directly from EventStore task events (completed → success, failed →
 // failure), so degradation detection works on real production outcomes
 // instead of requiring an external score feeder.
+//
+// Scores are normalized to [0,1] to be dimensionally consistent with
+// RollbackPolicy thresholds (B1 fix: the threshold 0.15 is on a [0,1] scale).
 const (
 	// taskScoreSuccess is the score recorded when a task completes successfully.
-	taskScoreSuccess = 100.0
+	taskScoreSuccess = 1.0
 	// taskScoreFailure is the score recorded when a task fails.
 	taskScoreFailure = 0.0
 )
 
 // degradationThreshold is the fraction of score drop that triggers evolution (15%).
+// On a [0,1] scale this is 0.15 — dimensionally consistent with
+// RollbackPolicy.DegradationThreshold (B1 fix).
 const degradationThreshold = 0.15
 
 // minScoreCountForReliability is the minimum number of scores required before
@@ -649,4 +654,38 @@ func (s *EvolutionScheduler) TriggerMode() EvolutionTrigger {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.trigger
+}
+
+// Tick is the single heartbeat entry point for the evolution ticker. It
+// replaces the bootstrap ticker's unconditional popAdapter.Run(ctx) call so
+// evolution timing is unified: the same shouldEvolve + checkGuardrails +
+// MinInterval throttling that drives event-triggered evolution also drives
+// time-triggered evolution (B4 fix).
+//
+// Tick is safe to call from a time.Ticker goroutine. It runs the adapter
+// synchronously — the caller controls timing via the ticker interval.
+// When the scheduler is disabled or the adapter is nil, Tick is a no-op.
+func (s *EvolutionScheduler) Tick(ctx context.Context) {
+	if !s.enabled.Load() {
+		return
+	}
+	if s.adapter == nil {
+		return
+	}
+	// Use the same throttling logic as OnAgentEnd: minInterval protection
+	// + guardrails. This ensures the ticker cannot bypass degradation
+	// detection or guardrail checks (B4 fix).
+	if !s.shouldEvolve(ctx, CallbackData{AgentID: "ticker"}) {
+		return
+	}
+	if !s.checkGuardrails(ctx) {
+		return
+	}
+	if err := s.adapter.Run(ctx); err != nil {
+		log.WarnContext(ctx, "[Evolution] Tick-triggered evolution failed", "error", err)
+		return
+	}
+	s.mu.Lock()
+	s.lastRun = time.Now()
+	s.mu.Unlock()
 }

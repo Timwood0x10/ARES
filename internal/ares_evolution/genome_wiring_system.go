@@ -39,6 +39,11 @@ type WiredEvolutionSystem struct {
 	HypothesisGen *genome.HypothesisGenerator `json:"-"`
 	MetaCtrl      *genome.MetaController      `json:"-"`
 
+	// Lifecycle is the strategy orchestrator (B1/B2/B3 fix). When set,
+	// it is the sole entry point for promoting a candidate strategy.
+	// Run() submits to Lifecycle.Submit instead of Deploy directly.
+	Lifecycle *StrategyLifecycle `json:"-"`
+
 	// Phase 6: Diff Engine + Coordinator for graph structure evolution.
 	// When set, each generation's mutation is diffed and patches submitted.
 	DiffReg     *diff.Registry                    `json:"-"`
@@ -529,6 +534,10 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	if cfg.ShadowEvalConfig.Enabled && cfg.Scorer != nil {
 		se := buildShadowEvaluator(cfg, base)
 		system.ShadowEvaluator = se
+		// B3 fix: ShadowEvaluator is no longer exclusively tied to DreamCycle.
+		// When DreamCycle exists it still gets the evaluator for its internal
+		// deploy path, but the StrategyLifecycle also gets it so the G2 gate
+		// works independently of whether DreamCycle is enabled.
 		if system.DreamCycle != nil {
 			system.DreamCycle.shadowEvaluator = se
 		}
@@ -540,6 +549,28 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		if dreamCycle != nil {
 			dreamCycle.scheduler = system.Scheduler
 		}
+	}
+
+	// B1/B2/B3 fix: construct the StrategyLifecycle when an
+	// ActiveStrategyManager is wired. It wraps the ASM so it is the sole
+	// caller of Deploy/Rollback. The lifecycle is injected into the
+	// population adapter so Run() submits to it instead of deploying
+	// directly. The ShadowEvaluator and (optional) evaluator gates are
+	// attached so the verify pipeline works without DreamCycle.
+	if system.ActiveStrategyManager != nil {
+		aggCfg := DefaultAggregatorConfig()
+		agg := NewRuntimeFitnessAggregator(nil, aggCfg) // store set later by bootstrap
+		lcCfg := DefaultLifecycleConfig()
+		lcOpts := []LifecycleOption{}
+		if system.ShadowEvaluator != nil {
+			lcOpts = append(lcOpts, WithLifecycleShadowEvaluator(system.ShadowEvaluator))
+		}
+		if cfg.Metrics != nil {
+			lcOpts = append(lcOpts, WithLifecycleMetrics(cfg.Metrics))
+		}
+		lc := NewStrategyLifecycle(system.ActiveStrategyManager, agg, lcCfg, lcOpts...)
+		system.Lifecycle = lc
+		popAdapter.lifecycle = lc
 	}
 
 	system.FeedbackRecorder = buildFeedbackRecorder(cfg)

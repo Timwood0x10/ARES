@@ -91,6 +91,11 @@ type GenomePopulationAdapter struct {
 	// Metrics records Prometheus counters for evolution events (optional).
 	metrics *ares_observability.PrometheusMetrics
 
+	// lifecycle is the strategy orchestrator (B2 fix). When set, Run()
+	// submits the best strategy to the lifecycle instead of deploying
+	// directly. The lifecycle runs verify gates before promoting.
+	lifecycle *StrategyLifecycle
+
 	// Coordinator bridge — when set, Run() submits evolution results
 	// to the new system's coordinator for decision and deployment.
 	coordinator *coordinator.EvolutionCoordinator
@@ -285,6 +290,24 @@ func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAda
 func WithActiveStrategyManager(mgr *ActiveStrategyManager) GenomeAdapterOption {
 	return func(a *GenomePopulationAdapter) {
 		a.activeStrategyMgr = mgr
+	}
+}
+
+// WithAdapterLifecycle attaches a StrategyLifecycle orchestrator to the
+// adapter. When set, Run() submits the best strategy to the lifecycle
+// instead of calling Deploy directly (B2 fix). The lifecycle runs verify
+// gates (guardrail, shadow, eval, staging) before promoting the candidate.
+//
+// Args:
+//
+//	l - the strategy lifecycle (must not be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterLifecycle(l *StrategyLifecycle) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.lifecycle = l
 	}
 }
 

@@ -17,10 +17,14 @@
 > ⑥ 删除集扩展：K2 并入 `NodeRouter` + `Step.Router`，K3 并入 `StepFailure`
 > （`types.go` 的 `context` import 随之删除）；**`Step.SubWorkflow` 一并删除**
 > ——零执行器消费、graph 侧无任何子图实现，与 `LoopConfig` 同性质死声明；
-> ⑦ 门禁 6.1/6.2 拆出本 PR（6.1 会红全部 8 个插件、6.2 会红
-> `InterruptConfig`/`WorkflowExecution`/`StepState`/`DAGNode`/`WorkflowResult`——
-> 另立门禁项，白名单起步逐个消化）；门禁 6.3（kernelscheduler 禁 import
-> runtime 插件包）本 PR 落地，见 `internal/kernelscheduler/architecture_test.go`；
+> ⑦ 门禁 6.1/6.2 已另立落地（2026-08-31，白名单起步）：
+> 6.1 见 `internal/ares_runtime/architecture_test.go`（7 个 test-only 插件构造器入白名单，
+> `NewLoopPlugin` 已接线不入）；6.2 见 `internal/workflow/engine/architecture_test.go`
+> （死类型白名单：`InterruptConfig`/`WorkflowExecution`/`StepState`/`WorkflowStatus`/
+> `WorkflowResult`——实测 `DAGNode` 是活的，`mutable_dag.go` 在用）。两个门禁都有
+> STALE 反向检测：白名单条目一旦获得生产引用即红，逼迫消化；目标态是白名单清空。
+> 门禁 6.3（kernelscheduler 禁 import runtime 插件包）已落地，见
+> `internal/kernelscheduler/architecture_test.go`；
 > ⑧ examples/docs 改写按"先改 `accuracy_test.go` 关键词表再改文案"执行，
 > 实际涉及 main.go:107/137、benchmark_test.go 26/31/35/37/203/227/239、
 > large_scale_test.go 84-86、docs zh/en 04 恢复章节、zh/en 14 §10.8。
@@ -184,11 +188,18 @@ W-L1 的 `OnRoundEnd → CapMemory.AdviseRoute` 正是这条链的下游消费�
 
 ---
 
-## 6. 防回归门禁
+## 6. 防回归门禁（✅ 2026-08-31 全部落地）
 
-1. **test-only 插件检测**：CI 增一条脚本——遍历 `ares_runtime` 中所有实现 `RuntimePlugin` 的类型，若其构造器仅被 `_test.go` 引用则失败。这是本次问题（`LoopPlugin` 死了却无人发现）的根因防线。
-2. **死声明检测**：对 `internal/workflow/engine/types.go` 中的导出类型跑引用计数，0 生产引用即失败（`RecoveryPolicy` 之类有引用的自然通过）。
-3. **架构红线检测**：禁止 `internal/kernelscheduler` 出现 `internal/ares_runtime` import（依赖方向必须是 `cmd/ares` 适配器单向注入）。
+1. **test-only 插件检测**（已落地：`internal/ares_runtime/architecture_test.go`
+   `TestPluginsMustBeWiredInProduction`）：AST 枚举 `New*Plugin` 构造器，
+   全仓非测试 `.go` 引用计数为零即失败（剔除 `func` 定义行与行注释）。
+   白名单起步 7 个，带 STALE 反向检测（条目获得引用即红）。
+2. **死声明检测**（已落地：`internal/workflow/engine/architecture_test.go`
+   `TestExportedTypesMustHaveProductionReferences`）：对 `types.go` 导出类型
+   跑"声明文件之外"引用计数，零即失败。白名单起步 5 个，同样带 STALE 检测。
+3. **架构红线检测**（已落地：`internal/kernelscheduler/architecture_test.go`
+   `TestSchedulerMustNotImportRuntime`）：禁止 `internal/kernelscheduler`
+   出现 `internal/ares_runtime` import（依赖方向必须是 `cmd/ares` 适配器单向注入）。
 
 ---
 

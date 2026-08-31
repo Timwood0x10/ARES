@@ -68,7 +68,7 @@ func main() {
 		objects: []*knowledge.KnowledgeObject{
 			{
 				ID: "wf-engine", Type: knowledge.ObjectArchitecture,
-				Summary:    "工作流引擎：两套工作流系统。Workflow Engine（配置驱动 DAG，YAML 定义，热重载，HITL）和 Graph System（代码驱动 Fluent Builder，条件边，可插拔调度器）。数据流：YAML → WorkflowLoader → Workflow+Step → DAG → Executor → WorkflowResult",
+				Summary:    "工作流引擎：两套工作流系统。Workflow Engine（配置驱动 DAG，YAML 定义，热重载，HITL）和 Graph System（代码驱动 Fluent Builder，条件边，可插拔调度器）。数据流：YAML → WorkflowLoader → Workflow+Step → DAG → Executor → StepResult",
 				Confidence: 0.95,
 				Tags:       []string{"workflow", "engine", "dag", "architecture"},
 			},

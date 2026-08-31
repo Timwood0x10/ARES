@@ -21,6 +21,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
@@ -44,6 +45,7 @@ func setupServeControlPlane(
 	peerKernel *kernelHandle,
 	obs *ares_bootstrap.ObservabilityProviders,
 	flightRecorder *flight.FlightRecorder,
+	lifecycle *evolution.StrategyLifecycle,
 ) (*introspect.Engine, *introspect.ControlServer, error) {
 	// Intelligence engine: observes the shared event stream (fed by the
 	// dedicated goroutine below, migrated from dashboard.EventBridge) to
@@ -117,6 +119,10 @@ func setupServeControlPlane(
 	// diagnostics / genealogy.
 	if flightRecorder != nil {
 		opts = append(opts, introspect.WithFlight(introspect.NewFlightRecorderAdapter(flightRecorder)))
+	}
+	// P2-2: evolution lifecycle state snapshot at /api/evolution/lifecycle.
+	if lifecycle != nil {
+		opts = append(opts, introspect.WithLifecycleSnapshot(lifecycle))
 	}
 	server := introspect.NewControlServer(agentsSource, opts...)
 	return intelEngine, server, nil

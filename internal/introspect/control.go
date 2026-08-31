@@ -78,6 +78,10 @@ type ControlServer struct {
 	// graph/decisions/diagnostics/genealogy) migrated from the deleted
 	// dashboard /flight/* routes. Nil disables the endpoints.
 	flight FlightProvider
+
+	// lifecycleSnapshot supplies the evolution lifecycle state (P2-2).
+	// Nil disables the /api/evolution/lifecycle endpoint.
+	lifecycle LifecycleSnapshotProvider
 }
 
 // EvolutionTrajectoryProvider supplies the evolution trajectory (v0.3.0 M3-1).
@@ -133,6 +137,26 @@ func WithObservability(provider ObservabilitySpansProvider) ControlServerOption 
 	}
 }
 
+// LifecycleSnapshotProvider supplies the evolution lifecycle state snapshot
+// (P2-2). The provider returns a JSON-friendly map describing the current
+// candidate state machine: active/previous/shadow strategy IDs, state, window
+// score, window sample count, and the most recent promote/rollback decision.
+// When not configured, the /api/evolution/lifecycle endpoint returns 404.
+type LifecycleSnapshotProvider interface {
+	// LifecycleSnapshot returns the current lifecycle state as a generic
+	// JSON-friendly map, or nil when the lifecycle is not configured.
+	LifecycleSnapshot() map[string]any
+}
+
+// WithLifecycleSnapshot attaches the evolution lifecycle snapshot provider
+// (P2-2). When set, the /api/evolution/lifecycle endpoint returns the current
+// state machine snapshot.
+func WithLifecycleSnapshot(provider LifecycleSnapshotProvider) ControlServerOption {
+	return func(s *ControlServer) {
+		s.lifecycle = provider
+	}
+}
+
 // NewControlServer builds the control-plane server. agents may be nil (the
 // agent endpoints then report 503, matching the old behavior of an
 // unconfigured monitoring plugin).
@@ -169,6 +193,9 @@ func (s *ControlServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"feedback endpoint requires auth, use action API"}`, http.StatusMethodNotAllowed)
 	case r.Method == http.MethodGet && path == "/api/observability/spans":
 		s.handleObservabilitySpans(w, r)
+	// P2-2: evolution lifecycle state snapshot.
+	case r.Method == http.MethodGet && path == "/api/evolution/lifecycle":
+		s.handleLifecycleSnapshot(w, r)
 	// Flight-recorder read surfaces (migrated from dashboard /flight/*):
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/flight/"):
 		s.serveFlight(w, r, path)
@@ -195,6 +222,20 @@ func (s *ControlServer) serveFlight(w http.ResponseWriter, r *http.Request, path
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *ControlServer) handleLifecycleSnapshot(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.lifecycle == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{keyError: "lifecycle snapshot not configured"})
+		return
+	}
+	snap := s.lifecycle.LifecycleSnapshot()
+	if snap == nil {
+		snap = map[string]any{}
+	}
+	_ = json.NewEncoder(w).Encode(snap)
 }
 
 func (s *ControlServer) handleEvolutionTrajectory(w http.ResponseWriter, r *http.Request) {

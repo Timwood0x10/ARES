@@ -52,6 +52,11 @@ type NewEvolutionComponents struct {
 	// no wired evolution system exists.
 	GAGenerationActive func() bool
 
+	// Lifecycle is the strategy lifecycle orchestrator (P2-2). When set,
+	// serve wires it into the introspect control plane so
+	// /api/evolution/lifecycle returns a state snapshot.
+	Lifecycle *evolution.StrategyLifecycle
+
 	// liveDAG holds the agent's live workflow DAG injected after bootstrap
 	// so the evolution system's executors operate on real runtime state
 	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents

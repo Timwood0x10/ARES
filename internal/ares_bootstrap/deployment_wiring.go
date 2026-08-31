@@ -15,6 +15,12 @@ import (
 // mean from the shared EvidenceStore (Stage 7): promotion only proceeds when
 // observed workflow/scheduler fitness supports the threshold.
 //
+// B6 fix: Evaluate now aggregates fitness from multiple evidence sources
+// (workflow, scheduler, recovery, strategy) instead of only "workflow".
+// When no evidence exists across all sources, it returns ColdStartScore
+// (default 0.5, configurable) so cold-start patches are not universally
+// rejected — the caller decides the conservative policy.
+//
 // History: this struct previously called r.reg.Apply on the SAME *patch.Registry
 // the live runtime uses. Staging therefore mutated production state (memory
 // config, knowledge runtime, DAG recovery policies) for patches that were then
@@ -25,6 +31,9 @@ type deploymentStagingRuntime struct {
 	reg           *patch.Registry
 	evidenceStore evidence.Store
 	applyCount    int
+	// coldStartScore is the fitness returned when no evidence exists across
+	// any source (B6 fix). Default 0.5 — conservative but not a universal reject.
+	coldStartScore float64
 }
 
 func (r *deploymentStagingRuntime) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
@@ -37,20 +46,32 @@ func (r *deploymentStagingRuntime) Apply(_ context.Context, p patch.RuntimePatch
 	return &p, nil
 }
 
+// stagingFitnessSources are the evidence sources whose fitness is aggregated
+// to score a staging patch. B6 fix: previously only "workflow" was queried,
+// causing cold-start patches to be universally rejected (score 0.0).
+var stagingFitnessSources = []string{"workflow", "scheduler", "recovery", "strategy"}
+
 func (r *deploymentStagingRuntime) Evaluate(ctx context.Context) (float64, error) {
-	// Stage 7: score against real observed fitness instead of a nominal 1.0.
-	// When no fitness evidence exists yet, return 0.0 so the pipeline rejects
-	// the patch (no fabricated pass). The mean across workflow fitness is used
-	// as the shadow score; scheduler/recovery can be added when their genomes
-	// produce fitness for the same window.
+	// B6 fix: aggregate fitness from multiple evidence sources instead of
+	// only "workflow". When no evidence exists across any source, return
+	// ColdStartScore so cold-start patches are not universally rejected.
 	if r.evidenceStore == nil {
-		return 0.0, nil
+		return r.coldStartScore, nil
 	}
-	mean, count, ok := recentFitnessSummary(ctx, r.evidenceStore, "workflow", 50)
-	if !ok || count == 0 {
-		return 0.0, nil
+	var sum float64
+	var count int
+	for _, src := range stagingFitnessSources {
+		mean, c, ok := recentFitnessSummary(ctx, r.evidenceStore, src, fitnessWindowSize)
+		if !ok || c == 0 {
+			continue
+		}
+		sum += mean
+		count++
 	}
-	return mean, nil
+	if count == 0 {
+		return r.coldStartScore, nil
+	}
+	return sum / float64(count), nil
 }
 
 func (r *deploymentStagingRuntime) Rollback(_ context.Context, _ *patch.RuntimePatch) error {

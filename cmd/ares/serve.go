@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -325,7 +326,11 @@ func runServe() error {
 	// intelligence engine + read-only control server (extracted to
 	// setupServeControlPlane to keep runServe's cyclomatic complexity within
 	// gocyclo's 30 limit). The old MonitorPlugin/tabs/PluginBus bridge is gone.
-	intelEngine, controlServer, err := setupServeControlPlane(ctx, g, cfg, cfgStore, store, peerKernel, comp.Dashboard, comp.FlightRecorder)
+	var lifecycleForServe *evolution.StrategyLifecycle
+	if comp.NewEvolution != nil {
+		lifecycleForServe = comp.NewEvolution.Lifecycle
+	}
+	intelEngine, controlServer, err := setupServeControlPlane(ctx, g, cfg, cfgStore, store, peerKernel, comp.Dashboard, comp.FlightRecorder, lifecycleForServe)
 	if err != nil {
 		return err
 	}

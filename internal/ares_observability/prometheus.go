@@ -29,6 +29,11 @@ type PrometheusMetrics struct {
 	EvolutionGuardrailTotal *prometheus.CounterVec
 	EvolutionShadowTotal    *prometheus.CounterVec
 
+	// P2-1: Lifecycle-specific counters for promote/rollback/gate-reject.
+	EvolutionPromoteTotal    *prometheus.CounterVec
+	EvolutionRollbackTotal   *prometheus.CounterVec
+	EvolutionGateRejectTotal *prometheus.CounterVec
+
 	// Histograms
 	LLMCallDuration   *prometheus.HistogramVec
 	AgentStepDuration *prometheus.HistogramVec
@@ -37,6 +42,11 @@ type PrometheusMetrics struct {
 	ActiveAgents        prometheus.Gauge
 	LLMTokensTotal      *prometheus.GaugeVec
 	EvolutionScoreGauge *prometheus.GaugeVec
+
+	// P2-1: Shadow win-rate gauge — the fraction of shadow comparisons the
+	// candidate won in the current window. Updated after each shadow
+	// evaluation cycle.
+	EvolutionShadowWinRate prometheus.Gauge
 
 	// Summary
 	CostUSDTotal *prometheus.SummaryVec
@@ -139,6 +149,33 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 			},
 			[]string{"strategy_id"},
 		),
+		EvolutionPromoteTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_promote_total",
+				Help: "Total number of strategy promotions by result",
+			},
+			[]string{"result"},
+		),
+		EvolutionRollbackTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_rollback_total",
+				Help: "Total number of strategy rollbacks by reason",
+			},
+			[]string{"reason"},
+		),
+		EvolutionGateRejectTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_gate_reject_total",
+				Help: "Total number of verify-gate rejections by gate name",
+			},
+			[]string{"gate"},
+		),
+		EvolutionShadowWinRate: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_shadow_win_rate",
+				Help: "Fraction of shadow comparisons won by the candidate strategy",
+			},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -155,6 +192,10 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionGuardrailTotal,
 		m.EvolutionShadowTotal,
 		m.EvolutionScoreGauge,
+		m.EvolutionPromoteTotal,
+		m.EvolutionRollbackTotal,
+		m.EvolutionGateRejectTotal,
+		m.EvolutionShadowWinRate,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -316,6 +357,54 @@ func (m *PrometheusMetrics) SetEvolutionScore(strategyID string, score float64) 
 		return
 	}
 	m.EvolutionScoreGauge.WithLabelValues(strategyID).Set(score)
+}
+
+// RecordEvolutionPromote increments the promote counter for the given result
+// (P2-1). Typical result values: "success", "deploy_failed".
+//
+// Args:
+//   - result: the promotion outcome.
+func (m *PrometheusMetrics) RecordEvolutionPromote(result string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionPromoteTotal.WithLabelValues(result).Inc()
+}
+
+// RecordEvolutionRollback increments the rollback counter for the given reason
+// (P2-1). Typical reason values: "degradation", "guardrail", "manual".
+//
+// Args:
+//   - reason: the rollback trigger reason.
+func (m *PrometheusMetrics) RecordEvolutionRollback(reason string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionRollbackTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordEvolutionGateReject increments the gate-reject counter for the given
+// gate name (P2-1).
+//
+// Args:
+//   - gate: the name of the verify gate that rejected the candidate.
+func (m *PrometheusMetrics) RecordEvolutionGateReject(gate string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionGateRejectTotal.WithLabelValues(gate).Inc()
+}
+
+// SetEvolutionShadowWinRate sets the current shadow win-rate gauge value
+// (P2-1). The value should be in [0,1].
+//
+// Args:
+//   - rate: the fraction of shadow comparisons won by the candidate.
+func (m *PrometheusMetrics) SetEvolutionShadowWinRate(rate float64) {
+	if m == nil {
+		return
+	}
+	m.EvolutionShadowWinRate.Set(rate)
 }
 
 // RecordCost observes a cost value for a model and session.
