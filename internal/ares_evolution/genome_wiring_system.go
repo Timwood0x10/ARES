@@ -133,6 +133,13 @@ type SystemConfig struct {
 	MutationConfig
 	SchedulerConfig
 	DependencyConfig
+
+	// Lifecycle, when non-nil, overrides the default StrategyLifecycle and
+	// RuntimeFitnessAggregator configuration (fitness window, judge
+	// thresholds, weights, watch interval, gate settings). Bootstrap wires
+	// it from the evolution YAML config (design doc §7); nil keeps the
+	// code defaults from DefaultLifecycleConfig.
+	Lifecycle *LifecycleConfig
 }
 
 // DefaultSystemConfig returns sensible defaults.
@@ -188,11 +195,11 @@ func buildMutator(cfg SystemConfig) (*mutatorResult, error) {
 	var genomeMut genome.MutatorInterface = rawMutator
 
 	if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
-		el.Info(context.Background(), "buildMutator", "experience-guided mutation requested; provider wired",
+		log.InfoContext(context.Background(), "experience-guided mutation requested; provider wired", "method", "buildMutator",
 			"hint_provider", fmt.Sprintf("%T", cfg.GuidanceProvider))
 		genomeMut = wrapGuidanceProvider(cfg.GuidanceProvider, rawMutator)
 	} else if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider == nil {
-		el.Warn(context.Background(), "buildMutator", "experience-guided mutation requested but no GuidanceProvider set")
+		log.WarnContext(context.Background(), "experience-guided mutation requested but no GuidanceProvider set", "method", "buildMutator")
 	}
 
 	var adaptiveDist *mutation.AdaptiveDistribution
@@ -307,7 +314,7 @@ func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.Tier
 		memScorer, err := scoring.NewMemoryAwareScorer(tiered, cfg.MemoryExperienceProvider,
 			cfg.MemoryAwareScoringConfig)
 		if err != nil {
-			el.Warn(context.Background(), "buildAdapterOptions", "failed to create memory-aware scorer, skipping",
+			log.WarnContext(context.Background(), "failed to create memory-aware scorer, skipping", "method", "buildAdapterOptions",
 				"error", err)
 		} else {
 			opts = append(opts, WithAdapterMemoryAwareScoring(memScorer))
@@ -531,7 +538,15 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		}
 	}
 
-	if cfg.ShadowEvalConfig.Enabled && cfg.Scorer != nil {
+	// B3 fix: ShadowEvaluator is built whenever shadow evaluation is
+	// enabled — not only when an LLM scorer exists. buildShadowEvaluator
+	// is nil-scorer-safe, and the StrategyLifecycle's G2 shadow gate needs
+	// the evaluator instance to exist so it can judge comparisons fed by
+	// whichever sampler is active (DreamCycle when enabled). With the old
+	// `&& cfg.Scorer != nil` condition the G2 gate silently vanished in
+	// every default config (LLM scoring off) — a gate that doesn't exist
+	// cannot even pass through.
+	if cfg.ShadowEvalConfig.Enabled {
 		se := buildShadowEvaluator(cfg, base)
 		system.ShadowEvaluator = se
 		// B3 fix: ShadowEvaluator is no longer exclusively tied to DreamCycle.
@@ -559,8 +574,19 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	// attached so the verify pipeline works without DreamCycle.
 	if system.ActiveStrategyManager != nil {
 		aggCfg := DefaultAggregatorConfig()
-		agg := NewRuntimeFitnessAggregator(nil, aggCfg) // store set later by bootstrap
 		lcCfg := DefaultLifecycleConfig()
+		if cfg.Lifecycle != nil {
+			lcCfg = *cfg.Lifecycle
+			// The aggregator mirrors the lifecycle's judging knobs so both
+			// stages apply the same cold-start/window semantics from YAML.
+			aggCfg = AggregatorConfig{
+				WindowSize:            lcCfg.FitnessWindow,
+				MinSamplesBeforeJudge: lcCfg.MinSamplesBeforeJudge,
+				ColdStartScore:        lcCfg.ColdStartScore,
+				Weights:               lcCfg.Weights,
+			}
+		}
+		agg := NewRuntimeFitnessAggregator(nil, aggCfg) // store set later by bootstrap
 		lcOpts := []LifecycleOption{}
 		if system.ShadowEvaluator != nil {
 			lcOpts = append(lcOpts, WithLifecycleShadowEvaluator(system.ShadowEvaluator))
@@ -621,7 +647,7 @@ func buildShadowEvaluator(cfg SystemConfig, baseStrategy *mutation.Strategy) *Sh
 			return scorer(s)
 		})
 	}
-	el.Info(context.Background(), "buildShadowEvaluator", "shadow evaluation enabled",
+	log.InfoContext(context.Background(), "shadow evaluation enabled", "method", "buildShadowEvaluator",
 		"min_samples", cfg.ShadowEvalConfig.MinSamples,
 		"min_win_rate", cfg.ShadowEvalConfig.MinWinRate,
 		"active_strategy", baseStrategy.ID,
@@ -679,11 +705,11 @@ func wrapGuidanceProvider(provider GuidanceProvider, raw *mutation.Mutator) geno
 	adaptedProvider := &guidanceHintAdapter{inner: provider}
 	guided, err := mutation.NewExperienceGuidedMutator(raw, adaptedProvider)
 	if err != nil {
-		el.Warn(context.Background(), "wrapGuidanceProvider", "failed to create ExperienceGuidedMutator, falling back to raw mutator",
+		log.WarnContext(context.Background(), "failed to create ExperienceGuidedMutator, falling back to raw mutator", "method", "wrapGuidanceProvider",
 			"error", err)
 		return raw
 	}
-	el.Info(context.Background(), "wrapGuidanceProvider", "experience-guided mutation enabled",
+	log.InfoContext(context.Background(), "experience-guided mutation enabled", "method", "wrapGuidanceProvider",
 		"provider", fmt.Sprintf("%T", provider),
 	)
 	return guided
@@ -740,7 +766,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		}
 
 		if err := system.PopAdapter.Run(ctx); err != nil {
-			el.Warn(ctx, "RunIdleEvolution", "generation produced guardrail warning, continuing", "generation", system.Population.Generation,
+			log.WarnContext(ctx, "generation produced guardrail warning, continuing", "method", "RunIdleEvolution", "generation", system.Population.Generation,
 				"run_iteration", gen,
 				"error", err,
 			)
@@ -749,7 +775,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		if system.Genealogy != nil {
 			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, parentSnapshot, gen)
 			if err != nil {
-				el.Warn(ctx, "RunIdleEvolution", "failed to record lineage", "generation", system.Population.Generation,
+				log.WarnContext(ctx, "failed to record lineage", "method", "RunIdleEvolution", "generation", system.Population.Generation,
 					"run_iteration", gen,
 					"error", err,
 				)
@@ -763,14 +789,14 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 				agents, _ := system.Population.Snapshot()
 				ref, err := system.Reflector.Reflect(ctx, history, agents)
 				if err != nil {
-					el.Warn(ctx, "RunIdleEvolution", "reflection failed, skipping", "generation", system.Population.Generation,
+					log.WarnContext(ctx, "reflection failed, skipping", "method", "RunIdleEvolution", "generation", system.Population.Generation,
 						"run_iteration", gen,
 						"error", err,
 					)
 				} else if ref != nil && len(ref.Recommendations) > 0 {
 					hyps := system.HypothesisGen.Generate(ctx, ref)
 					if len(hyps) > 0 {
-						el.Info(ctx, "RunIdleEvolution", "generated hypotheses from reflection", "generation", system.Population.Generation,
+						log.InfoContext(ctx, "generated hypotheses from reflection", "method", "RunIdleEvolution", "generation", system.Population.Generation,
 							"run_iteration", gen,
 							"count", len(hyps),
 						)
@@ -789,7 +815,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		if system.DiffReg != nil && system.Coordinator != nil && system.GenomeReg != nil {
 			diffPatches, dErr := generateDiffPatches(ctx, system.GenomeReg, system.DiffReg, 3)
 			if dErr != nil {
-				el.Warn(ctx, "RunIdleEvolution", "diff engine failed, continuing", "error", dErr)
+				log.WarnContext(ctx, "diff engine failed, continuing", "method", "RunIdleEvolution", "error", dErr)
 			} else {
 				for _, dp := range diffPatches {
 					system.Coordinator.Submit(coordinator.PatchProposal{
@@ -810,7 +836,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		// Run the post-generation hook (promotion, report, etc.).
 		if system.AfterGeneration != nil {
 			if err := system.AfterGeneration(ctx, gen, system); err != nil {
-				el.Warn(ctx, "RunIdleEvolution", "AfterGeneration hook failed", "generation", system.Population.Generation,
+				log.WarnContext(ctx, "AfterGeneration hook failed", "method", "RunIdleEvolution", "generation", system.Population.Generation,
 					"run_iteration", gen,
 					"error", err,
 				)
@@ -821,7 +847,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 	// Run the post-run hook for final report generation.
 	if system.AfterRun != nil {
 		if err := system.AfterRun(ctx, system); err != nil {
-			el.Warn(ctx, "RunIdleEvolution", "AfterRun hook failed", "error", err)
+			log.WarnContext(ctx, "AfterRun hook failed", "method", "RunIdleEvolution", "error", err)
 		}
 	}
 
@@ -873,7 +899,7 @@ func generateDiffPatches(
 		// Step 1: Snapshot parent.
 		oldSnap, err := g.Snapshot(ctx)
 		if err != nil {
-			el.Warn(ctx, "generateDiffPatches", "parent snapshot failed, skipping",
+			log.WarnContext(ctx, "parent snapshot failed, skipping", "method", "generateDiffPatches",
 				"genome", name, "error", err)
 			continue
 		}
@@ -884,7 +910,7 @@ func generateDiffPatches(
 		// Step 2: Mutate → nChildren candidates.
 		children, err := g.Mutate(ctx, nChildren)
 		if err != nil {
-			el.Warn(ctx, "generateDiffPatches", "mutate failed, skipping",
+			log.WarnContext(ctx, "mutate failed, skipping", "method", "generateDiffPatches",
 				"genome", name, "error", err)
 			continue
 		}
@@ -893,7 +919,7 @@ func generateDiffPatches(
 		for _, child := range children {
 			newSnap, err := child.Snapshot(ctx)
 			if err != nil {
-				el.Warn(ctx, "generateDiffPatches", "child snapshot failed, skipping",
+				log.WarnContext(ctx, "child snapshot failed, skipping", "method", "generateDiffPatches",
 					"genome", name, "error", err)
 				continue
 			}
@@ -903,7 +929,7 @@ func generateDiffPatches(
 
 			patches, err := differ.Diff(ctx, oldSnap, newSnap)
 			if err != nil {
-				el.Warn(ctx, "generateDiffPatches", "diff failed, skipping",
+				log.WarnContext(ctx, "diff failed, skipping", "method", "generateDiffPatches",
 					"genome", name, "error", err)
 				continue
 			}

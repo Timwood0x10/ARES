@@ -227,12 +227,26 @@ func NewEvolutionScheduler(subscriber EventStoreSubscriber, adapter AdapterRunne
 // RecordScore adds a task score to the sliding window for trend detection.
 // Thread-safe. Keeps only the most recent scoreWindowSize scores.
 //
+// The score is clamped to [0,1]: the window feeds degradation detection on
+// the same scale as RollbackPolicy.DegradationThreshold (0.15), so an
+// out-of-range score would silently corrupt every trend computation
+// (dimensional consistency contract, design doc §9).
+//
 // Args:
 //
-//	score - the task execution score to record (0-100).
+//	score - the task execution score, normalized to [0,1]. Out-of-range
+//	   values are clamped, not rejected, so a mis-scaled caller degrades
+//	   to "always best/always worst" instead of poisoning the window.
 func (s *EvolutionScheduler) RecordScore(score float64) {
 	s.scoreMu.Lock()
 	defer s.scoreMu.Unlock()
+
+	if score < taskScoreFailure {
+		score = taskScoreFailure
+	}
+	if score > taskScoreSuccess {
+		score = taskScoreSuccess
+	}
 
 	if len(s.scores) >= scoreWindowSize {
 		n := make([]float64, scoreWindowSize-1)
@@ -443,7 +457,10 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		return false
 
 	case TriggerOnThreshold:
-		if avg <= 0 || recent <= 0 {
+		// Only avg must be positive: recent == 0 means every recent task
+		// failed, which is the strongest degradation signal there is and
+		// must not be excluded from the check.
+		if avg <= 0 {
 			return false
 		}
 		drop := (avg - recent) / avg
@@ -461,7 +478,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 			return false
 		}
 
-		if avg > 0 && recent > 0 {
+		if avg > 0 {
 			drop := (avg - recent) / avg
 			if drop >= degradationThreshold {
 				log.InfoContext(ctx, "[Evolution] Score degradation detected (idle)",

@@ -12,17 +12,29 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
+
+// newStagingRuntime builds a deploymentStagingRuntime over the given evidence
+// store with the zero-value cold-start score (0.0 — the pre-B6 behavior the
+// original tests pinned). Production construction (bootstrap.go) wires the
+// shared aggregator plus an explicit 0.5 cold-start score.
+func newStagingRuntime(store evidence.Store, reg *patch.Registry) *deploymentStagingRuntime {
+	return &deploymentStagingRuntime{
+		reg: reg,
+		agg: evolution.NewRuntimeFitnessAggregator(store, evolution.DefaultAggregatorConfig()),
+	}
+}
 
 // TestDeploymentStaging_NoEvidence_ReturnsZero verifies that with no fitness
 // evidence the shadow score is 0.0 — promotion is blocked instead of the old
 // constant 1.0 pass.
 func TestDeploymentStaging_NoEvidence_ReturnsZero(t *testing.T) {
 	reg := patch.NewRegistry()
-	r := &deploymentStagingRuntime{reg: reg, evidenceStore: evidence.NewMemoryStore()}
+	r := newStagingRuntime(evidence.NewMemoryStore(), reg)
 
 	score, err := r.Evaluate(context.Background())
 	require.NoError(t, err)
@@ -30,9 +42,11 @@ func TestDeploymentStaging_NoEvidence_ReturnsZero(t *testing.T) {
 		"shadow score must be 0.0 without evidence (no fabricated pass)")
 }
 
-// TestDeploymentStaging_NilEvidence_ReturnsZero covers the nil-store guard.
+// TestDeploymentStaging_NilEvidence_ReturnsZero covers the nil-store guard:
+// the aggregator is wired but has no store, Window reports count 0, and the
+// runtime falls back to the (zero) cold-start score.
 func TestDeploymentStaging_NilEvidence_ReturnsZero(t *testing.T) {
-	r := &deploymentStagingRuntime{reg: patch.NewRegistry(), evidenceStore: nil}
+	r := newStagingRuntime(nil, patch.NewRegistry())
 
 	score, err := r.Evaluate(context.Background())
 	require.NoError(t, err)
@@ -47,11 +61,26 @@ func TestDeploymentStaging_WithFitness_ReturnsMean(t *testing.T) {
 	require.NoError(t, seedFitnessEvidence(t, store, 1.0))
 	require.NoError(t, seedFitnessEvidence(t, store, 0.0))
 
-	r := &deploymentStagingRuntime{reg: patch.NewRegistry(), evidenceStore: store}
+	r := newStagingRuntime(store, patch.NewRegistry())
 	score, err := r.Evaluate(context.Background())
 	require.NoError(t, err)
 	assert.InDelta(t, 0.5, score, 0.001,
 		"shadow score must equal the mean of observed workflow fitness")
+}
+
+// TestDeploymentStaging_ExplicitColdStartScore pins the B6 contract: when the
+// construction site sets a cold-start score (bootstrap uses 0.5), a store
+// with zero evidence returns that score instead of the universal 0.0 reject.
+func TestDeploymentStaging_ExplicitColdStartScore(t *testing.T) {
+	r := &deploymentStagingRuntime{
+		reg:            patch.NewRegistry(),
+		agg:            evolution.NewRuntimeFitnessAggregator(evidence.NewMemoryStore(), evolution.DefaultAggregatorConfig()),
+		coldStartScore: 0.5,
+	}
+	score, err := r.Evaluate(context.Background())
+	require.NoError(t, err)
+	assert.InDelta(t, 0.5, score, 0.001,
+		"cold-start patches must receive the configured fallback score")
 }
 
 // seedFitnessEvidence writes one workflow fitness evidence with the given value.
@@ -76,7 +105,7 @@ func TestDeploymentStaging_DoesNotMutateLiveRegistry(t *testing.T) {
 	require.NoError(t, reg.RegisterComponent(aresmemory.NewMemoryPatchExecutor(memStore)))
 	require.True(t, reg.CanApply("memory"), "memory patch component must be registered")
 
-	r := &deploymentStagingRuntime{reg: reg, evidenceStore: evidence.NewMemoryStore()}
+	r := newStagingRuntime(evidence.NewMemoryStore(), reg)
 
 	p := patch.RuntimePatch{
 		Type:   patch.PatchChangePlanner,
@@ -98,7 +127,7 @@ func TestDeploymentStaging_DoesNotMutateLiveRegistry(t *testing.T) {
 
 	// A target with no registered executor is rejected by the preflight,
 	// preserving the old "staging apply failed" rejection class.
-	orphan := &deploymentStagingRuntime{reg: patch.NewRegistry(), evidenceStore: evidence.NewMemoryStore()}
+	orphan := newStagingRuntime(evidence.NewMemoryStore(), patch.NewRegistry())
 	_, err = orphan.Apply(ctx, patch.RuntimePatch{Type: patch.PatchChangePlanner, Target: "nope"})
 	require.Error(t, err)
 }

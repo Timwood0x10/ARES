@@ -72,6 +72,12 @@ type VerifyGate interface {
 }
 
 // LifecycleConfig groups all StrategyLifecycle settings.
+//
+// Note on scope: only settings the lifecycle itself consumes live here.
+// Rollback thresholds and shadow thresholds are consumed by
+// ActiveStrategyManager / ShadowEvaluator respectively, built from
+// SystemConfig.RollbackPolicyConfig / SystemConfig.ShadowEvalConfig — they
+// are deliberately NOT duplicated in this struct.
 type LifecycleConfig struct {
 	// Enabled activates the lifecycle orchestrator. When false, Submit
 	// falls back to the legacy direct-deploy path (backward compatible).
@@ -86,12 +92,13 @@ type LifecycleConfig struct {
 	ColdStartScore float64 `json:"cold_start_score"`
 	// Weights controls per-source fitness contribution.
 	Weights FitnessWeights `json:"weights"`
-	// Penalty configures cost/latency deductions.
-	Penalty FitnessPenaltyConfig `json:"penalty"`
-	// Shadow configures shadow evaluation thresholds.
-	Shadow ShadowEvaluationConfig `json:"shadow"`
-	// Rollback configures degradation detection.
-	Rollback RollbackPolicyConfig `json:"rollback"`
+	// WatchInterval is the rollback watch-loop tick interval. Zero or
+	// negative falls back to defaultWatchInterval.
+	WatchInterval time.Duration `json:"watch_interval"`
+	// BlacklistGenerations is how many generations a rolled-back candidate
+	// stays banned from re-nomination (§9: rollback oscillation damping).
+	// Zero or negative falls back to defaultBlacklistGenerations.
+	BlacklistGenerations int `json:"blacklist_generations"`
 	// Gates holds verify-gate-specific settings.
 	Gates GateConfig `json:"gates"`
 }
@@ -102,38 +109,50 @@ type GateConfig struct {
 	// pass. Set to 0 to disable the eval gate.
 	EvalMinScore float64 `json:"eval_min_score"`
 	// RequireManualApproval, when true, holds candidates in SHADOW until an
-	// external API call explicitly approves them (P2-4).
+	// external API call explicitly approves them (P2-4). Submit returns
+	// immediately — the CANDIDATE is held, never the caller's goroutine.
 	RequireManualApproval bool `json:"require_manual_approval"`
+}
+
+// defaultWatchInterval is the rollback watch-loop period when
+// LifecycleConfig.WatchInterval is unset.
+const defaultWatchInterval = 30 * time.Second
+
+// defaultBlacklistGenerations is the re-nomination ban window (in
+// generations) applied to a rolled-back candidate when
+// LifecycleConfig.BlacklistGenerations is unset.
+const defaultBlacklistGenerations = 3
+
+// blacklistGenerations returns the effective ban window.
+func (c LifecycleConfig) blacklistGenerations() int {
+	if c.BlacklistGenerations > 0 {
+		return c.BlacklistGenerations
+	}
+	return defaultBlacklistGenerations
 }
 
 // DefaultLifecycleConfig returns sensible defaults matching the design doc.
 func DefaultLifecycleConfig() LifecycleConfig {
-	shadowCfg := DefaultShadowEvaluationConfig()
-	shadowCfg.Enabled = true
-	shadowCfg.MinSamples = 20
-	shadowCfg.MinWinRate = 0.55
 	return LifecycleConfig{
 		Enabled:               true,
 		FitnessWindow:         50,
 		MinSamplesBeforeJudge: 10,
 		ColdStartScore:        0.5,
 		Weights:               DefaultFitnessWeights(),
-		Shadow:                shadowCfg,
-		Rollback: RollbackPolicyConfig{
-			Enabled:              true,
-			DegradationThreshold: 0.15,
-			WindowSize:           5,
-			MinSamples:           3,
-		},
+		WatchInterval:         defaultWatchInterval,
+		BlacklistGenerations:  defaultBlacklistGenerations,
 		Gates: GateConfig{
 			EvalMinScore: 0.7,
 		},
 	}
 }
 
-// lifecycleSnapshot is a point-in-time copy of the lifecycle state for
+// lifecycleSnapshot was renamed to LifecycleState: the type name clashed with
+// the LifecycleSnapshot METHOD (required by introspect.LifecycleSnapshotProvider),
+// which read like two different things sharing one name.
+// LifecycleState is a point-in-time copy of the lifecycle state for
 // the HTTP /evolution/lifecycle endpoint (P2-2).
-type LifecycleSnapshot struct {
+type LifecycleState struct {
 	ActiveID        string  `json:"active_id"`
 	PreviousID      string  `json:"previous_id,omitempty"`
 	ShadowID        string  `json:"shadow_id,omitempty"`
@@ -164,21 +183,44 @@ type StrategyLifecycle struct {
 	currentCandidate *mutation.Strategy
 	// generation is the GA generation that produced the current candidate.
 	generation int
-	// blacklist holds strategy IDs that were rolled back and are banned
-	// from re-nomination for the current generation window.
-	blacklist map[string]int // strategyID → generation when blacklisted
+	// blacklist holds strategy IDs that were rolled back, mapped to the
+	// generation at which the ban LIFTS (banUntil = rollBackGen + N, §9).
+	// Entries are pruned once the submitted generation passes banUntil.
+	blacklist map[string]int // strategyID → generation when the ban lifts
 	// cancel stops the watch loop.
 	cancel context.CancelFunc
+	// done is closed when the watch loop exits; Stop waits on it so a
+	// shutdown sequence cannot race a late rollback decision (K3: no
+	// fire-and-forget goroutines — Start/Stop is a managed pair).
+	done chan struct{}
 	// lastDecision is the reason for the most recent promote/rollback.
 	lastDecision string
 
-	// pendingApproval is set when RequireManualApproval is true and the
-	// candidate is held in SHADOW awaiting an external Approve call (P2-4).
+	// heldCandidate is the strategy currently held in SHADOW awaiting an
+	// external Approve() call (P2-4, RequireManualApproval=true). Submit
+	// stores it and RETURNS immediately — the candidate is held, not the
+	// caller's goroutine: the ticker/adapter path must never block on human
+	// latency. When Approve() arrives, the held candidate is promoted by
+	// the next Submit (or by ApproveWithAction).
+	heldCandidate *mutation.Strategy
+	// heldGeneration is the GA generation that produced heldCandidate.
+	heldGeneration int
+	// pendingApproval mirrors heldCandidate != nil for cheap Snapshot reads.
 	pendingApproval bool
-	// approvalCh is the channel that Approve() sends on to unblock a
-	// waiting Submit call (P2-4). Allocated on first Submit when
-	// RequireManualApproval is true.
-	approvalCh chan struct{}
+	// lastWindowAt is the newest evidence timestamp seen by the previous
+	// watch tick. RecordScore fires only when the window ADVANCES — judged
+	// by this TIMESTAMP, not by the record count: each source's count
+	// saturates at WindowSize (50), and under steady-state churn the count
+	// stays flat forever ("one in, one out"), which would silently kill the
+	// rollback feed if judged by count (12h-soak certainty, not an edge
+	// case). The timestamp is reset on promote so the new strategy's first
+	// window records immediately.
+	lastWindowAt time.Time
+	// seeded marks that the lifecycle has performed (or observed) its one
+	// seed deployment. After it flips, NO candidate may skip the gate
+	// pipeline — even if the ASM later reports no active strategy (reset or
+	// emptied store), which would otherwise re-open the gate-free path.
+	seeded bool
 
 	// gates holds the ordered verify gates.
 	gates []VerifyGate
@@ -197,8 +239,13 @@ func WithLifecycleGates(gates ...VerifyGate) LifecycleOption {
 }
 
 // WithLifecycleShadowEvaluator attaches a ShadowEvaluator for the G2 gate.
-// When set, the lifecycle uses it for shadow evaluation instead of
-// DreamCycle (B3 fix).
+// When set, the lifecycle registers a shadow verify gate AHEAD of any
+// explicitly supplied gates (G2 runs before G3 eval), and the evaluator's
+// accumulated comparisons are enforced fail-closed: enough samples with a
+// win rate at or above the configured threshold → pass; below, or no data
+// yet → reject (design doc §3.1; the data feeder — DreamCycle today, a
+// task-level sampler per P0-9 — owns StartShadow/RecordResult; the gate is
+// read-only).
 func WithLifecycleShadowEvaluator(se *ShadowEvaluator) LifecycleOption {
 	return func(l *StrategyLifecycle) {
 		l.shadow = se
@@ -247,11 +294,71 @@ func NewStrategyLifecycle(
 	for _, opt := range opts {
 		opt(l)
 	}
+	// G2: when a ShadowEvaluator is wired, register the shadow verify gate
+	// ahead of any explicitly supplied gates so the pipeline order is
+	// G2 shadow → G3 eval → ... (B3 fix: previously the evaluator was
+	// assigned to l.shadow but never read by the promote pipeline).
+	if l.shadow != nil {
+		l.gates = append([]VerifyGate{shadowVerifyGate{l}}, l.gates...)
+	}
 	return l
 }
 
+// shadowVerifyGate adapts the lifecycle's ShadowEvaluator into the G2 verify
+// gate. It is deliberately read-only: ShouldDeploy consults the comparisons
+// that the data feeder (DreamCycle's shadow flow, or a future task-level
+// sampler — tracked as P0-9) recorded via StartShadow/RecordResult. The gate
+// never calls StartShadow itself — that would reset accumulated comparisons
+// on every Submit and destroy the evidence it is supposed to judge.
+//
+// SEMANTICS (review 阻断项 1, resolved in favor of fail-closed): with zero
+// comparisons the gate REJECTS, mirroring design doc §3.1 ("样本 < MinSamples
+// → 继续留在 SHADOW，不下发"). Passing candidates without any shadow evidence
+// made the whole verify pipeline a no-op in default configs (DreamCycle is
+// disabled, so nothing feeds comparisons) — the previous "skip" branch
+// silently reduced Submit to unconditional promote. Known consequence until
+// the P0-9 feeder lands: in default configs candidates stay held out of
+// production after the seed baseline; that is the safe direction of failure.
+type shadowVerifyGate struct{ l *StrategyLifecycle }
+
+func (g shadowVerifyGate) Name() string { return "shadow" }
+
+func (g shadowVerifyGate) Check(_ context.Context, _ *mutation.Strategy, _ *mutation.Strategy) (bool, float64, string) {
+	se := g.l.shadow
+	if se == nil {
+		// Unreachable when registered via NewStrategyLifecycle (the gate is
+		// only appended when l.shadow != nil); kept nil-safe anyway.
+		return true, 0, "shadow evaluator not wired, skipping"
+	}
+	ok, report := se.ShouldDeploy()
+	// P2-1: publish the win rate from THIS gate, not only from DreamCycle's
+	// shadow flow. Bootstrap runs with EnableDreamCycle=false and the
+	// scheduler drives popAdapter.Run → lifecycle.Submit, so the DreamCycle
+	// write point never executes in production and the gauge would stay
+	// permanently zero. This is the gate the promote decision actually goes
+	// through, so it is the authoritative source for the gauge.
+	if g.l.metrics != nil && report != nil {
+		g.l.metrics.SetEvolutionShadowWinRate(report.WinRate)
+	}
+	if report == nil || report.TotalComparisons == 0 {
+		// FAIL-CLOSED: no shadow evidence at all. The gate cannot vouch for
+		// the candidate, so it does not pass. See the type comment — this
+		// branch is the difference between a verify pipeline and a rubber
+		// stamp.
+		return false, 0, "no shadow comparisons recorded — fail-closed (P0-9 feeder pending)"
+	}
+	if ok {
+		return true, report.WinRate,
+			fmt.Sprintf("shadow win rate %.2f over %d comparisons meets threshold", report.WinRate, report.TotalComparisons)
+	}
+	return false, report.WinRate,
+		fmt.Sprintf("shadow win rate %.2f over %d comparisons below threshold (insufficient samples counts as fail)", report.WinRate, report.TotalComparisons)
+}
+
 // Start launches the rollback watch loop. It is idempotent. The loop runs
-// until ctx is cancelled or Stop is called.
+// until ctx is cancelled or Stop is called; Stop waits for the loop goroutine
+// to exit so the lifecycle never leaks or races a late rollback (K3: managed
+// goroutine pair, no fire-and-forget).
 func (l *StrategyLifecycle) Start(ctx context.Context) {
 	if l == nil || !l.cfg.Enabled {
 		return
@@ -263,22 +370,40 @@ func (l *StrategyLifecycle) Start(ctx context.Context) {
 	}
 	watchCtx, cancel := context.WithCancel(ctx)
 	l.cancel = cancel
+	l.done = make(chan struct{})
+	done := l.done
 	l.mu.Unlock()
 
-	go l.watch(watchCtx)
+	go func() {
+		// K3: production background goroutines must not die silently or take
+		// the process down on a bug — recover, log, and exit cleanly.
+		defer func() {
+			if r := recover(); r != nil {
+				log.ErrorContext(context.Background(), "watch loop panicked",
+					"method", "watch", "error", fmt.Errorf("panic: %v", r))
+			}
+			close(done)
+		}()
+		l.watch(watchCtx)
+	}()
 }
 
-// Stop cancels the watch loop.
+// Stop cancels the watch loop and waits for it to exit.
 func (l *StrategyLifecycle) Stop() {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	cancel := l.cancel
+	done := l.done
 	l.cancel = nil
+	l.done = nil
 	l.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if done != nil {
+		<-done
 	}
 }
 
@@ -287,19 +412,77 @@ func (l *StrategyLifecycle) Stop() {
 // The candidate goes through the verify-gate pipeline before being
 // promoted to ACTIVE. If any gate fails, the candidate is discarded and the
 // active strategy remains unchanged.
+//
+// Two special cases:
+//
+//   - Seed deploy: when NO strategy is active yet there is nothing to
+//     shadow-compare against, so the first candidate is promoted without
+//     gates (it becomes the baseline that §9 relies on as "previous"). Every
+//     subsequent candidate must earn promotion through the gates.
+//   - Manual approval (P2-4): when RequireManualApproval is set, the
+//     candidate is HELD in SHADOW and Submit RETURNS immediately — the
+//     candidate waits, never the caller's goroutine (the ticker/adapter
+//     path must not block on human latency).
 func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Strategy, generation int) {
 	if l == nil || !l.cfg.Enabled || candidate == nil {
 		return
 	}
 
-	// Check blacklist: candidates rolled back in this generation window
-	// are banned from re-nomination.
+	// Seed deploy: no active strategy → nothing to verify against. Promote
+	// unconditionally so the baseline exists (design doc §9: "基线策略
+	// bootstrap-root 永远可作为 previous").
+	//
+	// The exemption is a ONE-SHOT flag, not derived from asm.Current()==nil:
+	// if the ASM were ever reset (or its store emptied) mid-flight, a
+	// Current()==nil test would let the next candidate skip ALL gates again.
+	// Once seeded, every candidate must earn promotion (review 修复 5).
+	// Note: an ASM that ALREADY holds an externally deployed strategy is
+	// "born seeded" — the first Submit runs the gates against it.
+	hasActive := l.asm != nil && l.asm.Current() != nil
+
 	l.mu.Lock()
-	if gen, blacklisted := l.blacklist[candidate.ID]; blacklisted && gen >= generation {
+	if !l.seeded {
+		l.seeded = true
+		if !hasActive {
+			l.mu.Unlock()
+			log.InfoContext(ctx, "no active strategy, promoting seed baseline without gates",
+				"method", "lifecycle.Submit",
+				"strategy_id", candidate.ID,
+				"generation", generation,
+			)
+			l.promote(ctx, candidate)
+			return
+		}
+	}
+
+	// A candidate is already awaiting manual approval: reject new
+	// submissions until an operator decides (replacing the held candidate
+	// silently would defeat the gate).
+	if l.pendingApproval {
 		l.mu.Unlock()
-		el.Info(ctx, "lifecycle.Submit", "candidate is blacklisted, skipping",
+		log.InfoContext(ctx, "manual approval pending, rejecting new candidate", "method", "lifecycle.Submit",
 			"strategy_id", candidate.ID,
 			"generation", generation,
+			"held_id", l.heldCandidateIDLocked(),
+		)
+		return
+	}
+
+	// Check blacklist: candidates rolled back within the ban window
+	// (rollBackGen + N generations) are banned from re-nomination (§9
+	// rollback-oscillation damping). Entries are pruned once the submitted
+	// generation reaches the ban-lift generation.
+	for id, banUntil := range l.blacklist {
+		if banUntil <= generation {
+			delete(l.blacklist, id)
+		}
+	}
+	if banUntil, blacklisted := l.blacklist[candidate.ID]; blacklisted && generation < banUntil {
+		l.mu.Unlock()
+		log.InfoContext(ctx, "candidate is blacklisted, skipping", "method", "lifecycle.Submit",
+			"strategy_id", candidate.ID,
+			"generation", generation,
+			"ban_until_generation", banUntil,
 		)
 		return
 	}
@@ -308,7 +491,7 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 	l.generation = generation
 	l.mu.Unlock()
 
-	el.Info(ctx, "lifecycle.Submit", "candidate submitted",
+	log.InfoContext(ctx, "candidate submitted", "method", "lifecycle.Submit",
 		"strategy_id", candidate.ID,
 		"generation", generation,
 		"score", candidate.Score,
@@ -319,7 +502,7 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 	for _, gate := range l.gates {
 		pass, score, reason := gate.Check(ctx, candidate, active)
 		if !pass {
-			el.Info(ctx, "lifecycle.Submit", "gate rejected candidate",
+			log.InfoContext(ctx, "gate rejected candidate", "method", "lifecycle.Submit",
 				"gate", gate.Name(),
 				"strategy_id", candidate.ID,
 				"score", score,
@@ -332,63 +515,67 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 			l.mu.Unlock()
 			return
 		}
-		el.Debug(ctx, "lifecycle.Submit", "gate passed",
+		log.DebugContext(ctx, "gate passed", "method", "lifecycle.Submit",
 			"gate", gate.Name(),
 			"strategy_id", candidate.ID,
 			"score", score,
 		)
 	}
 
-	// P2-4: when manual approval is required, hold the candidate in
-	// SHADOW and block until Approve() is called. The candidate is not
-	// promoted until an external caller signals approval.
+	// P2-4: when manual approval is required, HOLD the candidate in SHADOW
+	// and return immediately. The candidate sits pending until Approve()
+	// promotes it (or a later Submit replaces it after approval/rejection).
+	// Blocking here would stall the whole evolution heartbeat: the call
+	// chain is bootstrap ticker → scheduler.Tick → adapter.Run → Submit,
+	// and a human response can take hours.
 	if l.cfg.Gates.RequireManualApproval {
 		l.mu.Lock()
 		l.state = StateShadow
 		l.pendingApproval = true
-		if l.approvalCh == nil {
-			l.approvalCh = make(chan struct{}, 1)
-		}
-		ch := l.approvalCh
+		l.heldCandidate = candidate
+		l.heldGeneration = generation
 		l.mu.Unlock()
-		el.Info(ctx, "lifecycle.Submit", "candidate held for manual approval",
+		log.InfoContext(ctx, "candidate held for manual approval", "method", "lifecycle.Submit",
 			"strategy_id", candidate.ID,
 			"generation", generation,
 		)
-		select {
-		case <-ch:
-			l.mu.Lock()
-			l.pendingApproval = false
-			l.mu.Unlock()
-		case <-ctx.Done():
-			l.mu.Lock()
-			l.pendingApproval = false
-			l.state = StateActive
-			l.currentCandidate = nil
-			l.mu.Unlock()
-			return
-		}
+		return
 	}
 
-	// All gates passed (and approval received when required): promote to ACTIVE.
+	// All gates passed (and no hold requested): promote to ACTIVE.
 	l.promote(ctx, candidate)
 }
 
-// Approve releases a candidate held in SHADOW by RequireManualApproval (P2-4).
-// It is a no-op when no candidate is pending approval. The next Submit call
-// (if blocked) will unblock and proceed to promote.
+// heldCandidateIDLocked returns the held candidate's ID; caller holds l.mu.
+func (l *StrategyLifecycle) heldCandidateIDLocked() string {
+	if l.heldCandidate == nil {
+		return ""
+	}
+	return l.heldCandidate.ID
+}
+
+// Approve releases the candidate held in SHADOW by RequireManualApproval
+// (P2-4): the held candidate is promoted immediately. It is a no-op when no
+// candidate is pending. The HTTP handler decides what to report to the
+// operator; Approve itself carries no request context, so the promote runs
+// under a bounded background context.
 func (l *StrategyLifecycle) Approve() {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.pendingApproval && l.approvalCh != nil {
-		select {
-		case l.approvalCh <- struct{}{}:
-		default:
-		}
+	cand := l.heldCandidate
+	l.mu.Unlock()
+	if cand == nil {
+		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	l.mu.Lock()
+	l.pendingApproval = false
+	l.heldCandidate = nil
+	l.mu.Unlock()
+	l.promote(ctx, cand)
 }
 
 // promote deploys the candidate as the new active strategy and resets the
@@ -398,7 +585,7 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 		return
 	}
 	if err := l.asm.Deploy(ctx, candidate); err != nil {
-		el.Warn(ctx, "lifecycle.promote", "deploy failed, keeping current active",
+		log.WarnContext(ctx, "deploy failed, keeping current active", "method", "lifecycle.promote",
 			"strategy_id", candidate.ID,
 			"error", err,
 		)
@@ -416,14 +603,23 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 	l.state = StateActive
 	l.currentCandidate = candidate
 	l.lastDecision = "promoted"
+	// §8 general item 5: reset the rollback window on EVERY promote, not
+	// only on rollback. The old strategy's low scores are still in
+	// scoreHistory right after a promote; without the reset the new strategy
+	// could be judged as a sudden drop on its very first watch tick using
+	// the PREVIOUS strategy's evidence. The decorrelation timestamp resets
+	// with it so the new strategy records on its first tick.
+	l.lastWindowAt = time.Time{}
 	l.mu.Unlock()
+
+	l.asm.RollbackPolicy().Reset()
 
 	if l.metrics != nil {
 		l.metrics.RecordEvolutionPromote("success")
 		l.metrics.RecordEvolutionDeploy("promoted")
 	}
 	l.writeDecisionEvidence(ctx, "promote", candidate.ID, candidate.Score, "")
-	el.Info(ctx, "lifecycle.promote", "strategy promoted to active",
+	log.InfoContext(ctx, "strategy promoted to active", "method", "lifecycle.promote",
 		"strategy_id", candidate.ID,
 		"score", candidate.Score,
 	)
@@ -431,10 +627,14 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 
 // watch is the background loop that feeds runtime samples into the
 // RollbackPolicy and triggers Rollback when degradation is detected (B1 fix).
-// It also resets the rollback policy window after a promote to avoid stale
-// scores from the previous strategy influencing the new one.
+// The rollback window itself is reset on every promote (see promote) so the
+// new strategy is judged from a clean baseline.
 func (l *StrategyLifecycle) watch(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := l.cfg.WatchInterval
+	if interval <= 0 {
+		interval = defaultWatchInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -460,18 +660,37 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 		return
 	}
 
-	mean, count, ok := l.agg.Window(ctx, active.ID)
-	if !ok || count == 0 {
+	res := l.agg.Window(ctx, active.ID)
+	if !res.Ok || res.Count == 0 {
 		return
 	}
+	l.mu.Lock()
+	// §8 general item 6 (decorrelation): record a score ONLY when the
+	// evidence window advanced since the previous tick. Re-averaging the
+	// same batch of evidence every tick would make the RollbackPolicy
+	// window a set of highly self-correlated copies of one snapshot —
+	// sudden drops get smoothed away and the gradual-decline detector
+	// fires on noise.
+	//
+	// The advance signal is the window's NEWEST evidence timestamp, NOT
+	// the record count: each source's count saturates at WindowSize and
+	// then stays flat under steady-state churn ("one in, one out") — a
+	// count-based check silently stops feeding RollbackPolicy forever
+	// once every source fills up (no error, no warning; /api/evolution/
+	// lifecycle would even show a healthy window_count). The timestamp is
+	// reset to zero on promote so the new strategy records on its first
+	// tick.
+	if !res.LastAt.After(l.lastWindowAt) {
+		l.mu.Unlock()
+		return
+	}
+	l.lastWindowAt = res.LastAt
+	gen := l.generation
+	l.mu.Unlock()
 
 	// Clamp to [0,1] before feeding RollbackPolicy (B1 fix: dimensional
 	// consistency — RollbackPolicy threshold is 0.15 on a [0,1] scale).
-	score := clamp01(mean)
-
-	l.mu.Lock()
-	gen := l.generation
-	l.mu.Unlock()
+	score := clamp01(res.Mean)
 
 	l.asm.RecordScore(gen, score)
 
@@ -484,7 +703,7 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 	// Trigger rollback.
 	prev, err := l.asm.Rollback(ctx)
 	if err != nil {
-		el.Warn(ctx, "lifecycle.watch", "rollback failed",
+		log.WarnContext(ctx, "rollback failed", "method", "lifecycle.watch",
 			"active_id", active.ID,
 			"error", err,
 		)
@@ -495,10 +714,12 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 		return
 	}
 
-	// Blacklist the degraded candidate so it's not re-nominated.
+	// Blacklist the degraded candidate for N generations (§9 oscillation
+	// damping): banUntil = current generation + N. The next Submit prunes
+	// the entry once its generation reaches banUntil.
 	l.mu.Lock()
 	if l.currentCandidate != nil {
-		l.blacklist[l.currentCandidate.ID] = gen
+		l.blacklist[l.currentCandidate.ID] = gen + l.cfg.blacklistGenerations()
 	}
 	rolledBackID := active.ID
 	rolledBackScore := active.Score
@@ -519,7 +740,7 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 	// knowledge graph's EvolutionProvider and the GA scorer can consume
 	// the decision trail. active.ID is the strategy that was rolled back.
 	l.writeDecisionEvidence(ctx, "rollback", rolledBackID, rolledBackScore, decision.Reason)
-	el.Info(ctx, "lifecycle.watch", "strategy rolled back",
+	log.InfoContext(ctx, "strategy rolled back", "method", "lifecycle.watch",
 		"active_id", active.ID,
 		"restored_id", prev.ID,
 		"reason", decision.Reason,
@@ -530,14 +751,18 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 
 // Snapshot returns a point-in-time copy of the lifecycle state for
 // observability (P2-2 HTTP endpoint).
-func (l *StrategyLifecycle) Snapshot() LifecycleSnapshot {
+//
+// The aggregator Window query (evidence-store I/O) runs OUTSIDE l.mu: the
+// mutex protects the state machine fields, and holding it across store I/O
+// would stall Submit/Approve/Stop while the HTTP endpoint reads. The agg
+// pointer itself is immutable after construction, so reading it without the
+// lock is safe.
+func (l *StrategyLifecycle) Snapshot() LifecycleState {
 	if l == nil {
-		return LifecycleSnapshot{State: "disabled"}
+		return LifecycleState{State: "disabled"}
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	snap := LifecycleSnapshot{
+	snap := LifecycleState{
 		State:           l.state.String(),
 		Generation:      l.generation,
 		LastDecision:    l.lastDecision,
@@ -554,10 +779,18 @@ func (l *StrategyLifecycle) Snapshot() LifecycleSnapshot {
 	if l.currentCandidate != nil {
 		snap.ShadowID = l.currentCandidate.ID
 	}
+	l.mu.Unlock()
+
 	if l.agg != nil {
-		mean, count, _ := l.agg.Window(context.Background(), snap.ActiveID)
-		snap.WindowScore = mean
-		snap.WindowCount = count
+		// §8 general item 8: the Window query is evidence-store I/O on the
+		// HTTP snapshot path — always bounded so a slow store cannot hang
+		// the endpoint. On timeout the fields stay zero (no fabricated
+		// score).
+		wctx, wcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer wcancel()
+		res := l.agg.Window(wctx, snap.ActiveID)
+		snap.WindowScore = res.Mean
+		snap.WindowCount = res.Count
 	}
 	return snap
 }
@@ -566,6 +799,10 @@ func (l *StrategyLifecycle) Snapshot() LifecycleSnapshot {
 // for the introspect ControlServer /api/evolution/lifecycle endpoint
 // (P2-2). It satisfies the introspect.LifecycleSnapshotProvider interface
 // without creating an import cycle (introspect does not import ares_evolution).
+//
+// Naming note: the METHOD keeps the introspect interface's name; the state
+// struct it returns was renamed LifecycleSnapshot → LifecycleState so the
+// type and the method no longer share one identifier.
 func (l *StrategyLifecycle) LifecycleSnapshot() map[string]any {
 	snap := l.Snapshot()
 	m := map[string]any{
@@ -597,15 +834,25 @@ func (l *StrategyLifecycle) recordGateReject(gateName, reason string) {
 	}
 	l.metrics.RecordEvolutionGateReject(gateName)
 	// Also fire the legacy guardrail counter for backward-compatible
-	// dashboards that still watch ARES_evolution_guardrail_total.
-	l.metrics.RecordEvolutionGuardrail("gate_reject_" + gateName)
+	// dashboards that still watch ARES_evolution_guardrail_total. The code
+	// label is a FIXED constant: interpolating the gate name would give the
+	// legacy counter unbounded label cardinality (gate names are
+	// caller-supplied via VerifyGate.Name()).
+	l.metrics.RecordEvolutionGuardrail("gate_reject")
 }
 
-// writeDecisionEvidence writes a KindFitness evidence record (source=
-// "strategy") for promote/rollback events so the knowledge graph's
-// EvolutionProvider (P2-3) and the GA scorer can consume the decision
-// trail. The evidence payload includes the action, strategy ID, score,
-// and optional reason (for rollbacks).
+// writeDecisionEvidence records promote/rollback decision events with
+// source="lifecycle" so the knowledge graph's EvolutionProvider (P2-3) can
+// consume the decision trail.
+//
+// The source is deliberately NOT "strategy" and the score is deliberately
+// NOT normalized: GA scores live on a 0–100 scale, while every fitness
+// consumer (RuntimeFitnessAggregator, recentFitnessSummary) filters
+// KindFitness values to [0,1]. Writing a 0–100 GA score under the
+// "strategy" fitness source would (a) be silently dropped by that filter
+// and (b) mix one-off decision events into the runtime fitness window
+// semantics. A dedicated source keeps the decision trail queryable without
+// polluting either dimension.
 func (l *StrategyLifecycle) writeDecisionEvidence(ctx context.Context, action, strategyID string, score float64, reason string) {
 	if l.evStore == nil {
 		return
@@ -622,7 +869,7 @@ func (l *StrategyLifecycle) writeDecisionEvidence(ctx context.Context, action, s
 	}
 	_ = l.evStore.Append(ctx, evidence.Evidence{
 		ID:        "strategy_decision_" + action + "_" + strategyID + "_" + time.Now().Format("150405.000000"),
-		Source:    "strategy",
+		Source:    "lifecycle",
 		Kind:      evidence.KindFitness,
 		Payload:   payload,
 		Timestamp: time.Now(),

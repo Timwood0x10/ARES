@@ -107,6 +107,59 @@ evolution:
   #   behaviour (tool selection, search depth, scheduler) over time
   enabled: false
 
+  # min_interval: heartbeat period of the evolution ticker. Each tick goes
+  #   through scheduler.Tick, which re-applies the same shouldEvolve +
+  #   guardrail throttling as event-triggered evolution.
+  # min_interval: 5m
+
+  # The blocks below configure the strategy control plane. Every knob is
+  # optional: an absent field (or 0) keeps the built-in default shown after
+  # the "default:" marker, so the whole section can be omitted safely.
+
+  # lifecycle: the JUDGE stage — how runtime evidence is aggregated into a
+  #   single [0,1] fitness, and how often rollback is re-evaluated.
+  # lifecycle:
+  #   fitness_window: 50              # runtime samples kept per source
+  #   min_samples_before_judge: 10    # below this, no promote/rollback verdict
+  #   cold_start_score: 0.5           # fallback fitness when no evidence exists
+  #   watch_interval: 30s             # rollback watch-loop period
+  #   # JUDGE weights. Set none to use the defaults below; set any and the
+  #   # unset ones become 0 (partial specs are used verbatim, never blended
+  #   # with defaults, so the operator gets exactly the mix they wrote).
+  #   outcome_weight: 0.40
+  #   dimension_eval_weight: 0.25
+  #   workflow_weight: 0.15
+  #   scheduler_weight: 0.15
+  #   recovery_weight: 0.05
+
+  # rollback: degradation detection for the active strategy. The threshold is
+  #   on the same [0,1] scale as the fitness window mean.
+  # rollback:
+  #   degradation_threshold: 0.15
+  #   window_size: 5
+  #   min_samples: 3
+
+  # shadow: the G2 verify gate. A candidate needs at least min_samples shadow
+  #   comparisons at or above min_win_rate before it may be promoted.
+  #   IMPORTANT (fail-closed): with ZERO shadow comparisons the gate REJECTS.
+  #   Nothing feeds shadow comparisons today (the feeder is DreamCycle, which
+  #   is disabled, and the task-level sampler is tracked as P0-9) — so in the
+  #   DEFAULT config the lifecycle promotes exactly ONE seed strategy and
+  #   then holds every later candidate in shadow until the feeder lands.
+  #   `evolution.enabled: true` therefore does NOT mean "the GA keeps
+  #   shipping new strategies"; it means "candidates are proposed and safely
+  #   held". Set min_samples/min_win_rate via YAML once a feeder exists.
+  # shadow:
+  #   min_samples: 20
+  #   min_win_rate: 0.55
+
+  # gates: the remaining verify-gate thresholds.
+  # gates:
+  #   eval_min_score: 0.7             # minimum G3 eval-suite score
+  #   # require_manual_approval holds every candidate in SHADOW until an
+  #   # operator calls POST /api/evolution/approve.
+  #   require_manual_approval: false
+
 # ── Agents ───────────────────────────────────────────────────
 # C1 flat peer structure (DEFAULT): a flat set of equal capability agents
 # spawned into the Agent Fabric and scheduled by the kernel scheduler. There

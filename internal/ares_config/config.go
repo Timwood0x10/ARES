@@ -799,6 +799,104 @@ type EvolutionConfig struct {
 	// GA evolution system. When Enabled is false (the default), evolution
 	// uses the constant baseline scorer, preserving prior behavior.
 	LLMScoring LLMScoringConfig `yaml:"llm_scoring"`
+
+	// Lifecycle configures the StrategyLifecycle control plane (design doc
+	// §7): fitness window, judge thresholds, JUDGE weights and the rollback
+	// watch interval. Zero-value fields fall back to code defaults in
+	// bootstrap, so an absent section preserves the built-in behavior.
+	Lifecycle EvolutionLifecycleConfig `yaml:"lifecycle"`
+
+	// Rollback configures degradation detection thresholds for the active
+	// strategy. Scale is [0,1] — DegradationThreshold compares against a
+	// window mean of normalized samples. Zero values fall back to code
+	// defaults.
+	Rollback EvolutionRollbackConfig `yaml:"rollback"`
+
+	// Shadow configures shadow-evaluation thresholds for the G2 verify gate.
+	// Zero values fall back to code defaults.
+	Shadow EvolutionShadowConfig `yaml:"shadow"`
+
+	// Gates configures the verify-gate pipeline thresholds (eval-suite
+	// minimum score, manual approval hold). Zero values fall back to code
+	// defaults.
+	Gates EvolutionGateConfig `yaml:"gates"`
+}
+
+// EvolutionLifecycleConfig mirrors the `evolution.lifecycle` YAML block
+// (design doc §7). It maps onto evolution.LifecycleConfig in bootstrap.
+// The design doc's `penalty` block (cost/latency budgets) is intentionally
+// absent: task events carry no cost/latency data yet, so no config field
+// is exposed for it (see the ares_evolution fitness_aggregator tech-debt
+// note).
+type EvolutionLifecycleConfig struct {
+	// FitnessWindow is the number of runtime samples kept for rollback
+	// evaluation. Default: 50.
+	FitnessWindow int `yaml:"fitness_window"`
+	// MinSamplesBeforeJudge is the minimum runtime sample count before
+	// promote/rollback decisions are made. Default: 10.
+	MinSamplesBeforeJudge int `yaml:"min_samples_before_judge"`
+	// ColdStartScore is the fallback fitness when no evidence exists.
+	// Default: 0.5.
+	ColdStartScore float64 `yaml:"cold_start_score"`
+	// OutcomeWeight weights task outcome samples in the JUDGE aggregate.
+	// Zero-weight fields inherit the code defaults only when ALL weights
+	// are unset; partial specs are used as-is (the aggregator normalizes
+	// the sum at query time).
+	OutcomeWeight float64 `yaml:"outcome_weight"`
+	// DimensionEvalWeight weights dimension_eval evidence.
+	DimensionEvalWeight float64 `yaml:"dimension_eval_weight"`
+	// WorkflowWeight weights workflow-sourced fitness evidence.
+	WorkflowWeight float64 `yaml:"workflow_weight"`
+	// SchedulerWeight weights scheduler-sourced fitness evidence.
+	SchedulerWeight float64 `yaml:"scheduler_weight"`
+	// RecoveryWeight weights recovery-sourced fitness evidence.
+	RecoveryWeight float64 `yaml:"recovery_weight"`
+	// WatchInterval is the rollback watch-loop tick interval (duration
+	// string, e.g. "30s"). Default: "30s". Valid values parse via
+	// time.ParseDuration and must be positive; invalid strings are ignored
+	// and the default applies.
+	WatchInterval string `yaml:"watch_interval"`
+	// BlacklistGenerations is how many generations a rolled-back candidate
+	// stays banned from re-nomination (§9 rollback-oscillation damping).
+	// Default: 3.
+	BlacklistGenerations int `yaml:"blacklist_generations"`
+}
+
+// EvolutionRollbackConfig mirrors the `evolution.rollback` YAML block.
+type EvolutionRollbackConfig struct {
+	// DegradationThreshold is the mean-score drop fraction (on a [0,1]
+	// scale) that triggers rollback. Default: 0.15.
+	DegradationThreshold float64 `yaml:"degradation_threshold"`
+	// WindowSize is the sliding-window length for degradation detection.
+	// Default: 5.
+	WindowSize int `yaml:"window_size"`
+	// MinSamples is the minimum window sample count before a rollback
+	// decision is made. Default: 3.
+	MinSamples int `yaml:"min_samples"`
+}
+
+// EvolutionShadowConfig mirrors the `evolution.shadow` YAML block.
+type EvolutionShadowConfig struct {
+	// MinSamples is the minimum shadow-comparison count before the G2 gate
+	// makes a deployment decision. Default: 20.
+	MinSamples int `yaml:"min_samples"`
+	// MinWinRate is the minimum shadow win rate for promotion [0,1].
+	// Default: 0.55.
+	MinWinRate float64 `yaml:"min_win_rate"`
+}
+
+// EvolutionGateConfig mirrors the `evolution.gates` YAML block.
+type EvolutionGateConfig struct {
+	// EvalMinScore is the minimum G3 eval-suite score for a candidate to
+	// pass [0,1]. Default: 0.7.
+	EvalMinScore float64 `yaml:"eval_min_score"`
+	// RequireManualApproval holds candidates in SHADOW until an operator
+	// calls POST /api/evolution/approve (P2-4). Default: false.
+	RequireManualApproval bool `yaml:"require_manual_approval"`
+	// EvalSuite loads the G3 regression test suite from a YAML file
+	// (ares_eval.TestSuite schema: {name, description, test_cases: [...]}).
+	// Empty string disables the G3 gate (it degrades to pass-through).
+	EvalSuite string `yaml:"eval_suite"`
 }
 
 // LLMScoringConfig configures the opt-in LLM-backed strategy scorer for the

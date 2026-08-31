@@ -22,6 +22,10 @@ type EvolutionComponents struct {
 	Scheduler         interface{}
 	FeedbackService   *experience.FeedbackService
 	EvaluatorRegistry *ares_eval.EvaluatorRegistry
+	// EvalLLMClient is the LLM client the evaluators were built with. The
+	// G3 eval gate needs it to score candidate strategies through the
+	// AgentTestRunner at promote time. Nil when no LLM client was available.
+	EvalLLMClient ares_eval.LLMClient
 	// FlightRecorder is the recorder created for the Flight→Experience
 	// adapter. It is exposed so Bootstrap can start/stop it explicitly:
 	// without Start the collector never subscribes to events and the GA
@@ -96,6 +100,7 @@ func ProvideEvolution(
 		Scheduler:         scheduler,
 		FeedbackService:   feedbackSvc,
 		EvaluatorRegistry: evalRegistry,
+		EvalLLMClient:     llmClient,
 		FlightRecorder:    fr,
 	}, nil
 }

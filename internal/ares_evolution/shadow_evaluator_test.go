@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
@@ -219,6 +221,37 @@ func TestShadowEvaluator_ShouldDeploy_NoResults(t *testing.T) {
 	if report != nil {
 		t.Error("expected nil report with no results")
 	}
+}
+
+// TestShadowEvaluator_StrictVsLoose locks the two-contract split (review:
+// DreamCycle and the lifecycle G2 gate read the same evaluator with opposite
+// insufficient-sample semantics — now explicit):
+//   - Strict (ShouldDeploy, the G2 gate): insufficient samples → REJECT.
+//   - Loose (ShouldDeployLoose, DreamCycle deploy path): insufficient
+//     samples → defer to the deployer (true, "cannot judge yet").
+//   - Enough samples → identical verdicts.
+func TestShadowEvaluator_StrictVsLoose(t *testing.T) {
+	e := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.5})
+
+	// 2 comparisons (< MinSamples): strict rejects, loose defers.
+	e.RecordResult(0.0, 1.0)
+	e.RecordResult(0.0, 1.0)
+
+	strictPass, strictReport := e.ShouldDeploy()
+	assert.False(t, strictPass, "strict: insufficient samples must reject")
+	assert.NotNil(t, strictReport)
+	assert.Contains(t, strictReport.Recommendation, "fail-closed")
+
+	loosePass, looseReport := e.ShouldDeployLoose()
+	assert.True(t, loosePass, "loose: insufficient samples must defer to the deployer")
+	assert.NotNil(t, looseReport)
+
+	// Enough samples, shadow wins → identical verdicts.
+	e.RecordResult(0.0, 1.0)
+	strictPass, _ = e.ShouldDeploy()
+	loosePass, _ = e.ShouldDeployLoose()
+	assert.True(t, strictPass)
+	assert.True(t, loosePass)
 }
 
 func TestShadowEvaluator_Reset(t *testing.T) {

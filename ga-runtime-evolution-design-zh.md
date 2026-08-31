@@ -136,10 +136,19 @@ type StrategySample struct {
 | 恢复 fitness | source=`recovery` | 同上 |
 | 成本/时延惩罚 | flight trace | 超预算按比例扣分 |
 
-`RuntimeObserver` 的输出**同时**流向两处：
-- `StrategyLifecycle`（喂 `RollbackPolicy.RecordScore`，用于回退判定）；
-- `EvidenceStore`（写 `KindFitness`，source=`strategy`，供 GA scorer 与 staging 评估复用）。
+`RuntimeObserver` 的输出流向：
+- `EvidenceStore`（写 `KindFitness`，source=`strategy`，供 GA scorer、
+  staging 评估与 lifecycle 的回退窗口复用）。`StrategyLifecycle` 通过
+  aggregator 读取这批证据（窗口均值、min-samples 门控），**不做**逐样本直喂——
+  事件→证据→聚合的路径是回退判定的唯一数据来源。
+- 订阅事件：`task.completed` / `task.failed` / `task.agent_stopped`。其中
+  agent_stopped 仅在 reason 标记为异常终止时计 0.0 样本（正常/显式停止
+  不产生样本）。
 
+> 注（tech-debt）：`StrategySample` 的 `Latency` / `CostUSD` 字段已随 §4②
+> 的 penalty 项一并移除——task 事件目前不携带 cost/latency，等 flight-trace
+> 数据进入 EventStore payload 后再恢复（见 observer.go 的 tech-debt 注释）。
+>
 > 这一步落实「runtime 主动收集信息」：agent 只发事件，不知道有人在给它打分。
 
 ### ② JUDGE：统一适应度聚合
@@ -148,12 +157,21 @@ type StrategySample struct {
 
 ```
 fitness = w_outcome·outcome + w_dim·dimensionEval + w_flow·workflowFitness
-          + w_sched·schedulerFitness − penalty(cost, latency)
+          + w_sched·schedulerFitness + w_recovery·recoveryFitness
 ```
 
-- 归一化到 `[0,1]`（与 `recentFitnessSummary` 的过滤区间一致，避免 `bootstrap_steps.go:591` 把样本丢掉）；
-- 冷启动（样本 < N）返回 `ok=false`，**由调用方决定保守策略**（见 B6 修复）；
-- 该聚合器同时作为 GA `memoryScorer` 的证据输入，让 GA 的自评分与线上真实表现对齐。
+（默认权重 0.40 / 0.25 / 0.15 / 0.15 / 0.05，和为 1。§4① 表中的
+"成本/时延惩罚" 项**未实现**：task 事件目前不携带 cost/latency，实现即引入
+死配置——已挂 tech-debt TODO（fitness_aggregator.go），数据源到位后再接。）
+
+- 归一化到 `[0,1]`（与 `recentFitnessSummary` 的过滤区间一致）；
+- **判定门控按用途分两级**（review 严重项 4）：
+  - **回退路径**（`Window(ctx, activeID)`，带 strategy ID）：`strategy`
+    源自身必须 ≥ `MinSamplesBeforeJudge`——workflow/scheduler/recovery 是
+    全局无归属证据，只能参与加权平均，**不能**代替该策略自己的样本满足
+    判定门槛（§4⑤ 原则 4）；
+  - **staging 路径**（`Window(ctx, "")`）：维持跨源总数门槛（原契约）；
+- 冷启动返回 `ok=false`，由调用方决定保守策略。
 
 ### ③ PROPOSE：GA 只提议，不部署
 
@@ -178,17 +196,32 @@ type VerifyGate interface {
 }
 ```
 
-按顺序：
+按顺序（当前实现状态如实标注）：
 
 | 门 | 实现 | 不通过的处理 |
 | --- | --- | --- |
-| **G1 Guardrail** | `EvolutionGuardrails.PostEvolveCheckForSource` | 直接丢弃候选，记 metric |
-| **G2 Shadow** | `ShadowEvaluator.StartShadow` + `Evaluate` + `ShouldDeploy`（`shadow_evaluator.go:125/273/162`） | 样本不足 → 保持 SHADOW；胜率不足 → 丢弃 |
-| **G3 Eval 套件** | `ares_eval.EvaluatorRegistry` + `AgentTestRunner` 跑固定回归集，取 `EvalScore` 加权 | 低于 `eval_min_score` → 丢弃 |
-| **G4 Deployment staging** | `deployment.DeploymentPipeline` staging（仅当候选携带 RuntimePatch 时） | 按 pipeline 语义拒绝 |
+| **G2 Shadow** | `StrategyLifecycle` 内置 `shadowVerifyGate`（只读消费 `ShadowEvaluator.ShouldDeploy`），fail-closed：**无比较样本即拒绝**（§3.1 "样本 < MinSamples → 留在 SHADOW 不下发"）；阈值来自 `evolution.shadow` | 胜率不足 / 样本不足 / 无数据 → 全部拒绝 |
+| **G3 Eval 套件** | `eval_suite` 配置了 YAML 回归集才构建（`buildEvalGate`）：AgentTestRunner 把候选 PromptTemplate 前置到用例输入，llm_judge 打分 [0,1] | 低于 `eval_min_score` → 丢弃；未配置 = 不注册本门 |
+| **G1 Guardrail** | **不在 lifecycle 门序列内**：仍是 adapter 层 population 级 pre/post 检查（`genome_wiring_run.go`），拦的是整代而非单候选 | 记 guardrail metric，候选随代丢弃 |
+| **G4 Deployment staging** | 仅候选携带 RuntimePatch 时经 Coordinator → DeploymentPipeline；与 `lifecycle.Submit` 是两条独立路径 | 按 pipeline 语义拒绝 |
 
-**修复 B3**：让 `ShadowEvaluator` 不再依赖 `DreamCycle`。
-`genome_wiring_system.go:529` 改为把 `system.ShadowEvaluator` 也挂到 `popAdapter` / `StrategyLifecycle`；bootstrap 保持 `EnableDreamCycle=false`，但必须设置 `gaCfg.ShadowEvalConfig.Enabled = true` 且提供 `Scorer`（LLM scorer 或启发式，二者都可）。
+> **诚实注记（review 阻断项 1 的处置）**：G2 之所以 fail-closed，是因为
+> 生产默认 `EnableDreamCycle=false`，目前**没有任何组件调用
+> `StartShadow/RecordResult` 喂影子比较**（数据 feeder 已正式登记为
+> **P0-9**，见 §6 任务表）。**在 P0-9 落地前，默认配置下 lifecycle 只完成
+> 一次 seed 部署，之后的候选全部被 G2 拒绝、保持在 SHADOW**——即
+> `evolution.enabled: true` 表示"候选被提出并被安全持有"，而非"持续产出
+> 新策略"。这是"宁可不进化，不无验证上线"的取向。放行（pass-through）
+> 曾是原实现，但它使整条验证管线沦为橡皮图章，已被否决。三处限制声明：
+> 设计文档（本节）、`configs/ares.yaml` 的 `shadow:` 注释块、
+> `CHANGELOG [0.3.1]` Known limitations。
+>
+> **seed 部署例外**：无活跃策略时的首个候选不做门禁直接 promote——
+> 影子比较需要对照物，且 §9 的回退机制依赖这个基线作为 previous。
+
+**修复 B3**：`ShadowEvaluator` 只要 `evolution.shadow.enabled` 即构建
+（不再要求 LLM scorer 存在），并同时挂到 DreamCycle（启用时）与
+`StrategyLifecycle` 的 G2 门。
 
 **修复 B6**：`deploymentStagingRuntime.Evaluate` 改为多维聚合 + 显式冷启动策略：
 
@@ -220,9 +253,24 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 ```
 
 要点：
-- `RecordScore` 的分数**必须与 `DegradationThreshold` 同量纲**。`RollbackPolicy` 默认阈值 `0.15`（`rollback_policy.go:122`），因此喂入的必须是 `[0,1]`，**不能**沿用 `scheduler.go` 的 `100/0`。这是一个必须在实现时统一的口径。
-- `Rollback` 依赖 `previous != nil`（`rollback_policy.go:401`），所以首次部署后至少要有一次成功 promote 才具备回退能力；冷启动期由 `bootstrap-root` 基线策略充当 previous。
-- 每次 promote / rollback 都写一条事件 + `KindFitness` 证据，形成可追溯轨迹（供 `/evolution/trajectory` 与 knowledge graph 消费，`attachEvolutionKnowledgeProvider` 已就绪）。
+- `RecordScore` 的分数**与 `DegradationThreshold` 同量纲**：`[0,1]`。
+  `EvolutionScheduler.RecordScore` 入口做 clamp（§8 验收 6 的落地口径是
+  clamp 而非断言——越界输入降级为"恒好/恒差"，而不是 panic / 丢弃）。
+- **回退窗口去自相关**：watch 每个tick 只在证据窗口**新增**（count 前进）
+  时才 `RecordScore`，同一批证据不会被反复平均（否则窗口 5/最小样本 3
+  ⇒ 90 秒内 3 个高度重叠的样本：突降被平滑、渐降检测被噪声触发）。
+- **promote 即清窗**：每次成功 promote 都 `RollbackPolicy().Reset()`，
+  新策略不会用旧策略的低分窗口被误判突降。
+- `Rollback` 依赖 `previous != nil`，所以首次部署后至少要有一次成功 promote
+  才具备回退能力；冷启动期由 seed 基线策略充当 previous。
+- 回退后候选进入黑名单 `banUntil = generation + blacklist_generations`
+  （默认 3 代，§9 震荡抑制）。
+- 每次 promote / rollback 都写一条决策证据（source=`lifecycle`，独立于
+  `[0,1]` fitness 窗口——GA 分数是 0–100 刻度，不得混入）。
+- watch 循环是**受纳管**的后台 goroutine：bootstrap 侧注册到
+  `comp.bgGroup`（ctx 结束时 Stop 并等待退出），循环内带 recover（K3）。
+- `Snapshot()`（HTTP /api/evolution/lifecycle）内的 Window 查询带 2s 超时，
+  慢存储不会挂住控制面请求。
 
 ---
 
@@ -235,7 +283,17 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 - 旧系统 scheduler 存在时仍 `SetAdapter`，但不再产生第二条判定路径。
 - `scheduler.RecordScore` 的量纲同步改为 `[0,1]`（`taskScoreSuccess=1.0` / `taskScoreFailure=0.0`），与 `RollbackPolicy` 对齐。
 
-好处：进化时机可解释（日志里能说清是 Idle / Threshold / Demand 哪个触发），并且 guardrail 无法被旁路。
+好处：进化时机可解释（日志里能说清是 Idle / Threshold / Demand 哪个触发）。
+
+> **已知缺口（如实登记，review §5 复核）**：
+> 1. bootstrap 优先驱动 **legacy scheduler**（`provide_evolution.go` 构造时
+>    只传 `WithEnabled/WithMinInterval`，**没有挂 guardrails**）⇒ ticker 路径
+>    的 `checkGuardrails` 恒 true。G1 的真实防线目前只有 adapter 层的
+>    pre/post 检查。后续：为 legacy scheduler 构造补 guardrails 选项。
+> 2. 两个 scheduler 并存（legacy Registered + wired 未注册）是过渡态；
+>    收敛为单一实例是后续清理项。
+> 3. `default:` 分支仍保留无 EventStore 配置下的无条件 `popAdapter.Run`
+>    （极简配置兼容），与"删除无条件 ticker"的目标态不符——记 TODO。
 
 ---
 
@@ -253,6 +311,7 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 | P0-6 | `bootstrap_steps.go:205-209` | `ShadowEvalConfig.Enabled=true`；补 `RollbackPolicyConfig` 的阈值/窗口/最小样本（从 YAML 读取） |
 | P0-7 | `bootstrap_steps.go:266-297` | ticker 改调 `scheduler.Tick(ctx)`；`EnableScheduler=true` 恒定 |
 | P0-8 | `scheduler.go:367-369` | 分数量纲改 `[0,1]`；新增 `Tick(ctx)` |
+| **P0-9（未落地）** | `internal/ares_evolution/observer.go` 或 agent 执行路径 | **影子比较 feeder**：产出「候选 vs 活跃」的 `ShadowEvaluator.RecordResult` 比对样本。落地前 G2 fail-closed（§4④）在默认配置下只放行一次 seed 部署，其余候选全部留在 SHADOW——这是有意为之的安全语义（见 §4④ 诚实注记与 CHANGELOG Known limitations） |
 
 ### P1 — 让验证有独立裁判
 
@@ -275,35 +334,51 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 
 ## 7. 配置（`configs/*.yaml`）
 
+> **实现注记**：YAML 键是**扁平权重键**（`outcome_weight` …），不是嵌套的
+> `weights:` 块；`lifecycle.enabled` / `rollback.enabled` / `shadow.enabled`
+> 三个开关由 bootstrap 固定置 true（这三个子系统的存在性由编译期接线决定，
+> 不暴露 YAML 开关——避免"关了 shadow 又留着 G2 门"这类组合矛盾）；
+> `penalty:` 块**故意不存在**（无数据源，见 §4②）。
+
 ```yaml
 evolution:
-  min_interval: 5m              # 已有，改为 scheduler.Tick 的心跳
+  min_interval: 5m              # 已有，ticker 心跳
   lifecycle:
-    enabled: true
     fitness_window: 50          # 线上样本窗口
     min_samples_before_judge: 10 # 少于此值不做 promote/rollback 判定
     cold_start_score: 0.5       # staging 无证据时的保守分
-    weights:                    # JUDGE 阶段权重，和为 1
-      outcome: 0.45
-      dimension_eval: 0.25
-      workflow: 0.15
-      scheduler: 0.15
-    penalty:
-      cost_usd_budget: 0.05
-      latency_budget: 30s
+    watch_interval: 30s         # 回退 watch 循环周期
+    blacklist_generations: 3    # 回退候选的禁提名代数（§9 震荡抑制）
+    outcome_weight: 0.40        # JUDGE 权重（扁平键；全部缺省=代码默认，
+    dimension_eval_weight: 0.25 #  部分设置=按原样使用，聚合器按权重和归一）
+    workflow_weight: 0.15
+    scheduler_weight: 0.15
+    recovery_weight: 0.05
   rollback:
-    enabled: true
     degradation_threshold: 0.15  # 与 [0,1] 量纲一致
     window_size: 5
     min_samples: 3
   shadow:
-    enabled: true
     min_samples: 20
     min_win_rate: 0.55
   gates:
     eval_min_score: 0.7
     require_manual_approval: false
+    eval_suite: configs/eval/regression.yaml   # G3 回归套件（ares_eval.TestSuite YAML）；缺省 = 无 G3 门
 ```
+
+> **G3 门配置语义（B5/B2 落地注记）**：`eval_suite` 指向 ares_eval
+> `TestSuite` 格式的 YAML 文件（`{name, test_cases: [{id, input}, ...]}`）。
+> 配置后，bootstrap 构建 AgentTestRunner（执行器把候选策略的 PromptTemplate
+> 前置到每个用例输入上，llm_judge 打分归一化到 [0,1]），候选必须 ≥
+> `eval_min_score` 才能 promote。**未配置 = 不注册 G3 门**（诚实的缺省，
+> 而不是恒放行的假门）；配置了但加载失败 = Bootstrap 直接报错（fail-closed，
+> 不允许拼写错误静默削弱验证管线）。
+>
+> **P2-4 语义**：`require_manual_approval: true` 时 Submit **立即返回**，
+> 候选停在 SHADOW（挂起的是候选，不是进化心跳的 goroutine）；批准走
+> `POST /api/evolution/approve`（401 未鉴权 / 409 无挂起候选 / 200 返回
+> 新 active_id）。挂起期间的新 Submit 一律拒绝，不得静默顶替。
 
 ---
 
@@ -316,7 +391,10 @@ evolution:
 3. **失败回退**：promote 后连续注入 `EventTaskFailed`，断言窗口分数下降触发 `Rollback`，`GetActive` 回到旧 ID。
 4. **agent 被动性**：断言 agent 侧只通过 `GetActiveStrategy` 读到策略，全链路无 agent 触发的进化调用（可用接口隔离 + 编译期断言保证）。
 5. **触发单一化**：断言在 `MinInterval` 内多次 `Tick` 只跑一代（节流生效）。
-6. **量纲一致性**：单测断言 `RecordScore` 输入恒在 `[0,1]`。
+6. **量纲一致性**：单测断言 `RecordScore` 对越界输入 **clamp 到 `[0,1]`**
+   （实现口径是 clamp 而非断言失败——错误量纲的调用方降级为"恒好/恒差"，
+   而不是污染窗口或 panic；见 `scheduler.go` RecordScore 与
+   `TestClosure_RecordScore_ClampsToUnitInterval`）。
 
 ---
 
@@ -325,19 +403,33 @@ evolution:
 | 风险 | 缓解 |
 | --- | --- |
 | 影子评估拖慢 promote（样本积累慢） | 允许 `min_samples` 分级：低风险参数（temperature）用小样本，prompt 级变更用大样本 |
-| 回退震荡（promote → rollback → promote 同一候选） | rollback 后把候选 ID 加黑名单 N 代；`RollbackPolicy.Reset()` 清窗口 |
+| 回退震荡（promote → rollback → promote 同一候选） | rollback 后把候选 ID 加黑名单 `blacklist_generations`（默认 3）代——实现为 `banUntil = rollBackGen + N`，跨代有效；`RollbackPolicy.Reset()` 清窗口（promote 与 rollback 两侧都清） |
 | LLM 打分成本 | 沿用现有 `TieredScorer` + `budget`（`buildRunScorer` 已实现缓存/批量/预算门） |
-| 冷启动无证据全拒 | `cold_start_score` 配置化；基线策略 `bootstrap-root` 永远可作为 previous |
-| 量纲混用引入静默 bug | 在 `RecordScore` 入口加 `[0,1]` 断言与 clamp，并在 CI 加单测 6 |
+| 冷启动无证据全拒 | `cold_start_score` 配置化；seed 基线策略永远可作为 previous |
+| 量纲混用引入静默 bug | 在 `RecordScore` 入口加 `[0,1]` clamp（§8 单测 6） |
+| 手动审批挂起拖死进化心跳 | Submit 非阻塞持有候选；审批期间拒绝新 Submit（不静默顶替） |
 
 ---
 
 ## 10. 实施顺序建议
+
+> **状态注记（0.3.1 实况）**：本节是原方案的渐进式开门计划；实际落地是
+> **一次性全量**（P0/P1 一个 PR 系列），依赖 §8 的 6 条验收断言
+> （`closure` build tag）与两道架构门禁承担"逐步回退"的安全职责。
+> 未按五步走的原因：§8 断言与门禁先行落地后，每一步的独立验证已被
+> 测试替代。遗留的渐进项：
+> 1. **P0-9（未做）**：影子比较 feeder（RuntimeObserver 或 task 执行路径
+>    加一个候选 vs 活跃的比对采样器）——落地前 G2 fail-closed 会拒绝
+>    除 seed 外的所有候选（见 §4④ 诚实注记）；
+> 2. legacy scheduler 补 guardrails 构造选项（§5 已知缺口 1）；
+> 3. 双 scheduler 收敛（§5 已知缺口 2）；
+> 4. 无 EventStore 配置的 `default:` 无条件 Run 分支移除（§5 已知缺口 3）；
+> 5. 两份白名单 12 条（架构门禁 6.1/6.2）按计划另立 PR 消化。
+
+原五步计划（存档）：
 
 1. **第一步只做 P0-2/P0-3**（观测 + 聚合），先把线上真实分数打出来看日志，不改任何决策 —— 零风险。
 2. **第二步做 P0-1/P0-4/P0-5**，引入 lifecycle，但把所有门配成"直通"（等价当前行为），确认无回归。
 3. **第三步逐个打开门**：Guardrail → Shadow → Eval，每次只开一个，观察 `gate_reject_total`。
 4. **第四步接回退**（watch loop），先只打日志不真的 `Rollback`（dry-run 开关），确认判定准确后再放行。
 5. **最后统一触发口径**（P0-7/P0-8），删掉无条件 ticker。
-
-这样每一步都可独立验证、可独立回退，符合「活着的系统要能安全地改变自己」这个前提。

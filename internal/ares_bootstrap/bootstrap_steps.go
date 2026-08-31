@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,12 +13,12 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
@@ -212,19 +213,38 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	gaCfg.EnableScheduler = true
 	gaCfg.EventStore = comp.EventStore
 	gaCfg.StrategyStore = memStore
-	// B1 fix: wire RollbackPolicyConfig from YAML so degradation thresholds
-	// are configurable instead of hardcoded to defaults.
+	// B1 fix: rollback thresholds come from the evolution.rollback YAML
+	// block (design doc §7); zero values fall back to the code defaults
+	// that match the previous hardcoded wiring.
+	rbCfg := cfg.Evolution.Rollback
 	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{
 		Enabled:              true,
-		DegradationThreshold: 0.15, // default; matches RollbackPolicy default
-		WindowSize:           5,
-		MinSamples:           3,
+		DegradationThreshold: defaultFloat(rbCfg.DegradationThreshold, 0.15),
+		WindowSize:           defaultInt(rbCfg.WindowSize, 5),
+		MinSamples:           defaultInt(rbCfg.MinSamples, 3),
 	}
 	// B3 fix: enable shadow evaluation independently of DreamCycle.
+	// Thresholds come from the evolution.shadow YAML block (design doc §7).
+	shCfg := cfg.Evolution.Shadow
 	gaCfg.ShadowEvalConfig = evolution.ShadowEvaluationConfig{
 		Enabled:    true,
-		MinSamples: 20,
-		MinWinRate: 0.55,
+		MinSamples: defaultInt(shCfg.MinSamples, 20),
+		MinWinRate: defaultFloat(shCfg.MinWinRate, 0.55),
+	}
+	// Design doc §7: the lifecycle control plane (window/judge/gates/watch
+	// interval) is YAML-configurable; the same config also feeds the G3
+	// eval-gate MinScore further below.
+	gaCfg.Lifecycle = lifecycleConfigFromYAML(cfg.Evolution.Lifecycle, cfg.Evolution.Gates)
+	// P2-1: wire the shared Prometheus metrics into the GA system so the
+	// lifecycle counters (promote/rollback/gate-reject) are actually
+	// incremented in production instead of registered-but-never-updated.
+	// NewPrometheusMetrics is idempotent (AlreadyRegisteredError returns the
+	// cached instance created by provide_llm), so this reuses the same
+	// collector the /metrics endpoint serves.
+	if m, merr := ares_observability.NewPrometheusMetrics(); merr == nil {
+		gaCfg.Metrics = m
+	} else {
+		log.WarnContext(ctx, "bootstrap: evolution metrics wiring skipped", "error", merr)
 	}
 
 	// W3: honor the YAML evolution tuning. Only fields with a matching
@@ -270,19 +290,40 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		newEvol.GenomeReg,
 	)(popAdapter)
 
-	// P1-2 (B5 fix): inject the EvaluatorRegistry into the lifecycle's
-	// G3 eval gate so independently-built evaluators participate in the
-	// promote/rollback decision instead of sitting idle. The gate is
-	// pass-through when no regression suite is configured, so this is
-	// safe to wire unconditionally.
-	if wired.Lifecycle != nil && comp.Evolution != nil && comp.Evolution.EvaluatorRegistry != nil {
-		evalGate := evolution.NewEvalGate(
+	// P1-2 (B5 fix): wire the G3 eval-suite gate so independently-built
+	// evaluators participate in the promote/rollback decision instead of
+	// sitting idle. The gate is built ONLY when a regression suite is
+	// configured (evolution.gates.eval_suite file path); otherwise NO gate
+	// is registered — honest absence, not a permanent pass-through pretending
+	// to be verification (review item B.2).
+	if wired.Lifecycle != nil && comp.Evolution != nil {
+		// MinScore flows from the evolution.gates.eval_min_score YAML knob
+		// via gaCfg.Lifecycle (design doc §7); 0 falls back to the gate's
+		// own 0.7 default.
+		var minScore float64
+		if wiredLifecycleCfg := gaCfg.Lifecycle; wiredLifecycleCfg != nil {
+			minScore = wiredLifecycleCfg.Gates.EvalMinScore
+		}
+		suitePath := ""
+		if gaCfg.Lifecycle != nil {
+			suitePath = cfg.Evolution.Gates.EvalSuite
+		}
+		evalGate, gerr := buildEvalGate(
 			comp.Evolution.EvaluatorRegistry,
-			nil,                   // AgentTestRunner — not wired in production yet
-			ares_eval.TestSuite{}, // no regression suite configured yet
-			evolution.DefaultEvalGateConfig(),
+			comp.Evolution.EvalLLMClient,
+			suitePath,
+			minScore,
 		)
-		evolution.WithLifecycleGates(evalGate)(wired.Lifecycle)
+		if gerr != nil && !errors.Is(gerr, errEvalGateNotConfigured) {
+			// A CONFIGURED but broken suite fails bootstrap (fail closed);
+			// an intentionally absent gate just skips G3.
+			return gerr
+		}
+		if evalGate != nil {
+			evolution.WithLifecycleGates(evalGate)(wired.Lifecycle)
+			log.InfoContext(ctx, "bootstrap: G3 eval gate wired",
+				"suite", suitePath, "min_score", minScore)
+		}
 	}
 
 	// Wire the lifecycle's evidence store and start its watch loop so
@@ -290,18 +331,74 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	if wired.Lifecycle != nil {
 		evolution.WithLifecycleEvidenceStore(newEvol.EvidenceStore)(wired.Lifecycle)
 		wired.Lifecycle.Start(ctx)
+		// K3 / release-plan T11: the watch goroutine must not outlive
+		// bootstrap — stop it (and wait) when the bootstrap context ends.
+		comp.bgGroup.Go(func() error {
+			<-ctx.Done()
+			wired.Lifecycle.Stop()
+			return nil
+		})
 		// P2-2: expose the lifecycle for the introspect control plane
 		// so /api/evolution/lifecycle returns a state snapshot.
 		newEvol.Lifecycle = wired.Lifecycle
+		// §8 closure-assertion surfaces: the ASM (Previous/RollbackPolicy)
+		// and the G2 shadow evaluator (the comparison feeder).
+		newEvol.ActiveStrategyManager = wired.ActiveStrategyManager
+		newEvol.ShadowEvaluator = wired.ShadowEvaluator
+	}
+
+	// P2-3: wire the RuntimeObserver — the OBSERVE stage of the evolution
+	// control plane. It converts task completed/failed events into
+	// normalized [0,1] strategy samples and writes KindFitness evidence
+	// (source "strategy"). Without it that source is empty, so the B1
+	// rollback watch loop's Window() never reaches ok=true and the B6
+	// staging score has no runtime fitness to read — the whole feedback
+	// chain starves regardless of how well the decision side is wired.
+	if comp.EventStore != nil && newEvol.EvidenceStore != nil {
+		obsOpts := []evolution.ObserverOption{
+			evolution.WithObserverEvidenceStore(newEvol.EvidenceStore),
+		}
+		if wired.ActiveStrategyManager != nil {
+			obsOpts = append(obsOpts, evolution.WithObserverActiveIDFunc(func() string {
+				if cur := wired.ActiveStrategyManager.Current(); cur != nil {
+					return cur.ID
+				}
+				return ""
+			}))
+		}
+		observer := evolution.NewRuntimeObserver(comp.EventStore, obsOpts...)
+		if err := observer.Start(ctx); err != nil {
+			log.WarnContext(ctx, "bootstrap: runtime observer start failed", "error", err)
+		} else {
+			comp.bgGroup.Go(func() error {
+				<-ctx.Done()
+				observer.Stop()
+				return nil
+			})
+		}
 	}
 
 	// In the full configuration, attach the GA adapter to the existing
 	// old-system scheduler; otherwise the GA system's own scheduler
 	// (registered above on the LLM callback registry) drives it.
-	if comp.Evolution != nil && comp.Evolution.Scheduler != nil {
-		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok {
-			sched.SetAdapter(popAdapter)
-		}
+	//
+	// B4 fix: remember which scheduler the background ticker will drive.
+	// Two instances exist: the LEGACY one (created+Registered in
+	// provide_evolution, so its score window receives task events) and the
+	// wired one (created in NewWiredEvolutionSystem WITHOUT Register — its
+	// score window is forever empty, making Tick's shouldEvolve a permanent
+	// no-op, silently disabling ticker-triggered evolution). The ticker
+	// prefers the legacy scheduler; only when it does not exist does it fall
+	// back to the wired one, which must then be Registered here so Tick sees
+	// real scores.
+	var legacySched *evolution.EvolutionScheduler
+	if comp.Evolution != nil {
+		legacySched, _ = comp.Evolution.Scheduler.(*evolution.EvolutionScheduler)
+	}
+	if legacySched != nil {
+		legacySched.SetAdapter(popAdapter)
+	} else if wired.Scheduler != nil && comp.EventStore != nil {
+		wired.Scheduler.Register()
 	}
 
 	// Start a background ticker that triggers evolution via the unified
@@ -322,12 +419,19 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		for {
 			select {
 			case <-evoTicker.C:
-				// B4 fix: route through scheduler.Tick so shouldEvolve +
-				// guardrails are always applied. When wired.Scheduler is nil
-				// (no EventStore), fall back to popAdapter.Run directly.
-				if wired.Scheduler != nil {
+				// B4 fix: route through a scheduler Tick that actually sees
+				// scores, so shouldEvolve + guardrails + MinInterval are
+				// always applied. legacySched is preferred (it is Registered
+				// and therefore receives score events); the wired scheduler
+				// is Registered above when it is the only one. When neither
+				// exists (no EventStore), keep the old unconditional Run so
+				// minimal configs still evolve.
+				switch {
+				case legacySched != nil:
+					legacySched.Tick(ctx)
+				case wired.Scheduler != nil:
 					wired.Scheduler.Tick(ctx)
-				} else {
+				default:
 					if err := popAdapter.Run(ctx); err != nil {
 						log.WarnContext(ctx, "[bootstrap] ticker-triggered evolution failed",
 							"error", err)

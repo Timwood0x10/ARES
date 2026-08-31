@@ -17,6 +17,7 @@ import (
 	"time"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_security"
@@ -63,6 +64,10 @@ type actionHandler struct {
 	// /api/v1/introspect/*. Nil (panel not wired) yields 404, matching any
 	// other unknown path.
 	intro *introspect.Handler
+	// lifecycle is the evolution StrategyLifecycle (P2-4). It powers
+	// POST /api/evolution/approve (manual gate release); nil disables the
+	// endpoint with 503 "evolution lifecycle not active".
+	lifecycle *evolution.StrategyLifecycle
 	// cost serves the LLM cost dashboard API (W1): /api/v1/observability/cost*
 	// and the HTML dashboard. Nil disables the routes (404).
 	cost *ares_observability.CostDashboard
@@ -279,6 +284,16 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Evolution governance: POST /api/evolution/approve (P2-4 manual gate).
+	if r.Method == "POST" && path == "/api/evolution/approve" {
+		princ := h.checkAuth(w, r)
+		if princ == nil {
+			return
+		}
+		h.handleEvolutionApprove(w, r, princ)
+		return
+	}
+
 	// Tool API: POST /api/tools/call
 	if r.Method == "POST" && path == "/api/tools/call" {
 		princ := h.checkAuth(w, r)
@@ -410,6 +425,46 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		"task_id": taskID,
 		"status":  "submitted",
 		"message": "task accepted by the peer runtime",
+	})
+}
+
+// ── Evolution Governance (P2-4) ──────────────────────────
+
+// handleEvolutionApprove promotes the candidate held in SHADOW by the
+// gates.require_manual_approval manual gate (P2-4). Submit only HOLDS the
+// candidate (it returns immediately), so Approve here performs the actual
+// promote — the response reports the newly-active strategy ID. Approve() is
+// a no-op when nothing is pending; the 409 below distinguishes that from a
+// real approval. Like every mutator here it is deny-by-default (checkAuth)
+// and audited.
+func (h *actionHandler) handleEvolutionApprove(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.lifecycle == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{
+			"error":  "evolution lifecycle not active",
+			"status": "error",
+		})
+		return
+	}
+	pendingBefore := h.lifecycle.Snapshot().PendingApproval
+	if !pendingBefore {
+		w.WriteHeader(http.StatusConflict)
+		writeJSON(w, map[string]any{
+			"error":  "no candidate pending manual approval",
+			"status": "error",
+		})
+		return
+	}
+	h.lifecycle.Approve()
+	h.auditAction("evolution_approve", "lifecycle", princ, true)
+	snap := h.lifecycle.Snapshot()
+	writeJSON(w, map[string]any{
+		"status":         "approved",
+		"pending_before": true,
+		"pending_after":  snap.PendingApproval,
+		"active_id":      snap.ActiveID,
+		"last_decision":  snap.LastDecision,
 	})
 }
 

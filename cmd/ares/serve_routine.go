@@ -30,6 +30,16 @@ import (
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
+// evolutionLifecycleForServe returns the wired evolution lifecycle, or nil
+// when the evolution pipeline is not active. Both the control-plane snapshot
+// endpoint and the actionHandler approval endpoint share one instance.
+func evolutionLifecycleForServe(comp *ares_bootstrap.Components) *evolution.StrategyLifecycle {
+	if comp == nil || comp.NewEvolution == nil {
+		return nil
+	}
+	return comp.NewEvolution.Lifecycle
+}
+
 // setupServeControlPlane builds the runtime introspection control plane
 // (monitoring.md Phase 4): the intelligence engine (health/anomalies/insights,
 // migrated from internal/dashboard) and the read-only control server that
@@ -234,6 +244,10 @@ func startServeHTTPAndHooks(
 		chaosStopToken: cfg.Kernel.Chaos.StopToken,
 		// Runtime introspection panel (monitoring.md): UI + read API.
 		intro: peerKernel.intro,
+		// P2-4: evolution manual-approval gate (POST /api/evolution/approve).
+		// Nil when the evolution pipeline is not wired — the endpoint then
+		// reports 503 instead of silently swallowing approvals.
+		lifecycle: evolutionLifecycleForServe(comp),
 	}
 
 	httpSrv := &http.Server{

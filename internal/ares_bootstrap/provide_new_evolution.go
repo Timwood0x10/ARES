@@ -57,6 +57,18 @@ type NewEvolutionComponents struct {
 	// /api/evolution/lifecycle returns a state snapshot.
 	Lifecycle *evolution.StrategyLifecycle
 
+	// ActiveStrategyManager is the ASM the Lifecycle wraps (sole Deploy/
+	// Rollback/RecordScore caller). Exposed for the §8 closure assertions:
+	// Previous() / RollbackPolicy() are the acceptance surfaces for the
+	// promote→rollback loop. Nil when no strategy store was wired.
+	ActiveStrategyManager *evolution.ActiveStrategyManager
+
+	// ShadowEvaluator is the G2 gate's data source. Exposed so the closure
+	// tests (and a future task-level sampler) can feed shadow comparisons —
+	// DreamCycle was the only feeder, and it is disabled in production.
+	// Nil when shadow evaluation is disabled.
+	ShadowEvaluator *evolution.ShadowEvaluator
+
 	// liveDAG holds the agent's live workflow DAG injected after bootstrap
 	// so the evolution system's executors operate on real runtime state
 	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents

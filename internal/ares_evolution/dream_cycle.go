@@ -542,41 +542,51 @@ func (dc *DreamCycle) deployWinner(
 			dc.shadowEvaluator.RecordResult(parent.Score, winner.scoreImprovement+parent.Score)
 		}
 
-		shouldDeploy, report := dc.shadowEvaluator.ShouldDeploy()
-		if !shouldDeploy {
-			// Shadow evaluation must not veto deployment while it has too few
-			// samples to reach a conclusion: StartShadow resets the results,
-			// so the first call here carries a single comparison (total <
-			// MinSamples), and ShouldDeploy returns false for that reason.
-			// Treat "insufficient samples" as "cannot judge yet — proceed",
-			// and only block deployment when enough samples actually show the
-			// shadow strategy underperforming.
-			if report == nil || report.TotalComparisons < dc.shadowEvaluator.minSamples {
-				reason := "insufficient samples, proceeding with deployment"
-				if report != nil && report.Recommendation != "" {
-					reason = report.Recommendation
-				}
-				slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation cannot conclude, proceeding",
-					"candidate_id", winner.strategy.ID,
-					"active_id", parent.ID,
-					"reason", reason)
-				if dc.metrics != nil {
-					dc.metrics.RecordEvolutionShadow("insufficient-samples")
-				}
-			} else {
-				slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation rejects deployment",
-					"candidate_id", winner.strategy.ID,
-					"active_id", parent.ID,
-					"win_rate", report.WinRate,
-					"threshold", dc.shadowEvaluator.minWinRate,
-					"reason", report.Recommendation)
-				if dc.metrics != nil {
-					dc.metrics.RecordEvolutionShadow("rejected")
-				}
-				return nil
+		shouldDeploy, report := dc.shadowEvaluator.ShouldDeployLoose()
+		// P2-1: keep the shadow win-rate gauge current on every comparison
+		// batch so /metrics reflects the live G2 gate state instead of a
+		// permanently zero gauge.
+		if dc.metrics != nil && report != nil {
+			dc.metrics.SetEvolutionShadowWinRate(report.WinRate)
+		}
+		// LOOSE contract (review: DreamCycle defers on insufficient data;
+		// the lifecycle G2 gate uses the STRICT ShouldDeploy): StartShadow
+		// resets the results, so the first call here carries a single
+		// comparison (total < MinSamples), and a strict reading would veto
+		// every early deployment. ShouldDeployLoose therefore returns
+		// shouldDeploy=true with an "insufficient samples" report when it
+		// cannot judge yet — surface that explicitly, and only block
+		// deployment when enough samples actually show the shadow strategy
+		// underperforming.
+		insufficient := report == nil || report.TotalComparisons < dc.shadowEvaluator.minSamples
+		switch {
+		case insufficient:
+			reason := "insufficient samples, proceeding with deployment"
+			if report != nil && report.Recommendation != "" {
+				reason = report.Recommendation
 			}
-		} else if dc.metrics != nil {
-			dc.metrics.RecordEvolutionShadow("promoted")
+			slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation cannot conclude, proceeding",
+				"candidate_id", winner.strategy.ID,
+				"active_id", parent.ID,
+				"reason", reason)
+			if dc.metrics != nil {
+				dc.metrics.RecordEvolutionShadow("insufficient-samples")
+			}
+		case !shouldDeploy:
+			slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation rejects deployment",
+				"candidate_id", winner.strategy.ID,
+				"active_id", parent.ID,
+				"win_rate", report.WinRate,
+				"threshold", dc.shadowEvaluator.minWinRate,
+				"reason", report.Recommendation)
+			if dc.metrics != nil {
+				dc.metrics.RecordEvolutionShadow("rejected")
+			}
+			return nil
+		default:
+			if dc.metrics != nil {
+				dc.metrics.RecordEvolutionShadow("promoted")
+			}
 		}
 	}
 
@@ -995,6 +1005,9 @@ type MetricsRecorder interface {
 	RecordEvolutionDeploy(status string)
 	RecordEvolutionShadow(result string)
 	SetEvolutionScore(strategyID string, score float64)
+	// SetEvolutionShadowWinRate publishes the current shadow win rate so
+	// the /metrics gauge tracks the live G2 gate state (P2-1).
+	SetEvolutionShadowWinRate(rate float64)
 }
 
 // winnerToMutationStrategy converts a candidateResult to a mutation.Strategy

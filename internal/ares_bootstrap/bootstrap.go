@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
@@ -521,7 +522,15 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	if cfg.Evolution.Enabled && cfg.Evolution.Deployment.Enabled && comp.NewEvolution != nil {
 		dp := deployment.NewDeploymentPipeline(
 			cfg.Evolution.Deployment,
-			&deploymentStagingRuntime{reg: comp.NewEvolution.PatchReg, evidenceStore: comp.EvidenceStore},
+			&deploymentStagingRuntime{
+				reg: comp.NewEvolution.PatchReg,
+				// B6 fix: shared scoring backend (same weights/filter as the
+				// lifecycle's rollback window) + explicit cold-start score so
+				// patches without evidence get a conservative 0.5 instead of a
+				// universal 0.0 reject.
+				agg:            evolution.NewRuntimeFitnessAggregator(comp.EvidenceStore, evolution.DefaultAggregatorConfig()),
+				coldStartScore: 0.5,
+			},
 			&deploymentLiveRuntime{reg: comp.NewEvolution.PatchReg},
 		)
 		comp.NewEvolution.Coordinator.SetDeployer(&deploymentAdapter{dp: dp})

@@ -1,12 +1,14 @@
 // observer.go provides the RuntimeObserver — the OBSERVE stage of the
 // evolution control plane. It subscribes to task-completed/failed and
-// agent-stopped events from the EventStore, converts them into normalized
-// [0,1] StrategySample values, and fans the samples out to two consumers:
+// agent-stopped events from the EventStore, converts the outcome-bearing
+// ones into normalized [0,1] StrategySample values, and writes them to the
+// EvidenceStore as KindFitness evidence (source="strategy") so the GA
+// scorer and deployment staging can read real runtime fitness (B6 fix).
 //
-//  1. StrategyLifecycle — feeds RollbackPolicy.RecordScore for degradation
-//     detection (B1 fix).
-//  2. EvidenceStore — writes KindFitness evidence (source="strategy") so the
-//     GA scorer and deployment staging can read real runtime fitness (B6 fix).
+// The lifecycle consumes these samples indirectly: its rollback watch loop
+// reads the aggregator Window over the same evidence (B1 fix). That path is
+// window-mean based (min-samples gated), which is deliberately preferred
+// over a direct per-sample feed.
 //
 // The observer is deliberately passive: it never decides to promote or
 // rollback. It only collects and forwards. Agent code is unaware that its
@@ -16,6 +18,7 @@ package evolution
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -36,12 +39,6 @@ type StrategySample struct {
 	// Score is the normalized fitness score in [0,1].
 	Score float64
 
-	// Latency is the observed execution duration.
-	Latency time.Duration
-
-	// CostUSD is the estimated dollar cost of the execution.
-	CostUSD float64
-
 	// TaskType categorizes the observed task (e.g. "chat", "workflow").
 	TaskType string
 
@@ -49,20 +46,20 @@ type StrategySample struct {
 	At time.Time
 }
 
-// SampleSink receives StrategySample values. StrategyLifecycle and the evidence
-// store both implement this interface (the store via an adapter).
-type SampleSink interface {
-	// OnSample processes a single strategy sample.
-	OnSample(sample StrategySample)
-}
+// TODO(tech-debt): the design doc (ga-runtime-evolution-design-zh.md §4 ①)
+// gives StrategySample Latency and CostUSD fields (fed by flight-trace
+// cost/latency). Neither is populated today: task events carry no duration
+// or cost keys (see e.g. agentloop.Engine.emitTaskCompleted's payload), so
+// the fields were removed rather than left permanently zero. Reintroduce
+// them together with the aggregator's cost/latency penalty term once those
+// values reach the EventStore payloads.
 
 // RuntimeObserver subscribes to the EventStore for task and agent lifecycle
-// events, converts them into StrategySample values, and fans them out to
-// registered sinks. It is the sole producer of runtime fitness samples —
-// agent code never calls it directly.
+// events, converts them into StrategySample values, and writes each sample
+// to the evidence store (source="strategy"). It is the sole producer of
+// runtime fitness samples — agent code never calls it directly.
 type RuntimeObserver struct {
 	subscriber EventStoreSubscriber
-	sinks      []SampleSink
 	evStore    evidence.Store
 	activeID   func() string
 	mu         sync.Mutex
@@ -105,15 +102,6 @@ func WithObserverActiveIDFunc(fn func() string) ObserverOption {
 	}
 }
 
-// WithObserverSink adds a SampleSink that receives every collected sample.
-func WithObserverSink(sink SampleSink) ObserverOption {
-	return func(o *RuntimeObserver) {
-		if sink != nil {
-			o.sinks = append(o.sinks, sink)
-		}
-	}
-}
-
 // NewRuntimeObserver creates an observer that subscribes to the given
 // EventStoreSubscriber. The observer does not start until Start is called.
 func NewRuntimeObserver(subscriber EventStoreSubscriber, opts ...ObserverOption) *RuntimeObserver {
@@ -141,6 +129,7 @@ func (o *RuntimeObserver) Start(ctx context.Context) error {
 		Types: []ares_events.EventType{
 			ares_events.EventTaskCompleted,
 			ares_events.EventTaskFailed,
+			ares_events.EventAgentStopped,
 		},
 	})
 	if err != nil {
@@ -154,7 +143,15 @@ func (o *RuntimeObserver) Start(ctx context.Context) error {
 	o.mu.Unlock()
 
 	go func() {
-		defer close(eg.done)
+		// K3: production background goroutines must not die silently or take
+		// the process down on a bug — recover, log, and exit cleanly.
+		defer func() {
+			if r := recover(); r != nil {
+				log.ErrorContext(context.Background(), "event loop panicked",
+					"method", "processEvent", "error", fmt.Errorf("panic: %v", r))
+			}
+			close(eg.done)
+		}()
 		for {
 			select {
 			case evt, ok := <-ch:
@@ -189,27 +186,50 @@ func (o *RuntimeObserver) Stop() {
 	}
 }
 
-// processEvent converts a single event into a StrategySample and dispatches
-// it to all sinks and the evidence store.
+// processEvent converts a single event into a StrategySample (when the
+// event represents a strategy outcome — see eventToSample) and writes it
+// to the evidence store.
 func (o *RuntimeObserver) processEvent(ctx context.Context, evt *ares_events.Event) {
-	sample := o.eventToSample(evt)
-	for _, sink := range o.sinks {
-		sink.OnSample(sample)
+	sample, ok := o.eventToSample(evt)
+	if !ok {
+		return
 	}
 	o.writeEvidence(ctx, sample)
 }
 
+// agentStoppedGracefulReasons lists EventAgentStopped payload "reason"
+// values that represent intentional, operator-driven terminations. These
+// say nothing about strategy quality, so they produce no sample.
+var agentStoppedGracefulReasons = map[string]bool{
+	"explicit_stop": true,
+}
+
 // eventToSample converts a task lifecycle event into a normalized [0,1]
-// StrategySample. Completed → 1.0, Failed → 0.0. The active strategy ID
-// is resolved from the activeID func (if set) or the event payload.
-func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) StrategySample {
+// StrategySample. Completed → 1.0, Failed → 0.0. EventAgentStopped produces
+// a 0.0 sample ONLY when the payload reason marks an abnormal termination
+// (e.g. death/restart): a killed agent must not silently keep its fitness
+// credit. Graceful stops ("explicit_stop", or no reason — sub-agent
+// shutdown) yield ok=false and produce no sample.
+// The active strategy ID is resolved from the activeID func (if set) or the
+// event payload.
+func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample, bool) {
 	score := 0.0
 	success := false
-	if evt.Type == ares_events.EventTaskCompleted {
+	switch evt.Type {
+	case ares_events.EventTaskCompleted:
 		score = 1.0
 		success = true
+	case ares_events.EventTaskFailed:
+		// 0.0 (already initialized).
+	case ares_events.EventAgentStopped:
+		reason, _ := evt.Payload["reason"].(string)
+		if reason == "" || agentStoppedGracefulReasons[reason] {
+			return StrategySample{}, false
+		}
+		// Abnormal termination → failure sample (0.0).
+	default:
+		return StrategySample{}, false
 	}
-	// Failed → 0.0 (already initialized).
 
 	strategyID := "unknown"
 	if o.activeID != nil {
@@ -234,7 +254,7 @@ func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) StrategySample {
 		Score:      score,
 		TaskType:   taskType,
 		At:         time.Now(),
-	}
+	}, true
 }
 
 // writeEvidence writes a KindFitness evidence record (source="strategy") so

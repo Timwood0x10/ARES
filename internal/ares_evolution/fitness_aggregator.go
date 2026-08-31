@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/evidence"
 )
@@ -34,27 +35,19 @@ type FitnessWeights struct {
 	Workflow float64 `json:"workflow"`
 	// Scheduler is the weight for scheduler-sourced fitness evidence.
 	Scheduler float64 `json:"scheduler"`
+	// Recovery is the weight for recovery-sourced fitness evidence.
+	Recovery float64 `json:"recovery"`
 }
 
 // DefaultFitnessWeights returns sensible default weights summing to 1.0.
 func DefaultFitnessWeights() FitnessWeights {
 	return FitnessWeights{
-		Outcome:       0.45,
+		Outcome:       0.40,
 		DimensionEval: 0.25,
 		Workflow:      0.15,
 		Scheduler:     0.15,
+		Recovery:      0.05,
 	}
-}
-
-// FitnessPenaltyConfig configures cost/latency penalties subtracted from
-// the aggregate fitness.
-type FitnessPenaltyConfig struct {
-	// CostUSDBudget is the cost above which the penalty starts. Set to 0 to
-	// disable cost penalty.
-	CostUSDBudget float64 `json:"cost_usd_budget"`
-	// LatencyBudget is the latency above which the penalty starts. Set to 0
-	// to disable latency penalty.
-	LatencyBudgetSec float64 `json:"latency_budget_sec"`
 }
 
 // AggregatorConfig groups all RuntimeFitnessAggregator settings.
@@ -71,9 +64,15 @@ type AggregatorConfig struct {
 	ColdStartScore float64 `json:"cold_start_score"`
 	// Weights controls per-source contribution.
 	Weights FitnessWeights `json:"weights"`
-	// Penalty configures cost/latency deductions.
-	Penalty FitnessPenaltyConfig `json:"penalty"`
 }
+
+// TODO(tech-debt): the design doc (ga-runtime-evolution-design-zh.md §4 ②)
+// specifies a cost/latency penalty term subtracted from the aggregate
+// fitness (penalty(cost, latency)). It is not implemented because task
+// events carry no cost or latency data today — see the observer.go
+// tech-debt note. Wire it once flight-trace cost/latency reaches the
+// EventStore payloads; do not reintroduce a config struct before a real
+// data source exists (no dead config fields).
 
 // DefaultAggregatorConfig returns sensible defaults matching the design doc.
 func DefaultAggregatorConfig() AggregatorConfig {
@@ -128,6 +127,15 @@ type WindowResult struct {
 	Count int
 	// PerSource holds the per-source mean and count.
 	PerSource map[string]sourceStat
+	// LastAt is the NEWEST evidence timestamp inside the window. Under
+	// steady-state churn (window saturated: one record in, one record out)
+	// Count stays flat, so "did the window advance" must be judged by this
+	// timestamp, not by Count — a count-based check silently stops
+	// RecordingScore forever once every source hits WindowSize (the
+	// rollback path would die without any error or warning).
+	LastAt time.Time
+	// Ok reports whether the judging gate passed (see Window's doc).
+	Ok bool
 }
 
 // sourceStat holds the mean and count for one evidence source.
@@ -137,44 +145,73 @@ type sourceStat struct {
 }
 
 // Window computes the aggregate fitness over recent evidence for the given
-// strategy ID. Returns ok=false when insufficient evidence exists (total
-// count < MinSamplesBeforeJudge), so callers can apply a conservative
-// cold-start policy.
+// strategy ID. Returns Ok=false when insufficient evidence exists, so callers
+// can apply a conservative cold-start policy.
 //
 // The aggregation:
 //  1. Queries KindFitness evidence for each configured source.
 //  2. Computes the per-source mean (only values in [0,1] are accepted,
 //     matching recentFitnessSummary's filter).
 //  3. Computes the weighted aggregate across sources.
-//  4. Subtracts cost/latency penalties (proportional, clamped to [0,1]).
-func (a *RuntimeFitnessAggregator) Window(ctx context.Context, _ string) (mean float64, count int, ok bool) {
+//
+// strategyID scoping AND the judging gate (review 严重项 4): only the
+// "strategy" source is scoped by the ID (its records carry a strategy_id
+// payload key written by RuntimeObserver). The workflow/scheduler/recovery
+// sources are runtime-global — they measure the system that runs the active
+// strategy, not a specific candidate — so they intentionally ignore the ID.
+//
+//   - When strategyID is NON-empty (the rollback-decision path), the
+//     "strategy" source must ITSELF hold ≥ MinSamplesBeforeJudge records for
+//     the given ID before Ok=true. Global sources contribute to the weighted
+//     mean but can never substitute for the active strategy's own evidence
+//     (design doc §4⑤ principle 4: "回退依据来自该策略的真实证据"). Without
+//     this gate, 10 unrelated global records would license a rollback
+//     decision while the strategy's own sample count is 0.
+//   - When strategyID is empty (deployment staging), the gate is the total
+//     count across sources, matching the pre-existing staging contract.
+//
+// WindowResult.LastAt carries the newest in-window evidence timestamp:
+// callers that feed a score into a sliding policy (the lifecycle watch loop)
+// MUST gate on LastAt advancing, never on Count — Count saturates at
+// WindowSize per source and stops changing under steady-state churn.
+func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string) WindowResult {
+	// Read cfg and store under the SAME lock: SetStore may run concurrently
+	// with Window (bootstrap injects the shared store after construction),
+	// and an unlocked store read is a data race.
 	a.mu.RLock()
 	cfg := a.cfg
+	store := a.store
 	a.mu.RUnlock()
 
-	if a.store == nil {
-		return cfg.ColdStartScore, 0, false
+	if store == nil {
+		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]sourceStat{}}
 	}
 
 	sources := []struct {
-		name   string
-		weight float64
+		name       string
+		weight     float64
+		strategyID string
 	}{
-		{"strategy", cfg.Weights.Outcome},
-		{"workflow", cfg.Weights.Workflow},
-		{"scheduler", cfg.Weights.Scheduler},
+		{"strategy", cfg.Weights.Outcome, strategyID},
+		{"workflow", cfg.Weights.Workflow, ""},
+		{"scheduler", cfg.Weights.Scheduler, ""},
+		{"recovery", cfg.Weights.Recovery, ""},
 	}
 
 	// Also query dimension_eval evidence.
-	dimMean, dimCount := a.querySourceMean(ctx, "dimension_eval", evidence.KindDimensionEval, cfg.WindowSize)
+	dimMean, dimCount, dimLastAt := a.querySourceMean(ctx, store, "dimension_eval", evidence.KindDimensionEval, cfg.WindowSize, "")
 
 	perSource := make(map[string]sourceStat)
 	totalCount := 0
+	// strategyCount: samples of the STRATEGY source alone — the judging
+	// gate for the rollback path (see the doc comment on Window).
+	strategyCount := 0
+	var lastAt time.Time
 	var weightedSum float64
 	var weightSum float64
 
 	for _, src := range sources {
-		m, c := a.querySourceMean(ctx, src.name, evidence.KindFitness, cfg.WindowSize)
+		m, c, srcLastAt := a.querySourceMean(ctx, store, src.name, evidence.KindFitness, cfg.WindowSize, src.strategyID)
 		if c == 0 {
 			continue
 		}
@@ -182,6 +219,12 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, _ string) (mean f
 		totalCount += c
 		weightedSum += m * src.weight
 		weightSum += src.weight
+		if srcLastAt.After(lastAt) {
+			lastAt = srcLastAt
+		}
+		if src.name == "strategy" {
+			strategyCount = c
+		}
 	}
 
 	if dimCount > 0 {
@@ -189,13 +232,23 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, _ string) (mean f
 		totalCount += dimCount
 		weightedSum += dimMean * cfg.Weights.DimensionEval
 		weightSum += cfg.Weights.DimensionEval
+		if dimLastAt.After(lastAt) {
+			lastAt = dimLastAt
+		}
 	}
+
+	result := WindowResult{PerSource: perSource, LastAt: lastAt}
 
 	if weightSum == 0 {
-		return cfg.ColdStartScore, 0, false
+		result.Mean = cfg.ColdStartScore
+		return result
 	}
 
-	mean = weightedSum / weightSum
+	mean := weightedSum / weightSum
+
+	// TODO(tech-debt): subtract the cost/latency penalty term here once a
+	// real cost/latency data source reaches the EventStore (see the
+	// tech-debt note on AggregatorConfig above).
 
 	// Clamp to [0,1].
 	if mean < 0 {
@@ -204,36 +257,52 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, _ string) (mean f
 	if mean > 1 {
 		mean = 1
 	}
+	result.Mean = mean
+	result.Count = totalCount
 
-	if totalCount < cfg.MinSamplesBeforeJudge {
-		return mean, totalCount, false
+	if strategyID != "" {
+		// Rollback path: the active strategy's OWN evidence must reach the
+		// judge threshold. Global sources weight the mean but never satisfy
+		// the gate on the strategy's behalf (严重项 4).
+		result.Ok = strategyCount >= cfg.MinSamplesBeforeJudge
+		return result
 	}
-	return mean, totalCount, true
+	result.Ok = totalCount >= cfg.MinSamplesBeforeJudge
+	return result
 }
 
 // querySourceMean computes the mean fitness value from evidence matching
 // the given source and kind. Only values in [0,1] are accepted (matching
 // recentFitnessSummary's filter), so callers can rely on the [0,1] contract.
-func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, source string, kind evidence.EvidenceKind, limit int) (float64, int) {
-	if a.store == nil {
-		return 0, 0
+// When strategyID is non-empty, records whose payload strategy_id differs
+// are skipped (the strategy source scopes by candidate); records without a
+// strategy_id payload key are skipped too, because they cannot be attributed.
+// The returned time is the newest in-window record's timestamp (zero when no
+// records matched) — the saturation-safe "did the window advance" signal.
+// The store is passed in (not read from the receiver) so Window can snapshot
+// it under its lock and keep this helper lock-free.
+func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID string) (float64, int, time.Time) {
+	if store == nil {
+		return 0, 0, time.Time{}
 	}
-	evs, err := a.store.Query(ctx, evidence.Filter{
+	evs, err := store.Query(ctx, evidence.Filter{
 		Source: source,
 		Kind:   kind,
 		Limit:  limit,
 	})
 	if err != nil {
-		return 0, 0
+		return 0, 0, time.Time{}
 	}
 	var sum float64
 	count := 0
+	var lastAt time.Time
 	for _, ev := range evs {
 		if len(ev.Payload) == 0 {
 			continue
 		}
 		var fe struct {
-			Value float64 `json:"value"`
+			Value      float64 `json:"value"`
+			StrategyID string  `json:"strategy_id"`
 		}
 		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
 			continue
@@ -241,11 +310,17 @@ func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, source s
 		if fe.Value < 0 || fe.Value > 1 {
 			continue
 		}
+		if strategyID != "" && fe.StrategyID != strategyID {
+			continue
+		}
 		sum += fe.Value
 		count++
+		if ev.Timestamp.After(lastAt) {
+			lastAt = ev.Timestamp
+		}
 	}
 	if count == 0 {
-		return 0, 0
+		return 0, 0, time.Time{}
 	}
-	return sum / float64(count), count
+	return sum / float64(count), count, lastAt
 }

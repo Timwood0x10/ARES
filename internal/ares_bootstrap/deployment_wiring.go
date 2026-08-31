@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Timwood0x10/ares/internal/evidence"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
@@ -13,13 +13,21 @@ import (
 // It NEVER mutates live state — Apply is a read-only preflight (the patch must
 // have a registered executor) and Evaluate returns the recent real fitness
 // mean from the shared EvidenceStore (Stage 7): promotion only proceeds when
-// observed workflow/scheduler fitness supports the threshold.
+// observed fitness supports the threshold.
 //
-// B6 fix: Evaluate now aggregates fitness from multiple evidence sources
-// (workflow, scheduler, recovery, strategy) instead of only "workflow".
-// When no evidence exists across all sources, it returns ColdStartScore
-// (default 0.5, configurable) so cold-start patches are not universally
-// rejected — the caller decides the conservative policy.
+// B6 fix: Evaluate aggregates fitness from multiple evidence sources via the
+// SHARED RuntimeFitnessAggregator (the same scoring backend the lifecycle's
+// rollback window uses) instead of a local equal-weight mean. Two aggregation
+// semantics for one "shared scoring backend" was a latent disagreement: the
+// local mean treated all sources equally while the aggregator applies
+// configured per-source weights.
+//
+// Cold start: when no evidence exists in any source (Window count == 0),
+// Evaluate returns coldStartScore. There is NO implicit default — bootstrap
+// sets it explicitly (0.5) at construction. A zero-valued struct yields 0.0,
+// which means "reject everything without evidence"; that is a deliberate
+// construction-site choice, not a hidden default (the old doc comment claimed
+// "Default 0.5" while the zero value was 0.0 — the claim was false).
 //
 // History: this struct previously called r.reg.Apply on the SAME *patch.Registry
 // the live runtime uses. Staging therefore mutated production state (memory
@@ -28,11 +36,11 @@ import (
 // inverse. For ID-bearing patches the staging apply also poisoned the shared
 // idempotency map, so the later live promotion silently no-op'd.
 type deploymentStagingRuntime struct {
-	reg           *patch.Registry
-	evidenceStore evidence.Store
-	applyCount    int
-	// coldStartScore is the fitness returned when no evidence exists across
-	// any source (B6 fix). Default 0.5 — conservative but not a universal reject.
+	reg *patch.Registry
+	// agg is the shared fitness scoring backend. Nil means "no evidence
+	// backend wired" → Evaluate always returns coldStartScore.
+	agg            *evolution.RuntimeFitnessAggregator
+	applyCount     int
 	coldStartScore float64
 }
 
@@ -46,32 +54,22 @@ func (r *deploymentStagingRuntime) Apply(_ context.Context, p patch.RuntimePatch
 	return &p, nil
 }
 
-// stagingFitnessSources are the evidence sources whose fitness is aggregated
-// to score a staging patch. B6 fix: previously only "workflow" was queried,
-// causing cold-start patches to be universally rejected (score 0.0).
-var stagingFitnessSources = []string{"workflow", "scheduler", "recovery", "strategy"}
-
+// Evaluate scores the current runtime state via the shared fitness
+// aggregator. The aggregator's MinSamplesBeforeJudge is deliberately NOT
+// enforced here: partial evidence (any count > 0) still yields the weighted
+// mean — only a completely empty store falls back to coldStartScore. This
+// preserves the pre-existing staging contract ("some evidence beats a
+// nominal score") while inheriting the aggregator's per-source weights and
+// [0,1] value filter.
 func (r *deploymentStagingRuntime) Evaluate(ctx context.Context) (float64, error) {
-	// B6 fix: aggregate fitness from multiple evidence sources instead of
-	// only "workflow". When no evidence exists across any source, return
-	// ColdStartScore so cold-start patches are not universally rejected.
-	if r.evidenceStore == nil {
+	if r.agg == nil {
 		return r.coldStartScore, nil
 	}
-	var sum float64
-	var count int
-	for _, src := range stagingFitnessSources {
-		mean, c, ok := recentFitnessSummary(ctx, r.evidenceStore, src, fitnessWindowSize)
-		if !ok || c == 0 {
-			continue
-		}
-		sum += mean
-		count++
-	}
-	if count == 0 {
+	res := r.agg.Window(ctx, "")
+	if res.Count == 0 {
 		return r.coldStartScore, nil
 	}
-	return sum / float64(count), nil
+	return res.Mean, nil
 }
 
 func (r *deploymentStagingRuntime) Rollback(_ context.Context, _ *patch.RuntimePatch) error {

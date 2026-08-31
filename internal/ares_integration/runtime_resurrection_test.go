@@ -321,10 +321,14 @@ func TestRuntimeResurrection_ConcurrentKillAndResurrect(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Wait for both resurrections.
+	// Wait for both resurrections. The factory counter increments before the
+	// new managedAgent is installed into the runtime map, so waiting on the
+	// counter alone leaves a window where Stats() still sees the old entry
+	// marked stopped and the new one not yet registered. Wait on the
+	// observable end state (ActiveAgents) instead.
 	resDeadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(resDeadline) {
-		if factoryA.Load() >= 1 && factoryB.Load() >= 1 {
+		if factoryA.Load() >= 1 && factoryB.Load() >= 1 && mgr.Stats().ActiveAgents == 2 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -2,6 +2,8 @@ package evolution
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -40,13 +42,7 @@ func TestDefaultLifecycleConfig(t *testing.T) {
 	assert.Equal(t, 50, cfg.FitnessWindow)
 	assert.Equal(t, 10, cfg.MinSamplesBeforeJudge)
 	assert.InDelta(t, 0.5, cfg.ColdStartScore, 0.001)
-	assert.True(t, cfg.Shadow.Enabled)
-	assert.Equal(t, 20, cfg.Shadow.MinSamples)
-	assert.InDelta(t, 0.55, cfg.Shadow.MinWinRate, 0.001)
-	assert.True(t, cfg.Rollback.Enabled)
-	assert.InDelta(t, 0.15, cfg.Rollback.DegradationThreshold, 0.001)
-	assert.Equal(t, 5, cfg.Rollback.WindowSize)
-	assert.Equal(t, 3, cfg.Rollback.MinSamples)
+	assert.Equal(t, defaultWatchInterval, cfg.WatchInterval)
 	assert.InDelta(t, 0.7, cfg.Gates.EvalMinScore, 0.001)
 	assert.False(t, cfg.Gates.RequireManualApproval)
 }
@@ -109,24 +105,45 @@ func TestStrategyLifecycle_LifecycleSnapshotMap(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestStrategyLifecycle_Submit_Blacklisted(t *testing.T) {
-	lc, asm, _ := newTestLifecycle(t, DefaultLifecycleConfig())
+func TestStrategyLifecycle_Submit_Blacklisted_CrossGeneration(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.BlacklistGenerations = 2
+	lc, asm, store := newTestLifecycle(t, cfg)
 	require.NoError(t, asm.Deploy(context.Background(),
 		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
 	))
 
 	candidate := &mutation.Strategy{ID: "bad", Version: 2, Score: 30.0}
 
-	// Manually blacklist the candidate for generation 1.
+	// Simulate a rollback at generation 0: the candidate is banned for
+	// BlacklistGenerations (2) → banUntil = 2. Submissions at generations 0
+	// and 1 must be rejected; the ban LIFTS at generation 2 (§9: N 代的
+	// 震荡抑制, not a 0-generation no-op).
 	lc.mu.Lock()
-	lc.blacklist[candidate.ID] = 1
+	lc.blacklist[candidate.ID] = 2
 	lc.mu.Unlock()
 
-	// Submit must be a no-op.
-	lc.Submit(context.Background(), candidate, 1)
+	lc.Submit(context.Background(), candidate, 0)
+	assert.Equal(t, "base", asm.Current().ID, "banned at generation 0")
 
-	// Active strategy should remain "base".
-	assert.Equal(t, "base", asm.Current().ID)
+	lc.Submit(context.Background(), candidate, 1)
+	assert.Equal(t, "base", asm.Current().ID, "banned at generation 1")
+
+	lc.Submit(context.Background(), candidate, 2)
+	assert.Equal(t, "bad", asm.Current().ID, "ban lifts at generation 2")
+
+	// The expired entry was pruned during the accepted Submit.
+	lc.mu.Lock()
+	_, stillListed := lc.blacklist[candidate.ID]
+	lc.mu.Unlock()
+	assert.False(t, stillListed, "expired blacklist entry must be pruned")
+
+	// Accepted submits write promote decision evidence.
+	evs, err := store.Query(context.Background(), evidence.Filter{
+		Source: "lifecycle", Kind: evidence.KindFitness, Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, evs, 1, "exactly one promote decision (the accepted submit)")
 }
 
 func TestStrategyLifecycle_Submit_NoGates(t *testing.T) {
@@ -184,7 +201,7 @@ func TestStrategyLifecycle_Submit_GatePass(t *testing.T) {
 	assert.Equal(t, "better", asm.Current().ID)
 }
 
-func TestStrategyLifecycle_ManualApproval(t *testing.T) {
+func TestStrategyLifecycle_ManualApproval_NonBlocking(t *testing.T) {
 	cfg := DefaultLifecycleConfig()
 	cfg.Gates.RequireManualApproval = true
 
@@ -195,39 +212,46 @@ func TestStrategyLifecycle_ManualApproval(t *testing.T) {
 
 	candidate := &mutation.Strategy{ID: "approved-cand", Version: 2, Score: 80.0}
 
-	// Submit must block until Approve is called.
-	approved := make(chan struct{})
+	// Submit must RETURN immediately — the candidate is held, never the
+	// caller's goroutine (the ticker/adapter path must not block on human
+	// latency).
+	done := make(chan struct{})
 	go func() {
 		lc.Submit(context.Background(), candidate, 1)
-		close(approved)
+		close(done)
 	}()
+	select {
+	case <-done:
+		// Submit returned without waiting for approval. Good.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Submit blocked on manual approval — the hold must be on the candidate, not the caller")
+	}
 
-	// Give Submit time to enter the wait.
-	time.Sleep(50 * time.Millisecond)
-
-	// The candidate should be in SHADOW state, pending approval.
+	// The candidate is in SHADOW state, pending approval, NOT promoted.
 	snap := lc.Snapshot()
 	assert.Equal(t, "shadow", snap.State)
 	assert.True(t, snap.PendingApproval)
+	assert.Equal(t, "base", asm.Current().ID)
 
-	// Approve should unblock Submit.
+	// A second Submit while one is pending is rejected (replacing the held
+	// candidate silently would defeat the gate).
+	other := &mutation.Strategy{ID: "other-cand", Version: 3, Score: 90.0}
+	lc.Submit(context.Background(), other, 2)
+	assert.Equal(t, "base", asm.Current().ID, "submissions are rejected while approval is pending")
+	lc.mu.Lock()
+	assert.Equal(t, "approved-cand", lc.heldCandidate.ID, "the originally held candidate is kept")
+	lc.mu.Unlock()
+
+	// Approve promotes the HELD candidate.
 	lc.Approve()
-
-	select {
-	case <-approved:
-		// Success
-	case <-time.After(2 * time.Second):
-		t.Fatal("Submit did not complete after Approve")
-	}
-
-	// After approval, the candidate should be promoted.
 	assert.Equal(t, "approved-cand", asm.Current().ID)
 
 	snap = lc.Snapshot()
 	assert.False(t, snap.PendingApproval)
+	assert.Equal(t, "promoted", snap.LastDecision)
 }
 
-func TestStrategyLifecycle_ManualApproval_ContextCancel(t *testing.T) {
+func TestStrategyLifecycle_ManualApproval_HoldSurvivesCallerContext(t *testing.T) {
 	cfg := DefaultLifecycleConfig()
 	cfg.Gates.RequireManualApproval = true
 
@@ -238,32 +262,21 @@ func TestStrategyLifecycle_ManualApproval_ContextCancel(t *testing.T) {
 
 	candidate := &mutation.Strategy{ID: "cand-cancel", Version: 2, Score: 80.0}
 
+	// The submitting caller's context dies (e.g. ticker tick cancelled) —
+	// the HOLD must survive it: the candidate stays pending and can still
+	// be approved. (The old blocking design cancelled the promotion on
+	// ctx.Done() AND left a residue token in approvalCh that would silently
+	// auto-approve the NEXT candidate.)
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		lc.Submit(ctx, candidate, 1)
-		close(done)
-	}()
-
-	// Wait for Submit to enter the wait.
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel the context → Submit should return without promoting.
+	lc.Submit(ctx, candidate, 1)
 	cancel()
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Submit did not return after context cancel")
-	}
-
-	// The candidate should NOT be promoted.
+	snap := lc.Snapshot()
+	assert.True(t, snap.PendingApproval, "hold survives the caller's context")
 	assert.Equal(t, "base", asm.Current().ID)
 
-	// pendingApproval should be reset.
-	lc.mu.Lock()
-	assert.False(t, lc.pendingApproval)
-	lc.mu.Unlock()
+	lc.Approve()
+	assert.Equal(t, "cand-cancel", asm.Current().ID, "Approve still promotes the held candidate")
 }
 
 func TestStrategyLifecycle_WriteDecisionEvidence(t *testing.T) {
@@ -276,9 +289,12 @@ func TestStrategyLifecycle_WriteDecisionEvidence(t *testing.T) {
 	candidate := &mutation.Strategy{ID: "better", Version: 2, Score: 80.0}
 	lc.Submit(context.Background(), candidate, 1)
 
-	// Check that promote evidence was written.
+	// Check that promote evidence was written under the dedicated decision
+	// source ("lifecycle", NOT "strategy"): decision events are 0-100 GA
+	// scores and must never enter the [0,1] fitness window consumed by the
+	// aggregator from the "strategy" source.
 	evs, err := store.Query(context.Background(), evidence.Filter{
-		Source: "strategy",
+		Source: "lifecycle",
 		Kind:   evidence.KindFitness,
 		Limit:  10,
 	})
@@ -294,6 +310,209 @@ func TestStrategyLifecycle_Approve_NoOpWhenNotPending(t *testing.T) {
 	lc, _, _ := newTestLifecycle(t, DefaultLifecycleConfig())
 	// Approve must be a no-op when no candidate is pending.
 	assert.NotPanics(t, func() { lc.Approve() })
+}
+
+// newTestLifecycleWithShadow builds a lifecycle whose G2 shadow gate is
+// registered (the production shape), backed by an empty ShadowEvaluator.
+func newTestLifecycleWithShadow(t *testing.T, cfg LifecycleConfig) (*StrategyLifecycle, *ActiveStrategyManager, *ShadowEvaluator, evidence.Store) {
+	t.Helper()
+	store := evidence.NewMemoryStore()
+	asm, err := NewActiveStrategyManager(newMockStrategyStore(), NewRollbackPolicy())
+	require.NoError(t, err)
+	agg := NewRuntimeFitnessAggregator(store, DefaultAggregatorConfig())
+	se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 2, MinWinRate: 0.6})
+	lc := NewStrategyLifecycle(asm, agg, cfg,
+		WithLifecycleShadowEvaluator(se),
+		WithLifecycleEvidenceStore(store),
+	)
+	return lc, asm, se, store
+}
+
+// TestStrategyLifecycle_Submit_SeedDeployWhenNoActive locks the seed-deploy
+// exception: with NO active strategy there is nothing to shadow-compare
+// against, so the first candidate is promoted without gates and becomes the
+// baseline that rollback relies on as "previous" (§9).
+func TestStrategyLifecycle_Submit_SeedDeployWhenNoActive(t *testing.T) {
+	lc, asm, _, _ := newTestLifecycleWithShadow(t, DefaultLifecycleConfig())
+
+	seed := &mutation.Strategy{ID: "seed-v1", Version: 1, Score: 50.0}
+	lc.Submit(context.Background(), seed, 0)
+
+	assert.Equal(t, "seed-v1", asm.Current().ID,
+		"first candidate must deploy as the seed baseline without gates")
+	assert.Equal(t, "promoted", lc.Snapshot().LastDecision)
+
+	// The seed deploy reset the rollback window (promote-side Reset).
+	decision := asm.RollbackPolicy().Evaluate()
+	require.NotNil(t, decision)
+	assert.Contains(t, decision.Reason, "no score data",
+		"rollback window must be clean right after a promote")
+}
+
+// TestStrategyLifecycle_Submit_SeedExemptionIsOneShot locks the seeded flag:
+// after the one seed deployment, the gate-free path can NEVER re-open — not
+// even when the ASM later reports no active strategy (store reset/emptied),
+// which would otherwise let a candidate skip all verification a second time.
+func TestStrategyLifecycle_Submit_SeedExemptionIsOneShot(t *testing.T) {
+	lc, asm, _, store := newTestLifecycleWithShadow(t, DefaultLifecycleConfig())
+
+	seed := &mutation.Strategy{ID: "seed-v1", Version: 1, Score: 50.0}
+	lc.Submit(context.Background(), seed, 0)
+	require.Equal(t, "seed-v1", asm.Current().ID)
+	require.True(t, lc.seeded, "seed flag must flip on the first Submit")
+
+	// Simulate the ASM losing its active strategy (reset / emptied store).
+	asm.mu.Lock()
+	asm.current = nil
+	asm.previous = nil
+	asm.mu.Unlock()
+
+	// No shadow data → fail-closed gates. The candidate must NOT get a
+	// second gate-free deploy, and the active stays gone.
+	cand := &mutation.Strategy{ID: "cand-after-reset", Version: 2, Score: 90.0}
+	lc.Submit(context.Background(), cand, 1)
+	assert.Nil(t, asm.Current(), "seed exemption must be one-shot: no re-deploy after reset")
+
+	// No promote decision evidence was written for the rejected candidate —
+	// the only decision evidence is the original seed promote.
+	evs, err := store.Query(context.Background(), evidence.Filter{
+		Source: "lifecycle", Kind: evidence.KindFitness, Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, evs, 1)
+	assert.Contains(t, evs[0].ID, "seed-v1",
+		"the only promote evidence is the original seed deploy")
+}
+
+// TestStrategyLifecycle_ShadowGate_FailClosedOnNoData locks review 阻断项 1:
+// with zero shadow comparisons the G2 gate REJECTS (design doc §3.1 "样本 <
+// MinSamples → 留在 SHADOW 不下发"), it does NOT pass through. The previous
+// pass-through made the whole verify pipeline a rubber stamp in default
+// configs where nothing feeds comparisons.
+func TestStrategyLifecycle_ShadowGate_FailClosedOnNoData(t *testing.T) {
+	lc, asm, _, _ := newTestLifecycleWithShadow(t, DefaultLifecycleConfig())
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	candidate := &mutation.Strategy{ID: "unverified", Version: 2, Score: 90.0}
+	lc.Submit(context.Background(), candidate, 1)
+
+	assert.Equal(t, "base", asm.Current().ID,
+		"zero shadow evidence must fail-closed, not promote")
+	snap := lc.Snapshot()
+	assert.Equal(t, "active", snap.State)
+	assert.Empty(t, snap.ShadowID, "rejected candidate must not stay attached")
+
+	// The rejection is recorded on the gate-reject counter path (no panic
+	// without metrics wired) and no promote evidence was written.
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	assert.Nil(t, lc.heldCandidate)
+}
+
+// TestStrategyLifecycle_Promote_ResetsRollbackWindow locks §8 item 5: a
+// promote resets the rollback score window so the new strategy is not judged
+// against the OLD strategy's low scores on its first watch tick.
+func TestStrategyLifecycle_Promote_ResetsRollbackWindow(t *testing.T) {
+	lc, asm, _ := newTestLifecycle(t, DefaultLifecycleConfig())
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	// Simulate a degraded history on the OLD strategy.
+	asm.RecordScore(0, 0.1)
+	asm.RecordScore(0, 0.2)
+
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "better", Version: 2, Score: 80.0}, 1)
+	require.Equal(t, "better", asm.Current().ID)
+
+	decision := asm.RollbackPolicy().Evaluate()
+	require.NotNil(t, decision)
+	assert.Contains(t, decision.Reason, "no score data",
+		"rollback window must be empty right after promote")
+}
+
+// TestStrategyLifecycle_Watch_DecorrelatesRepeatedTicks locks §8 item 6:
+// evaluateAndMaybeRollback records a score only when the evidence window
+// ADVANCED — re-running with the same evidence batch must not feed the same
+// mean into RollbackPolicy again.
+func TestStrategyLifecycle_Watch_DecorrelatesRepeatedTicks(t *testing.T) {
+	lc, asm, store := newTestLifecycle(t, DefaultLifecycleConfig())
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	// Seed 12 strategy-source fitness samples (≥ MinSamplesBeforeJudge 10).
+	ctx := context.Background()
+	seedWindowFitness(t, store, "base", 1.0, 12)
+
+	lc.evaluateAndMaybeRollback(ctx)
+	require.Len(t, asm.RollbackPolicy().scoreHistory, 1, "first tick records once")
+
+	lc.evaluateAndMaybeRollback(ctx)
+	lc.evaluateAndMaybeRollback(ctx)
+	assert.Len(t, asm.RollbackPolicy().scoreHistory, 1,
+		"repeated ticks over the SAME evidence must not re-record")
+}
+
+// TestStrategyLifecycle_Watch_SaturatedWindowStillAdvances is the regression
+// for the decorrelation-by-count bug: once every source saturates at
+// WindowSize (50), the window's record count stays FLAT under steady-state
+// churn ("one in, one out"). A count-based advance check would therefore
+// never fire again and the rollback feed would silently die — no error, no
+// warning, and /api/evolution/lifecycle would keep showing a healthy
+// window_count (~250). The advance signal must be the window's newest
+// evidence TIMESTAMP. Seeds 120 records (> WindowSize) to cover the
+// saturation path the original 12-record test missed.
+func TestStrategyLifecycle_Watch_SaturatedWindowStillAdvances(t *testing.T) {
+	lc, asm, store := newTestLifecycle(t, DefaultLifecycleConfig())
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	ctx := context.Background()
+	// Saturate the strategy source well past WindowSize (50): the window
+	// count is pinned at 50 from here on.
+	seedWindowFitness(t, store, "base", 1.0, 120)
+
+	lc.evaluateAndMaybeRollback(ctx)
+	require.Len(t, asm.RollbackPolicy().scoreHistory, 1, "first tick records once")
+
+	// Steady-state churn: 10 NEW records enter, 10 oldest are evicted —
+	// count stays 50 but the window content (and LastAt) advanced.
+	seedWindowFitness(t, store, "base", 0.0, 10)
+
+	lc.evaluateAndMaybeRollback(ctx)
+	assert.Len(t, asm.RollbackPolicy().scoreHistory, 2,
+		"saturated window with NEW evidence must still record — count is flat, the timestamp advanced")
+
+	// No new evidence → still 2 (timestamp unchanged, no re-record).
+	lc.evaluateAndMaybeRollback(ctx)
+	assert.Len(t, asm.RollbackPolicy().scoreHistory, 2,
+		"unchanged window must not re-record")
+}
+
+// seedWindowFitness writes n strategy-source fitness records with distinct,
+// monotonically advancing timestamps (the evidence store orders and trims by
+// timestamp, so distinct times are required for eviction semantics).
+func seedWindowFitness(t *testing.T, store evidence.Store, strategyID string, value float64, n int) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Now().Add(-time.Duration(n+1) * time.Second)
+	for i := 0; i < n; i++ {
+		payload, err := json.Marshal(map[string]any{
+			"value": value, "strategy_id": strategyID,
+		})
+		require.NoError(t, err)
+		require.NoError(t, store.Append(ctx, evidence.Evidence{
+			ID:        fmt.Sprintf("fit-%s-%d-%d", strategyID, int(value*100), i),
+			Source:    "strategy",
+			Kind:      evidence.KindFitness,
+			Payload:   payload,
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		}))
+	}
 }
 
 func TestStrategyLifecycle_StartStop(t *testing.T) {

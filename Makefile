@@ -170,10 +170,13 @@ test-tools:
 check: lint test
 
 # G1-G3 repair-plan gates: reachability, config contract, event contract.
+# G4 (§8 closure): the design doc's acceptance assertions only exist under
+# `-tags closure` — without this line `make check` green ≠ §8 verified.
 gate:
 	@./scripts/g1_reachability_gate.sh
 	@go test -run TestG2ConfigContract ./internal/ares_config/...
 	@go test -run TestEventContract ./internal/ares_events/...
+	@go test -race -tags closure ./internal/ares_evolution/... ./internal/ares_bootstrap/...
 
 # G4: nightly race + soak baseline (cron target).
 nightly: test-race

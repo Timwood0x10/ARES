@@ -155,11 +155,42 @@ func (e *ShadowEvaluator) RecordResult(activeScore, shadowScore float64) {
 // on accumulated comparison results. It uses majority voting with a configurable
 // minimum sample count and win rate threshold.
 //
+// SEMANTICS (review: one evaluator, two consumers, two readings — now
+// explicit): ShouldDeploy is the STRICT judge, fail-closed — insufficient
+// samples REJECT. It is the contract the StrategyLifecycle's G2 verify gate
+// relies on ("样本 < MinSamples → 留在 SHADOW 不下发"). DreamCycle's internal
+// deploy path uses ShouldDeployLoose instead, where insufficient samples
+// defer to the deployer rather than veto.
+//
 // Returns:
 //
 //	bool - true if the shadow strategy should be deployed.
 //	*ShadowReport - detailed report of the evaluation, or nil if no results exist.
 func (e *ShadowEvaluator) ShouldDeploy() (bool, *ShadowReport) {
+	pass, report := e.ShouldDeployLoose()
+	// Re-interpret the two "cannot conclude" cases as strict rejections:
+	// zero comparisons (Loose reports nil) and below-min-samples (Loose
+	// reports a report with a recommendation but false).
+	if report == nil || report.TotalComparisons < e.minSamples {
+		if report != nil {
+			report.Recommendation = "fail-closed: " + report.Recommendation
+		}
+		return false, report
+	}
+	return pass, report
+}
+
+// ShouldDeployLoose is the DreamCycle-side contract: shadow evaluation must
+// not VETO deployment while it has too few samples to reach a conclusion —
+// insufficient data defers to the deployer instead of rejecting. With enough
+// samples the verdict is identical to ShouldDeploy.
+//
+// Returns:
+//
+//	bool - true if the shadow strategy should be deployed (or cannot be
+//	       judged yet and the deployer may proceed).
+//	*ShadowReport - detailed report, or nil when there are no results.
+func (e *ShadowEvaluator) ShouldDeployLoose() (bool, *ShadowReport) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -184,10 +215,12 @@ func (e *ShadowEvaluator) ShouldDeploy() (bool, *ShadowReport) {
 
 	if total < e.minSamples {
 		report.Recommendation = fmt.Sprintf(
-			"insufficient samples: need %d, have %d",
+			"insufficient samples: need %d, have %d — cannot judge yet, deferring to deployer",
 			e.minSamples, total,
 		)
-		return false, report
+		// LOOSE contract: too few samples to conclude → do NOT veto; the
+		// deployer decides (DreamCycle proceeds with an explicit log).
+		return true, report
 	}
 
 	if winRate >= e.minWinRate {

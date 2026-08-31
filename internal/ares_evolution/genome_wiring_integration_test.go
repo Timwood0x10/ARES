@@ -360,10 +360,10 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 	//   - score degradation drop >= 15%
 	// Use 40 high scores followed by 10 low scores to create ~98.7% degradation.
 	for i := 0; i < 40; i++ {
-		system.Scheduler.RecordScore(100.0)
+		system.Scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		system.Scheduler.RecordScore(1.0)
+		system.Scheduler.RecordScore(0.0)
 	}
 
 	// Override minInterval to allow immediate triggering.
@@ -512,10 +512,10 @@ func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 
 	// Populate score degradation data once (reused across calls).
 	for i := 0; i < 40; i++ {
-		system.Scheduler.RecordScore(100.0)
+		system.Scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		system.Scheduler.RecordScore(1.0)
+		system.Scheduler.RecordScore(0.0)
 	}
 
 	genBefore := system.Population.CurrentGeneration()
@@ -588,10 +588,10 @@ func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 
 	// Feed score degradation data to satisfy shouldEvolve.
 	for i := 0; i < 40; i++ {
-		system.Scheduler.RecordScore(100.0)
+		system.Scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		system.Scheduler.RecordScore(1.0)
+		system.Scheduler.RecordScore(0.0)
 	}
 
 	system.Scheduler.minInterval = time.Nanosecond
@@ -868,10 +868,10 @@ func TestWiredSystem_WithRegressionTester(t *testing.T) {
 
 	// Populate score history so scheduler.shouldEvolve returns true.
 	for i := 0; i < 40; i++ {
-		system.Scheduler.RecordScore(100.0)
+		system.Scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		system.Scheduler.RecordScore(1.0)
+		system.Scheduler.RecordScore(0.0)
 	}
 
 	system.Scheduler.minInterval = time.Nanosecond

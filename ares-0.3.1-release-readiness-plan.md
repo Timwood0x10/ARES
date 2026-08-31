@@ -22,16 +22,17 @@
 | T4 SDK `create_plan` loop | ✅ 通过 | 采用 A1：SDK kernel 注入 loop 生命周期；`Runtime.Close()` 取消 loop；`-race` 绿。**review 修复**：`syscallKernel` 是私有字段，嵌入方无法列出/停止 loop（serve 路径有此控制面），已导出 `Runtime.LivePlanLoops()` / `StopPlanLoop()`（kernel 未接线时安全返回），并补验收测试 |
 | T5 文档指向已删架构 | ✅ 通过 | `docs/agent-birth-capabilities.md` 已替换重写，无失效符号/路径；中英对齐 |
 | T6 IPC 死信 | ✅ 通过 | Send/Request 失败进 deadletter 且可观测（DAG 状态段）；`-race` 绿 |
-| T7 只读工具清单端点 | ✅ 通过 | `auth_enabled: true` 时读面要求 `PermRead`：`/api/tools`、`/api/mcp/tools`、introspect JSON 流、cost API。**review 修复**：`introspect.ControlServer` 的 `/api/*`（`/api/agents` 活体拓扑、`/api/flight/timeline`、`/api/flight/decisions` 调度决策、`/api/observability/spans`、`/api/runtime/config`、`/api/insights`）原从 handler 末尾无鉴权穿透（探针实测 200），已一并纳入读鉴权；非 `/api` 路径保持开放。矩阵测试覆盖；鉴权落审计 |
+| T7 只读工具清单端点 | ✅ 通过 | `auth_enabled: true` 时读面要求 `PermRead`：`/api/tools`、`/api/mcp/tools`、introspect JSON 流、cost API。**review 修复**：`introspect.ControlServer` 的 `/api/*`（`/api/agents` 活体拓扑、`/api/flight/timeline`、`/api/flight/decisions` 调度决策、`/api/observability/spans`、`/api/runtime/config`、`/api/insights`）原从 handler 末尾无鉴权穿透（探针实测 200），已一并纳入读鉴权；非 `/api` 路径保持开放。矩阵测试覆盖；鉴权落审计。**2026-08-31 注记**：GA 控制平面的 `GET /api/evolution/lifecycle` 落在 introspect `/api/*` 下，已被本项读鉴权覆盖；`POST /api/evolution/approve` 走 actionHandler `checkAuth`+审计。两个新端点**永久适用本项口径**，后续不得为其开无鉴权后门（§5 清单单列一项盯防） |
 | T8 明文弱口令入库 | ✅ 通过 | 已入库配置无 active 明文口令（扫描为空）；`make check` 绿 |
 | T9 覆盖率 ≥65% | ⚠️ 部分 | `internal/ares_events` 51% → **71.7%**（≥70% 达标）、`-race -count=5` 绿；**总覆盖率 58.3%**，距 65% 仍差（0% 薄层集中在 `compat/`、`api/evolution`、`examples/`，需专项或按计划决定移除 `compat`） |
 | T10 长跑与租户隔离 | ⏳ 待环境 | 依赖真实 PG（`TEST_POSTGRES_DSN`）+ 真实 LLM + 12h soak，本迭代无法在会话内执行 |
 | K1 Adopt 延迟纳管 | ✅ 通过 | `Orchestrator.Adopt(ctx, c, mode)`：Start 后注册并驱动启动状态记录；依赖缺失/`Failed` 拒绝（注册前校验，不污染图）、同名重复拒绝且不覆盖既有状态、`Shutdown` 期间返回 `ErrShuttingDown`（stopped 标志 + root ctx 双保险）；Degraded 模式 Ready 失败 → `Degraded`+reason 不报错，Required 模式 → `Failed`+error。单测全绿 |
 | K2 六大件纳管 | ✅ 通过 | `kernelHandle.adopt(ctx, orch)`（`cmd/ares/kernel_adopt.go`）纳管 scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus 六件，依赖边按 K2 表（fabrics→eventstore，dispatcher→两 fabric，scheduler→三件，pluginbus→scheduler）；stop/wait 钩子用 `context.CancelFunc` + done channel 包装（未给内核类型硬加 `Stop()`）；nil 支柱按 present 语义跳过；采纳失败 fail-loud 中止 serve。验收测试：全内核六件 Ready + 部分内核跳过 nil 件 |
-| K3 裸 go 收敛 | ✅ 通过 | 新增统一入口 `Orchestrator.GoBackground(name, fn)`（recover → 日志+`component.failed` 事件进 FlightRecorder 时间线+组件标 `Failed`，不传播 panic/不炸 errgroup；关机期退出不改状态）；chaos 8 处、quota/population、feedback、collabGC、scheduler、recovery 共 13 处迁入。grep 复核生产路径仅剩 3 处豁免（serve.go 二次信号强退、kernel_loop 有界 sweep、arena 一次性流），均带 recover+注释。**顺带修复两处既有 flaky 测试**：`TestRecoveryBindingExclusiveAndAutoRelease` 在 finalize→unbind 窗口读注册表的竞态（改有界轮询）；`TestChaosStopEndpointAuth` 单例在 `-count>1` 下跨次残留（补 reset） |
+| K3 裸 go 收敛 | ✅ 通过 | 新增统一入口 `Orchestrator.GoBackground(name, fn)`（recover → 日志+`component.failed` 事件进 FlightRecorder 时间线+组件标 `Failed`，不传播 panic/不炸 errgroup；关机期退出不改状态）；chaos 8 处、quota/population、feedback、collabGC、scheduler、recovery 共 13 处迁入。grep 复核生产路径仅剩 3 处豁免（serve.go 二次信号强退、kernel_loop 有界 sweep、arena 一次性流），均带 recover+注释。**2026-08-31 注记**：GA 控制平面新增的 lifecycle watch / observer loop 不在那次 grep 范围内，K3 复核范围扩展到 `internal/ares_evolution`（T11 验收项 1；两处现均带 recover 且受管退出）。**顺带修复两处既有 flaky 测试**：`TestRecoveryBindingExclusiveAndAutoRelease` 在 finalize→unbind 窗口读注册表的竞态（改有界轮询）；`TestChaosStopEndpointAuth` 单例在 `-count>1` 下跨次残留（补 reset） |
 | K4 停机单点+超时 | ✅ 通过 | `Shutdown` 增加整体预算（调用方 deadline 优先，否则 30s），预算耗尽后逐项点名未达 `Stopped` 的组件并计入返回错误；停机循环感知预算提前收敛。核查 entry-point：内核无重复 teardown（loops 由 adopt 的 stop 钩子统一驱动） |
 | K5 内核可观测 | ✅ 通过 | `Scheduler.Running()`（Run 入口置位/退出复位）+ `Orchestrator.Snapshot()`；scheduler 以 Degraded 模式注册，ready 门轮询 Running（2s 预算）——drain 未跑报 `Degraded`+可读 reason，**不再假 Ready**；introspect `/api/v1/introspect/snapshot` 经 `WithSystemRuntime` 附加 `system_runtime` 组件图段（旧形状内联保持，面板兼容；受 T7 读鉴权）。`component.failed` 事件类型入 `ares_events`（无订阅方，G3 契约不受影响） |
 | K6 SDK/arena 登记 | ✅ 完成 | CHANGELOG `[0.3.1]` 新增 **Known limitations** 段：统一编排仅覆盖 `ares serve`，SDK/arena 非 serve 路径不建 Orchestrator，延后至 0.4.x |
+| T11 GA 控制平面纳入发布面 | ⏳ 2026-08-31 登记 | 代码面已落地（lifecycle/observer/gate/aggregator/approve 端点/5 配置块，§8 六断言 + `-race` 绿）；待办：goroutine 纳管 grep 复核入 `internal/ares_evolution`、`make gate` G2 补 5 块配置契约、12h soak 重跑、CHANGELOG 补记（详见 §T11 验收标准） |
 
 **关键结论（2026-08-30 第二轮迭代）**：K1–K6 全部落地，`make check` / `make gate`
 / `go test -race -count=1 ./...`（132 包）/ 相关包 `-race -count=5`（system_runtime、
@@ -54,7 +55,7 @@ T9 剩余低覆盖率模块（`compat/` 等）按指示暂缓；T10 维持待环
 | 构建 / 静态检查 | `make check`（vet + staticcheck + golangci-lint + 全量 test）通过 |
 | 竞态 | `go test -race -count=1 ./...` 132 包全绿，0 FAIL |
 | 门禁 | `make gate`（G1 可达性 / G2 配置契约 / G3 事件契约）通过 |
-| 总覆盖率 | **57.8%**（内核关键包 78%–100%，`ares_events` 仅 51%） |
+| 总覆盖率 | **58.3%**（2026-08-30 `make cover`；2026-08-29 首轮评审值为 57.8%。GA 控制平面 +1495 行后需重测，见 T9/T11） |
 | 生产 TODO/FIXME | 11 处（3 处为已标注技术债，非遗漏） |
 | 生产库裸 `panic()` | 0 处（5 处均为 `MustNew`/`quickstart` fail-fast 与 testdata 生成器） |
 
@@ -107,8 +108,9 @@ make cover
 | T10 | **P2** | 定版前长跑与租户隔离确认 | soak 脚本、`internal/storage/postgres` | 1 人日 |
 | K1–K5 | **P1** | 内核六大件纳入 System Runtime 统一编排（含裸 `go` 收敛） | `internal/system_runtime/*`、`internal/ares_bootstrap/system_runtime_wiring.go`、`cmd/ares/{kernel,serve_agents,peer_mode,serve_chaos,serve_routine}.go` | 2–3 人日 |
 | K6 | P2 | SDK / arena 路径编排同构（可延后，须登记） | `sdk/*`、`cmd/ares/arena.go` | 1 人日 |
+| T11 | **P1** | GA 进化控制平面纳入发布面（2026-08-31 新增：lifecycle/observer/approve 端点/5 个新配置块/2 个常驻 goroutine/新 metrics） | `internal/ares_evolution/{lifecycle,observer,fitness_aggregator}.go`、`internal/ares_bootstrap/{eval_gate_wiring,evolution_lifecycle_config,bootstrap_steps}.go`、`cmd/ares/{actions,serve_routine}.go` | 1 人日 |
 
-**关键路径**：T1 → T3 → T2 →（T4、T5 并行）→ `v0.3.1-rc` → K1–K5 → T6–T10 → GA。
+**关键路径**：T1 → T3 → T2 →（T4、T5 并行）→ `v0.3.1-rc` → K1–K5 → T6–T10 → **T11（先于 T10）** → GA。
 
 ---
 
@@ -637,6 +639,54 @@ T2 方案 A 的恢复正确性完全依赖它。`compat/` 19 个文件 0% 覆盖
 
 ---
 
+## T11（P1）GA 进化控制平面纳入发布面
+
+> 2026-08-31 登记。本轮 GA 接线新增 31 文件 / +1495 行：StrategyLifecycle
+> 状态机、RuntimeObserver、RuntimeFitnessAggregator、G2/G3 验证门、
+> `POST /api/evolution/approve` 写端点（checkAuth + 审计，鉴权已对齐 T7 口径）、
+> `GET /api/evolution/lifecycle` 读端点（已纳入 introspect `/api/*` 读鉴权）、
+> 5 个新 YAML 配置块、2 个常驻后台 goroutine、4 个新 Prometheus 指标。
+> 原任务总表（§2）、发布节奏（§3）、最终清单（§5）均未覆盖此面，本任务补登记。
+
+### 必须补齐的项
+
+1. **goroutine 纳管（K3 同口径）**：
+   - `lifecycle.watch` 循环：bootstrap 侧注册到 `comp.bgGroup`（ctx 结束 →
+     `Stop()` 且等待 `done`），循环内 recover（panic 只记日志+退出，不炸进程）。
+   - `RuntimeObserver` 事件循环：`eg.Wait()` 退出等待 + recover。
+   - K3 的 grep 复核范围扩展到 `internal/ares_evolution`。
+2. **make gate G2 配置契约**：`evolution.{lifecycle,rollback,shadow,gates}`
+   5 个新配置块纳入 G2（缺省值、量纲 [0,1]、`eval_suite` 文件存在性）。
+3. **T10 12h soak 重跑**：长跑基线必须在新控制平面代码之上采集（新增
+   lifecycle/observer 两个常驻 goroutine + watch ticker，停机序列新增
+   `Lifecycle.Stop()` 等待路径）。**2026-08-31 佐证**：decorrelation 曾按
+   "证据条数"判断窗口推进，窗口饱和（每源 ≥50 条）后 count 恒平 → 回退
+   静默停摆，无报错无告警——这类"长跑后才暴露、短测全绿"的缺陷只有
+   12h soak 能在合入前抓住（已修：判据改为窗口内最新证据时间戳，
+   `TestStrategyLifecycle_Watch_SaturatedWindowStillAdvances` 锁定）。
+4. **CHANGELOG `[0.3.1]`**：记录新端点（approve/lifecycle）、新配置块、
+   新指标（promote/rollback/gate_reject/shadow_win_rate）、G2 fail-closed
+   语义（默认配置下 seed 之后的候选将被拒绝，直至 P0-9 feeder 落地——
+   已写入 Known limitations）。
+5. **P0-9 影子比较 feeder**：设计文档 §6 已登记编号条目；落地前默认配置
+   不会产出第二个策略（§T11 Known limitations 同源）。
+
+### 验收标准
+
+- [ ] `internal/ares_evolution` 生产路径无游离裸 `go`（watch/observer 均
+      recover + 受管退出，grep 复核记录在案）。
+- [ ] `make gate` G2 覆盖 5 个新配置块；**`make gate` 含
+      `go test -race -tags closure`**（§8 六条验收断言必须进 CI——此前
+      closure 测试从未被任何 Makefile 目标执行，`make check` 绿 ≠ §8 通过）。
+- [ ] 12h soak 在含控制平面的版本上重跑并归档（重点观察：窗口饱和后
+      回退仍触发、watch/observer goroutine 数收敛）。
+- [ ] `CHANGELOG.md` `[0.3.1]` 含上述四类记录 + fail-closed Known limitation。
+- [ ] `/api/evolution/approve` 在 `auth_enabled: true` 时：无 token → 401；
+      无挂起候选 → 409；正常批准 → 200 且审计落盘（单测覆盖三态）。
+- [ ] P0-9 feeder 有编号条目与负责人（设计文档 §6 已登记）。
+
+---
+
 ## K 组（P1）内核组件纳入统一调度：System Runtime 编排闭环
 
 > 追加自 2026-08-30 复审。K1–K5 为 `v0.3.1` 必做，K6 可延后但须在 CHANGELOG
@@ -777,7 +827,7 @@ panic recover——单个 loop panic 会直接带崩整个进程，且 `Shutdown
               ↓ 全部验收通过
            打 tag v0.3.1-rc，发布 Release Notes（含 Known limitations）
 
-阶段二（GA）：K1–K5 → T6 → T7 → T8 →（T9 ∥ T10）
+阶段二（GA）：K1–K5 → T6 → T7 → T8 →（T9 ∥ T11）→ T10
               ↓ 全部验收通过 + 总覆盖率 ≥65% + 12h soak 基线
            打 tag v0.3.1（GA）
 ```
@@ -786,6 +836,10 @@ panic recover——单个 loop panic 会直接带崩整个进程，且 `Shutdown
 20 处后台 goroutine，风险高于纯文档/鉴权类修复；但它是 12h soak（T10）的前置——
 在裸 `go` 未收敛、内核不在停机序列里的状态下跑长跑，goroutine 泄漏与停机残留
 无法归因。所以必须在 T10 之前完成。
+
+**为何 T11 紧贴 T10 之前**：T11 引入两个常驻后台 goroutine（lifecycle watch /
+observer）与新写端点，12h soak 必须在包含它们的版本上采集，否则长跑基线不代表
+将要发布的进程形态（同 K3 先于 T10 的理由）。
 
 **为何 T1/T3 先于 T2**：两者都是小改动、零架构风险，先合掉可以立刻消除最严重的
 默认暴露面；T2 无论走 A 还是 B 都需要决策与讨论，不应阻塞安全修复上线。
@@ -818,28 +872,45 @@ panic recover——单个 loop panic 会直接带崩整个进程，且 `Shutdown
 
 ## 5. 定版最终检查清单
 
+> **单一真相源声明**：T1–T8 / K1–K6 的完成状态以 §0「本迭代执行状态」表为准
+> （2026-08-30 更新，含自动化确证与待环境项），本清单**不再重复勾选**任务级
+> 状态，只保留打 tag 前必须重新机器验证的全局项。此前本清单曾与 §0 状态表
+> 矛盾（T1–T8 一边标 ✅ 一边留空）——以本声明消除双真相。
+
 打 GA tag 前逐项确认：
 
-- [ ] T1–T8 全部完成并验收通过
+- [ ] §0 状态表所有 ✅ 项在打 tag 当日重跑仍绿（`make check` / `make gate` /
+      `-race -count=1 ./...`）；⏳/⚠️ 项均有处置结论
+- [ ] T11 验收标准全部勾选（§T11）
 - [ ] `make check` 绿
-- [ ] `make gate` 绿（G1 可达性 / G2 配置契约 / G3 事件契约）
+- [ ] `make gate` 绿（G1 可达性 / G2 配置契约——**含 evolution 5 个新配置块** / G3 事件契约）
 - [ ] `go test -race -count=1 ./...` 132 包全绿
 - [ ] `go build ./...` && `go vet ./examples/...` 绿
 - [ ] `make cover` 总覆盖率 ≥ 65%，`internal/ares_events` ≥ 70%
-- [ ] 12h soak 基线归档，无内存/goroutine 泄漏
+      （**取值口径**：2026-08-30 `make cover` 实测 58.3%（§0 状态表）；
+      §0 摘要的 57.8% 为 2026-08-29 首轮评审值，仅作历史对照。GA 控制平面
+      +1495 行后需在 T9/T11 收尾时**重测并更新两个数字**）
+- [ ] 12h soak 基线归档（**在含 GA 控制平面的版本上**），无内存/goroutine 泄漏
 - [ ] 默认启动仅监听 `127.0.0.1`，跨主机访问被拒
 - [ ] 任务持久化语义与 README/CHANGELOG 文字**完全一致**（无论走 T2-A 还是 T2-B）
 - [ ] `docs/agent-birth-capabilities.md`（中英双版）无失效符号与路径
 - [ ] 已入库配置无明文可用凭证
 - [ ] `CHANGELOG.md` `[0.3.1]` 段落完整：Fixed / Changed / Breaking changes /
-      Known limitations 四类齐全
+      Known limitations 四类齐全（**含 GA 控制平面：新端点/新配置/新指标/
+      G2 fail-closed 语义**）
 - [ ] `VERSION` 与 tag 一致
 - [ ] 仓库内无自相矛盾的状态记录（重点：`ares-repair-plan-zh.md` 的 GAP 表
-      与代码 TODO）
+      与代码 TODO；`ga-runtime-evolution-design-zh.md` §5/§7/§10 已按
+      2026-08-31 复核同步）
 - [ ] K1–K5 完成并验收通过（统一调度闭环；K6 可延后但须显式登记）
 - [ ] `orch.Snapshot()` 中出现内核组件（scheduler / taskfabric / agentfabric /
       recovery / dispatcher / pluginbus），且 `kill -TERM` 后全部为 `Stopped`
-- [ ] `cmd/ares` 生产路径无游离裸 `go`（除 `orch.Go` / `GoBackground` 包装内部）
+- [ ] `cmd/ares` 生产路径无游离裸 `go`（除 `orch.Go` / `GoBackground` 包装内部）；
+      **K3 grep 复核范围含 `internal/ares_evolution`**（lifecycle watch /
+      observer loop 均带 recover 且受管退出）
+- [ ] `GET /api/evolution/lifecycle` 与 `POST /api/evolution/approve` 均在
+      T7 读/写鉴权口径内（lifecycle 端点随 introspect `/api/*` 读鉴权；
+      approve 走 actionHandler checkAuth + 审计），无无鉴权后门
 
 ---
 

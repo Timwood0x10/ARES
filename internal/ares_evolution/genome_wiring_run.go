@@ -104,7 +104,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	}
 
 	stats := a.pop.Stats()
-	el.Info(ctx, "Run", "evolution cycle completed", "generation", stats.Generation,
+	log.InfoContext(ctx, "evolution cycle completed", "method", "Run", "generation", stats.Generation,
 		"population_size", stats.Size,
 		"best_score", stats.BestScore,
 		"avg_score", stats.AvgScore,
@@ -150,7 +150,7 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 					a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
 				}
 			}
-			el.Debug(ctx, "Run", "pre-filled score cache via batch scorer", "count", n,
+			log.DebugContext(ctx, "pre-filled score cache via batch scorer", "method", "Run", "count", n,
 				"version", ver,
 				"scored", len(scores),
 			)
@@ -163,7 +163,7 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 		if a.memoryScorer != nil {
 			score, _, err := a.memoryScorer.Score(ctx, s)
 			if err != nil {
-				el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic", "error", err,
+				log.WarnContext(ctx, "memory-aware scorer failed, using heuristic", "method", "Run", "error", err,
 					"strategy_id", s.ID,
 				)
 				return heuristicScorer(s)
@@ -172,7 +172,7 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 		}
 		score, _, err := a.tieredScorer.Score(ctx, s)
 		if err != nil {
-			el.Warn(ctx, "Run", "tiered scorer failed, using heuristic", "error", err,
+			log.WarnContext(ctx, "tiered scorer failed, using heuristic", "method", "Run", "error", err,
 				"strategy_id", s.ID,
 			)
 			return heuristicScorer(s)
@@ -189,7 +189,7 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 func (a *GenomePopulationAdapter) logTieredStats(ctx context.Context) {
 	stats := a.tieredScorer.Stats()
 	used, max, cacheHits, fallbacks := a.budget.Usage()
-	el.Info(ctx, "Run", "tiered scoring stats", "llm_used", used,
+	log.InfoContext(ctx, "tiered scoring stats", "method", "Run", "llm_used", used,
 		"llm_max", max,
 		"cache_hits", cacheHits,
 		"fallbacks", fallbacks,
@@ -224,7 +224,7 @@ func (a *GenomePopulationAdapter) runPreGuardrails(ctx context.Context) error {
 	)
 
 	for _, evt := range preResult.Events {
-		el.Warn(ctx, "Run", "pre-evolve guardrail triggered", "rule", evt.Rule,
+		log.WarnContext(ctx, "pre-evolve guardrail triggered", "method", "Run", "rule", evt.Rule,
 			"level", evt.Level,
 			"message", evt.Message,
 			"suggested_action", evt.SuggestedAction,
@@ -267,7 +267,7 @@ func (a *GenomePopulationAdapter) runPostGuardrails(ctx context.Context) error {
 	)
 
 	for _, evt := range postResult.Events {
-		el.Warn(ctx, "Run", "post-evolve guardrail triggered", "rule", evt.Rule,
+		log.WarnContext(ctx, "post-evolve guardrail triggered", "method", "Run", "rule", evt.Rule,
 			"level", evt.Level,
 			"message", evt.Message,
 			"suggested_action", evt.SuggestedAction,
@@ -279,7 +279,7 @@ func (a *GenomePopulationAdapter) runPostGuardrails(ctx context.Context) error {
 
 	if postResult.ShouldStop {
 		// Evolution already completed; log warning but still return error.
-		el.Warn(ctx, "Run", "post-evolve guardrail signals stop, but evolution already completed", "generation", postStats.Generation,
+		log.WarnContext(ctx, "post-evolve guardrail signals stop, but evolution already completed", "method", "Run", "generation", postStats.Generation,
 			"event_count", len(postResult.Events),
 		)
 		return fmt.Errorf("adapter.Run: post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
@@ -301,11 +301,11 @@ func (a *GenomePopulationAdapter) deployBestStrategy(ctx context.Context) {
 	}
 	best := a.pop.BestStrategy()
 	if best == nil {
-		el.Debug(ctx, "deployBestStrategy", "no evaluated strategy to deploy")
+		log.DebugContext(ctx, "no evaluated strategy to deploy", "method", "deployBestStrategy")
 		return
 	}
 	if err := a.activeStrategyMgr.Deploy(ctx, best); err != nil {
-		el.Warn(ctx, "deployBestStrategy", "deploy failed", "strategy_id", best.ID, "error", err)
+		log.WarnContext(ctx, "deploy failed", "method", "deployBestStrategy", "strategy_id", best.ID, "error", err)
 	}
 }
 
@@ -369,7 +369,7 @@ func (a *GenomePopulationAdapter) recordOutcomesLocked(
 				Score:      child.Score,
 			}
 			if err := a.feedbackRecorder.Register(ctx, outcome); err != nil {
-				el.Warn(ctx, "recordOutcomesLocked", "feedback recording failed", "strategy_id", child.ID,
+				log.WarnContext(ctx, "feedback recording failed", "method", "recordOutcomesLocked", "strategy_id", child.ID,
 					"error", err,
 				)
 			}
@@ -389,7 +389,7 @@ func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
 		return scorer
 	}
 	scorerWarningOnce.Do(func() {
-		el.Warn(context.Background(), "buildScorer", "No scorer configured, using constant baseline (50.0). "+
+		log.WarnContext(context.Background(), "No scorer configured, using constant baseline (50.0). ", "method", "buildScorer"+
 			"Configure a real scorer for production use.",
 		)
 	})
@@ -415,7 +415,7 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 	patches, err := generateDiffPatches(ctx, a.genomeReg, a.diffReg, 3)
 	if err != nil {
-		el.Warn(ctx, "submitToCoordinator", "diff engine failed", "error", err)
+		log.WarnContext(ctx, "diff engine failed", "method", "submitToCoordinator", "error", err)
 		return
 	}
 
@@ -501,6 +501,7 @@ func logCoordinatorDecision(
 	fitness float64,
 ) {
 	baseAttrs := []any{
+		"method", "Run",
 		"type", d.Proposal.Patch.Type,
 		"target", d.Proposal.Patch.Target,
 		"fitness", d.Proposal.Fitness,
@@ -513,23 +514,23 @@ func logCoordinatorDecision(
 	switch d.Decision {
 	case coordinator.DecisionApply:
 		if d.ApplyError != nil {
-			el.Warn(ctx, "Run", "GA patch apply failed by coordinator",
+			log.WarnContext(ctx, "GA patch apply failed by coordinator",
 				append(baseAttrs, "error", d.ApplyError)...)
 			return
 		}
-		el.Info(ctx, "Run", "GA patch applied by coordinator", baseAttrs...)
+		log.InfoContext(ctx, "GA patch applied by coordinator", baseAttrs...)
 	case coordinator.DecisionReject:
-		el.Warn(ctx, "Run", "GA patch rejected by coordinator", baseAttrs...)
+		log.WarnContext(ctx, "GA patch rejected by coordinator", baseAttrs...)
 	case coordinator.DecisionDelay:
-		el.Info(ctx, "Run", "GA patch delayed by coordinator for review", baseAttrs...)
+		log.InfoContext(ctx, "GA patch delayed by coordinator for review", baseAttrs...)
 	case coordinator.DecisionDrop:
 		// Drop is elevated to Warn: a permanently discarded patch is a
 		// signal the GA is producing patches the coordinator won't act on,
 		// which is exactly the "silent failure" the closure plan targets.
-		el.Warn(ctx, "Run", "GA patch dropped by coordinator (retry budget exhausted)",
+		log.WarnContext(ctx, "GA patch dropped by coordinator (retry budget exhausted)",
 			baseAttrs...)
 	default:
-		el.Warn(ctx, "Run", "GA patch has unknown coordinator decision",
+		log.WarnContext(ctx, "GA patch has unknown coordinator decision",
 			append(baseAttrs, "decision", d.Decision.String())...)
 	}
 }

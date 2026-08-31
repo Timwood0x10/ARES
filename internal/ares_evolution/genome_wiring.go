@@ -22,10 +22,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
 	evogenome "github.com/Timwood0x10/ares/internal/evolution/genome"
-	"github.com/Timwood0x10/ares/internal/logger"
 )
-
-var el = logger.New("adapter")
 
 // BatchScorer scores multiple internal strategies in a single call.
 // Used to reduce LLM API calls by batching strategies together.
@@ -290,24 +287,6 @@ func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAda
 func WithActiveStrategyManager(mgr *ActiveStrategyManager) GenomeAdapterOption {
 	return func(a *GenomePopulationAdapter) {
 		a.activeStrategyMgr = mgr
-	}
-}
-
-// WithAdapterLifecycle attaches a StrategyLifecycle orchestrator to the
-// adapter. When set, Run() submits the best strategy to the lifecycle
-// instead of calling Deploy directly (B2 fix). The lifecycle runs verify
-// gates (guardrail, shadow, eval, staging) before promoting the candidate.
-//
-// Args:
-//
-//	l - the strategy lifecycle (must not be nil).
-//
-// Returns:
-//
-//	GenomeAdapterOption - the configuration function.
-func WithAdapterLifecycle(l *StrategyLifecycle) GenomeAdapterOption {
-	return func(a *GenomePopulationAdapter) {
-		a.lifecycle = l
 	}
 }
 

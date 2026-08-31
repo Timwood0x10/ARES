@@ -286,10 +286,10 @@ func TestRun_FullCycleHappyPath(t *testing.T) {
 	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
 	// the sliding window, so scoreCount can never reach 100).
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
@@ -392,10 +392,10 @@ func TestRun_OneCandidateWins(t *testing.T) {
 	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
 	// the sliding window, so scoreCount can never reach 100).
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
@@ -445,10 +445,10 @@ func TestRun_MutatorError(t *testing.T) {
 	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
 	// the sliding window, so scoreCount can never reach 100).
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
@@ -552,7 +552,7 @@ func TestShouldEvolve_NotEnoughTasks(t *testing.T) {
 
 	// TriggerOnIdle requires at least 20 scores; with fewer it should return false.
 	for i := 0; i < 15; i++ {
-		scheduler.RecordScore(50.0)
+		scheduler.RecordScore(0.5)
 	}
 
 	result := scheduler.shouldEvolve(context.Background(), CallbackData{AgentID: "agent-1"})

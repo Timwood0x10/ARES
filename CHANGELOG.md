@@ -111,6 +111,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errgroup lifecycle (panic-recovered, joined at shutdown) but are not
   visible in a component-graph snapshot and their kernel pillars are not
   adopted. Registering them is deferred to 0.4.x.
+- **GA control plane is fail-closed by default** (`evolution.enabled: true`
+  does NOT mean strategies keep shipping): the G2 shadow gate rejects any
+  candidate with zero shadow comparisons, and no shadow-comparison feeder
+  exists in the default config (DreamCycle is disabled; the task-level
+  feeder is tracked as P0-9). Until a feeder lands, the lifecycle promotes
+  exactly ONE seed strategy and safely holds every later candidate —
+  configure `evolution.shadow` + a feeder to enable real promotion.
 
 ### Fixed
 

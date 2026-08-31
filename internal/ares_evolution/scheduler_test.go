@@ -121,14 +121,14 @@ func TestOnAgentEnd_Enabled(t *testing.T) {
 	// TriggerOnIdle requires either score degradation (drop >= 15%) or
 	// scoreCount >= 100 for periodic exploration. Since scoreWindowSize=50
 	// caps the sliding window at 50 entries, we use degradation:
-	//   - 40 scores of 100.0 fill most of the window
-	//   - 10 scores of 1.0 create recent avg ≈ 1.0 vs overall avg ≈ 80.2
-	//   - drop = (80.2-1.0)/80.2 = 98.7% >> 15% threshold
+	//   - 40 scores of 1.0 fill most of the window
+	//   - 10 scores of 0.0 create recent avg = 0.0 vs overall avg = 0.8
+	//   - drop = (0.8-0.0)/0.8 = 100% >> 15% threshold
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-1"})
@@ -154,10 +154,10 @@ func TestOnAgentEnd_MinIntervalProtection(t *testing.T) {
 
 	// Populate scores to pass shouldEvolve in TriggerOnIdle mode.
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	// First call should succeed
@@ -229,10 +229,10 @@ func TestShouldEvolve_Defaults(t *testing.T) {
 	// TriggerOnIdle needs score degradation or 100+ scores (impossible
 	// due to scoreWindowSize=50). Provide degradation data.
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	result := scheduler.shouldEvolve(context.Background(), CallbackData{AgentID: "agent-1"})
@@ -279,10 +279,10 @@ func TestLastRunTime(t *testing.T) {
 	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
 	// the sliding window, so scoreCount can never reach 100).
 	for i := 0; i < 40; i++ {
-		scheduler.RecordScore(100.0)
+		scheduler.RecordScore(1.0)
 	}
 	for i := 0; i < 10; i++ {
-		scheduler.RecordScore(1.0)
+		scheduler.RecordScore(0.0)
 	}
 
 	scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-1"})

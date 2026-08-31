@@ -45,6 +45,23 @@ type EvalGate struct {
 	runner   *ares_eval.AgentTestRunner
 	suite    ares_eval.TestSuite
 	cfg      EvalGateConfig
+	// beforeRun, when set, is invoked with the candidate right before the
+	// suite runs — the seam that lets the executor run test cases THROUGH
+	// the candidate strategy (e.g. apply its prompt template) so the score
+	// actually discriminates candidates instead of measuring a fixed agent.
+	beforeRun func(*mutation.Strategy)
+}
+
+// EvalGateOption configures an EvalGate.
+type EvalGateOption func(*EvalGate)
+
+// WithEvalGateBeforeRun registers a hook invoked with the candidate strategy
+// immediately before the suite runs. Use it to push candidate state (prompt
+// template, sampling params) into the executor behind the AgentTestRunner.
+func WithEvalGateBeforeRun(fn func(*mutation.Strategy)) EvalGateOption {
+	return func(g *EvalGate) {
+		g.beforeRun = fn
+	}
 }
 
 // NewEvalGate creates a G3 eval-suite gate. Any nil argument makes the gate
@@ -54,13 +71,18 @@ func NewEvalGate(
 	runner *ares_eval.AgentTestRunner,
 	suite ares_eval.TestSuite,
 	cfg EvalGateConfig,
+	opts ...EvalGateOption,
 ) *EvalGate {
-	return &EvalGate{
+	g := &EvalGate{
 		registry: registry,
 		runner:   runner,
 		suite:    suite,
 		cfg:      cfg,
 	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g
 }
 
 // Name returns the gate identifier.
@@ -71,10 +93,17 @@ func (g *EvalGate) Name() string {
 // Check runs the candidate through the eval suite and returns pass=true when
 // the weighted average score meets or exceeds MinScore. When no registry or
 // runner is wired, the gate is a pass-through (B5 graceful degradation).
-func (g *EvalGate) Check(ctx context.Context, _ *mutation.Strategy, _ *mutation.Strategy) (bool, float64, string) {
+func (g *EvalGate) Check(ctx context.Context, cand *mutation.Strategy, _ *mutation.Strategy) (bool, float64, string) {
 	if g.registry == nil || g.runner == nil || len(g.suite.TestCases) == 0 {
 		// Pass-through: no eval infrastructure wired.
 		return true, 0, "eval suite not configured, skipping"
+	}
+
+	// Let the executor run the suite through THIS candidate (prompt template
+	// / params), so the score reflects the candidate rather than a fixed
+	// agent configuration.
+	if g.beforeRun != nil {
+		g.beforeRun(cand)
 	}
 
 	// Resolve evaluator: use the named one when configured, otherwise run

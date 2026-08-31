@@ -179,7 +179,7 @@ func (r *PopulationGenealogyRecorder) Record(ctx context.Context, lineage Strate
 		r.lineages = r.lineages[trimCount:]
 	}
 
-	el.Debug(ctx, "Record", "lineage recorded", "parent_id", lineage.ParentID,
+	log.DebugContext(ctx, "lineage recorded", "method", "Record", "parent_id", lineage.ParentID,
 		"child_id", lineage.ChildID,
 		"mutation_type", lineage.MutationType,
 	)
@@ -335,7 +335,7 @@ func RecordPopulationLineage(
 	}
 
 	if count > 0 {
-		el.Info(ctx, "RecordPopulationLineage", "recorded", "new_records", count,
+		log.InfoContext(ctx, "recorded", "method", "RecordPopulationLineage", "new_records", count,
 			"generation", generation,
 		)
 	}
