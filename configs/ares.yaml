@@ -142,13 +142,23 @@ evolution:
   # shadow: the G2 verify gate. A candidate needs at least min_samples shadow
   #   comparisons at or above min_win_rate before it may be promoted.
   #   IMPORTANT (fail-closed): with ZERO shadow comparisons the gate REJECTS.
-  #   Nothing feeds shadow comparisons today (the feeder is DreamCycle, which
-  #   is disabled, and the task-level sampler is tracked as P0-9) — so in the
-  #   DEFAULT config the lifecycle promotes exactly ONE seed strategy and
-  #   then holds every later candidate in shadow until the feeder lands.
+  #   The P0-9 task-level feeder (ShadowSampler) is landed and feeds candidate
+  #   vs active comparisons when DreamCycle is disabled — but it only produces
+  #   samples when an INDEPENDENT scorer is wired on the evaluator (LLM
+  #   scoring). In the default config (DreamCycle disabled + LLM scoring off)
+  #   there are still zero comparisons, so the lifecycle promotes exactly ONE
+  #   seed strategy and then holds every later candidate in shadow.
   #   `evolution.enabled: true` therefore does NOT mean "the GA keeps
   #   shipping new strategies"; it means "candidates are proposed and safely
-  #   held". Set min_samples/min_win_rate via YAML once a feeder exists.
+  #   held". Corollary: automatic rollback is ALSO unavailable in this state
+  #   — the seed deploy has no `previous`, so degradation detection logs at
+  #   Info but cannot restore until a second (approved) promote exists.
+  #   Enable `evolution.llm_scoring` (or otherwise wire a scorer) to activate
+  #   real comparison-driven promotion; tune min_samples/min_win_rate via YAML.
+  #   CAVEAT: the sampler scores the SAME candidate/active pair min_samples
+  #   times, so the comparisons are only independent under a non-deterministic
+  #   (LLM) scorer. With a deterministic scorer min_samples counts repetitions,
+  #   not independent evidence.
   # shadow:
   #   min_samples: 20
   #   min_win_rate: 0.55

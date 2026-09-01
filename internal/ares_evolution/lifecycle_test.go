@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,8 +119,8 @@ func TestStrategyLifecycle_Submit_Blacklisted_CrossGeneration(t *testing.T) {
 
 	// Simulate a rollback at generation 0: the candidate is banned for
 	// BlacklistGenerations (2) → banUntil = 2. Submissions at generations 0
-	// and 1 must be rejected; the ban LIFTS at generation 2 (§9: N 代的
-	// 震荡抑制, not a 0-generation no-op).
+	// and 1 must be rejected; the ban LIFTS at generation 2 (§9: an
+	// N-generation damping window, not a 0-generation no-op).
 	lc.mu.Lock()
 	lc.blacklist[candidate.ID] = 2
 	lc.mu.Unlock()
@@ -279,6 +281,56 @@ func TestStrategyLifecycle_ManualApproval_HoldSurvivesCallerContext(t *testing.T
 	assert.Equal(t, "cand-cancel", asm.Current().ID, "Approve still promotes the held candidate")
 }
 
+// TestStrategyLifecycle_Approve_ConcurrentExactlyOnePromote locks the
+// take-and-clear critical section: N concurrent approvals of the same held
+// candidate must produce exactly ONE promote. The old two-phase Approve let
+// two callers both promote, which set asm.previous = asm.current = the same
+// strategy — later rollbacks would "restore" the strategy to itself and
+// degradation could never be undone.
+func TestStrategyLifecycle_Approve_ConcurrentExactlyOnePromote(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.Gates.RequireManualApproval = true
+	lc, asm, store := newTestLifecycle(t, cfg)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	held := &mutation.Strategy{ID: "held-cand", Version: 2, Score: 80.0}
+	lc.Submit(context.Background(), held, 1)
+	require.True(t, lc.Snapshot().PendingApproval)
+
+	const approvers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < approvers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			lc.Approve()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, "held-cand", asm.Current().ID)
+	assert.NotEqual(t, "held-cand", asm.Previous().ID,
+		"previous must stay 'base': a double promote would make previous == current")
+	assert.False(t, lc.Snapshot().PendingApproval)
+
+	evs, err := store.Query(context.Background(), evidence.Filter{
+		Source: "lifecycle", Kind: evidence.KindFitness, Limit: 10,
+	})
+	require.NoError(t, err)
+	promotes := 0
+	for _, ev := range evs {
+		if strings.Contains(ev.ID, "promote") {
+			promotes++
+		}
+	}
+	assert.Equal(t, 1, promotes, "exactly one promote decision may be recorded")
+}
+
 func TestStrategyLifecycle_WriteDecisionEvidence(t *testing.T) {
 	cfg := DefaultLifecycleConfig()
 	lc, asm, store := newTestLifecycle(t, cfg)
@@ -384,9 +436,10 @@ func TestStrategyLifecycle_Submit_SeedExemptionIsOneShot(t *testing.T) {
 		"the only promote evidence is the original seed deploy")
 }
 
-// TestStrategyLifecycle_ShadowGate_FailClosedOnNoData locks review 阻断项 1:
-// with zero shadow comparisons the G2 gate REJECTS (design doc §3.1 "样本 <
-// MinSamples → 留在 SHADOW 不下发"), it does NOT pass through. The previous
+// TestStrategyLifecycle_ShadowGate_FailClosedOnNoData locks review blocking
+// item 1: with zero shadow comparisons the G2 gate REJECTS (design doc §3.1
+// "fewer than MinSamples samples → the candidate stays in SHADOW and is NOT
+// deployed"), it does NOT pass through. The previous
 // pass-through made the whole verify pipeline a rubber stamp in default
 // configs where nothing feeds comparisons.
 func TestStrategyLifecycle_ShadowGate_FailClosedOnNoData(t *testing.T) {
@@ -409,6 +462,73 @@ func TestStrategyLifecycle_ShadowGate_FailClosedOnNoData(t *testing.T) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 	assert.Nil(t, lc.heldCandidate)
+}
+
+// TestStrategyLifecycle_Sampler_PrimedGatePromotesWinningCandidate locks the
+// P0-9 integration: when a ShadowSampler is wired (the default config path,
+// DreamCycle disabled), Submit primes it before the G2 gate so a candidate
+// that genuinely outperforms the active one earns promotion instead of being
+// stuck fail-closed in SHADOW.
+func TestStrategyLifecycle_Sampler_PrimedGatePromotesWinningCandidate(t *testing.T) {
+	store := evidence.NewMemoryStore()
+	asm, err := NewActiveStrategyManager(newMockStrategyStore(), NewRollbackPolicy())
+	require.NoError(t, err)
+	agg := NewRuntimeFitnessAggregator(store, DefaultAggregatorConfig())
+	se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.6})
+	// Deterministic scorer: candidate always beats active.
+	se.SetShadowScorer(func(_ context.Context, s *mutation.Strategy) float64 {
+		if s.ID == "base" {
+			return 0.6
+		}
+		return 0.9
+	})
+	lc := NewStrategyLifecycle(asm, agg, DefaultLifecycleConfig(),
+		WithLifecycleShadowEvaluator(se),
+		WithLifecycleShadowSampler(NewShadowSampler(se, 3)),
+		WithLifecycleEvidenceStore(store),
+	)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	candidate := &mutation.Strategy{ID: "winner", Version: 2, Score: 80.0}
+	lc.Submit(context.Background(), candidate, 1)
+
+	assert.Equal(t, "winner", asm.Current().ID,
+		"winning candidate must pass the primed G2 shadow gate and be promoted")
+}
+
+// TestStrategyLifecycle_Sampler_PrimedGateRejectsLosingCandidate locks the
+// other side of the P0-9 contract: a candidate the sampler judges as WORSE is
+// still rejected by the G2 gate (the sampler supplies evidence, it does not
+// rubber-stamp).
+func TestStrategyLifecycle_Sampler_PrimedGateRejectsLosingCandidate(t *testing.T) {
+	store := evidence.NewMemoryStore()
+	asm, err := NewActiveStrategyManager(newMockStrategyStore(), NewRollbackPolicy())
+	require.NoError(t, err)
+	agg := NewRuntimeFitnessAggregator(store, DefaultAggregatorConfig())
+	se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.6})
+	// Deterministic scorer: candidate always loses to active.
+	se.SetShadowScorer(func(_ context.Context, s *mutation.Strategy) float64 {
+		if s.ID == "base" {
+			return 0.9
+		}
+		return 0.2
+	})
+	lc := NewStrategyLifecycle(asm, agg, DefaultLifecycleConfig(),
+		WithLifecycleShadowEvaluator(se),
+		WithLifecycleShadowSampler(NewShadowSampler(se, 3)),
+		WithLifecycleEvidenceStore(store),
+	)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
+	))
+
+	candidate := &mutation.Strategy{ID: "loser", Version: 2, Score: 80.0}
+	lc.Submit(context.Background(), candidate, 1)
+
+	assert.Equal(t, "base", asm.Current().ID,
+		"losing candidate must be rejected by the primed G2 shadow gate")
 }
 
 // TestStrategyLifecycle_Promote_ResetsRollbackWindow locks §8 item 5: a

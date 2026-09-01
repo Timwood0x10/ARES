@@ -5,10 +5,12 @@ package evolution
 // scheduler_tick_gate_test.go locks design-doc §8 acceptance assertions 5–6
 // (ga-runtime-evolution-design-zh.md):
 //
-//	5. 触发单一化 — repeated Tick calls inside MinInterval run at most one
-//	   evolution cycle (throttling applies to the time-triggered path too).
-//	6. 量纲一致性 — RecordScore clamps every input to [0,1] so the score
-//	   window stays dimensionally consistent with RollbackPolicy thresholds.
+//	5. single-trigger — repeated Tick calls inside MinInterval run at most
+//	   one evolution cycle (throttling applies to the time-triggered path
+//	   too).
+//	6. dimensional consistency — RecordScore clamps every input to [0,1] so
+//	   the score window stays dimensionally consistent with RollbackPolicy
+//	   thresholds.
 
 import (
 	"context"
@@ -18,7 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestClosure_Tick_MinIntervalThrottlesRepeatTicks (§8 断言 5: 触发单一化).
+// TestClosure_Tick_MinIntervalThrottlesRepeatTicks (§8 assertion 5).
 func TestClosure_Tick_MinIntervalThrottlesRepeatTicks(t *testing.T) {
 	adapter := newMockAdapterForScheduler()
 	s := NewEvolutionScheduler(nil, adapter, WithMinInterval(time.Hour))
@@ -47,7 +49,7 @@ func TestClosure_Tick_MinIntervalThrottlesRepeatTicks(t *testing.T) {
 		"Tick inside MinInterval must not start a second generation")
 }
 
-// TestClosure_RecordScore_ClampsToUnitInterval (§8 断言 6: 量纲一致性).
+// TestClosure_RecordScore_ClampsToUnitInterval (§8 assertion 6).
 func TestClosure_RecordScore_ClampsToUnitInterval(t *testing.T) {
 	s := NewEvolutionScheduler(nil, newMockAdapterForScheduler())
 

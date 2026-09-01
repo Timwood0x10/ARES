@@ -158,7 +158,8 @@ func (e *ShadowEvaluator) RecordResult(activeScore, shadowScore float64) {
 // SEMANTICS (review: one evaluator, two consumers, two readings — now
 // explicit): ShouldDeploy is the STRICT judge, fail-closed — insufficient
 // samples REJECT. It is the contract the StrategyLifecycle's G2 verify gate
-// relies on ("样本 < MinSamples → 留在 SHADOW 不下发"). DreamCycle's internal
+// relies on (design doc §3.1: "fewer than MinSamples samples → the candidate
+// stays in SHADOW and is NOT deployed"). DreamCycle's internal
 // deploy path uses ShouldDeployLoose instead, where insufficient samples
 // defer to the deployer rather than veto.
 //

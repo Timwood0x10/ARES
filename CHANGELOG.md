@@ -113,11 +113,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adopted. Registering them is deferred to 0.4.x.
 - **GA control plane is fail-closed by default** (`evolution.enabled: true`
   does NOT mean strategies keep shipping): the G2 shadow gate rejects any
-  candidate with zero shadow comparisons, and no shadow-comparison feeder
-  exists in the default config (DreamCycle is disabled; the task-level
-  feeder is tracked as P0-9). Until a feeder lands, the lifecycle promotes
-  exactly ONE seed strategy and safely holds every later candidate —
-  configure `evolution.shadow` + a feeder to enable real promotion.
+  candidate with zero shadow comparisons. The P0-9 task-level feeder
+  (`ShadowSampler`) is now landed, but it only produces comparisons when an
+  independent scorer is wired on the evaluator — and the default bootstrap
+  does not wire one (`evolution.llm_scoring` is off), so default configs still
+  keep zero comparisons and fail-closed. In the default config the lifecycle
+  promotes exactly ONE seed strategy and safely holds every later candidate —
+  enable `evolution.llm_scoring` to let the sampler feed real comparisons.
+  **Second limit**: the sampler scores the same candidate/active pair N times,
+  so the comparisons are only statistically independent under a
+  non-deterministic (LLM) scorer; with a deterministic scorer `min_samples` is
+  satisfied by repetition rather than by independent evidence. Per-task
+  real-execution A/B sampling is the follow-up.
+  **Corollary — automatic rollback is also unavailable by default**: the
+  seed deploy leaves `previous` nil and no further promote ever happens, so
+  `Rollback` returns "no previous strategy available". The watch loop still
+  scores and detects degradation (logged at Info), but it cannot restore a
+  strategy until a second (approved) promote exists.
 
 ### Fixed
 

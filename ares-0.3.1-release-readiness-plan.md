@@ -675,9 +675,10 @@ T2 方案 A 的恢复正确性完全依赖它。`compat/` 19 个文件 0% 覆盖
 
 - [ ] `internal/ares_evolution` 生产路径无游离裸 `go`（watch/observer 均
       recover + 受管退出，grep 复核记录在案）。
-- [ ] `make gate` G2 覆盖 5 个新配置块；**`make gate` 含
-      `go test -race -tags closure`**（§8 六条验收断言必须进 CI——此前
-      closure 测试从未被任何 Makefile 目标执行，`make check` 绿 ≠ §8 通过）。
+- [ ] `make gate` G2 覆盖 5 个新配置块；**CI 工作流调用 `make gate`**
+      （ci.yml test job 与 release.yml 均已加入该步骤——仅 Makefile 目标含
+      `-tags closure` 不够：`go test ./...` 不编译 closure 文件，§8 六条
+      验收断言此前从未被任何流水线执行；G1/G2/G3 同样因此首次进 CI）。
 - [ ] 12h soak 在含控制平面的版本上重跑并归档（重点观察：窗口饱和后
       回退仍触发、watch/observer goroutine 数收敛）。
 - [ ] `CHANGELOG.md` `[0.3.1]` 含上述四类记录 + fail-closed Known limitation。

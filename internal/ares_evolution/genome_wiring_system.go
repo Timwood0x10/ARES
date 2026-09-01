@@ -590,6 +590,24 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		lcOpts := []LifecycleOption{}
 		if system.ShadowEvaluator != nil {
 			lcOpts = append(lcOpts, WithLifecycleShadowEvaluator(system.ShadowEvaluator))
+			// P0-9: wire the task-level shadow feeder so the G2 gate has
+			// candidate-vs-active comparison evidence when DreamCycle does
+			// not feed any. Exactly ONE feeder may own StartShadow/
+			// RecordResult: wiring both would let the sampler's StartShadow
+			// reset DreamCycle's accumulated comparisons on every Submit.
+			//
+			// The condition is cfg.EnableDreamCycle, NOT system.DreamCycle
+			// == nil: a DreamCycle INSTANCE is built whenever
+			// EnableDreamCycle OR EnableScheduler is set (see needDreamCycle
+			// above), and bootstrap runs EnableDreamCycle=false with
+			// EnableScheduler=true — so a nil-check would skip the sampler in
+			// every production config, i.e. exactly the case P0-9 exists to
+			// fix. Locked by TestWiring_ShadowSampler_WiredInBootstrapShape.
+			if !cfg.EnableDreamCycle {
+				lcOpts = append(lcOpts, WithLifecycleShadowSampler(
+					NewShadowSampler(system.ShadowEvaluator, cfg.ShadowEvalConfig.MinSamples),
+				))
+			}
 		}
 		if cfg.Metrics != nil {
 			lcOpts = append(lcOpts, WithLifecycleMetrics(cfg.Metrics))

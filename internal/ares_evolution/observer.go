@@ -275,7 +275,10 @@ func (o *RuntimeObserver) writeEvidence(ctx context.Context, sample StrategySamp
 		return
 	}
 	_ = o.evStore.Append(ctx, evidence.Evidence{
-		ID:        "strategy_" + sample.StrategyID + "_" + sample.At.Format("150405.000000"),
+		// Full-date format: the PG store uses ON CONFLICT (id) DO NOTHING,
+		// so a time-only suffix would silently drop samples from different
+		// days colliding on the same clock reading.
+		ID:        "strategy_" + sample.StrategyID + "_" + sample.At.Format("20060102150405.000000"),
 		Source:    "strategy",
 		Kind:      evidence.KindFitness,
 		Payload:   payload,

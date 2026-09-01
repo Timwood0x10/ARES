@@ -17,6 +17,7 @@ package evolution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -162,6 +163,11 @@ type LifecycleState struct {
 	Generation      int     `json:"generation"`
 	LastDecision    string  `json:"last_decision,omitempty"`
 	PendingApproval bool    `json:"pending_approval,omitempty"`
+	// HeldID / HeldGeneration identify the candidate awaiting manual
+	// approval, so an operator sees WHICH generation they are approving
+	// before calling /api/evolution/approve. Zero when nothing is held.
+	HeldID         string `json:"held_id,omitempty"`
+	HeldGeneration int    `json:"held_generation,omitempty"`
 }
 
 // StrategyLifecycle is the sole orchestrator that can change the active
@@ -171,6 +177,7 @@ type StrategyLifecycle struct {
 	asm     *ActiveStrategyManager
 	agg     *RuntimeFitnessAggregator
 	shadow  *ShadowEvaluator
+	sampler *ShadowSampler
 	metrics *ares_observability.PrometheusMetrics
 	evStore evidence.Store
 
@@ -200,8 +207,9 @@ type StrategyLifecycle struct {
 	// external Approve() call (P2-4, RequireManualApproval=true). Submit
 	// stores it and RETURNS immediately — the candidate is held, not the
 	// caller's goroutine: the ticker/adapter path must never block on human
-	// latency. When Approve() arrives, the held candidate is promoted by
-	// the next Submit (or by ApproveWithAction).
+	// latency. Approve() promotes it; new Submits are rejected while a hold
+	// is pending. Exposed to operators via Snapshot.HeldID/HeldGeneration
+	// so an approver can judge the candidate's freshness before deciding.
 	heldCandidate *mutation.Strategy
 	// heldGeneration is the GA generation that produced heldCandidate.
 	heldGeneration int
@@ -249,6 +257,16 @@ func WithLifecycleGates(gates ...VerifyGate) LifecycleOption {
 func WithLifecycleShadowEvaluator(se *ShadowEvaluator) LifecycleOption {
 	return func(l *StrategyLifecycle) {
 		l.shadow = se
+	}
+}
+
+// WithLifecycleShadowSampler attaches the P0-9 task-level shadow feeder. When
+// set (and an independent scorer is wired on the evaluator), Submit primes the
+// sampler before running the gates so the G2 shadow gate has comparison
+// evidence to judge in default configs where DreamCycle is disabled.
+func WithLifecycleShadowSampler(s *ShadowSampler) LifecycleOption {
+	return func(l *StrategyLifecycle) {
+		l.sampler = s
 	}
 }
 
@@ -306,19 +324,22 @@ func NewStrategyLifecycle(
 
 // shadowVerifyGate adapts the lifecycle's ShadowEvaluator into the G2 verify
 // gate. It is deliberately read-only: ShouldDeploy consults the comparisons
-// that the data feeder (DreamCycle's shadow flow, or a future task-level
-// sampler — tracked as P0-9) recorded via StartShadow/RecordResult. The gate
-// never calls StartShadow itself — that would reset accumulated comparisons
-// on every Submit and destroy the evidence it is supposed to judge.
+// that the data feeder — DreamCycle's shadow flow, or the P0-9 task-level
+// ShadowSampler when DreamCycle is disabled — recorded via
+// StartShadow/RecordResult. The gate never calls StartShadow itself — that
+// would reset accumulated comparisons on every Submit and destroy the
+// evidence it is supposed to judge.
 //
-// SEMANTICS (review 阻断项 1, resolved in favor of fail-closed): with zero
-// comparisons the gate REJECTS, mirroring design doc §3.1 ("样本 < MinSamples
-// → 继续留在 SHADOW，不下发"). Passing candidates without any shadow evidence
+// SEMANTICS (review blocking item 1, resolved in favor of fail-closed): with
+// zero comparisons the gate REJECTS, mirroring design doc §3.1 ("fewer than
+// MinSamples samples → the candidate stays in SHADOW and is NOT deployed").
+// Passing candidates without any shadow evidence
 // made the whole verify pipeline a no-op in default configs (DreamCycle is
 // disabled, so nothing feeds comparisons) — the previous "skip" branch
-// silently reduced Submit to unconditional promote. Known consequence until
-// the P0-9 feeder lands: in default configs candidates stay held out of
-// production after the seed baseline; that is the safe direction of failure.
+// silently reduced Submit to unconditional promote. The fail-closed branch is
+// still reachable when the P0-9 sampler is wired but has NO independent scorer
+// (default bootstrap: LLM scoring off): the sampler deliberately produces zero
+// comparisons rather than fabricate evidence.
 type shadowVerifyGate struct{ l *StrategyLifecycle }
 
 func (g shadowVerifyGate) Name() string { return "shadow" }
@@ -345,7 +366,7 @@ func (g shadowVerifyGate) Check(_ context.Context, _ *mutation.Strategy, _ *muta
 		// the candidate, so it does not pass. See the type comment — this
 		// branch is the difference between a verify pipeline and a rubber
 		// stamp.
-		return false, 0, "no shadow comparisons recorded — fail-closed (P0-9 feeder pending)"
+		return false, 0, "no shadow comparisons recorded — fail-closed (no independent scorer wired)"
 	}
 	if ok {
 		return true, report.WinRate,
@@ -429,13 +450,13 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 	}
 
 	// Seed deploy: no active strategy → nothing to verify against. Promote
-	// unconditionally so the baseline exists (design doc §9: "基线策略
-	// bootstrap-root 永远可作为 previous").
+	// unconditionally so the baseline exists (design doc §9: the seed
+	// baseline is always available as `previous`).
 	//
 	// The exemption is a ONE-SHOT flag, not derived from asm.Current()==nil:
 	// if the ASM were ever reset (or its store emptied) mid-flight, a
 	// Current()==nil test would let the next candidate skip ALL gates again.
-	// Once seeded, every candidate must earn promotion (review 修复 5).
+	// Once seeded, every candidate must earn promotion (review fix #5).
 	// Note: an ASM that ALREADY holds an externally deployed strategy is
 	// "born seeded" — the first Submit runs the gates against it.
 	hasActive := l.asm != nil && l.asm.Current() != nil
@@ -497,8 +518,17 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 		"score", candidate.Score,
 	)
 
-	// Run the verify-gate pipeline.
 	active := l.asm.Current()
+
+	// P0-9: prime the task-level shadow feeder (when wired) so the G2 gate
+	// has candidate-vs-active comparison evidence to judge. Must run AFTER
+	// the candidate record is set and BEFORE the gates. No-op when no
+	// sampler is wired or no independent scorer exists (stays fail-closed).
+	if l.sampler != nil {
+		l.sampler.Prime(ctx, candidate, active)
+	}
+
+	// Run the verify-gate pipeline.
 	for _, gate := range l.gates {
 		pass, score, reason := gate.Check(ctx, candidate, active)
 		if !pass {
@@ -554,27 +584,34 @@ func (l *StrategyLifecycle) heldCandidateIDLocked() string {
 	return l.heldCandidate.ID
 }
 
-// Approve releases the candidate held in SHADOW by RequireManualApproval
-// (P2-4): the held candidate is promoted immediately. It is a no-op when no
-// candidate is pending. The HTTP handler decides what to report to the
-// operator; Approve itself carries no request context, so the promote runs
-// under a bounded background context.
+// Approve promotes the candidate held in SHADOW by RequireManualApproval
+// (P2-4). It is a no-op when no candidate is pending.
+//
+// Concurrency (review fix #2): "take and clear" happen in ONE critical
+// section, so exactly one caller of N concurrent approvals receives the
+// candidate and promotes it — the losers return with cand == nil. The
+// previous two-phase (read → unlock → promote) let two concurrent
+// POST /api/evolution/approve calls both promote the same strategy, which
+// made ActiveStrategyManager set previous = current = that strategy:
+// subsequent rollbacks would "succeed" while restoring the strategy to
+// itself, and degradation could never be undone. The HTTP handler's 409
+// pre-check stays purely as a friendlier early error, not a correctness
+// device. Approve carries no request context, so the promote runs under a
+// bounded background context.
 func (l *StrategyLifecycle) Approve() {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	cand := l.heldCandidate
+	l.heldCandidate = nil
+	l.pendingApproval = false
 	l.mu.Unlock()
 	if cand == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	l.mu.Lock()
-	l.pendingApproval = false
-	l.heldCandidate = nil
-	l.mu.Unlock()
 	l.promote(ctx, cand)
 }
 
@@ -593,7 +630,15 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 		l.state = StateActive
 		l.currentCandidate = nil
 		l.lastDecision = fmt.Sprintf("deploy_failed: %s", err)
+		l.lastWindowAt = time.Time{}
 		l.mu.Unlock()
+		// Deploy can internally roll the ASM back to `previous` when the
+		// post-evolve guardrail stops it — the ACTIVE strategy may have
+		// changed even though this promote failed. Reset the rollback
+		// window so the (possibly new) active strategy is not judged on the
+		// previous strategy's stale scores (same reasoning as the promote
+		// path above; conservative direction).
+		l.asm.RollbackPolicy().Reset()
 		if l.metrics != nil {
 			l.metrics.RecordEvolutionPromote("deploy_failed")
 		}
@@ -703,6 +748,20 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 	// Trigger rollback.
 	prev, err := l.asm.Rollback(ctx)
 	if err != nil {
+		if errors.Is(err, ErrNoPreviousStrategy) {
+			// Expected in the fail-closed default config: only the seed
+			// deploy has happened, so previous is still nil. Log at Info
+			// (with the expectation stated) instead of Warn — a long soak
+			// would otherwise flood the log with a non-malfunction.
+			log.InfoContext(ctx, "rollback unavailable: no previous strategy yet (expected before the second promote)",
+				"method", "lifecycle.watch",
+				"active_id", active.ID,
+			)
+			if l.metrics != nil {
+				l.metrics.RecordEvolutionRollback("no_previous")
+			}
+			return
+		}
 		log.WarnContext(ctx, "rollback failed", "method", "lifecycle.watch",
 			"active_id", active.ID,
 			"error", err,
@@ -779,6 +838,10 @@ func (l *StrategyLifecycle) Snapshot() LifecycleState {
 	if l.currentCandidate != nil {
 		snap.ShadowID = l.currentCandidate.ID
 	}
+	if l.heldCandidate != nil {
+		snap.HeldID = l.heldCandidate.ID
+		snap.HeldGeneration = l.heldGeneration
+	}
 	l.mu.Unlock()
 
 	if l.agg != nil {
@@ -823,6 +886,8 @@ func (l *StrategyLifecycle) LifecycleSnapshot() map[string]any {
 	}
 	if snap.PendingApproval {
 		m["pending_approval"] = true
+		m["held_id"] = snap.HeldID
+		m["held_generation"] = snap.HeldGeneration
 	}
 	return m
 }
@@ -868,7 +933,10 @@ func (l *StrategyLifecycle) writeDecisionEvidence(ctx context.Context, action, s
 		return
 	}
 	_ = l.evStore.Append(ctx, evidence.Evidence{
-		ID:        "strategy_decision_" + action + "_" + strategyID + "_" + time.Now().Format("150405.000000"),
+		// Full-date format: the PG store uses ON CONFLICT (id) DO NOTHING,
+		// so a time-only suffix would silently drop decision events from
+		// different days colliding on the same clock reading.
+		ID:        "strategy_decision_" + action + "_" + strategyID + "_" + time.Now().Format("20060102150405.000000"),
 		Source:    "lifecycle",
 		Kind:      evidence.KindFitness,
 		Payload:   payload,

@@ -813,7 +813,7 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Aligned with the sdk.Graph builder cap so both submission paths share
-	// one semantic boundary (fusion plan: 一套语义).
+	// one semantic boundary (fusion plan).
 	const maxSubmissionEdges = 4096
 	if len(req.Edges) > maxSubmissionEdges {
 		w.WriteHeader(http.StatusBadRequest)

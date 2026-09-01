@@ -1,11 +1,11 @@
 package evolution
 
-// fitness_aggregator_scoping_test.go locks review 严重项 4: the rollback
+// fitness_aggregator_scoping_test.go locks review fix #4: the rollback
 // decision path (Window called WITH a strategy ID) requires the strategy's
 // OWN "strategy" source to satisfy MinSamplesBeforeJudge — global sources
 // (workflow/scheduler/recovery/dimension_eval) weight the mean but can never
 // license a rollback decision on the strategy's behalf (design doc §4⑤
-// principle 4: 回退依据来自该策略的真实证据).
+// principle 4: rollback decisions must rest on the strategy's own evidence).
 
 import (
 	"context"

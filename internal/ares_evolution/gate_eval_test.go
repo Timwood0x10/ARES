@@ -155,7 +155,7 @@ func TestEvalGate_ScoringPath(t *testing.T) {
 // --- G2 shadow verify gate ---
 
 func TestShadowVerifyGate(t *testing.T) {
-	t.Run("no shadow evidence FAILS CLOSED (阻断项 1)", func(t *testing.T) {
+	t.Run("no shadow evidence FAILS CLOSED (review blocking item 1)", func(t *testing.T) {
 		se := NewShadowEvaluator(DefaultShadowEvaluationConfig())
 		lc := &StrategyLifecycle{shadow: se}
 		pass, score, reason := shadowVerifyGate{lc}.Check(context.Background(), &mutation.Strategy{}, nil)

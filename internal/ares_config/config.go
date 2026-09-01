@@ -252,7 +252,7 @@ type LLMConfig struct {
 // AgentsConfig holds agent configuration.
 type AgentsConfig struct {
 	// Peers is the flat capability-agent population (aresos-agentos-plan C1:
-	// 平铺结构作为默认). Each entry is an equal peer spawned into the Agent
+	// flat peer structure as the default). Each entry is an equal peer spawned into the Agent
 	// Fabric with its execution body; the kernel scheduler selects among them
 	// by capability. When Peers is non-empty it is the authoritative agent
 	// source (createPeerAgents reads it); Sub remains as the legacy fallback
@@ -266,7 +266,7 @@ type AgentsConfig struct {
 	Sub []SubAgentConfig `yaml:"sub"`
 }
 
-// PeerAgentConfig is one flat peer agent (C1 平铺结构).
+// PeerAgentConfig is one flat peer agent (C1 flat peer structure).
 type PeerAgentConfig struct {
 	// ID is the agent's unique identity (also its scheduler executor id and
 	// fabric agent id).

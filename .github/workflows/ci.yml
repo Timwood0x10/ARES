@@ -64,6 +64,13 @@ jobs:
       - name: Unit tests with coverage
         run: go test -race -count=1 -timeout=300s -coverprofile=cover.out ./...
 
+      # Architecture & acceptance gates (G1 reachability / G2 config contract
+      # / G3 event contract / §8 closure assertions via `-tags closure`).
+      # `go test ./...` does NOT compile //go:build closure files, so without
+      # this step the design doc's six §8 acceptance tests never run in CI.
+      - name: Architecture and acceptance gates
+        run: make gate
+
       - name: Coverage summary
         run: go tool cover -func=cover.out | tail -1
 

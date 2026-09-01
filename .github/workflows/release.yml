@@ -25,6 +25,11 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 -timeout=300s ./...
 
+      # Release builds must pass the architecture/acceptance gates too (the
+      # §8 closure assertions are invisible to `go test ./...`).
+      - name: Architecture and acceptance gates
+        run: make gate
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:

@@ -206,15 +206,19 @@ type VerifyGate interface {
 | **G4 Deployment staging** | 仅候选携带 RuntimePatch 时经 Coordinator → DeploymentPipeline；与 `lifecycle.Submit` 是两条独立路径 | 按 pipeline 语义拒绝 |
 
 > **诚实注记（review 阻断项 1 的处置）**：G2 之所以 fail-closed，是因为
-> 生产默认 `EnableDreamCycle=false`，目前**没有任何组件调用
-> `StartShadow/RecordResult` 喂影子比较**（数据 feeder 已正式登记为
-> **P0-9**，见 §6 任务表）。**在 P0-9 落地前，默认配置下 lifecycle 只完成
-> 一次 seed 部署，之后的候选全部被 G2 拒绝、保持在 SHADOW**——即
-> `evolution.enabled: true` 表示"候选被提出并被安全持有"，而非"持续产出
-> 新策略"。这是"宁可不进化，不无验证上线"的取向。放行（pass-through）
-> 曾是原实现，但它使整条验证管线沦为橡皮图章，已被否决。三处限制声明：
-> 设计文档（本节）、`configs/ares.yaml` 的 `shadow:` 注释块、
-> `CHANGELOG [0.3.1]` Known limitations。
+> 生产默认 `EnableDreamCycle=false`，过去**没有任何组件调用
+> `StartShadow/RecordResult` 喂影子比较**。**P0-9（见 §6 任务表）已落地**：
+> `ShadowSampler` 在候选提交时同步喂「候选 vs 活跃」比对样本，复用
+> evaluator 的独立 scorer，仅在 `!cfg.EnableDreamCycle` 时接线（与 DreamCycle
+> 互斥、只留一个 feeder）。**仍存两条边界**：
+> 1. 默认 bootstrap 未接独立 scorer（`llm_scoring` off）时 sampler 刻意产出
+>    zero comparison，G2 维持 fail-closed，候选留在 SHADOW；
+> 2. 已接 scorer 时，N 次比较是对**同一对策略**重复打分，只有 LLM scorer
+>    （非确定）才构成独立样本；确定性 scorer 下 MinSamples 退化为重复计数。
+>
+> 二者都指向同一个后续项：per-task 实执行 A/B 采样。这是"宁可不进化，
+> 不无验证上线"的安全取向；放行（pass-through）曾是原实现，但它使整条
+> 验证管线沦为橡皮图章，已被否决。
 >
 > **seed 部署例外**：无活跃策略时的首个候选不做门禁直接 promote——
 > 影子比较需要对照物，且 §9 的回退机制依赖这个基线作为 previous。
@@ -311,7 +315,7 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 | P0-6 | `bootstrap_steps.go:205-209` | `ShadowEvalConfig.Enabled=true`；补 `RollbackPolicyConfig` 的阈值/窗口/最小样本（从 YAML 读取） |
 | P0-7 | `bootstrap_steps.go:266-297` | ticker 改调 `scheduler.Tick(ctx)`；`EnableScheduler=true` 恒定 |
 | P0-8 | `scheduler.go:367-369` | 分数量纲改 `[0,1]`；新增 `Tick(ctx)` |
-| **P0-9（未落地）** | `internal/ares_evolution/observer.go` 或 agent 执行路径 | **影子比较 feeder**：产出「候选 vs 活跃」的 `ShadowEvaluator.RecordResult` 比对样本。落地前 G2 fail-closed（§4④）在默认配置下只放行一次 seed 部署，其余候选全部留在 SHADOW——这是有意为之的安全语义（见 §4④ 诚实注记与 CHANGELOG Known limitations） |
+| **P0-9（已落地，有限制）** | `internal/ares_evolution/shadow_sampler.go`（新增 `ShadowSampler`）；`lifecycle.go`（`Submit` 前 `Prime`）；`genome_wiring_system.go`（`!cfg.EnableDreamCycle` 时接线） | **影子比较 feeder**：新增 `ShadowSampler` 在候选提交时同步产出「候选 vs 活跃」的比对样本，复用 evaluator 的独立 scorer。判据是 `!cfg.EnableDreamCycle`（不是 `system.DreamCycle == nil`：DreamCycle **实例**在 `EnableScheduler` 时也会构建，而 bootstrap 正是 `DreamCycle=false + Scheduler=true`）。**限制**：同一对策略被重复打分 N 次，仅当 scorer 非确定（LLM，temperature>0）时才是独立样本；确定性 scorer 下 MinSamples 只是重复计数。真正的 per-task A/B 实执行采样仍待后续 |
 
 ### P1 — 让验证有独立裁判
 
@@ -418,9 +422,9 @@ evolution:
 > （`closure` build tag）与两道架构门禁承担"逐步回退"的安全职责。
 > 未按五步走的原因：§8 断言与门禁先行落地后，每一步的独立验证已被
 > 测试替代。遗留的渐进项：
-> 1. **P0-9（未做）**：影子比较 feeder（RuntimeObserver 或 task 执行路径
->    加一个候选 vs 活跃的比对采样器）——落地前 G2 fail-closed 会拒绝
->    除 seed 外的所有候选（见 §4④ 诚实注记）；
+> 1. ~~**P0-9**~~：影子比较 feeder 已落地（`ShadowSampler`，见 §6/§4④）。
+>    剩余两条边界：默认无独立 scorer 时仍 fail-closed；已接 scorer 时
+>    N 次比较是同一对策略的重复打分，需 per-task 实执行 A/B 采样才有统计意义；
 > 2. legacy scheduler 补 guardrails 构造选项（§5 已知缺口 1）；
 > 3. 双 scheduler 收敛（§5 已知缺口 2）；
 > 4. 无 EventStore 配置的 `default:` 无条件 Run 分支移除（§5 已知缺口 3）；

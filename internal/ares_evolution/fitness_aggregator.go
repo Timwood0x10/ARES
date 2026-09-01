@@ -138,10 +138,12 @@ type WindowResult struct {
 	Ok bool
 }
 
-// sourceStat holds the mean and count for one evidence source.
+// sourceStat holds the mean, count, and newest timestamp of one evidence
+// source inside the window.
 type sourceStat struct {
-	Mean  float64
-	Count int
+	Mean   float64
+	Count  int
+	LastAt time.Time
 }
 
 // Window computes the aggregate fitness over recent evidence for the given
@@ -154,7 +156,7 @@ type sourceStat struct {
 //     matching recentFitnessSummary's filter).
 //  3. Computes the weighted aggregate across sources.
 //
-// strategyID scoping AND the judging gate (review 严重项 4): only the
+// strategyID scoping AND the judging gate (review fix #4): only the
 // "strategy" source is scoped by the ID (its records carry a strategy_id
 // payload key written by RuntimeObserver). The workflow/scheduler/recovery
 // sources are runtime-global — they measure the system that runs the active
@@ -164,7 +166,8 @@ type sourceStat struct {
 //     "strategy" source must ITSELF hold ≥ MinSamplesBeforeJudge records for
 //     the given ID before Ok=true. Global sources contribute to the weighted
 //     mean but can never substitute for the active strategy's own evidence
-//     (design doc §4⑤ principle 4: "回退依据来自该策略的真实证据"). Without
+//     (design doc §4⑤ principle 4: rollback decisions must rest on the
+//     strategy's own evidence). Without
 //     this gate, 10 unrelated global records would license a rollback
 //     decision while the strategy's own sample count is 0.
 //   - When strategyID is empty (deployment staging), the gate is the total
@@ -174,6 +177,13 @@ type sourceStat struct {
 // callers that feed a score into a sliding policy (the lifecycle watch loop)
 // MUST gate on LastAt advancing, never on Count — Count saturates at
 // WindowSize per source and stops changing under steady-state churn.
+//
+// LastAt is deliberately the STRATEGY source's newest timestamp only (when
+// the caller scopes by a strategy ID): the global sources churn at their own
+// rates, and a global-only advance would re-trigger RecordScore every tick
+// while the strategy's own fitness sample set is unchanged — partially
+// defeating the decorrelation. Callers needing the overall newest timestamp
+// can take the max over PerSource.
 func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string) WindowResult {
 	// Read cfg and store under the SAME lock: SetStore may run concurrently
 	// with Window (bootstrap injects the shared store after construction),
@@ -206,7 +216,8 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string
 	// strategyCount: samples of the STRATEGY source alone — the judging
 	// gate for the rollback path (see the doc comment on Window).
 	strategyCount := 0
-	var lastAt time.Time
+	strategyLastAt := time.Time{}
+	globalLastAt := time.Time{}
 	var weightedSum float64
 	var weightSum float64
 
@@ -215,29 +226,30 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string
 		if c == 0 {
 			continue
 		}
-		perSource[src.name] = sourceStat{Mean: m, Count: c}
+		perSource[src.name] = sourceStat{Mean: m, Count: c, LastAt: srcLastAt}
 		totalCount += c
 		weightedSum += m * src.weight
 		weightSum += src.weight
-		if srcLastAt.After(lastAt) {
-			lastAt = srcLastAt
+		if srcLastAt.After(globalLastAt) {
+			globalLastAt = srcLastAt
 		}
 		if src.name == "strategy" {
 			strategyCount = c
+			strategyLastAt = srcLastAt
 		}
 	}
 
 	if dimCount > 0 {
-		perSource["dimension_eval"] = sourceStat{Mean: dimMean, Count: dimCount}
+		perSource["dimension_eval"] = sourceStat{Mean: dimMean, Count: dimCount, LastAt: dimLastAt}
 		totalCount += dimCount
 		weightedSum += dimMean * cfg.Weights.DimensionEval
 		weightSum += cfg.Weights.DimensionEval
-		if dimLastAt.After(lastAt) {
-			lastAt = dimLastAt
+		if dimLastAt.After(globalLastAt) {
+			globalLastAt = dimLastAt
 		}
 	}
 
-	result := WindowResult{PerSource: perSource, LastAt: lastAt}
+	result := WindowResult{PerSource: perSource}
 
 	if weightSum == 0 {
 		result.Mean = cfg.ColdStartScore
@@ -263,11 +275,17 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string
 	if strategyID != "" {
 		// Rollback path: the active strategy's OWN evidence must reach the
 		// judge threshold. Global sources weight the mean but never satisfy
-		// the gate on the strategy's behalf (严重项 4).
+		// the gate on the strategy's behalf (review fix #4). The advance
+		// signal (LastAt) is likewise scoped to the strategy source.
 		result.Ok = strategyCount >= cfg.MinSamplesBeforeJudge
+		result.LastAt = strategyLastAt
 		return result
 	}
+	// Staging path: advance signal is the newest timestamp across all
+	// sources (the staging Evaluate has no decorrelation consumer; LastAt
+	// here is informational).
 	result.Ok = totalCount >= cfg.MinSamplesBeforeJudge
+	result.LastAt = globalLastAt
 	return result
 }
 

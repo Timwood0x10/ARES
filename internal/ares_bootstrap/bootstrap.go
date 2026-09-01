@@ -96,7 +96,7 @@ type Components struct {
 	FlightRecorder *flight.FlightRecorder
 	// ExpRepo is the experience repository used by distillation writes
 	// (Track A) and — in the Agent Fabric runtime — as the G1 spawn-prior
-	// source (aresos-agentos-plan G1: 蒸馏产出 → 经验仓库查询 → spawn 注入).
+	// source (aresos-agentos-plan G1: distillation output → experience repo query → spawn injection).
 	// It is the deps.ExpRepo when provided, or the repository created by
 	// wireDistillation when PostgreSQL distillation is enabled; nil otherwise
 	// (callers treat nil as "no prior", never as an error).

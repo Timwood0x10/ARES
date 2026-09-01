@@ -394,12 +394,20 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 // Returns:
 //   - *mutation.Strategy: the restored previous strategy.
 //   - error: non-nil if no previous strategy exists or store operation fails.
+//
+// ErrNoPreviousStrategy is returned by ActiveStrategyManager.Rollback when
+// no previous strategy exists to restore. Callers should match it with
+// errors.Is: the fail-closed default config promotes exactly one seed
+// strategy (previous stays nil), so "rollback unavailable" is an EXPECTED
+// condition until a second promote happens — not a malfunction.
+var ErrNoPreviousStrategy = errors.New("no previous strategy available for rollback")
+
 func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strategy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.previous == nil {
-		return nil, errors.New("no previous strategy available for rollback")
+		return nil, ErrNoPreviousStrategy
 	}
 
 	previousClone := m.previous.Clone()
