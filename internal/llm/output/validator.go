@@ -98,8 +98,10 @@ func (v *Validator) validateValue(data interface{}, schema *Schema, path string)
 		}
 	}
 
-	// String-specific validations
-	if str, ok := data.(string); ok {
+	// String-specific validations. asString (not a bare assertion) so that
+	// named string types such as models.Occasion get their MinLength /
+	// MaxLength / Pattern constraints checked too.
+	if str, ok := asString(data); ok {
 		if schema.MinLength != nil && len(str) < *schema.MinLength {
 			return fmt.Errorf("%s: length %d is less than minimum %d", path, len(str), *schema.MinLength)
 		}
@@ -193,8 +195,7 @@ func (v *Validator) validateValue(data interface{}, schema *Schema, path string)
 func (v *Validator) validateType(data interface{}, expectedType string, path string) error {
 	switch expectedType {
 	case schemaTypeString:
-		_, ok := data.(string)
-		if !ok {
+		if _, ok := asString(data); !ok {
 			return fmt.Errorf("%s: expected string, got %T", path, data)
 		}
 	case schemaTypeNumber:
@@ -206,8 +207,7 @@ func (v *Validator) validateType(data interface{}, expectedType string, path str
 			return fmt.Errorf("%s: expected integer, got %T", path, data)
 		}
 	case "boolean":
-		_, ok := data.(bool)
-		if !ok {
+		if _, ok := asBool(data); !ok {
 			return fmt.Errorf("%s: expected boolean, got %T", path, data)
 		}
 	case schemaTypeArray:
@@ -224,9 +224,48 @@ func (v *Validator) validateType(data interface{}, expectedType string, path str
 	return nil
 }
 
+// canonicalValue reduces a value to a plain primitive of the same kind so that
+// a named type compares equal to its underlying type.
+//
+// Needed because reflect.DeepEqual compares DYNAMIC TYPES: models.Occasion("casual")
+// is not DeepEqual to the enum entry "casual" (a plain string), so every
+// named-type value was rejected by validateEnum even once the scalar type
+// checks accepted it.
+func canonicalValue(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String()
+	case reflect.Bool:
+		return rv.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint()
+	case reflect.Float32, reflect.Float64:
+		return rv.Float()
+	}
+	return v
+}
+
 func (v *Validator) validateEnum(value interface{}, enum []interface{}, path string) error {
+	// An empty string means "not set" for a Go-struct-derived map: converters
+	// like ValidateRecommendResult emit every struct field, so an optional
+	// domain field that the caller never populated arrives as "" (see
+	// models.RecommendResult.Occasion / .Season, both documented as optional).
+	// Judging "" against the enum would reject every general-purpose result, so
+	// treat it as absent. Fields where empty is genuinely invalid are still
+	// caught by their own MinLength/required constraints.
+	if s, ok := asString(value); ok && s == "" {
+		return nil
+	}
+
+	want := canonicalValue(value)
 	for _, e := range enum {
-		if reflect.DeepEqual(value, e) {
+		if reflect.DeepEqual(want, canonicalValue(e)) {
 			return nil
 		}
 	}
@@ -234,8 +273,7 @@ func (v *Validator) validateEnum(value interface{}, enum []interface{}, path str
 }
 
 func (v *Validator) validateString(value interface{}) error {
-	_, ok := value.(string)
-	if !ok {
+	if _, ok := asString(value); !ok {
 		return errors.New("expected string")
 	}
 	return nil
@@ -442,69 +480,95 @@ func GetTravelItemSchema() *Schema {
 }
 
 // Helper functions.
-func toFloat64(v interface{}) (float64, bool) {
-	switch val := v.(type) {
-	case float64:
-		return val, true
-	case float32:
-		return float64(val), true
-	case int:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	case int32:
-		return float64(val), true
-	case uint:
-		return float64(val), true
-	case uint64:
-		return float64(val), true
-	case uint32:
-		return float64(val), true
-		// Reject string type to avoid ambiguous type conversion
-		// Strings should be validated explicitly before conversion
+//
+// Named-type handling (why these use reflect.Kind instead of type switches):
+// a plain `v.(string)` / `v.(float64)` assertion matches only the EXACT dynamic
+// type, so a named domain type with the right underlying kind — models.Occasion
+// ("type Occasion string"), models.StyleTag, or a hypothetical
+// "type Score float64" — was rejected as the wrong type. That made the
+// validator fail on valid domain objects, and the symptom was papered over for
+// a long time by a t.Skip in output_test.go. Comparing reflect.Kind keeps the
+// check structural, which is what a JSON-schema "string"/"number" means.
+//
+// Strings are still rejected by the numeric converters: reflect.String is not a
+// numeric kind, so the "reject ambiguous string→number conversion" rule holds.
+
+// asString returns v's string value when v is a string or a named type whose
+// underlying kind is string.
+func asString(v interface{}) (string, bool) {
+	if v == nil {
+		return "", false
 	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.String {
+		return "", false
+	}
+	return rv.String(), true
+}
+
+// asBool returns v's bool value when v is a bool or a named type whose
+// underlying kind is bool.
+func asBool(v interface{}) (bool, bool) {
+	if v == nil {
+		return false, false
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Bool {
+		return false, false
+	}
+	return rv.Bool(), true
+}
+
+func toFloat64(v interface{}) (float64, bool) {
+	if v == nil {
+		return 0, false
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	}
+	// Every other kind — notably reflect.String — is rejected, preserving the
+	// "no ambiguous string→number conversion" rule of the original switch.
 	return 0, false
 }
 
+// maxInt64AsFloat is the largest int64 exactly representable as a float64.
+// It is spelled via the unsigned max so it stays correct without importing
+// math.MaxInt64 (Go 1.17+ would allow the constant directly).
+const maxInt64AsFloat = float64(^uint64(0) >> 1)
+
+// minInt64AsFloat is the true int64 lower bound. The original code used
+// `^int64(0)`, which evaluates to -1 (not MinInt64), so huge negative floats
+// slipped through and were silently truncated.
+const minInt64AsFloat = float64(-1 << 63)
+
 func toInt64(v interface{}) (int64, bool) {
-	switch val := v.(type) {
-	case int:
-		return int64(val), true
-	case int64:
-		return val, true
-	case int32:
-		return int64(val), true
-	case float64:
-		// Check if value is within int64 range. NOTE: the previous lower bound
-		// `^int64(0)` evaluates to -1 (not MinInt64, which is -1<<63), so huge
-		// negative floats slipped through. Use the true MinInt64 constant.
-		if val <= float64(^uint64(0)>>1) && val >= float64(-1<<63) {
-			return int64(val), true
-		}
-		// Value exceeds int64 range, reject it
+	if v == nil {
 		return 0, false
-	case float32:
-		// Check if value is within int64 range
-		if float64(val) <= float64(^uint64(0)>>1) && float64(val) >= float64(^int64(0)) {
-			return int64(val), true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		u := rv.Uint()
+		if u > ^uint64(0)>>1 {
+			return 0, false // exceeds int64 range
 		}
-		// Value exceeds int64 range, reject it
-		return 0, false
-	case uint:
-		if uint64(val) <= uint64(int64(^uint64(0)>>1)) {
-			return int64(val), true
+		return int64(u), true
+	case reflect.Float32, reflect.Float64:
+		// Range-check before narrowing. Both bounds are the true int64 limits;
+		// the float32 branch previously still used the `^int64(0)` == -1 bug.
+		f := rv.Float()
+		if f <= maxInt64AsFloat && f >= minInt64AsFloat {
+			return int64(f), true
 		}
 		return 0, false
-	case uint64:
-		if val <= uint64(int64(^uint64(0)>>1)) {
-			return int64(val), true
-		}
-		// Value exceeds int64 range, reject it
-		return 0, false
-	case uint32:
-		return int64(val), true
-		// Reject string type to avoid ambiguous type conversion
-		// Strings should be validated explicitly before conversion
 	}
 	return 0, false
 }

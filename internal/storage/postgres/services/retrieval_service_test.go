@@ -360,42 +360,17 @@ func findResultByID(results []*SearchResult, id string) *SearchResult {
 	return nil
 }
 
-// TestSearch_WithNilEmbeddingClient tests Search with nil embedding client (keyword search only).
-func TestSearch_WithNilEmbeddingClient(t *testing.T) {
-	// This test will panic because TenantGuard.SetTenantContext requires a non-nil Pool
-	// Skip this test for now as it requires database setup
-	t.Skip("TestSearch_WithNilEmbeddingClient requires database pool setup")
-}
-
-// TestSearch_WithQueryRewrite tests Search with query rewrite enabled.
-func TestSearch_WithQueryRewrite(t *testing.T) {
-	// This test requires database pool setup
-	t.Skip("TestSearch_WithQueryRewrite requires database pool setup")
-}
-
-// TestSearch_WithTraceEnabled tests Search with trace enabled.
-func TestSearch_WithTraceEnabled(t *testing.T) {
-	// This test requires database pool setup
-	t.Skip("TestSearch_WithTraceEnabled requires database pool setup")
-}
-
-// TestSearch_WithMinScoreFilter tests Search with minimum score filter.
-func TestSearch_WithMinScoreFilter(t *testing.T) {
-	// This test requires database pool setup
-	t.Skip("TestSearch_WithMinScoreFilter requires database pool setup")
-}
-
-// TestSearch_WithTopKLimit tests Search with TopK limit.
-func TestSearch_WithTopKLimit(t *testing.T) {
-	// This test requires database pool setup
-	t.Skip("TestSearch_WithTopKLimit requires database pool setup")
-}
-
-// TestSearch_WithNilPlan tests Search with nil plan (should use default).
-func TestSearch_WithNilPlan(t *testing.T) {
-	// This test requires database pool setup
-	t.Skip("TestSearch_WithNilPlan requires database pool setup")
-}
+// COVERAGE GAP (deliberately NOT papered over with t.Skip):
+// Search() — including query rewrite, trace, MinScore filter, TopK limit,
+// nil-plan defaulting and the rate-limit error path — has no automated
+// coverage. It is untestable without a live database: RetrievalService holds
+// a concrete *postgres.Pool and concrete repositories, none of which are
+// behind an interface, so no fake can be injected. Closing this gap means
+// either (a) integration-tagged tests against a real PG, or (b) extracting
+// Pool/repository interfaces in 0.4.x. Empty `t.Skip` shells previously stood
+// in for these tests; they never executed even with TEST_POSTGRES_DSN set, so
+// they inflated the test count and the coverage denominator while asserting
+// nothing. They were removed rather than left as a false signal.
 
 // TestGetEmbedding_EmptyQuery tests getEmbedding with empty query.
 func TestGetEmbedding_EmptyQuery(t *testing.T) {
@@ -631,12 +606,6 @@ func TestFilterByScore_WithNegativeMinScore(t *testing.T) {
 	if len(filtered) != 3 {
 		t.Errorf("should return all results with negative min score, got %d", len(filtered))
 	}
-}
-
-// TestSearch_WithRateLimitError tests Search when rate limit is exceeded.
-func TestSearch_WithRateLimitError(t *testing.T) {
-	// This test requires database pool setup
-	t.Skip("TestSearch_WithRateLimitError requires database pool setup")
 }
 
 // TestNewRetrievalService tests NewRetrievalService constructor.
@@ -962,15 +931,12 @@ func TestValidateRequest_WithVeryLargeTopK(t *testing.T) {
 	}
 }
 
-// TestSearchKnowledgeVector_WithError tests vector search with error.
-func TestSearchKnowledgeVector_WithError(t *testing.T) {
-	t.Skip("TestSearchKnowledgeVector_WithError requires mocking knowledge repository")
-}
-
-// TestBm25SearchKnowledge_WithError tests BM25 search with error.
-func TestBm25SearchKnowledge_WithError(t *testing.T) {
-	t.Skip("TestBm25SearchKnowledge_WithError requires mocking knowledge repository")
-}
+// COVERAGE GAP (deliberately NOT papered over with t.Skip):
+// searchKnowledgeVector / bm25SearchKnowledge — both the error paths and the
+// result paths (including similarity and keyword-score metadata) — have no
+// automated coverage. They talk to a concrete knowledge repository type, not
+// an interface, so no fake can be injected. See the gap note above Search()
+// for why empty skip shells were removed instead of retained.
 
 // TestCalculateTimeDecay_WithZeroAge tests time decay with zero age.
 func TestCalculateTimeDecay_WithZeroAge(t *testing.T) {
@@ -1169,12 +1135,10 @@ func TestGetEmbedding_WithNilClient(t *testing.T) {
 	}
 }
 
-// TestGetEmbedding_WithValidClient tests getEmbedding with valid client (requires mocking).
-func TestGetEmbedding_WithValidClient(t *testing.T) {
-	// This test would require mocking the embedding client
-	// For now, we skip it as the embedding client doesn't have a simple mock interface
-	t.Skip("TestGetEmbedding_WithValidClient requires mocking embedding client")
-}
+// COVERAGE GAP (deliberately NOT papered over with t.Skip):
+// getEmbedding's happy path (valid client) is uncovered: embedding.EmbeddingClient
+// is a concrete struct, so there is nothing to fake. The nil-client path IS
+// covered by TestGetEmbedding_NilClient above.
 
 // TestShouldRewriteQuery_WithExactly10Chars tests query rewrite with exactly 10 characters.
 func TestShouldRewriteQuery_WithExactly10Chars(t *testing.T) {
@@ -1259,26 +1223,6 @@ func TestShouldRewriteQuery_WithMultiplePatterns(t *testing.T) {
 	if !service.shouldRewriteQuery(query) {
 		t.Error("query with multiple patterns should trigger rewrite")
 	}
-}
-
-// TestSearchKnowledgeVector_WithResults tests vector search with results.
-func TestSearchKnowledgeVector_WithResults(t *testing.T) {
-	t.Skip("TestSearchKnowledgeVector_WithResults requires mocking knowledge repository")
-}
-
-// TestSearchKnowledgeVector_WithSimilarityMetadata tests vector search with similarity in metadata.
-func TestSearchKnowledgeVector_WithSimilarityMetadata(t *testing.T) {
-	t.Skip("TestSearchKnowledgeVector_WithSimilarityMetadata requires mocking knowledge repository")
-}
-
-// TestBm25SearchKnowledge_WithResults tests BM25 search with results.
-func TestBm25SearchKnowledge_WithResults(t *testing.T) {
-	t.Skip("TestBm25SearchKnowledge_WithResults requires mocking knowledge repository")
-}
-
-// TestBm25SearchKnowledge_WithKeywordScore tests BM25 search with keyword score in metadata.
-func TestBm25SearchKnowledge_WithKeywordScore(t *testing.T) {
-	t.Skip("TestBm25SearchKnowledge_WithKeywordScore requires mocking knowledge repository")
 }
 
 // TestSearchExperienceVector tests experience vector search (empty implementation).

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -261,9 +262,9 @@ func (w embeddingWriter) writeEmbedding(
 			return errNoRepo(tableKnowledgeChunks)
 		}
 		return w.knowledgeRepo.UpdateEmbedding(ctx, task.TenantID, task.TaskID, vec, model, version)
-	case "experiences_1024":
+	case aresexp.ExperienceTableName:
 		if w.experienceRepo == nil {
-			return errNoRepo("experiences_1024")
+			return errNoRepo(aresexp.ExperienceTableName)
 		}
 		return w.experienceRepo.UpdateEmbedding(ctx, task.TenantID, task.TaskID, vec, model, version)
 	default:

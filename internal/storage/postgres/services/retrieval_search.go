@@ -151,6 +151,17 @@ func (s *RetrievalService) searchKnowledgeVector(ctx context.Context, embedding 
 		return []*SearchResult{}
 	}
 
+	// Nil guard, symmetric with searchExperienceVector / searchToolsVector.
+	// NewRetrievalService takes kbRepo as a caller-supplied argument and does
+	// not validate it; a nil repository here used to dereference and panic
+	// instead of degrading to "no knowledge results" the way its siblings do.
+	if s.kbRepo == nil {
+		if s.logger != nil {
+			s.logger.Debug("KnowledgeRepository not available, skipping knowledge vector search")
+		}
+		return []*SearchResult{}
+	}
+
 	// Use Repository layer to search knowledge base
 	chunks, err := s.kbRepo.SearchByVector(ctx, embedding, req.TenantID, req.Plan.TopK)
 	if err != nil {
@@ -443,6 +454,15 @@ func (s *RetrievalService) bm25Search(ctx context.Context, req *SearchRequest) [
 
 // bm25SearchKnowledge performs BM25 search on knowledge base.
 func (s *RetrievalService) bm25SearchKnowledge(ctx context.Context, query string, tenantID string, limit int) []*SearchResult {
+	// Nil guard, symmetric with bm25SearchExperience / bm25SearchTools — see
+	// searchKnowledgeVector for why a nil kbRepo must degrade, not panic.
+	if s.kbRepo == nil {
+		if s.logger != nil {
+			s.logger.Debug("KnowledgeRepository not available, skipping knowledge BM25 search")
+		}
+		return []*SearchResult{}
+	}
+
 	// Use Repository layer for keyword search
 	chunks, err := s.kbRepo.SearchByKeyword(ctx, query, tenantID, limit)
 	if err != nil {

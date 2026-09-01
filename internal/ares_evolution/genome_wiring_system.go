@@ -547,7 +547,7 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	// every default config (LLM scoring off) — a gate that doesn't exist
 	// cannot even pass through.
 	if cfg.ShadowEvalConfig.Enabled {
-		se := buildShadowEvaluator(cfg, base)
+		se := buildShadowEvaluator(cfg, tiered, base)
 		system.ShadowEvaluator = se
 		// B3 fix: ShadowEvaluator is no longer exclusively tied to DreamCycle.
 		// When DreamCycle exists it still gets the evaluator for its internal
@@ -656,20 +656,50 @@ func buildActiveStrategyManager(cfg SystemConfig) (*ActiveStrategyManager, error
 }
 
 // buildShadowEvaluator creates the shadow evaluator with optional scorer.
-func buildShadowEvaluator(cfg SystemConfig, baseStrategy *mutation.Strategy) *ShadowEvaluator {
+func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseStrategy *mutation.Strategy) *ShadowEvaluator {
 	shadowEval := NewShadowEvaluator(cfg.ShadowEvalConfig)
 	shadowEval.SetActiveStrategy(baseStrategy)
+	// Shadow scoring is budget-gated ONLY when an LLM scorer is actually
+	// wired (cfg.Scorer != nil ⇔ evolution.llm_scoring enabled). A raw
+	// cfg.Scorer here would let every Submit's Prime run minSamples×2 LLM
+	// calls with zero accounting against MaxLLMCallsPerGeneration (review
+	// finding #1); TieredScorer instead enforces the budget
+	// (TryRecordLLMCall), reuses the per-generation score cache, and falls
+	// back to the heuristic when the budget is exhausted.
+	//
+	// Without an LLM scorer the tiered scorer is heuristic-only
+	// (ConstantScorer 50): every comparison would be an exact tie, which is
+	// meaningless evidence. In that case leave the shadow scorer UNSET so
+	// the sampler no-ops and the G2 gate stays fail-closed — the intended
+	// default until a real evidence source is wired (§4④). This also keeps
+	// the manual-RecordResult test path (unit + closure) working.
 	if cfg.Scorer != nil {
-		scorer := cfg.Scorer
-		shadowEval.SetShadowScorer(func(_ context.Context, s *mutation.Strategy) float64 {
-			return scorer(s)
-		})
+		if tiered != nil {
+			shadowEval.SetShadowScorer(func(ctx context.Context, s *mutation.Strategy) float64 {
+				score, _, err := tiered.Score(ctx, s)
+				if err != nil {
+					log.WarnContext(ctx, "shadow scorer failed, treating as score 0", "method", "buildShadowEvaluator", "strategy_id", s.ID, "error", err)
+					return 0
+				}
+				return score
+			})
+		} else {
+			scorer := cfg.Scorer
+			shadowEval.SetShadowScorer(func(_ context.Context, s *mutation.Strategy) float64 {
+				return scorer(s)
+			})
+		}
+	}
+	if cfg.ShadowEvalConfig.DeterministicScorer {
+		log.Warn("shadow evaluator: scorer is deterministic — comparisons are identical, MinSamples is satisfied by repetition, not by independent evidence",
+			"min_samples", cfg.ShadowEvalConfig.MinSamples,
+		)
 	}
 	log.InfoContext(context.Background(), "shadow evaluation enabled", "method", "buildShadowEvaluator",
 		"min_samples", cfg.ShadowEvalConfig.MinSamples,
 		"min_win_rate", cfg.ShadowEvalConfig.MinWinRate,
 		"active_strategy", baseStrategy.ID,
-		"independent_scorer", cfg.Scorer != nil,
+		"budget_gated", cfg.Scorer != nil && tiered != nil,
 	)
 	return shadowEval
 }

@@ -17,25 +17,73 @@ import (
 
 // DistillationService provides experience distillation from task results.
 // This service converts task execution logs into reusable experiences.
+// ExperienceTableName is the storage table distilled experiences are written
+// to. Exposed so the bootstrap enqueuer adapter and the embedding worker can
+// reference it without duplicating the literal.
+const ExperienceTableName = "experiences_1024"
+
+// EmbeddingTask describes an async vector backfill for an already-created
+// experience row. TaskID is the experience row id, i.e. the source row the
+// vector will be written back to, per the queue's REVIEW #13 contract.
+type EmbeddingTask struct {
+	TaskID   string
+	Content  string
+	TenantID string
+	Model    string
+	Version  int
+}
+
+// EmbeddingEnqueuer asynchronously enqueues an embedding task so the embedding
+// worker can write the vector back to the source row. Defined in the consuming
+// package so DistillationService does not depend on the concrete postgres
+// queue; the bootstrap wires a postgres-backed adapter (provide_distillation).
+type EmbeddingEnqueuer interface {
+	Enqueue(ctx context.Context, task *EmbeddingTask) error
+}
+
+// DistillationService provides experience distillation from task results.
+// This service converts task execution logs into reusable experiences.
 type DistillationService struct {
-	llmClient       *llm.Client
-	embeddingClient *embedding.EmbeddingClient
-	experienceRepo  repositories.ExperienceRepositoryInterface
-	logger          *slog.Logger
+	llmClient         *llm.Client
+	embeddingClient   *embedding.EmbeddingClient
+	experienceRepo    repositories.ExperienceRepositoryInterface
+	embeddingEnqueuer EmbeddingEnqueuer // optional async backfill producer
+	logger            *slog.Logger
+}
+
+// DistillationOption configures a DistillationService.
+type DistillationOption func(*DistillationService)
+
+// WithEmbeddingEnqueuer wires an async embedding producer. When set, Distill
+// persists the experience row without a vector and enqueues a backfill task so
+// the embedding worker writes the vector back asynchronously (REVIEW #13 A2).
+// When unset (default), Distill embeds synchronously exactly as before, so
+// SDK / zero-config callers observe unchanged behavior.
+func WithEmbeddingEnqueuer(enqueuer EmbeddingEnqueuer) DistillationOption {
+	return func(s *DistillationService) {
+		s.embeddingEnqueuer = enqueuer
+	}
 }
 
 // NewDistillationService creates a new DistillationService instance.
+// The optional options are applied in order; WithEmbeddingEnqueuer switches the
+// service to async embedding (REVIEW #13 A2).
 func NewDistillationService(
 	llmClient *llm.Client,
 	embeddingClient *embedding.EmbeddingClient,
 	experienceRepo repositories.ExperienceRepositoryInterface,
+	opts ...DistillationOption,
 ) *DistillationService {
-	return &DistillationService{
+	s := &DistillationService{
 		llmClient:       llmClient,
 		embeddingClient: embeddingClient,
 		experienceRepo:  experienceRepo,
 		logger:          slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ShouldDistill checks if a task result should be distilled. Both successful
@@ -77,40 +125,117 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 		return nil, errors.New("invalid extracted experience")
 	}
 
-	embedding, err := s.embeddingClient.Embed(ctx, extracted.Problem)
-	if err != nil {
-		return nil, errors.Wrap(err, "generate embedding")
-	}
-
 	expType := ExperienceTypeFailure
 	if task.Success {
 		expType = ExperienceTypeSuccess
 	}
 
 	exp := &storage_models.Experience{
-		TenantID:         task.TenantID,
-		Type:             expType,
-		Problem:          extracted.Problem,
-		Solution:         extracted.Solution,
-		Constraints:      extracted.Constraints,
-		Input:            extracted.Problem,
-		Output:           extracted.Solution,
-		Embedding:        embedding,
-		EmbeddingModel:   s.embeddingClient.GetModel(),
-		EmbeddingVersion: 1,
-		Score:            0.0,
-		Success:          task.Success,
-		AgentID:          task.AgentID,
-		UsageCount:       0,
-		Metadata:         nil,
-		CreatedAt:        time.Now(),
+		TenantID:    task.TenantID,
+		Type:        expType,
+		Problem:     extracted.Problem,
+		Solution:    extracted.Solution,
+		Constraints: extracted.Constraints,
+		Input:       extracted.Problem,
+		Output:      extracted.Solution,
+		// Embedding/EmbeddingModel/EmbeddingVersion are set by the embed path
+		// below, which differs depending on whether the async enqueuer is wired.
+		Score:      0.0,
+		Success:    task.Success,
+		AgentID:    task.AgentID,
+		UsageCount: 0,
+		Metadata:   nil,
+		CreatedAt:  time.Now(),
 	}
 
-	err = s.experienceRepo.Create(ctx, exp)
+	if s.embeddingEnqueuer != nil {
+		// REVIEW #13 A2: async producer path. Persist the row first (embedding
+		// NULL), then enqueue a backfill task so the embedding worker writes the
+		// vector back asynchronously. This keeps the event subscriber loop from
+		// blocking on the embedding network call.
+		if err := s.experienceRepo.Create(ctx, exp); err != nil {
+			return nil, errors.Wrap(err, "store experience")
+		}
+		if err := s.enqueueEmbeddingBackfill(ctx, exp, extracted.Problem); err != nil {
+			// Enqueue failed: fall back to a synchronous embed+update so the
+			// row never stays without a vector (the reconciler does not scan
+			// experiences_1024, so an orphaned task would not be retried).
+			if backfillErr := s.backfillEmbedding(ctx, exp, extracted.Problem); backfillErr != nil {
+				return nil, errors.Wrap(backfillErr, "backfill embedding after enqueue failure")
+			}
+		}
+	} else {
+		// Default (SDK / no enqueuer): embed synchronously and persist the
+		// vector with the row, preserving pre-A2 behavior.
+		if err := s.embedAndCreate(ctx, exp, extracted.Problem); err != nil {
+			return nil, err
+		}
+	}
+
+	return expToExperience(exp), nil
+}
+
+// enqueueEmbeddingBackfill enqueues an async embedding task for the given row.
+func (s *DistillationService) enqueueEmbeddingBackfill(ctx context.Context, exp *storage_models.Experience, content string) error {
+	task := &EmbeddingTask{
+		TaskID:   exp.ID,
+		Content:  content,
+		TenantID: exp.TenantID,
+		Model:    s.embeddingModel(),
+		Version:  1,
+	}
+	return s.embeddingEnqueuer.Enqueue(ctx, task)
+}
+
+// backfillEmbedding synchronously embeds content and writes the vector back to
+// the row. Used as a fallback when enqueue fails.
+func (s *DistillationService) backfillEmbedding(ctx context.Context, exp *storage_models.Experience, content string) error {
+	if s.embeddingClient == nil {
+		return errors.New("embedding client is not available")
+	}
+	vec, err := s.embeddingClient.Embed(ctx, content)
 	if err != nil {
-		return nil, errors.Wrap(err, "store experience")
+		return errors.Wrap(err, "generate embedding")
 	}
+	exp.Embedding = vec
+	exp.EmbeddingModel = s.embeddingModel()
+	exp.EmbeddingVersion = 1
+	if err := s.experienceRepo.Update(ctx, exp); err != nil {
+		return errors.Wrap(err, "backfill experience embedding")
+	}
+	return nil
+}
 
+// embedAndCreate embeds content and persists the row with the vector (the
+// synchronous pre-A2 path).
+func (s *DistillationService) embedAndCreate(ctx context.Context, exp *storage_models.Experience, content string) error {
+	if s.embeddingClient == nil {
+		return errors.New("embedding client is not available")
+	}
+	vec, err := s.embeddingClient.Embed(ctx, content)
+	if err != nil {
+		return errors.Wrap(err, "generate embedding")
+	}
+	exp.Embedding = vec
+	exp.EmbeddingModel = s.embeddingModel()
+	exp.EmbeddingVersion = 1
+	if err := s.experienceRepo.Create(ctx, exp); err != nil {
+		return errors.Wrap(err, "store experience")
+	}
+	return nil
+}
+
+// embeddingModel returns the embedding client's model name, or "" when nil.
+func (s *DistillationService) embeddingModel() string {
+	if s.embeddingClient == nil {
+		return ""
+	}
+	return s.embeddingClient.GetModel()
+}
+
+// expToExperience converts a stored experience into the returned domain
+// experience.
+func expToExperience(exp *storage_models.Experience) *Experience {
 	return &Experience{
 		ID:               exp.ID,
 		TenantID:         exp.TenantID,
@@ -127,7 +252,7 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 		UsageCount:       exp.UsageCount,
 		DecayAt:          exp.DecayAt,
 		CreatedAt:        exp.CreatedAt,
-	}, nil
+	}
 }
 
 // DistillBatch distills multiple task results.

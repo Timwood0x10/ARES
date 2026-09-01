@@ -78,7 +78,7 @@ var storageMigrations = []string{
 			type VARCHAR(50) NOT NULL CHECK (type IN ('success', 'failure', 'query', 'solution', 'pattern', 'distilled')),
 			input TEXT,
 			output TEXT,
-			embedding VECTOR(1024) NOT NULL,
+			embedding VECTOR(1024),
 			embedding_model TEXT NOT NULL DEFAULT 'intfloat/e5-large',
 			embedding_version INT NOT NULL DEFAULT 1,
 			score FLOAT DEFAULT 0.5 CHECK (score >= 0 AND score <= 1),
@@ -117,6 +117,18 @@ var storageMigrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_decay 
 		ON experiences_1024(decay_at) WHERE decay_at IS NOT NULL`,
+
+	// experiences_1024.embedding is nullable (NOT NULL relaxed above) so
+	// distillation can persist an experience row first (REVIEW #13 A2) and let
+	// the async embedding worker backfill the vector afterwards. A NULL vector is
+	// simply not returned by ivfflat index scans (NULL vectors are not indexed),
+	// so GA semantic search only sees rows once their vector exists; keyword
+	// search still finds them immediately. The ALTER makes an existing (pre-
+	// nullable) schema converge, and the UPDATE clears the legacy zero-dimension
+	// vectors ('[]') written by the old synchronous path, which would otherwise
+	// make pgvector raise "different vector dimensions" during vector search.
+	`ALTER TABLE experiences_1024 ALTER COLUMN embedding DROP NOT NULL`,
+	`UPDATE experiences_1024 SET embedding = NULL WHERE embedding = '[]'`,
 
 	// 3. tools table - Tools with semantic embedding
 	`CREATE TABLE IF NOT EXISTS tools (

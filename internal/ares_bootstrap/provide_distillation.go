@@ -63,7 +63,13 @@ func provideDistillation(
 
 	expRepo := repositories.NewExperienceRepository(pool.GetDB())
 
-	distSvc := aresexp.NewDistillationService(llmClient, embClient, expRepo)
+	// REVIEW #13 A2: feed the embedding queue from the distillation path so the
+	// async worker (wireEmbeddingWorker) backfills experience vectors instead of
+	// distilling synchronously. The adapter bridges the consuming-package
+	// interface to the concrete postgres queue, sharing the same pool.
+	embedQueue := postgres.NewEmbeddingQueue(pool, postgres.DefaultEmbeddingConfig())
+	distSvc := aresexp.NewDistillationService(llmClient, embClient, expRepo,
+		aresexp.WithEmbeddingEnqueuer(postgresEmbeddingEnqueuer{queue: embedQueue}))
 
 	guidProv := &evolution.FuncGuidanceProvider{
 		HintsFunc: func(ctx context.Context, taskType string, limit int) ([]evolution.EvolutionHint, error) {
@@ -239,6 +245,24 @@ func HandleTaskCompletedForDistillation(ctx context.Context, svc *aresexp.Distil
 	if _, err := svc.Distill(ctx, taskResult); err != nil {
 		log.Warn("bootstrap: distillation on task completion failed", "error", err)
 	}
+}
+
+// postgresEmbeddingEnqueuer adapts the consuming-package EmbeddingEnqueuer
+// interface to the concrete postgres EmbeddingQueue so the distillation path can
+// enqueue async experience-vector backfill tasks (REVIEW #13 A2).
+type postgresEmbeddingEnqueuer struct {
+	queue *postgres.EmbeddingQueue
+}
+
+func (e postgresEmbeddingEnqueuer) Enqueue(ctx context.Context, task *aresexp.EmbeddingTask) error {
+	return e.queue.Enqueue(ctx, &postgres.EmbeddingTask{
+		TaskID:   task.TaskID,
+		Table:    aresexp.ExperienceTableName,
+		Content:  task.Content,
+		TenantID: task.TenantID,
+		Model:    task.Model,
+		Version:  task.Version,
+	})
 }
 
 // stringField returns the first non-empty string value among the given keys.

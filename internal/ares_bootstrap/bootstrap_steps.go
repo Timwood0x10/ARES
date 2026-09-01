@@ -69,18 +69,17 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// They share the distillation pool (already open for the process
 			// lifetime) instead of opening a second pool — minimal wiring.
 			wireExpiryCleaners(comp, pool.GetDB(), cfg)
-			// REVIEW #13 (A1, consumer side only): wire the embedding queue
-			// worker + reconciler so pending embedding tasks in the queue are
-			// consumed and vectors are written back. Best-effort: if the
-			// embedding client is nil the worker is skipped. The knowledge
-			// repo is constructed here (sharing the same pool) so the worker
-			// can write vectors back to knowledge_chunks_1024; the experience
-			// repo is the same instance already created above.
-			//
-			// Scope note (REVIEW #13 A2 not done): serve's distillation path
-			// still embeds synchronously and does NOT enqueue; the queue is
-			// fed today only by Reconcile's orphan scan and the (unwired)
-			// WriteBuffer. Wiring an async producer is tracked separately.
+			// REVIEW #13 (A1 consumer side wired, A2 producer side now wired):
+			// the embedding queue worker + reconciler consume pending tasks and
+			// write vectors back to knowledge_chunks_1024 and experiences_1024
+			// (both repos share the same pool). Best-effort: if the embedding
+			// client is nil the worker is skipped. The A2 producer is wired in
+			// provide_distillation — the distillation path now persists an
+			// experience row without a vector and enqueues a backfill task so
+			// the async worker writes the vector back instead of blocking the
+			// event subscriber loop on a synchronous embed. The LLM extraction
+			// call (30s) still runs in the subscriber loop; only the embed was
+			// deferred to the worker.
 			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB())
 			var expConcreteRepo *repositories.ExperienceRepository
 			if r, ok := expRepo.(*repositories.ExperienceRepository); ok {
@@ -270,6 +269,13 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		gaCfg.HeuristicScorer = llmHeuristic
 		if llmMaxCalls > 0 {
 			gaCfg.MaxLLMCallsPerGeneration = llmMaxCalls
+		}
+		// A fixed seed forces the LLM to temperature 0 + prompt-embedded seed
+		// → deterministic output. The sampler's comparisons are then identical
+		// (MinSamples satisfied by repetition, not by independent evidence).
+		// buildShadowEvaluator logs a warning when this is set.
+		if cfg.Evolution.LLMScoring.Seed > 0 {
+			gaCfg.ShadowEvalConfig.DeterministicScorer = true
 		}
 	}
 

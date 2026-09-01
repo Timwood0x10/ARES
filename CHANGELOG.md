@@ -120,16 +120,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep zero comparisons and fail-closed. In the default config the lifecycle
   promotes exactly ONE seed strategy and safely holds every later candidate —
   enable `evolution.llm_scoring` to let the sampler feed real comparisons.
-  **Second limit**: the sampler scores the same candidate/active pair N times,
-  so the comparisons are only statistically independent under a
-  non-deterministic (LLM) scorer; with a deterministic scorer `min_samples` is
-  satisfied by repetition rather than by independent evidence. Per-task
-  real-execution A/B sampling is the follow-up.
-  **Corollary — automatic rollback is also unavailable by default**: the
-  seed deploy leaves `previous` nil and no further promote ever happens, so
-  `Rollback` returns "no previous strategy available". The watch loop still
-  scores and detects degradation (logged at Info), but it cannot restore a
-  strategy until a second (approved) promote exists.
+   **Second limit**: the sampler scores the same candidate/active pair N times,
+   so the comparisons are only statistically independent under a
+   non-deterministic (LLM) scorer; with a deterministic scorer `min_samples` is
+   satisfied by repetition rather than by independent evidence. Per-task
+   real-execution A/B sampling is the follow-up.
+   **Cost model** (`evolution.llm_scoring` on): each submitted candidate runs
+   `min_samples` comparisons × 2 scorer calls (active + candidate) per Prime,
+   and each LLM scorer call may itself fan out `num_samples` (max-of-N) LLM
+   requests — i.e. up to `2 × min_samples × num_samples` LLM requests per
+   Submit. Since the fix that wired the shadow scorer through the shared
+   `TieredScorer`, all of these are charged against
+   `MaxLLMCallsPerGeneration` (the same budget as population scoring): once
+   the budget is exhausted the sampler falls back to the heuristic, so a
+   generation that cannot afford verification cannot silently overdraw cost —
+   it degrades to fewer independent LLM comparisons (fail-closed on the gate).
+   **Corollary — automatic rollback is also unavailable by default**: the
+   seed deploy leaves `previous` nil and no further promote ever happens, so
+   `Rollback` returns "no previous strategy available". The watch loop still
+   scores and detects degradation (logged at Info), but it cannot restore a
+   strategy until a second (approved) promote exists.
 
 ### Fixed
 

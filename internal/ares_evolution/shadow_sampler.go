@@ -8,6 +8,7 @@ package evolution
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -49,6 +50,10 @@ type ShadowSampler struct {
 	// the gate crosses its MinSamples threshold. Zero falls back to
 	// defaultShadowSamples.
 	samples int
+	// timeout bounds one Prime batch; zero falls back to shadowPrimeTimeout.
+	// Exposed (unexported field, set by tests) so the batch deadline is
+	// verifiable without a 60s real-time wait.
+	timeout time.Duration
 	mu      sync.Mutex // serializes Prime so two submissions cannot interleave StartShadow/Evaluate
 }
 
@@ -56,6 +61,15 @@ type ShadowSampler struct {
 // non-positive sample count. It matches DefaultShadowEvaluationConfig's
 // MinSamples so the gate can always reach a verdict.
 const defaultShadowSamples = 10
+
+// shadowPrimeTimeout bounds one Prime batch. Each comparison may call the
+// scorer twice (active + candidate), and the scorer may in turn make LLM
+// calls bounded only by the LLM client's own HTTP timeout — without a batch
+// deadline the evolution heartbeat could stall for the whole chain. On
+// timeout Prime returns with whatever comparisons it recorded; the gate's
+// MinSamples check then rejects (fail-closed) rather than judging a short
+// window.
+const shadowPrimeTimeout = 60 * time.Second
 
 // NewShadowSampler creates a task-level shadow comparison feeder.
 //
@@ -72,7 +86,7 @@ func NewShadowSampler(evaluator *ShadowEvaluator, samples int) *ShadowSampler {
 	if samples <= 0 {
 		samples = defaultShadowSamples
 	}
-	return &ShadowSampler{evaluator: evaluator, samples: samples}
+	return &ShadowSampler{evaluator: evaluator, samples: samples, timeout: shadowPrimeTimeout}
 }
 
 // Prime prepares the evaluator for one candidate-and-active pair and gathers
@@ -87,6 +101,8 @@ func NewShadowSampler(evaluator *ShadowEvaluator, samples int) *ShadowSampler {
 // Prime respects ctx cancellation between comparisons: a shutdown mid-batch
 // leaves the partial samples it already recorded, and the gate's fail-closed
 // MinSamples check rejects the candidate rather than judging on a short window.
+// The batch is bounded by shadowPrimeTimeout so the evolution heartbeat
+// cannot be held hostage by a slow scorer.
 //
 // Args:
 //
@@ -106,13 +122,20 @@ func (s *ShadowSampler) Prime(ctx context.Context, candidate, active *mutation.S
 		// here would make the gate a rubber stamp, which §4④ rejects.
 		return
 	}
+
+	timeout := s.timeout
+	if timeout <= 0 {
+		timeout = shadowPrimeTimeout
+	}
+	primeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	s.evaluator.SetActiveStrategy(active)
 	s.evaluator.StartShadow(candidate)
 	for i := 0; i < s.samples; i++ {
-		if ctx.Err() != nil {
+		if primeCtx.Err() != nil {
 			return
 		}
-		s.evaluator.Evaluate(ctx)
+		s.evaluator.Evaluate(primeCtx)
 	}
 }
 

@@ -3,6 +3,7 @@ package evolution
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -123,6 +124,40 @@ func TestShadowSampler_Prime(t *testing.T) {
 			t.Fatalf("expected %d comparisons from the default, got %d", defaultShadowSamples, got)
 		}
 	})
+}
+
+// TestShadowSampler_Prime_BatchTimeout verifies the batch deadline (fix #2):
+// a scorer that never returns promptly (simulating a hung LLM call) must not
+// hold the evolution heartbeat hostage — Prime returns once the deadline
+// elapses, leaving fewer than MinSamples comparisons so the G2 gate stays
+// fail-closed rather than judging a partial window.
+func TestShadowSampler_Prime_BatchTimeout(t *testing.T) {
+	e := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3})
+	// Blocks until the context deadline fires, then returns a tie score.
+	e.SetShadowScorer(func(ctx context.Context, _ *mutation.Strategy) float64 {
+		<-ctx.Done()
+		return 0.5
+	})
+	s := NewShadowSampler(e, 5)
+	s.timeout = 50 * time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		s.Prime(context.Background(), &mutation.Strategy{ID: "cand"}, &mutation.Strategy{ID: "active"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Prime bounded by the batch deadline.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Prime did not return within the batch deadline — heartbeat held hostage")
+	}
+
+	got := len(e.Results())
+	if got >= 3 {
+		t.Fatalf("expected fewer than MinSamples(3) comparisons after a timed-out batch, got %d", got)
+	}
 }
 
 func TestShadowSampler_NilSafe(t *testing.T) {

@@ -60,6 +60,15 @@ type ShadowEvaluationConfig struct {
 
 	// EvaluationInterval is the time between evaluation rounds.
 	EvaluationInterval time.Duration `json:"evaluation_interval"`
+
+	// DeterministicScorer reports whether the wired scorer always returns the
+	// same score for the same strategy (e.g. LLM scorer with a fixed seed
+	// forces temperature 0, or a heuristic scorer is in use). It is set by
+	// the wiring layer, never by YAML: the sampler is honest about this
+	// limitation — comparisons are identical, MinSamples is satisfied by
+	// repetition, not by independent evidence. json:"-" keeps it out of the
+	// HTTP config surface.
+	DeterministicScorer bool `json:"-"`
 }
 
 // DefaultShadowEvaluationConfig returns sensible defaults for shadow evaluation.

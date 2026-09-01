@@ -283,18 +283,10 @@ func TestClosure_Lifecycle_ContextCancellation(t *testing.T) {
 	}
 }
 
-// TestClosure_Lifecycle_BootstrapCleanup verifies that Bootstrap's cleanup
-// functions are executed in reverse order on failure.
-//
-// The cleanup logic is in Bootstrap's runCleanups function. We can verify
-// it works by checking that after a failed Bootstrap, resources are cleaned
-// up (e.g., MCP is stopped).
-func TestClosure_Lifecycle_BootstrapCleanup(t *testing.T) {
-	// This test is informational — Bootstrap's cleanup logic is internal
-	// and we cannot easily trigger a failure without mocking.
-	// The existing TestBootstrap_WithMinimalConfig already verifies the
-	// happy path. A failure injection test would require modifying
-	// production code (Stage 1+).
-	t.Skip("Failure injection requires Stage 1 Runtime interface; " +
-		"Bootstrap cleanup is verified by existing tests for now")
-}
+// NOTE: the previous TestClosure_Lifecycle_BootstrapCleanup was a no-op
+// (it only called t.Skip with the rationale "Failure injection requires Stage 1
+// Runtime interface"). Failure rollback is not observable without a
+// deterministic error injection point in Bootstrap, which would require a
+// production refactor to expose runCleanups. Rather than keep a test that
+// always skips (and inflate the test count), it was removed. Reverse-order
+// cleanup on the happy path is exercised indirectly by the stop/shutdown tests.

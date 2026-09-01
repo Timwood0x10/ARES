@@ -38,8 +38,16 @@ func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.E
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding to pgvector format
-	embeddingStr := postgres.FormatVector(exp.Embedding)
+	// Convert embedding to pgvector format. An empty embedding is written as a
+	// SQL NULL (the column is nullable) so the async embedding worker can later
+	// backfill the vector without producing a zero-dimension vector, which would
+	// make pgvector raise "different vector dimensions" during vector search.
+	var embeddingStr interface{}
+	if len(exp.Embedding) == 0 {
+		embeddingStr = nil
+	} else {
+		embeddingStr = postgres.FormatVector(exp.Embedding)
+	}
 
 	// Build query with optional decay_at and created_at
 	var query string
