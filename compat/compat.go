@@ -1,9 +1,9 @@
-// Package compat is the ARES Compatibility Layer — the ecosystem entry point.
-//
-// This file holds the top-level convenience registration helpers that bind
+// compat.go holds the top-level convenience registration helpers that bind
 // the per-subsystem registries into a single façade. Application bootstrap
 // code calls compat.RegisterLLM/RegisterVector/… instead of importing each
 // subsystem registry directly.
+//
+// Package documentation lives in doc.go.
 package compat
 
 import (

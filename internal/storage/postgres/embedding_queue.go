@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // ErrDuplicateTask is returned when Enqueue or EnqueueTx detects a duplicate
@@ -42,7 +43,10 @@ type EmbeddingTask struct {
 	Kind     string // EmbeddingSpec.Kind for canonical spec tracking
 	Prefix   string // EmbeddingSpec.Prefix for canonical spec tracking
 	Dim      int    // EmbeddingSpec.Dim for canonical spec tracking
-	SpecHash string // EmbeddingSpec.Hash for deduplication
+	// SpecHash is the EmbeddingSpec.Hash, carried for traceability only. It is
+	// deliberately NOT part of dedupe_key — see generateDedupeKey for why a
+	// content-derived hash breaks the one-queue-row-per-source-row invariant.
+	SpecHash string
 }
 
 // NewEmbeddingQueue creates a new EmbeddingQueue instance.
@@ -61,8 +65,12 @@ func NewEmbeddingQueue(pool *Pool, embeddingConfig *EmbeddingConfig) *EmbeddingQ
 }
 
 // Enqueue adds an embedding task to the queue with idempotency protection.
-// This uses dedupe_key to prevent duplicate tasks for the same content.
-// Returns ErrDuplicateTask if the task already exists (same dedupe_key).
+//
+// Idempotency is per source row (see generateDedupeKey): a row that already has
+// a queue entry yields ErrDuplicateTask. The one exception is the revive branch
+// in enqueueSQL — a *completed* entry whose content or embedding spec no longer
+// matches the request is reset to pending in place, so re-embedding an edited
+// row still works without ever creating a second entry for the same row.
 // Args:
 // ctx - database operation context.
 // task - embedding task to enqueue.
@@ -78,12 +86,8 @@ func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error
 	// Generate dedupe key for idempotency.
 	dedupeKey := q.generateDedupeKey(task)
 
-	result, err := q.db.Exec(ctx, `
-		INSERT INTO embedding_queue
-		(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
-		ON CONFLICT (dedupe_key) DO NOTHING
-	`, task.TaskID, task.Table, task.Content, task.TenantID, task.Model, task.Version, dedupeKey)
+	result, err := q.db.Exec(ctx, enqueueSQL,
+		task.TaskID, task.Table, task.Content, task.TenantID, task.Model, task.Version, dedupeKey)
 
 	if err != nil {
 		return errors.Wrap(err, "enqueue embedding task")
@@ -100,6 +104,33 @@ func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error
 
 	return nil
 }
+
+// enqueueSQL inserts a queue entry, or revives an already-completed entry for
+// the same source row when the content or embedding spec changed.
+//
+// The DO UPDATE branch is guarded on status = 'completed' so it can never
+// disturb an entry another worker is currently holding (pending/processing):
+// those legitimately return ErrDuplicateTask. RowsAffected stays a correct
+// duplicate signal because a DO UPDATE whose WHERE fails reports 0 rows.
+const enqueueSQL = `
+		INSERT INTO embedding_queue
+		(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
+		ON CONFLICT (dedupe_key) DO UPDATE SET
+			content = EXCLUDED.content,
+			embedding_model = EXCLUDED.embedding_model,
+			embedding_version = EXCLUDED.embedding_version,
+			status = 'pending',
+			retry_count = 0,
+			queued_at = NOW(),
+			processing_at = NULL,
+			completed_at = NULL,
+			error_message = NULL
+		WHERE embedding_queue.status = 'completed'
+		  AND (embedding_queue.content <> EXCLUDED.content
+		    OR embedding_queue.embedding_model <> EXCLUDED.embedding_model
+		    OR embedding_queue.embedding_version <> EXCLUDED.embedding_version)
+	`
 
 // EnqueueTx adds an embedding task to the queue within an existing transaction.
 // This ensures the enqueue is committed atomically with the caller's transaction,
@@ -124,12 +155,8 @@ func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *Embedd
 	// Generate dedupe key for idempotency.
 	dedupeKey := q.generateDedupeKey(task)
 
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO embedding_queue
-		(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
-		ON CONFLICT (dedupe_key) DO NOTHING
-	`, task.TaskID, task.Table, task.Content, task.TenantID, task.Model, task.Version, dedupeKey)
+	result, err := tx.ExecContext(ctx, enqueueSQL,
+		task.TaskID, task.Table, task.Content, task.TenantID, task.Model, task.Version, dedupeKey)
 
 	if err != nil {
 		return errors.Wrap(err, "enqueue embedding task in transaction")
@@ -148,15 +175,30 @@ func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *Embedd
 }
 
 // generateDedupeKey generates a unique key for idempotency.
-// When SpecHash is set (from canonical EmbeddingSpec), it is used directly.
-// Otherwise falls back to content|model|version for backward compatibility.
+//
+// The key is exactly (table, task_id, tenant_id): one source row owns at most
+// one queue row, forever.
+//
+// Two earlier variants were both wrong:
+//
+//   - table|content|model|version made the semantics "this content is never
+//     embedded twice, ever". Completed rows stay in embedding_queue, so a second
+//     source row whose content happened to match an older one got
+//     ErrDuplicateTask forever and its vector was never backfilled.
+//   - adding content (or SpecHash, which is derived from content) on top of
+//     task_id let one task_id own several queue rows. dedupe_key is the only
+//     UNIQUE constraint here, while MarkProcessing/MarkCompleted/MarkFailed all
+//     address rows by `WHERE task_id = $1` — with multiple rows per id a single
+//     Mark* call rewrites all of them, and MarkFailed's SELECT ... FOR UPDATE
+//     scans more than the row it locks.
+//
+// Anything that varies per attempt (content, model, version, spec) is therefore
+// excluded. Re-embedding a row under a new model is handled by reviving the
+// existing queue row in Enqueue/EnqueueTx, not by inserting a second one.
 func (q *EmbeddingQueue) generateDedupeKey(task *EmbeddingTask) string {
-	if task.SpecHash != "" {
-		return task.SpecHash
-	}
-	// Include the table name so identical content in different tables never
-	// collides on the same dedupe key (the queue is shared across tables).
-	key := fmt.Sprintf("%s|%s|%s|%d", task.Table, task.Content, task.Model, task.Version)
+	// Include the table name so identical ids in different tables never
+	// collide on the same dedupe key (the queue is shared across tables).
+	key := fmt.Sprintf("%s|%s|%s", task.Table, task.TaskID, task.TenantID)
 	hash := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(hash[:16])
 }
@@ -241,6 +283,10 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 }
 
 // MarkProcessing marks a task as being processed.
+//
+// task_id addresses exactly one queue row: dedupe_key is derived solely from
+// (table, task_id, tenant_id), so a source row can never own two entries. All
+// Mark* statements below rely on that invariant — see generateDedupeKey.
 // Args:
 // ctx - database operation context.
 // taskID - task identifier.
@@ -323,10 +369,17 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 	maxRetries := q.embeddingConfig.MaxRetries
 	if retryCount >= maxRetries {
 		// Move to dead letter queue.
+		//
+		// created_at is taken from queued_at: embedding_queue has no created_at
+		// column, so selecting one raised "column created_at does not exist",
+		// which aborted the transaction and left the row pending with
+		// retry_count already at the limit — the worker then picked it up,
+		// failed, and hit this same broken statement forever. Reconcile's
+		// dead-letter guard also depends on this INSERT actually landing.
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO embedding_dead_letter
 			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, error_message, retry_count, created_at)
-			SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, $1, retry_count, created_at
+			SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, $1, retry_count, queued_at
 			FROM embedding_queue WHERE task_id = $2
 		`, errMessage, taskID)
 		if err != nil {
@@ -358,8 +411,15 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 	return nil
 }
 
-// Reconcile finds orphaned tasks that were never processed and re-enqueues them.
-// This provides eventual consistency for tasks that were lost between DB write and queue enqueue.
+// Reconcile finds orphaned rows whose vector was never written and re-enqueues
+// them. This provides eventual consistency for tasks that were lost between the
+// DB write and the queue enqueue.
+//
+// It covers both vector tables: knowledge_chunks_1024 (status-driven) and
+// experiences_1024, whose embedding column is nullable so distillation can
+// insert the row first. Without the experiences pass, a row whose enqueue and
+// synchronous embed both failed would keep a NULL vector forever and stay
+// invisible to vector search.
 // Args:
 // ctx - database operation context.
 // threshold - time threshold to consider a task orphaned.
@@ -369,15 +429,10 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 		return fmt.Errorf("threshold must be positive: %w", errors.ErrInvalidArgument)
 	}
 
-	// Use configured default model and version.
-	defaultModel := q.embeddingConfig.DefaultModel
-	defaultVersion := q.embeddingConfig.DefaultVersion
-
 	// Convert threshold to microseconds for PostgreSQL interval arithmetic.
 	thresholdMicros := threshold.Microseconds()
 
-	// Fetch orphaned chunks, compute dedupe key in Go (same logic as generateDedupeKey),
-	// then insert into the queue. We use a transaction to ensure atomicity.
+	// Both passes share one transaction so a failure leaves the queue untouched.
 	tx, err := q.db.Begin(ctx)
 	if err != nil {
 		return errors.Wrap(err, "begin reconcile transaction")
@@ -391,62 +446,142 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 		}
 	}()
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, content, tenant_id
-		FROM knowledge_chunks_1024
-		WHERE embedding_status = 'pending'
-		  AND embedding_queued_at < NOW() - ($1 * INTERVAL '1 microsecond')
-		  AND embedding_processed_at IS NULL
-	`, thresholdMicros)
-	if err != nil {
-		return errors.Wrap(err, "query orphaned embeddings")
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Warn("failed to close rows", "error", err)
-		}
-	}()
-
-	type orphanedChunk struct {
-		ID       string
-		Content  string
-		TenantID string
-	}
-	var chunks []orphanedChunk
-	for rows.Next() {
-		var chunk orphanedChunk
-		if err := rows.Scan(&chunk.ID, &chunk.Content, &chunk.TenantID); err != nil {
-			log.Error("Failed to scan orphaned chunk row", "error", err)
-			continue
-		}
-		chunks = append(chunks, chunk)
-	}
-	if err := rows.Err(); err != nil {
-		return errors.Wrap(err, "iterate orphaned chunks")
+	// Rows already given up on (max retries exceeded) are excluded from both
+	// passes. MarkFailed deletes the queue entry when it dead-letters a task, so
+	// without this guard the source row would look orphaned again on every
+	// reconcile tick: re-enqueue -> fail -> dead-letter -> re-enqueue, burning
+	// embedding quota forever on content that cannot be embedded.
+	knowledgeQuery := `
+		SELECT k.id, k.content, k.tenant_id
+		FROM knowledge_chunks_1024 k
+		WHERE k.embedding_status = 'pending'
+		  AND k.embedding_queued_at < NOW() - ($1 * INTERVAL '1 microsecond')
+		  AND k.embedding_processed_at IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM embedding_dead_letter d
+			WHERE d.task_id = k.id::text
+			  AND d.table_name = 'knowledge_chunks_1024'
+		  )
+	`
+	if err := q.reconcileTable(ctx, tx, storage_models.KnowledgeChunksTable, knowledgeQuery, thresholdMicros); err != nil {
+		return err
 	}
 
-	// Insert each orphaned chunk into the queue with Go-computed dedupe key.
-	for _, chunk := range chunks {
-		dedupeKey := q.generateDedupeKey(&EmbeddingTask{
-			Content: chunk.Content,
-			Model:   defaultModel,
-			Version: defaultVersion,
-		})
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO embedding_queue
-			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
-			VALUES ($1, 'knowledge_chunks_1024', $2, $3, $4, $5, $6, 'pending', NOW())
-			ON CONFLICT (dedupe_key) DO NOTHING
-		`, chunk.ID, chunk.Content, chunk.TenantID, defaultModel, defaultVersion, dedupeKey)
-		if err != nil {
-			return errors.Wrap(err, "insert orphaned task into queue")
-		}
+	// An experience is orphaned when the row exists without a vector and no
+	// live queue entry covers it. created_at is the only timestamp available
+	// here, which is enough: the row is written immediately before the enqueue.
+	//
+	// 'processing' is excluded alongside 'pending': a worker holding the task
+	// has not written the vector yet, so the row legitimately still has a NULL
+	// embedding and must not be reset underneath that worker.
+	experienceQuery := `
+		SELECT e.id, e.input, e.tenant_id
+		FROM experiences_1024 e
+		WHERE e.embedding IS NULL
+		  AND e.created_at < NOW() - ($1 * INTERVAL '1 microsecond')
+		  AND NOT EXISTS (
+			SELECT 1 FROM embedding_queue q
+			WHERE q.task_id = e.id::text
+			  AND q.table_name = 'experiences_1024'
+			  AND q.status IN ('pending', 'processing')
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM embedding_dead_letter d
+			WHERE d.task_id = e.id::text
+			  AND d.table_name = 'experiences_1024'
+		  )
+	`
+	if err := q.reconcileTable(ctx, tx, storage_models.ExperiencesTable, experienceQuery, thresholdMicros); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
 		return errors.Wrap(err, "commit reconcile transaction")
 	}
 	committed = true
+
+	return nil
+}
+
+// reconcileTable re-enqueues the rows selected by query into the queue for
+// table. query must select (id, content, tenant_id) and take the orphan
+// threshold in microseconds as $1.
+func (q *EmbeddingQueue) reconcileTable(
+	ctx context.Context,
+	tx *sql.Tx,
+	table string,
+	query string,
+	thresholdMicros int64,
+) error {
+	defaultModel := q.embeddingConfig.DefaultModel
+	defaultVersion := q.embeddingConfig.DefaultVersion
+
+	rows, err := tx.QueryContext(ctx, query, thresholdMicros)
+	if err != nil {
+		return errors.Wrap(err, "query orphaned embeddings for "+table)
+	}
+
+	type orphanedRow struct {
+		ID       string
+		Content  string
+		TenantID string
+	}
+	// Rows are collected before inserting: reusing the same transaction for
+	// writes while a cursor is open would interleave on one connection.
+	var orphans []orphanedRow
+	for rows.Next() {
+		var row orphanedRow
+		if err := rows.Scan(&row.ID, &row.Content, &row.TenantID); err != nil {
+			log.Error("Failed to scan orphaned row", "table", table, "error", err)
+			continue
+		}
+		orphans = append(orphans, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close() // best-effort: the iteration error is the one to report
+		return errors.Wrap(err, "iterate orphaned rows for "+table)
+	}
+	if err := rows.Close(); err != nil {
+		return errors.Wrap(err, "close orphaned rows for "+table)
+	}
+
+	for _, row := range orphans {
+		// Dedupe key must be built exactly like Enqueue does, otherwise a
+		// reconciled task would not deduplicate against a producer-side task.
+		dedupeKey := q.generateDedupeKey(&EmbeddingTask{
+			TaskID:   row.ID,
+			Table:    table,
+			Content:  row.Content,
+			TenantID: row.TenantID,
+			Model:    defaultModel,
+			Version:  defaultVersion,
+		})
+		// Same revive-on-completed conflict handling as enqueueSQL, minus the
+		// content/spec comparison: the orphan query already proved this source
+		// row has no vector, so a 'completed' queue entry for it is stale
+		// regardless of what content it holds. Plain DO NOTHING would strand
+		// such a row forever. Entries in pending/processing are left alone —
+		// they are either waiting or held by a worker.
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO embedding_queue
+			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
+			ON CONFLICT (dedupe_key) DO UPDATE SET
+				content = EXCLUDED.content,
+				embedding_model = EXCLUDED.embedding_model,
+				embedding_version = EXCLUDED.embedding_version,
+				status = 'pending',
+				retry_count = 0,
+				queued_at = NOW(),
+				processing_at = NULL,
+				completed_at = NULL,
+				error_message = NULL
+			WHERE embedding_queue.status = 'completed'
+		`, row.ID, table, row.Content, row.TenantID, defaultModel, defaultVersion, dedupeKey)
+		if err != nil {
+			return errors.Wrap(err, "insert orphaned task into queue")
+		}
+	}
 
 	return nil
 }

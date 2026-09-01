@@ -49,11 +49,20 @@ var storageMigrations = []string{
 		FOR EACH ROW EXECUTE FUNCTION
 		tsvector_update_trigger(tsv, 'pg_catalog.simple', content)`,
 
-	// Create indexes for knowledge_chunks_1024
+	// Create indexes for knowledge_chunks_1024.
+	//
+	// The vector index is PARTIAL on `embedding IS NOT NULL` to match the
+	// predicate SearchByVector uses (the column is nullable because the async
+	// embedding worker backfills it). ivfflat never indexes NULL rows anyway, so
+	// the partial form does not change what is stored; it declares the predicate
+	// so the planner can prove the query filter is implied and still use the
+	// index. Databases migrated before this change keep the non-partial index,
+	// which remains correct — the searches simply lose that proof.
 	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_embedding 
 		ON knowledge_chunks_1024 
 		USING ivfflat (embedding vector_cosine_ops) 
-		WITH (lists = 100)`,
+		WITH (lists = 100)
+		WHERE embedding IS NOT NULL`,
 
 	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tsv 
 		ON knowledge_chunks_1024 
@@ -97,11 +106,16 @@ var storageMigrations = []string{
 	`CREATE POLICY tenant_isolation_experiences_1024 ON experiences_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-	// Create indexes for experiences_1024
+	// Create indexes for experiences_1024.
+	// Partial on `embedding IS NOT NULL` for the same reason as the knowledge
+	// index above: it mirrors SearchByVector's predicate. This column is the one
+	// that is actually left NULL in production (distillation inserts the row
+	// before the vector exists).
 	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_embedding 
 		ON experiences_1024 
 		USING ivfflat (embedding vector_cosine_ops) 
-		WITH (lists = 100)`,
+		WITH (lists = 100)
+		WHERE embedding IS NOT NULL`,
 
 	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_type 
 		ON experiences_1024(type)`,
@@ -118,17 +132,57 @@ var storageMigrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_decay 
 		ON experiences_1024(decay_at) WHERE decay_at IS NOT NULL`,
 
-	// experiences_1024.embedding is nullable (NOT NULL relaxed above) so
-	// distillation can persist an experience row first (REVIEW #13 A2) and let
-	// the async embedding worker backfill the vector afterwards. A NULL vector is
-	// simply not returned by ivfflat index scans (NULL vectors are not indexed),
-	// so GA semantic search only sees rows once their vector exists; keyword
-	// search still finds them immediately. The ALTER makes an existing (pre-
-	// nullable) schema converge, and the UPDATE clears the legacy zero-dimension
-	// vectors ('[]') written by the old synchronous path, which would otherwise
-	// make pgvector raise "different vector dimensions" during vector search.
-	`ALTER TABLE experiences_1024 ALTER COLUMN embedding DROP NOT NULL`,
-	`UPDATE experiences_1024 SET embedding = NULL WHERE embedding = '[]'`,
+	// experiences_1024.embedding is nullable (NOT NULL relaxed here) so
+	// distillation can persist an experience row first and let the async
+	// embedding worker backfill the vector afterwards. Readers must therefore
+	// filter NULL vectors explicitly: "NULL is not indexed by ivfflat" only
+	// holds for index scans, a sequential scan still returns those rows.
+	//
+	// The guard exists because DROP NOT NULL takes an ACCESS EXCLUSIVE lock even
+	// when the column is already nullable, and MigrateStorage runs on every
+	// `db migrate`. Skipping the no-op keeps repeated migrations lock-free.
+	`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'experiences_1024'
+				  AND column_name = 'embedding'
+				  AND is_nullable = 'NO'
+			) THEN
+				ALTER TABLE experiences_1024 ALTER COLUMN embedding DROP NOT NULL;
+			END IF;
+		END
+	$$`,
+
+	// Legacy repair, kept from the pre-nullable schema: the old synchronous
+	// write path could leave zero-dimension vectors behind, and pgvector raises
+	// "different vector dimensions" as soon as such a row is compared against a
+	// real 1024-dim query vector, which takes down vector search for the whole
+	// tenant.
+	//
+	// Two guards keep this from costing anything on a healthy database:
+	//
+	//   - atttypmod = -1 means the column is a dimension-less VECTOR, the only
+	//     shape that can hold a row of the wrong width. A declared VECTOR(1024)
+	//     rejects other dimensions on write, so the scan is skipped entirely.
+	//   - vector_dims() is used instead of the original `embedding = '[]'`: that
+	//     comparison coerces the literal to a 0-dim vector and raises the very
+	//     dimension mismatch it was meant to clean up.
+	`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM pg_attribute
+				WHERE attrelid = 'experiences_1024'::regclass
+				  AND attname = 'embedding'
+				  AND atttypmod = -1
+			) THEN
+				UPDATE experiences_1024
+				SET embedding = NULL
+				WHERE embedding IS NOT NULL
+				  AND vector_dims(embedding) <> 1024;
+			END IF;
+		END
+	$$`,
 
 	// 3. tools table - Tools with semantic embedding
 	`CREATE TABLE IF NOT EXISTS tools (
@@ -332,6 +386,12 @@ var storageMigrations = []string{
 	// Create indexes for embedding_dead_letter
 	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
+
+	// Reconcile probes this table once per orphan-scan to skip rows that were
+	// already given up on; without the index that NOT EXISTS degrades to a
+	// sequential scan on every reconcile tick.
+	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_task 
+		ON embedding_dead_letter(task_id, table_name)`,
 
 	// 9. distilled_memories table - Distilled conversation memories for cross-session context
 	`CREATE TABLE IF NOT EXISTS distilled_memories (

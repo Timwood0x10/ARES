@@ -21,6 +21,12 @@ type ExperienceRepositoryInterface interface {
 	// non-empty TenantID; the SQL predicate includes tenant_id.
 	Update(ctx context.Context, exp *storage_models.Experience) error
 
+	// UpdateEmbedding writes back only the vector columns of one row. Narrower
+	// than Update on purpose: the async embedding worker and a synchronous
+	// fallback can target the same row, and a full-row update would clobber
+	// concurrent writes to the non-vector columns.
+	UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error
+
 	// Delete removes an experience by its ID.
 	Delete(ctx context.Context, id, tenantID string) error
 

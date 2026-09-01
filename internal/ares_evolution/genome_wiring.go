@@ -351,3 +351,25 @@ func (a *GenomePopulationAdapter) PopulationSize() int {
 	// len(a.pop.Agents) here is a data race (REVIEW #55).
 	return a.pop.Stats().Size
 }
+
+// PopulationUnevaluated returns how many individuals still carry
+// genome.ScoreUnevaluated. It completes the populationInspector contract the
+// legacy EvolutionScheduler needs: PreEvolveCheck's only blocking condition is
+// an unevaluated majority, and before B2 the scheduler passed a hardcoded 0 —
+// so its guardrail could never block regardless of configuration.
+func (a *GenomePopulationAdapter) PopulationUnevaluated() int {
+	if a.pop == nil {
+		return 0
+	}
+	agents, _ := a.pop.Snapshot()
+	return countUnevaluated(agents)
+}
+
+// PopulationGeneration returns the current generation number so guardrail
+// events carry the real generation instead of a hardcoded 0.
+func (a *GenomePopulationAdapter) PopulationGeneration() int {
+	if a.pop == nil {
+		return 0
+	}
+	return a.pop.Stats().Generation
+}

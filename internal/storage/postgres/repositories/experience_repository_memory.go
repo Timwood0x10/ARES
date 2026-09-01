@@ -119,6 +119,43 @@ func (r *memoryExperienceRepository) Update(ctx context.Context, exp *storage_mo
 	return nil
 }
 
+// UpdateEmbedding writes back only the vector columns of one row, mirroring the
+// postgres repository's narrow write-back path.
+//
+// Args:
+//
+//	ctx - unused (kept for interface conformance).
+//	tenantID - tenant scope; a mismatch is treated as "no such row".
+//	id - the experience id.
+//	embedding - the vector to store.
+//	model - embedding model name.
+//	version - embedding schema version.
+//
+// Returns:
+//
+//	error - nil when the row is absent, matching Update's lenient semantics.
+func (r *memoryExperienceRepository) UpdateEmbedding(
+	ctx context.Context,
+	tenantID, id string,
+	embedding []float64,
+	model string,
+	version int,
+) error {
+	if id == "" {
+		return errExperienceInvalid("id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	exp, ok := r.exps[id]
+	if !ok || (tenantID != "" && exp.TenantID != tenantID) {
+		return nil
+	}
+	exp.Embedding = embedding
+	exp.EmbeddingModel = model
+	exp.EmbeddingVersion = version
+	return nil
+}
+
 // Delete removes an experience by its ID.
 //
 // Args:

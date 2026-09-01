@@ -536,6 +536,24 @@ type populationSizer interface {
 	PopulationSize() int
 }
 
+// populationInspector is the fuller optional interface: besides the size it
+// reports the unevaluated count and the current generation.
+//
+// It exists because size alone cannot drive PreEvolveCheck. That check's ONLY
+// ShouldStop condition is "more than half the population is unevaluated", and
+// checkGuardrails used to pass a hardcoded unevaluatedCount of 0 — so the
+// legacy scheduler's guardrail could never block anything, no matter how it was
+// configured (B2). Wiring guardrails without this was wiring a switch with no
+// wire behind it.
+//
+// Generation matters too: it is stamped on every emitted GuardrailEvent, and a
+// hardcoded 0 made every event look like it came from the first generation.
+type populationInspector interface {
+	populationSizer
+	PopulationUnevaluated() int
+	PopulationGeneration() int
+}
+
 // checkGuardrails runs a pre-evolution guardrail check.
 // Returns true if evolution should proceed, false if guardrails block it.
 // Passes bestRecentScore from the score window for meaningful baseline comparison.
@@ -553,15 +571,26 @@ func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
 	}
 	// Use the most recent score as currentBest for baseline regression detection.
 	avg, _, _ := s.scoreSnapshot()
-	// Try to get population size if the adapter supports it.
-	totalPop := 0
-	if sizer, ok := s.adapter.(populationSizer); ok {
-		totalPop = sizer.PopulationSize()
+	// Read the population shape when the adapter can report it. An adapter that
+	// only implements populationSizer still yields unevaluated=0, which the
+	// unevaluated-majority check reads as "fully evaluated" — the documented
+	// degradation for adapters that cannot introspect their population.
+	totalPop, unevaluated, generation := 0, 0, 0
+	switch a := s.adapter.(type) {
+	case populationInspector:
+		totalPop = a.PopulationSize()
+		unevaluated = a.PopulationUnevaluated()
+		generation = a.PopulationGeneration()
+	case populationSizer:
+		totalPop = a.PopulationSize()
 	}
-	result := s.guardrails.PreEvolveCheck(ctx, avg, 0, totalPop, 0)
+	result := s.guardrails.PreEvolveCheck(ctx, avg, generation, totalPop, unevaluated)
 	if result.ShouldStop {
 		log.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
-			"events", len(result.Events))
+			"events", len(result.Events),
+			"generation", generation,
+			"total_pop", totalPop,
+			"unevaluated", unevaluated)
 		return false
 	}
 	return true

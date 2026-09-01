@@ -33,6 +33,18 @@
 | K5 内核可观测 | ✅ 通过 | `Scheduler.Running()`（Run 入口置位/退出复位）+ `Orchestrator.Snapshot()`；scheduler 以 Degraded 模式注册，ready 门轮询 Running（2s 预算）——drain 未跑报 `Degraded`+可读 reason，**不再假 Ready**；introspect `/api/v1/introspect/snapshot` 经 `WithSystemRuntime` 附加 `system_runtime` 组件图段（旧形状内联保持，面板兼容；受 T7 读鉴权）。`component.failed` 事件类型入 `ares_events`（无订阅方，G3 契约不受影响） |
 | K6 SDK/arena 登记 | ✅ 完成 | CHANGELOG `[0.3.1]` 新增 **Known limitations** 段：统一编排仅覆盖 `ares serve`，SDK/arena 非 serve 路径不建 Orchestrator，延后至 0.4.x |
 | T11 GA 控制平面纳入发布面 | ⏳ 2026-08-31 登记 | 代码面已落地（lifecycle/observer/gate/aggregator/approve 端点/5 配置块，§8 六断言 + `-race` 绿）；待办：goroutine 纳管 grep 复核入 `internal/ares_evolution`、`make gate` G2 补 5 块配置契约、12h soak 重跑、CHANGELOG 补记（详见 §T11 验收标准） |
+| **B1 调度器 stale-winner 竞态** | 🔴 **2026-09-01 新增 P0** | `-race -coverprofile` 下 `TestE2E_GrandLoop_RealSchedulerChaosRecovery` 20 轮失败 1 轮（任务停在 LEASED）。根因在 `kernelscheduler/scheduler.go:650-669`：winner 在 Schedule 后、Lookup 前死亡且无 capable replacement 时**保持 lease 等 TTL**，假时钟下永久停滞、生产下停顿一个 lease TTL。详见 `ares-0.3.1-ga-blockers-plan-zh.md` §B1 |
+| **B2 G1 guardrail 空转** | 🔴 **2026-09-01 新增 P1** | `gaCfg.Guardrails` 在整个 `internal/ares_bootstrap` **从未被赋值**，`runPreGuardrails`/`checkGuardrails` 均因 nil 短路恒通过 —— G1 在 bootstrap 运行时完全空转。比设计文档 §5 已知缺口 1 的描述更严重。详见 §B2 |
+| **B3 approve 端点零测试** | 🔴 **2026-09-01 新增 P1** | `POST /api/evolution/approve` 的 401/409/200 全仓零测试（与本表 L685 未勾选项同源）。详见 §B3 |
+| **B4 goleak 缺失** | 🔴 **2026-09-01 新增 P1** | 全仓零 `goleak` 引用，T4 验收项 L405 的"用 goleak 或等价物断言"未满足；现状仅 4 处手写 `runtime.NumGoroutine()`。详见 §B4 |
+| **B5 覆盖率口径与缺口** | 🔴 **2026-09-01 复测** | 总覆盖率 **58.24%**（68043 语句 / 39630 覆盖）。`repositories` 的 0% 是**假 0%**——8 个测试文件全带 `//go:build integration`，默认标签下不编译。排除 `examples/` 口径为 62.83%。详见 §B5/§B6 |
+
+**关键结论（2026-09-01 第三轮复核）**：`go build` / `go vet` / `golangci-lint`
+（**0 issues**）/ `go test -count=1 ./...`（186 包 ×3 轮）/ `make gate` 全绿；
+但 **`go test -race -count=1 -coverprofile ./...` FAIL**（`cmd/ares`，B1）。
+这条命令此前不在 §1 验收基线里，是本轮新增的门槛 —— 覆盖率插桩放大了 B1 的竞态
+窗口，所以 `make check` 绿而 CI 的 coverage 步骤会周期性变红。
+新增 B1–B7 七项，执行细化见 `ares-0.3.1-ga-blockers-plan-zh.md`。
 
 **关键结论（2026-08-30 第二轮迭代）**：K1–K6 全部落地，`make check` / `make gate`
 / `go test -race -count=1 ./...`（132 包）/ 相关包 `-race -count=5`（system_runtime、
@@ -54,9 +66,11 @@ T9 剩余低覆盖率模块（`compat/` 等）按指示暂缓；T10 维持待环
 |------|---------|
 | 构建 / 静态检查 | `make check`（vet + staticcheck + golangci-lint + 全量 test）通过 |
 | 竞态 | `go test -race -count=1 ./...` 132 包全绿，0 FAIL |
+| **竞态 + 覆盖率插桩** | ⚠️ **`go test -race -count=1 -coverprofile ./...` FAIL**（2026-09-01 复测，`cmd/ares`；20 轮 1 失败，见 B1） |
 | 门禁 | `make gate`（G1 可达性 / G2 配置契约 / G3 事件契约）通过 |
-| 总覆盖率 | **58.3%**（2026-08-30 `make cover`；2026-08-29 首轮评审值为 57.8%。GA 控制平面 +1495 行后需重测，见 T9/T11） |
-| 生产 TODO/FIXME | 11 处（3 处为已标注技术债，非遗漏） |
+| 总覆盖率 | **58.24%**（2026-09-01 复测；2026-08-30 为 58.3%、2026-08-29 首轮 57.8%。排除 `examples/` 口径 62.83%，见 B5/B6） |
+| Lint | **0 issues**（2026-09-01 `golangci-lint run --timeout=10m`） |
+| 生产 TODO/FIXME | 15 处（2026-09-01 复测；其中 5 处为 `TODO(tech-debt)` 标注，非遗漏） |
 | 生产库裸 `panic()` | 0 处（5 处均为 `MustNew`/`quickstart` fail-fast 与 testdata 生成器） |
 
 **阻塞定版的两个 P0：**
@@ -85,6 +99,12 @@ go test -race -count=5 ./internal/taskfabric/... ./internal/kernelscheduler/... 
 
 # 覆盖率（GA 目标：总覆盖率 ≥ 65%）
 make cover
+
+# 2026-09-01 新增：竞态 + 覆盖率插桩合跑。插桩开销会放大调度器的竞态窗口，
+# 单独跑 -race 或单独跑 cover 都可能是绿的（B1 就是这样躲过了此前两轮评审）。
+# 这条命令是 CI coverage 步骤的实际形态，必须与 -race 一样是硬门槛。
+go test -race -count=1 -coverprofile=cover.out ./... \
+  && go tool cover -func=cover.out | tail -1
 ```
 
 **术语约定**：下文「绿」= 上述命令全部零退出码；「新增测试」一律要求
@@ -109,8 +129,19 @@ make cover
 | K1–K5 | **P1** | 内核六大件纳入 System Runtime 统一编排（含裸 `go` 收敛） | `internal/system_runtime/*`、`internal/ares_bootstrap/system_runtime_wiring.go`、`cmd/ares/{kernel,serve_agents,peer_mode,serve_chaos,serve_routine}.go` | 2–3 人日 |
 | K6 | P2 | SDK / arena 路径编排同构（可延后，须登记） | `sdk/*`、`cmd/ares/arena.go` | 1 人日 |
 | T11 | **P1** | GA 进化控制平面纳入发布面（2026-08-31 新增：lifecycle/observer/approve 端点/5 个新配置块/2 个常驻 goroutine/新 metrics） | `internal/ares_evolution/{lifecycle,observer,fitness_aggregator}.go`、`internal/ares_bootstrap/{eval_gate_wiring,evolution_lifecycle_config,bootstrap_steps}.go`、`cmd/ares/{actions,serve_routine}.go` | 1 人日 |
+| **B1** | **P0** | 调度器 stale-winner 竞态：主动触发 recovery，不再被动等 TTL | `internal/kernelscheduler/{scheduler,executor_registry}.go`、`cmd/ares/kernel_loop.go` | 0.5 人日 |
+| **B2** | **P1** | bootstrap 真实构造 `gaCfg.Guardrails`，G1 从纸面门变生效门 | `internal/ares_bootstrap/{bootstrap_steps,provide_evolution}.go` | 0.5 人日 |
+| **B3** | **P1** | `/api/evolution/approve` 401/409/200 三态测试 | `cmd/ares/actions_evolution_test.go`（新增） | 0.3 人日 |
+| **B4** | **P1** | 引入 `goleak`，覆盖 SDK `Runtime.Close()` 与 plan loop | `go.mod`、`sdk/goleak_test.go`（新增） | 0.3 人日 |
+| **B5** | **P1** | 总覆盖率 58.24% → ≥65% | `internal/storage/postgres/**`、`internal/ares_memory/experienceadapters`、`internal/logger` | 1.5 人日 |
+| **B6** | P2 | `compat/` 决策 + 覆盖率口径显式化（`cover` / `cover-all`） | `compat/*`、`Makefile` | 0.3 人日 |
+| **B7** | P2 | 账目对齐：修正 repair 计划的错误引用结论（D14/D15/D16） | `ares-repair-plan-zh.md`、本文件 | 0.3 人日 |
 
-**关键路径**：T1 → T3 → T2 →（T4、T5 并行）→ `v0.3.1-rc` → K1–K5 → T6–T10 → **T11（先于 T10）** → GA。
+**关键路径（原）**：T1 → T3 → T2 →（T4、T5 并行）→ `v0.3.1-rc` → K1–K5 → T6–T10 → **T11（先于 T10）** → GA。
+
+**关键路径（2026-09-01 修订）**：**B1** →（B2 ∥ B3 ∥ B4）→ B5 → B6 → B7 → T10 → GA。
+B1 必须最先做：它是唯一会让 CI 变红的项，其余项的验收都依赖一条稳定的绿基线。
+执行细化见 `ares-0.3.1-ga-blockers-plan-zh.md`。
 
 ---
 
@@ -883,14 +914,22 @@ observer）与新写端点，12h soak 必须在包含它们的版本上采集，
 - [ ] §0 状态表所有 ✅ 项在打 tag 当日重跑仍绿（`make check` / `make gate` /
       `-race -count=1 ./...`）；⏳/⚠️ 项均有处置结论
 - [ ] T11 验收标准全部勾选（§T11）
+- [ ] **B1–B7 验收标准全部勾选**（`ares-0.3.1-ga-blockers-plan-zh.md`）
 - [ ] `make check` 绿
 - [ ] `make gate` 绿（G1 可达性 / G2 配置契约——**含 evolution 5 个新配置块** / G3 事件契约）
 - [ ] `go test -race -count=1 ./...` 132 包全绿
+- [ ] **`go test -race -count=1 -coverprofile=cover.out ./...` 全绿**
+      （2026-09-01 新增硬门槛：覆盖率插桩会放大竞态窗口，B1 就是只在这条命令下
+      暴露的；单跑 `-race` 或单跑 `cover` 均可能是绿的）
+- [ ] **`TestE2E_GrandLoop_RealSchedulerChaosRecovery` 在 `-race -coverprofile`
+      下连跑 30 轮全绿**（B1 的复现门槛：修复前 20 轮 1 失败）
 - [ ] `go build ./...` && `go vet ./examples/...` 绿
+- [ ] `golangci-lint run` **0 issues**
 - [ ] `make cover` 总覆盖率 ≥ 65%，`internal/ares_events` ≥ 70%
-      （**取值口径**：2026-08-30 `make cover` 实测 58.3%（§0 状态表）；
-      §0 摘要的 57.8% 为 2026-08-29 首轮评审值，仅作历史对照。GA 控制平面
-      +1495 行后需在 T9/T11 收尾时**重测并更新两个数字**）
+      （**取值口径**：2026-09-01 复测全口径 **58.24%**、排除 `examples/` 口径
+      **62.83%**；2026-08-30 为 58.3%，2026-08-29 首轮 57.8%，均作历史对照。
+      口径本身在 B6 决策并在 Makefile 中显式注释；`make cover-all` 的全口径
+      数字须同时记录进 CHANGELOG，不得只报被排除后的数字）
 - [ ] 12h soak 基线归档（**在含 GA 控制平面的版本上**），无内存/goroutine 泄漏
 - [ ] 默认启动仅监听 `127.0.0.1`，跨主机访问被拒
 - [ ] 任务持久化语义与 README/CHANGELOG 文字**完全一致**（无论走 T2-A 还是 T2-B）
@@ -898,11 +937,17 @@ observer）与新写端点，12h soak 必须在包含它们的版本上采集，
 - [ ] 已入库配置无明文可用凭证
 - [ ] `CHANGELOG.md` `[0.3.1]` 段落完整：Fixed / Changed / Breaking changes /
       Known limitations 四类齐全（**含 GA 控制平面：新端点/新配置/新指标/
-      G2 fail-closed 语义**）
+      G2 fail-closed 语义**；**并含 metrics 实际前缀为 `ARES_` 而非设计文档
+      字面量 `ares_` 的说明**，见 B7.4）
 - [ ] `VERSION` 与 tag 一致
 - [ ] 仓库内无自相矛盾的状态记录（重点：`ares-repair-plan-zh.md` 的 GAP 表
       与代码 TODO；`ga-runtime-evolution-design-zh.md` §5/§7/§10 已按
       2026-08-31 复核同步）
+- [ ] **`ares-repair-plan-zh.md` 的 D14/D15/D16 已追加 2026-09-01 更正块**
+      （原文"生产 0 引用"结论有误，多个目标符号生产可达；按原文执行删除会破坏
+      编译，见 B7.1）
+- [ ] **G1 guardrail 在 bootstrap 运行时真实生效**（`gaCfg.Guardrails` 非 nil，
+      pre/post 检查可被合同测试触发，见 B2）—— 修复前它是纸面门
 - [ ] K1–K5 完成并验收通过（统一调度闭环；K6 可延后但须显式登记）
 - [ ] `orch.Snapshot()` 中出现内核组件（scheduler / taskfabric / agentfabric /
       recovery / dispatcher / pluginbus），且 `kill -TERM` 后全部为 `Stopped`
@@ -912,6 +957,10 @@ observer）与新写端点，12h soak 必须在包含它们的版本上采集，
 - [ ] `GET /api/evolution/lifecycle` 与 `POST /api/evolution/approve` 均在
       T7 读/写鉴权口径内（lifecycle 端点随 introspect `/api/*` 读鉴权；
       approve 走 actionHandler checkAuth + 审计），无无鉴权后门
+- [ ] **`POST /api/evolution/approve` 的 401/409/200 三态有独立测试**（B3）
+      —— 此前是全仓唯一"实现完成、对外可写、零验证"的端点
+- [ ] **`goleak` 覆盖 SDK `Runtime.Close()` 与 plan loop**（B4），
+      ignore 列表逐条带理由，无 `IgnoreCurrent()`
 
 ---
 
@@ -921,4 +970,11 @@ observer）与新写端点，12h soak 必须在包含它们的版本上采集，
 不跨重启，以及用户无法把未鉴权的内省面板关进 localhost。前者可以选择「实现」或
 「诚实声明」，后者必须实现。修完这两项加上四个 P1，`v0.3.1` 可发；再补齐覆盖率
 与长跑基线，GA 可定。
+
+**2026-09-01 追加**：上面那句话在 T1–T8/K1–K6 落地后依然成立，但复核发现新的
+一类问题——**「门装了却没通电」**。G1 guardrail 的配置字段从未被赋值，
+approve 端点实现完整却零测试，`repositories` 有 6000 行测试却全被 build tag
+关在门外，覆盖率插桩下才暴露的调度器竞态在两轮评审里都躲过了。这些都不是
+代码写错，而是**验证链路没有闭合**：装配的最后一厘米、测试的实际执行条件、
+门槛命令的实际形态，是 0.3.1 收尾真正要补的东西。B1–B7 就是这一厘米。
 

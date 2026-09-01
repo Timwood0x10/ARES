@@ -117,18 +117,26 @@ func TestSDKH2_ChaosRecoveryChain(t *testing.T) {
 	rt.sched.RegisterExecutor("coder", &yieldExecutor{id: "coder", typ: "coder"})
 
 	// Submit the task in a goroutine (it blocks until COMPLETED).
+	//
+	// The task ID is explicit. It used to be left empty and the assertion below
+	// looked up the hardcoded "sdk-task-1", but sdkTaskSeq is a package-level
+	// counter: from the second run of the binary onward (`-count=2` and up) the
+	// generated ID is sdk-task-2, sdk-task-3, … so the lookup never matched,
+	// the test failed with "task never SUSPENDED", and this goroutine was left
+	// blocked in Submit forever (goleak reports it).
+	const h2TaskID = "sdk-h2-chain"
 	var submitErr error
 	submitDone := make(chan struct{})
 	go func() {
 		defer close(submitDone)
-		_, submitErr = rt.Submit(context.Background(), Task{Capability: "coder", Input: "h2-chain"})
+		_, submitErr = rt.Submit(context.Background(), Task{ID: h2TaskID, Capability: "coder", Input: "h2-chain"})
 	}()
 
 	// Wait for the task to reach SUSPENDED (quantum 1 yield).
 	deadline := time.Now().Add(3 * time.Second)
 	var taskID string
 	for time.Now().Before(deadline) {
-		tk, err := rt.sdkFabric.Task("sdk-task-1")
+		tk, err := rt.sdkFabric.Task(h2TaskID)
 		if err == nil && tk.State == taskfabric.StateSuspended {
 			taskID = tk.ID
 			break

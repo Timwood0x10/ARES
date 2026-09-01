@@ -96,7 +96,11 @@ type ShadowEvaluator struct {
 	minSamples     int
 	minWinRate     float64
 	shadowScorer   func(context.Context, *mutation.Strategy) float64 // optional independent scorer
-	mu             sync.RWMutex
+	// deterministic mirrors ShadowEvaluationConfig.DeterministicScorer so
+	// callers can inspect whether the comparison window is repetition rather
+	// than independent evidence, instead of that fact living only in a log line.
+	deterministic bool
+	mu            sync.RWMutex
 }
 
 // NewShadowEvaluator creates a ShadowEvaluator for safe strategy comparison.
@@ -122,7 +126,21 @@ func NewShadowEvaluator(cfg ShadowEvaluationConfig) *ShadowEvaluator {
 		shadowResults: make([]ShadowComparison, 0),
 		minSamples:    minSamples,
 		minWinRate:    minWinRate,
+		deterministic: cfg.DeterministicScorer,
 	}
+}
+
+// IsDeterministicScorer reports whether the wired scorer returns the same score
+// for the same strategy, in which case the comparison window is repetition and
+// the win rate can only be 0.0 or 1.0.
+//
+// Returns:
+//
+//	bool - true when comparisons are not independent evidence.
+func (e *ShadowEvaluator) IsDeterministicScorer() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.deterministic
 }
 
 // StartShadow begins shadow evaluation of a candidate strategy. The active

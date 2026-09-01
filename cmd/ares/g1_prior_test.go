@@ -26,7 +26,10 @@ func (s *stubExpRepo) GetByID(context.Context, string, string) (*models.Experien
 	panic("not used")
 }
 func (s *stubExpRepo) Update(context.Context, *models.Experience) error { panic("not used") }
-func (s *stubExpRepo) Delete(context.Context, string, string) error     { panic("not used") }
+func (s *stubExpRepo) UpdateEmbedding(context.Context, string, string, []float64, string, int) error {
+	panic("not used")
+}
+func (s *stubExpRepo) Delete(context.Context, string, string) error { panic("not used") }
 func (s *stubExpRepo) SearchByVector(context.Context, []float64, string, int) ([]*models.Experience, error) {
 	panic("not used")
 }

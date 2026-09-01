@@ -143,4 +143,10 @@ func TestWiring_ShadowSampler_BudgetGated(t *testing.T) {
 		t.Fatalf("expected a full comparison window (%d), got %d — the heuristic fallback must keep the gate able to judge",
 			cfg.ShadowEvalConfig.MinSamples, n)
 	}
+	// The tiered scorer caches per generation, so every comparison after the
+	// first is a cache hit returning an identical score. The evaluator must
+	// report that, otherwise the window looks like independent evidence.
+	if !system.ShadowEvaluator.IsDeterministicScorer() {
+		t.Fatal("a cache-backed tiered scorer must be reported as deterministic")
+	}
 }

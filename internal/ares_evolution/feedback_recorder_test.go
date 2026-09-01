@@ -31,6 +31,10 @@ func (m *mockRepoFR) Update(_ context.Context, _ *storageModels.Experience) erro
 	return nil
 }
 
+func (m *mockRepoFR) UpdateEmbedding(_ context.Context, _, _ string, _ []float64, _ string, _ int) error {
+	return nil
+}
+
 func (m *mockRepoFR) Delete(_ context.Context, _, _ string) error {
 	return nil
 }

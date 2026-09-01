@@ -329,6 +329,34 @@ var (
 
 **验收标准**：全库 `fmt.Errorf("%s", err)` 为 0；`err.Error() !=` 字符串比较为 0（`golangci-lint` `errcheck`/自定义规则）；静态 `fmt.Errorf` 为 0。
 
+> **2026-09-01 全仓复核：§2.5 大部分已落地，两项仍未完成。**
+>
+> **✅ 已完成**
+>
+> | 项 | 实测证据 |
+> |---|---|
+> | 2.5.1 `KernelError` | `internal/errors/kernel_error.go` 存在：结构体 `:18-24`、`Error()` `:27`（格式 `kernel:<op> task=… agent=… <code>: <err>`）、`Unwrap()` `:50`、构造器 `Kernel(...)` `:54` |
+> | E2 新增哨兵文件 | `internal/kernelscheduler/errors.go` 存在：`ErrNilStepOutcome` `:10`、`ErrNoCandidate` `:12` |
+> | E1/E2 结构化调用点 | `kernelscheduler/scheduler.go:608`（`Kernel("schedule","no_capable_candidate",…)` 包住 `taskfabric.ErrNoCapableCandidate`）、`:843`（`nil_step_outcome`）、`:846`（`step_error`）；`taskfabric/fabric.go:35,37,39` 哨兵，`:142,195,347` 返回 |
+> | R1 链不破 | 非测试代码 `fmt.Errorf("%s", err)` = **0** |
+> | R2 字符串比较（EOF 部分） | 非测试代码 `err.Error() !=` = **0**、`err.Error() ==` = **0**；`cmd/ares/actions.go:748` 已改 `errors.Is(err, io.EOF)` |
+>
+> **❌ 仍未完成**
+>
+> | 项 | 实测 |
+> |---|---|
+> | **E3 agentipc 结构化** | `internal/agentipc/` **未 import** `internal/errors`；`primitives.go:156-169` 仍返回裸 `ErrTimeout`，无 `Kernel("ipc_request","timeout",…)` 包装；`Reply` 孤儿 channel 亦无结构化日志 |
+> | **R3 静态 fmt.Errorf** | 非测试文件仍有 **61 处**（`evaluation/evaluation.go:37`、`api/evolution/genome/genome.go:68,85`、`api/mcp/stdio.go:89,103` 等）。本节"静态 `fmt.Errorf` 为 0"的验收未达成 |
+>
+> **⚠️ R2 的字面要求未满足但精神已满足**
+>
+> `internal/knowledge/store/sqlite/store.go:124` 仍有 `strings.Contains(err.Error(), "duplicate column")`，
+> 但已重构为命名谓词 `isDuplicateColumnError`（调用点 `:114`），并在 `:110-113` 注释说明：
+> SQLite driver 返回纯文本、无哨兵可 `errors.Is`。
+> 原方案给的替代路径（"sqlite 错误用哨兵或 `errors.As`"）**未被采纳** —— 这是一个有意识的取舍，
+> 但由于本节验收标准只统计 `err.Error() !=` 而不统计 `strings.Contains(err.Error(), …)`，
+> 这处残留不会被门禁发现。若要真正闭环，验收标准需补上 `strings.Contains(err.Error()` 的计数。
+
 ---
 
 ## 3. Phase 1：P0/P1 致命 bug 修复（第 1 周）
@@ -446,7 +474,7 @@ var (
 | **修复方案** | 见左侧 5 项 |
 | **验收标准** | `/api/insights` 非空；面板任务板/决策页有数据；`/api/flight/summary` 的 Tool/LLM 时长 > 0 |
 
-### W3 Evolution GA 参数接线
+### W3 Evolution GA 参数接线 ⚠️**2026-09-01 复核：8 个已接线，6 个结构性死配置**
 
 | 项 | 内容 |
 |----|------|
@@ -454,6 +482,29 @@ var (
 | **文件:方法** | `internal/ares_bootstrap/bootstrap_steps.go:195-200` `wireGAEvolution` |
 | **修复方案** | 读 `cfg.Evolution` 的 14 个参数构造 `SystemConfig`，ticker 读 `MinInterval` |
 | **验收标准** | 改 yaml → 参数生效的等价性测试通过 |
+
+> **2026-09-01 复核**
+>
+> `wireGAEvolution` 仍从 `DefaultSystemConfig()` 起步（`bootstrap_steps.go:205`），但已不再无视 `cfg.Evolution`：
+> 新增的 `applyGATuning`（`bootstrap_steps.go:538-563`）拷贝 **8 个** GA 参数
+> （`PopulationSize`/`EliteCount`/`SurvivalRate`/`MutationRate`/`MinMutationRate`/`MaxMutationRate`/`BreedingPoolRatio`/`SelectionStrategy`），
+> ticker 读 `MinInterval`（`:418`）。另有 `Rollback.*`（`:218-224`）、`Shadow.*`（`:227-232`）、
+> `Lifecycle.*`+`Gates.*`（`:236`）、`LLMScoring.*`（`:566,584,602,604`）、`Deployment`（`bootstrap.go:522-524`）均已接线。
+>
+> **仍死的 4 个**：`TournamentSize`、`CrossoverType`、`SteadyState`、`SteadyStateReplaceRate`。
+> 代码注释自己承认了这件事（`bootstrap_steps.go:249-252`）。根因是 `GenomeConfig`
+> （`genome_wiring_system.go:91-105`）没有对应槽位；`TournamentSize`/`CrossoverType` 虽在 GA 引擎内部
+> （`genome/population.go:533-555`）可用，但只从 `SystemConfig`/`GenomeConfig` 读，而 `applyGATuning` 从不设置它们。
+>
+> **另外 2 个（`Generations`/`TargetFitness`）已在 B2 中被消费** —— 接到 G1 guardrail 的
+> `MaxStagnantGenerations` / `BaselineScore`（见 §7 C3 复核）。
+>
+> **一个必须知道的取舍**：已接线的 8 个参数，每个都只在"值 ≠ 配置层默认值"时才覆盖引擎默认
+> （`ec.EliteCount > 0 && ec.EliteCount != ares_config.DefaultEvolutionEliteCount`）。
+> 因此**显式写 `elite_count: 2`（正好等于配置层默认）的运维人员会拿到引擎默认 3**。
+> 这是刻意设计（`cfg` 经 `setDefaults` 后字段全非零，裸 `> 0` 判断会永远命中并覆盖引擎的调优默认），
+> 已被测试锁定（`ga_tuning_test.go:102` `TestApplyGATuningExplicitDefaultValues`），
+> 但它意味着"改 yaml 一定生效"这句验收标准并非无条件成立。
 
 ### W4 ProfileRegistry 写侧 ✅ 已完成（同 P1-10，见上方「落地」）
 
@@ -464,7 +515,7 @@ var (
 | **修复方案** | 同 P1-10 |
 | **验收标准** | 同 P1-10 |
 
-### W5 RBAC——PermAdmin 接线
+### W5 RBAC——PermAdmin 接线 ✅**2026-09-01 复核：已完成**（handler 层校验，非 middleware）
 
 | 项 | 内容 |
 |----|------|
@@ -472,6 +523,20 @@ var (
 | **文件:方法** | `internal/ares_security/rbac.go:36-38` `PermAdmin`；`cmd/ares/actions.go` chaos 路由 |
 | **修复方案** | chaos kill-all/random-kill/recover 路由 require `PermAdmin`；API key 保持 read/write 分级 |
 | **验收标准** | operator JWT 调 kill-all 返回 403；admin JWT 通过 |
+
+> **2026-09-01 复核：已落地，但实现位置与原方案不同，需记录这个设计选择。**
+>
+> `PermAdmin` 存在于 `rbac.go:36-38`，且仅授予 `RoleAdmin`（`rbac.go:49`；operator/agent 在 `:50-51` 无此权限）。
+> 校验点在 **handler 而非 middleware**：`cmd/ares/actions.go:517`
+> `if chaosType != "stop" && !ares_security.HasPermission(princ.Role, ares_security.PermAdmin)` → 403 + 审计（`:518-521`）。
+> `random-kill`/`kill-all`/`recover` 三条都经 `handleChaos`（`actions.go:278-284`），全覆盖；
+> `stop` 走另一条路：常量时间 `X-Chaos-Token` 校验（`:531-541`）。
+>
+> `NewAuthMiddleware` 仍以 `PermWrite`（`serve_routine.go:219`）/`PermRead`（`:221`）构造 —— 没有 `PermAdmin` 的 middleware 实例，这是刻意的：`checkAuth`（`actions.go:107-144`）只负责确立 principal，admin 判定在其后。
+>
+> **一个值得记录的副作用**：legacy API-key 路径铸造的是 `Role: RoleOperator`（`actions.go:124`），
+> 因此 **API key 调用方永远无法执行破坏性 chaos**（恒 403）。这是比原方案更严的口径，不是缺陷，但会让"用 API key 做运维"的预期落空。
+> 测试覆盖：`actions_chaos_test.go:79-93` 铸造 admin JWT。
 
 ### W6 SDK Close 闭环 ✅已完成（sdk.go Close 全路径释放；B32 Submit 终态+超时均 Delete）
 
@@ -482,7 +547,16 @@ var (
 | **修复方案** | Bootstrap 成功路径的 cleanups 存到 Runtime，Close 顺序执行（先 `eg.Wait` 再 cleanups 再 SDK 侧资源） |
 | **验收标准** | `WithPostgres` 场景 Close 后连接池归零；无连接泄漏 |
 
-### W7 Kernel.PollInterval / Server.Host 接线 ✅PollInterval 已注入；Server.Host 定为 display-only（C4 决策，改绑定地址属行为变更另行立项）
+> **2026-09-01 补充（B4 goleak 引入后发现的两处真实泄漏，与本项同源）**
+>
+> W6 关掉的是"资源"（连接池 / manager），但没覆盖"goroutine"。goleak 上线后暴露两处：
+> `EvolutionScheduler.Register()`（`scheduler.go:351`）在自己的 `context.Background()` 上订阅 EventStore 并 park 一个 goroutine，
+> 而 `Shutdown()` **从未被任何生产代码调用**——该 goroutine 连同喂它的 EventStore subscriber goroutine 泄漏至进程结束。
+> 两条注册路径都中招：`provide_evolution.go:99`（legacy）与 `bootstrap_steps.go:417`（wired fallback）。
+> 已在 `bootstrap.go`/`bootstrap_steps.go` 各挂一个 `bgGroup.Go(<-ctx.Done() → sched.Shutdown())` 修复。
+> 手写 `runtime.NumGoroutine()` 比较无法发现这类问题（只有计数没有栈），这是 B4 引入 goleak 的直接收益。
+
+### W7 Kernel.PollInterval / Server.Host 接线 ✅PollInterval 已注入；~~Server.Host 定为 display-only~~ **2026-09-01 更正：Server.Host 已真实驱动 bind**
 
 | 项 | 内容 |
 |----|------|
@@ -490,6 +564,13 @@ var (
 | **文件:方法** | `internal/ares_config/config.go:88` `Kernel.PollInterval`；`cmd/ares/serve_routine.go:165` 绑定地址 |
 | **修复方案** | kernel_loop/serve_routine 读 cfg 注入；或从 config 删除并从 yaml 示例移除 |
 | **验收标准** | 改 yaml 的 `kernel.poll_interval` → 调度器 ticker 间隔变化 |
+
+> **2026-09-01 复核更正**：本项标题里"Server.Host 定为 display-only（改绑定地址属行为变更另行立项）"**已过期**。
+> release 计划的 T1 就是那个"另行立项"，且已落地：`Server.Host` 现在真实决定监听地址
+> （`cmd/ares/serve_routine.go:184` → `serverBindAddr`，`:439-444`），
+> 并在 `:196-199` 对 `0.0.0.0` + 未开鉴权发出暴露告警，`:307,346` 支持 `--host` flag 覆盖。
+> `Kernel.PollInterval` 亦已注入（`cmd/ares/peer_mode.go:165`）。
+> `Kernel.Policy` 则仍只用于展示/告警（`status.go:280,295,493`），无执行分支依赖它 —— 这一条保持 display-only 定性。
 
 ### W8 技能反馈闭环 ✅已完成（Recorder 订阅 sub_task.result + CatalogTools 注册进 internalReg + ExperienceConfidenceSource→fabric.WithConfidenceSource）
 
@@ -500,7 +581,7 @@ var (
 | **修复方案** | ① serve 中启动 `SkillOutcomeRecorder`（订阅 `EventSubTaskResult`）；② 注册 `CatalogTools` 5 个技能工具到 `internalReg`；③ 将 `ExperienceConfidenceSource` 注入 taskfabric 调度器的 `ConfidenceSource` |
 | **验收标准** | 技能工具出现于工具列表；技能结果写回 experience |
 
-### W9 workflow 计划层（CompilePlan + create_plan）
+### W9 workflow 计划层（CompilePlan + create_plan）⚠️**2026-09-01 复核：4 步完成 2 步**
 
 | 项 | 内容 |
 |----|------|
@@ -508,6 +589,21 @@ var (
 | **文件:方法** | 见附录 C 完整方案 |
 | **修复方案** | 新增 `internal/taskfabric/workflow_plan.go` `CompilePlan`；新增 `cmd/ares/workflow_plan.go` `projectWorkflow`；修改 `internal/agentsyscall/syscall.go` 注册 `create_plan` 工具 |
 | **验收标准** | 端到端：create_plan → 全部 COMPLETED；`make check` 绿 |
+
+> **2026-09-01 复核（对照附录 C 的 4 个 Step）**
+>
+> | Step | 状态 | 证据 |
+> |---|---|---|
+> | **Step 1** `taskfabric/workflow_plan.go` `CompilePlan` | ✅ 存在 | `PlanStep` `:15-33`、`(*Fabric) CompilePlan` `:53`、环检测 `:134` |
+> | **Step 2** `cmd/ares/workflow_plan.go` `projectWorkflow` | ❌ **不存在** | 文件不存在；`projectWorkflow` 全仓零命中（含注释）。最接近的是 `cmd/ares/serve_live_dag.go:30` `buildLiveAgentDAG`，但方向相反（config → `engine.MutableDAG`），不是 `engine.Workflow` → `[]taskfabric.PlanStep` |
+> | **Step 3** `create_plan` 注册 | ✅ 存在，且超出原方案 | 常量 `agentsyscall/plan.go:16`、`(*Kernel) CreatePlan` `plan.go:108`（内部调 `fabric.CompilePlan` `:136`）、工具绑定 `syscall.go:382-395`、schema `syscall.go:455` ← `CreatePlanToolSchema()` `plan.go:297`；生产接入 `cmd/ares/peer_mode.go:276`、`sdk/syscall.go:156`。额外还有 `PlanLoop` round-loop 层（`taskfabric/plan_loop.go`、`WithLoopLifetime`/`WithMaxPlanLoops`） |
+> | **Step 4** introspect plan 视图 | ❌ **不存在** | `internal/introspect/` 内无 `Plan`/`CompilePlan`/`PlanLoop`/Origin 聚合的任何引用 |
+>
+> 结论：核心能力（编译 + syscall 工具）已闭环并在生产接入，缺的是
+> **workflow→plan 的投影入口**与**面板可观测**。前者是"engine.Workflow 这条老编排模型的最后一段"，
+> 而 `agent-os-loop-wiring-plan-zh.md:68-70` 已判定 `internal/workflow/engine` 在 0.3.x 的真实角色是
+> 进化基因组的 mutable-DAG 载体、永远不会有执行器 —— 因此 Step 2 是否还有必要，
+> 应先做方向裁决而不是照单实现。
 
 ### W10 DLQ 可靠性闭环 ⛔已作废（X3=删除）
 
@@ -571,7 +667,7 @@ var (
 | **修复方案** | 删除上述 4 个目录（保留 linker + store/sqlite） |
 | **验收标准** | `go build ./...` 绿；`make check` 绿；`sdk/knowledge.go` 编译通过 |
 
-### D7 删除 storage 两个孤儿包 ✅可执行（均 0 引用，验证通过）
+### D7 删除 storage 两个孤儿包 ✅**2026-09-01 复核：已完成（两包已不存在）**
 
 | 项 | 内容 |
 |----|------|
@@ -579,6 +675,10 @@ var (
 | **验证** | ✅ 两包均全库零引用（含测试），删除安全 |
 | **修复方案** | 删除上述 2 个目录 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
+
+> **2026-09-01 复核**：两个目录均已不存在，全仓无 importer。
+> 唯一残留痕迹是一条注释：`internal/ares_integration/vector_store_test.go:22`
+> "It replaces the deleted internal/storage/memory package."。本项由"可执行"改判为**已完成**。
 
 ### D8 llmservice ⛔保留（api/service/llm 依赖，不可删）
 
@@ -635,7 +735,7 @@ var (
 | **修复方案** | 删除上述符号；`Config.Extra` 从 config schema 移除 |
 | **验收标准** | `go build ./...` 绿 |
 
-### D14 删除 ares_evolution 仅测试组件 ✅已核实（NewPGStrategyStore 生产在用，撤回）
+### D14 删除 ares_evolution 仅测试组件 ⛔**2026-09-01 复核：引用统计有误，禁止按原文删除**
 
 | 项 | 内容 |
 |----|------|
@@ -644,7 +744,22 @@ var (
 | **修复方案** | 仅删除上表"真 0 引用"符号；删除前按 §1.5.3 跑 `findReferences` 复核 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿；`bootstrap_steps.go:415` 的 PGStrategyStore 仍编译 |
 
-### D15 删除 ares_memory 旧蒸馏管线（X1 已裁决=删除）
+> **2026-09-01 全仓复核更正（原文上表的"真 0 引用"结论不成立，10 个目标里 8 个判断错误）**
+>
+> | 符号 | 实测 | 处置 |
+> |---|---|---|
+> | `NewPopulationGenealogyRecorder` | `genome_wiring_system.go:494` **无条件调用**，在 `NewWiredEvolutionSystem` 内部 → 每次 bootstrap 都活 | **禁删** |
+> | `NewNondominatedSortingSelection` | `genome/population.go:552` 可达（`selection_strategy: nsga2`/`nondominated`） | **禁删**（配置可达） |
+> | `NewTruncationSelection` | `genome/population.go:548` 可达（`selection_strategy: truncation`） | **禁删**（配置可达） |
+> | `HintsForTask` | `mutation/guided_mutator.go:247` 调用；生产 provider 在 `provide_distillation.go:75` 构造 | **禁删** |
+> | `RecordStrategyOutcome` | `dream_cycle.go:629,972,996` 调用；生产 `RecordFunc` 在 `provide_distillation.go:92` | **禁删** |
+> | `NewMetaController` / `NewHypothesisGenerator` / `NewLLMReflector` | `service/service.go:258-260` 调用，但 `NewService`/`CreateWiredSystem` 本身**无非测试调用者** | 一跳之隔的 test-only；删除前须先决定 `ares_evolution/service` 的去留，不可单独删 |
+> | `NewKnowledgeDistiller` | 仅 `intelligence_test.go:634,659` | 真 0 生产引用，可删 |
+> | `NewEvidenceAggregatorProvider` | **全仓零引用**（含测试） | 真 0 引用，可删 |
+>
+> 结论：原文的"真 0 引用"清单只有最后 2 项成立。按原文执行会删掉 5 个生产可达符号，破坏编译。
+
+### D15 删除 ares_memory 旧蒸馏管线（X1 已裁决=删除）⛔**2026-09-01 复核：4 个目标是生产代码，禁止按原文删除**
 
 | 项 | 内容 |
 |----|------|
@@ -654,13 +769,40 @@ var (
 | **前置门** | 删除前对每个符号跑 `findReferences` 复核 `cmd/ares/`+`sdk/`+`examples/` 无引用（§1.5.3） |
 | **验收标准** | `go build ./... && go test ./...` 全绿；`make check` 绿；`ares serve` 蒸馏功能不受影响（事件链仍活） |
 
-### D16 删除 aresrecovery 仅测试组件
+> **2026-09-01 全仓复核更正（原文 L1141"实测生产 0，仅测试"对其中 4 个符号不成立）**
+>
+> | 符号 | 实测 | 处置 |
+> |---|---|---|
+> | `NewDistillationRepo` | **3 个生产调用者**：`ares_bootstrap/knowledge_akg.go:109`、`sdk/memory_wiring.go:122`、`sdk/memory_wiring.go:334` | **禁删** |
+> | `NewKnowledgeRetrieverAdapter` | **2 个生产调用者**：`ares_bootstrap/retriever_wiring.go:148`、`sdk/memory_wiring.go:433` | **禁删** |
+> | `DistillationRepo.SearchByVector` | 作为 `distillation.ExperienceRepository` 实现注入（`sdk/memory_wiring.go:122`、`knowledge_akg.go:110`），经接口在 `distillation/resolver.go:98`、`manager_impl.go:742` 调用 | **禁删**（接口实现） |
+> | `DistillationRepo.GetByMemoryType` | 经接口在 `distillation/distiller.go:790` 调用（去重路径） | **禁删**（接口实现） |
+> | `NewPipeline` / `NewPushService` / `NewReportGenerator` | 仅 `pipeline_test.go` / `push/service_test.go` / `report/generator_test.go` | 真 test-only，可删 |
+> | 带参 `NewProductionMemoryManager` | 仅 `ares_integration/failover_test.go:74`、`memory_test.go:97` | 真 test-only，可删（`NewMinimalMemoryManager` 有生产调用，保留） |
+>
+> 结论：D15 拆成两半——Pipeline/Push/Report 三件套 + 带参构造器可按原计划删；4 个 adapter 符号是活的生产代码，按原文删会破坏编译。
+
+### D16 删除 aresrecovery 仅测试组件 ⛔**2026-09-01 复核：3 个目标生产可达，禁止按原文删除**
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `internal/aresrecovery/` `WithCognitionFactory`；`GlobalTracer.TraceTask`/`TraceAgent`/`ByKind`；`Sandbox.Simulate`；`Recovery.RecoverTaskCheckpoint`/`RecoverFromAgentDeath`；`ChangeAttributor.AttributeTrajectory`；`EvolutionAdapter.NewEvolutionAdapter` |
 | **修复方案** | 删除上述符号 |
 | **验收标准** | `go build ./...` 绿；`make check` 绿 |
+
+> **2026-09-01 全仓复核更正（8 个目标里 3 个生产可达）**
+>
+> | 符号 | 实测 | 处置 |
+> |---|---|---|
+> | `Recovery.RecoverFromAgentDeath` | `chaos.go:90`（`Chaos.VerifyRecovery`）← `cmd/ares/serve_chaos.go:486`；另有 `sandbox.go:140,193` | **禁删** |
+> | `Recovery.RecoverTaskCheckpoint` | `recovery.go:309` 内部调用，位于上面这条生产可达链内 | **禁删** |
+> | `NewEvolutionAdapter` | `evolution_population.go:58`（`NewPopulationAdapter` 内）← `cmd/ares/serve_agents.go:136` | **禁删** |
+> | `WithCognitionFactory` | 全仓零引用（连测试都没有） | 可删 |
+> | `GlobalTracer.TraceTask`/`TraceAgent`/`ByKind` | 仅测试。注意 `GlobalTracer` **本体是生产在用的**（`serve_agents.go:248` → `evolution_ipc.go:78,124` 调 `TraceMessage`），只有这三个读面未用 | 可删这三个方法，勿删类型 |
+> | `Sandbox.Simulate` | 仅测试。但兄弟方法 `Sandbox.Replay`（`sandbox.go:108`）生产在用（`serve_chaos.go:102`、`introspect/dashboard.go:377`） | 可删 `Simulate`，勿删类型 |
+> | `ChangeAttributor.AttributeTrajectory` | 仅 `evolution_attribution_test.go:104,114` | 可删 |
+>
+> 结论：按原文执行会删掉 3 个生产可达符号（chaos 恢复验证链 + 进化种群适配器），破坏编译。
 
 ### D17 删除 workflow/graph 死 setter ✅已完成
 
@@ -1020,7 +1162,7 @@ var (
 | **修复方案** | 改为 `s := fmt.Sprintf(format, args...); return Wrap(err, s)` 两步成形，消除 append 副作用 |
 | **验收标准** | 新增单测：同 `args` 切片多次调用 `Wrapf` 后调用方切片未被污染；`go vet` 绿 |
 
-### B37 修复内核路径错误链断裂 + 未结构化
+### B37 修复内核路径错误链断裂 + 未结构化 ✅**2026-09-01 复核：已完成**
 
 | 项 | 内容 |
 |----|------|
@@ -1029,7 +1171,13 @@ var (
 | **修复方案** | 按 §2.5.3 E1/E2 改造：改 `KernelError` + 保留哨兵（具体见 2.5.3 表，精确到 方法→错误类型） |
 | **验收标准** | `errors.Is(err, taskfabric.ErrNoCapableCandidate)` 仍可匹配；调度失败日志含 `op=schedule task=<id> code=no_capable_candidate`；`-race` 绿 |
 
-### B38 全库错误纪律（R1-R4 批量修复）
+> **2026-09-01 复核：三项全部落地。**
+> `kernelscheduler/scheduler.go:608`（`Kernel("schedule","no_capable_candidate",taskID,"",taskfabric.ErrNoCapableCandidate)`，哨兵在链上）、
+> `:843`（`nil_step_outcome`）、`:846`（`step_error`，链已接回）；
+> `taskfabric/fabric.go:35,37,39` 新增哨兵 `ErrTaskIDRequired`/`ErrAgentIDRequired`/`ErrInvalidTTL`，
+> 返回点 `:142,195,347`。行号与原文有偏移（原文是 2026-08-28 快照）。
+
+### B38 全库错误纪律（R1-R4 批量修复）⚠️**2026-09-01 复核：R1/R2 达成，R3 未达成（61 处）**
 
 | 项 | 内容 |
 |----|------|
@@ -1038,11 +1186,36 @@ var (
 | **修复方案** | 按 §2.5.4 纪律表四项逐一执行；R1/B37 已修；R2 手动改；R3 用 lint 规则批量 |
 | **验收标准** | 全库 `fmt.Errorf("%s", err)` = 0 处；`err.Error() !=` 字符串比较 = 0 处；`golangci-lint perfsprint` 无警告 |
 
+> **2026-09-01 逐项复核**
+>
+> | 纪律 | 实测 |
+> |---|---|
+> | R1 | 非测试代码 `fmt.Errorf("%s", err)` = **0** ✅ |
+> | R2 前半（EOF） | `cmd/ares/actions.go:748` 已改 `errors.Is(err, io.EOF)`；非测试代码 `err.Error() !=` = **0**、`err.Error() ==` = **0** ✅ |
+> | R2 后半（sqlite） | `internal/knowledge/store/sqlite/store.go:124` **仍是** `strings.Contains(err.Error(), "duplicate column")`，但已重构为命名谓词 `isDuplicateColumnError`（调用点 `:114`）+ 注释说明 driver 无哨兵（`:110-113`）。**字面未达成、精神已达成**；且本项验收标准只统计 `err.Error() !=`，不统计 `strings.Contains(err.Error(`，所以门禁发现不了这处残留 |
+> | R3 | 非测试文件仍有 **61 处**静态 `fmt.Errorf("常量")`（`evaluation/evaluation.go:37`、`api/evolution/genome/genome.go:68,85`、`api/mcp/stdio.go:89,103` 等）。**验收标准未达成** |
+> | R4 | 见 B37 ✅；但 **E3（agentipc）未做** —— `internal/agentipc/` 未 import `internal/errors`，`primitives.go:156-169` 仍返回裸 `ErrTimeout` |
+>
+> 综上 B38 应记为**部分完成**：R1/R2(EOF)/R4(内核两包) 达成，R3 与 E3 未达成。
+
 ---
 
 ## 7. Phase 5：配置清理与死配置（第 4 周）
 
-### C1 Memory 死配置
+> **2026-09-01 全仓复核（逐字段 ripgrep，统计"`ares_config` 包外是否有消费者"）**
+>
+> C1 除 `EnableDistillation` 外全部仍死；C2 完全未动；C3 部分接线（见 W3 更正）；
+> C4 的 26 个字段只有 4 个被消费。
+>
+> **同时必须记录 G2 门禁的一个假绿**：`internal/ares_config/contract_test.go` 的扫描是
+> **基于行的子串匹配**而非 AST，`containsAccess`（`:200`）不校验 receiver。后果是
+> `Knowledge.TopK`、`Memory.MaxHistory`、`Embedding.Dimension`、5 个 `Sub.*` 在
+> `ares_config` 侧确无消费者，却因 SDK / examples 里存在**同名字段**而通过门禁，
+> 所以它们不在 16 条白名单里 —— 门禁"绿"不等于这些字段活着。
+> 修复方向（本期只登记，转 0.4.x）：改 AST 遍历 + 类型解析，或把扫描限定到
+> `cfg`/`c`/`acfg` 等已知 config receiver 的选择器表达式。
+
+### C1 Memory 死配置 ⚠️**2026-09-01 复核：6 个字段中 5 个仍死，1 个经访问器消费**
 
 | 项 | 内容 |
 |----|------|
@@ -1050,7 +1223,22 @@ var (
 | **修复方案** | 接入 bootstrap wireMemory（映射到 ares_memory 配置）或移除 |
 | **验收标准** | 字段被消费或从 schema 删除 |
 
-### C2 Tools 死配置
+> **2026-09-01 逐字段实测**
+>
+> | 字段 | 结论 |
+> |---|---|
+> | `Memory.SessionMemory`（含所有叶子） | **未读**，包外零命中 |
+> | `Memory.UserProfile` | **未读**，零命中 |
+> | `Memory.TaskDistillation` | **未读**，零命中 |
+> | `Memory.MaxHistory` | 在 `ares_config.MemoryConfig` 上**未读**。命中项（`sdk/config.go:236,237,381`、`examples/11-knowledge-import/main.go:386`）都在 `sdk.MemoryFileConfig` / 示例本地结构体上，是**不同类型**。`sdk/bootstrap_runtime.go:38-43` 构造 `ares_config.MemoryConfig` 时只设 `Enabled/EnableRAG/RAGTopK/RAGMinScore` |
+> | `Memory.EnableDistillation` | **间接消费**：经三态访问器 `MemoryConfig.DistillationEnabled()`（`config.go:490-492`）→ `ares_bootstrap/bootstrap_steps.go:43`。字段本身包外未解引用。这一条对应 `agent-os-loop-wiring-plan-zh.md:179-187` 记录的 C1/P0-3 三态门控，**已完成** |
+> | `Memory.DistillationThreshold` | 在 `ares_config.MemoryConfig` 上**未读**；命中项同样是 `sdk.MemoryFileConfig`（`sdk/config.go:244-246,387`） |
+>
+> 对照：同结构体里 `IsEnabled()`/`EnableRAG`/`RAGTopK`/`RAGMinScore`/`Archive.*` 全部有消费
+> （`bootstrap.go:602-613`、`retriever_wiring.go:81`、`cmd/ares/serve.go:158`、`cmd/ares/recall.go:109-161`），
+> 说明"Memory 配置整体是死的"并不成立 —— 死的是这 5 个字段。
+
+### C2 Tools 死配置 ❌**2026-09-01 复核：完全未动**
 
 | 项 | 内容 |
 |----|------|
@@ -1058,7 +1246,11 @@ var (
 | **修复方案** | 接入工具选择或从 config schema 移除 |
 | **验收标准** | 字段被消费或删除 |
 
-### C3 Evolution 14 个 GA 参数
+> **2026-09-01 实测**：全仓 `Tools.Defaults` / `Tools.Agents` 的**唯一出现位置**是
+> G2 白名单的两条：`internal/ares_config/contract_test.go:38-39`。
+> 无任何生产读取方；`ToolsConfig`/`AgentToolConfig`（`config.go:666-677`）是 parse-only。
+
+### C3 Evolution 14 个 GA 参数 ⚠️**2026-09-01 复核：8 个已接线，6 个结构性死配置（详见 W3 更正）**
 
 | 项 | 内容 |
 |----|------|
@@ -1066,13 +1258,46 @@ var (
 | **修复方案** | 见 W3 |
 | **验收标准** | 见 W3 |
 
-### C4 其他死配置字段
+> **2026-09-01 补充**：`Generations` 与 `TargetFitness` 原属"结构性死配置"，
+> 已在 B2（G1 guardrail 接线）中被消费：
+> `Generations` → `EvolutionGuardrails.MaxStagnantGenerations`、
+> `TargetFitness`（0-100）→ `BaselineScore`（除 100 归一到 [0,1]），
+> 见 `internal/ares_bootstrap/bootstrap_steps.go` `buildEvolutionGuardrails`。
+> 仍死的是 `TournamentSize` / `CrossoverType` / `SteadyState` / `SteadyStateReplaceRate`
+> —— 前两个在 GA 引擎内部（`genome/population.go:533-555`）可用，但 `GenomeConfig`
+> （`genome_wiring_system.go:91-105`）没有对应槽位，`applyGATuning` 也从不设置 `TournamentSize`。
+
+### C4 其他死配置字段 ⚠️**2026-09-01 复核：26 个字段仅 4 个被消费**
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | `Server.Host`、`LLM.Extra`、`Sub.Category/Triggers/Timeout/Model/Provider`、`Prompts.ProfileExtraction/StyleAnalysis`、`Output.Format/ItemTemplate/SummaryTemplate`、`Validation.Enabled/MaxRetries/CustomSchema`（含下游 Schema/Field/SchemaConfig/Property 整棵类型树）、`Workflow.DefinitionPath/AutoReload/ReloadInterval`、`Storage.PGVector.Enabled/Dimension/TableName`、`Knowledge.TopK`、`Embedding.RedisAddr/Dimension`、`Kernel.PollInterval`、`Kernel.Policy` |
 | **修复方案** | 分三类：接线 / 删除 / 文档化为"仅展示" |
 | **验收标准** | 无无效配置字段 |
+
+> **2026-09-01 逐字段实测**
+>
+> **已消费（4 个）**
+>
+> | 字段 | 证据 |
+> |---|---|
+> | `Server.Host` | 真实驱动 bind：`cmd/ares/serve_routine.go:184` → `serverBindAddr`（`:439-444`）、`:196-199` wildcard+鉴权告警、`:307,346` flag 覆盖；`status.go:302,332`。**原文列为死配置已过期**（见 W7 更正） |
+> | `LLM.Extra` | 单一赋值点 `ares_bootstrap/provide_llm.go:29` → `llm.Config.Extra`（`internal/llm/client.go:91`）。注意：`internal/llm` 内部**未找到任何读取 `Config.Extra` 的代码**，即"传进去了但没人用" |
+> | `Kernel.PollInterval` | `cmd/ares/peer_mode.go:165` → `sched.PollInterval` |
+> | `Kernel.Policy` | `cmd/ares/status.go:280`（未知 policy 告警）、`:295`（报告投影）、`:493`（标签）。**仅展示/告警，无执行分支依赖** —— `kernel_bridge.go:18-19` 注释说明该 flag 起点即 `PolicyTaskFabric`，legacy 轨已无 |
+>
+> **仍死（22 个）**：`Sub.Category`/`Sub.Triggers`/`Sub.Timeout`/`Sub.Model`/`Sub.Provider`
+> （零读取；`peer_mode.go:386` 只**写**了个合成的 `SubAgentConfig{Timeout: 60}`，model/provider 来自 `cfg.LLM.*`，见 `peer_agents.go:140,143`）、
+> `Prompts.ProfileExtraction`/`Prompts.StyleAnalysis`（零命中；`internal/llm/output/template.go:116,136,159,166` 的同名常量无关）、
+> `Output.Format`/`ItemTemplate`/`SummaryTemplate`（全仓无 `cfg.Output` 引用）、
+> `Validation.Enabled`（仅 `SchemaType`/`RetryOnFail`/`StrictMode` 在用，见 `peer_agents.go:128,130,131`）、
+> `Validation.MaxRetries`（仅 config 包内 `config_defaults.go:245`/`config_validate.go:120`；`peer_agents.go:129` 传的是 sub-agent 的同名字段）、
+> `Validation.CustomSchema` 及整棵类型树、
+> `Workflow.DefinitionPath`/`AutoReload`/`ReloadInterval`、
+> `Storage.PGVector.Enabled`/`Dimension`/`TableName`（仅 `config_defaults.go:180-184`）、
+> `Knowledge.TopK`（`ares_config` 侧死；命中项是 `sdk.KnowledgeFileConfig`；bootstrap 只读 `RetrievalEnabled`（`knowledge_akg.go:166`）与 `MinScore`（`retriever_wiring.go:121`））、
+> `Embedding.RedisAddr`（零命中）、
+> `Embedding.Dimension`（`ares_config` 侧死；bootstrap 只读 `{Enabled,BaseURL,Model,Timeout}`）。
 
 ### C5 ares.yaml 同步
 
@@ -1086,7 +1311,24 @@ var (
 
 ## 8. Phase 6：防回归 CI 门禁（第 5 周）
 
-### G1 可达性门禁
+> **2026-09-01 全仓复核：G1/G2/G3 三道门禁均已落地，且 CI 真实调用；G4 仍是环境项。**
+>
+> | 门禁 | 实现 | CI 接入 |
+> |---|---|---|
+> | G1 | `scripts/g1_reachability_gate.sh`（44 行；`go list -deps ./cmd/ares/... ./sdk/... ./services/... ./api/...` 对 `go list ./internal/...` 求差集，`:19-20`），白名单 5 条（`:9-15`） | ✅ |
+> | G2 | `TestG2ConfigContract`（`internal/ares_config/contract_test.go:61`），16 条白名单（`:37-54`），子树继承（`:179-191`） | ✅ |
+> | G3 | `TestEventContract_SubscribedMustHaveEmitter`（`internal/ares_events/contract_test.go:34`），22 条 `emittable` 表（`:36-59`） | ✅ |
+> | G4 | `make gate` 第 4 步跑 `-race -tags closure`（§8 六断言）；**12h soak 仍未执行**，属 release 计划 T10 环境项 | 部分 |
+>
+> `make gate`（`Makefile:175-179`）四步齐全。CI 接入点：
+> `.github/workflows/ci.yml:71-72`（test job，"Architecture and acceptance gates" → `make gate`）、
+> `.github/workflows/release.yml:30-31`（tag 触发）。
+> `agentos_ci.yml` / `cd.yml` / `integration-test.yml` **不调用**。
+>
+> **一个必须记住的口径差异**：`make check`（`Makefile:170`）= `lint test`，**不依赖 gate**。
+> 所以"本地 `make check` 绿"不代表门禁跑过 —— 只有 CI 与 release 强制。
+
+### G1 可达性门禁 ✅**2026-09-01 复核：已落地**
 
 | 项 | 内容 |
 |----|------|
@@ -1094,7 +1336,13 @@ var (
 | **修复方案** | CI 增加 `go list -deps ./cmd/ares/... ./sdk/...` 与 `go list ./internal/...` 差集检查——新增"从生产入口不可达"的包必须出现在白名单 |
 | **验收标准** | 白名单外零不可达包 |
 
-### G2 config 契约测试
+> 实测 `./scripts/g1_reachability_gate.sh` → `G1 reachability gate: PASSED`。
+> 白名单原文（`scripts/g1_reachability_gate.sh:9-15`）：
+> `internal/ares_integration`（纯测试包）、`internal/knowledge/provider/postgres`（仅 examples，D6 已核）、
+> `internal/knowledge/retriever`（0 import，D6 已核）、`internal/knowledge/service`（仅 examples，D6 已核）、
+> `internal/knowledge/workflow`（仅 examples，D6 已核）。
+
+### G2 config 契约测试 ✅**已落地，但存在假绿（见 §7 复核说明）**
 
 | 项 | 内容 |
 |----|------|
@@ -1102,7 +1350,15 @@ var (
 | **修复方案** | 反射遍历 cfg 字段，grep 不到消费点的字段在 CI 报错 |
 | **验收标准** | 死配置字段数为 0 |
 
-### G3 事件契约测试
+> **实现与原方案的差异**：不是"反射遍历"，而是**解析 `config.go` 的 `type X struct` + `yaml:` tag**
+> 构造访问路径，再对全仓非测试 `.go` 文件做**逐行子串匹配**（`contract_test.go:106-143`，排除含 `ares_config/` 的路径）。
+> 两个结构性弱点：① 非 AST，同名字段可蒙混过关（`containsAccess` `:200` 不校验 receiver）；
+> ② 通过路径有两条 —— 自身路径命中，或任一祖先子结构被整体传给已识别的 config receiver
+> （`containsWholesale` `:211`，receiver 限定 `cfg`/`c`/`acfg`/`config`/`conf`，`:227-229`）。
+> 实测后果见 §7 复核：7 个真死字段因 SDK/examples 同名字段而通过。
+> **验收标准"死配置字段数为 0"因此尚未真正达成**（当前是"16 条白名单 + 7 条漏网"）。
+
+### G3 事件契约测试 ✅**2026-09-01 复核：已落地**
 
 | 项 | 内容 |
 |----|------|
@@ -1110,13 +1366,26 @@ var (
 | **修复方案** | `ares_events` 常量表 vs 全库 emitter/subscriber 字面量的对齐测试 |
 | **验收标准** | 订阅的事件必须有 emitter |
 
-### G4 -race 长期运行
+> `TestEventContract_SubscribedMustHaveEmitter`（`internal/ares_events/contract_test.go:34`）。
+> 注意其 `emittable` 是**硬编码 22 条映射表**（`:36-59`）而非自动发现，新增事件类型需手工同步该表 —— 漏同步会表现为门禁误报而非漏报，方向安全。
+
+### G4 -race 长期运行 ⚠️**2026-09-01 复核：`-race` + closure 已进 CI；12h soak 仍未执行**
 
 | 项 | 内容 |
 |----|------|
 | **文件:方法** | CI 脚本（新增） |
 | **修复方案** | nightly 12h serve 内存曲线与 goroutine 数基线告警 |
 | **验收标准** | 内存平稳，无泄漏 |
+
+> `Makefile` 的 `nightly` 目标（`:182-184`）= `test-race` + 一行说明"12h soak 是独立调度任务"。
+> `make gate` 第 4 步已跑 `-race -tags closure ./internal/ares_evolution/... ./internal/ares_bootstrap/...`
+> （6 个 `//go:build closure` 文件：ares_bootstrap 5 + ares_evolution 1）。
+> **12h soak 基线未归档**，且 release 计划要求它必须在**含 GA 控制平面的构建**上重跑（T11 验收项 3）。
+>
+> **2026-09-01 新增的一条硬门槛**：`go test -race -count=1 -coverprofile ./...`。
+> 它此前不在任何验收基线里，而 B1 的调度器竞态**只在这条命令下暴露**
+> （单跑 `-race` 或单跑 `cover` 都是绿的，覆盖率插桩放大了竞态窗口）。
+> 详见 `ares-0.3.1-ga-blockers-plan-zh.md` §B1。
 
 ---
 
@@ -1264,3 +1533,149 @@ GAP-3/4 按 Agent OS 形态接线。
 | **M4**（第 5 周） | Phase 4 + 6 | B1-B38 bug 修复（含结构化错误 B36-B38）+ G1-G4 CI 门禁 | 全部 bug 修复单测覆盖；`errors.Is` 全库可匹配；`fmt.Errorf("%s", err)` 与 `err.Error() !=` 字符串比较均为 0；CI 门禁生效；nightly 12h 无回归 |
 
 **总预估工作量**：Phase 1（1 周）+ Phase 2（2 周）+ Phase 3（1.5 周）+ Phase 4（并行）+ Phase 5（0.5 周）+ Phase 6（0.5 周）= **约 4-5 周 / 15-20 人日**。
+
+---
+
+## 14. 附录 F：2026-09-01 全仓复核总表
+
+> 本次复核对全部"未标完成"项做了逐符号 ripgrep + 读码验证，结论与原文存在**双向偏差**。
+> **文档偏差比代码缺陷更危险**：D14/D15/D16 若按原文执行删除会破坏编译。
+> 复核采用**追加不改写**的方式，保留原判断的演进痕迹（§0.3 留痕原则的文档版）。
+
+### 14.1 应改判为"已完成"
+
+| 项 | 证据 |
+|---|---|
+| **W5** PermAdmin | `rbac.go:36-38,49` + `actions.go:517` handler 层校验，三条 chaos 路由全覆盖，`actions_chaos_test.go:79-93` 有测试。实现在 handler 而非 middleware（见 W5 复核块） |
+| **D7** storage 孤儿包 | 两目录均已不存在，无 importer |
+| **E1/E2/B37** 内核结构化错误 | `internal/errors/kernel_error.go:18-24,50,54`；`internal/kernelscheduler/errors.go:10,12`；调用点 `scheduler.go:608,843,846`、`fabric.go:142,195,347` |
+| **R1/R2(EOF)** | 生产代码 `fmt.Errorf("%s", err)`=0、`err.Error() !=`=0、`err.Error() ==`=0；`actions.go:748` 已用 `errors.Is(err, io.EOF)` |
+| **G1/G2/G3** CI 门禁 | 三者均存在且 `ci.yml:71-72`、`release.yml:30-31` 真实调用 `make gate` |
+| **C1** 部分 | `memory.enable_distillation` 三态门控已落地（`config.go:490-492` 访问器 + `bootstrap_steps.go:43`） |
+| **W7** PollInterval | `cmd/ares/peer_mode.go:165` 注入；`Server.Host` 亦已真实驱动 bind（原"display-only"定性过期） |
+
+### 14.2 引用统计有误，**禁止按原文删除**
+
+| 项 | 错判数 | 生产可达的符号 |
+|---|---|---|
+| **D14** | 10 个里 8 个 | `NewPopulationGenealogyRecorder`（`genome_wiring_system.go:494` 无条件调用）、`NewNondominatedSortingSelection`/`NewTruncationSelection`（`population.go:548,552` 配置可达）、`HintsForTask`（`guided_mutator.go:247`）、`RecordStrategyOutcome`（`dream_cycle.go:629,972,996`）、`NewMetaController`/`NewHypothesisGenerator`/`NewLLMReflector`（经 `service/service.go:258-260`，一跳之隔） |
+| **D15** | 8 个里 4 个 | `NewDistillationRepo`（3 处生产）、`NewKnowledgeRetrieverAdapter`（2 处生产）、`SearchByVector`/`GetByMemoryType`（接口实现，`resolver.go:98`/`manager_impl.go:742`/`distiller.go:790` 调用） |
+| **D16** | 8 个里 3 个 | `RecoverFromAgentDeath`（`chaos.go:90` ← `serve_chaos.go:486`）、`RecoverTaskCheckpoint`（`recovery.go:309`）、`NewEvolutionAdapter`（`evolution_population.go:58` ← `serve_agents.go:136`） |
+
+### 14.3 确认仍未完成
+
+| 项 | 实测缺口 |
+|---|---|
+| **E3** agentipc 结构化 | `internal/agentipc/` 未 import `internal/errors`；`primitives.go:156-169` 裸 `ErrTimeout` |
+| **R3** 静态 fmt.Errorf | 非测试文件 **61 处**（§2.5.4 验收标准"为 0"未达成） |
+| **W9** Step 2/4 | `cmd/ares/workflow_plan.go` + `projectWorkflow` 不存在（全仓零命中）；`internal/introspect/` 无 plan 视图。Step 1/3 已完成 |
+| **C2** | `Tools.Defaults`/`Tools.Agents` 全仓仅出现在 G2 白名单里 |
+| **C3** 剩余 | `TournamentSize`/`CrossoverType`/`SteadyState`/`SteadyStateReplaceRate` 无 `GenomeConfig` 槽位 |
+| **C4** | 26 个字段仅 4 个被消费（且 `Kernel.Policy` 仅展示、`LLM.Extra` 传进 `llm.Config` 后无人读） |
+| **C5** | 未复核（`ares.yaml` 字段与消费代码的逐条对齐） |
+| **G4** 12h soak | 未执行，属 release 计划 T10 环境项 |
+| **G2** 门禁质量 | 子串匹配非 AST，7 个真死字段靠同名字段蒙混过关（转 0.4.x） |
+
+### 14.4 本次复核新发现的代码问题（已修，详见 GA 阻塞项计划）
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| **B1** | 调度器 stale-winner 竞态：winner 死亡且无 capable replacement 时保持 lease 等 TTL，假时钟下永久停滞、生产下停顿一个 lease TTL。`-race -coverprofile` 下 20 轮失败 1 轮 | `kernelscheduler` 新增 `WithRecoveryHint` 回调（不反向依赖 runtime），三分支处置：有替补→release；无替补但有 recovery loop→release + 提名；两者皆无→保留 lease（因为 Release 会清 lease，令任务脱离 `CheckExpiredLeases` 视野）。recovery loop 新增 `RecoveryKick` 通道消费提名 |
+| **B2** | `gaCfg.Guardrails` 在整个 `ares_bootstrap` **从未被赋值** → `runPreGuardrails`/`checkGuardrails` 均 nil 短路恒通过，G1 在运行时完全空转（比设计文档 §5 已知缺口 1 的描述更严重）。且 `checkGuardrails` 传死值 `unevaluatedCount=0`，而"未评估过半"是 `PreEvolveCheck` 唯一的 ShouldStop 条件 —— 只接线不修这个，门依然不会响 | 新增 `buildEvolutionGuardrails`，两条驱动路径各持独立实例（guardrails 有可变 stagnation/baseline 状态，共享会互相污染）；新增 `populationInspector` 接口让调度器看到真实种群形状 |
+| **B4-1** | `EvolutionScheduler.Register()` 在自己的 `context.Background()` 上订阅并 park goroutine，`Shutdown()` **从未被生产调用** → 该 goroutine + EventStore subscriber goroutine 泄漏至进程结束。两条注册路径都中招 | `bootstrap.go` / `bootstrap_steps.go` 各挂 `bgGroup.Go(<-ctx.Done() → Shutdown())` |
+| **B4-2** | `sdk/e2e_h2_test.go` 硬编码查 `sdk-task-1`，而 `sdkTaskSeq` 是包级计数器 → `-count≥2` 时 ID 变成 `sdk-task-2`，测试失败且 Submit goroutine 永久阻塞 | 显式指定 task ID |
+|  | 上述两条都是 goleak 发现的。手写 `runtime.NumGoroutine()` 比较只有计数没有栈，发现不了 —— 这是引入 goleak 的直接收益 |  |
+
+
+
+```mermaid
+flowchart TB
+    subgraph EXTR_ENTRY["入口 / CLI"]
+        ARES["cmd/ares<br/>(serve · kernel · arena · collab · flight · dashboard)"]
+        MOCKDB["cmd/mock-db"]
+        EMD["services/embedding"]
+    end
+
+    subgraph LAYER1["接入层"]
+        SDK["sdk"]
+        API["api"]
+        COMPAT["compat<br/>(llm/loader/protocol/tool/vector)"]
+        MCP["ares_mcp<br/>(client/server/transport)"]
+    end
+
+    subgraph LAYER2["引导 / DI 组合根"]
+        BOOT["ares_bootstrap<br/>(provide_* / bootstrap_steps / embedding_worker / strategy_adapter)"]
+        CFG["ares_config (含 G2 配置契约)"]
+    end
+
+    subgraph LAYER3["运行时 / 多 Agent"]
+        RT["ares_runtime<br/>(loop / router / checkpoint / recovery / interrupt)"]
+        AF["agentfabric + agentloop"]
+        AG["agents (base/sub/peer + governance)"]
+        IPC["agentipc (bus) + agentsyscall"]
+        SYS["system_runtime (Kernel) + kernelscheduler + kernelctx"]
+        TF["taskfabric<br/>(dag / scheduler / quantum)"]
+    end
+
+    subgraph LAYER4["进化控制平面 (GA)"]
+        EVO["ares_evolution<br/>(lifecycle gate / observer / aggregator / scheduler)"]
+        SHADOW["shadow_evaluator + shadow_sampler"]
+        SCORE["scoring (TieredScorer / budget / cache)"]
+        GENOME["genome wiring + mutation / promotion / refine / DreamCycle"]
+        EXP["ares_experience<br/>(distillation + conflict_resolver + ranking)"]
+    end
+
+    subgraph LAYER5["记忆 / 技能 / 知识"]
+        MEM["ares_memory (distillation / embedding pipeline)"]
+        SK["ares_skills (catalog / experience)"]
+        KNOW["knowledge (AKF: pipeline / compiler / linker / planner / provider)"]
+        RETR["knowledge retriever + hybrid (vector + BM25)"]
+    end
+
+    subgraph LAYER6["可观测 / 评估 / 安全"]
+        OBS["ares_observability + introspect (metrics / dashboard)"]
+        EVAL["ares_eval + evaluation + ares_arena"]
+        SEC["ares_security (jwt/rbac/audit) + ares_ratelimit"]
+        EVT["ares_events (event store / compactor)"]
+    end
+
+    subgraph LAYER7["持久化 / 外部依赖"]
+        PG["PostgreSQL + pgvector<br/>(repositories / services / migrate)"]
+        EMBQ["EmbeddingQueue (postgres)"]
+        LLM["LLM (openrouter/openai/ollama)"]
+        EXT["外部 MCP / 工具 / 装载器"]
+    end
+
+    ARES --> BOOT --> RT
+    BOOT --> CFG
+    RT --> AF --> AG
+    AG --> IPC
+    RT --> SYS --> TF
+    RT --> EVO
+    EVO --> SHADOW --> SCORE
+    EVO --> GENOME
+    EVO --> EXP
+    AG --> MEM
+    MEM --> KNOW
+    KNOW --> RETR
+    EXP --> KNOW
+
+    %% REVIEW #13 异步嵌入回填闭环
+    EXP -- "Distill 先落行(向量 NULL)" --> PG
+    EXP -- "Enqueue 回填任务" --> EMBQ
+    BOOT -- "embedding worker 消费" --> EMBQ
+    EMBQ -- "UpdateEmbedding 写回向量" --> PG
+    RETR -- "语义检索" --> PG
+
+    RETR --> EVAL
+    OBS --> RT
+    SEC --> RT
+    EVT --> RT
+
+    PG --> LLM
+    RT --> LLM
+    KNOW --> EXT
+    AG --> MCP
+    COMPAT --> LLM
+    EMD --> PG
+```

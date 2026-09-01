@@ -1,6 +1,7 @@
 package output
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,11 +31,20 @@ func TestValidator_toInt64(t *testing.T) {
 		{"uint within range", uint(42), 42, true},
 		{"uint64 within range", uint64(99), 99, true},
 		{"uint64 exceeds int64 max rejected", uint64(1) << 63, 0, false},
-		{"float within range truncates", 42.75, 42, true},
-		{"float at int64 max accepted", float64(^uint64(0) >> 1), int64(^uint64(0) >> 1), true},
+		// JSON Schema "integer" accepts 1.0 but not 1.5: the old assertion locked in
+		// silent truncation, which made dirty data look valid.
+		{"float with fraction rejected", 42.75, 0, false},
+		{"float without fraction accepted", 42.0, 42, true},
+		// int64's true max (2^63-1) is not representable as a float64, so this
+		// expression rounds up to exactly 2^63, which is out of range: int64(f)
+		// would be undefined behaviour per the Go spec.
+		{"float at int64 max overflow bound rejected", float64(^uint64(0) >> 1), 0, false},
 		{"float above int64 max rejected", 1e19, 0, false},
 		{"float at int64 min accepted", float64(int64(-1) << 63), int64(-1) << 63, true},
 		{"float below int64 min rejected", -1e19, 0, false},
+		{"NaN rejected", math.NaN(), 0, false},
+		{"positive infinity rejected", math.Inf(1), 0, false},
+		{"negative infinity rejected", math.Inf(-1), 0, false},
 		{"string rejected", "42", 0, false},
 		{"bool rejected", true, 0, false},
 		{"nil rejected", nil, 0, false},
@@ -127,22 +137,39 @@ func TestValidator_canonicalValue(t *testing.T) {
 
 func TestValidator_validateEnum(t *testing.T) {
 	v := NewValidator()
+	enum := []interface{}{"casual", "formal"}
 
 	t.Run("named string matches enum", func(t *testing.T) {
-		require.NoError(t, v.validateEnum("casual", []interface{}{"casual", "formal"}, "p"))
-		require.NoError(t, v.validateEnum(testNamedString("formal"), []interface{}{"casual", "formal"}, "p"))
-		require.Error(t, v.validateEnum("blacktie", []interface{}{"casual", "formal"}, "p"))
+		require.NoError(t, v.validateEnum("casual", &Schema{Enum: enum}, "p"))
+		require.NoError(t, v.validateEnum(testNamedString("formal"), &Schema{Enum: enum}, "p"))
+		require.Error(t, v.validateEnum("blacktie", &Schema{Enum: enum}, "p"))
 	})
 
-	t.Run("empty string treated as absent", func(t *testing.T) {
-		require.NoError(t, v.validateEnum("", []interface{}{"casual", "formal"}, "p"))
+	// Empty is only "absent" where the schema opts in. It used to be an
+	// unconditional bypass, which let a required enum field pass with "".
+	t.Run("empty string absent only when AllowEmpty", func(t *testing.T) {
+		require.NoError(t, v.validateEnum("", &Schema{Enum: enum, AllowEmpty: true}, "p"))
+		require.Error(t, v.validateEnum("", &Schema{Enum: enum}, "p"))
 	})
 
 	t.Run("numeric enum", func(t *testing.T) {
-		require.NoError(t, v.validateEnum(3, []interface{}{1, 2, 3}, "p"))
-		require.NoError(t, v.validateEnum(testNamedInt(2), []interface{}{1, 2, 3}, "p"))
-		require.Error(t, v.validateEnum(9, []interface{}{1, 2, 3}, "p"))
+		nums := []interface{}{1, 2, 3}
+		require.NoError(t, v.validateEnum(3, &Schema{Enum: nums}, "p"))
+		require.NoError(t, v.validateEnum(testNamedInt(2), &Schema{Enum: nums}, "p"))
+		require.Error(t, v.validateEnum(9, &Schema{Enum: nums}, "p"))
 	})
+}
+
+func TestValidator_requiredEnumRejectsEmpty(t *testing.T) {
+	v := NewValidator()
+	item := map[string]interface{}{
+		"item_id":  "i1",
+		"name":     "n1",
+		"category": "",
+		"price":    1.0,
+	}
+	require.Error(t, v.validateValue(item, GetRecommendItemSchema(), "root"),
+		"a required enum field must not validate with an empty value")
 }
 
 func TestValidator_validateTypeNamedSupport(t *testing.T) {

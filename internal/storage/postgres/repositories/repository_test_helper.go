@@ -101,7 +101,11 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 			type VARCHAR(50) NOT NULL CHECK (type IN ('success', 'failure', 'query', 'solution', 'pattern', 'distilled')),
 			input TEXT,
 			output TEXT,
-			embedding VECTOR(1024) NOT NULL,
+			-- Nullable, matching storageMigrations: the async embedding worker
+			-- inserts the row first and backfills the vector later. A NOT NULL
+			-- here would let tests pass against a schema production does not
+			-- have, and would reject the pending rows readers must skip.
+			embedding VECTOR(1024),
 			embedding_model TEXT NOT NULL DEFAULT 'intfloat/e5-large',
 			embedding_version INT NOT NULL DEFAULT 1,
 			score FLOAT DEFAULT 0.5 CHECK (score >= 0 AND score <= 1),

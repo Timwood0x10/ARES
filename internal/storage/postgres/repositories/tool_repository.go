@@ -324,6 +324,7 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 	defer func() { _ = rows.Close() }()
 
 	tools := make([]*storage_models.Tool, 0)
+	skipped := 0
 	for rows.Next() {
 		tool := &storage_models.Tool{}
 		var similarity float64
@@ -335,12 +336,20 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 			&tool.LastUsedAt, &metadataStr, &tool.CreatedAt, &similarity,
 		)
 		if err != nil {
+			// tools.embedding is NOT NULL, so a failure here means a genuine
+			// schema/data problem rather than a pending backfill. Either way a
+			// bare continue would shrink the result set invisibly.
+			skipped++
+			log.Warn("Skipping tool row in vector search", "tenant_id", tenantID, "error", err)
 			continue
 		}
 
 		// Parse embedding string to float64 array
 		tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
+			skipped++
+			log.Warn("Skipping tool with unparsable embedding",
+				"tenant_id", tenantID, "tool_id", tool.ID, "error", err)
 			continue
 		}
 
@@ -363,6 +372,11 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 	if err := rows.Err(); err != nil {
 		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
+	}
+
+	if skipped > 0 {
+		log.Warn("Vector search dropped tool rows",
+			"tenant_id", tenantID, "skipped", skipped, "returned", len(tools))
 	}
 
 	return tools, nil

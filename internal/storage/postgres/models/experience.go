@@ -77,9 +77,16 @@ type Experience struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ExperiencesTable is the physical table distilled experiences live in. The
+// `_1024` suffix encodes the embedding dimension of its `embedding VECTOR(1024)`
+// column, so a dimension change means a new table plus a migration. Kept here,
+// next to the model, so the storage layer is the single source of truth and
+// domain packages do not have to re-declare the literal.
+const ExperiencesTable = "experiences_1024"
+
 // TableName returns the table name for this model.
 func (e *Experience) TableName() string {
-	return "experiences_1024"
+	return ExperiencesTable
 }
 
 // ExperienceType constants.

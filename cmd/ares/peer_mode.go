@@ -316,9 +316,17 @@ func createPeerAgents(
 
 	recCtx, recCancel := context.WithCancel(ctx)
 	recDone := make(chan struct{})
+	// B1: bind the scheduler's stale-winner hint to this recovery loop. When a
+	// leased task's winner dies with no capable replacement, the scheduler
+	// releases the task and kicks a sweep here, so the replacement execution
+	// body is bound within one drain instead of one full lease TTL.
+	recoveryKick, recoveryHint := newRecoveryKick()
+	recoveryLoopCfg := kernelLoopCfg
+	recoveryLoopCfg.RecoveryKick = recoveryKick
+	sched.WithRecoveryHint(recoveryHint)
 	runBackground(ctx, comp, sysCompRecovery, func(context.Context) error {
 		defer close(recDone)
-		runKernelRecoveryLoop(recCtx, store, kernel.recovery, kernelLoopCfg,
+		runKernelRecoveryLoop(recCtx, store, kernel.recovery, recoveryLoopCfg,
 			func(taskID, agentID string, executor CapabilityExecutor) {
 				sched.RegisterExecutorForTask(taskID, agentID, executor)
 			},

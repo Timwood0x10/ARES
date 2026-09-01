@@ -24,6 +24,7 @@ import (
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -44,13 +45,14 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 		return nil, nil
 	}
 	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Embedding.Enabled {
-		pool, client, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
+		wiring, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
 		if wireErr != nil {
 			log.Warn("bootstrap: experience distillation not wired", "error", wireErr)
 		} else {
-			guidanceProvider = guidProv
-			embClient = client
-			comp.Distillation = distSvc
+			pool, expRepo := wiring.pool, wiring.experienceRepo
+			guidanceProvider = wiring.guidanceProvider
+			embClient = wiring.embeddingClient
+			comp.Distillation = wiring.service
 			// Feed the experience repo into the old evolution system if present.
 			if deps.ExpRepo == nil {
 				deps.ExpRepo = expRepo
@@ -61,7 +63,7 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// CleanupExpired; the fat interface intentionally stays untouched.
 			if cleaner, ok := expRepo.(ExpiryCleaner); ok {
 				comp.ExpiryCleaners = append(comp.ExpiryCleaners,
-					NamedExpiryCleaner{Name: "experiences_1024", Cleaner: cleaner})
+					NamedExpiryCleaner{Name: storage_models.ExperiencesTable, Cleaner: cleaner})
 			}
 			// REVIEW #7 (remainder): register the other retention-managed
 			// tables (sessions, conversations, secrets, knowledge_chunks) so
@@ -69,23 +71,23 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// They share the distillation pool (already open for the process
 			// lifetime) instead of opening a second pool — minimal wiring.
 			wireExpiryCleaners(comp, pool.GetDB(), cfg)
-			// REVIEW #13 (A1 consumer side wired, A2 producer side now wired):
-			// the embedding queue worker + reconciler consume pending tasks and
+			// The embedding queue worker + reconciler consume pending tasks and
 			// write vectors back to knowledge_chunks_1024 and experiences_1024
-			// (both repos share the same pool). Best-effort: if the embedding
-			// client is nil the worker is skipped. The A2 producer is wired in
-			// provide_distillation — the distillation path now persists an
-			// experience row without a vector and enqueues a backfill task so
-			// the async worker writes the vector back instead of blocking the
-			// event subscriber loop on a synchronous embed. The LLM extraction
-			// call (30s) still runs in the subscriber loop; only the embed was
-			// deferred to the worker.
+			// (both repos share the same pool). The producer side is wired in
+			// provide_distillation: the distillation path persists an experience
+			// row without a vector and enqueues a backfill task so the async
+			// worker writes the vector back instead of blocking the event
+			// subscriber loop on a synchronous embed. The LLM extraction call
+			// (30s) still runs in the subscriber loop; only the embed was
+			// deferred to the worker. The queue instance is shared with the
+			// producer rather than rebuilt here.
 			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB())
 			var expConcreteRepo *repositories.ExperienceRepository
 			if r, ok := expRepo.(*repositories.ExperienceRepository); ok {
 				expConcreteRepo = r
 			}
-			wireEmbeddingWorker(ctx, comp, pool, client, knowRepo, expConcreteRepo)
+			wireEmbeddingWorker(ctx, comp, pool, embClient,
+				wiring.embeddingQueue, wiring.embeddingConfig, knowRepo, expConcreteRepo)
 			// Back the knowledge runtime's VectorProvider with the same PG
 			// pool, so AKF vector search reads the same embedded corpus the
 			// distillation path writes. Best-effort: nil embedding config uses
@@ -248,10 +250,18 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 
 	// W3: honor the YAML evolution tuning. Only fields with a matching
 	// SystemConfig slot are wired; the rest of the YAML GA knobs
-	// (Generations/TournamentSize/CrossoverType/TargetFitness/SteadyState*)
-	// are registered as dead config pending a SystemConfig slot.
+	// (TournamentSize/CrossoverType/SteadyState*) are registered as dead
+	// config pending a SystemConfig slot.
 	ec := &cfg.Evolution
 	applyGATuning(&gaCfg, ec)
+	// B2 (G1): construct the guardrails. Until now gaCfg.Guardrails was NEVER
+	// assigned anywhere in this package, so WithAdapterGuardrails was skipped
+	// and both runPreGuardrails and the legacy scheduler's checkGuardrails
+	// short-circuited on nil — G1 was a gate that existed in code and did
+	// nothing at runtime. The design doc's §5 known gap 1 understated this: it
+	// described the adapter layer as G1's "only real defense", but the adapter
+	// layer was inert too.
+	gaCfg.Guardrails = buildEvolutionGuardrails(ctx, ec, gaCfg.Metrics)
 	// Track A closure: feed distilled experiences back into the GA's
 	// experience-guided mutation. guidanceProvider is non-nil only when
 	// distillation was successfully wired above (PG + embedding configured).
@@ -405,6 +415,17 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		legacySched.SetAdapter(popAdapter)
 	} else if wired.Scheduler != nil && comp.EventStore != nil {
 		wired.Scheduler.Register()
+		// B4: Register subscribes on its own context.Background() and parks a
+		// goroutine on the event channel; without a matching Shutdown that
+		// goroutine (and the EventStore subscriber feeding it) outlives the
+		// bootstrap for the life of the process. goleak found this; a
+		// goroutine count could not have.
+		wiredSched := wired.Scheduler
+		comp.bgGroup.Go(func() error {
+			<-ctx.Done()
+			wiredSched.Shutdown()
+			return nil
+		})
 	}
 
 	// Start a background ticker that triggers evolution via the unified
@@ -560,6 +581,78 @@ func applyGATuning(gaCfg *evolution.SystemConfig, ec *ares_config.EvolutionConfi
 	if ec.SelectionStrategy != "" && ec.SelectionStrategy != ares_config.DefaultEvolutionSelectionStrategy {
 		gaCfg.SelectionStrategy = ec.SelectionStrategy
 	}
+}
+
+// targetFitnessScale converts the YAML evolution.target_fitness (documented as
+// a 0-100 scale in ares_config) to the [0,1] scale EvolutionGuardrails compares
+// against, since its BaselineScore is measured against the same values fed to
+// PostEvolveCheckForSource.
+const targetFitnessScale = 100.0
+
+// buildEvolutionGuardrails constructs the G1 population-level guardrails from
+// the YAML evolution section (B2).
+//
+// Before B2 this construction did not exist: gaCfg.Guardrails was never
+// assigned, so GenomePopulationAdapter.runPreGuardrails / runPostGuardrails and
+// EvolutionScheduler.checkGuardrails all short-circuited on nil and passed
+// unconditionally. G1 was structurally present and operationally absent.
+//
+// Two YAML knobs that were previously dead config now drive it:
+//   - Generations → MaxStagnantGenerations. Semantics line up: both bound "how
+//     many generations may pass without progress".
+//   - TargetFitness (0-100) → BaselineScore, rescaled to [0,1]. Left unset when
+//     zero so the guardrail keeps its adaptive behavior (baseline = the best
+//     score seen so far for that source).
+//
+// MaxLineageShare keeps the constructor default (0.8); no YAML key exists for
+// it and inventing one would create fresh dead config.
+//
+// IMPORTANT — each caller must own its OWN instance, never share one.
+// EvolutionGuardrails carries mutable state (stagnantCount, bestBySource) and
+// the two driving paths (legacy scheduler ticker vs adapter population layer)
+// run on different generation counters and score scales. Sharing an instance
+// would let one path's stagnation count and baseline pollute the other's. The
+// bestBySource source-keying inside guardrails.go exists for the same reason.
+//
+// Args:
+//   - ctx: for the degradation log only.
+//   - ec: the YAML evolution section (nil returns nil).
+//   - metrics: optional Prometheus sink; when non-nil every guardrail event
+//     increments ARES_evolution_guardrail_total{code}.
+//
+// Returns:
+//   - *evolution.EvolutionGuardrails: nil on construction failure, which
+//     degrades to the pre-B2 behavior (all checks pass) rather than blocking
+//     bootstrap.
+func buildEvolutionGuardrails(
+	ctx context.Context,
+	ec *ares_config.EvolutionConfig,
+	metrics *ares_observability.PrometheusMetrics,
+) *evolution.EvolutionGuardrails {
+	if ec == nil {
+		return nil
+	}
+	opts := []evolution.GuardrailOption{
+		evolution.WithMaxStagnantGenerations(
+			defaultInt(ec.Generations, ares_config.DefaultEvolutionGenerations),
+		),
+	}
+	if ec.TargetFitness > 0 {
+		opts = append(opts, evolution.WithBaselineScore(ec.TargetFitness/targetFitnessScale))
+	}
+	if metrics != nil {
+		opts = append(opts, evolution.WithGuardrailEventHandler(func(evt evolution.GuardrailEvent) {
+			metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+		}))
+	}
+	g, err := evolution.NewEvolutionGuardrails(opts...)
+	if err != nil {
+		// Documented as always-nil today, but handled per code_rules §3.1: a
+		// future validating constructor must degrade, not panic or abort.
+		log.WarnContext(ctx, "bootstrap: evolution guardrails skipped", "error", err)
+		return nil
+	}
+	return g
 }
 
 func wireLLMScorer(cfg *ares_config.Config, comp *Components) (genome.ScorerFunc, genome.ScorerFunc, int) {

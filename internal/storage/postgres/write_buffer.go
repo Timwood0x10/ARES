@@ -312,16 +312,22 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			// Generate content hash for real-time deduplication (per design standard)
 			contentHash := b.computeContentHash(item.Content)
 
+			// embedding is left NULL, not a zero vector: a 1024-dimensional
+			// all-zero vector is a *valid* vector, so it satisfies
+			// `embedding IS NOT NULL`, gets picked up by the partial ivfflat
+			// index, and would be returned by SearchByVector with a meaningless
+			// distance. NULL is the only value readers can reliably exclude
+			// until the worker backfills the real vector.
 			err := tx.QueryRowContext(ctx, `
 			  INSERT INTO knowledge_chunks_1024
 				(tenant_id, content, content_hash, embedding, embedding_model, embedding_version,
 				 embedding_status, embedding_queued_at, source_type, metadata, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW(), 'memory', $7, NOW(), NOW())
+				VALUES ($1, $2, $3, NULL, $4, $5, 'pending', NOW(), 'memory', $6, NOW(), NOW())
 				ON CONFLICT (content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
-			`, item.TenantID, item.Content, contentHash, make([]float64, 1024),
+			`, item.TenantID, item.Content, contentHash,
 				b.embeddingConfig.DefaultModel, b.embeddingConfig.DefaultVersion, item.Metadata).Scan(&entityIDs[i])
 			if err != nil {
 				return errors.Wrap(err, "insert knowledge chunk")
@@ -342,13 +348,21 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 					md["embedding_dim"] = item.SpecDim
 				}
 			}
+			// embedding stays NULL until the worker backfills it. See the
+			// knowledge_chunks_1024 branch above for why a zero vector is not
+			// an acceptable placeholder.
+			//
+			// Unlike knowledge_chunks_1024, this table has no
+			// embedding_status/embedding_queued_at columns: `embedding IS NULL`
+			// is itself the pending marker, and that is what Reconcile's
+			// experiences pass keys on.
 			err := tx.QueryRowContext(ctx, `
 			  INSERT INTO experiences_1024
 				(tenant_id, type, input, output, embedding, embedding_model, embedding_version,
-				 embedding_status, embedding_queued_at, agent_id, metadata, score, success, decay_at, created_at)
-				VALUES ($1, 'solution', $2, $3, $4, $5, $6, 'pending', NOW(), 'style-agent', $7, 0.8, true, NOW() + INTERVAL '30 days', NOW())
+				 agent_id, metadata, score, success, decay_at, created_at)
+				VALUES ($1, 'solution', $2, $3, NULL, $4, $5, 'style-agent', $6, 0.8, true, NOW() + INTERVAL '30 days', NOW())
 				RETURNING id
-			`, item.TenantID, item.Content, item.Metadata["output"], make([]float64, 1024),
+			`, item.TenantID, item.Content, item.Metadata["output"],
 				b.embeddingConfig.DefaultModel, b.embeddingConfig.DefaultVersion, md).Scan(&entityIDs[i])
 			if err != nil {
 				return errors.Wrap(err, "insert experience")

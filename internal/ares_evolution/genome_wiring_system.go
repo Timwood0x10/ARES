@@ -657,6 +657,15 @@ func buildActiveStrategyManager(cfg SystemConfig) (*ActiveStrategyManager, error
 
 // buildShadowEvaluator creates the shadow evaluator with optional scorer.
 func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseStrategy *mutation.Strategy) *ShadowEvaluator {
+	// The tiered scorer caches by strategy hash for the whole generation, so the
+	// FIRST comparison populates the cache and every later one is a cache hit
+	// returning the identical score. That makes the scorer effectively
+	// deterministic even with a temperature>0 LLM behind it, which the previous
+	// code only flagged when an explicit seed was configured. Record it here so
+	// the warning below reflects what actually happens.
+	if tiered != nil && cfg.Scorer != nil {
+		cfg.ShadowEvalConfig.DeterministicScorer = true
+	}
 	shadowEval := NewShadowEvaluator(cfg.ShadowEvalConfig)
 	shadowEval.SetActiveStrategy(baseStrategy)
 	// Shadow scoring is budget-gated ONLY when an LLM scorer is actually
@@ -693,6 +702,7 @@ func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseSt
 	if cfg.ShadowEvalConfig.DeterministicScorer {
 		log.Warn("shadow evaluator: scorer is deterministic — comparisons are identical, MinSamples is satisfied by repetition, not by independent evidence",
 			"min_samples", cfg.ShadowEvalConfig.MinSamples,
+			"reason", "per-generation score cache and/or fixed LLM seed",
 		)
 	}
 	log.InfoContext(context.Background(), "shadow evaluation enabled", "method", "buildShadowEvaluator",

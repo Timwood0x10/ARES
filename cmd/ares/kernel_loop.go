@@ -85,6 +85,54 @@ type kernelLoopConfig struct {
 	// LoopRoundQuanta is how many quanta constitute one loop round (>=1;
 	// 0/absent falls back to 1).
 	LoopRoundQuanta int
+	// RecoveryKick carries task IDs the scheduler released at the stale-winner
+	// boundary (B1): the winner died with no capable replacement, so the task
+	// is back in READY but has no execution body. The recovery loop binds a
+	// replacement for each nominated task.
+	//
+	// A nominated task cannot be found by the expired-lease sweep — Release
+	// clears the lease, and CheckExpiredLeases only requeues tasks that still
+	// hold an expired one. That is exactly why the ID travels with the signal
+	// instead of being a bare wake-up.
+	//
+	// Nil (the zero value) makes the select case inert, preserving the pre-B1
+	// behavior for every call site that does not wire it.
+	RecoveryKick <-chan string
+}
+
+// recoveryKickBuffer bounds the stale-winner nomination channel (B1). Each
+// entry is a distinct task needing a replacement body, so the buffer is sized
+// for a burst of concurrent deaths (one drain runs at most 32 quanta, see
+// Scheduler.drain's sanity cap) rather than the single slot a bare wake-up
+// signal would need. The producer drops on full: a dropped nomination degrades
+// to the pre-B1 behavior for that task (it waits in READY for an executor),
+// never to a blocked drain goroutine.
+const recoveryKickBuffer = 32
+
+// newRecoveryKick builds the stale-winner nomination pair for B1: a bounded
+// channel to hand to kernelLoopConfig.RecoveryKick, and a non-blocking hint
+// function to hand to Scheduler.WithRecoveryHint.
+//
+// The hint is called from a drain goroutine on the scheduling hot path, so it
+// must never block.
+//
+// Returns:
+//   - <-chan string: the receive side for kernelLoopConfig.RecoveryKick.
+//   - func(string): the non-blocking hint for Scheduler.WithRecoveryHint.
+func newRecoveryKick() (<-chan string, func(taskID string)) {
+	ch := make(chan string, recoveryKickBuffer)
+	return ch, func(taskID string) {
+		if taskID == "" {
+			return
+		}
+		select {
+		case ch <- taskID:
+		default:
+			// Buffer full: drop rather than block the drain. The task stays
+			// READY and is picked up as soon as any capable executor appears.
+			log.Printf("kernel recovery loop: nomination buffer full, dropping %q", taskID)
+		}
+	}
 }
 
 // withDefaults fills any zero-valued knob with the package default so a
@@ -224,6 +272,13 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 // from the loop ctx, so a shutdown cancels it) and releases the semaphore on
 // exit (code_rules: managed worker with a stop signal).
 //
+// B1: cfg.RecoveryKick is the scheduler's stale-winner trigger. The scheduler
+// signals it when a leased task's winner died with no capable replacement —
+// the task is released to READY and this loop spawns the replacement body
+// immediately, instead of the task waiting out a full lease TTL. A nil channel
+// (the zero value) makes the select case inert, exactly like a nil event
+// channel, so every existing call site keeps its previous behavior.
+//
 // Args:
 //   - ctx: stops the loop.
 //   - store: the EventStore to subscribe from (nil disables the event channel;
@@ -267,6 +322,59 @@ func runKernelRecoveryLoop(
 	}
 	ticker := time.NewTicker(cfg.RecoverySweepInterval)
 	defer ticker.Stop()
+	// bindReplacements gives each task in ids an execution body when no
+	// registered executor can already resume it. Shared by the expired-lease
+	// sweep and the B1 stale-winner nomination path, which differ only in how
+	// the task list is obtained: the sweep discovers tasks whose lease just
+	// expired, the nomination path is told a specific task by the scheduler.
+	//
+	// No-op in requeue-only mode (leader path, chaos/sandbox, tests that pass
+	// nil callbacks): the scheduler resumes the READY task with an existing
+	// executor from its preserved checkpoint via toModelTask.
+	bindReplacements := func(ids []string) {
+		if registerExecutor == nil || executorFactory == nil || hasCapableExecutor == nil {
+			return
+		}
+		for _, taskID := range ids {
+			if hasCapableExecutor(taskID) {
+				continue // an existing executor resumes this task
+			}
+			tasks := recovery.RecoveryTasksFor([]string{taskID})
+			if len(tasks) == 0 {
+				continue
+			}
+			rt := tasks[0]
+
+			// Fusion-plan A2 arbitration (priority 1): if a dead agent
+			// with matching capability left a cognitive snapshot, revive
+			// THAT identity in place — same id, restored cognition,
+			// continuous provenance — instead of spawning a generic
+			// replacement. RestartAgent enforces the maxRestarts budget
+			// and returns ErrRecoveryExhausted past it, in which case we
+			// fall through to the generic replacement below.
+			if snapID, snap, found := recovery.RevivableSnapshot(rt.Capability); found {
+				if revived, err := recovery.RestartAgent(ctx, snapID, snap.Cognitive, snap.Capabilities); err == nil {
+					exec := executorFactory(revived.Identity, rt.Capability)
+					if exec != nil {
+						registerExecutor(taskID, revived.Identity, exec)
+						log.Printf("kernel recovery loop: revived %q in place (cognition restored) for task %q", revived.Identity, taskID)
+						continue
+					}
+				} else {
+					log.Printf("kernel recovery loop: in-place revival of %q unavailable (%v); using replacement", snapID, err)
+				}
+			}
+
+			replacementID := fmt.Sprintf("recovery-%s-%d", taskID, time.Now().UnixNano())
+			executor := executorFactory(replacementID, rt.Capability)
+			if executor == nil {
+				log.Printf("kernel recovery loop: executor factory returned nil for %s (%s)", replacementID, rt.Capability)
+				continue
+			}
+			registerExecutor(taskID, replacementID, executor)
+			log.Printf("kernel recovery loop: replacement executor %q bound to task %q", replacementID, taskID)
+		}
+	}
 	// sem (capacity 1) guards against overlapping sweeps: a sweep that is
 	// still running (e.g. a stalled store) holds the single slot, so further
 	// triggers are dropped until it finishes. Bounded — at most one sweep
@@ -297,62 +405,50 @@ func runKernelRecoveryLoop(
 			}
 			// W1 recovery闭环: requeue the tasks whose lease expired THIS
 			// sweep (not all READY tasks — a brand-new task is never a
-			// recovery candidate). For each requeued task, if no registered
-			// executor can already resume it, spawn a replacement executor
-			// and bind it to exactly that task. The scheduler unregisters the
-			// bound executor once the task reaches a terminal state.
-			//
-			// When executorFactory / registerExecutor are nil (leader path,
-			// tests, chaos/sandbox), the loop is requeue-only: the scheduler
-			// picks up the READY task with an existing executor and resumes
-			// from the preserved checkpoint via toModelTask.
+			// recovery candidate), then give each one an execution body.
 			requeued := recovery.RequeueExpiredLeases()
 			if len(requeued) == 0 {
 				return
 			}
 			log.Printf("kernel recovery loop: requeued %d expired task(s)", len(requeued))
-			if registerExecutor == nil || executorFactory == nil || hasCapableExecutor == nil {
-				return // requeue-only mode
+			bindReplacements(requeued)
+		}()
+	}
+	// bindNominated handles one B1 stale-winner nomination. It shares the
+	// sweep's semaphore so a nomination can never run concurrently with a
+	// sweep — both mutate the executor registry for the same task set, and
+	// RestartAgent's restart budget must not be spent twice for one death.
+	//
+	// Unlike sweep it does NOT requeue: the scheduler already released the
+	// task to READY, and Release cleared the lease, so CheckExpiredLeases
+	// would never find it. The nomination carries the task ID for exactly this
+	// reason.
+	//
+	// It WAITS for the semaphore instead of dropping on contention. Dropping
+	// looked symmetric with sweep's drop-on-full, but the two are not
+	// symmetric: a dropped sweep is retried by the next tick, whereas a
+	// dropped nomination is lost forever — the released task holds no lease,
+	// so no later sweep will rediscover it, and it sits in READY with no
+	// execution body. Measured as a 1-in-30 residual failure of
+	// TestE2E_GrandLoop_RealSchedulerChaosRecovery.
+	//
+	// Waiting is bounded: RecoveryKick is a capacity-32 channel and the loop
+	// consumes one entry at a time, so at most a handful of these goroutines
+	// exist, each parked on a semaphore released by an in-memory scan.
+	bindNominated := func(taskID string) {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("kernel recovery loop: panic binding nominated task %q: %v", taskID, r)
+				}
+			}()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
 			}
-			for _, taskID := range requeued {
-				if hasCapableExecutor(taskID) {
-					continue // an existing executor resumes this task
-				}
-				tasks := recovery.RecoveryTasksFor([]string{taskID})
-				if len(tasks) == 0 {
-					continue
-				}
-				rt := tasks[0]
-
-				// Fusion-plan A2 arbitration (priority 1): if a dead agent
-				// with matching capability left a cognitive snapshot, revive
-				// THAT identity in place — same id, restored cognition,
-				// continuous provenance — instead of spawning a generic
-				// replacement. RestartAgent enforces the maxRestarts budget
-				// and returns ErrRecoveryExhausted past it, in which case we
-				// fall through to the generic replacement below.
-				if snapID, snap, found := recovery.RevivableSnapshot(rt.Capability); found {
-					if revived, err := recovery.RestartAgent(ctx, snapID, snap.Cognitive, snap.Capabilities); err == nil {
-						exec := executorFactory(revived.Identity, rt.Capability)
-						if exec != nil {
-							registerExecutor(taskID, revived.Identity, exec)
-							log.Printf("kernel recovery loop: revived %q in place (cognition restored) for task %q", revived.Identity, taskID)
-							continue
-						}
-					} else {
-						log.Printf("kernel recovery loop: in-place revival of %q unavailable (%v); using replacement", snapID, err)
-					}
-				}
-
-				replacementID := fmt.Sprintf("recovery-%s-%d", taskID, time.Now().UnixNano())
-				executor := executorFactory(replacementID, rt.Capability)
-				if executor == nil {
-					log.Printf("kernel recovery loop: executor factory returned nil for %s (%s)", replacementID, rt.Capability)
-					continue
-				}
-				registerExecutor(taskID, replacementID, executor)
-				log.Printf("kernel recovery loop: replacement executor %q bound to task %q", replacementID, taskID)
-			}
+			defer func() { <-sem }()
+			bindReplacements([]string{taskID})
 		}()
 	}
 	for {
@@ -366,6 +462,14 @@ func runKernelRecoveryLoop(
 				return
 			}
 			sweep()
+		case taskID, ok := <-cfg.RecoveryKick:
+			// B1: the scheduler released a leased task whose winner died with
+			// no capable replacement. Bind a replacement body now so the task
+			// resumes within one drain instead of stalling in READY.
+			if !ok {
+				return
+			}
+			bindNominated(taskID)
 		}
 	}
 }

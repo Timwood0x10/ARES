@@ -1,8 +1,10 @@
 package experience
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
@@ -47,9 +50,19 @@ func fakeEmbedServer(t *testing.T, dim int) *httptest.Server {
 // fakeExpRepo records Create/Update calls and assigns IDs, satisfying
 // ExperienceRepositoryInterface for unit tests.
 type fakeExpRepo struct {
-	created []*storage_models.Experience
-	updated []*storage_models.Experience
-	idSeq   int
+	created          []*storage_models.Experience
+	updated          []*storage_models.Experience
+	embeddingUpdates []embeddingUpdate
+	idSeq            int
+}
+
+// embeddingUpdate captures one narrow vector write-back.
+type embeddingUpdate struct {
+	TenantID  string
+	ID        string
+	Embedding []float64
+	Model     string
+	Version   int
 }
 
 func (f *fakeExpRepo) Create(_ context.Context, exp *storage_models.Experience) error {
@@ -61,6 +74,23 @@ func (f *fakeExpRepo) Create(_ context.Context, exp *storage_models.Experience) 
 
 func (f *fakeExpRepo) Update(_ context.Context, exp *storage_models.Experience) error {
 	f.updated = append(f.updated, exp)
+	return nil
+}
+
+func (f *fakeExpRepo) UpdateEmbedding(
+	_ context.Context,
+	tenantID, id string,
+	vec []float64,
+	model string,
+	version int,
+) error {
+	f.embeddingUpdates = append(f.embeddingUpdates, embeddingUpdate{
+		TenantID:  tenantID,
+		ID:        id,
+		Embedding: vec,
+		Model:     model,
+		Version:   version,
+	})
 	return nil
 }
 func (f *fakeExpRepo) GetByID(_ context.Context, _, _ string) (*storage_models.Experience, error) {
@@ -277,7 +307,7 @@ func TestDistillBatch(t *testing.T) {
 
 func TestDistill_EnqueueFailureFallsBackToSyncEmbed(t *testing.T) {
 	// When the enqueue fails, the service falls back to a synchronous
-	// embed+update so the row never stays without a vector.
+	// embed + narrow vector write-back so the row never stays without a vector.
 	llmClient := newTestLLM(t, llmExtractionContent)
 	embSrv := fakeEmbedServer(t, 8)
 	t.Cleanup(embSrv.Close)
@@ -291,9 +321,65 @@ func TestDistill_EnqueueFailureFallsBackToSyncEmbed(t *testing.T) {
 	exp, err := svc.Distill(context.Background(), distillableTask())
 	require.NoError(t, err)
 
-	// Row created once, then updated by the synchronous fallback.
+	// Row created once, then patched by the synchronous fallback. The fallback
+	// must use UpdateEmbedding, not a full-row Update, so a concurrent worker
+	// write to other columns is not clobbered.
 	require.Len(t, repo.created, 1)
-	require.Len(t, repo.updated, 1)
-	assert.NotEmpty(t, repo.updated[0].Embedding)
+	require.Empty(t, repo.updated)
+	require.Len(t, repo.embeddingUpdates, 1)
+	assert.Equal(t, exp.ID, repo.embeddingUpdates[0].ID)
+	assert.Equal(t, "tenant-1", repo.embeddingUpdates[0].TenantID)
+	assert.NotEmpty(t, repo.embeddingUpdates[0].Embedding)
 	assert.NotEmpty(t, exp.Embedding)
+}
+
+func TestDistill_AsyncPathStampsModelAndConfiguredVersion(t *testing.T) {
+	// The async path knows the model name at insert time, so it must not leave
+	// embedding_model empty until backfill, and the version must come from
+	// config instead of a hardcoded literal.
+	llmClient := newTestLLM(t, llmExtractionContent)
+	embSrv := fakeEmbedServer(t, 4)
+	t.Cleanup(embSrv.Close)
+	embClient := embedding.NewEmbeddingClient(embSrv.URL, "stamped-model", nil, time.Second)
+
+	repo := &fakeExpRepo{}
+	enq := &fakeEnqueuer{}
+	cfg := &postgres.EmbeddingConfig{DefaultModel: "stamped-model", DefaultVersion: 7}
+
+	svc := NewDistillationService(llmClient, embClient, repo,
+		WithEmbeddingEnqueuer(enq), WithEmbeddingConfig(cfg))
+
+	_, err := svc.Distill(context.Background(), distillableTask())
+	require.NoError(t, err)
+
+	require.Len(t, repo.created, 1)
+	assert.Equal(t, "stamped-model", repo.created[0].EmbeddingModel)
+	assert.Equal(t, 7, repo.created[0].EmbeddingVersion)
+
+	require.Len(t, enq.called, 1)
+	assert.Equal(t, "stamped-model", enq.called[0].Model)
+	assert.Equal(t, 7, enq.called[0].Version)
+}
+
+func TestDistill_EnqueueFailureIsLogged(t *testing.T) {
+	// A permanently broken queue must be visible in logs; without this the async
+	// path degrades to synchronous embedding silently.
+	llmClient := newTestLLM(t, llmExtractionContent)
+	embSrv := fakeEmbedServer(t, 4)
+	t.Cleanup(embSrv.Close)
+	embClient := embedding.NewEmbeddingClient(embSrv.URL, "test-model", nil, time.Second)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	svc := NewDistillationService(llmClient, embClient, &fakeExpRepo{},
+		WithEmbeddingEnqueuer(&fakeEnqueuer{err: context.DeadlineExceeded}))
+	svc.logger = logger
+
+	_, err := svc.Distill(context.Background(), distillableTask())
+	require.NoError(t, err)
+
+	logged := buf.String()
+	assert.Contains(t, logged, "enqueue embedding backfill failed")
+	assert.Contains(t, logged, "tenant-1")
 }

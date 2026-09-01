@@ -39,6 +39,10 @@ func (m *mockExpRepo) Update(ctx context.Context, exp *models.Experience) error 
 	return errors.New("not implemented")
 }
 
+func (m *mockExpRepo) UpdateEmbedding(context.Context, string, string, []float64, string, int) error {
+	return errors.New("not implemented")
+}
+
 func (m *mockExpRepo) Delete(ctx context.Context, id, tenantID string) error {
 	return errors.New("not implemented")
 }

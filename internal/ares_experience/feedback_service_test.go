@@ -28,6 +28,16 @@ func (m *mockExperienceRepo) Update(ctx context.Context, exp *storage_models.Exp
 	return nil
 }
 
+func (m *mockExperienceRepo) UpdateEmbedding(
+	ctx context.Context,
+	tenantID, id string,
+	embedding []float64,
+	model string,
+	version int,
+) error {
+	return nil
+}
+
 func (m *mockExperienceRepo) Delete(ctx context.Context, id, tenantID string) error {
 	return nil
 }

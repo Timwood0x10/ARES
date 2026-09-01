@@ -32,14 +32,28 @@ const defaultDistillTenant = ares_events.DefaultTenantID
 // (e.g. Postgres unreachable, LLM client of unexpected type) is returned as an
 // error and the caller logs + skips, leaving the system running without
 // distillation.
+// distillationWiring bundles what provideDistillation builds. It exists so the
+// embedding queue (and the config it was built with) can be handed to
+// wireEmbeddingWorker instead of being constructed a second time from the same
+// pool, which is what previously created two queue instances for one queue.
+type distillationWiring struct {
+	pool             *postgres.Pool
+	embeddingClient  *embedding.EmbeddingClient
+	experienceRepo   repositories.ExperienceRepositoryInterface
+	service          *aresexp.DistillationService
+	guidanceProvider evolution.GuidanceProvider
+	embeddingQueue   *postgres.EmbeddingQueue
+	embeddingConfig  *postgres.EmbeddingConfig
+}
+
 func provideDistillation(
 	ctx context.Context,
 	cfg *ares_config.Config,
 	llmClientArg interface{},
-) (*postgres.Pool, *embedding.EmbeddingClient, repositories.ExperienceRepositoryInterface, *aresexp.DistillationService, evolution.GuidanceProvider, error) {
+) (*distillationWiring, error) {
 	llmClient, ok := llmClientArg.(*llm.Client)
 	if !ok {
-		return nil, nil, nil, nil, nil, fmt.Errorf("distillation requires *llm.Client, got %T", llmClientArg)
+		return nil, fmt.Errorf("distillation requires *llm.Client, got %T", llmClientArg)
 	}
 
 	pgCfg := &postgres.Config{
@@ -52,7 +66,7 @@ func provideDistillation(
 	}
 	pool, err := postgres.NewPool(pgCfg)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("distillation: open postgres pool: %w", err)
+		return nil, fmt.Errorf("distillation: open postgres pool: %w", err)
 	}
 
 	timeout := time.Duration(cfg.Embedding.Timeout) * time.Second
@@ -63,13 +77,15 @@ func provideDistillation(
 
 	expRepo := repositories.NewExperienceRepository(pool.GetDB())
 
-	// REVIEW #13 A2: feed the embedding queue from the distillation path so the
-	// async worker (wireEmbeddingWorker) backfills experience vectors instead of
-	// distilling synchronously. The adapter bridges the consuming-package
-	// interface to the concrete postgres queue, sharing the same pool.
-	embedQueue := postgres.NewEmbeddingQueue(pool, postgres.DefaultEmbeddingConfig())
+	// Feed the embedding queue from the distillation path so the async worker
+	// (wireEmbeddingWorker) backfills experience vectors instead of embedding
+	// synchronously. The adapter bridges the consuming-package interface to the
+	// concrete postgres queue; the queue is returned so the worker shares it.
+	embCfg := postgres.DefaultEmbeddingConfig()
+	embedQueue := postgres.NewEmbeddingQueue(pool, embCfg)
 	distSvc := aresexp.NewDistillationService(llmClient, embClient, expRepo,
-		aresexp.WithEmbeddingEnqueuer(postgresEmbeddingEnqueuer{queue: embedQueue}))
+		aresexp.WithEmbeddingEnqueuer(postgresEmbeddingEnqueuer{queue: embedQueue}),
+		aresexp.WithEmbeddingConfig(embCfg))
 
 	guidProv := &evolution.FuncGuidanceProvider{
 		HintsFunc: func(ctx context.Context, taskType string, limit int) ([]evolution.EvolutionHint, error) {
@@ -94,7 +110,15 @@ func provideDistillation(
 		},
 	}
 
-	return pool, embClient, expRepo, distSvc, guidProv, nil
+	return &distillationWiring{
+		pool:             pool,
+		embeddingClient:  embClient,
+		experienceRepo:   expRepo,
+		service:          distSvc,
+		guidanceProvider: guidProv,
+		embeddingQueue:   embedQueue,
+		embeddingConfig:  embCfg,
+	}, nil
 }
 
 // recordStrategyOutcome persists a GA strategy outcome as an experience so the
@@ -257,7 +281,7 @@ type postgresEmbeddingEnqueuer struct {
 func (e postgresEmbeddingEnqueuer) Enqueue(ctx context.Context, task *aresexp.EmbeddingTask) error {
 	return e.queue.Enqueue(ctx, &postgres.EmbeddingTask{
 		TaskID:   task.TaskID,
-		Table:    aresexp.ExperienceTableName,
+		Table:    storage_models.ExperiencesTable,
 		Content:  task.Content,
 		TenantID: task.TenantID,
 		Model:    task.Model,

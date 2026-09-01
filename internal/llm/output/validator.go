@@ -3,6 +3,7 @@ package output
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect" // used for comparing arbitrary values via reflect.DeepEqual in validation
 	"regexp"
 	"sync"
@@ -93,7 +94,7 @@ func (v *Validator) validateValue(data interface{}, schema *Schema, path string)
 
 	// Enum validation
 	if len(schema.Enum) > 0 {
-		if err := v.validateEnum(data, schema.Enum, path); err != nil {
+		if err := v.validateEnum(data, schema, path); err != nil {
 			return err
 		}
 	}
@@ -251,25 +252,23 @@ func canonicalValue(v interface{}) interface{} {
 	return v
 }
 
-func (v *Validator) validateEnum(value interface{}, enum []interface{}, path string) error {
-	// An empty string means "not set" for a Go-struct-derived map: converters
-	// like ValidateRecommendResult emit every struct field, so an optional
-	// domain field that the caller never populated arrives as "" (see
-	// models.RecommendResult.Occasion / .Season, both documented as optional).
-	// Judging "" against the enum would reject every general-purpose result, so
-	// treat it as absent. Fields where empty is genuinely invalid are still
-	// caught by their own MinLength/required constraints.
-	if s, ok := asString(value); ok && s == "" {
-		return nil
+func (v *Validator) validateEnum(value interface{}, schema *Schema, path string) error {
+	// Empty means "not set" only where the schema says so (Schema.AllowEmpty).
+	// It used to be an unconditional bypass, which also let a REQUIRED enum field
+	// validate with "" because Required never inspects the value.
+	if schema.AllowEmpty {
+		if s, ok := asString(value); ok && s == "" {
+			return nil
+		}
 	}
 
 	want := canonicalValue(value)
-	for _, e := range enum {
+	for _, e := range schema.Enum {
 		if reflect.DeepEqual(want, canonicalValue(e)) {
 			return nil
 		}
 	}
-	return fmt.Errorf("%s: value %v is not in enum %v", path, value, enum)
+	return fmt.Errorf("%s: value %v is not in enum %v", path, value, schema.Enum)
 }
 
 func (v *Validator) validateString(value interface{}) error {
@@ -296,13 +295,18 @@ func (v *Validator) validateInteger(value interface{}) error {
 }
 
 func (v *Validator) validateBoolean(value interface{}) error {
-	_, ok := value.(bool)
-	if !ok {
+	// asBool, not a bare value.(bool): custom validators run after validateType,
+	// so a bare assertion would accept a named bool type at the type check and
+	// then reject it here.
+	if _, ok := asBool(value); !ok {
 		return errors.New("expected boolean")
 	}
 	return nil
 }
 
+// validateArray deliberately keeps the exact []interface{} assertion rather than
+// accepting any slice kind: JSON decoding and ValidateRecommendResult only ever
+// produce that type, and validateValue's array branch asserts it exactly too.
 func (v *Validator) validateArray(value interface{}) error {
 	_, ok := value.([]interface{})
 	if !ok {
@@ -311,6 +315,8 @@ func (v *Validator) validateArray(value interface{}) error {
 	return nil
 }
 
+// validateObject keeps the exact map[string]interface{} assertion for the same
+// reason as validateArray.
 func (v *Validator) validateObject(value interface{}) error {
 	_, ok := value.(map[string]interface{})
 	if !ok {
@@ -537,14 +543,16 @@ func toFloat64(v interface{}) (float64, bool) {
 	return 0, false
 }
 
-// maxInt64AsFloat is the largest int64 exactly representable as a float64.
-// It is spelled via the unsigned max so it stays correct without importing
-// math.MaxInt64 (Go 1.17+ would allow the constant directly).
-const maxInt64AsFloat = float64(^uint64(0) >> 1)
+// int64OverflowBound is the first float64 that is out of int64 range: 2^63.
+// int64's true maximum (2^63-1) is not representable as a float64, so any
+// expression aiming at it rounds up to exactly 2^63 — which is why the
+// comparison below must be strict.
+const int64OverflowBound = float64(1 << 63)
 
-// minInt64AsFloat is the true int64 lower bound. The original code used
-// `^int64(0)`, which evaluates to -1 (not MinInt64), so huge negative floats
-// slipped through and were silently truncated.
+// minInt64AsFloat is the true int64 lower bound (-2^63) and IS exactly
+// representable, so it stays an inclusive bound. The original code used
+// `^int64(0)`, which evaluates to -1 rather than MinInt64, so huge negative
+// floats slipped through and were silently truncated.
 const minInt64AsFloat = float64(-1 << 63)
 
 func toInt64(v interface{}) (int64, bool) {
@@ -562,13 +570,19 @@ func toInt64(v interface{}) (int64, bool) {
 		}
 		return int64(u), true
 	case reflect.Float32, reflect.Float64:
-		// Range-check before narrowing. Both bounds are the true int64 limits;
-		// the float32 branch previously still used the `^int64(0)` == -1 bug.
 		f := rv.Float()
-		if f <= maxInt64AsFloat && f >= minInt64AsFloat {
-			return int64(f), true
+		// Range-check strictly before narrowing: int64(f) is undefined per the Go
+		// spec when f is out of range, and 2^63 itself is already out of range.
+		// NaN and ±Inf fail both comparisons, so they are rejected here.
+		if f >= int64OverflowBound || f < minInt64AsFloat {
+			return 0, false
 		}
-		return 0, false
+		// JSON Schema "integer" accepts 1.0 but not 1.5. Truncating silently would
+		// make dirty data look valid, so require no fractional part.
+		if f != math.Trunc(f) {
+			return 0, false
+		}
+		return int64(f), true
 	}
 	return 0, false
 }

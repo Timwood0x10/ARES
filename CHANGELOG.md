@@ -143,6 +143,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Vector search returned rows that have no embedding yet**
+  (`internal/storage/postgres`): the async embedding path inserts a row first
+  and backfills its vector later, but the readers never excluded those rows.
+  Two placeholder shapes were both wrong: `WriteBuffer` wrote a 1024-dimensional
+  *zero* vector (a perfectly valid vector, so it satisfies `IS NOT NULL`, enters
+  the ivfflat index, and ranks by a meaningless distance), while the migration
+  made the column nullable without teaching the queries about NULL. Now every
+  vector read filters `embedding IS NOT NULL`, the ivfflat indexes on
+  `knowledge_chunks_1024` / `experiences_1024` are partial on the same
+  predicate (so the planner can prove the filter is implied), and the write
+  buffer leaves `embedding` NULL. Databases migrated earlier keep their
+  non-partial index — still correct, just without that proof.
+- **Rows whose content repeated were never embedded** (`embedding_queue`):
+  `dedupe_key` hashed `table|content|model|version` and completed entries stay
+  in the queue, so the *second* row that happened to share content with an older
+  one got `ErrDuplicateTask` forever and kept a NULL vector. The key is now
+  exactly `(table_name, task_id, tenant_id)` — one source row owns at most one
+  queue entry, which is the invariant `MarkProcessing`/`MarkCompleted`/
+  `MarkFailed` already assumed by addressing rows via `WHERE task_id = $1`.
+  Anything varying per attempt (content, model, version, spec hash) is excluded;
+  re-embedding an edited row revives its existing entry in place, and only from
+  `completed`, so an entry held by a worker is never yanked away.
+  **Upgrade note**: pending entries written by an older build hash differently
+  and will be re-enqueued once by the reconcile loop; embedding writes are
+  idempotent, so the only cost is one duplicated embedding call per pending row.
+- **Dead-lettering an embedding task always failed, retrying it forever**
+  (`EmbeddingQueue.MarkFailed`): the insert into `embedding_dead_letter`
+  selected `created_at` from `embedding_queue`, which has no such column. The
+  statement errored, aborted the transaction, and left the entry pending with
+  `retry_count` already at the limit — so the worker re-picked it, failed, and
+  hit the same broken statement on every pass. It now carries `queued_at` over.
+- **Reconcile re-enqueued dead-lettered rows on every tick**: `MarkFailed`
+  deletes the queue entry when it gives up, so the source row matched the orphan
+  scan again immediately (re-enqueue → fail → dead-letter → re-enqueue), burning
+  embedding quota on content that cannot be embedded. Both orphan scans now skip
+  rows present in `embedding_dead_letter` (indexed on `(task_id, table_name)`),
+  and the experiences scan treats `processing` like `pending` so a task held by
+  a worker is not reset underneath it.
 - **Cost dashboard routes panicked on every request** (`cmd/ares`): `actionHandler.costMux`
   was never assigned while `cost` was, and `serveIntrospect` dereferences the
   mux whenever `cost` is non-nil — so the first request to

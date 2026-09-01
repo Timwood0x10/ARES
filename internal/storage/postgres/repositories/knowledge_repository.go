@@ -426,6 +426,17 @@ func (r *KnowledgeRepository) Delete(ctx context.Context, id, tenantID string) e
 }
 
 // SearchByVector performs vector similarity search.
+//
+// `embedding_status = 'completed'` is not a substitute for `embedding IS NOT
+// NULL`: UpdateEmbeddingStatus can flip the status without writing a vector, so
+// the two predicates can disagree. Filtering NULL vectors does NOT increase the
+// number of rows returned — `ORDER BY <dist>` is ascending and PostgreSQL sorts
+// NULLs last, so a vector-less row could never outrank a real one. It matters
+// because such a row would otherwise reach the scan loop, fail to parse, and be
+// dropped by a bare `continue`, which is indistinguishable from "the tenant has
+// little knowledge"; it also spares the executor rows it cannot rank and gives
+// the planner a usable filter.
+//
 // Args:
 // ctx - database operation context.
 // embedding - query vector embedding.
@@ -446,6 +457,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 		FROM knowledge_chunks_1024
 		WHERE tenant_id = $2
 		  AND embedding_status = 'completed'
+		  AND embedding IS NOT NULL
 		ORDER BY embedding <=> $1::vector
 		LIMIT $3
 	`
@@ -524,6 +536,14 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	}
 
 	log.Info("Vector search completed", "rows_scanned", rowCount, "chunks_returned", len(chunks))
+
+	// A gap between scanned and returned means rows were dropped by one of the
+	// `continue` branches above. Info-level parity would hide that, and a
+	// shrinking result set is exactly what an operator needs to notice.
+	if rowCount != len(chunks) {
+		log.Warn("Vector search dropped knowledge rows",
+			"tenant_id", tenantID, "skipped", rowCount-len(chunks), "returned", len(chunks))
+	}
 
 	return chunks, nil
 }

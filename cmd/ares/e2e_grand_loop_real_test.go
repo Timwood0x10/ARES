@@ -96,6 +96,15 @@ func (s *e2eAgentSink) contains(t agentfabric.AgentEventType) bool {
 	return false
 }
 
+// snapshot returns a copy of the collected types under the lock, for the same
+// reason as e2eTaskEventLog.snapshot: reading s.types directly from the test
+// goroutine races with Emit.
+func (s *e2eAgentSink) snapshot() []agentfabric.AgentEventType {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]agentfabric.AgentEventType(nil), s.types...)
+}
+
 // e2eTaskEventLog collects ares_events task lifecycle events (task.created /
 // acquired / yielded / completed / ...) published by the Task Fabric.
 type e2eTaskEventLog struct {
@@ -118,6 +127,40 @@ func (l *e2eTaskEventLog) contains(t ares_events.EventType) bool {
 		}
 	}
 	return false
+}
+
+// snapshot returns a copy of the collected types under the lock. Reading
+// l.types directly (e.g. inside a t.Fatalf format arg) races with the
+// subscriber goroutine's append — measured as a `-race` failure once per ~40
+// runs of the grand-loop test.
+func (l *e2eTaskEventLog) snapshot() []ares_events.EventType {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]ares_events.EventType(nil), l.types...)
+}
+
+// waitForEvents polls until every wanted event type has been observed, or the
+// timeout elapses. It returns the missing types (empty when all arrived).
+//
+// A bounded wait is required rather than an instantaneous check: the fabric
+// publishes lifecycle events through the EventStore, and the subscriber
+// goroutine appends them asynchronously. A task can therefore be COMPLETED in
+// the fabric a few microseconds before task.completed lands in this log — which
+// is precisely what made the assertion flaky under `-race -coverprofile`.
+func (l *e2eTaskEventLog) waitForEvents(timeout time.Duration, want ...ares_events.EventType) []ares_events.EventType {
+	deadline := time.Now().Add(timeout)
+	for {
+		missing := make([]ares_events.EventType, 0, len(want))
+		for _, w := range want {
+			if !l.contains(w) {
+				missing = append(missing, w)
+			}
+		}
+		if len(missing) == 0 || time.Now().After(deadline) {
+			return missing
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // waitFabricState polls until the task reaches the given state or the timeout
@@ -223,7 +266,17 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	var replacementMu sync.Mutex
 	var replacement *e2eRecoveryExecutor
 	rec := aresrecovery.New(fabric, agents, aresrecovery.DefaultRestartPolicy())
-	go runKernelRecoveryLoop(ctx, store, rec, kernelLoopConfig{},
+	// B1: wire the scheduler's stale-winner nomination exactly as peer mode
+	// does. Without it this test does not exercise the production chain: a
+	// drain that acquires t1 AFTER the clock advance mints a lease expiring at
+	// (now + TTL), which this controlled clock never reaches — the task then
+	// sits LEASED forever and recovery is never triggered. That was the 1-in-20
+	// flake under `-race -coverprofile` (coverage instrumentation widens the
+	// kill/lookup window). In production the same defect costs a full lease TTL
+	// of dead time per agent death.
+	recoveryKick, recoveryHint := newRecoveryKick()
+	sched.WithRecoveryHint(recoveryHint)
+	go runKernelRecoveryLoop(ctx, store, rec, kernelLoopConfig{RecoveryKick: recoveryKick},
 		func(taskID, agentID string, executor CapabilityExecutor) {
 			sched.RegisterExecutorForTask(taskID, agentID, executor)
 		},
@@ -291,14 +344,17 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	} else if phase, ok := resumed.(map[string]any); !ok || phase["phase"] != "investigation-done" {
 		t.Fatalf("replacement resumed from the wrong checkpoint: %v", resumed)
 	}
-	if !taskEvents.contains(ares_events.EventTaskCreated) ||
-		!taskEvents.contains(ares_events.EventTaskAcquired) ||
-		!taskEvents.contains(ares_events.EventTaskYielded) ||
-		!taskEvents.contains(ares_events.EventTaskCompleted) {
-		t.Fatalf("event stream must carry task.created/acquired/yielded/completed, got %v", taskEvents.types)
+	if missing := taskEvents.waitForEvents(2*time.Second,
+		ares_events.EventTaskCreated,
+		ares_events.EventTaskAcquired,
+		ares_events.EventTaskYielded,
+		ares_events.EventTaskCompleted,
+	); len(missing) > 0 {
+		t.Fatalf("event stream must carry task.created/acquired/yielded/completed, missing %v, got %v",
+			missing, taskEvents.snapshot())
 	}
 	if !agentSink.contains(agentfabric.EventAgentKilled) {
-		t.Fatalf("agent event stream must carry agent.killed, got %v", agentSink.types)
+		t.Fatalf("agent event stream must carry agent.killed, got %v", agentSink.snapshot())
 	}
 	// Leader OFF: the whole run used only taskfabric + agentfabric + the
 	// scheduler — no leader dispatcher, no planner participated.

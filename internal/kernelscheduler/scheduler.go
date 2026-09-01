@@ -106,6 +106,60 @@ type Scheduler struct {
 	// System Runtime readiness gate must mean "drain loop alive", not
 	// "object exists"). Set at Run entry, cleared on exit.
 	running atomic.Bool
+	// recoveryHint, when wired, is invoked at the stale-winner boundary: the
+	// winner died between candidate build and executor lookup and no capable
+	// replacement exists yet, so waiting for the lease TTL is the only other
+	// way out. The hint asks the recovery loop to sweep NOW (B1).
+	//
+	// It must be non-blocking — the caller is a drain goroutine on the hot
+	// path. The wiring side (cmd/ares) satisfies this with a capacity-1
+	// channel and a drop-on-full send, matching the sweep semaphore's own
+	// drop semantics. Nil keeps the pre-B1 behavior for the leader/SDK paths
+	// that have no recovery loop.
+	//
+	// Deliberately a callback rather than a recovery dependency: the
+	// architecture red line forbids kernelscheduler importing runtime
+	// (TestSchedulerMustNotImportRuntime).
+	recoveryHint func(taskID string)
+}
+
+// WithRecoveryHint wires the stale-winner recovery trigger (B1). fn is called
+// when a leased task's winner has died and no capable replacement executor
+// exists, so the task would otherwise stall for the full lease TTL. fn MUST
+// NOT block: it runs on a drain goroutine.
+//
+// Args:
+//   - fn: the non-blocking sweep trigger; nil disables the hint.
+//
+// Returns:
+//   - *Scheduler: the receiver, for chaining.
+func (s *Scheduler) WithRecoveryHint(fn func(taskID string)) *Scheduler {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	s.recoveryHint = fn
+	return s
+}
+
+// notifyRecovery fires the recovery hint under a read lock (the hint may be
+// re-wired at runtime). Safe when no hint is wired.
+func (s *Scheduler) notifyRecovery(taskID string) {
+	s.execMu.RLock()
+	hint := s.recoveryHint
+	s.execMu.RUnlock()
+	if hint != nil {
+		hint(taskID)
+	}
+}
+
+// hasRecoveryHint reports whether a recovery loop is wired to receive
+// stale-winner nominations. The stale-winner path needs this BEFORE releasing:
+// releasing clears the lease and thereby removes the task from
+// CheckExpiredLeases' scope, so a release with no recovery consumer would
+// strand the task instead of merely delaying it.
+func (s *Scheduler) hasRecoveryHint() bool {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	return s.recoveryHint != nil
 }
 
 // Running reports whether the scheduler's drain loop is currently running.
@@ -652,20 +706,44 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		if !ok || executor == nil {
 			// The candidate snapshot is stale: the winner died (or became
 			// non-executable) between candidate build and executor lookup.
-			// When another capable executor exists, release the task so the
-			// next drain re-schedules it within one poll interval instead of
-			// stalling for the full lease TTL (EDGE-4: 5-minute stall).
-			// Only when NO capable executor is left do we keep the lease:
-			// keeping it lets TTL expiry drive the E1 recovery chain
-			// (death → lease expiry → requeue → replacement resumes from
-			// checkpoint). A task held by other live agents is unaffected.
+			//
+			// The task must only be released to someone who can actually pick
+			// it up. Releasing clears the lease, which also removes the task
+			// from CheckExpiredLeases' scope — so releasing into an empty
+			// world would strand it permanently, which is strictly worse than
+			// the TTL stall. Hence three cases, in order of preference:
+			//
+			//  1. Another capable executor exists → release; the next drain
+			//     re-schedules within one poll interval (EDGE-4).
+			//  2. No capable executor, but a recovery loop is wired → release
+			//     AND nominate the task to it (B1). Recovery gives the task a
+			//     replacement execution body promptly, instead of the task
+			//     waiting out the full lease TTL. This is the production path
+			//     (cmd/ares peer mode).
+			//  3. Neither → keep the lease. TTL expiry is then the ONLY
+			//     recovery trigger available, and keeping the lease is what
+			//     makes the task visible to CheckExpiredLeases. Leader/SDK/
+			//     chaos-sandbox paths land here.
+			//
+			// Release is epoch-fenced (only the current holder can release)
+			// and PRESERVES the checkpoint, so E1's "resume, don't restart"
+			// contract holds in cases 1 and 2.
 			if s.HasCapableExecutor(taskID) {
 				if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
 					log.Printf("kernel scheduler: release %q for stale winner %q failed: %v", taskID, winner, releaseErr)
 				}
 				return nil
 			}
-			log.Printf("kernel scheduler: winner %q for task %q is no longer executable and no capable replacement exists; task stays leased for recovery", winner, taskID)
+			if s.hasRecoveryHint() {
+				if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+					log.Printf("kernel scheduler: release %q for stale winner %q failed: %v", taskID, winner, releaseErr)
+					return nil
+				}
+				log.Printf("kernel scheduler: winner %q for task %q is no longer executable; released to READY and nominated for recovery", winner, taskID)
+				s.notifyRecovery(taskID)
+				return nil
+			}
+			log.Printf("kernel scheduler: winner %q for task %q is no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry", winner, taskID)
 			return nil
 		}
 	}

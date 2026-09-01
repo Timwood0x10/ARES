@@ -498,6 +498,21 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		return nil, err
 	}
 	comp.Evolution = evol
+	// B4: ProvideEvolution calls scheduler.Register(), which subscribes to the
+	// EventStore on a context.Background() of its own and parks a goroutine on
+	// the event channel. Nothing used to call Shutdown(), so that goroutine —
+	// plus the EventStore subscriber goroutine feeding it — outlived every
+	// Runtime and Bootstrap for the life of the process. goleak surfaced it;
+	// counting goroutines by hand never would have, which is why B4 exists.
+	if evol != nil {
+		if sched, ok := evol.Scheduler.(*evolution.EvolutionScheduler); ok && sched != nil {
+			comp.bgGroup.Go(func() error {
+				<-ctx.Done()
+				sched.Shutdown()
+				return nil
+			})
+		}
+	}
 
 	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
 	// KnowledgeRetriever (AKG entries) into the MemoryManager so every

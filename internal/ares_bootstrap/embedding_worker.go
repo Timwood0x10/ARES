@@ -5,16 +5,17 @@ import (
 	"log/slog"
 	"time"
 
-	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 // tableKnowledgeChunks is the knowledge chunk table consumed by the
 // embedding worker's write-back dispatch (shared with the expiry cleaner
-// and vector wiring in this package).
-const tableKnowledgeChunks = "knowledge_chunks_1024"
+// and vector wiring in this package). It aliases the storage-layer constant so
+// the physical name has a single source of truth.
+const tableKnowledgeChunks = storage_models.KnowledgeChunksTable
 
 // EmbeddingWorkerConfig controls the embedding worker polling intervals.
 type EmbeddingWorkerConfig struct {
@@ -262,9 +263,9 @@ func (w embeddingWriter) writeEmbedding(
 			return errNoRepo(tableKnowledgeChunks)
 		}
 		return w.knowledgeRepo.UpdateEmbedding(ctx, task.TenantID, task.TaskID, vec, model, version)
-	case aresexp.ExperienceTableName:
+	case storage_models.ExperiencesTable:
 		if w.experienceRepo == nil {
-			return errNoRepo(aresexp.ExperienceTableName)
+			return errNoRepo(storage_models.ExperiencesTable)
 		}
 		return w.experienceRepo.UpdateEmbedding(ctx, task.TenantID, task.TaskID, vec, model, version)
 	default:
@@ -286,21 +287,27 @@ func (e *noRepoError) Error() string {
 // wireEmbeddingWorker connects the embedding worker and reconciler into
 // the bootstrap background group. It is best-effort: nil pool, nil embClient,
 // or nil repos cause the worker to be skipped with an info log.
+//
+// queue and embCfg come from provideDistillation so producer and consumer share
+// one queue instance and one config, instead of each side building its own.
 func wireEmbeddingWorker(
 	ctx context.Context,
 	comp *Components,
 	pool *postgres.Pool,
 	embClient *embedding.EmbeddingClient,
+	queue *postgres.EmbeddingQueue,
+	embCfg *postgres.EmbeddingConfig,
 	knowledgeRepo *repositories.KnowledgeRepository,
 	experienceRepo *repositories.ExperienceRepository,
 ) {
-	if pool == nil || embClient == nil {
-		slog.Info("bootstrap: embedding worker not wired (pool or embedding client nil)")
+	if pool == nil || embClient == nil || queue == nil {
+		slog.Info("bootstrap: embedding worker not wired (pool, embedding client or queue nil)")
 		return
 	}
+	if embCfg == nil {
+		embCfg = postgres.DefaultEmbeddingConfig()
+	}
 
-	embCfg := postgres.DefaultEmbeddingConfig()
-	queue := postgres.NewEmbeddingQueue(pool, embCfg)
 	writer := embeddingWriter{
 		knowledgeRepo:  knowledgeRepo,
 		experienceRepo: experienceRepo,

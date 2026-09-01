@@ -18,12 +18,26 @@ type Adapter struct {
 	client *aresllm.Client
 }
 
+// defaultOpenAIBaseURL is the canonical OpenAI endpoint. internal/llm.NewClient
+// requires a BaseURL for every non-Ollama provider, so without this default the
+// doc comment below ("optional override") was false: a plain
+// New(map[string]any{"api_key": …}) failed with "base_url is required".
+// The same default already exists on the two other OpenAI entry points
+// (sdk/options.go:201, internal/llm/output/openai.go:46); this aligns the
+// compat adapter with them.
+const defaultOpenAIBaseURL = "https://api.openai.com/v1"
+
+// defaultOpenAIModel is used when the config map carries no model.
+const defaultOpenAIModel = "gpt-4o-mini"
+
 // New constructs an Adapter from a raw config map.
 //
 // Recognized keys:
 //
 //	api_key   string  — API key for the OpenAI-compatible service.
-//	base_url  string  — optional override for non-OpenAI endpoints.
+//	base_url  string  — optional override for non-OpenAI endpoints. Defaults to
+//	                    the canonical OpenAI endpoint when provider is "openai";
+//	                    REQUIRED for any other provider, which has no default.
 //	model     string  — default model name.
 //	provider  string  — internal provider label; defaults to "openai".
 func New(config map[string]any) (*Adapter, error) {
@@ -33,12 +47,19 @@ func New(config map[string]any) (*Adapter, error) {
 	}
 	model, _ := config["model"].(string)
 	if model == "" {
-		model = "gpt-4o-mini"
+		model = defaultOpenAIModel
 	}
 	baseURL, _ := config["base_url"].(string)
 	provider, _ := config["provider"].(string)
 	if provider == "" {
 		provider = "openai"
+	}
+	// Only plain "openai" gets a default endpoint. An OpenAI-compatible
+	// third party (openrouter, vLLM, azure) has no canonical URL, so guessing
+	// one would send the caller's key to the wrong host — let NewClient reject
+	// it instead.
+	if baseURL == "" && provider == "openai" {
+		baseURL = defaultOpenAIBaseURL
 	}
 
 	cfg := &aresllm.Config{

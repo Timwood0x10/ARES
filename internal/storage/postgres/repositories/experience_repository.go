@@ -234,6 +234,21 @@ func (r *ExperienceRepository) Delete(ctx context.Context, id, tenantID string) 
 }
 
 // SearchByVector performs vector similarity search for experiences.
+//
+// The embedding column is nullable (distillation inserts the row first and the
+// async worker backfills the vector), so the query filters NULL vectors
+// explicitly. This does NOT change how many rows come back: `ORDER BY <dist>`
+// is ascending and PostgreSQL puts NULLs last, so a NULL-vector row could never
+// displace a row that has a vector. What the predicate buys is:
+//   - such rows no longer reach the scan loop, where a NULL scanned into a
+//     string target failed and was dropped by a bare `continue` — an invisible
+//     loss that made pending backfill look like "this tenant has few rows";
+//   - the executor stops reading rows that can never be ranked;
+//   - the planner gains a filter it can actually use for row estimates.
+//
+// Rows that still fail to scan or parse are counted and reported once, so a
+// systematic problem shows up in logs instead of silently shrinking results.
+//
 // Args:
 // ctx - database operation context.
 // embedding - query vector embedding.
@@ -251,6 +266,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 		FROM experiences_1024
 		WHERE tenant_id = $2
 		  AND (decay_at IS NULL OR decay_at > NOW())
+		  AND embedding IS NOT NULL
 		ORDER BY embedding <=> $1::vector
 		LIMIT $3
 	`
@@ -262,6 +278,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 	defer func() { _ = rows.Close() }()
 
 	experiences := make([]*storage_models.Experience, 0)
+	skipped := 0
 	for rows.Next() {
 		exp := &storage_models.Experience{}
 		var similarity float64
@@ -273,12 +290,21 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 			&exp.DecayAt, &exp.CreatedAt, &similarity,
 		)
 		if err != nil {
+			// Skip the single bad row instead of failing the whole search: one
+			// unscannable row must not blank out an otherwise valid result set.
+			// Logged and counted because a silent continue makes a broken
+			// column look like "the tenant has fewer experiences".
+			skipped++
+			log.Warn("Skipping experience row in vector search", "tenant_id", tenantID, "error", err)
 			continue
 		}
 
 		// Parse embedding string to float64 array
 		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
+			skipped++
+			log.Warn("Skipping experience with unparsable embedding",
+				"tenant_id", tenantID, "experience_id", exp.ID, "error", err)
 			continue
 		}
 
@@ -301,6 +327,14 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 	if err := rows.Err(); err != nil {
 		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
+	}
+
+	// One aggregate line per search: the per-row warnings above are easy to
+	// lose in volume, and the ratio is what tells an operator whether the
+	// result set was truncated by data problems rather than by the limit.
+	if skipped > 0 {
+		log.Warn("Vector search dropped experience rows",
+			"tenant_id", tenantID, "skipped", skipped, "returned", len(experiences))
 	}
 
 	return experiences, nil

@@ -80,9 +80,23 @@ func ProvideEvolution(
 	} else {
 		opts = append(opts, evolution.WithMinInterval(5*time.Minute))
 	}
+	// B2 (G1): the legacy scheduler previously got no guardrails at all, so
+	// EvolutionScheduler.checkGuardrails short-circuited on nil and every
+	// ticker-driven cycle ran unchecked. This instance is deliberately
+	// SEPARATE from the adapter-layer one built in wireGAEvolution: guardrails
+	// carry mutable stagnation/baseline state, and the two paths count
+	// generations on different clocks and score scales — sharing one would
+	// cross-contaminate both. Do not "simplify" this into a single instance.
+	//
+	// metrics is nil here: the Prometheus collector is owned by wireGAEvolution
+	// (idempotent registration), and the legacy path's guardrail events are
+	// already visible through its own logs. Passing a second collector would
+	// double-count nothing but adds a construction-order dependency.
+	if g := buildEvolutionGuardrails(ctx, cfg, nil); g != nil {
+		opts = append(opts, evolution.WithSchedulerGuardrails(g))
+	}
 	scheduler := evolution.NewEvolutionScheduler(eventStore, adapter, opts...)
 	scheduler.Register()
-
 	// 3. Evaluators (optional — requires LLM client).
 	var evalRegistry *ares_eval.EvaluatorRegistry
 	if llmClient != nil {

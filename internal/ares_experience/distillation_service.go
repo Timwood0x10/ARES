@@ -10,21 +10,15 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
-// DistillationService provides experience distillation from task results.
-// This service converts task execution logs into reusable experiences.
-// ExperienceTableName is the storage table distilled experiences are written
-// to. Exposed so the bootstrap enqueuer adapter and the embedding worker can
-// reference it without duplicating the literal.
-const ExperienceTableName = "experiences_1024"
-
 // EmbeddingTask describes an async vector backfill for an already-created
 // experience row. TaskID is the experience row id, i.e. the source row the
-// vector will be written back to, per the queue's REVIEW #13 contract.
+// vector will be written back to, per the queue's TaskID contract.
 type EmbeddingTask struct {
 	TaskID   string
 	Content  string
@@ -47,7 +41,8 @@ type DistillationService struct {
 	llmClient         *llm.Client
 	embeddingClient   *embedding.EmbeddingClient
 	experienceRepo    repositories.ExperienceRepositoryInterface
-	embeddingEnqueuer EmbeddingEnqueuer // optional async backfill producer
+	embeddingEnqueuer EmbeddingEnqueuer         // optional async backfill producer
+	embeddingConfig   *postgres.EmbeddingConfig // optional; defaults applied when nil
 	logger            *slog.Logger
 }
 
@@ -62,6 +57,15 @@ type DistillationOption func(*DistillationService)
 func WithEmbeddingEnqueuer(enqueuer EmbeddingEnqueuer) DistillationOption {
 	return func(s *DistillationService) {
 		s.embeddingEnqueuer = enqueuer
+	}
+}
+
+// WithEmbeddingConfig supplies the storage embedding config so the async and
+// synchronous paths stamp the configured embedding version instead of a
+// hardcoded one. Defaults are used when unset.
+func WithEmbeddingConfig(cfg *postgres.EmbeddingConfig) DistillationOption {
+	return func(s *DistillationService) {
+		s.embeddingConfig = cfg
 	}
 }
 
@@ -149,17 +153,26 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 	}
 
 	if s.embeddingEnqueuer != nil {
-		// REVIEW #13 A2: async producer path. Persist the row first (embedding
-		// NULL), then enqueue a backfill task so the embedding worker writes the
-		// vector back asynchronously. This keeps the event subscriber loop from
-		// blocking on the embedding network call.
+		// Async producer path. Persist the row first (embedding NULL), then
+		// enqueue a backfill task so the embedding worker writes the vector back
+		// asynchronously. This keeps the event subscriber loop from blocking on
+		// the embedding network call.
+		exp.EmbeddingModel = s.embeddingModel()
+		exp.EmbeddingVersion = s.embeddingVersion()
 		if err := s.experienceRepo.Create(ctx, exp); err != nil {
 			return nil, errors.Wrap(err, "store experience")
 		}
 		if err := s.enqueueEmbeddingBackfill(ctx, exp, extracted.Problem); err != nil {
-			// Enqueue failed: fall back to a synchronous embed+update so the
-			// row never stays without a vector (the reconciler does not scan
-			// experiences_1024, so an orphaned task would not be retried).
+			// Logged because a permanently broken queue is otherwise
+			// indistinguishable from a healthy one: the fallback below keeps
+			// producing correct rows, only synchronously and slower.
+			s.logger.Warn("enqueue embedding backfill failed, falling back to synchronous embed",
+				"error", err,
+				"experience_id", exp.ID,
+				"tenant_id", exp.TenantID,
+				"table", storage_models.ExperiencesTable)
+			// Fall back to a synchronous embed+update so the row does not stay
+			// without a vector until the reconciler picks it up.
 			if backfillErr := s.backfillEmbedding(ctx, exp, extracted.Problem); backfillErr != nil {
 				return nil, errors.Wrap(backfillErr, "backfill embedding after enqueue failure")
 			}
@@ -182,14 +195,14 @@ func (s *DistillationService) enqueueEmbeddingBackfill(ctx context.Context, exp 
 		Content:  content,
 		TenantID: exp.TenantID,
 		Model:    s.embeddingModel(),
-		Version:  1,
+		Version:  s.embeddingVersion(),
 	}
 	return s.embeddingEnqueuer.Enqueue(ctx, task)
 }
 
-// backfillEmbedding synchronously embeds content and writes the vector back to
-// the row. Used as a fallback when enqueue fails.
-func (s *DistillationService) backfillEmbedding(ctx context.Context, exp *storage_models.Experience, content string) error {
+// embed generates the vector for content and stamps the model/version fields on
+// exp. Shared by both persistence paths so they cannot drift apart.
+func (s *DistillationService) embed(ctx context.Context, exp *storage_models.Experience, content string) error {
 	if s.embeddingClient == nil {
 		return errors.New("embedding client is not available")
 	}
@@ -199,26 +212,34 @@ func (s *DistillationService) backfillEmbedding(ctx context.Context, exp *storag
 	}
 	exp.Embedding = vec
 	exp.EmbeddingModel = s.embeddingModel()
-	exp.EmbeddingVersion = 1
-	if err := s.experienceRepo.Update(ctx, exp); err != nil {
+	exp.EmbeddingVersion = s.embeddingVersion()
+	return nil
+}
+
+// backfillEmbedding synchronously embeds content and writes the vector back to
+// the row. Used as a fallback when enqueue fails.
+//
+// It updates only the embedding columns (not the whole row) because the async
+// worker may be writing the same row concurrently: a full-row Update would
+// clobber whatever it wrote.
+func (s *DistillationService) backfillEmbedding(ctx context.Context, exp *storage_models.Experience, content string) error {
+	if err := s.embed(ctx, exp, content); err != nil {
+		return err
+	}
+	err := s.experienceRepo.UpdateEmbedding(
+		ctx, exp.TenantID, exp.ID, exp.Embedding, exp.EmbeddingModel, exp.EmbeddingVersion)
+	if err != nil {
 		return errors.Wrap(err, "backfill experience embedding")
 	}
 	return nil
 }
 
 // embedAndCreate embeds content and persists the row with the vector (the
-// synchronous pre-A2 path).
+// synchronous default path).
 func (s *DistillationService) embedAndCreate(ctx context.Context, exp *storage_models.Experience, content string) error {
-	if s.embeddingClient == nil {
-		return errors.New("embedding client is not available")
+	if err := s.embed(ctx, exp, content); err != nil {
+		return err
 	}
-	vec, err := s.embeddingClient.Embed(ctx, content)
-	if err != nil {
-		return errors.Wrap(err, "generate embedding")
-	}
-	exp.Embedding = vec
-	exp.EmbeddingModel = s.embeddingModel()
-	exp.EmbeddingVersion = 1
 	if err := s.experienceRepo.Create(ctx, exp); err != nil {
 		return errors.Wrap(err, "store experience")
 	}
@@ -231,6 +252,16 @@ func (s *DistillationService) embeddingModel() string {
 		return ""
 	}
 	return s.embeddingClient.GetModel()
+}
+
+// embeddingVersion returns the configured embedding schema version. It reads the
+// storage embedding config instead of hardcoding 1 so a version bump does not
+// have to be applied in every producer separately.
+func (s *DistillationService) embeddingVersion() int {
+	if s.embeddingConfig == nil {
+		return postgres.DefaultEmbeddingConfig().DefaultVersion
+	}
+	return s.embeddingConfig.DefaultVersion
 }
 
 // expToExperience converts a stored experience into the returned domain
