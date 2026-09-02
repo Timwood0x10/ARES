@@ -74,6 +74,12 @@ type ScoringConfig struct {
 	ScoreCacheSize           int                              `json:"score_cache_size,omitempty"`
 	MemoryAwareScoringConfig scoring.MemoryAwareScoringConfig `json:"memory_aware_scoring,omitempty"`
 	MemoryExperienceProvider scoring.ExperienceProvider       `json:"-"`
+	// DeterministicScorerEnabled indicates that a zero-LLM deterministic
+	// scorer is wired (C2.6). When true, the shadow gate's hasScorer check
+	// passes even without an LLM scorer, so the G2 gate stays registered
+	// and can produce shadow comparison evidence from execution attribution
+	// alone. This breaks the "zero-token ⇒ no G2" deadlock.
+	DeterministicScorerEnabled bool `json:"deterministic_scorer_enabled,omitempty"`
 }
 
 // MutationConfig groups mutation and crossover settings.

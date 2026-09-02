@@ -33,9 +33,16 @@ type ExecutionAttribution struct {
 
 // capabilityOutcome tracks success/failure counts for one (agent, capability)
 // pair (or one agent's aggregate).
+//
+// C2.1 extended fields: latency (nanoseconds), retries, and recovery
+// count — these feed the deterministic scorer (C2.2) so the evolution
+// system can score strategies without calling an LLM.
 type capabilityOutcome struct {
-	success int
-	fail    int
+	success       int
+	fail          int
+	totalLatency  time.Duration
+	totalRetries  int
+	totalRecovers int
 }
 
 // NewExecutionAttribution creates an empty attribution store.
@@ -61,6 +68,27 @@ func NewExecutionAttribution() *ExecutionAttribution {
 // rejected with a log line instead of corrupting the key (EDGE-5: the
 // invariant is enforced here, not only assumed by splitAttributionKey).
 func (a *ExecutionAttribution) Record(agentID, capability string, success bool) {
+	a.RecordWithMetrics(agentID, capability, success, 0, 0, 0)
+}
+
+// RecordWithMetrics is the C2.1 extended Record that accepts latency,
+// retry count, and recovery count alongside the success/failure outcome.
+// These feed the deterministic scorer (C2.2) so attribution → strategy
+// score works without any LLM call.
+//
+// Args:
+//   - agentID: the executor that ran the task.
+//   - capability: the task's required capability.
+//   - success: true when the task completed, false when it failed.
+//   - latency: the quantum's wall-clock duration (0 if unknown).
+//   - retries: how many retries the task used (0 for first attempt).
+//   - recovers: how many recovery replacements were needed (0 normally).
+func (a *ExecutionAttribution) RecordWithMetrics(
+	agentID, capability string,
+	success bool,
+	latency time.Duration,
+	retries, recovers int,
+) {
 	if strings.Contains(agentID, "|") || strings.Contains(capability, "|") {
 		slog.Warn("aresrecovery: reject attribution record: contains '|'",
 			slog.String("agent_id", agentID), slog.String("capability", capability))
@@ -79,6 +107,10 @@ func (a *ExecutionAttribution) Record(agentID, capability string, success bool) 
 	} else {
 		out.fail++
 	}
+	out.totalLatency += latency
+	out.totalRetries += retries
+	out.totalRecovers += recovers
+
 	agent, ok := a.agentResults[agentID]
 	if !ok {
 		agent = &capabilityOutcome{}
@@ -89,6 +121,9 @@ func (a *ExecutionAttribution) Record(agentID, capability string, success bool) 
 	} else {
 		agent.fail++
 	}
+	agent.totalLatency += latency
+	agent.totalRetries += retries
+	agent.totalRecovers += recovers
 }
 
 // CapabilityConfidence returns the success rate [0,1] for an agent on a
@@ -138,20 +173,29 @@ type AttributionSnapshot struct {
 }
 
 // CapabilityResult is one (agent, capability) pair's outcome summary.
+// C2.1: extended with AvgLatency, AvgRetries, AvgRecovers for the
+// deterministic scorer.
 type CapabilityResult struct {
-	AgentID    string
-	Capability string
-	Success    int
-	Fail       int
-	Rate       float64
+	AgentID     string
+	Capability  string
+	Success     int
+	Fail        int
+	Rate        float64
+	AvgLatency  time.Duration
+	AvgRetries  float64
+	AvgRecovers float64
 }
 
 // AgentResult is one agent's aggregate outcome summary.
+// C2.1: extended with AvgLatency, AvgRetries, AvgRecovers.
 type AgentResult struct {
-	AgentID string
-	Success int
-	Fail    int
-	Rate    float64
+	AgentID     string
+	Success     int
+	Fail        int
+	Rate        float64
+	AvgLatency  time.Duration
+	AvgRetries  float64
+	AvgRecovers float64
 }
 
 // Snapshot returns a point-in-time copy of the attribution data. The
@@ -165,29 +209,45 @@ func (a *ExecutionAttribution) Snapshot() AttributionSnapshot {
 		agentID, cap := splitAttributionKey(key)
 		total := out.success + out.fail
 		rate := 1.0
+		var avgLatency time.Duration
+		var avgRetries, avgRecovers float64
 		if total > 0 {
 			rate = float64(out.success) / float64(total)
+			avgLatency = out.totalLatency / time.Duration(total)
+			avgRetries = float64(out.totalRetries) / float64(total)
+			avgRecovers = float64(out.totalRecovers) / float64(total)
 		}
 		caps = append(caps, CapabilityResult{
-			AgentID:    agentID,
-			Capability: cap,
-			Success:    out.success,
-			Fail:       out.fail,
-			Rate:       rate,
+			AgentID:     agentID,
+			Capability:  cap,
+			Success:     out.success,
+			Fail:        out.fail,
+			Rate:        rate,
+			AvgLatency:  avgLatency,
+			AvgRetries:  avgRetries,
+			AvgRecovers: avgRecovers,
 		})
 	}
 	agents := make([]AgentResult, 0, len(a.agentResults))
 	for agentID, out := range a.agentResults {
 		total := out.success + out.fail
 		rate := 1.0
+		var avgLatency time.Duration
+		var avgRetries, avgRecovers float64
 		if total > 0 {
 			rate = float64(out.success) / float64(total)
+			avgLatency = out.totalLatency / time.Duration(total)
+			avgRetries = float64(out.totalRetries) / float64(total)
+			avgRecovers = float64(out.totalRecovers) / float64(total)
 		}
 		agents = append(agents, AgentResult{
-			AgentID: agentID,
-			Success: out.success,
-			Fail:    out.fail,
-			Rate:    rate,
+			AgentID:     agentID,
+			Success:     out.success,
+			Fail:        out.fail,
+			Rate:        rate,
+			AvgLatency:  avgLatency,
+			AvgRetries:  avgRetries,
+			AvgRecovers: avgRecovers,
 		})
 	}
 	return AttributionSnapshot{

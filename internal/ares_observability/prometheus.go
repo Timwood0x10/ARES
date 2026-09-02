@@ -39,6 +39,13 @@ type PrometheusMetrics struct {
 	EvolutionGateSkippedTotal *prometheus.CounterVec
 	EvolutionWindowSamples    *prometheus.GaugeVec
 
+	// C5.3: evolution loop introspection gauges. These expose the
+	// current generation, DAG version, and compile count so /metrics
+	// can answer "which generation, which gate, which compile".
+	EvolutionGeneration   prometheus.Gauge
+	EvolutionDAGVersion   prometheus.Gauge
+	EvolutionCompileCount prometheus.Gauge
+
 	// Histograms
 	LLMCallDuration   *prometheus.HistogramVec
 	AgentStepDuration *prometheus.HistogramVec
@@ -204,6 +211,24 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 			},
 			[]string{"strategy_id", "source"},
 		),
+		EvolutionGeneration: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_generation",
+				Help: "Current evolution generation number",
+			},
+		),
+		EvolutionDAGVersion: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_dag_version",
+				Help: "Current live MutableDAG version (mutation counter)",
+			},
+		),
+		EvolutionCompileCount: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_compile_count",
+				Help: "Total number of CompilePlan calls since startup",
+			},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -227,6 +252,9 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionGateSkippedTotal,
 		m.EvolutionActiveDuration,
 		m.EvolutionWindowSamples,
+		m.EvolutionGeneration,
+		m.EvolutionDAGVersion,
+		m.EvolutionCompileCount,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -480,6 +508,46 @@ func (m *PrometheusMetrics) SetEvolutionWindowSamples(strategyID, source string,
 		return
 	}
 	m.EvolutionWindowSamples.WithLabelValues(strategyID, source).Set(float64(count))
+}
+
+// SetEvolutionGeneration sets the current evolution generation gauge (C5.3).
+// This exposes the GA's generation counter so /metrics can answer
+// "which generation produced this compile".
+//
+// Args:
+//   - generation: the current evolution generation.
+func (m *PrometheusMetrics) SetEvolutionGeneration(generation int) {
+	if m == nil {
+		return
+	}
+	m.EvolutionGeneration.Set(float64(generation))
+}
+
+// SetEvolutionDAGVersion sets the current live DAG version gauge (C5.3).
+// This is MutableDAG.Version() — the mutation counter that increments on
+// every structural patch (AddNode/RemoveNode/AddEdge/ReplaceNode).
+//
+// Args:
+//   - version: the current DAG version.
+func (m *PrometheusMetrics) SetEvolutionDAGVersion(version uint64) {
+	if m == nil {
+		return
+	}
+	m.EvolutionDAGVersion.Set(float64(version))
+}
+
+// SetEvolutionCompileCount sets the total compile count gauge (C5.3).
+// This is the number of CompilePlan calls since startup, exposing whether
+// the projection pipeline is actually firing (a flat zero means recompile
+// events are not reaching the coordinator).
+//
+// Args:
+//   - count: the total number of compiles.
+func (m *PrometheusMetrics) SetEvolutionCompileCount(count uint64) {
+	if m == nil {
+		return
+	}
+	m.EvolutionCompileCount.Set(float64(count))
 }
 
 // RecordCost observes a cost value for a model and session.

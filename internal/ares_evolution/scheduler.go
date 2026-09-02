@@ -127,6 +127,24 @@ func WithEnabled(enabled bool) SchedulerOption {
 	}
 }
 
+// WithScoreProvider wires the C2.4 zero-LLM score provider. When set, each
+// task.completed/failed event records the provider's aggregate score instead
+// of the constant 1.0/0.0, so degradation detection reflects real execution
+// quality (latency, retries, recovery) rather than just pass/fail.
+//
+// Args:
+//
+//	provider - the TaskScoreProvider to use (nil is a no-op).
+//
+// Returns:
+//
+//	SchedulerOption - the option function.
+func WithScoreProvider(provider TaskScoreProvider) SchedulerOption {
+	return func(s *EvolutionScheduler) {
+		s.scoreProvider = provider
+	}
+}
+
 // scoreWindowSize is the number of recent task scores to track for trend detection.
 const scoreWindowSize = 50
 
@@ -137,12 +155,32 @@ const scoreWindowSize = 50
 //
 // Scores are normalized to [0,1] to be dimensionally consistent with
 // RollbackPolicy thresholds (B1 fix: the threshold 0.15 is on a [0,1] scale).
+//
+// C2.4: when a ScoreProvider is wired, the scheduler uses the provider's
+// aggregate score instead of the constant 1.0/0.0. The provider reads
+// execution attribution (latency, retries, recovery) so the score window
+// reflects real execution quality, not just pass/fail. The constants remain
+// as the fallback when no provider is wired (backward compatible).
 const (
-	// taskScoreSuccess is the score recorded when a task completes successfully.
+	// taskScoreSuccess is the fallback score for a completed task (no provider).
 	taskScoreSuccess = 1.0
-	// taskScoreFailure is the score recorded when a task fails.
+	// taskScoreFailure is the fallback score for a failed task (no provider).
 	taskScoreFailure = 0.0
 )
+
+// TaskScoreProvider supplies a deterministic [0,1] score for task outcomes.
+// When wired into the EvolutionScheduler (C2.4), each task.completed or
+// task.failed event records the provider's current aggregate score instead
+// of the constant 1.0/0.0, so degradation detection reflects real execution
+// quality (latency, retries, recovery) rather than just pass/fail.
+//
+// The provider must be thread-safe (the subscription loop calls it
+// concurrently with the drain loop). Returns the neutral 0.5 when no
+// attribution data is available yet.
+type TaskScoreProvider interface {
+	// TaskScore returns a [0,1] score for the given task outcome.
+	TaskScore(success bool) float64
+}
 
 // degradationThreshold is the fraction of score drop that triggers evolution (15%).
 // On a [0,1] scale this is 0.15 — dimensionally consistent with
@@ -188,6 +226,12 @@ type EvolutionScheduler struct {
 	scores     []float64
 	scoreMu    sync.Mutex
 	guardrails *EvolutionGuardrails
+
+	// scoreProvider is the C2.4 zero-LLM score source. When wired, each
+	// task.completed/failed event records the provider's aggregate score
+	// instead of the constant 1.0/0.0. Nil falls back to the constants
+	// (backward compatible).
+	scoreProvider TaskScoreProvider
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -383,9 +427,13 @@ func (s *EvolutionScheduler) Register() {
 			case ares_events.EventAgentStopped:
 				s.OnAgentEnd(contextFromEvent(evt), CallbackData{AgentID: evt.StreamID})
 			case ares_events.EventTaskCompleted:
-				s.RecordScore(taskScoreSuccess)
+				// C2.4: use the deterministic score provider when wired;
+				// fall back to the constant 1.0 when not (backward compatible).
+				s.RecordScore(s.taskScore(true))
 			case ares_events.EventTaskFailed:
-				s.RecordScore(taskScoreFailure)
+				// C2.4: use the deterministic score provider when wired;
+				// fall back to the constant 0.0 when not (backward compatible).
+				s.RecordScore(s.taskScore(false))
 			}
 		}
 		return nil
@@ -605,6 +653,21 @@ func (s *EvolutionScheduler) SetEnabled(enabled bool) {
 	s.enabled.Store(enabled)
 }
 
+// SetScoreProvider wires the C2.4 zero-LLM score provider at runtime. This
+// is the post-construction wiring path: the EvolutionScheduler is built
+// before the peer kernel's ExecutionAttribution exists, so the provider
+// must be injected after both are constructed. Called from the serve
+// wiring layer (cmd/ares) once the attribution source is available.
+//
+// Args:
+//
+//	provider - the TaskScoreProvider to use (nil reverts to constants).
+func (s *EvolutionScheduler) SetScoreProvider(provider TaskScoreProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scoreProvider = provider
+}
+
 // IsEnabled returns whether the scheduler is currently enabled.
 //
 // Returns:
@@ -673,6 +736,28 @@ func (s *EvolutionScheduler) Shutdown() {
 			log.Warn("evolution scheduler: wait", "error", err)
 		}
 	}
+}
+
+// taskScore returns the score for a task outcome event (C2.4). When a
+// TaskScoreProvider is wired, it delegates to the provider so the score
+// reflects real execution quality (latency, retries, recovery). Without a
+// provider, it falls back to the constant 1.0/0.0 (backward compatible).
+//
+// Args:
+//
+//	success - true for task.completed, false for task.failed.
+//
+// Returns:
+//
+//	float64 - the score in [0,1].
+func (s *EvolutionScheduler) taskScore(success bool) float64 {
+	if s.scoreProvider != nil {
+		return s.scoreProvider.TaskScore(success)
+	}
+	if success {
+		return taskScoreSuccess
+	}
+	return taskScoreFailure
 }
 
 // ShouldEvolve delegates to the internal shouldEvolve logic.

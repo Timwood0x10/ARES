@@ -198,6 +198,22 @@ func DefaultLifecycleConfig() LifecycleConfig {
 	}
 }
 
+// CompileInfoProvider supplies compile provenance for the introspection
+// chain (C5.2). The wiring layer (cmd/ares) adapts the planprojection.
+// CompileCoordinator into this interface so /api/evolution/lifecycle can
+// answer "which generation, which gate, which compile" without ares_evolution
+// importing planprojection (which would create a circular dependency).
+//
+// When not wired, the compile fields in LifecycleState stay zero-valued.
+type CompileInfoProvider interface {
+	// CompileID returns the most recent compile's unique identifier.
+	CompileID() string
+	// DAGVersion returns the live DAG's mutation counter at the last compile.
+	DAGVersion() uint64
+	// CompileCount returns the total number of compiles since startup.
+	CompileCount() uint64
+}
+
 // lifecycleSnapshot was renamed to LifecycleState: the type name clashed with
 // the LifecycleSnapshot METHOD (required by introspect.LifecycleSnapshotProvider),
 // which read like two different things sharing one name.
@@ -234,6 +250,14 @@ type LifecycleState struct {
 	// RollbackArmed reports whether the automatic rollback watch loop may
 	// trigger (the post-deployment safety net).
 	RollbackArmed bool `json:"rollback_armed"`
+
+	// C5.2: compile provenance for the attribution chain. The triplet
+	// (Generation, Gates, CompileID) answers "which generation, which gate,
+	// which compile" — the introspection acceptance contract. Zero values
+	// when no CompileInfoProvider is wired.
+	CompileID    string `json:"compile_id,omitempty"`
+	DAGVersion   uint64 `json:"dag_version"`
+	CompileCount uint64 `json:"compile_count"`
 }
 
 // StrategyLifecycle is the sole orchestrator that can change the active
@@ -307,6 +331,12 @@ type StrategyLifecycle struct {
 	// emptied store), which would otherwise re-open the gate-free path.
 	seeded bool
 
+	// compileInfo supplies compile provenance for the C5.2 attribution chain.
+	// When wired, LifecycleSnapshot exposes (compile_id, dag_version,
+	// compile_count) so /api/evolution/lifecycle can answer "which compile
+	// produced the current task set". Nil when not wired (zero-valued fields).
+	compileInfo CompileInfoProvider
+
 	// gates holds the ordered verify gates.
 	gates []VerifyGate
 }
@@ -365,6 +395,39 @@ func WithLifecycleMetrics(m *ares_observability.PrometheusMetrics) LifecycleOpti
 	return func(l *StrategyLifecycle) {
 		l.metrics = m
 	}
+}
+
+// WithCompileInfoProvider wires the C5.2 compile provenance source so the
+// LifecycleSnapshot map carries (compile_id, dag_version, compile_count)
+// alongside the generation and gates. This closes the attribution chain:
+// /api/evolution/lifecycle can answer "which generation, which gate, which
+// compile" in a single endpoint call.
+//
+// The provider is typically a *planprojection.CompileCoordinator adapted
+// into the CompileInfoProvider interface by the cmd/ares wiring layer (the
+// adaptation breaks what would be a circular import).
+func WithCompileInfoProvider(provider CompileInfoProvider) LifecycleOption {
+	return func(l *StrategyLifecycle) {
+		l.compileInfo = provider
+	}
+}
+
+// SetCompileInfoProvider wires the C5.2 compile provenance source at runtime.
+// This is the post-construction wiring path: the CompileCoordinator is created
+// after the lifecycle (it needs the live DAG which is built after bootstrap),
+// so the provider must be injected after both are constructed. Called from
+// the serve wiring layer (cmd/ares) once the compile coordinator is available.
+//
+// Thread-safe: the compileInfo field is an interface reference (a pointer-sized
+// word) set once after construction and never read concurrently with a write
+// (the Snapshot method runs only after wiring is complete).
+func (l *StrategyLifecycle) SetCompileInfoProvider(provider CompileInfoProvider) {
+	if l == nil || provider == nil {
+		return
+	}
+	l.mu.Lock()
+	l.compileInfo = provider
+	l.mu.Unlock()
 }
 
 // WithLifecycleEvidenceStore attaches the shared evidence store so the
@@ -1023,6 +1086,10 @@ func (l *StrategyLifecycle) Snapshot() LifecycleState {
 		snap.HeldID = l.heldCandidate.ID
 		snap.HeldGeneration = l.heldGeneration
 	}
+	// Capture compileInfo under the lock for consistent reads. The
+	// provider itself is thread-safe, so its methods can be called outside
+	// the lock — but the field reference must be read consistently.
+	compileInfo := l.compileInfo
 	l.mu.Unlock()
 
 	if l.agg != nil {
@@ -1035,6 +1102,13 @@ func (l *StrategyLifecycle) Snapshot() LifecycleState {
 		res := l.agg.Window(wctx, snap.ActiveID)
 		snap.WindowScore = res.Mean
 		snap.WindowCount = res.Count
+	}
+	// C5.2: compile provenance for the attribution chain. When not wired,
+	// the fields stay zero-valued.
+	if compileInfo != nil {
+		snap.CompileID = compileInfo.CompileID()
+		snap.DAGVersion = compileInfo.DAGVersion()
+		snap.CompileCount = compileInfo.CompileCount()
 	}
 	return snap
 }
@@ -1085,6 +1159,14 @@ func (l *StrategyLifecycle) LifecycleSnapshot() map[string]any {
 		m["min_active_duration"] = snap.MinActiveDuration.Seconds()
 	}
 	m["rollback_armed"] = snap.RollbackArmed
+	// C5.2: compile provenance for the attribution chain. The triplet
+	// (generation, gates, compile_id) answers "which generation, which
+	// gate, which compile" in a single endpoint call.
+	m["dag_version"] = snap.DAGVersion
+	m["compile_count"] = snap.CompileCount
+	if snap.CompileID != "" {
+		m["compile_id"] = snap.CompileID
+	}
 	return m
 }
 
@@ -1101,8 +1183,21 @@ func (l *StrategyLifecycle) gateNamesLocked() []string {
 	return names
 }
 
-// recordGateReject increments the gate-reject metric (P2-1).
+// recordGateReject increments the gate-reject metric (P2-1) and records
+// the decision trail (C3.3: every promote/reject must leave a trace with
+// {generation, gate, reason, win_rate}).
 func (l *StrategyLifecycle) recordGateReject(gateName, reason string) {
+	// C3.3: record the rejection in the decision trail. The generation and
+	// win_rate are best-effort: the lifecycle may not know the gate's score
+	// at this call site (the gate's Check already returned), so we record
+	// what we have.
+	l.mu.Lock()
+	gen := l.generation
+	l.mu.Unlock()
+
+	l.writeDecisionEvidence(context.Background(), "reject",
+		"", 0, fmt.Sprintf("gate=%s gen=%d reason=%s", gateName, gen, reason))
+
 	if l.metrics == nil {
 		return
 	}

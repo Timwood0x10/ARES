@@ -9,6 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/introspect"
+	"github.com/Timwood0x10/ares/internal/planprojection"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -48,6 +49,10 @@ type kernelHandle struct {
 	// reachable for agent messaging / capability discovery instead of being
 	// discarded (N4: peer registry return value was dropped).
 	peerRegistry *peer.Registry
+	// compileCoord is the C1 projection coordinator. It projects the live
+	// MutableDAG into taskfabric PlanSteps and records compile provenance
+	// for introspection. Nil when no live DAG is wired.
+	compileCoord *planprojection.CompileCoordinator
 	// pluginBus is the runtime plugin ecosystem hooked to the scheduler's
 	// quantum boundary (runtime_bridge.go). Nil when the scheduler is absent.
 	pluginBus *ares_runtime.PluginBus

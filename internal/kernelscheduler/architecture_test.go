@@ -26,7 +26,15 @@ func TestSchedulerMustNotImportRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
-	banned := "internal/ares_runtime"
+	// C1.2: the banned list is a slice so it can grow. Adding
+	// internal/workflow/engine prevents the kernel scheduler from
+	// importing the planner package — the projection runs in the cmd
+	// layer, never inside the kernel. This is a regression guard: the
+	// current import count is 0; the test ensures it stays 0.
+	banned := []string{
+		"internal/ares_runtime",
+		"internal/workflow/engine",
+	}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") {
@@ -34,7 +42,7 @@ func TestSchedulerMustNotImportRuntime(t *testing.T) {
 		}
 		if name == filepath.Base(thisFile) {
 			// Skip the gate itself: its documentation quotes the banned
-			// import path and would otherwise trip its own scan.
+			// import paths and would otherwise trip its own scan.
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, name))
@@ -42,9 +50,11 @@ func TestSchedulerMustNotImportRuntime(t *testing.T) {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
-			if strings.Contains(line, banned) {
-				t.Fatalf("%s:%d: kernelscheduler must not import %s (dependency direction: cmd/ares adapters inject the runtime INTO the kernel, never the reverse)",
-					name, i+1, banned)
+			for _, b := range banned {
+				if strings.Contains(line, b) {
+					t.Fatalf("%s:%d: kernelscheduler must not import %s (dependency direction: cmd/ares adapters inject the runtime INTO the kernel, never the reverse)",
+						name, i+1, b)
+				}
 			}
 		}
 	}

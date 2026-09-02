@@ -425,15 +425,24 @@ func TestStrategyLifecycle_Submit_SeedExemptionIsOneShot(t *testing.T) {
 	lc.Submit(context.Background(), cand, 1)
 	assert.Nil(t, asm.Current(), "seed exemption must be one-shot: no re-deploy after reset")
 
-	// No promote decision evidence was written for the rejected candidate —
-	// the only decision evidence is the original seed promote.
+	// C3.3: the rejected candidate now ALSO writes a decision record
+	// (gate=shadow reject), so the trail has 2 entries: 1 promote (seed)
+	// + 1 reject (the gate-rejected candidate). Previously only the
+	// promote was recorded, making gate rejections invisible in the
+	// decision trail.
 	evs, err := store.Query(context.Background(), evidence.Filter{
 		Source: "lifecycle", Kind: evidence.KindFitness, Limit: 10,
 	})
 	require.NoError(t, err)
-	require.Len(t, evs, 1)
-	assert.Contains(t, evs[0].ID, "seed-v1",
-		"the only promote evidence is the original seed deploy")
+	require.Len(t, evs, 2, "seed promote + gate reject = 2 decision records")
+	// One of them is the seed promote.
+	var hasPromote bool
+	for _, ev := range evs {
+		if strings.Contains(ev.ID, "promote_seed-v1") {
+			hasPromote = true
+		}
+	}
+	assert.True(t, hasPromote, "the seed promote evidence must be present")
 }
 
 // TestStrategyLifecycle_ShadowGate_FailClosedOnNoData locks review blocking

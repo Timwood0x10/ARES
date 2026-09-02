@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/planprojection"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -77,6 +78,36 @@ func createAndServeAgents(
 				log.Printf("serve: live DAG injection failed (evolution keeps placeholder): %v", err)
 			} else {
 				log.Printf("serve: live agent DAG injected into evolution executors (%d nodes)", len(liveDAG.Steps()))
+			}
+
+			// C1.3/C1.4: wire the compile coordinator so DAG mutations
+			// are projected into PlanSteps and compiled into the task
+			// fabric — the single projection path closes the "two
+			// graphs" gap. The coordinator subscribes to GraphEvents
+			// so structural patches (Insert/Remove/AddEdge) trigger
+			// recompilation without restart.
+			if peerKernel != nil && peerKernel.fabric != nil {
+				peerKernel.compileCoord = planprojection.NewCompileCoordinator(
+					peerKernel.fabric, comp.EventStore,
+				)
+				if _, err := peerKernel.compileCoord.CompileDAG(ctx, liveDAG); err != nil {
+					log.Printf("serve: initial DAG compile failed: %v", err)
+				} else {
+					log.Printf("serve: live DAG compiled into task fabric")
+				}
+				peerKernel.compileCoord.SubscribeGraphEvents(ctx, liveDAG)
+
+				// C5.2: wire the compile coordinator into the strategy
+				// lifecycle so /api/evolution/lifecycle carries the
+				// attribution triplet (generation, gates, compile_id).
+				// The CompileCoordinator satisfies the
+				// evolution.CompileInfoProvider interface directly (it
+				// has CompileID/DAGVersion/CompileCount methods).
+				if comp.NewEvolution != nil && comp.NewEvolution.Lifecycle != nil {
+					comp.NewEvolution.Lifecycle.SetCompileInfoProvider(
+						peerKernel.compileCoord,
+					)
+				}
 			}
 		case errors.Is(dagErr, errNoLiveAgentDAG):
 			log.Printf("serve: no peers configured; evolution keeps placeholder DAG")

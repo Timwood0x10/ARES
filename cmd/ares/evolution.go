@@ -226,6 +226,35 @@ func showEvolutionStatus() error {
 	evs, _ := ev.EvidenceStore.Query(context.Background(), evidence.Filter{Limit: 1000})
 	fmt.Printf("\nEvidence store entries: %d\n", len(evs))
 
+	// C5.1: lifecycle + compile attribution chain.
+	if ev.Lifecycle != nil {
+		snap := ev.Lifecycle.Snapshot()
+		fmt.Println()
+		fmt.Println("── Attribution Chain ──")
+		fmt.Printf("  Generation:     %d\n", snap.Generation)
+		fmt.Printf("  State:          %s\n", snap.State)
+		fmt.Printf("  Active ID:      %s\n", snap.ActiveID)
+		fmt.Printf("  Window score:   %.4f (%d samples)\n", snap.WindowScore, snap.WindowCount)
+		fmt.Printf("  Rollback armed:  %v\n", snap.RollbackArmed)
+		if len(snap.Gates) > 0 {
+			fmt.Printf("  Gates:          %v\n", snap.Gates)
+		}
+		if snap.ShadowGateSkipReason != "" {
+			fmt.Printf("  Shadow skip:    %s\n", snap.ShadowGateSkipReason)
+		}
+		if snap.LastDecision != "" {
+			fmt.Printf("  Last decision:  %s\n", snap.LastDecision)
+		}
+		// C5.2: compile provenance — the triplet (generation, gates,
+		// compile_id) answers "which generation, which gate, which
+		// compile" in a single command.
+		if snap.CompileID != "" {
+			fmt.Printf("  Compile ID:     %s\n", snap.CompileID)
+			fmt.Printf("  DAG version:    %d\n", snap.DAGVersion)
+		}
+		fmt.Printf("  Compile count:  %d\n", snap.CompileCount)
+	}
+
 	return nil
 }
 

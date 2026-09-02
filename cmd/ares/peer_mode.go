@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -191,11 +192,37 @@ func createPeerAgents(
 	// W4 evolution feedback loop: record execution outcomes per agent +
 	// capability, and periodically push the derived confidence back into the
 	// tracker so the next Schedule prefers historically-successful executors.
+	// C2.3: the loop now also writes the zero-LLM deterministic score back
+	// to the active strategy's Score field via the StrategyStore, so the
+	// GA's fitness signal tracks real execution outcomes without any LLM
+	// call.
 	attribution := aresrecovery.NewExecutionAttribution()
 	sched.WithAttribution(attribution)
 	feedback := aresrecovery.NewEvolutionFeedbackAdapter(attribution, tracker)
+
+	// C2.4: wire the zero-LLM score provider into the EvolutionScheduler so
+	// task.completed/failed events feed the deterministic aggregate score
+	// (from attribution) instead of the constant 1.0/0.0. The provider reads
+	// the same attribution that the feedback loop writes to, so the score
+	// window reflects real execution quality (latency, retries, recovery).
+	if comp.Evolution != nil {
+		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok && sched != nil {
+			sched.SetScoreProvider(
+				aresrecovery.NewAttributionScoreProvider(attribution),
+			)
+		}
+	}
+
+	// C2.3: wrap the confidence-injection adapter with score write-back.
+	// The strategyScoreAdapter bridges to evolution.StrategyStore without
+	// creating a circular import (aresrecovery cannot import evolution).
+	var scoreWriter aresrecovery.StrategyScoreWriter
+	if comp.NewEvolution != nil {
+		scoreWriter = newStrategyScoreAdapter(comp.NewEvolution.StrategyStore)
+	}
+	scoredFeedback := aresrecovery.NewScoredFeedbackAdapter(feedback, nil, scoreWriter)
 	runBackground(ctx, comp, "evolution-feedback", func(loopCtx context.Context) error {
-		aresrecovery.RunEvolutionFeedbackLoop(loopCtx, feedback, 10*time.Second)
+		aresrecovery.RunScoredFeedbackLoop(loopCtx, scoredFeedback, 10*time.Second)
 		return nil
 	})
 

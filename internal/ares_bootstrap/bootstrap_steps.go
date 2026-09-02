@@ -297,16 +297,34 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		}
 	}
 
+	// C2.6: when LLM scoring is off (the default), the zero-LLM deterministic
+	// scorer takes over as the independent evidence source. The scorer is
+	// wired at runtime by the serve layer (peer_mode.go) once the
+	// ExecutionAttribution is created, but the shadow gate posture must be
+	// decided HERE (before NewWiredEvolutionSystem). Setting
+	// DeterministicScorerEnabled=true makes hasScorer pass without an LLM,
+	// so the G2 gate stays registered and can produce shadow comparison
+	// evidence from execution attribution alone.
+	if llmScorer == nil {
+		gaCfg.DeterministicScorerEnabled = true
+	}
+
 	// E2: decide the G2 shadow-gate posture BEFORE wiring the system, so the
 	// lifecycle is constructed with the gate already suppressed (or kept)
 	// instead of un-registering it afterwards. The invariant: skipping
 	// PRE-deployment verification is allowed only when POST-deployment
 	// verification is armed; with neither, G2 stays fail-closed.
-	//
 	// hasScorer ⇔ gaCfg.Scorer != nil: buildShadowEvaluator sets an
 	// independent scorer on the evaluator exactly when cfg.Scorer is wired
 	// (the heuristic-only TieredScorer is NOT independent evidence).
-	register, gateReason, gateErr := shadowGateMode(gaCfg.Scorer != nil, rollbackArmed)
+	// C2.6: when a deterministic (zero-LLM) scorer is wired, it counts as
+	// independent evidence too — the attribution-derived score is a
+	// legitimate comparison source. This breaks the "zero-token ⇒ no G2"
+	// deadlock: with DeterministicScorerEnabled, the G2 gate stays
+	// registered and produces shadow comparison evidence from execution
+	// attribution alone, without any LLM call.
+	hasScorer := gaCfg.Scorer != nil || gaCfg.DeterministicScorerEnabled
+	register, gateReason, gateErr := shadowGateMode(hasScorer, rollbackArmed)
 	if !register && errors.Is(gateErr, errShadowGateNotConfigured) {
 		gaCfg.Lifecycle.DisableShadowGate = true
 		gaCfg.Lifecycle.ShadowGateSkipReason = gateReason
@@ -682,10 +700,15 @@ func buildEvolutionGuardrails(
 	}
 	g, err := evolution.NewEvolutionGuardrails(opts...)
 	if err != nil {
-		// Documented as always-nil today, but handled per code_rules §3.1: a
-		// future validating constructor must degrade, not panic or abort.
-		log.WarnContext(ctx, "bootstrap: evolution guardrails skipped", "error", err)
-		return nil
+		// C3.1: construction failure is fail-closed, not silent pass-through.
+		// Previously this returned nil, which caused checkGuardrails to
+		// short-circuit to true (all checks pass) — a guardrail that does
+		// not exist cannot block anything. Now we return a guardrail that
+		// always blocks (ShouldStop=true) so a broken G1 cannot silently
+		// let bad candidates through.
+		log.ErrorContext(ctx, "bootstrap: evolution guardrails construction failed, using fail-closed guardrail",
+			"error", err)
+		return evolution.NewFailClosedGuardrails()
 	}
 	return g
 }
