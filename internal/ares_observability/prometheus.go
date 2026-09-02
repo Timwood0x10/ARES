@@ -34,6 +34,11 @@ type PrometheusMetrics struct {
 	EvolutionRollbackTotal   *prometheus.CounterVec
 	EvolutionGateRejectTotal *prometheus.CounterVec
 
+	// E6 (evolution loop closure): gate-absence accounting + runtime
+	// attribution/residency gauges.
+	EvolutionGateSkippedTotal *prometheus.CounterVec
+	EvolutionWindowSamples    *prometheus.GaugeVec
+
 	// Histograms
 	LLMCallDuration   *prometheus.HistogramVec
 	AgentStepDuration *prometheus.HistogramVec
@@ -47,6 +52,9 @@ type PrometheusMetrics struct {
 	// candidate won in the current window. Updated after each shadow
 	// evaluation cycle.
 	EvolutionShadowWinRate prometheus.Gauge
+
+	// E6: how long the currently active strategy has been promoted (seconds).
+	EvolutionActiveDuration prometheus.Gauge
 
 	// Summary
 	CostUSDTotal *prometheus.SummaryVec
@@ -176,6 +184,26 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				Help: "Fraction of shadow comparisons won by the candidate strategy",
 			},
 		),
+		EvolutionGateSkippedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_gate_skipped_total",
+				Help: "Total number of verify gates deliberately NOT registered, by gate and reason",
+			},
+			[]string{"gate", "reason"},
+		),
+		EvolutionActiveDuration: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_active_duration_seconds",
+				Help: "How long the currently active strategy has been promoted, in seconds",
+			},
+		),
+		EvolutionWindowSamples: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_window_samples",
+				Help: "Runtime fitness evidence window sample count, by strategy and source",
+			},
+			[]string{"strategy_id", "source"},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -196,6 +224,9 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionRollbackTotal,
 		m.EvolutionGateRejectTotal,
 		m.EvolutionShadowWinRate,
+		m.EvolutionGateSkippedTotal,
+		m.EvolutionActiveDuration,
+		m.EvolutionWindowSamples,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -405,6 +436,50 @@ func (m *PrometheusMetrics) SetEvolutionShadowWinRate(rate float64) {
 		return
 	}
 	m.EvolutionShadowWinRate.Set(rate)
+}
+
+// RecordEvolutionGateSkipped increments the gate-skipped counter (E6): a gate
+// that was deliberately NOT registered at wiring time. Without it, an absent
+// gate exists only in the startup log line.
+//
+// Args:
+//   - gate: the gate name (e.g. "shadow").
+//   - reason: the documented skip reason (fixed vocabulary, not free text).
+func (m *PrometheusMetrics) RecordEvolutionGateSkipped(gate, reason string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionGateSkippedTotal.WithLabelValues(gate, reason).Inc()
+}
+
+// SetEvolutionActiveDuration sets the current active-strategy residency gauge
+// (E6), in seconds. Paired with the promote throttle it exposes strategy
+// churn: a gauge pinned near zero means strategies rotate faster than the
+// rollback window accumulates evidence.
+//
+// Args:
+//   - seconds: seconds since the current strategy was promoted.
+func (m *PrometheusMetrics) SetEvolutionActiveDuration(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.EvolutionActiveDuration.Set(seconds)
+}
+
+// SetEvolutionWindowSamples sets the fitness-window sample-count gauge for
+// one strategy/source pair (E6). This is the runtime check that E1's
+// attribution actually distributes samples across strategies: if stamping
+// breaks, every sample piles up under a single strategy_id label value.
+//
+// Args:
+//   - strategyID: the attributed strategy.
+//   - source: the evidence source (e.g. "strategy").
+//   - count: the current window sample count.
+func (m *PrometheusMetrics) SetEvolutionWindowSamples(strategyID, source string, count int) {
+	if m == nil {
+		return
+	}
+	m.EvolutionWindowSamples.WithLabelValues(strategyID, source).Set(float64(count))
 }
 
 // RecordCost observes a cost value for a model and session.

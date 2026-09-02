@@ -78,6 +78,11 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 	if err := detectPlanCycle(steps, byID); err != nil {
 		return nil, err
 	}
+	// E1: sample the strategy attribution ONCE for the whole batch so every
+	// task of the batch carries the same strategy even if the active strategy
+	// changes mid-compilation. Create fills the stamp only when the envelope
+	// field is still empty, so this pre-stamp wins.
+	strategyID := f.strategyStampID()
 	// All-or-nothing creation: roll back on any failure so the ready queue is
 	// never polluted by a half-built DAG.
 	created := make([]string, 0, len(steps))
@@ -94,7 +99,11 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			RetryPolicy: RetryPolicy{MaxRetries: s.MaxRetries},
 		}
 		if s.Payload != nil {
-			t.Checkpoint = &CheckpointEnvelope{Payload: s.Payload}
+			env := &CheckpointEnvelope{Payload: s.Payload}
+			if strategyID != "" {
+				env.StrategyID = strategyID
+			}
+			t.Checkpoint = env
 		}
 		if err := f.Create(t); err != nil {
 			// Roll back EVERY created id even if some Deletes fail: a partial

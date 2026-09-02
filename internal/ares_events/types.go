@@ -107,6 +107,12 @@ const (
 	// EventKeyUsedExperienceID carries the experience ID the task consumed
 	// (bandit feedback linkage), if any.
 	EventKeyUsedExperienceID = "used_experience_id"
+	// EventKeyStrategyID carries the evolution strategy that was active when
+	// the task was submitted (evolution loop closure E1). RuntimeObserver
+	// attributes fitness samples by it, so a promote mid-flight cannot
+	// mis-credit the newly promoted strategy for samples produced by tasks
+	// that the previous strategy chose the prompt/params for.
+	EventKeyStrategyID = "strategy_id"
 	// EventKeyHandoffFrom carries the sending role ID of a handoff.
 	EventKeyHandoffFrom = "handoff_from"
 	// EventKeyHandoffTo carries the receiving role ID of a handoff.

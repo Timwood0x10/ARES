@@ -44,16 +44,16 @@ func TestAttachEvolutionKnowledgeProvider(t *testing.T) {
 	ctx := context.Background()
 
 	// Nil runtime / nil store must be no-ops, not panics (dev/offline paths).
-	require.NotPanics(t, func() { attachEvolutionKnowledgeProvider(ctx, nil, nil) })
+	require.NotPanics(t, func() { attachEvolutionKnowledgeProvider(ctx, nil, nil, nil) })
 
 	rt := BuildKnowledgeRuntime(nil, nil, nil)
 	store := ares_evolution.NewMemoryStrategyStore(0)
-	attachEvolutionKnowledgeProvider(ctx, rt, store)
+	attachEvolutionKnowledgeProvider(ctx, rt, store, nil)
 	require.Contains(t, rt.ProviderNames(), "evolution")
 
 	// Duplicate attach must not panic or register a second "evolution"
 	// provider (the runtime also carries its default memory/code providers).
-	attachEvolutionKnowledgeProvider(ctx, rt, store)
+	attachEvolutionKnowledgeProvider(ctx, rt, store, nil)
 	count := 0
 	for _, name := range rt.ProviderNames() {
 		if name == "evolution" {

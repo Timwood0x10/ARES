@@ -526,7 +526,13 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		system.StrategyStore = cfg.StrategyStore
 	}
 
-	if cfg.StrategyStore != nil && cfg.RollbackPolicyConfig.Enabled {
+	// E2: the ASM is built whenever a strategy store exists — no longer
+	// gated on RollbackPolicyConfig.Enabled. The rollback policy stays armed
+	// or disarmed via LifecycleConfig.RollbackArmed (watch-loop behavior),
+	// because the lifecycle AND its gate pipeline must exist even when the
+	// rollback net is disarmed: that is exactly the posture where the G2
+	// shadow gate re-arms fail-closed (see shadowGateMode in ares_bootstrap).
+	if cfg.StrategyStore != nil {
 		asm, err := buildActiveStrategyManager(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("build active strategy manager: %w", err)
@@ -588,6 +594,13 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		}
 		agg := NewRuntimeFitnessAggregator(nil, aggCfg) // store set later by bootstrap
 		lcOpts := []LifecycleOption{}
+		// E2: propagate the wiring layer's explicit shadow-gate decision. The
+		// gate's absence must be a decision (WithShadowGateDisabled), never an
+		// emergent property of nil-checking — the reason travels with it and is
+		// reported by the snapshot.
+		if cfg.Lifecycle != nil && cfg.Lifecycle.DisableShadowGate {
+			lcOpts = append(lcOpts, WithShadowGateDisabled(cfg.Lifecycle.ShadowGateSkipReason))
+		}
 		if system.ShadowEvaluator != nil {
 			lcOpts = append(lcOpts, WithLifecycleShadowEvaluator(system.ShadowEvaluator))
 			// P0-9: wire the task-level shadow feeder so the G2 gate has

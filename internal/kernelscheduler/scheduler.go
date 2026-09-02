@@ -932,6 +932,7 @@ func (s *Scheduler) buildQuantumStep(
 				UserProfile:      meta.UserProfile,
 				Payload:          meta.Payload,
 				UsedExperienceID: meta.UsedExperienceID,
+				StrategyID:       meta.StrategyID,
 				StepCheckpoint:   out.Checkpoint,
 			}), false, nil
 		}
@@ -958,6 +959,7 @@ func (s *Scheduler) buildQuantumStep(
 			UserProfile:      meta.UserProfile,
 			Payload:          meta.Payload,
 			UsedExperienceID: meta.UsedExperienceID,
+			StrategyID:       meta.StrategyID,
 			StepCheckpoint:   outMap,
 		}), true, nil
 	}
@@ -1012,6 +1014,11 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	t.UserProfile = reifyUserProfile(dc.UserProfile)
 	t.Payload = dc.Payload
 	t.UsedExperienceID = dc.UsedExperienceID
+	// E1: the submission-time strategy attribution rides to the executor so
+	// the sub-agent's task.completed/failed events carry the same key the
+	// fabric's own events do — RuntimeObserver attributes fitness samples by
+	// it, and a promote mid-task must not re-credit the new strategy.
+	t.StrategyID = dc.StrategyID
 	// A resumed quantum observes where the previous step left off (Bug 3):
 	// the step checkpoint is surfaced to the executor as payload["checkpoint"].
 	if dc.StepCheckpoint != nil {

@@ -8,7 +8,14 @@ import (
 // CurrentCheckpointSchemaVersion is the version of the checkpoint envelope
 // schema. Bump when the CheckpointEnvelope fields change; DecodeCheckpoint
 // handles migration from prior versions.
-const CurrentCheckpointSchemaVersion = 1
+//
+// v1 → v2 (evolution loop closure E1): StrategyID added as an OPTIONAL field.
+// A v1 envelope decodes under v2 code with StrategyID == "" (reads as
+// "unattributed" — consumers fall back to the currently active strategy), so
+// no migration code is needed in the forward direction. The reverse is NOT
+// compatible: v1 code rejects a v2 envelope (ErrCheckpointSchemaVersion), so
+// rolling back a deployment requires draining in-flight tasks first.
+const CurrentCheckpointSchemaVersion = 2
 
 // CheckpointEnvelope is the durable, versioned checkpoint schema (W3). It
 // wraps the submission-time metadata (UserProfile, Payload, UsedExperienceID)
@@ -41,6 +48,17 @@ type CheckpointEnvelope struct {
 	// checkpoint back into the envelope, so the submission metadata survives
 	// yield→resume cycles (v0.3.0 review Bug 3 fix).
 	StepCheckpoint any `json:"step_checkpoint,omitempty"`
+	// StrategyID is the evolution strategy active when this task was
+	// SUBMITTED. It is stamped once at Create time and never re-read, so
+	// every sample the task produces is attributed to the strategy that
+	// actually chose its prompt and LLM params — even when a promote happens
+	// mid-flight. Empty means "unattributed" (pre-v2 envelope or no strategy
+	// deployed): consumers fall back to the currently active strategy.
+	//
+	// The envelope is the carrier because attribution must stick at TASK
+	// granularity (a task spans multiple quanta; re-reading the active
+	// strategy per quantum would split one task's samples across strategies).
+	StrategyID string `json:"strategy_id,omitempty"`
 }
 
 // DecodedCheckpoint is the result of DecodeCheckpoint: the envelope's fields
@@ -57,6 +75,9 @@ type DecodedCheckpoint struct {
 	// has not yet run a quantum, or the checkpoint is a pre-execution
 	// envelope).
 	StepCheckpoint any
+	// StrategyID is the submission-time strategy attribution ("" when absent
+	// or when the envelope predates schema v2).
+	StrategyID string
 	// SchemaVersion is the envelope's version (0 when no checkpoint).
 	SchemaVersion int
 }
@@ -92,6 +113,7 @@ func DecodeCheckpoint(cp any) (DecodedCheckpoint, error) {
 			Payload:          env.Payload,
 			UsedExperienceID: env.UsedExperienceID,
 			StepCheckpoint:   env.StepCheckpoint,
+			StrategyID:       env.StrategyID,
 			SchemaVersion:    env.SchemaVersion,
 		}, nil
 	}
@@ -125,6 +147,9 @@ func DecodeCheckpoint(cp any) (DecodedCheckpoint, error) {
 			if sc, ok := m["step_checkpoint"]; ok {
 				dc.StepCheckpoint = sc
 			}
+			if sid, ok := m[restoreKeyStrategyID].(string); ok {
+				dc.StrategyID = sid
+			}
 			return dc, nil
 		}
 		// A plain map without schema_version: treat as a raw step checkpoint.
@@ -157,7 +182,22 @@ func EncodeCheckpoint(dc DecodedCheckpoint) *CheckpointEnvelope {
 		Payload:          dc.Payload,
 		UsedExperienceID: dc.UsedExperienceID,
 		StepCheckpoint:   dc.StepCheckpoint,
+		StrategyID:       dc.StrategyID,
 	}
+}
+
+// strategyIDFromCheckpoint extracts the submission-time strategy attribution
+// from a checkpoint value through the single shared decode path. A decode
+// failure or an unattributed checkpoint returns "" — attribution is strictly
+// best-effort: a missing StrategyID degrades to the caller's active-strategy
+// fallback and must never break the state machine. DecodeCheckpoint is a pure
+// in-memory operation, so this is safe to call under the fabric mutex.
+func strategyIDFromCheckpoint(cp any) string {
+	dc, err := DecodeCheckpoint(cp)
+	if err != nil {
+		return ""
+	}
+	return dc.StrategyID
 }
 
 // MarshalCheckpoint JSON-encodes a checkpoint value. When the value is a

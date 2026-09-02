@@ -59,6 +59,11 @@ type Fabric struct {
 	confidence ConfidenceSource       // experience-derived confidence (§8 Skill-first); guarded by mu
 	now        func() time.Time       // injectable clock for lease tests
 	epoch      uint64
+	// strategyStamp is the submission-time attribution source (E1): called
+	// once per Create to stamp the checkpoint envelope's StrategyID. Guarded
+	// by mu; nil means "no strategy deployed / wiring absent", which reads as
+	// the active-strategy fallback downstream.
+	strategyStamp func() string
 
 	// flushSeq/flushedSeq gate durable appends into strict causal order (N7:
 	// concurrent flushAppends must not land out of order in the store's
@@ -108,6 +113,69 @@ func (f *Fabric) WithConfidenceSource(src ConfidenceSource) *Fabric {
 	return f
 }
 
+// WithStrategyStamp wires the submission-time attribution source (evolution
+// loop closure E1). The fabric calls it once per Create to stamp the task's
+// checkpoint envelope with the strategy that was active at submission, so
+// runtime fitness samples stay attributed to the strategy that actually
+// produced them — even when a promote happens mid-flight. It must be cheap
+// and non-blocking (it runs on the submission path); returning "" means "no
+// strategy deployed", which downstream reads as the active-strategy fallback.
+// Nil detaches. Guarded by mu.
+//
+// Args:
+//   - fn: the attribution source (may be nil to detach).
+//
+// Returns:
+//   - *Fabric: the fabric for chaining.
+func (f *Fabric) WithStrategyStamp(fn func() string) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.strategyStamp = fn
+	return f
+}
+
+// strategyStampID samples the attribution source once. Callers that create
+// task BATCHES (CompilePlan) call it a single time so every task of the batch
+// carries the same attribution even if the active strategy changes
+// mid-compilation. Returns "" when no stamp source is wired.
+func (f *Fabric) strategyStampID() string {
+	f.mu.Lock()
+	fn := f.strategyStamp
+	f.mu.Unlock()
+	if fn == nil {
+		return ""
+	}
+	return fn()
+}
+
+// stampStrategyAttribution stamps strategyID onto a freshly built task's
+// checkpoint envelope. Only *CheckpointEnvelope checkpoints can carry the
+// attribution (the versioned protocol); other shapes are left untouched so a
+// raw progress checkpoint keeps its meaning. An explicit caller-provided
+// StrategyID wins — the fabric only fills an EMPTY field, so batch creators
+// that sampled the stamp once (CompilePlan) keep their per-batch consistency.
+// The envelope is shallow-copied before stamping: the caller's envelope is
+// never mutated through the fabric's back door.
+func stampStrategyAttribution(t *Task, strategyID string) {
+	if strategyID == "" {
+		return
+	}
+	switch env := t.Checkpoint.(type) {
+	case nil:
+		t.Checkpoint = &CheckpointEnvelope{
+			SchemaVersion: CurrentCheckpointSchemaVersion,
+			StrategyID:    strategyID,
+		}
+	case *CheckpointEnvelope:
+		if env == nil || env.StrategyID != "" {
+			return
+		}
+		cp := *env
+		cp.StrategyID = strategyID
+		t.Checkpoint = &cp
+	}
+}
+
 // WithEventStore attaches a persistent event sink (ares-runtime P2-C): every
 // task lifecycle transition is appended to the store on the task's stream, in
 // addition to the in-memory log, so scheduler/task/lease state can be rebuilt
@@ -134,6 +202,10 @@ func (f *Fabric) WithEventStore(store ares_events.EventStore) *Fabric {
 // Returns:
 //   - error: ErrTaskExists, or an error for an empty id.
 func (f *Fabric) Create(t *Task) error {
+	// Sample the attribution source BEFORE taking f.mu: the stamp fn talks to
+	// the strategy control plane and must never run while the fabric state
+	// machine is locked (deadlock avoidance), and it must be cheap.
+	strategyID := f.strategyStampID()
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
@@ -163,6 +235,9 @@ func (f *Fabric) Create(t *Task) error {
 	cp.Lease = nil
 	cp.CreatedAt = f.now()
 	cp.UpdatedAt = cp.CreatedAt
+	// E1: stamp the submission-time strategy attribution onto the task's
+	// checkpoint envelope (once per Create; a pre-stamped envelope wins).
+	stampStrategyAttribution(&cp, strategyID)
 	f.tasks[t.ID] = &cp
 	pending = append(pending, f.recordLocked(&cp, EventTaskCreated))
 	return nil
@@ -667,6 +742,17 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 		// checkpoint — the rebuilt fabric would then RE-ISSUE those tokens
 		// and a stale pre-crash holder would pass ownerLocked's epoch check.
 		restoreKeyEpoch: f.epoch,
+	}
+	// E1: the strategy attribution key also rides on EVERY persisted event,
+	// same reasoning as the epoch — the observability-only task.acquired/
+	// task.completed events are the ones RuntimeObserver subscribes to, so
+	// restricting the key to must-persist events would leave the observation
+	// side reading nothing and every sample would fall back to "the strategy
+	// active at fold time". The value comes from the checkpoint envelope;
+	// decode is pure in-memory (safe under f.mu) and failure degrades to ""
+	// (no key — the observer's activeID fallback), never an error.
+	if sid := strategyIDFromCheckpoint(t.Checkpoint); sid != "" {
+		payload[restoreKeyStrategyID] = sid
 	}
 	if isMustPersistEvent(typ) {
 		payload[restoreKeyCapability] = t.Capability

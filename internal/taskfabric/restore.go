@@ -47,6 +47,13 @@ const (
 	restoreKeyRetryMax       = "retry_max"
 	restoreKeyCreatedAt      = "created_at"
 	restoreKeyCheckpointJSON = "checkpoint_json"
+	// restoreKeyStrategyID rides on EVERY persisted event (same reasoning as
+	// the epoch key): the RuntimeObserver attributes fitness samples by it,
+	// and the observability-only task.acquired/completed events are exactly
+	// the ones it subscribes to. The value itself lives inside the checkpoint
+	// envelope (Task.Checkpoint), which restoreCheckpoint already folds back
+	// wholesale — no dedicated Task field, no extra fold branch.
+	restoreKeyStrategyID = "strategy_id"
 )
 
 // RestoreFromStore rebuilds the in-memory task set from the attached event

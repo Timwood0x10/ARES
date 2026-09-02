@@ -396,6 +396,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			ares_events.EventKeyResult:           execErr.Error(),
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
 		a.recordAction(ctx, task, false, execErr.Error())
 		return nil, execErr
@@ -413,6 +414,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			ares_events.EventKeyResult:           guardErr.Error(),
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
 		a.recordAction(ctx, task, false, guardErr.Error())
 		return result, fmt.Errorf("sub agent %s output guard rejected result: %w", a.id, guardErr)
@@ -425,6 +427,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 		ares_events.EventKeyResult:           resultEventText(result),
 		ares_events.EventKeyTenantID:         distillTenantID(),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+		ares_events.EventKeyStrategyID:       task.StrategyID,
 	})
 	a.recordAction(ctx, task, result.Success, "")
 
@@ -510,7 +513,7 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		defer a.streamWg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				// Capture panic to prevent process crash .
+				// Capture panic to prevent process crash.
 				// Emit failure event and send error on channel so consumers don't hang.
 				panicErr := fmt.Errorf("sub agent %s panic: %v", a.id, r)
 				a.emitEvent(ctx, ares_events.EventSubAgentFailed, map[string]any{
@@ -572,6 +575,7 @@ func (a *subAgent) runTaskAndEmit(
 			ares_events.EventKeyResult:           err.Error(),
 			ares_events.EventKeyTenantID:         distillTenantID(),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
 
 		select {
@@ -589,6 +593,7 @@ func (a *subAgent) runTaskAndEmit(
 		ares_events.EventKeyResult:           resultEventText(result),
 		ares_events.EventKeyTenantID:         distillTenantID(),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+		ares_events.EventKeyStrategyID:       task.StrategyID,
 	})
 
 	// Send task complete event

@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
@@ -21,13 +22,29 @@ type StrategyStore interface {
 	GetHistory(ctx context.Context, id string, n int) ([]*ares_evolution.Strategy, error)
 }
 
+// evidenceStore is the slice of evidence.Store the decision-trail stream
+// needs (evolution loop closure E3). Declared locally to keep the provider's
+// dependency surface minimal and testable.
+type evidenceStore interface {
+	Query(ctx context.Context, filter evidence.Filter) ([]evidence.Evidence, error)
+}
+
+// lifecycleDecisionSource is the evidence Source written by the strategy
+// lifecycle's writeDecisionEvidence. It is the discriminator, NOT Kind:
+// decision records currently share KindFitness with runtime samples, so
+// filtering by Kind alone would pull in every fitness sample.
+const lifecycleDecisionSource = "lifecycle"
+
 // EvolutionProvider wraps an evolution StrategyStore as a GraphProvider.
 // It streams active and historical strategies as decision-type KnowledgeObjects,
-// enabling the AKF knowledge graph to include evolution context.
+// enabling the AKF knowledge graph to include evolution context. When an
+// evidence store is wired (WithEvidenceStore), it also streams the
+// promote/rollback DECISION trail — the reasoning, not just the lineage.
 type EvolutionProvider struct {
-	name  string
-	store StrategyStore
-	ns    string
+	name    string
+	store   StrategyStore
+	evStore evidenceStore
+	ns      string
 }
 
 // New creates an EvolutionProvider.
@@ -37,6 +54,15 @@ func New(name string, store StrategyStore) *EvolutionProvider {
 		ns = "evolution"
 	}
 	return &EvolutionProvider{name: name, store: store, ns: ns}
+}
+
+// WithEvidenceStore attaches the shared evidence store so Stream also emits
+// the lifecycle's promote/rollback decision trail. Zero value (not wired)
+// keeps Stream's output identical to the lineage-only behavior — backward
+// compatible for existing constructions.
+func (p *EvolutionProvider) WithEvidenceStore(store evidenceStore) *EvolutionProvider {
+	p.evStore = store
+	return p
 }
 
 // Name returns the provider identifier.
@@ -112,7 +138,7 @@ func (p *EvolutionProvider) Stream(ctx context.Context, intent knowledge.Intent)
 		}
 
 		// Emit historical strategies from the active strategy's lineage.
-		if active != nil {
+		if active != nil && limit > 0 {
 			history, hErr := p.store.GetHistory(gCtx, active.ID, limit)
 			if hErr == nil {
 				for _, s := range history {
@@ -126,7 +152,50 @@ func (p *EvolutionProvider) Stream(ctx context.Context, intent knowledge.Intent)
 						case <-gCtx.Done():
 							return nil
 						}
+						limit--
+						if limit <= 0 {
+							return nil
+						}
 					}
+				}
+			}
+		}
+
+		// E3: emit the promote/rollback decision trail. The strategy store
+		// carries LINEAGE (which strategy came from which); this carries the
+		// REASONING (why it was promoted or rolled back, and at what score).
+		// An agent asking "why did we roll back last time" can only be
+		// answered by the latter.
+		//
+		// Source is the discriminator, NOT Kind: writeDecisionEvidence
+		// currently writes Kind=KindFitness — the same Kind the runtime
+		// fitness samples use — so filtering by Kind alone would pull in
+		// every runtime sample. adapter.FromDecisionEvidence applies the
+		// second filter (payload must carry an "action" field).
+		if p.evStore != nil && limit > 0 {
+			evs, qErr := p.evStore.Query(gCtx, evidence.Filter{
+				Source: lifecycleDecisionSource,
+				Kind:   evidence.KindFitness,
+				Limit:  limit,
+			})
+			if qErr != nil {
+				// Decision trail is best-effort: a store failure degrades to
+				// lineage-only output rather than failing the whole stream.
+				return nil
+			}
+			for _, ev := range evs {
+				obj := adapter.FromDecisionEvidence(ev, p.ns)
+				if obj == nil {
+					continue // not a decision record — second filter fired
+				}
+				select {
+				case objCh <- obj:
+				case <-gCtx.Done():
+					return nil
+				}
+				limit--
+				if limit <= 0 {
+					return nil
 				}
 			}
 		}

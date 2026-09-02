@@ -105,6 +105,21 @@ func createPeerAgents(
 	// mirrors flipKernelToTaskFabric but runs directly at startup (no
 	// legacy path to flip from).
 	kernel.fabric = taskfabric.NewFabric()
+	// E1 (evolution loop closure): stamp every submitted task with the
+	// strategy that was active at submission time, so runtime fitness samples
+	// stay attributed to the strategy that produced them across promotes.
+	// Cheap + non-blocking: one store read per Create on the submission path.
+	if strategySrc != nil {
+		kernel.fabric = kernel.fabric.WithStrategyStamp(func() string {
+			stampCtx, stampCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer stampCancel()
+			st, err := strategySrc.GetActiveStrategy(stampCtx)
+			if err != nil || st == nil {
+				return ""
+			}
+			return st.ID
+		})
+	}
 	if store != nil {
 		kernel.fabric = kernel.fabric.WithEventStore(store)
 		// Rebuild in-memory tasks from the durable task.* log BEFORE the

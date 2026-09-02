@@ -100,6 +100,34 @@ type LifecycleConfig struct {
 	// stays banned from re-nomination (§9: rollback oscillation damping).
 	// Zero or negative falls back to defaultBlacklistGenerations.
 	BlacklistGenerations int `json:"blacklist_generations"`
+	// MinActiveDuration is how long a promoted strategy must stay active
+	// before another candidate may replace it (evolution loop closure E2,
+	// promote throttling). Without it the GA ticker could rotate strategies
+	// faster than the rollback window accumulates evidence, making
+	// degradation undetectable in principle — this is a CORRECTNESS
+	// precondition of opening the promote path, not an optional optimization.
+	// Zero falls back to 3 × WatchInterval, so at least three rollback
+	// windows are observed between promotes. The residency clock starts at
+	// the first GATED promote (the one-shot seed deploy does not start it:
+	// the seed is the baseline §9 relies on, and rejecting the first real
+	// candidate after it would leave the loop permanently empty).
+	MinActiveDuration time.Duration `json:"min_active_duration"`
+	// RollbackArmed reports whether the post-deployment rollback watch loop
+	// may trigger an automatic Rollback (evolution loop closure E2). It is
+	// the second half of the shadow-gate safety invariant: skipping
+	// PRE-deployment verification is allowed only when POST-deployment
+	// verification is armed. When false, evaluateAndMaybeRollback never
+	// fires and the wiring layer must keep the G2 gate registered
+	// fail-closed.
+	RollbackArmed bool `json:"rollback_armed"`
+	// DisableShadowGate suppresses the automatic G2 registration — the
+	// documented no-scorer-plus-armed-rollback case. The wiring layer sets it
+	// via ShadowGateMode's decision; the lifecycle only ever sees the
+	// explicit instruction (gate absence is a wiring decision, never an
+	// emergent property of nil-checking). ShadowGateSkipReason records why,
+	// for the snapshot and startup log — the absence must be visible.
+	DisableShadowGate    bool   `json:"disable_shadow_gate"`
+	ShadowGateSkipReason string `json:"shadow_gate_skip_reason,omitempty"`
 	// Gates holds verify-gate-specific settings.
 	Gates GateConfig `json:"gates"`
 }
@@ -124,12 +152,34 @@ const defaultWatchInterval = 30 * time.Second
 // LifecycleConfig.BlacklistGenerations is unset.
 const defaultBlacklistGenerations = 3
 
+// defaultResidencyTicks is the default minimum-active duration, expressed in
+// watch-loop ticks: a promoted strategy must survive at least three rollback
+// windows before it may be replaced.
+const defaultResidencyTicks = 3
+
+// gateMinActiveDuration is the promote-throttle's pseudo-gate name, used for
+// the gate-reject metric so throttled submissions are observable on the same
+// counter as real gate rejections.
+const gateMinActiveDuration = "min_active_duration"
+
 // blacklistGenerations returns the effective ban window.
 func (c LifecycleConfig) blacklistGenerations() int {
 	if c.BlacklistGenerations > 0 {
 		return c.BlacklistGenerations
 	}
 	return defaultBlacklistGenerations
+}
+
+// minActiveDuration returns the effective residency period. Zero falls back
+// to 3 × watchInterval (the caller passes the already-defaulted interval).
+func (c LifecycleConfig) minActiveDuration(watchInterval time.Duration) time.Duration {
+	if c.MinActiveDuration > 0 {
+		return c.MinActiveDuration
+	}
+	if watchInterval <= 0 {
+		watchInterval = defaultWatchInterval
+	}
+	return defaultResidencyTicks * watchInterval
 }
 
 // DefaultLifecycleConfig returns sensible defaults matching the design doc.
@@ -168,6 +218,22 @@ type LifecycleState struct {
 	// before calling /api/evolution/approve. Zero when nothing is held.
 	HeldID         string `json:"held_id,omitempty"`
 	HeldGeneration int    `json:"held_generation,omitempty"`
+	// Gates lists the names of the verify gates actually registered, so an
+	// operator sees at a glance which verification pipeline is live
+	// (evolution loop closure E2/E6).
+	Gates []string `json:"gates,omitempty"`
+	// ShadowGateSkipReason is non-empty when the G2 shadow gate was
+	// deliberately NOT registered (no independent scorer + rollback armed):
+	// the absence is a decision and must be visible, not emergent.
+	ShadowGateSkipReason string `json:"shadow_gate_skipped_reason,omitempty"`
+	// ActiveSince is when the currently active strategy was promoted by this
+	// lifecycle (zero for an externally deployed / seed baseline).
+	ActiveSince time.Time `json:"active_since,omitempty"`
+	// MinActiveDuration is the effective residency period between promotes.
+	MinActiveDuration time.Duration `json:"min_active_duration,omitempty"`
+	// RollbackArmed reports whether the automatic rollback watch loop may
+	// trigger (the post-deployment safety net).
+	RollbackArmed bool `json:"rollback_armed"`
 }
 
 // StrategyLifecycle is the sole orchestrator that can change the active
@@ -224,6 +290,17 @@ type StrategyLifecycle struct {
 	// case). The timestamp is reset on promote so the new strategy's first
 	// window records immediately.
 	lastWindowAt time.Time
+	// activeSince is when the CURRENT strategy was promoted by a GATED
+	// Submit/Approve. It drives the promote throttle (MinActiveDuration) and
+	// the active-duration gauge. It is deliberately NOT set by the one-shot
+	// seed deploy: the seed is the §9 baseline, not a judged promote, and
+	// starting the residency clock there would keep the first real candidate
+	// waiting for a window that has no evidence source yet.
+	activeSince time.Time
+	// shadowGateSkipReason is non-empty when the wiring layer decided (via
+	// WithShadowGateDisabled) NOT to register the G2 shadow gate. Surfaced by
+	// Snapshot so the absence is visible.
+	shadowGateSkipReason string
 	// seeded marks that the lifecycle has performed (or observed) its one
 	// seed deployment. After it flips, NO candidate may skip the gate
 	// pipeline — even if the ASM later reports no active strategy (reset or
@@ -267,6 +344,18 @@ func WithLifecycleShadowEvaluator(se *ShadowEvaluator) LifecycleOption {
 func WithLifecycleShadowSampler(s *ShadowSampler) LifecycleOption {
 	return func(l *StrategyLifecycle) {
 		l.sampler = s
+	}
+}
+
+// WithShadowGateDisabled suppresses the automatic G2 registration for the
+// documented no-scorer-plus-armed-rollback case (evolution loop closure E2).
+// It is deliberately explicit: the gate's absence must be a decision at the
+// wiring layer (ShadowGateMode's three-branch invariant), never an emergent
+// property of nil-checking. The reason is stored and reported by the snapshot
+// and the startup log — an absent gate must be visible to be auditable.
+func WithShadowGateDisabled(reason string) LifecycleOption {
+	return func(l *StrategyLifecycle) {
+		l.shadowGateSkipReason = reason
 	}
 }
 
@@ -316,7 +405,11 @@ func NewStrategyLifecycle(
 	// ahead of any explicitly supplied gates so the pipeline order is
 	// G2 shadow → G3 eval → ... (B3 fix: previously the evaluator was
 	// assigned to l.shadow but never read by the promote pipeline).
-	if l.shadow != nil {
+	// Exception (E2): WithShadowGateDisabled suppresses the registration for
+	// the no-scorer-plus-armed-rollback case — the gate would otherwise
+	// reject every candidate forever, while canary + automatic rollback
+	// carries the promotion risk.
+	if l.shadow != nil && l.shadowGateSkipReason == "" {
 		l.gates = append([]VerifyGate{shadowVerifyGate{l}}, l.gates...)
 	}
 	return l
@@ -471,9 +564,28 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 				"strategy_id", candidate.ID,
 				"generation", generation,
 			)
-			l.promote(ctx, candidate)
+			l.promote(ctx, candidate, false)
 			return
 		}
+	}
+
+	// Promote throttle (E2): a promoted strategy must stay active for
+	// MinActiveDuration before another candidate may replace it. Without it
+	// the GA ticker rotates strategies faster than the rollback window
+	// accumulates evidence — degradation becomes undetectable in principle.
+	// Checked BEFORE the gate chain so a throttled candidate never burns gate
+	// evaluations; the rejection is observable on the shared gate-reject
+	// counter under the min_active_duration gate name.
+	if wait := l.residencyRemainingLocked(time.Now()); wait > 0 {
+		l.mu.Unlock()
+		reason := fmt.Sprintf("min active duration not elapsed (%s remaining)", wait.Truncate(time.Second))
+		log.InfoContext(ctx, "candidate rejected: promote throttle", "method", "lifecycle.Submit",
+			"strategy_id", candidate.ID,
+			"generation", generation,
+			"reason", reason,
+		)
+		l.recordGateReject(gateMinActiveDuration, reason)
+		return
 	}
 
 	// A candidate is already awaiting manual approval: reject new
@@ -573,7 +685,26 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 	}
 
 	// All gates passed (and no hold requested): promote to ACTIVE.
-	l.promote(ctx, candidate)
+	l.promote(ctx, candidate, true)
+}
+
+// residencyRemainingLocked reports how much of the current strategy's minimum
+// active duration is still outstanding (0 = the next candidate may be judged).
+// Caller holds l.mu. A zero activeSince (externally deployed or seed baseline)
+// never throttles: there is no judged promote to protect yet.
+func (l *StrategyLifecycle) residencyRemainingLocked(now time.Time) time.Duration {
+	if l.activeSince.IsZero() {
+		return 0
+	}
+	d := l.cfg.minActiveDuration(l.cfg.WatchInterval)
+	if d <= 0 {
+		return 0
+	}
+	if elapsed := now.Sub(l.activeSince); elapsed >= d {
+		return 0
+	} else {
+		return d - elapsed
+	}
 }
 
 // heldCandidateIDLocked returns the held candidate's ID; caller holds l.mu.
@@ -612,12 +743,15 @@ func (l *StrategyLifecycle) Approve() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	l.promote(ctx, cand)
+	l.promote(ctx, cand, true)
 }
 
 // promote deploys the candidate as the new active strategy and resets the
 // rollback window (B1 fix: previous is preserved by ActiveStrategyManager.Deploy).
-func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Strategy) {
+// startResidency controls whether this promote starts the MinActiveDuration
+// clock: gated Submit/Approve promotions do, the one-shot seed deploy does not
+// (it is the §9 baseline, not a judged promote).
+func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Strategy, startResidency bool) {
 	if l == nil || l.asm == nil {
 		return
 	}
@@ -655,6 +789,9 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 	// the PREVIOUS strategy's evidence. The decorrelation timestamp resets
 	// with it so the new strategy records on its first tick.
 	l.lastWindowAt = time.Time{}
+	if startResidency {
+		l.activeSince = time.Now()
+	}
 	l.mu.Unlock()
 
 	l.asm.RollbackPolicy().Reset()
@@ -685,6 +822,7 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
+			l.recordWatchGauges()
 			l.evaluateAndMaybeRollback(ctx)
 		case <-ctx.Done():
 			return
@@ -692,11 +830,35 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 	}
 }
 
+// recordWatchGauges publishes the per-tick observability gauges (E6): how
+// long the current strategy has been active. Purely observational — it must
+// never influence the rollback decision.
+func (l *StrategyLifecycle) recordWatchGauges() {
+	if l.metrics == nil {
+		return
+	}
+	l.mu.Lock()
+	since := l.activeSince
+	l.mu.Unlock()
+	if since.IsZero() {
+		return
+	}
+	l.metrics.SetEvolutionActiveDuration(time.Since(since).Seconds())
+}
+
 // evaluateAndMaybeRollback queries the aggregator for the current window
 // fitness, feeds it into RollbackPolicy.RecordScore, and triggers Rollback
 // when degradation is detected.
 func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 	if l.agg == nil || l.asm == nil {
+		return
+	}
+	// Rollback disarm (E2): the YAML rollback.enabled=false path removes the
+	// post-deployment safety net by explicit operator decision. The watch
+	// loop then records nothing and never triggers — promotion risk was
+	// accepted up front (and the shadow-gate invariant re-arms G2 fail-closed
+	// for exactly this configuration).
+	if !l.cfg.RollbackArmed {
 		return
 	}
 
@@ -708,6 +870,12 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 	res := l.agg.Window(ctx, active.ID)
 	if !res.Ok || res.Count == 0 {
 		return
+	}
+	// E6: window-sample gauge split by strategy — attribution health is
+	// visible at a glance. If E1's stamping ever breaks, all samples pile up
+	// under one strategy_id label value instead of distributing.
+	if l.metrics != nil {
+		l.metrics.SetEvolutionWindowSamples(active.ID, "strategy", res.Count)
 	}
 	l.mu.Lock()
 	// §8 general item 6 (decorrelation): record a score ONLY when the
@@ -785,6 +953,9 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 	l.state = StateActive
 	l.currentCandidate = nil
 	l.lastDecision = fmt.Sprintf("rollback: %s", decision.Reason)
+	// The restored strategy becomes active again: restart its residency clock
+	// so the promote throttle protects its fresh evidence window too.
+	l.activeSince = time.Now()
 	l.mu.Unlock()
 
 	// Reset the rollback window so the new (previous) strategy gets a
@@ -795,9 +966,11 @@ func (l *StrategyLifecycle) evaluateAndMaybeRollback(ctx context.Context) {
 		l.metrics.RecordEvolutionRollback("degradation")
 		l.metrics.RecordEvolutionDeploy("rollback")
 	}
-	// P2-3: write the rollback decision into the evidence store so the
-	// knowledge graph's EvolutionProvider and the GA scorer can consume
-	// the decision trail. active.ID is the strategy that was rolled back.
+	// P2-3 (closed by E3): write the rollback decision into the evidence
+	// store. The consumer is the knowledge graph's EvolutionProvider
+	// (internal/knowledge/provider/evolution/provider.go, decision-trail
+	// segment) via adapter.FromDecisionEvidence. active.ID is the strategy
+	// that was rolled back.
 	l.writeDecisionEvidence(ctx, "rollback", rolledBackID, rolledBackScore, decision.Reason)
 	log.InfoContext(ctx, "strategy rolled back", "method", "lifecycle.watch",
 		"active_id", active.ID,
@@ -826,6 +999,14 @@ func (l *StrategyLifecycle) Snapshot() LifecycleState {
 		Generation:      l.generation,
 		LastDecision:    l.lastDecision,
 		PendingApproval: l.pendingApproval,
+		// E2/E6: gate configuration + promote-throttle posture, so an
+		// operator can tell from ONE endpoint call which verification mode
+		// is live and whether the rollback net is armed.
+		Gates:                l.gateNamesLocked(),
+		ShadowGateSkipReason: l.shadowGateSkipReason,
+		ActiveSince:          l.activeSince,
+		MinActiveDuration:    l.cfg.minActiveDuration(l.cfg.WatchInterval),
+		RollbackArmed:        l.cfg.RollbackArmed,
 	}
 	if l.asm != nil {
 		if cur := l.asm.Current(); cur != nil {
@@ -889,7 +1070,35 @@ func (l *StrategyLifecycle) LifecycleSnapshot() map[string]any {
 		m["held_id"] = snap.HeldID
 		m["held_generation"] = snap.HeldGeneration
 	}
+	// E2/E6: gate pipeline visibility + promote-throttle posture. Rendered
+	// as seconds so the JSON stays human-readable across language bindings.
+	if len(snap.Gates) > 0 {
+		m["gates"] = snap.Gates
+	}
+	if snap.ShadowGateSkipReason != "" {
+		m["shadow_gate_skipped_reason"] = snap.ShadowGateSkipReason
+	}
+	if !snap.ActiveSince.IsZero() {
+		m["active_since"] = snap.ActiveSince.Format(time.RFC3339)
+	}
+	if snap.MinActiveDuration > 0 {
+		m["min_active_duration"] = snap.MinActiveDuration.Seconds()
+	}
+	m["rollback_armed"] = snap.RollbackArmed
 	return m
+}
+
+// gateNamesLocked returns the registered gate names in pipeline order.
+// Caller holds l.mu.
+func (l *StrategyLifecycle) gateNamesLocked() []string {
+	if len(l.gates) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(l.gates))
+	for _, g := range l.gates {
+		names = append(names, g.Name())
+	}
+	return names
 }
 
 // recordGateReject increments the gate-reject metric (P2-1).
@@ -907,8 +1116,10 @@ func (l *StrategyLifecycle) recordGateReject(gateName, reason string) {
 }
 
 // writeDecisionEvidence records promote/rollback decision events with
-// source="lifecycle" so the knowledge graph's EvolutionProvider (P2-3) can
-// consume the decision trail.
+// source="lifecycle" so the knowledge graph's EvolutionProvider (P2-3,
+// closed by E3) can consume the decision trail: the provider's Stream emits
+// them as ObjectDecision objects via adapter.FromDecisionEvidence, filtered
+// by Source=="lifecycle" plus the payload "action" field.
 //
 // The source is deliberately NOT "strategy" and the score is deliberately
 // NOT normalized: GA scores live on a 0–100 scale, while every fitness
@@ -918,16 +1129,24 @@ func (l *StrategyLifecycle) recordGateReject(gateName, reason string) {
 // and (b) mix one-off decision events into the runtime fitness window
 // semantics. A dedicated source keeps the decision trail queryable without
 // polluting either dimension.
+//
+// TODO(tech-debt): decision records share KindFitness with runtime fitness
+// samples, distinguished only by Source. They should separate into a
+// dedicated KindDecision in 0.4.x — AFTER confirming Window's sources table
+// (fitness_aggregator.go: only strategy/workflow/scheduler/recovery) is
+// unaffected. Today "lifecycle" is not in that table, so decision records
+// never enter rollback math either way; the separation is a semantic
+// cleanup, not a correctness fix.
 func (l *StrategyLifecycle) writeDecisionEvidence(ctx context.Context, action, strategyID string, score float64, reason string) {
 	if l.evStore == nil {
 		return
 	}
 	payload, err := json.Marshal(map[string]any{
-		"action":      action,
-		"value":       score,
-		"strategy_id": strategyID,
-		"reason":      reason,
-		"timestamp":   time.Now().Format(time.RFC3339),
+		"action":              action,
+		"value":               score,
+		evidenceKeyStrategyID: strategyID,
+		"reason":              reason,
+		"timestamp":           time.Now().Format(time.RFC3339),
 	})
 	if err != nil {
 		return

@@ -558,7 +558,11 @@ func TestStrategyLifecycle_Promote_ResetsRollbackWindow(t *testing.T) {
 // ADVANCED — re-running with the same evidence batch must not feed the same
 // mean into RollbackPolicy again.
 func TestStrategyLifecycle_Watch_DecorrelatesRepeatedTicks(t *testing.T) {
-	lc, asm, store := newTestLifecycle(t, DefaultLifecycleConfig())
+	cfg := DefaultLifecycleConfig()
+	// The test drives the rollback feed directly, so the net must be armed
+	// (E2: an explicitly disarmed rollback skips the watch loop entirely).
+	cfg.RollbackArmed = true
+	lc, asm, store := newTestLifecycle(t, cfg)
 	require.NoError(t, asm.Deploy(context.Background(),
 		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
 	))
@@ -586,7 +590,11 @@ func TestStrategyLifecycle_Watch_DecorrelatesRepeatedTicks(t *testing.T) {
 // evidence TIMESTAMP. Seeds 120 records (> WindowSize) to cover the
 // saturation path the original 12-record test missed.
 func TestStrategyLifecycle_Watch_SaturatedWindowStillAdvances(t *testing.T) {
-	lc, asm, store := newTestLifecycle(t, DefaultLifecycleConfig())
+	cfg := DefaultLifecycleConfig()
+	// The test drives the rollback feed directly, so the net must be armed
+	// (E2: an explicitly disarmed rollback skips the watch loop entirely).
+	cfg.RollbackArmed = true
+	lc, asm, store := newTestLifecycle(t, cfg)
 	require.NoError(t, asm.Deploy(context.Background(),
 		&mutation.Strategy{ID: "base", Version: 1, Score: 50.0},
 	))
@@ -691,4 +699,207 @@ type mockGate struct {
 func (g *mockGate) Name() string { return g.name }
 func (g *mockGate) Check(_ context.Context, _, _ *mutation.Strategy) (bool, float64, string) {
 	return g.pass, g.score, g.reason
+}
+
+// --- E2: open promote path + promote throttle + rollback reachability ---
+
+// advanceResidency backs the activeSince clock up far enough that the
+// MinActiveDuration throttle is satisfied for the next Submit. It simulates
+// wall-clock time passing between generations without spawning a real watch
+// ticker (the test drives evaluateAndMaybeRollback directly).
+func advanceResidency(t *testing.T, lc *StrategyLifecycle) {
+	t.Helper()
+	lc.mu.Lock()
+	lc.activeSince = time.Now().Add(-24 * time.Hour)
+	lc.mu.Unlock()
+}
+
+// TestStrategyLifecycle_Submit_ProgressivePromotion_E2 is the main closed-loop
+// acceptance for E2: in a no-scorer config (no shadow gate registered, no
+// gates wired) TWO candidates are now promoted in sequence, and asm.Previous()
+// points at the FIRST — i.e. a real second promote happens, not just the seed
+// exemption. Before E2 this second candidate was rejected forever by the
+// fail-closed G2 gate.
+func TestStrategyLifecycle_Submit_ProgressivePromotion_E2(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.RollbackArmed = true
+	lc, asm, _ := newTestLifecycle(t, cfg)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "seed", Version: 1, Score: 50.0},
+	))
+
+	// First candidate: a gated promote (startResidency true) — the §9 baseline
+	// was already deployed via asm.Deploy, so this is NOT the seed exemption.
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "cand-1", Version: 2, Score: 75.0}, 1)
+	assert.Equal(t, "cand-1", asm.Current().ID, "first candidate must promote")
+	require.NotNil(t, asm.Previous())
+	assert.Equal(t, "seed", asm.Previous().ID)
+
+	// Satisfy the promote throttle so the second candidate is judged.
+	advanceResidency(t, lc)
+
+	// Second candidate: THIS is the case that was rejected before E2.
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "cand-2", Version: 3, Score: 88.0}, 2)
+	assert.Equal(t, "cand-2", asm.Current().ID, "second candidate must promote (E2 regression)")
+	assert.Equal(t, "cand-1", asm.Previous().ID,
+		"a real second promote must establish previous=cand-1")
+
+	// Snapshot posture: two promotions, no shadow gate skipped.
+	snap := lc.Snapshot()
+	assert.Equal(t, "promoted", snap.LastDecision)
+	assert.Empty(t, snap.ShadowGateSkipReason)
+}
+
+// TestStrategyLifecycle_Submit_ResidencyThrottle_E2 locks the promote throttle:
+// a candidate submitted BEFORE MinActiveDuration elapses is rejected and the
+// active strategy is unchanged; only after residency does the next candidate go
+// through. This is the correctness precondition of the open promote path — it
+// is what stops the GA ticker from rotating strategies faster than the rollback
+// window can accumulate evidence.
+func TestStrategyLifecycle_Submit_ResidencyThrottle_E2(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.RollbackArmed = true
+	lc, asm, _ := newTestLifecycle(t, cfg)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "seed", Version: 1, Score: 50.0},
+	))
+
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "first", Version: 2, Score: 75.0}, 1)
+	assert.Equal(t, "first", asm.Current().ID)
+
+	// Immediately submit a better candidate: residency not yet elapsed.
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "too-soon", Version: 3, Score: 95.0}, 2)
+	assert.Equal(t, "first", asm.Current().ID,
+		"promote throttle must reject a candidate before MinActiveDuration elapses")
+	assert.Equal(t, "seed", asm.Previous().ID,
+		"rejected candidate must not corrupt the previous chain")
+
+	// After advancing the residency clock the same candidate goes through.
+	advanceResidency(t, lc)
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "too-soon", Version: 3, Score: 95.0}, 2)
+	assert.Equal(t, "too-soon", asm.Current().ID, "once residency elapses the candidate promotes")
+}
+
+// TestStrategyLifecycle_RollbackReachable_E2 is the single most valuable
+// assertion in the whole E2 plan: it proves the POST-deployment machinery
+// (RuntimeObserver → Window → RecordScore → Rollback → restore-previous) runs
+// for real. Before E2, the fail-closed G2 gate meant only the seed ever
+// promoted, so asm.Previous() stayed nil and automatic rollback was
+// permanently unreachable. Here we build a two-promote chain then feed a
+// sustained degradation so the watch loop restores the previous strategy.
+func TestStrategyLifecycle_RollbackReachable_E2(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.RollbackArmed = true // the net must be armed for the watch loop to act
+	lc, asm, store := newTestLifecycle(t, cfg)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "seed", Version: 1, Score: 50.0},
+	))
+
+	// Build a two-promote chain so previous is non-nil (the precondition the
+	// fail-closed config could never satisfy).
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "gen-1", Version: 2, Score: 70.0}, 1)
+	advanceResidency(t, lc)
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "gen-2", Version: 3, Score: 85.0}, 2)
+	assert.Equal(t, "gen-2", asm.Current().ID)
+	assert.Equal(t, "gen-1", asm.Previous().ID)
+
+	// Seed a high baseline for gen-2, then drive sustained degradation. Each
+	// batch advances the evidence timestamp so the decorrelation guard records
+	// once per tick.
+	ctx := context.Background()
+	seedWindowFitness(t, store, "gen-2", 1.0, 12)
+	lc.evaluateAndMaybeRollback(ctx)
+	require.Len(t, asm.RollbackPolicy().scoreHistory, 1, "baseline recorded once")
+
+	seedWindowFitness(t, store, "gen-2", 0.0, 12)
+	lc.evaluateAndMaybeRollback(ctx)
+	seedWindowFitness(t, store, "gen-2", 0.0, 12)
+	lc.evaluateAndMaybeRollback(ctx)
+
+	// 1.0 then 0.0, 0.0 → degradation 1.0 > 0.15 and history >= minSamples.
+	assert.Equal(t, "gen-1", asm.Current().ID,
+		"rollback must restore the previous strategy on sustained degradation")
+	assert.Equal(t, "gen-2", asm.Previous().ID,
+		"after rollback the degraded strategy becomes previous (re-rollback possible)")
+}
+
+// TestStrategyLifecycle_Snapshot_GateVisibility_E2 locks the E2 snapshot
+// contract: the lifecycle must report the gate pipeline and, when the wiring
+// layer folds the G2 gate (WithShadowGateDisabled), surface the skip reason so
+// the absence is visible to an operator instead of emergent.
+func TestStrategyLifecycle_Snapshot_GateVisibility_E2(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.RollbackArmed = true
+	asm, err := NewActiveStrategyManager(newMockStrategyStore(), NewRollbackPolicy())
+	require.NoError(t, err)
+	store := evidence.NewMemoryStore()
+	agg := NewRuntimeFitnessAggregator(store, DefaultAggregatorConfig())
+
+	lc := NewStrategyLifecycle(asm, agg, cfg,
+		WithLifecycleEvidenceStore(store),
+		WithShadowGateDisabled("no scorer; canary+rollback armed"),
+		WithLifecycleGates(&mockGate{name: "eval", pass: true, reason: "ok"}),
+	)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "seed", Version: 1, Score: 50.0},
+	))
+
+	snap := lc.Snapshot()
+	// The explicit gate is registered; the shadow gate is NOT (folded by the
+	// wiring decision). gateNamesLocked returns registered gate names only.
+	assert.ElementsMatch(t, []string{"eval"}, snap.Gates,
+		"shadow gate must NOT appear in gates when disabled via WithShadowGateDisabled")
+	assert.Equal(t, "no scorer; canary+rollback armed", snap.ShadowGateSkipReason)
+	assert.True(t, snap.RollbackArmed)
+	assert.Greater(t, snap.MinActiveDuration, time.Duration(0),
+		"promote-throttle posture must be visible in the snapshot")
+
+	m := lc.LifecycleSnapshot()
+	assert.Equal(t, "no scorer; canary+rollback armed", m["shadow_gate_skipped_reason"])
+	assert.Equal(t, []string{"eval"}, m["gates"])
+	assert.Equal(t, true, m["rollback_armed"])
+}
+
+// TestStrategyLifecycle_ThrottleBoundedChurn_E2 is the jitter/oscillation
+// regression for E2: the GA ticker nominates a strictly better candidate on
+// every generation, but the promote throttle couples promote frequency to
+// MinActiveDuration. Without it the loop would rotate strategies every tick —
+// faster than the rollback window accumulates evidence, making degradation
+// undetectable in principle. Here, five consecutive better candidates within
+// one residency window must NOT rotate the active strategy; only one promote is
+// permitted, and a fresh promote restarts the residency clock.
+func TestStrategyLifecycle_ThrottleBoundedChurn_E2(t *testing.T) {
+	cfg := DefaultLifecycleConfig()
+	cfg.RollbackArmed = true
+	lc, asm, _ := newTestLifecycle(t, cfg)
+	require.NoError(t, asm.Deploy(context.Background(),
+		&mutation.Strategy{ID: "seed", Version: 1, Score: 50.0},
+	))
+
+	// Generation 1: the first judged promote (establishes the residency clock).
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "gen-1", Version: 2, Score: 70.0}, 1)
+	assert.Equal(t, "gen-1", asm.Current().ID)
+
+	// Generations 2..6: each tick nominates a strictly better candidate while
+	// residency is still elapsing. None may replace gen-1 — the throttle must
+	// bound promote churn to one promotion per residency window.
+	for gen := 2; gen <= 6; gen++ {
+		lc.Submit(context.Background(), &mutation.Strategy{
+			ID:      fmt.Sprintf("gen-%d", gen),
+			Version: gen + 1,
+			Score:   float64(70 + gen),
+		}, gen)
+		assert.Equal(t, "gen-1", asm.Current().ID,
+			"promote churn at generation %d must be throttled by MinActiveDuration", gen)
+	}
+
+	// Once residency elapses, one better candidate is allowed through.
+	advanceResidency(t, lc)
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "gen-7", Version: 8, Score: 95.0}, 7)
+	assert.Equal(t, "gen-7", asm.Current().ID, "after residency elapses one promote is permitted")
+
+	// And a fresh promote restarts the residency clock: an immediate follow-up
+	// in the same tick is throttled again.
+	lc.Submit(context.Background(), &mutation.Strategy{ID: "gen-8", Version: 9, Score: 99.0}, 8)
+	assert.Equal(t, "gen-7", asm.Current().ID, "a fresh promote must restart the residency clock")
 }

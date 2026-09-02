@@ -197,6 +197,12 @@ func (o *RuntimeObserver) processEvent(ctx context.Context, evt *ares_events.Eve
 	o.writeEvidence(ctx, sample)
 }
 
+// evidenceKeyStrategyID is the evidence payload key carrying the strategy
+// attribution (evolution loop closure E1). It is read from task events by
+// eventToSample and written into every fitness/decision payload, so promote
+// attribution stays consistent across producers.
+const evidenceKeyStrategyID = "strategy_id"
+
 // agentStoppedGracefulReasons lists EventAgentStopped payload "reason"
 // values that represent intentional, operator-driven terminations. These
 // say nothing about strategy quality, so they produce no sample.
@@ -238,7 +244,7 @@ func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample,
 		}
 	}
 	if evt.Payload != nil {
-		if id, ok := evt.Payload["strategy_id"].(string); ok && id != "" {
+		if id, ok := evt.Payload[evidenceKeyStrategyID].(string); ok && id != "" {
 			strategyID = id
 		}
 	}
@@ -266,10 +272,10 @@ func (o *RuntimeObserver) writeEvidence(ctx context.Context, sample StrategySamp
 		return
 	}
 	payload, err := json.Marshal(map[string]any{
-		"value":       sample.Score,
-		"success":     sample.Success,
-		"strategy_id": sample.StrategyID,
-		"task_type":   sample.TaskType,
+		"value":               sample.Score,
+		"success":             sample.Success,
+		evidenceKeyStrategyID: sample.StrategyID,
+		"task_type":           sample.TaskType,
 	})
 	if err != nil {
 		return

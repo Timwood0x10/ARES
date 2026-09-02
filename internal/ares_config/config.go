@@ -860,10 +860,24 @@ type EvolutionLifecycleConfig struct {
 	// stays banned from re-nomination (§9 rollback-oscillation damping).
 	// Default: 3.
 	BlacklistGenerations int `yaml:"blacklist_generations"`
+	// MinActiveDuration is how long a promoted strategy must stay active
+	// before another candidate may replace it (duration string, e.g. "90s").
+	// It throttles promote churn so the rollback window can accumulate
+	// evidence between promotions. Default: 3 × watch_interval. Invalid or
+	// non-positive strings fall back to the default.
+	MinActiveDuration string `yaml:"min_active_duration"`
 }
 
 // EvolutionRollbackConfig mirrors the `evolution.rollback` YAML block.
 type EvolutionRollbackConfig struct {
+	// Enabled arms the automatic post-deployment rollback (the canary safety
+	// net). Tri-state pointer: nil (absent) means true — an operator who does
+	// not mention rollback gets it, because the promote path relies on it.
+	// An explicit `enabled: false` disables the watch-loop rollback AND
+	// re-arms the G2 shadow gate fail-closed (see the shadow-gate invariant
+	// in ares_bootstrap): with neither pre- nor post-deployment verification,
+	// refusing promotion is the only correct behavior.
+	Enabled *bool `yaml:"enabled"`
 	// DegradationThreshold is the mean-score drop fraction (on a [0,1]
 	// scale) that triggers rollback. Default: 0.15.
 	DegradationThreshold float64 `yaml:"degradation_threshold"`
@@ -873,6 +887,13 @@ type EvolutionRollbackConfig struct {
 	// MinSamples is the minimum window sample count before a rollback
 	// decision is made. Default: 3.
 	MinSamples int `yaml:"min_samples"`
+}
+
+// IsEnabled reports whether automatic rollback is armed. Unset (nil)
+// defaults to true: the rollback net is part of the promote path's safety
+// contract, so only an explicit YAML false disarms it.
+func (c EvolutionRollbackConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // EvolutionShadowConfig mirrors the `evolution.shadow` YAML block.

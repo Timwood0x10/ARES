@@ -46,6 +46,14 @@ func lifecycleConfigFromYAML(lc ares_config.EvolutionLifecycleConfig, gc ares_co
 		// a broken YAML knob must never stop the watch loop entirely.
 	}
 	cfg.BlacklistGenerations = defaultInt(lc.BlacklistGenerations, cfg.BlacklistGenerations)
+	// E2: promote throttle. Invalid or non-positive values fall back to the
+	// default (3 × watch_interval) — a broken knob must never disable the
+	// throttle, it is a correctness precondition of the open promote path.
+	if lc.MinActiveDuration != "" {
+		if d, perr := time.ParseDuration(lc.MinActiveDuration); perr == nil && d > 0 {
+			cfg.MinActiveDuration = d
+		}
+	}
 	cfg.Gates.EvalMinScore = defaultFloat(gc.EvalMinScore, cfg.Gates.EvalMinScore)
 	cfg.Gates.RequireManualApproval = gc.RequireManualApproval
 	return &cfg

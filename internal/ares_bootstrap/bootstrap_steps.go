@@ -198,7 +198,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// server-side evolution queries can retrieve strategy decisions. The
 	// StrategyStore only exists from this point on (the knowledge runtime is
 	// built earlier, in BuildKnowledgeRuntime), hence the late registration.
-	attachEvolutionKnowledgeProvider(ctx, comp.KnowledgeRuntime, memStore)
+	attachEvolutionKnowledgeProvider(ctx, comp.KnowledgeRuntime, memStore, comp.EvidenceStore)
 
 	base := &mutation.Strategy{
 		ID:     "bootstrap-root",
@@ -217,9 +217,14 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// B1 fix: rollback thresholds come from the evolution.rollback YAML
 	// block (design doc §7); zero values fall back to the code defaults
 	// that match the previous hardcoded wiring.
+	// E2: Enabled is now tri-state (nil defaults true) instead of hardcoded:
+	// an operator can disarm the rollback net, which (a) stops the watch loop
+	// from triggering and (b) re-arms the G2 gate fail-closed — see
+	// shadowGateMode below.
 	rbCfg := cfg.Evolution.Rollback
+	rollbackArmed := rbCfg.IsEnabled()
 	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{
-		Enabled:              true,
+		Enabled:              rollbackArmed,
 		DegradationThreshold: defaultFloat(rbCfg.DegradationThreshold, 0.15),
 		WindowSize:           defaultInt(rbCfg.WindowSize, 5),
 		MinSamples:           defaultInt(rbCfg.MinSamples, 3),
@@ -236,6 +241,9 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// interval) is YAML-configurable; the same config also feeds the G3
 	// eval-gate MinScore further below.
 	gaCfg.Lifecycle = lifecycleConfigFromYAML(cfg.Evolution.Lifecycle, cfg.Evolution.Gates)
+	// E2: the lifecycle must know whether the rollback net is armed (it owns
+	// the watch loop) — the same tri-state decision as the ASM wiring above.
+	gaCfg.Lifecycle.RollbackArmed = rollbackArmed
 	// P2-1: wire the shared Prometheus metrics into the GA system so the
 	// lifecycle counters (promote/rollback/gate-reject) are actually
 	// incremented in production instead of registered-but-never-updated.
@@ -286,6 +294,33 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		// buildShadowEvaluator logs a warning when this is set.
 		if cfg.Evolution.LLMScoring.Seed > 0 {
 			gaCfg.ShadowEvalConfig.DeterministicScorer = true
+		}
+	}
+
+	// E2: decide the G2 shadow-gate posture BEFORE wiring the system, so the
+	// lifecycle is constructed with the gate already suppressed (or kept)
+	// instead of un-registering it afterwards. The invariant: skipping
+	// PRE-deployment verification is allowed only when POST-deployment
+	// verification is armed; with neither, G2 stays fail-closed.
+	//
+	// hasScorer ⇔ gaCfg.Scorer != nil: buildShadowEvaluator sets an
+	// independent scorer on the evaluator exactly when cfg.Scorer is wired
+	// (the heuristic-only TieredScorer is NOT independent evidence).
+	register, gateReason, gateErr := shadowGateMode(gaCfg.Scorer != nil, rollbackArmed)
+	if !register && errors.Is(gateErr, errShadowGateNotConfigured) {
+		gaCfg.Lifecycle.DisableShadowGate = true
+		gaCfg.Lifecycle.ShadowGateSkipReason = gateReason
+		log.WarnContext(ctx, "evolution: pre-deployment shadow gate NOT registered",
+			"reason", gateReason,
+			"mitigation", "candidates promote directly; degradation triggers automatic rollback",
+			"rollback_armed", rollbackArmed,
+			"rollback_threshold", gaCfg.RollbackPolicyConfig.DegradationThreshold,
+			"rollback_window", gaCfg.RollbackPolicyConfig.WindowSize,
+			"rollback_min_samples", gaCfg.RollbackPolicyConfig.MinSamples,
+		)
+		// E6: the absence must be meterable, not only logged once.
+		if gaCfg.Metrics != nil {
+			gaCfg.Metrics.RecordEvolutionGateSkipped("shadow", gateReason)
 		}
 	}
 
@@ -702,16 +737,30 @@ func wireLLMScorer(cfg *ares_config.Config, comp *Components) (genome.ScorerFunc
 // failure degrades to a warn log, never blocks bootstrap). Kept as its own
 // function so the closure contract is directly testable without the full
 // wireGAEvolution fixture.
-func attachEvolutionKnowledgeProvider(ctx context.Context, rt *knowledgeruntime.KnowledgeRuntime, store evolution.StrategyStore) {
+//
+// E3: the evidence store (comp.EvidenceStore — wired long before this point,
+// so the call-site timing is unaffected) lets the provider also stream the
+// promote/rollback decision trail, closing the "P2-3 wrote evidence nobody
+// consumed" gap. A nil evStore degrades to lineage-only output.
+func attachEvolutionKnowledgeProvider(
+	ctx context.Context,
+	rt *knowledgeruntime.KnowledgeRuntime,
+	store evolution.StrategyStore,
+	evStore evidence.Store,
+) {
 	if rt == nil || store == nil {
 		return
 	}
 	evoProv := evoprovider.New("evolution", store)
+	if evStore != nil {
+		evoProv.WithEvidenceStore(evStore)
+	}
 	if err := rt.RegisterProvider(evoProv); err != nil {
 		log.WarnContext(ctx, "bootstrap: register evolution provider for knowledge runtime", "error", err)
 		return
 	}
-	log.InfoContext(ctx, "bootstrap: evolution provider wired for knowledge runtime")
+	log.InfoContext(ctx, "bootstrap: evolution provider wired for knowledge runtime",
+		"decision_trail", evStore != nil)
 }
 
 // newPGStrategyStore creates a PostgreSQL-backed strategy store from config.

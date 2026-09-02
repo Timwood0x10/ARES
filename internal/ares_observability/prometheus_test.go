@@ -79,6 +79,26 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 			// model only (#cardinality), mirrors NewPrometheusMetrics.
 			[]string{"model"},
 		),
+		EvolutionGateSkippedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_gate_skipped_total",
+				Help: "Total number of verify gates deliberately NOT registered, by gate and reason",
+			},
+			[]string{"gate", "reason"},
+		),
+		EvolutionActiveDuration: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_active_duration_seconds",
+				Help: "How long the currently active strategy has been promoted, in seconds",
+			},
+		),
+		EvolutionWindowSamples: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "ARES_evolution_window_samples",
+				Help: "Runtime fitness evidence window sample count, by strategy and source",
+			},
+			[]string{"strategy_id", "source"},
+		),
 	}
 
 	collectors := []prometheus.Collector{
@@ -90,6 +110,9 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 		m.ActiveAgents,
 		m.LLMTokensTotal,
 		m.CostUSDTotal,
+		m.EvolutionGateSkippedTotal,
+		m.EvolutionActiveDuration,
+		m.EvolutionWindowSamples,
 	}
 	for _, c := range collectors {
 		if err := reg.Register(c); err != nil {
@@ -145,6 +168,15 @@ func TestNewPrometheusMetrics(t *testing.T) {
 	}
 	if m.CostUSDTotal == nil {
 		t.Error("expected CostUSDTotal to be initialized")
+	}
+	if m.EvolutionGateSkippedTotal == nil {
+		t.Error("expected EvolutionGateSkippedTotal to be initialized")
+	}
+	if m.EvolutionActiveDuration == nil {
+		t.Error("expected EvolutionActiveDuration gauge to be initialized")
+	}
+	if m.EvolutionWindowSamples == nil {
+		t.Error("expected EvolutionWindowSamples to be initialized")
 	}
 }
 
@@ -359,6 +391,47 @@ func TestMetricsHTTPHandler_ContentType(t *testing.T) {
 	}
 	if !strings.Contains(body, "# TYPE") {
 		t.Error("expected # TYPE comments in Prometheus output")
+	}
+}
+
+func TestPrometheusMetrics_EvolutionGateSkipped(t *testing.T) {
+	m, handler := newTestMetrics(t)
+
+	m.RecordEvolutionGateSkipped("shadow", "no_configured_evaluator")
+	m.RecordEvolutionGateSkipped("shadow", "no_configured_evaluator")
+
+	body := collectMetrics(t, handler)
+
+	if !strings.Contains(body, `ARES_evolution_gate_skipped_total{gate="shadow",reason="no_configured_evaluator"} 2`) {
+		t.Errorf("expected gate-skipped counter to increment to 2, got:\n%s", body)
+	}
+}
+
+func TestPrometheusMetrics_EvolutionActiveDuration(t *testing.T) {
+	m, handler := newTestMetrics(t)
+
+	m.SetEvolutionActiveDuration(120.5)
+
+	body := collectMetrics(t, handler)
+
+	if !strings.Contains(body, "ARES_evolution_active_duration_seconds") {
+		t.Error("expected active-duration gauge in output")
+	}
+	if !strings.Contains(body, "ARES_evolution_active_duration_seconds 120.5") {
+		t.Errorf("expected active-duration to be 120.5, got:\n%s", body)
+	}
+}
+
+func TestPrometheusMetrics_EvolutionWindowSamples(t *testing.T) {
+	m, handler := newTestMetrics(t)
+
+	m.SetEvolutionWindowSamples("strategy-a", "strategy", 42)
+	m.SetEvolutionWindowSamples("strategy-a", "strategy", 99)
+
+	body := collectMetrics(t, handler)
+
+	if !strings.Contains(body, `ARES_evolution_window_samples{source="strategy",strategy_id="strategy-a"} 99`) {
+		t.Errorf("expected window-samples gauge to reflect latest set (99), got:\n%s", body)
 	}
 }
 
