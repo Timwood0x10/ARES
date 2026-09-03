@@ -697,10 +697,16 @@ func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseSt
 	//
 	// Without an LLM scorer the tiered scorer is heuristic-only
 	// (ConstantScorer 50): every comparison would be an exact tie, which is
-	// meaningless evidence. In that case leave the shadow scorer UNSET so
-	// the sampler no-ops and the G2 gate stays fail-closed — the intended
-	// default until a real evidence source is wired (§4④). This also keeps
-	// the manual-RecordResult test path (unit + closure) working.
+	// meaningless evidence. With cfg.Scorer==nil we therefore do NOT wire the
+	// tiered heuristic here. In zero-LLM mode the independent evidence source
+	// is the DETERMINISTIC scorer (C2.6): bootstrap sets
+	// DeterministicScorerEnabled so the G2 gate registers, and the serve layer
+	// (cmd/ares/peer_mode.go) wires that scorer onto this evaluator once the
+	// runtime ExecutionAttribution exists — the attribution is created after
+	// NewWiredEvolutionSystem, so it cannot be injected through cfg here.
+	// Until that runtime wiring, the scorer is UNSET and the sampler no-ops
+	// (G2 stays fail-closed); this also keeps the manual-RecordResult test
+	// path (unit + closure) working.
 	if cfg.Scorer != nil {
 		if tiered != nil {
 			shadowEval.SetShadowScorer(func(ctx context.Context, s *mutation.Strategy) float64 {

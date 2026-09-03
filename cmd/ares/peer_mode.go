@@ -213,6 +213,38 @@ func createPeerAgents(
 		}
 	}
 
+	// C3.2 (loop closure): make the "independent scorer wired" G2 promise real.
+	// bootstrap_steps.go set DeterministicScorerEnabled=true so hasScorer passed
+	// and the G2 shadow gate was registered as "independent scorer wired" — but
+	// buildShadowEvaluator only sets a shadow scorer when an LLM scorer exists.
+	// With llmScorer==nil the evaluator's scorer stayed nil, the ShadowSampler
+	// no-op'd, and G2 rejected every candidate fail-closed forever (a gate that
+	// claims evidence but never gathers it).
+	//
+	// The scorer must DISCRIMINATE per strategy, otherwise the defect only
+	// moves: one global attribution score returns the same number for the
+	// candidate and the active strategy, every comparison is an exact tie
+	// (ShadowWon requires shadow > active), the win rate is 0.0 and G2 still
+	// rejects everything. So the evidence source is the ReplayScorer: each
+	// strategy is scored by the mean of ITS OWN KindFitness records that the
+	// RuntimeObserver already writes per finished task, read over a distinct
+	// time window per comparison — real per-strategy evidence, zero LLM calls.
+	// The attribution-derived deterministic score (C2.2) supplies the
+	// cold-start prior for a strategy with no history in a window, so the same
+	// execution quality the GA rewards also anchors the shadow comparison.
+	if comp.NewEvolution != nil && comp.NewEvolution.ShadowEvaluator != nil {
+		det := aresrecovery.NewDeterministicScorer()
+		replay := evolution.NewReplayScorer(comp.EvidenceStore, func() float64 {
+			return det.ScoreAttribution(attribution)
+		})
+		// Without an evidence store replay degrades to prior-vs-prior, i.e.
+		// the tie deadlock above. Leave the scorer unset in that case so G2
+		// stays honestly fail-closed instead of judging on ties.
+		if replay.HasStore() {
+			comp.NewEvolution.ShadowEvaluator.SetShadowScorer(replay.Score)
+		}
+	}
+
 	// C2.3: wrap the confidence-injection adapter with score write-back.
 	// The strategyScoreAdapter bridges to evolution.StrategyStore without
 	// creating a circular import (aresrecovery cannot import evolution).

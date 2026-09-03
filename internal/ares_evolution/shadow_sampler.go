@@ -33,16 +33,21 @@ import (
 // shadow flow — both call StartShadow, which resets accumulated comparisons.
 // The wiring picks one (see NewWiredEvolutionSystem).
 //
-// HONEST LIMIT (do not mistake this for statistical power): the sampler scores
-// the same candidate/active pair `samples` times. That only yields INDEPENDENT
-// comparisons when the scorer is non-deterministic (the LLM scorer, which
-// samples at temperature > 0). With a deterministic scorer every comparison is
-// identical, so the win rate collapses to 0.0 or 1.0 and MinSamples is
-// satisfied by repetition rather than by evidence — the verdict is a single
-// score comparison wearing MinSamples' clothes. Per-task real-execution
-// sampling (each comparison from a different live task) is the follow-up that
-// makes the threshold meaningful; it needs a task-level A/B execution path that
-// does not exist yet.
+// WINDOWED REPLAY (C3.2): when the scorer is deterministic, scoring the same
+// pair N times yields N IDENTICAL comparisons — the win rate collapses to 0.0
+// or 1.0 and MinSamples is satisfied by repetition rather than by evidence. To
+// avoid that, Prime hands each comparison a DIFFERENT replay window (see
+// replay_scorer.go): comparison i reads the history slice
+// [now-(i+1)·span, now-i·span), so the samples are disjoint task sets and the
+// win rate is a real distribution over time. A scorer that ignores the window
+// (e.g. an LLM scorer, which is non-deterministic anyway) is unaffected.
+//
+// REMAINING HONEST LIMIT: replay measures each strategy's own history, so a
+// never-executed candidate has no records and falls back to the cold-start
+// prior in every window. Its verdict is then "current fleet quality vs the
+// active strategy's measured history" — a real signal, but not a candidate-
+// specific one. Per-task A/B execution (running the candidate on live traffic)
+// is what would make it candidate-specific; that path does not exist yet.
 type ShadowSampler struct {
 	// evaluator is the G2 gate's data source; this sampler only feeds it.
 	evaluator *ShadowEvaluator
@@ -54,7 +59,10 @@ type ShadowSampler struct {
 	// Exposed (unexported field, set by tests) so the batch deadline is
 	// verifiable without a 60s real-time wait.
 	timeout time.Duration
-	mu      sync.Mutex // serializes Prime so two submissions cannot interleave StartShadow/Evaluate
+	// windowSpan is the width of one replay window. Zero falls back to
+	// replayWindowSpan.
+	windowSpan time.Duration
+	mu         sync.Mutex // serializes Prime so two submissions cannot interleave StartShadow/Evaluate
 }
 
 // defaultShadowSamples is the comparison count used when the caller passes a
@@ -86,7 +94,7 @@ func NewShadowSampler(evaluator *ShadowEvaluator, samples int) *ShadowSampler {
 	if samples <= 0 {
 		samples = defaultShadowSamples
 	}
-	return &ShadowSampler{evaluator: evaluator, samples: samples, timeout: shadowPrimeTimeout}
+	return &ShadowSampler{evaluator: evaluator, samples: samples, timeout: shadowPrimeTimeout, windowSpan: replayWindowSpan}
 }
 
 // Prime prepares the evaluator for one candidate-and-active pair and gathers
@@ -129,19 +137,32 @@ func (s *ShadowSampler) Prime(ctx context.Context, candidate, active *mutation.S
 	}
 	primeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	span := s.windowSpan
+	if span <= 0 {
+		span = replayWindowSpan
+	}
+	// Anchor all windows to ONE clock reading: deriving each window from a
+	// fresh time.Now() would let the batch's own execution time shift the
+	// slices and overlap them, reintroducing the duplicate-evidence problem.
+	anchor := time.Now()
 	s.evaluator.SetActiveStrategy(active)
 	s.evaluator.StartShadow(candidate)
 	for i := 0; i < s.samples; i++ {
 		if primeCtx.Err() != nil {
 			return
 		}
-		s.evaluator.Evaluate(primeCtx)
+		// Walk backwards through history, one disjoint window per
+		// comparison: [anchor-(i+1)*span, anchor-i*span).
+		w := replayWindow{
+			Since: anchor.Add(-time.Duration(i+1) * span),
+			Until: anchor.Add(-time.Duration(i) * span),
+		}
+		s.evaluator.Evaluate(withReplayWindow(primeCtx, w))
 	}
 }
 
-// TODO(tech-debt): comparisons are repeated scores of the SAME pair, so they are
-// only independent under a non-deterministic (LLM) scorer — see the
-// ShadowSampler doc comment. Replace with per-task real-execution sampling
-// (one comparison per live task, candidate vs active) once a task-level A/B
-// execution path exists; until then MinSamples counts repetitions, not
-// independent evidence.
+// TODO(tech-debt): replay windows make the comparisons disjoint in TIME, but a
+// never-executed candidate still has no records of its own and scores the
+// cold-start prior in every window (see the ShadowSampler doc comment).
+// Replace with per-task real-execution sampling (one comparison per live task,
+// candidate vs active) once a task-level A/B execution path exists.

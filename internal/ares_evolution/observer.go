@@ -285,7 +285,7 @@ func (o *RuntimeObserver) writeEvidence(ctx context.Context, sample StrategySamp
 		// so a time-only suffix would silently drop samples from different
 		// days colliding on the same clock reading.
 		ID:        "strategy_" + sample.StrategyID + "_" + sample.At.Format("20060102150405.000000"),
-		Source:    "strategy",
+		Source:    observerEvidenceSource,
 		Kind:      evidence.KindFitness,
 		Payload:   payload,
 		Timestamp: sample.At,

@@ -835,11 +835,19 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			}
 		}
 	}()
+	// C2.1: capture the quantum's wall-clock duration and the retry budget
+	// BEFORE RunQuantum so endQuantumOutcome can attribute real latency and
+	// retry count to the deterministic scorer (C2.2). The old Record() path
+	// passed 0,0,0, which made the latency/retry/recover weights dead and
+	// collapsed every score to 0.70×successRate+0.30 (no added information).
+	retries := tk.RetryPolicy.Attempts
+	quantumStart := time.Now()
 	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta))
+	quantumLatency := time.Since(quantumStart)
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	stopHeartbeat()
 	s.afterQuantum(ctx, taskID, winner, err)
-	s.endQuantumOutcome(winner, tk.Capability, taskID, err)
+	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
 	slotReleased = true
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
 	// round) so the next gate sees the new balance. Runs even on step errors —
@@ -974,7 +982,7 @@ func (s *Scheduler) buildQuantumStep(
 // Score's confidence factor would make the preempted task permanently
 // unschedulable. Such rejections end NEUTRAL — load is released but no
 // success/failure enters the history, and W4 attribution is skipped.
-func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err error) {
+func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err error, latency time.Duration, retries int) {
 	if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
 		s.tracker.EndNeutral(winner)
 		log.Printf("kernel scheduler: quantum for task %q ended by preemption fencing (benign); outcome not attributed", taskID)
@@ -985,8 +993,12 @@ func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err err
 	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
 	// the tracker's confidence override (SetAgentConfidence) so the next
 	// Schedule sees the evolution-derived confidence.
+	//
+	// C2.1: RecordWithMetrics carries the real quantum latency and retry
+	// budget so the deterministic scorer (C2.2) has non-degenerate evidence.
+	// Recovery count stays 0 (normal quantum: no replacement was needed).
 	if s.attribution != nil {
-		s.attribution.Record(winner, capability, err == nil)
+		s.attribution.RecordWithMetrics(winner, capability, err == nil, latency, retries, 0)
 	}
 }
 
