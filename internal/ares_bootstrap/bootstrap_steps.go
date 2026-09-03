@@ -168,6 +168,13 @@ const (
 	paramMaxTokens   = "max_tokens"
 )
 
+// maxShadowReplayHorizon is the widest total replay history (window span ×
+// MinSamples) the shadow sampler is expected to walk backwards before the
+// oldest comparison stops describing current behaviour. Purely advisory: the
+// bootstrap warns above it and never clamps, because a low-traffic deployment
+// may legitimately need a longer horizon to find any evidence at all.
+const maxShadowReplayHorizon = 24 * time.Hour
+
 // wireGAEvolution wires the GA population adapter (step 9 of Bootstrap): it
 // builds the GA system, attaches the coordinator bridge to the population
 // adapter, and starts the background evolution ticker. Extracted from Bootstrap
@@ -236,6 +243,35 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		Enabled:    true,
 		MinSamples: defaultInt(shCfg.MinSamples, 20),
 		MinWinRate: defaultFloat(shCfg.MinWinRate, 0.55),
+	}
+	// W2: the replay evidence window width is YAML-configurable (duration
+	// string). Zero/unset keeps the scorer's 10-minute default; an invalid
+	// string is ignored, never fatal — the operator's typo must not take down
+	// the evolution plane.
+	//
+	// The per-window query limit (evolution.shadow.replay_query_limit) is NOT
+	// carried here: the ReplayScorer is constructed in the serve layer
+	// (cmd/ares/peer_mode.go), which reads the YAML directly. Duplicating it
+	// into ShadowEvalConfig would create a second, unread copy of the same
+	// knob (review P1).
+	if raw := shCfg.ReplayWindowSpan; raw != "" {
+		if d, perr := time.ParseDuration(raw); perr == nil && d > 0 {
+			gaCfg.ShadowEvalConfig.ReplayWindowSpan = d
+			// P2: the sampler walks MinSamples windows BACKWARDS from now, so
+			// span × MinSamples is the total history horizon. A wide span with
+			// the default query limit (200 records/window, no server-side
+			// strategy filter) makes truncation likely and pushes the oldest
+			// window far out of date — stale evidence judged as current. Warn
+			// rather than clamp: the operator may genuinely want a long
+			// horizon on a low-traffic deployment.
+			if horizon := d * time.Duration(gaCfg.ShadowEvalConfig.MinSamples); horizon > maxShadowReplayHorizon {
+				log.WarnContext(ctx, "bootstrap: evolution.shadow replay horizon is very wide — oldest comparison reads stale evidence and wide windows are more likely to hit replay_query_limit",
+					"replay_window_span", d, "min_samples", gaCfg.ShadowEvalConfig.MinSamples,
+					"horizon", horizon, "recommended_max", maxShadowReplayHorizon)
+			}
+		} else {
+			log.WarnContext(ctx, "bootstrap: ignoring invalid evolution.shadow.replay_window_span", "value", raw, "error", perr)
+		}
 	}
 	// Design doc §7: the lifecycle control plane (window/judge/gates/watch
 	// interval) is YAML-configurable; the same config also feeds the G3

@@ -339,6 +339,162 @@ func TestShadowEvaluator_ShadowWonTie(t *testing.T) {
 	}
 }
 
+// TestShadowEvaluator_TiesNotCountedAsSamples pins the B-3 fix: an exact tie
+// (shadowScore == activeScore) carries no information about which strategy is
+// better, so it must NOT count toward TotalComparisons or dilute the win rate.
+// A cold-start prior-vs-prior comparison is exactly such a tie, so this is the
+// deadlock-removal contract: ties are neither wins nor samples.
+func TestShadowEvaluator_TiesNotCountedAsSamples(t *testing.T) {
+	e := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.55})
+	e.SetActiveStrategy(&mutation.Strategy{ID: "active"})
+	e.StartShadow(&mutation.Strategy{ID: "candidate"})
+
+	// Two decisive shadow wins + three ties. TotalComparisons must count only
+	// the decisive wins (2), not the 5 recorded comparisons.
+	e.RecordResult(0.2, 0.8) // shadow wins
+	e.RecordResult(0.5, 0.5) // tie (e.g. both cold-start prior)
+	e.RecordResult(0.3, 0.7) // shadow wins
+	e.RecordResult(0.5, 0.5) // tie
+	e.RecordResult(0.5, 0.5) // tie
+
+	// Recorded raw results still include the ties (observability preserved).
+	if got := len(e.Results()); got != 5 {
+		t.Fatalf("raw results = %d, want 5 (ties recorded for observability)", got)
+	}
+
+	// Strict gate: TotalComparisons is decisive-only → 2 < MinSamples(3) →
+	// fail-closed (the gate cannot vouch for the candidate on 2 samples).
+	deploy, report := e.ShouldDeploy()
+	if deploy {
+		t.Fatal("2 decisive samples below MinSamples(3) must fail-closed")
+	}
+	if report == nil {
+		t.Fatal("expected a non-nil report")
+	}
+	if report.TotalComparisons != 2 {
+		t.Fatalf("TotalComparisons = %d, want 2 (ties excluded from the sample count)", report.TotalComparisons)
+	}
+	if report.ShadowWins != 2 {
+		t.Fatalf("ShadowWins = %d, want 2", report.ShadowWins)
+	}
+	if report.TieCount != 3 {
+		t.Fatalf("TieCount = %d, want 3 (ties reported separately)", report.TieCount)
+	}
+	if report.WinRate != 1.0 {
+		t.Fatalf("WinRate = %.2f, want 1.0 (2/2 decisive)", report.WinRate)
+	}
+}
+
+// TestShadowEvaluator_AllTiesNoDecisiveEvidence pins the P0-3 contract:
+// when every comparison is a tie (the empty-evidence-store / full-cold-start
+// case), there is no DECISIVE evidence — but the sample was still gathered.
+// ShouldDeploy must fail-closed with a NON-NIL report (TieCount > 0,
+// TotalComparisons == 0), so a caller can distinguish "no comparisons" (nil)
+// from "comparisons gathered but all were ties". The loose contract must NOT
+// defer on an all-tie MinSamples wall: enough raw comparisons that say nothing
+// is a REJECTION, never a flip to "proceed" (review P0-3).
+func TestShadowEvaluator_AllTiesNoDecisiveEvidence(t *testing.T) {
+	e := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.55})
+	e.SetActiveStrategy(&mutation.Strategy{ID: "active"})
+	e.StartShadow(&mutation.Strategy{ID: "candidate"})
+
+	for i := 0; i < 5; i++ {
+		e.RecordResult(0.5, 0.5) // all cold-start prior-vs-prior ties
+	}
+
+	// Strict gate: fail-closed, non-nil report distinguishing "all ties" from
+	// "no evidence".
+	deploy, report := e.ShouldDeploy()
+	if deploy {
+		t.Fatal("all-tie evidence must fail-closed")
+	}
+	if report == nil {
+		t.Fatal("all-tie evidence must report a non-nil report (distinguish from 'no comparisons')")
+	}
+	if report.TotalComparisons != 0 {
+		t.Fatalf("TotalComparisons = %d, want 0 (ties are not decisive samples)", report.TotalComparisons)
+	}
+	if report.TieCount != 5 {
+		t.Fatalf("TieCount = %d, want 5", report.TieCount)
+	}
+
+	// Loose contract: 5 raw comparisons >= MinSamples(3), zero decisive →
+	// REJECT (do not defer, do not proceed). DreamCycle reads this via
+	// shouldDeploy==false after the raw-count insufficiency check.
+	looseDeploy, looseReport := e.ShouldDeployLoose()
+	if looseDeploy {
+		t.Fatalf("loose contract must reject an all-tie MinSamples wall (got deploy=true), report=%+v", looseReport)
+	}
+	if looseReport == nil {
+		t.Fatal("loose contract must return a report for an all-tie wall")
+	}
+	if looseReport.TieCount != 5 {
+		t.Fatalf("loose TieCount = %d, want 5", looseReport.TieCount)
+	}
+}
+
+// TestShadowEvaluator_NearTieUsesSamePredicateEverywhere pins the review-P0
+// fix: the decisive-sample filter and ShadowWon must use the SAME tie
+// predicate (isTie), not `==` in one place and isTie in the other.
+//
+// A pair whose difference is within shadowTieEpsilon is a tie for ShadowWon.
+// If the filter compared exactly, such a pair would be "decisive" — entering
+// TotalComparisons while never entering ShadowWins — so every near-tie would
+// be silently counted as a LOSS and drag the win rate below MinWinRate. That
+// is the mirror image of the P1-3 false-positive: a false NEGATIVE verdict
+// built from comparisons that carry no information.
+func TestShadowEvaluator_NearTieUsesSamePredicateEverywhere(t *testing.T) {
+	e := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 2, MinWinRate: 0.55})
+	e.SetActiveStrategy(&mutation.Strategy{ID: "active"})
+	e.StartShadow(&mutation.Strategy{ID: "candidate"})
+
+	// Two decisive shadow wins, then three near-ties (micro-drift of the
+	// attribution-derived prior between the two scorer calls). The near-ties
+	// straddle zero in BOTH directions, which is exactly why they must not be
+	// scored: the direction is jitter, not signal.
+	e.RecordResult(0.2, 0.8)
+	e.RecordResult(0.3, 0.7)
+	e.RecordResult(0.5, 0.5+shadowTieEpsilon/2)
+	e.RecordResult(0.5, 0.5-shadowTieEpsilon/2)
+	e.RecordResult(0.5, 0.5+shadowTieEpsilon)
+
+	deploy, report := e.ShouldDeploy()
+	if report == nil {
+		t.Fatal("expected a non-nil report")
+	}
+	if report.TotalComparisons != 2 {
+		t.Fatalf("TotalComparisons = %d, want 2 (near-ties are not decisive samples)", report.TotalComparisons)
+	}
+	if report.TieCount != 3 {
+		t.Fatalf("TieCount = %d, want 3 (near-ties counted as ties)", report.TieCount)
+	}
+	// The whole point: without the shared predicate the win rate would be
+	// 2/5 = 0.4 < 0.55 and the candidate would be rejected on jitter.
+	if report.WinRate != 1.0 {
+		t.Fatalf("WinRate = %.4f, want 1.0 (2/2 decisive, near-ties excluded)", report.WinRate)
+	}
+	if !deploy {
+		t.Fatalf("2 decisive wins at MinSamples(2) must pass, got reject: %s", report.Recommendation)
+	}
+}
+
+// TestShadowEvaluator_NoComparisonsNilReport pins the "no evidence at all"
+// contract: when nothing was recorded, ShouldDeploy returns a nil report so a
+// caller can tell "no comparisons gathered" from "all ties" (the P0-3
+// distinction that prevents an all-tie wall from being misread as a deferral).
+func TestShadowEvaluator_NoComparisonsNilReport(t *testing.T) {
+	e := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.55})
+	e.SetActiveStrategy(&mutation.Strategy{ID: "active"})
+	e.StartShadow(&mutation.Strategy{ID: "candidate"})
+
+	if deploy, report := e.ShouldDeploy(); deploy || report != nil {
+		t.Fatalf("no comparisons: strict must be fail-closed with nil report, got %v, %+v", deploy, report)
+	}
+	if deploy, report := e.ShouldDeployLoose(); deploy || report != nil {
+		t.Fatalf("no comparisons: loose must report nil (defer), got %v, %+v", deploy, report)
+	}
+}
+
 func TestShadowEvaluator_ResultsReturnsCopy(t *testing.T) {
 	e := NewShadowEvaluator(DefaultShadowEvaluationConfig())
 	e.SetActiveStrategy(&mutation.Strategy{ID: "active"})

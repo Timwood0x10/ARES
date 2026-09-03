@@ -60,6 +60,14 @@ type Evidence struct {
 }
 
 // Filter specifies criteria for evidence queries.
+//
+// TIME BOUNDS (review P1-4): Since and Until are INCLUSIVE on both ends —
+// `since <= ts <= until`. MemoryStore skips `ts > Until` and `ts < Since`,
+// PostgresStore compiles `ts >= Since AND ts <= Until`, so a record whose
+// timestamp equals the boundary matches. Callers who need a half-open
+// [since, until) semantics (e.g. abutting replay windows that must not share a
+// boundary record) must adjust the boundary themselves — pass `until` minus one
+// nanosecond so the inclusive store excludes the shared instant.
 type Filter struct {
 	Source string       `json:"source,omitempty"`
 	Kind   EvidenceKind `json:"kind,omitempty"`

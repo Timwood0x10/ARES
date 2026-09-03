@@ -68,6 +68,8 @@ func normalizedPeers(cfg *ares_config.Config) []ares_config.PeerAgentConfig {
 // queried live from the fabric (B1) — is exactly the set of real, executable
 // agents. There is no second registration table to keep in sync: spawn/kill
 // take effect on the next scheduler drain.
+//
+//nolint:gocyclo // createPeerAgents is a wiring hub (like runServe): it assembles the peer-mode kernel from Task Fabric, Agent Fabric, scheduler, evolution feedback, syscalls, recovery and the lifecycle in one function. Each branch is a distinct wiring step; splitting it would spread one assembly across helpers without reducing the decisions.
 func createPeerAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,
@@ -234,9 +236,12 @@ func createPeerAgents(
 	// execution quality the GA rewards also anchors the shadow comparison.
 	if comp.NewEvolution != nil && comp.NewEvolution.ShadowEvaluator != nil {
 		det := aresrecovery.NewDeterministicScorer()
+		// W2: the replay query limit is configurable (evolution.shadow.
+		// replay_query_limit). Zero keeps the default (200) — a config that
+		// never mentions it behaves exactly as before.
 		replay := evolution.NewReplayScorer(comp.EvidenceStore, func() float64 {
 			return det.ScoreAttribution(attribution)
-		})
+		}, evolution.WithReplayQueryLimit(cfg.Evolution.Shadow.ReplayQueryLimit))
 		// Without an evidence store replay degrades to prior-vs-prior, i.e.
 		// the tie deadlock above. Leave the scorer unset in that case so G2
 		// stays honestly fail-closed instead of judging on ties.

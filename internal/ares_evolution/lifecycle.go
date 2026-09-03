@@ -10,8 +10,15 @@
 // loop feeds real runtime samples into RollbackPolicy and triggers
 // Rollback when degradation is detected (B1 fix).
 //
-// The lifecycle is nil-safe: when not wired (legacy mode), the adapter
-// falls back to the old unconditional deploy path, preserving prior behavior.
+// NIL-SAFETY / LEGACY PATH (review P1-3, made explicit): the lifecycle
+// itself has NO unconditional deploy fallback — when Enabled is false or the
+// lifecycle is not wired, Submit is a no-op and the active strategy is never
+// changed through this type. The only legacy path lives in
+// GenomePopulationAdapter.Run: when a.lifecycle == nil it falls back to
+// deployBestStrategy (the pre-B2 direct Deploy call) for systems built
+// without a lifecycle. There is no way to bypass the G2 shadow gate through
+// the lifecycle once it IS wired: the gate is registered fail-closed and
+// Submit runs every registered gate.
 package evolution
 
 import (
@@ -517,12 +524,22 @@ func (g shadowVerifyGate) Check(_ context.Context, _ *mutation.Strategy, _ *muta
 	if g.l.metrics != nil && report != nil {
 		g.l.metrics.SetEvolutionShadowWinRate(report.WinRate)
 	}
-	if report == nil || report.TotalComparisons == 0 {
-		// FAIL-CLOSED: no shadow evidence at all. The gate cannot vouch for
-		// the candidate, so it does not pass. See the type comment — this
-		// branch is the difference between a verify pipeline and a rubber
-		// stamp.
+	if report == nil {
+		// FAIL-CLOSED: no shadow evidence at all — no comparison was ever
+		// gathered. The gate cannot vouch for the candidate, so it does not
+		// pass. See the type comment — this branch is the difference between a
+		// verify pipeline and a rubber stamp.
 		return false, 0, "no shadow comparisons recorded — fail-closed (no independent scorer wired)"
+	}
+	if report.TotalComparisons == 0 {
+		// FAIL-CLOSED with a distinction (P0-3/P2): comparisons WERE gathered
+		// but every one was an exact tie (e.g. cold-start prior-vs-prior on an
+		// empty/sparse evidence store). Report the tie count so the operator
+		// can tell "no evidence" (nil above) from "gathered but uninformative".
+		return false, 0, fmt.Sprintf(
+			"shadow evidence is all ties (%d comparisons, 0 decisive) — fail-closed: no decisive evidence the candidate is better",
+			report.TieCount,
+		)
 	}
 	if ok {
 		return true, report.WinRate,

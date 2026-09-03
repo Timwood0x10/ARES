@@ -904,6 +904,14 @@ type EvolutionShadowConfig struct {
 	// MinWinRate is the minimum shadow win rate for promotion [0,1].
 	// Default: 0.55.
 	MinWinRate float64 `yaml:"min_win_rate"`
+	// ReplayWindowSpan is the width of ONE replay evidence window (duration
+	// string, e.g. "10m"). Each comparison reads a distinct slice of history,
+	// so MinSamples is satisfied by independent evidence. Zero/unset falls
+	// back to the 10-minute default.
+	ReplayWindowSpan string `yaml:"replay_window_span"`
+	// ReplayQueryLimit caps the evidence records read per window query. Zero/
+	// unset falls back to the default (200).
+	ReplayQueryLimit int `yaml:"replay_query_limit"`
 }
 
 // EvolutionGateConfig mirrors the `evolution.gates` YAML block.

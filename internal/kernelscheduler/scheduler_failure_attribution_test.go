@@ -94,6 +94,55 @@ func TestSchedulerAttributesFailureAsFailure(t *testing.T) {
 	}
 }
 
+// TestSchedulerRetryAttribution_RecordsActualRetries verifies the B-1 fix:
+// a task that retries (fails, requeues, fails again, terminal) must have its
+// retry count attributed as the LIVE post-quantum RetryPolicy.Attempts, not
+// the pre-quantum snapshot value. The old code sampled Attempts before
+// RunQuantum, so a failing quantum's retry increment was never seen by
+// RecordWithMetrics — the "starting budget" was attributed instead of the
+// "actual retries this round consumed".
+func TestSchedulerRetryAttribution_RecordsActualRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	exec := &failingExecutor{id: "coder", typ: models.AgentType("code")}
+	attribution := aresrecovery.NewExecutionAttribution()
+	sched := New(fabric, map[string]CapabilityExecutor{"coder": exec}, NewLoadTracker())
+	sched.PollInterval = 10 * time.Millisecond
+	sched.WithAttribution(attribution)
+
+	go sched.Run(ctx)
+
+	// MaxRetries=2 means the task can fail twice before terminal FAILED.
+	// The first failure requeues (Attempts 0→1, CanRetry), the second
+	// failure reaches terminal (Attempts 1→2, !CanRetry).
+	if err := fabric.Create(&taskfabric.Task{
+		ID:          "t-b1",
+		Capability:  "code",
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Wait for the task to reach terminal FAILED (both attempts consumed).
+	waitForTaskState(t, fabric, "t-b1", taskfabric.StateFailed, 5*time.Second)
+
+	// B-1 contract: both quanta must be attributed with the DELTA increment
+	// (post-quantum − pre-quantum), not the cumulative Attempts. Quantum1:
+	// Attempts 0→1, delta=1. Quantum2: Attempts 1→2, delta=1.
+	// totalRetries = 1+1 = 2 over 2 records → AvgRetries = 1.0.
+	waitFor(t, 2*time.Second, func() bool {
+		snap := attribution.Snapshot()
+		for _, cr := range snap.PerCapability {
+			if cr.AgentID == "coder" && cr.Capability == "code" {
+				return cr.Fail == 2 && cr.AvgRetries == 1.0
+			}
+		}
+		return false
+	}, "B-1: failed-quantum retries must reflect the delta (1+1=2 total, avg 1.0)")
+}
+
 // TestSchedulerPanicReleasesLoadSlot drives a PANICKING executor through the
 // quantum path and asserts the agent's load slot is released: after the panic
 // the agent must still be schedulable (Load back to 0). Regression for the

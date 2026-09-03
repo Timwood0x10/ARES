@@ -6,11 +6,34 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
+
+// shadowTieEpsilon is the tolerance within which two scores are treated as an
+// exact tie. The production cold-start prior is attribution-derived
+// (det.ScoreAttribution snapshots live attribution), and ShadowEvaluator.
+// Evaluate scores active and shadow in two separate scorer calls; a concurrent
+// quantum landing between the calls can shift the prior by a tiny amount. That
+// micro-drift must NOT turn an intended prior-vs-prior tie into a "decisive"
+// comparison — a random-direction jitter would report "evidence exists but
+// win rate is thin" instead of "no evidence", and a monotonically-rising
+// attribution could let the candidate systematically win a comparison that was
+// really a tie (review P1-3). The ReplayScorer also memoizes its prior per
+// window so the two calls agree exactly; the epsilon is the defensive second
+// layer for any scorer that does not memoize.
+const shadowTieEpsilon = 1e-9
+
+// isTie reports whether two scores are within shadowTieEpsilon of each other.
+// It is the single authoritative tie predicate used both at RecordResult time
+// (ShadowWon) and at ShouldDeployLoose time (decisive-sample filter), so the
+// two never disagree about what counts as a tie.
+func isTie(a, b float64) bool {
+	return math.Abs(a-b) <= shadowTieEpsilon
+}
 
 // ShadowComparison records the result of comparing active vs shadow strategy
 // performance on a single evaluation.
@@ -31,13 +54,24 @@ type ShadowComparison struct {
 // ShadowReport summarizes shadow evaluation results and provides a deployment
 // recommendation.
 type ShadowReport struct {
-	// TotalComparisons is the number of comparison results collected.
+	// TotalComparisons is the number of DECISIVE comparison results collected
+	// (ties excluded — see ShouldDeployLoose). This is the sample count the
+	// MinSamples gate is judged against: a tie carries no information about
+	// which strategy is better, so counting it would let the gate pass on
+	// evidence that is really "no evidence" (review B-3).
 	TotalComparisons int
 
-	// ShadowWins is the count of comparisons where the shadow strategy won.
+	// TieCount is the number of recorded comparisons that were exact ties
+	// (activeScore == shadowScore). Kept for observability — the strict gate
+	// treats a tie as neither a win nor a sample, so a high tie count with a
+	// low TotalComparisons means the evidence is thin, not that the shadow
+	// lost.
+	TieCount int
+
+	// ShadowWins is the count of decisive comparisons won by the shadow strategy.
 	ShadowWins int
 
-	// WinRate is the proportion of comparisons won by the shadow strategy.
+	// WinRate is the proportion of decisive comparisons won by the shadow strategy.
 	WinRate float64
 
 	// Recommendation describes the suggested action based on evaluation results.
@@ -69,6 +103,14 @@ type ShadowEvaluationConfig struct {
 	// repetition, not by independent evidence. json:"-" keeps it out of the
 	// HTTP config surface.
 	DeterministicScorer bool `json:"-"`
+
+	// ReplayWindowSpan is the width of ONE replay evidence window used by the
+	// ReplayScorer (C3.2). Each comparison reads a distinct slice of history,
+	// so MinSamples is satisfied by independent evidence. Zero falls back to
+	// the replayWindowSpan default (10 minutes). Exposed so an operator can
+	// tune the evidence granularity without touching code — this parameter
+	// directly decides how independent the shadow evidence is.
+	ReplayWindowSpan time.Duration `json:"replay_window_span,omitempty"`
 }
 
 // DefaultShadowEvaluationConfig returns sensible defaults for shadow evaluation.
@@ -172,8 +214,12 @@ func (e *ShadowEvaluator) RecordResult(activeScore, shadowScore float64) {
 	comparison := ShadowComparison{
 		ActiveScore: activeScore,
 		ShadowScore: shadowScore,
-		ShadowWon:   shadowScore > activeScore,
-		Timestamp:   time.Now(),
+		// B-3 / P1-3: a score within shadowTieEpsilon of the active is a tie,
+		// not a win. ShadowWon must agree with ShouldDeployLoose's decisive
+		// filter (both use isTie), otherwise a near-tie could be recorded as a
+		// win yet be filtered out of the sample count — or vice versa.
+		ShadowWon: shadowScore > activeScore && !isTie(activeScore, shadowScore),
+		Timestamp: time.Now(),
 	}
 	e.shadowResults = append(e.shadowResults, comparison)
 }
@@ -184,71 +230,130 @@ func (e *ShadowEvaluator) RecordResult(activeScore, shadowScore float64) {
 //
 // SEMANTICS (review: one evaluator, two consumers, two readings — now
 // explicit): ShouldDeploy is the STRICT judge, fail-closed — insufficient
-// samples REJECT. It is the contract the StrategyLifecycle's G2 verify gate
-// relies on (design doc §3.1: "fewer than MinSamples samples → the candidate
-// stays in SHADOW and is NOT deployed"). DreamCycle's internal
-// deploy path uses ShouldDeployLoose instead, where insufficient samples
-// defer to the deployer rather than veto.
+// DECISIVE samples REJECT. It is the contract the StrategyLifecycle's G2
+// verify gate relies on (design doc §3.1: "fewer than MinSamples samples →
+// the candidate stays in SHADOW and is NOT deployed"). DreamCycle's internal
+// deploy path uses ShouldDeployLoose instead, where insufficient data defers
+// to the deployer rather than veto.
 //
 // Returns:
 //
 //	bool - true if the shadow strategy should be deployed.
-//	*ShadowReport - detailed report of the evaluation, or nil if no results exist.
+//	*ShadowReport - detailed report, or nil when there are no comparisons at
+//	                all (a caller must distinguish "no evidence" from "all
+//	                ties"; both fail-closed but report nil only for the former).
 func (e *ShadowEvaluator) ShouldDeploy() (bool, *ShadowReport) {
 	pass, report := e.ShouldDeployLoose()
-	// Re-interpret the two "cannot conclude" cases as strict rejections:
-	// zero comparisons (Loose reports nil) and below-min-samples (Loose
-	// reports a report with a recommendation but false).
-	if report == nil || report.TotalComparisons < e.minSamples {
-		if report != nil {
-			report.Recommendation = "fail-closed: " + report.Recommendation
-		}
+	if report == nil {
+		// No comparisons at all → fail-closed with a nil report, so a caller
+		// can tell "no evidence was gathered" (nil) from "comparisons were
+		// gathered but every one was a tie" (report.TieCount > 0).
+		return false, nil
+	}
+	// Strict judge: MinSamples means MinSamples DECISIVE comparisons. Ties
+	// carry no signal, so a report whose decisive count is below the bar is a
+	// fail-closed rejection — even if raw comparisons (incl. ties) look ample.
+	if report.TotalComparisons < e.minSamples {
+		report.Recommendation = fmt.Sprintf(
+			"fail-closed: insufficient samples — %d decisive comparisons < required %d, candidate stays in SHADOW",
+			report.TotalComparisons, e.minSamples,
+		)
 		return false, report
 	}
 	return pass, report
 }
 
 // ShouldDeployLoose is the DreamCycle-side contract: shadow evaluation must
-// not VETO deployment while it has too few samples to reach a conclusion —
+// not VETO deployment while it has too few comparisons to reach a conclusion —
 // insufficient data defers to the deployer instead of rejecting. With enough
-// samples the verdict is identical to ShouldDeploy.
+// raw comparisons the verdict is identical to ShouldDeploy on the DECISIVE
+// subset.
+//
+// B-3 (tie semantics): an exact tie (activeScore == shadowScore) carries no
+// information about which strategy is better. It is neither a win nor a
+// sample — it is excluded from TotalComparisons, so a run of cold-start
+// prior-vs-prior comparisons (sparse-window active vs never-executed
+// candidate, see replay_scorer.go) can no longer dilute the win rate toward
+// the fail-closed boundary.
+//
+// P0-3 (tie-vs-no-evidence): a report is returned whenever ANY comparison was
+// recorded — including the all-tie case — so the caller can distinguish "no
+// comparisons gathered" (nil report) from "comparisons gathered but all were
+// ties" (report with TieCount == TotalComparisons' complement). The all-tie
+// verdict is a REJECTION (no decisive evidence the shadow is better), never a
+// deferral — a full MinSamples wall of ties must not flip to "proceed".
 //
 // Returns:
 //
 //	bool - true if the shadow strategy should be deployed (or cannot be
 //	       judged yet and the deployer may proceed).
-//	*ShadowReport - detailed report, or nil when there are no results.
+//	*ShadowReport - detailed report, or nil when there are no comparisons.
 func (e *ShadowEvaluator) ShouldDeployLoose() (bool, *ShadowReport) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	total := len(e.shadowResults)
-	if total == 0 {
-		return false, nil
-	}
-
+	// B-3: only decisive comparisons (shadow != active) count toward the
+	// sample total. A tie is recorded for observability but adds nothing to
+	// either the numerator or the denominator.
+	total := 0
 	shadowWins := 0
+	tieCount := 0
 	for _, r := range e.shadowResults {
+		// P0 (review): the decisive filter MUST use the same predicate as
+		// ShadowWon (isTie), not an exact `==`. A pair whose difference falls
+		// in (0, shadowTieEpsilon] is a tie for ShadowWon but would be
+		// "decisive" for an exact comparison — entering `total` while never
+		// entering `shadowWins`, i.e. every near-tie silently counted as a
+		// LOSS and dragging the win rate down.
+		if isTie(r.ActiveScore, r.ShadowScore) {
+			tieCount++
+			continue
+		}
+		total++
 		if r.ShadowWon {
 			shadowWins++
 		}
 	}
 
-	winRate := float64(shadowWins) / float64(total)
+	if total+tieCount == 0 {
+		// No comparisons at all — nothing to judge. Nil report tells the
+		// caller this is "no evidence", not "all ties".
+		return false, nil
+	}
+
+	winRate := 0.0
+	if total > 0 {
+		winRate = float64(shadowWins) / float64(total)
+	}
 	report := &ShadowReport{
 		TotalComparisons: total,
+		TieCount:         tieCount,
 		ShadowWins:       shadowWins,
 		WinRate:          winRate,
 	}
 
-	if total < e.minSamples {
+	// LOOSE contract, raw-comparison bar: DreamCycle defers (returns true)
+	// when the total recorded comparisons — decisive AND ties — are below
+	// MinSamples. Ties still count as "a comparison happened" for deciding
+	// whether the sample size is adequate; they just never enter the win-rate
+	// math.
+	if total+tieCount < e.minSamples {
 		report.Recommendation = fmt.Sprintf(
-			"insufficient samples: need %d, have %d — cannot judge yet, deferring to deployer",
-			e.minSamples, total,
+			"insufficient samples: need %d comparisons, have %d — cannot judge yet, deferring to deployer",
+			e.minSamples, total+tieCount,
 		)
-		// LOOSE contract: too few samples to conclude → do NOT veto; the
-		// deployer decides (DreamCycle proceeds with an explicit log).
 		return true, report
+	}
+
+	// Enough raw comparisons but zero decisive ones: a MinSamples wall of
+	// ties is a REJECTION, not a deferral. There is no decisive evidence the
+	// shadow is better, so the gate must not let the candidate through.
+	if total == 0 {
+		report.Recommendation = fmt.Sprintf(
+			"all %d comparisons were exact ties — no decisive evidence the shadow outperforms active",
+			tieCount,
+		)
+		return false, report
 	}
 
 	if winRate >= e.minWinRate {

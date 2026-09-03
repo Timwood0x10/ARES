@@ -558,7 +558,15 @@ func (dc *DreamCycle) deployWinner(
 		// cannot judge yet — surface that explicitly, and only block
 		// deployment when enough samples actually show the shadow strategy
 		// underperforming.
-		insufficient := report == nil || report.TotalComparisons < dc.shadowEvaluator.minSamples
+		//
+		// P0-3: the insufficiency bar is RAW comparisons (decisive + ties).
+		// TotalComparisons alone is decisive-only since B-3, so an all-tie
+		// wall would read as 0 < MinSamples and flip to "proceed" — the
+		// opposite of the pre-B-3 rejection it replaced. Counting ties in the
+		// sample-size check keeps "not enough data → defer" separate from
+		// "enough data, all ties → reject" (the latter is ShouldDeployLoose's
+		// total==0 rejection).
+		insufficient := report == nil || report.TotalComparisons+report.TieCount < dc.shadowEvaluator.minSamples
 		switch {
 		case insufficient:
 			reason := "insufficient samples, proceeding with deployment"

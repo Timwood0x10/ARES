@@ -79,6 +79,21 @@ const defaultShadowSamples = 10
 // window.
 const shadowPrimeTimeout = 60 * time.Second
 
+// ShadowSamplerOption configures a ShadowSampler.
+type ShadowSamplerOption func(*ShadowSampler)
+
+// WithReplayWindowSpan overrides the replay evidence window width for the
+// sampler's comparisons. Zero (or a non-positive value) keeps the default
+// replayWindowSpan, so an explicit config can never shrink the window to a
+// degenerate slice.
+func WithReplayWindowSpan(span time.Duration) ShadowSamplerOption {
+	return func(s *ShadowSampler) {
+		if span > 0 {
+			s.windowSpan = span
+		}
+	}
+}
+
 // NewShadowSampler creates a task-level shadow comparison feeder.
 //
 // Args:
@@ -86,15 +101,20 @@ const shadowPrimeTimeout = 60 * time.Second
 //	evaluator - the ShadowEvaluator the G2 gate reads (must be non-nil).
 //	samples   - comparison count to gather per submitted candidate;
 //	            non-positive falls back to defaultShadowSamples.
+//	opts      - optional configuration (see WithReplayWindowSpan).
 //
 // Returns:
 //
 //	*ShadowSampler - the configured feeder.
-func NewShadowSampler(evaluator *ShadowEvaluator, samples int) *ShadowSampler {
+func NewShadowSampler(evaluator *ShadowEvaluator, samples int, opts ...ShadowSamplerOption) *ShadowSampler {
 	if samples <= 0 {
 		samples = defaultShadowSamples
 	}
-	return &ShadowSampler{evaluator: evaluator, samples: samples, timeout: shadowPrimeTimeout, windowSpan: replayWindowSpan}
+	s := &ShadowSampler{evaluator: evaluator, samples: samples, timeout: shadowPrimeTimeout, windowSpan: replayWindowSpan}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Prime prepares the evaluator for one candidate-and-active pair and gathers

@@ -274,7 +274,7 @@ func buildPopulation(ctx context.Context, base *mutation.Strategy, cfg SystemCon
 }
 
 // buildAdapterOptions creates GenomePopulationAdapter options from config.
-func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.TieredScorer, *scoring.Budget, *scoring.ScoreCache, error) {
+func buildAdapterOptions(ctx context.Context, cfg SystemConfig) ([]GenomeAdapterOption, *scoring.TieredScorer, *scoring.Budget, *scoring.ScoreCache, error) {
 	var opts []GenomeAdapterOption
 
 	if cfg.Scorer != nil {
@@ -286,6 +286,17 @@ func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.Tier
 		heuristic = cfg.Scorer
 	}
 	if heuristic == nil {
+		// Zero-token mode: no LLM scorer and no heuristic wired. The constant
+		// baseline gives the GA a flat fitness landscape — evolution selection
+		// is effectively random. This is the accepted backward-compat default
+		// (review P0-2: the shadow gate is NOT affected by this heuristic —
+		// buildShadowEvaluator only wires a scorer when cfg.Scorer != nil, so
+		// the gate stays fail-closed in zero-token mode or uses the ReplayScorer
+		// when a store is present).
+		log.WarnContext(ctx, "No heuristic scorer configured; evolution runs with a constant baseline (50.0). "+
+			"The G2 shadow gate is unaffected (fail-closed until ReplayScorer is wired).",
+			"method", "buildAdapterOptions",
+		)
 		heuristic = genome.ConstantScorer(50.0)
 	}
 
@@ -501,7 +512,7 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 		AdaptiveDist: mutResult.adaptiveDist,
 	}
 
-	adapterOpts, tiered, budget, cache, err := buildAdapterOptions(cfg)
+	adapterOpts, tiered, budget, cache, err := buildAdapterOptions(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build adapter options: %w", err)
 	}
@@ -623,8 +634,13 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 			// every production config, i.e. exactly the case P0-9 exists to
 			// fix. Locked by TestWiring_ShadowSampler_WiredInBootstrapShape.
 			if !cfg.EnableDreamCycle {
+				// W2: the replay evidence window width is configurable
+				// (ShadowEvaluationConfig.ReplayWindowSpan). Zero keeps the
+				// scorer's 10-minute default — an operator who never sets it
+				// gets the same evidence granularity as before.
 				lcOpts = append(lcOpts, WithLifecycleShadowSampler(
-					NewShadowSampler(system.ShadowEvaluator, cfg.ShadowEvalConfig.MinSamples),
+					NewShadowSampler(system.ShadowEvaluator, cfg.ShadowEvalConfig.MinSamples,
+						WithReplayWindowSpan(cfg.ShadowEvalConfig.ReplayWindowSpan)),
 				))
 			}
 		}

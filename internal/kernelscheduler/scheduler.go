@@ -835,15 +835,20 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			}
 		}
 	}()
-	// C2.1: capture the quantum's wall-clock duration and the retry budget
-	// BEFORE RunQuantum so endQuantumOutcome can attribute real latency and
-	// retry count to the deterministic scorer (C2.2). The old Record() path
-	// passed 0,0,0, which made the latency/retry/recover weights dead and
-	// collapsed every score to 0.70×successRate+0.30 (no added information).
-	retries := tk.RetryPolicy.Attempts
+	// C2.1: capture the quantum's wall-clock duration before RunQuantum so
+	// endQuantumOutcome can attribute real latency to the deterministic scorer
+	// (C2.2). The old Record() path passed 0,0,0, which made the
+	// latency/retry/recover weights dead and collapsed every score to
+	// 0.70×successRate+0.30 (no added information).
+	//
+	// B-1 (review P0-2): the retry count is DERIVED from the RunQuantum error
+	// via quantumRetries — never read from RetryPolicy.Attempts (cumulative,
+	// would over-attribute) and never re-read from the task (races another
+	// drain). See quantumRetries for the full rationale.
 	quantumStart := time.Now()
 	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta))
 	quantumLatency := time.Since(quantumStart)
+	retries := quantumRetries(err)
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	stopHeartbeat()
 	s.afterQuantum(ctx, taskID, winner, err)
@@ -971,6 +976,38 @@ func (s *Scheduler) buildQuantumStep(
 			StepCheckpoint:   outMap,
 		}), true, nil
 	}
+}
+
+// quantumRetries derives the number of retries THIS quantum consumed from the
+// RunQuantum error. RunQuantum calls fabric.Fail at most ONCE per quantum —
+// only on a step error — and Fail is the sole incrementer of
+// RetryPolicy.Attempts (a monotonically increasing LIFETIME counter that never
+// resets). Therefore:
+//
+//   - 1 when the step failed (Fail ran, the task consumed one retry);
+//   - 0 otherwise (completed/yielded, or the quantum never started).
+//
+// Start-stage sentinels (fencing ErrNotOwner/ErrEpochMismatch, ErrIllegalState,
+// ErrTaskNotFound) are NOT step failures — Fail never ran — so they contribute
+// 0. Executor step errors cannot equal taskfabric's sentinels, so errors.Is
+// cleanly separates the two.
+//
+// This derivation is used instead of reading RetryPolicy.Attempts (cumulative,
+// over-attributes later quanta and inflates the deterministic scorer's retry
+// component with retry depth) or re-reading the task after RunQuantum (races
+// another drain that may have re-acquired and re-failed our requeued task,
+// attributing ITS retry to US). See review P0-2.
+func quantumRetries(err error) int {
+	if err == nil {
+		return 0
+	}
+	if errors.Is(err, taskfabric.ErrNotOwner) ||
+		errors.Is(err, taskfabric.ErrEpochMismatch) ||
+		errors.Is(err, taskfabric.ErrIllegalState) ||
+		errors.Is(err, taskfabric.ErrTaskNotFound) {
+		return 0
+	}
+	return 1
 }
 
 // endQuantumOutcome releases the winner's busy slot and attributes the
