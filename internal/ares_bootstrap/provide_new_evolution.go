@@ -86,6 +86,15 @@ type NewEvolutionComponents struct {
 	// live one, since Register cannot overwrite an already-registered key.
 	recoveryExec *engine.RecoveryPatchExecutor
 
+	// dagExec is the engine.DAGPatchExecutor that applies workflow structure
+	// patches (insert/remove/replace node, add/remove edge) directly to the
+	// live *MutableDAG. UpdateLiveDAG binds it to the live DAG and installs it
+	// as the patch registry's fallback, so a structure patch whose target is a
+	// dynamic node ID no longer dies on "no executor registered" — it reaches
+	// the real runtime topology. The pointer stays put; SetDAG swaps the DAG it
+	// operates on.
+	dagExec *engine.DAGPatchExecutor
+
 	// knowledgeExec is the KnowledgePatchExecutor created at bootstrap time.
 	// UpdateLiveKnowledgeRuntime calls SetRuntime on it to swap in the agent's
 	// live KnowledgeRuntime, since Register cannot overwrite an already
@@ -338,14 +347,34 @@ func (c *NewEvolutionComponents) UpdateLiveKnowledgeRuntime(rt *knowledgeruntime
 // registered with the runtime manager.
 //
 // The DAG is used to rebuild the graph executor and recovery executor in the
-// patch registry. The genome registry's WorkflowGenome is NOT updated here
-// because it needs a full re-registration; the live DAG is used downstream
-// when the coordinator evaluates and applies patches.
+// patch registry, and to repoint the WorkflowGenome at the live topology so
+// evolution reasons over the real agent DAG instead of the bootstrap
+// placeholder (previously the genome kept evolving the synthetic DAG while
+// patches were applied to the live one — a cross-graph mismatch that silently
+// no-op'd or errored). All three are updated in place: Register cannot
+// overwrite already-registered keys, so SetDAG/SetGraph/SetDAG mirror that.
 func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 	if dag == nil {
 		return errors.New("live DAG must not be nil")
 	}
 	c.liveDAG = dag
+
+	// Repoint the WorkflowGenome at the live DAG so mutations and diffs are
+	// computed against the topology patches will actually touch. A registry
+	// Register cannot overwrite an already-registered genome, so we update the
+	// existing instance in place via SetDAG. GenomeReg is nil when UpdateLiveDAG
+	// runs outside a full bootstrap (e.g. tests that only register executors),
+	// and no WorkflowGenome is registered when bootstrap ran with a nil DAG —
+	// both are a no-op, since there is no cross-graph mismatch to fix.
+	if c.GenomeReg != nil {
+		if wfG, gErr := c.GenomeReg.Get(genome.WorkflowGenomeName); gErr == nil {
+			if wf, ok := wfG.(*genome.WorkflowGenome); ok {
+				wf.SetDAG(dag)
+				log.Info("new evolution: WorkflowGenome repointed at live DAG",
+					"steps", len(dag.Steps()))
+			}
+		}
+	}
 
 	// Rebuild graph executor with the live DAG's steps.
 	g, gErr := wfgraph.NewGraph("evolution-workflow")
@@ -401,6 +430,20 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 		_ = c.PatchReg.Register("recovery.replacement_agent", recoveryExec)
 		_ = c.PatchReg.Register("recovery.max_retries", recoveryExec)
 		_ = c.PatchReg.Register("recovery.strategy", recoveryExec)
+	}
+
+	// Install the structure executor as the patch registry's fallback. The
+	// WorkflowDiffer emits patches whose Target is a node ID (e.g. "wf-mut-1")
+	// rather than a registered component key, so without a fallback they hit
+	// "no executor registered for target". Binding the fallback to the live DAG
+	// makes structure patches mutate the real runtime topology. SetDAG keeps
+	// the same executor pointer (and thus the registered fallback slot) while
+	// rebinding it to a refreshed DAG on later calls.
+	if c.dagExec != nil {
+		c.dagExec.SetDAG(dag)
+	} else {
+		c.dagExec = engine.NewDAGPatchExecutor(dag)
+		c.PatchReg.SetFallback(c.dagExec)
 	}
 
 	log.Info("new evolution: live DAG injected into executors",

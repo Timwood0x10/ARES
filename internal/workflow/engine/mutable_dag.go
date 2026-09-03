@@ -498,6 +498,32 @@ func (m *MutableDAG) NodeCount() int {
 	return len(m.dag.Nodes)
 }
 
+// ResetFromSteps rebuilds the DAG in place from the given steps, preserving the
+// *MutableDAG identity. This is what makes rollback safe when multiple holders
+// (runtime manager, WorkflowGenome, patch executors) share the same pointer —
+// the pointer stays valid while its topology is restored to a prior snapshot.
+func (m *MutableDAG) ResetFromSteps(steps []*Step) error {
+	if len(steps) == 0 {
+		return errors.New("reset: at least one step is required")
+	}
+	newDAG, err := NewDAG(steps)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	newSteps := make(map[string]*Step, len(steps))
+	for _, s := range steps {
+		newSteps[s.ID] = s
+	}
+	m.dag = newDAG
+	m.steps = newSteps
+	m.version++
+	return nil
+}
+
 // EdgeCount returns the total number of edges.
 func (m *MutableDAG) EdgeCount() int {
 	m.mu.RLock()

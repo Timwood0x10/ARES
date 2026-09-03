@@ -310,3 +310,63 @@ func TestRegistry_ConcurrentApply(t *testing.T) {
 	wg.Wait()
 	assert.Len(t, ex.applied, n)
 }
+
+// ── Snapshot / Restore ──────────────────────────
+
+// TestRegistry_SnapshotAndRestore verifies the rollback primitive:
+// Snapshot before Apply captures the old executor; Restore puts it back.
+func TestRegistry_SnapshotAndRestore(t *testing.T) {
+	r := NewRegistry()
+	ex1 := &mockExecutor{}
+	require.NoError(t, r.Register("target", ex1))
+
+	// Snapshot the pre-apply state.
+	snap, err := r.Snapshot(context.Background(), "target")
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	assert.Equal(t, "target", snap.Target)
+
+	// The snapshot should hold the old executor reference (ExecutorComponent
+	// adapter returns ErrNoSnapshot, so the fallback is the Executor itself).
+	assert.NotNil(t, snap.OldExecutor, "snapshot must hold the old executor reference")
+
+	// Replace with a new executor to simulate an Apply.
+	ex2 := &mockExecutor{}
+	require.NoError(t, r.Replace("target", ex2))
+
+	// Restore the old executor.
+	err = r.Restore(context.Background(), "target", snap)
+	require.NoError(t, err)
+
+	// Verify the executor is the original one (pointer equality).
+	assert.Same(t, ex1, r.executors["target"],
+		"Restore must put back the exact executor that was snapshotted")
+}
+
+// TestRegistry_Snapshot_NonExistentTarget verifies that Snapshot returns
+// ErrNoExecutor when the target is not registered and no fallback exists.
+func TestRegistry_Snapshot_NonExistentTarget(t *testing.T) {
+	r := NewRegistry()
+	snap, err := r.Snapshot(context.Background(), "nonexistent")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoExecutor)
+	assert.Nil(t, snap)
+}
+
+// TestRegistry_Restore_NilSnapshot verifies that Restore returns
+// ErrNoSnapshot when the snapshot is nil.
+func TestRegistry_Restore_NilSnapshot(t *testing.T) {
+	r := NewRegistry()
+	err := r.Restore(context.Background(), "target", nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoSnapshot)
+}
+
+// TestRegistry_Restore_UnknownType verifies that Restore returns
+// ErrNoSnapshot when the snapshot is of an unknown type.
+func TestRegistry_Restore_UnknownType(t *testing.T) {
+	r := NewRegistry()
+	err := r.Restore(context.Background(), "target", "not-a-snapshot")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoSnapshot)
+}

@@ -96,7 +96,7 @@ func TestGenerateDiffPatches_CallsMutate(t *testing.T) {
 	diffReg := diff.NewRegistry()
 	require.NoError(t, diffReg.Register(d))
 
-	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 3)
+	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 3, "strategy-1")
 	require.NoError(t, err)
 
 	// Parent Snapshot called once; each of 3 children Snapshot called once.
@@ -112,7 +112,7 @@ func TestGenerateDiffPatches_CallsMutate(t *testing.T) {
 // TestGenerateDiffPatches_ZeroChildrenReturnsError verifies the guard
 // against invalid nChildren.
 func TestGenerateDiffPatches_ZeroChildrenReturnsError(t *testing.T) {
-	_, err := generateDiffPatches(context.Background(), evogenome.NewRegistry(), diff.NewRegistry(), 0)
+	_, err := generateDiffPatches(context.Background(), evogenome.NewRegistry(), diff.NewRegistry(), 0, "strategy-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nChildren must be > 0")
 }
@@ -120,7 +120,7 @@ func TestGenerateDiffPatches_ZeroChildrenReturnsError(t *testing.T) {
 // TestGenerateDiffPatches_NegativeChildrenReturnsError verifies negative
 // nChildren is also rejected.
 func TestGenerateDiffPatches_NegativeChildrenReturnsError(t *testing.T) {
-	_, err := generateDiffPatches(context.Background(), evogenome.NewRegistry(), diff.NewRegistry(), -1)
+	_, err := generateDiffPatches(context.Background(), evogenome.NewRegistry(), diff.NewRegistry(), -1, "strategy-1")
 	require.Error(t, err)
 }
 
@@ -139,7 +139,7 @@ func TestGenerateDiffPatches_NilParentSnapshotSkipsGenome(t *testing.T) {
 	diffReg := diff.NewRegistry()
 	require.NoError(t, diffReg.Register(d))
 
-	_, err := generateDiffPatches(ctx, genomeReg, diffReg, 2)
+	_, err := generateDiffPatches(ctx, genomeReg, diffReg, 2, "strategy-1")
 	require.NoError(t, err)
 	assert.Equal(t, 0, g.mutateCalls, "Mutate should NOT be called when parent snapshot is nil")
 	assert.Equal(t, 0, d.diffCalls, "Diff should NOT be called when parent snapshot is nil")
@@ -162,7 +162,7 @@ func TestGenerateDiffPatches_MutateErrorSkipsGenome(t *testing.T) {
 	diffReg := diff.NewRegistry()
 	require.NoError(t, diffReg.Register(d))
 
-	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2)
+	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2, "strategy-1")
 	require.NoError(t, err, "mutate error should be logged and skipped, not returned")
 	assert.Empty(t, patches)
 	assert.Equal(t, 0, d.diffCalls, "Diff should not be called when Mutate failed")
@@ -188,7 +188,7 @@ func TestGenerateDiffPatches_DiffErrorSkipsCandidate(t *testing.T) {
 	diffReg := diff.NewRegistry()
 	require.NoError(t, diffReg.Register(d))
 
-	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2)
+	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2, "strategy-1")
 	require.NoError(t, err)
 	assert.Empty(t, patches, "all diffs failed, so no patches")
 }
@@ -201,9 +201,47 @@ func TestGenerateDiffPatches_EmptyRegistriesReturnEmpty(t *testing.T) {
 		evogenome.NewRegistry(),
 		diff.NewRegistry(),
 		3,
+		"strategy-1",
 	)
 	require.NoError(t, err)
 	assert.Empty(t, patches)
+}
+
+// TestGenerateDiffPatches_EmptyStrategyIDReturnsError verifies the
+// attribution precondition: generateDiffPatches must fail fast instead of
+// emitting unattributable patches, since an empty strategy cannot be A/B
+// compared.
+func TestGenerateDiffPatches_EmptyStrategyIDReturnsError(t *testing.T) {
+	_, err := generateDiffPatches(
+		context.Background(),
+		evogenome.NewRegistry(),
+		diff.NewRegistry(),
+		3,
+		"",
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "strategyID must not be empty")
+}
+
+// TestGenerateDiffPatches_StampsStrategyID verifies every produced patch
+// carries the supplied strategy ID so the coordinator can attribute outcomes.
+func TestGenerateDiffPatches_StampsStrategyID(t *testing.T) {
+	ctx := context.Background()
+
+	g := &stubGenome{name: "workflow", snapshot: struct{ gen int }{gen: 1}}
+	d := &stubDiffer{name: "workflow", patchOut: []patch.RuntimePatch{{Target: "p1"}, {Target: "p2"}}}
+
+	genomeReg := evogenome.NewRegistry()
+	require.NoError(t, genomeReg.Register(g))
+	diffReg := diff.NewRegistry()
+	require.NoError(t, diffReg.Register(d))
+
+	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2, "strategy-abc")
+	require.NoError(t, err)
+	assert.Len(t, patches, 4, "2 children × 2 patches each = 4")
+	for i, p := range patches {
+		assert.Equal(t, "strategy-abc", p.StrategyID, "patch %d must carry the strategy ID", i)
+	}
 }
 
 // TestGenerateDiffPatches_MultipleGenomes verifies that multiple registered
@@ -223,7 +261,7 @@ func TestGenerateDiffPatches_MultipleGenomes(t *testing.T) {
 	require.NoError(t, diffReg.Register(d1))
 	require.NoError(t, diffReg.Register(d2))
 
-	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2)
+	patches, err := generateDiffPatches(ctx, genomeReg, diffReg, 2, "strategy-1")
 	require.NoError(t, err)
 	// g1: 2 children × 1 patch = 2; g2: 2 children × 2 patches = 4. Total 6.
 	assert.Len(t, patches, 6, "patches from all genomes should be aggregated")

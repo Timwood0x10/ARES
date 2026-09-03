@@ -535,17 +535,22 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// their (still synthetic) executors — closing those requires a live DAG
 	// supply chain (Track C-Risky, deferred).
 	if cfg.Evolution.Enabled && cfg.Evolution.Deployment.Enabled && comp.NewEvolution != nil {
+		staging := &deploymentStagingRuntime{
+			reg: comp.NewEvolution.PatchReg,
+			// B6 fix: shared scoring backend (same weights/filter as the
+			// lifecycle's rollback window) + explicit cold-start score so
+			// patches without evidence get a conservative 0.5 instead of a
+			// universal 0.0 reject.
+			agg:            evolution.NewRuntimeFitnessAggregator(comp.EvidenceStore, evolution.DefaultAggregatorConfig()),
+			coldStartScore: 0.5,
+			// Baseline scoring resolves the active strategy live at Evaluate
+			// time via the ASM, so a strategy switched mid-run is reflected
+			// in the comparison instead of a stale construction-time ID.
+			asm: comp.NewEvolution.ActiveStrategyManager,
+		}
 		dp := deployment.NewDeploymentPipeline(
 			cfg.Evolution.Deployment,
-			&deploymentStagingRuntime{
-				reg: comp.NewEvolution.PatchReg,
-				// B6 fix: shared scoring backend (same weights/filter as the
-				// lifecycle's rollback window) + explicit cold-start score so
-				// patches without evidence get a conservative 0.5 instead of a
-				// universal 0.0 reject.
-				agg:            evolution.NewRuntimeFitnessAggregator(comp.EvidenceStore, evolution.DefaultAggregatorConfig()),
-				coldStartScore: 0.5,
-			},
+			staging,
 			&deploymentLiveRuntime{reg: comp.NewEvolution.PatchReg},
 		)
 		comp.NewEvolution.Coordinator.SetDeployer(&deploymentAdapter{dp: dp})

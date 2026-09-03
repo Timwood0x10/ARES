@@ -102,6 +102,58 @@ func TestEvalGate_PassThroughWithoutInfrastructure(t *testing.T) {
 	})
 }
 
+// TestEvalGate_StrictModeRejectsWhenUnconfigured verifies that with
+// StrictMode=true, the gate fails closed (returns false) when no
+// eval infrastructure is wired, instead of silently passing.
+func TestEvalGate_StrictModeRejectsWhenUnconfigured(t *testing.T) {
+	t.Run("nil registry strict mode rejects", func(t *testing.T) {
+		cfg := DefaultEvalGateConfig()
+		cfg.StrictMode = true
+		g := NewEvalGate(nil, nil, ares_eval.TestSuite{}, cfg)
+		pass, _, reason := g.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.False(t, pass, "strict mode must reject when registry is nil")
+		assert.Contains(t, reason, "strict mode")
+		assert.Contains(t, reason, "registry")
+	})
+	t.Run("nil runner strict mode rejects", func(t *testing.T) {
+		cfg := DefaultEvalGateConfig()
+		cfg.StrictMode = true
+		registry := ares_eval.NewEvaluatorRegistry()
+		suite := ares_eval.TestSuite{TestCases: []ares_eval.TestCase{{ID: "c1", Input: "hi"}}}
+		g := NewEvalGate(registry, nil, suite, cfg)
+		pass, _, reason := g.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.False(t, pass, "strict mode must reject when runner is nil")
+		assert.Contains(t, reason, "strict mode")
+		assert.Contains(t, reason, "runner")
+	})
+	t.Run("empty suite strict mode rejects", func(t *testing.T) {
+		cfg := DefaultEvalGateConfig()
+		cfg.StrictMode = true
+		runner, err := ares_eval.NewAgentTestRunner(&fakeExecutor{output: "ok"})
+		require.NoError(t, err)
+		registry := ares_eval.NewEvaluatorRegistry()
+		g := NewEvalGate(registry, runner, ares_eval.TestSuite{}, cfg)
+		pass, _, reason := g.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.False(t, pass, "strict mode must reject when suite is empty")
+		assert.Contains(t, reason, "strict mode")
+		assert.Contains(t, reason, "test suite")
+	})
+}
+
+// TestEvalGate_SkippedCountIncrements verifies that the skipped counter
+// increments on each skip, and that the reason distinguishes the three
+// missing-component scenarios.
+func TestEvalGate_SkippedCountIncrements(t *testing.T) {
+	g := NewEvalGate(nil, nil, ares_eval.TestSuite{}, DefaultEvalGateConfig())
+	assert.Equal(t, 0, g.SkippedCount())
+
+	g.Check(context.Background(), &mutation.Strategy{}, nil)
+	assert.Equal(t, 1, g.SkippedCount(), "first skip should increment counter")
+
+	g.Check(context.Background(), &mutation.Strategy{}, nil)
+	assert.Equal(t, 2, g.SkippedCount(), "second skip should increment counter")
+}
+
 func TestEvalGate_ScoringPath(t *testing.T) {
 	t.Run("score above threshold passes", func(t *testing.T) {
 		g := newTestEvalGate(t, 0.9, nil)

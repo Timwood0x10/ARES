@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // PatchType classifies a runtime mutation.
@@ -80,13 +81,22 @@ func (pt PatchType) String() string {
 // If Rollback is non-nil, Runtime can undo the patch on failure.
 // ID must be unique for idempotency tracking — Registry skips already-applied IDs.
 type RuntimePatch struct {
-	ID       string        `json:"id,omitempty"`       // unique idempotency key (optional; empty = no dedup)
-	Type     PatchType     `json:"type"`               // what to change
-	Target   string        `json:"target"`             // what to change (node ID / component name)
-	Value    any           `json:"value,omitempty"`    // what to become (new Node / Scheduler / Config)
-	Reason   string        `json:"reason,omitempty"`   // why this change was proposed
-	Source   string        `json:"source,omitempty"`   // who proposed it
-	Rollback *RuntimePatch `json:"rollback,omitempty"` // inverse patch for rollback
+	ID     string    `json:"id,omitempty"`    // unique idempotency key (optional; empty = no dedup)
+	Type   PatchType `json:"type"`            // what to change
+	Target string    `json:"target"`          // what to change (node ID / component name)
+	Value  any       `json:"value,omitempty"` // what to become (new Node / Scheduler / Config)
+	Reason string    `json:"reason,omitempty"`
+	// Source is the PROPOSER CLASS (e.g. "diff.memory", "candidate", "ga"),
+	// NOT a strategy identifier. Do not use it to key per-strategy evidence
+	// queries — those namespaces are disjoint and a lookup by Source always
+	// misses, silently degrading any A/B comparison to a cold-start default.
+	Source string `json:"source,omitempty"`
+	// StrategyID attributes this patch to a mutation.Strategy so evidence
+	// queries can score the patch's own strategy against the active one.
+	// Empty means "no strategy attribution" — deployment pipelines MUST NOT
+	// invent one, because an unattributable patch cannot be A/B compared.
+	StrategyID string        `json:"strategy_id,omitempty"`
+	Rollback   *RuntimePatch `json:"rollback,omitempty"` // inverse patch for rollback
 }
 
 // PatchSet is an atomic batch of patches.
@@ -168,13 +178,144 @@ func (c *ExecutorComponent) CanApply(ctx context.Context, patch RuntimePatch) er
 var (
 	// ErrNoSnapshot is returned by Snapshot when no snapshot is available.
 	ErrNoSnapshot = errors.New("patch: no snapshot available")
+	// ErrNoExecutor is returned by Snapshot/Restore when no executor is
+	// registered for the given target.
+	ErrNoExecutor = errors.New("patch: no executor registered for target")
+	// ErrNoRestore is returned by Restore when a component snapshot was
+	// captured but the component cannot consume it back.
+	ErrNoRestore = errors.New("patch: component does not support restore")
 )
+
+// Restorable is implemented by RuntimeComponents whose Snapshot output can be
+// loaded back, making a true state rollback possible. Components that only
+// implement RuntimeComponent can be snapshotted but NOT restored — the
+// Registry therefore refuses to retain their snapshots (see Snapshot) so a
+// captured-but-unusable snapshot can never masquerade as a rollback.
+type Restorable interface {
+	// Restore loads a value previously returned by Snapshot back into the
+	// component, reverting it to the captured state.
+	Restore(ctx context.Context, snap any) error
+}
+
+// ExecutorSnapshot captures the pre-apply state of a target executor so it
+// can be restored during rollback. When the executor implements
+// RuntimeComponent and its Snapshot returns a non-nil value, that value is
+// stored here. When the executor only implements Executor (via
+// ExecutorComponent whose Snapshot returns ErrNoSnapshot), the fallback is
+// to save the old Executor reference itself — Restore then Replace-s it back.
+type ExecutorSnapshot struct {
+	// Target is the executor name this snapshot was taken for.
+	Target string
+	// ComponentSnap is the snapshot returned by RuntimeComponent.Snapshot.
+	// It is populated ONLY when the component also implements Restorable,
+	// i.e. only when Restore can actually feed it back. For components that
+	// cannot consume their own snapshot, this stays nil and OldExecutor
+	// carries the rollback — capturing state that nothing can restore would
+	// be a silent data loss dressed up as a rollback.
+	ComponentSnap any
+	// OldExecutor is the pre-apply Executor reference, used when
+	// ComponentSnap is nil. Restore calls Registry.Replace with this.
+	OldExecutor Executor
+}
+
+// Snapshot captures the pre-apply state of the executor registered for the
+// given target. It is the rollback primitive: Apply → Snapshot before,
+// Restore after to revert.
+//
+// A component snapshot is retained ONLY when the target also implements
+// Restorable, because only then can Restore feed it back. Otherwise the
+// snapshot falls back to the old Executor reference, which Restore Replace-s
+// back into the registry.
+func (r *Registry) Snapshot(ctx context.Context, target string) (*ExecutorSnapshot, error) {
+	r.mu.RLock()
+	ex, ok := r.executors[target]
+	fallback := r.fallback
+	r.mu.RUnlock()
+
+	if !ok {
+		if fallback == nil {
+			return nil, fmt.Errorf("%w: %q", ErrNoExecutor, target)
+		}
+		// Fallback is a RuntimeComponent — snapshot it only if it can
+		// restore that snapshot itself.
+		if _, restorable := fallback.(Restorable); restorable {
+			snap, err := fallback.Snapshot(ctx)
+			if err != nil && !errors.Is(err, ErrNoSnapshot) {
+				return nil, fmt.Errorf("snapshot fallback for %q: %w", target, err)
+			}
+			if err == nil && snap != nil {
+				return &ExecutorSnapshot{Target: target, ComponentSnap: snap, OldExecutor: fallback}, nil
+			}
+		}
+		return &ExecutorSnapshot{Target: target, OldExecutor: fallback}, nil
+	}
+
+	// Retain a component snapshot only when the component can consume it.
+	if rc, isComp := ex.(RuntimeComponent); isComp {
+		if _, restorable := ex.(Restorable); restorable {
+			snap, err := rc.Snapshot(ctx)
+			if err != nil && !errors.Is(err, ErrNoSnapshot) {
+				return nil, fmt.Errorf("snapshot target %q: %w", target, err)
+			}
+			if err == nil && snap != nil {
+				return &ExecutorSnapshot{Target: target, ComponentSnap: snap, OldExecutor: ex}, nil
+			}
+		}
+	}
+
+	// Executor-reference rollback: Restore will Replace this back.
+	return &ExecutorSnapshot{Target: target, OldExecutor: ex}, nil
+}
+
+// Restore reverts the executor for the given target to the state captured in
+// the snapshot.
+//
+// When the snapshot holds a ComponentSnap, the target MUST implement
+// Restorable (Snapshot guarantees this pairing) and the state is loaded back
+// into the live component. Otherwise Restore swaps the pre-apply Executor
+// reference back into the registry. A nil snapshot, an unknown snapshot type,
+// or a snapshot with neither restorable state nor an old executor yields
+// ErrNoSnapshot — rollback must fail loudly rather than silently no-op.
+func (r *Registry) Restore(ctx context.Context, target string, snap any) error {
+	if snap == nil {
+		return fmt.Errorf("%w: nil snapshot for %q", ErrNoSnapshot, target)
+	}
+	es, ok := snap.(*ExecutorSnapshot)
+	if !ok {
+		return fmt.Errorf("%w: unknown snapshot type %T for %q", ErrNoSnapshot, snap, target)
+	}
+
+	// Prefer true state restoration when the snapshot carries component state.
+	if es.ComponentSnap != nil {
+		restorable, canRestore := es.OldExecutor.(Restorable)
+		if !canRestore {
+			return fmt.Errorf("%w: %q captured component state", ErrNoRestore, target)
+		}
+		if err := restorable.Restore(ctx, es.ComponentSnap); err != nil {
+			return fmt.Errorf("restore target %q: %w", target, err)
+		}
+		return nil
+	}
+
+	if es.OldExecutor == nil {
+		return fmt.Errorf("%w: nil old executor in snapshot for %q", ErrNoSnapshot, target)
+	}
+	r.mu.Lock()
+	r.executors[target] = es.OldExecutor
+	r.mu.Unlock()
+	return nil
+}
 
 // Ensure ExecutorComponent implements RuntimeComponent.
 var _ RuntimeComponent = (*ExecutorComponent)(nil)
 
 // Registry manages patch executors and runtime components by target name.
+//
+// Concurrency: Registry is safe for concurrent use. Rollback paths (Restore)
+// mutate the executor map while other goroutines may be dispatching patches,
+// so every map access is guarded by mu.
 type Registry struct {
+	mu        sync.RWMutex
 	executors map[string]Executor
 	// fallback is a component that handles patches for targets that have no
 	// dedicated executor registered. This enables catch-all executors like
@@ -197,6 +338,8 @@ func NewRegistry() *Registry {
 // with no dedicated executor registered. When Apply cannot find an executor
 // by target, it delegates to the fallback if one is set.
 func (r *Registry) SetFallback(comp RuntimeComponent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.fallback = comp
 }
 
@@ -205,6 +348,8 @@ func (r *Registry) SetFallback(comp RuntimeComponent) {
 // It is the read-only preflight for shadow/staging runtimes: validating a
 // patch must not mutate live state.
 func (r *Registry) CanApply(target string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if _, ok := r.executors[target]; ok {
 		return true
 	}
@@ -219,6 +364,8 @@ func (r *Registry) Register(target string, ex Executor) error {
 	if ex == nil {
 		return errors.New("patch: executor must not be nil")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.executors[target]; exists {
 		return fmt.Errorf("patch: executor for %q already registered", target)
 	}
@@ -246,6 +393,8 @@ func (r *Registry) Replace(target string, ex Executor) error {
 	if ex == nil {
 		return errors.New("patch: executor must not be nil")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.executors[target] = ex
 	return nil
 }
@@ -259,6 +408,45 @@ func (r *Registry) ReplaceComponent(comp RuntimeComponent) error {
 	return r.Replace(comp.Name(), comp)
 }
 
+// lookup resolves the executor for a target plus the current fallback under
+// the read lock. Executor calls MUST happen after the lock is released — an
+// executor may re-enter the registry (e.g. a rollback path calling Restore),
+// and holding the lock across that would deadlock.
+func (r *Registry) lookup(target string) (ex Executor, fallback RuntimeComponent, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ex, ok = r.executors[target]
+	return ex, r.fallback, ok
+}
+
+// executorFor resolves a single target under the read lock.
+func (r *Registry) executorFor(target string) (Executor, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ex, ok := r.executors[target]
+	return ex, ok
+}
+
+// isApplied reports whether a non-empty patch ID was already applied.
+func (r *Registry) isApplied(id string) bool {
+	if id == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.applied[id]
+}
+
+// markApplied records a non-empty patch ID as applied.
+func (r *Registry) markApplied(id string) {
+	if id == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.applied[id] = true
+}
+
 // Apply dispatches a patch to the appropriate executor.
 // First tries to find an executor by target name. If none is found and a
 // fallback is set, delegates to the fallback. If no fallback exists, returns
@@ -267,31 +455,29 @@ func (r *Registry) ReplaceComponent(comp RuntimeComponent) error {
 // it — this provides idempotent re-delivery protection.
 func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 	// Idempotency guard: skip already-applied patches.
-	if patch.ID != "" && r.applied[patch.ID] {
+	if r.isApplied(patch.ID) {
 		return nil
 	}
 
-	ex, ok := r.executors[patch.Target]
+	ex, fallback, ok := r.lookup(patch.Target)
 	if !ok {
 		// No executor for this target — try the fallback if one is set.
-		if r.fallback != nil {
-			rollback, err := r.fallback.Apply(ctx, patch)
+		if fallback != nil {
+			rollback, err := fallback.Apply(ctx, patch)
 			if err != nil {
 				// Attempt rollback via the fallback executor itself. A
 				// fallback-originated rollback targets a fallback-only key
 				// (no exact executor exists in r.executors), so it must be
 				// applied by the fallback, not looked up by target name.
 				if rollback != nil {
-					if _, rbErr := r.fallback.Apply(ctx, *rollback); rbErr != nil {
+					if _, rbErr := fallback.Apply(ctx, *rollback); rbErr != nil {
 						return fmt.Errorf("patch %s on %s (fallback) failed (%w); rollback also failed: %v",
 							patch.Type, patch.Target, err, rbErr)
 					}
 				}
 				return fmt.Errorf("patch %s on %s (fallback): %w", patch.Type, patch.Target, err)
 			}
-			if patch.ID != "" {
-				r.applied[patch.ID] = true
-			}
+			r.markApplied(patch.ID)
 			return nil
 		}
 		return fmt.Errorf("patch: no executor registered for target %q", patch.Target)
@@ -300,7 +486,7 @@ func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 	if err != nil {
 		// Attempt rollback if available.
 		if rollback != nil {
-			if rbEx, ok := r.executors[rollback.Target]; ok {
+			if rbEx, found := r.executorFor(rollback.Target); found {
 				if _, rbErr := rbEx.Apply(ctx, *rollback); rbErr != nil {
 					return fmt.Errorf("patch %s failed (%w); rollback also failed: %v",
 						patch.Type, err, rbErr)
@@ -309,9 +495,7 @@ func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 		}
 		return fmt.Errorf("patch %s on %s: %w", patch.Type, patch.Target, err)
 	}
-	if patch.ID != "" {
-		r.applied[patch.ID] = true
-	}
+	r.markApplied(patch.ID)
 	return nil
 }
 
@@ -329,82 +513,55 @@ func (r *Registry) ApplySet(ctx context.Context, ps PatchSet) error {
 	}
 	var appliedPatches []applied
 
+	// undoAll reverts every already-applied patch in reverse order. Executor
+	// calls happen outside the registry lock (see lookup).
+	undoAll := func() {
+		for i := len(appliedPatches) - 1; i >= 0; i-- {
+			ap := appliedPatches[i]
+			if ap.rollback == nil {
+				continue
+			}
+			if rbEx, ok := r.executorFor(ap.rollback.Target); ok {
+				_, _ = rbEx.Apply(ctx, *ap.rollback)
+			}
+		}
+	}
+
 	for _, p := range ps.Patches {
 		// Idempotency guard: skip already-applied patches.
-		if p.ID != "" && r.applied[p.ID] {
+		if r.isApplied(p.ID) {
 			continue
 		}
 
-		ex, ok := r.executors[p.Target]
+		ex, fallback, ok := r.lookup(p.Target)
 		if !ok {
 			// Try fallback if no dedicated executor.
-			if r.fallback != nil {
-				rollback, fbErr := r.fallback.Apply(ctx, p)
+			if fallback != nil {
+				rollback, fbErr := fallback.Apply(ctx, p)
 				if fbErr != nil {
-					// Rollback all previously applied patches.
-					for i := len(appliedPatches) - 1; i >= 0; i-- {
-						ap := appliedPatches[i]
-						if ap.rollback == nil {
-							continue
-						}
-						if rbEx, ok := r.executors[ap.rollback.Target]; ok {
-							_, _ = rbEx.Apply(ctx, *ap.rollback)
-						}
-					}
+					undoAll()
 					return fmt.Errorf("patch set: no executor for target %q (fallback also failed: %w)", p.Target, fbErr)
 				}
-				if p.ID != "" {
-					r.applied[p.ID] = true
-				}
+				r.markApplied(p.ID)
 				appliedPatches = append(appliedPatches, applied{patch: p, rollback: rollback})
 				continue
 			}
-			// Rollback all previously applied patches in reverse order.
-			for i := len(appliedPatches) - 1; i >= 0; i-- {
-				ap := appliedPatches[i]
-				if ap.rollback == nil {
-					continue
-				}
-				if rbEx, ok := r.executors[ap.rollback.Target]; ok {
-					_, _ = rbEx.Apply(ctx, *ap.rollback)
-				}
-			}
+			undoAll()
 			return fmt.Errorf("patch set: no executor for target %q", p.Target)
 		}
 
-		canErr := ex.CanApply(ctx, p)
-		if canErr != nil {
-			// Rollback all previously applied patches in reverse order.
-			for i := len(appliedPatches) - 1; i >= 0; i-- {
-				ap := appliedPatches[i]
-				if ap.rollback == nil {
-					continue
-				}
-				if rbEx, ok := r.executors[ap.rollback.Target]; ok {
-					_, _ = rbEx.Apply(ctx, *ap.rollback)
-				}
-			}
+		if canErr := ex.CanApply(ctx, p); canErr != nil {
+			undoAll()
 			return fmt.Errorf("patch set: cannot apply %s on %s: %w", p.Type, p.Target, canErr)
 		}
 
 		rollback, err := ex.Apply(ctx, p)
 		if err != nil {
-			// Rollback all previously applied patches in reverse order.
-			for i := len(appliedPatches) - 1; i >= 0; i-- {
-				ap := appliedPatches[i]
-				if ap.rollback == nil {
-					continue
-				}
-				if rbEx, ok := r.executors[ap.rollback.Target]; ok {
-					_, _ = rbEx.Apply(ctx, *ap.rollback)
-				}
-			}
+			undoAll()
 			return fmt.Errorf("patch set: apply %s on %s failed: %w", p.Type, p.Target, err)
 		}
 
-		if p.ID != "" {
-			r.applied[p.ID] = true
-		}
+		r.markApplied(p.ID)
 		appliedPatches = append(appliedPatches, applied{patch: p, rollback: rollback})
 	}
 

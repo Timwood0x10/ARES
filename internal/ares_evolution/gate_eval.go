@@ -15,6 +15,7 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -28,23 +29,33 @@ type EvalGateConfig struct {
 	// EvaluatorName selects which registered evaluator to use. When empty,
 	// the gate runs all registered evaluators and averages their scores.
 	EvaluatorName string
+	// StrictMode, when true, causes the gate to REJECT (return false)
+	// when no eval infrastructure is wired instead of silently passing.
+	// Production deployments should set this to true so a missing
+	// registry does not quietly allow every candidate through.
+	StrictMode bool
 }
 
 // DefaultEvalGateConfig returns sensible defaults.
 func DefaultEvalGateConfig() EvalGateConfig {
 	return EvalGateConfig{
-		MinScore: 0.7,
+		MinScore:   0.7,
+		StrictMode: false, // preserves backward compatibility; prod sets true
 	}
 }
 
 // EvalGate is the G3 verify gate. It wraps an ares_eval.EvaluatorRegistry
 // and an optional AgentTestRunner to score candidate strategies against a
-// fixed regression suite. The gate is pass-through when no registry is set.
+// fixed regression suite. The gate is pass-through when no registry is set
+// (unless StrictMode is enabled, in which case it fails closed).
 type EvalGate struct {
 	registry *ares_eval.EvaluatorRegistry
 	runner   *ares_eval.AgentTestRunner
 	suite    ares_eval.TestSuite
 	cfg      EvalGateConfig
+	// skippedCount tracks how many times the gate was skipped due to
+	// missing infrastructure. Exposed via SkippedCount for observability.
+	skippedCount int
 	// beforeRun, when set, is invoked with the candidate right before the
 	// suite runs — the seam that lets the executor run test cases THROUGH
 	// the candidate strategy (e.g. apply its prompt template) so the score
@@ -90,13 +101,38 @@ func (g *EvalGate) Name() string {
 	return "eval"
 }
 
+// SkippedCount returns the number of times the gate was skipped due to
+// missing eval infrastructure (registry, runner, or empty suite). This
+// counter lets operators detect a misconfigured G3 gate that would
+// otherwise silently pass every candidate.
+func (g *EvalGate) SkippedCount() int {
+	return g.skippedCount
+}
+
 // Check runs the candidate through the eval suite and returns pass=true when
 // the weighted average score meets or exceeds MinScore. When no registry or
-// runner is wired, the gate is a pass-through (B5 graceful degradation).
+// runner is wired, the gate is a pass-through — UNLESS StrictMode is enabled,
+// in which case it returns false (fail-closed) so a missing registry does not
+// silently allow every candidate through.
 func (g *EvalGate) Check(ctx context.Context, cand *mutation.Strategy, _ *mutation.Strategy) (bool, float64, string) {
 	if g.registry == nil || g.runner == nil || len(g.suite.TestCases) == 0 {
-		// Pass-through: no eval infrastructure wired.
-		return true, 0, "eval suite not configured, skipping"
+		g.skippedCount++
+		// Identify the specific missing component for the log.
+		var missing []string
+		if g.registry == nil {
+			missing = append(missing, "registry")
+		}
+		if g.runner == nil {
+			missing = append(missing, "runner")
+		}
+		if len(g.suite.TestCases) == 0 {
+			missing = append(missing, "test suite")
+		}
+		reason := fmt.Sprintf("eval suite not configured (missing: %s), skipping", strings.Join(missing, ", "))
+		if g.cfg.StrictMode {
+			return false, 0, fmt.Sprintf("strict mode: %s — rejected", reason)
+		}
+		return true, 0, reason
 	}
 
 	// Let the executor run the suite through THIS candidate (prompt template
@@ -132,7 +168,12 @@ func (g *EvalGate) Check(ctx context.Context, cand *mutation.Strategy, _ *mutati
 		evalCount++
 	}
 	if evalCount == 0 {
-		return true, 0, "no evaluators produced results, skipping"
+		g.skippedCount++
+		reason := "no evaluators produced results, skipping"
+		if g.cfg.StrictMode {
+			return false, 0, fmt.Sprintf("strict mode: %s — rejected", reason)
+		}
+		return true, 0, reason
 	}
 	avgScore := totalScore / float64(evalCount)
 	if avgScore >= g.cfg.MinScore {

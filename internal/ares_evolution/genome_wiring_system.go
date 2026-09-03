@@ -910,9 +910,15 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		}
 
 		// Phase 6: Diff Engine — compare old/new snapshots, generate patches,
-		// and submit to Coordinator for evaluation and application.
+		// and submit to Coordinator for evaluation and application. Every
+		// patch is attributed to the current best strategy so the coordinator
+		// and runtime can A/B compare it against the active one.
 		if system.DiffReg != nil && system.Coordinator != nil && system.GenomeReg != nil {
-			diffPatches, dErr := generateDiffPatches(ctx, system.GenomeReg, system.DiffReg, 3)
+			strategyID := ""
+			if best := system.Population.BestStrategy(); best != nil {
+				strategyID = best.ID
+			}
+			diffPatches, dErr := generateDiffPatches(ctx, system.GenomeReg, system.DiffReg, 3, strategyID)
 			if dErr != nil {
 				log.WarnContext(ctx, "diff engine failed, continuing", "method", "RunIdleEvolution", "error", dErr)
 			} else {
@@ -968,18 +974,27 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 //   - genomeReg  - registry of evolvable genomes.
 //   - diffReg    - registry of genome-specific differs.
 //   - nChildren  - number of mutation candidates per genome (must be > 0).
+//   - strategyID - the mutation.Strategy ID these patches are attributed to.
+//     Must be non-empty; a patch without a strategy cannot be A/B compared,
+//     so generateDiffPatches fails fast rather than emit unattributable
+//     patches (deployment pipelines MUST NOT invent one).
 //
 // Returns:
-//   - patches - non-empty RuntimePatches from successful mutations.
-//   - err     - non-nil if nChildren is invalid.
+//   - patches - non-empty RuntimePatches from successful mutations, each stamped
+//     with the supplied strategyID.
+//   - err     - non-nil if nChildren is invalid or strategyID is empty.
 func generateDiffPatches(
 	ctx context.Context,
 	genomeReg *evogenome.Registry,
 	diffReg *diff.Registry,
 	nChildren int,
+	strategyID string,
 ) ([]patch.RuntimePatch, error) {
 	if nChildren <= 0 {
 		return nil, fmt.Errorf("generateDiffPatches: nChildren must be > 0, got %d", nChildren)
+	}
+	if strategyID == "" {
+		return nil, fmt.Errorf("generateDiffPatches: strategyID must not be empty")
 	}
 
 	var allPatches []patch.RuntimePatch
@@ -1033,6 +1048,9 @@ func generateDiffPatches(
 				continue
 			}
 
+			for i := range patches {
+				patches[i].StrategyID = strategyID
+			}
 			allPatches = append(allPatches, patches...)
 		}
 	}

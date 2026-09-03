@@ -411,9 +411,15 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 }
 
 // submitToCoordinator generates diff patches from all registered genomes and
-// submits them to the coordinator for decision and deployment.
+// submits them to the coordinator for decision and deployment. Each patch is
+// attributed to the best-evolved strategy so the coordinator can measure it
+// against the active strategy rather than invent a strategy ID.
 func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
-	patches, err := generateDiffPatches(ctx, a.genomeReg, a.diffReg, 3)
+	strategyID := ""
+	if best := a.pop.BestStrategy(); best != nil {
+		strategyID = best.ID
+	}
+	patches, err := generateDiffPatches(ctx, a.genomeReg, a.diffReg, 3, strategyID)
 	if err != nil {
 		log.WarnContext(ctx, "diff engine failed", "method", "submitToCoordinator", "error", err)
 		return
