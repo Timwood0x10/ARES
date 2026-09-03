@@ -9,6 +9,37 @@
 > - ⏳ 待办：Step 7.3——非 serve 入口（Bootstrap 单独使用）时补一条「判决可用，但无 live 拓扑可作用」的显式日志。行为上（保持合成图 + deployment 关闭）已满足，缺的是那行日志。
 > - 验证：`go build ./...`、`go vet`、`go test ./internal/ares_bootstrap/... ./internal/ares_evolution/... ./internal/evolution/deployment/...`、以及 `make gate` 中的 closure + race 与 `TestG2ConfigContract`、`TestEventContract` 均已通过。
 
+## 0. 未闭环边界（硬边界 — 0.3.1 vs 0.4.x 的划分依据，不可含糊）
+
+> 本节是**发布措辞的唯一依据**。对外只能说清楚"哪些闭环了、哪些没有"；凡本节点名项，均不得在 0.3.1 发布文档/CHANGELOG 中以"闭环""完整"表述。
+
+### N-1（P1-1，最关键）候选无自身证据 —— real-execution A/B 未落地
+
+- **现状**：G2 shadow 判定仍靠 `ReplayScorer` 读**策略自身历史**（`replay_scorer.go`，`shadow_evaluator.go:438` `Evaluate` 纯函数打分），不是"候选真跑一遍"。
+- **代价**：G2 的 verdict **不是候选特异性的**——语义是"当前机队质量 vs 线上策略历史"，不是"候选比线上更好"。候选从未被执行、无可回退。
+- **为何不在本次**：Step 4 单独排期（涉及调度器 + 副作用隔离，风险与工作量最大）。
+- **达成判据**（Step 4 落地后）：候选在隔离上下文真执行一次 → 产出一笔 `strategy_id==candidate.ID` 的 evidence → G2 用它判定。
+- **0.3.1 发布措辞**：只能写"进化判决语义已闭环"，**禁止**写成"进化能判定候选是否更好"。
+
+### N-2（缩水一）"真实 agent" = peer 拓扑，非单 agent 内 DAG
+
+- **现状**：`buildLiveAgentDAG`（`cmd/ares/serve_live_dag.go:30`）建的是**一 peer 一节点**的顶层图（AgentType=主能力）。
+- **边界**：`UpdateLiveDAG` 注入的是这个 peer 拓扑。若目标为"**单 agent 内部的工作流步骤图**"，那是另一个 gap，`UpdateLiveDAG` 喂进去的不覆盖它。
+- **0.3.1 发布措辞**：写"进化作用于 peer 级 agent 拓扑"，不写"作用于单 agent 内部工作流"。
+
+### N-3（缩水二）测试覆盖率未达标的
+
+- **现状**：总覆盖率 ≈**59.2%**，低于 GA 目标 **65%**。
+- **薄弱区**：`shadow_sampler.go:93` 构造路径、`postgres/repositories`（0%，需真 PG）。
+- **性质**：非发布硬阻断，但属于"质量就绪"欠账，应列入 0.4.x 补覆盖。
+
+### N-4（收尾待办，非新缺口）非 serve 入口的显式日志
+
+- `Bootstrap` 单独使用（非 serve）时保持合成图 + 关闭 deployment 的行为已在，缺一行"判决可用，但无 live 拓扑可作用"的显式日志（文档顶部另标 Step 7.3）。
+- **性质**：行为已满足，仅是观测缺口，不改变闭环结论。
+
+---
+
 ## 现状结论
 
 已经闭合的：`generateDiffPatches`（`internal/ares_evolution/genome_wiring_system.go:975`）确实完成了 Snapshot → Mutate → Snapshot → Diff 的完整链路，不是空壳；`DeploymentPipeline` 已经在 `internal/ares_bootstrap/bootstrap.go:537-553` 接进 `Coordinator.SetDeployer`。

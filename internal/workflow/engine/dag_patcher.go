@@ -203,4 +203,3 @@ func stepFromPatchValue(v any, id string) (*Step, error) {
 		return nil, fmt.Errorf("unsupported step value type %T", v)
 	}
 }
-
