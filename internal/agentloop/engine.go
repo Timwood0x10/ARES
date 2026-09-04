@@ -322,6 +322,11 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 			// keeps the tool-call trail (not just Content). Fall back to the
 			// content-only AddMessage for minimal sinks/mocks.
 			if sm, ok := e.Memory.(structuredMemorySink); ok && len(resp.ToolCalls) > 0 {
+				// best-effort: memory persistence failure must not abort the
+				// agent loop — the in-memory message trail is already
+				// appended above and the conversation can continue. A
+				// dropped structured message means context rebuild may lose
+				// tool-call trails, which degrades quality but not safety.
 				_ = sm.AddStructuredMessage(ctx, req.SessionID, memctx.Message{
 					Role:      roleAssistant,
 					Content:   resp.Content,
@@ -329,6 +334,11 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 					ToolCalls: toMemToolCalls(resp.ToolCalls),
 				})
 			} else {
+				// best-effort: same rationale as the structured path —
+				// memory persistence is not on the critical path of the
+				// agent loop. The in-memory trail is authoritative for
+				// the current turn; a failed persist only affects future
+				// context rebuilds.
 				_ = e.Memory.AddMessage(ctx, req.SessionID, roleAssistant, resp.Content)
 			}
 		}

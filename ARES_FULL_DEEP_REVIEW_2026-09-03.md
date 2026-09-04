@@ -19,9 +19,19 @@
 
 ## 1. 真 Bug 与未闭环（P0/P1）
 
-### P1-1 候选无自身证据（进化 G2 判定非候选特异）— 已核实
+### P1-1 候选无自身证据（进化 G2 判定非候选特异）— 已核实 / ✅ 已闭环（2026-09-03，Step 4）
 
-- `internal/ares_evolution/replay_scorer.go` + `shadow_sampler.go:45-50`：G2 判定靠 replay 读策略自身历史，候选从未被执行 → 语义是"机队 vs 线上历史"，不是"候选更好"。此为已知 P1-1，明确排除在 0.3.1 交付外（见 `AGENT_OS_CLOSURE_DEV_PLAN.md` N-1）。**这是最大未闭环。**
+- `internal/ares_evolution/replay_scorer.go` + `shadow_sampler.go:45-50`：G2 判定靠 replay 读策略自身历史，候选从未被执行 → 语义是"机队 vs 线上历史"，不是"候选更好"。
+
+- **已闭环**：`evolution.shadow_execution.enabled=true` 时候选与活跃双臂在隔离 runner 实跑配对（见 `AGENT_OS_CLOSURE_DEV_PLAN.md` N-1）。默认关闭时仍是 replay 语义。
+
+### P1-1b（2026-09-04 新增）协作与工具通道：进化看得见但改不动
+
+- **已闭环的部分**：协作回执（`agentipc/primitives.go` 的 `Request` + `Send` 双出口）与工具成败（`sub/tool_observer.go` binder 装饰器）现已写入 `collaboration` / `tool_call` 独立 source 的 fitness 证据，按活跃策略归因，`RuntimeFitnessAggregator` 按策略 scope 加权读取。默认关闭。
+
+- **未闭环的部分（`AGENT_OS_CLOSURE_DEV_PLAN.md`** **N-11 修订 / N-12）**：工具维度有**旋钮但没接线**——`Params["tools"]`（`string` 逗号分隔）已存在且 `Mutator.mutateTool` 会变异它，但两条执行体的 `GetToolSchemas()`（`sub/executor.go:860`、`agentfabric/chat_cognition.go:304`）无条件全量投给 LLM、不读取过滤，且 `ComputeEvidenceKey` 只含数值参数、工具字段不进归因 key；协作维度 agent 没有"问某个 agent"的 syscall。所以判决分会因这两个通道的真实成败而分化，但**下一代在这两个维度上的行为不会因此改变**——开环反馈。
+
+- **性质**：从"最大未闭环"降级为"度量已闭环、作动未闭环"。最小突破口是给两条执行体**接线** **`Params["tools"]`** **过滤**并把工具字段**并入** **`ComputeEvidenceKey`**（详见计划 Y.3-ACT），非新增字段。
 
 ### P1-2 error 被吞且无注释 — 已核实 ✅
 
@@ -29,11 +39,13 @@
 
 - `internal/agentipc/primitives.go:118,129`：`_ = b.deliverReply(...)` 吞投递错误——reply 投递失败会静默，调用方可能永久等待。
 
-### P1-3 裸 goroutine 无 recover — 已核实 ✅
+### P1-3 裸 goroutine 无 recover — 已核实 ✅ / `agentipc` 部分已修 ✅（2026-09-04）
 
 - `internal/agentipc/primitives.go:112`：`go func(){ reply, err := h(...); ... }()` 由 deadline select 管理，但 **handler 无 recover 边界**——若 handler panic（如第三方插件/注册 handler），整进程崩溃而非仅该请求失败。规范(§4.2)要求 goroutine 内 recover。
 
-- ⚠️ 待确认：`internal/ares_runtime/manager_chaos.go:286`、`internal/ares_memory/context/session.go:93`、`internal/planprojection/coordinator.go:158` 等裸 goroutine，需逐一点检 recover/生命周期（仅子代理面点）。
+  **已修（2026-09-04）**：抽为 `Bus.invokeHandler` 并加 recover 边界。三处设计取舍：①panic 转 `ErrHandlerPanic` 走与普通 handler error **相同的 sentinel-nil-reply 唤醒协议**——只 log 不唤醒会让调用方白等满 timeout（panic 的 handler 永远不会 Reply），有专门测试断言不烧 timeout；②panic 值**不进 error**（可能含内部路径/请求数据，§3.5），只进注入的 logger（`Bus.WithLogger`，`cmd/ares/evolution_ipc.go` 与 `introspect/dashboard.go` 两个生产构造点已接）；③`Send` 的同步 panic **刻意不 recover**——它跑在调用方自己的 goroutine 上，调用方可自行 recover，吞掉才是隐藏错误。测试：`agentipc/collaboration_observer_test.go` 断言进程存活、调用方拿到 `ErrHandlerPanic`、其他 agent 事后仍可用、不烧 timeout、日志含 from/to/topic 上下文键。
+
+- ⚠️ 待确认：`internal/ares_runtime/manager_chaos.go:286`、`internal/planprojection/coordinator.go:158` 等裸 goroutine，需逐一点检 recover/生命周期（仅子代理面点）。`internal/ares_memory/context/session.go:93` 已于 §6.5 确认受管。
 
 ### P1-4 超长生产函数隐藏浅析风险 — 已核实 ✅（非漏洞但属高风险）
 
@@ -180,16 +192,17 @@
 
 ## 5. 整改建议（按优先级）
 
-| 优先级 | 动作                                                        | 对应问题        |
-| --- | --------------------------------------------------------- | ----------- |
-| W1  | `agentipc/primitives.go` 的 handler goroutine 加 recover 边界 | P1-3        |
-| W1  | `embedding_dead_letter` 补死信重投/过期清理，防 NULL vector 永久卡死     | P1-5        |
-| W1  | `agentloop engine.go:325/332` 吞错补注释或改返回                   | P1-2        |
-| W2  | 拆 6 个 1000+ 行文件 + 156 个 100+ 行函数（按职责拆）                    | V-1/V-2     |
-| W2  | 消灭 251 处 test `time.Sleep`（改用 channel/WaitGroup/轮询）       | T-2         |
-| W2  | 清理 142 处注释代码 + 65 处库层打印 + 47 处硬编码魔数                       | V-3/V-4/V-6 |
-| W3  | 重构 4 个 `*_coverage_test.go` 为真语义断言，补错误/反向用例               | T-1         |
-| W3  | `agentfabric` 未覆盖模块补深查                                    | 各模块         |
+| 优先级      | 动作                                                                               | 对应问题        |
+| -------- | -------------------------------------------------------------------------------- | ----------- |
+| ~~W1~~ ✅ | ~~`agentipc/primitives.go`~~ ~~的 handler goroutine 加 recover 边界~~ 已修（2026-09-04） | P1-3        |
+| W1       | `embedding_dead_letter` 补死信重投/过期清理，防 NULL vector 永久卡死                            | P1-5        |
+| W1       | `agentloop engine.go:325/332` 吞错补注释或改返回                                          | P1-2        |
+| W1       | 两条执行体接线 `Params["tools"]` 过滤工具集 + 工具字段并入 `ComputeEvidenceKey`（让工具通道反馈闭环成作动）      | P1-1b       |
+| W2       | 拆 6 个 1000+ 行文件 + 156 个 100+ 行函数（按职责拆）                                           | V-1/V-2     |
+| W2       | 消灭 251 处 test `time.Sleep`（改用 channel/WaitGroup/轮询）                              | T-2         |
+| W2       | 清理 142 处注释代码 + 65 处库层打印 + 47 处硬编码魔数                                              | V-3/V-4/V-6 |
+| W3       | 重构 4 个 `*_coverage_test.go` 为真语义断言，补错误/反向用例                                      | T-1         |
+| W3       | `agentfabric` 未覆盖模块补深查                                                           | 各模块         |
 
 ***
 

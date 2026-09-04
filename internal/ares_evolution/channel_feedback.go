@@ -316,9 +316,10 @@ func (r *ChannelFeedbackRecorder) countDrop() {
 }
 
 // write appends one record as KindFitness evidence attributed to the active
-// strategy. Best-effort on the store error (mirrors RuntimeObserver.
-// writeEvidence): a lost fitness sample must never escalate into a failure of
-// the path that produced it.
+// strategy. Best-effort on the store error, but a refused append is counted as
+// a drop so Dropped() remains a faithful lower bound on lost evidence — a lost
+// fitness sample must never escalate into a failure of the path that produced
+// it (same non-escalation guarantee as RuntimeObserver.writeEvidence).
 func (r *ChannelFeedbackRecorder) write(ctx context.Context, rec channelRecord) {
 	strategyID := r.activeID()
 	if strategyID == "" {
@@ -339,7 +340,7 @@ func (r *ChannelFeedbackRecorder) write(ctx context.Context, rec channelRecord) 
 		r.countDrop()
 		return
 	}
-	_ = r.store.Append(ctx, evidence.Evidence{
+	if err := r.store.Append(ctx, evidence.Evidence{
 		// Full-date format with fractional seconds: the PG store deduplicates
 		// on id via ON CONFLICT DO NOTHING, so a coarser timestamp would
 		// silently drop records (same reasoning as the observer's IDs).
@@ -348,5 +349,11 @@ func (r *ChannelFeedbackRecorder) write(ctx context.Context, rec channelRecord) 
 		Kind:      evidence.KindFitness,
 		Payload:   raw,
 		Timestamp: rec.at,
-	})
+	}); err != nil {
+		// A sample the store refused is a lost sample: count it so Dropped() is
+		// a faithful lower bound on how much fitness evidence never reached the
+		// judgment path. The error itself is not propagated — a failed append
+		// must never escalate into a failure of the drain goroutine's lifetime.
+		r.countDrop()
+	}
 }

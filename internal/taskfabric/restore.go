@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -122,12 +121,12 @@ func (f *Fabric) RestoreFromStore(ctx context.Context) error {
 	f.events = nil
 	for _, ev := range created {
 		if err := f.foldRestoreEvent(ev); err != nil {
-			log.Printf("taskfabric: restore skipped unusable task.created event: %v", err)
+			log.Warn("taskfabric: restore skipped unusable task.created event", "error", err)
 		}
 	}
 	for _, ev := range rest {
 		if err := f.foldRestoreEvent(ev); err != nil {
-			log.Printf("taskfabric: restore skipped unusable %s event: %v", ev.Type, err)
+			log.Warn("taskfabric: restore skipped unusable event", "event_type", ev.Type, "error", err)
 		}
 	}
 	// Epoch must dominate every token the pre-crash fabric ever handed out.

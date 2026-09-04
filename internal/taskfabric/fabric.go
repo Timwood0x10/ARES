@@ -3,7 +3,6 @@ package taskfabric
 import (
 	"context"
 	"errors"
-	"log"
 	"sort"
 	"sync"
 	"time"
@@ -774,7 +773,7 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 			} else {
 				// The rebuilt task will resume without this checkpoint. Log
 				// so the divergence is detectable; do not fail the transition.
-				log.Printf("taskfabric: checkpoint marshal failed for task %s (restore will lose progress): %v", t.ID, err)
+				log.Error("taskfabric: checkpoint marshal failed (restore will lose progress)", "task_id", t.ID, "error", err)
 			}
 		}
 	}
@@ -829,7 +828,7 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 		f.flushCond.Broadcast()
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
-				log.Printf("taskfabric: must-persist event %s for task %s append failed (durable log diverges from memory): %v", p.typ, p.taskID, appendErr)
+				log.Error("taskfabric: must-persist event append failed (durable log diverges from memory)", "event_type", p.typ, "task_id", p.taskID, "error", appendErr)
 			}
 		}
 	}

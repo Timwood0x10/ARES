@@ -2,7 +2,6 @@ package kernelscheduler
 
 import (
 	"context"
-	"log"
 )
 
 // QuantumHook is the extension contract at the quantum boundary. The scheduler
@@ -56,7 +55,7 @@ func (s *Scheduler) beforeQuantum(ctx context.Context, taskID, agentID string) {
 		return
 	}
 	if err := s.quantumHook.BeforeQuantum(ctx, taskID, agentID); err != nil {
-		log.Printf("kernel scheduler: beforeQuantum hook error for task %q on %q (continuing): %v", taskID, agentID, err)
+		log.Error("kernel scheduler: beforeQuantum hook error (continuing)", "task_id", taskID, "agent", agentID, "error", err)
 	}
 }
 

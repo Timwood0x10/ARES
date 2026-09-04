@@ -192,9 +192,14 @@ func (s *Strategy) SetHash(h uint64) {
 }
 
 // ComputeEvidenceKey derives a stable evidence key from behaviorally relevant
-// fields: prompt template and sorted numeric params. The key format is:
-// "promptTemplate|key1=value1,key2=value2". Only numeric values (float64)
-// in Params are included, sorted by key for determinism.
+// fields: prompt template, sorted numeric params, and the tool whitelist.
+// The key format is: "promptTemplate|key1=value1,key2=value2|tools=t1,t2".
+// Only numeric values (float64) in Params are included, sorted by key for
+// determinism. The tool whitelist (Params["tools"]) is normalized (sorted,
+// trimmed) and included so two strategies that differ only in tool selection
+// land on different EvidenceKeys — otherwise their tool_call evidence would
+// be merged and the evolution verdict could not distinguish them by tool
+// choice (Y.3-ACT归因入key).
 func (s *Strategy) ComputeEvidenceKey() string {
 	if s == nil {
 		return ""
@@ -225,8 +230,38 @@ func (s *Strategy) ComputeEvidenceKey() string {
 		evidenceKey = prompt + "|" + strings.Join(pairs, ",")
 	}
 
+	// Y.3-ACT: include the tool whitelist in the evidence key so strategies
+	// that differ only in tool selection are distinguishable. The value is
+	// normalized (split, trim, sort, rejoin) so "b,a" and "a, b" produce the
+	// same key — the set is what matters, not the order.
+	if tools, ok := s.Params["tools"].(string); ok {
+		normalized := normalizeToolKey(tools)
+		if normalized != "" {
+			evidenceKey = evidenceKey + "|tools=" + normalized
+		}
+	}
+
 	s.EvidenceKey = evidenceKey
 	return evidenceKey
+}
+
+// normalizeToolKey splits a comma-separated tool string into individual names,
+// trims whitespace, sorts them, and rejoins with commas. Empty entries are
+// skipped. Returns "" if the input is empty or contains no valid names.
+func normalizeToolKey(raw string) string {
+	parts := strings.Split(raw, ",")
+	names := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			names = append(names, p)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 // ParamRange defines the allowed range for a mutable parameter.

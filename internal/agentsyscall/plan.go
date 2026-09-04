@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 
 	"github.com/Timwood0x10/ares/internal/kernelctx"
@@ -137,7 +136,7 @@ func (k *Kernel) CreatePlan(ctx context.Context, args CreatePlanArgs) (*CreatePl
 	if err != nil {
 		return nil, fmt.Errorf("agentsyscall: compile plan: %w", err)
 	}
-	log.Printf("agentsyscall: created plan batch of %d tasks (origin=%q) → READY", len(ids), origin)
+	log.Info("agentsyscall: created plan batch of tasks → READY", "task_count", len(ids), "origin", origin)
 	return &CreatePlanResult{
 		TaskIDs: ids,
 		Count:   len(ids),
@@ -199,8 +198,7 @@ func (k *Kernel) startPlanLoop(
 		return nil, fmt.Errorf("agentsyscall: plan loop: %w", err)
 	}
 	k.watchPlanLoop(loopSpec.PlanID, loop)
-	log.Printf("agentsyscall: started plan loop %q (rounds<=%d, until=%q, origin=%q)",
-		loopSpec.PlanID, spec.MaxRounds, spec.Until, origin)
+	log.Info("agentsyscall: started plan loop", "plan_id", loopSpec.PlanID, "max_rounds", spec.MaxRounds, "until", spec.Until, "origin", origin)
 	return &CreatePlanResult{
 		// Round-1 task IDs, named by the loop's round namespace.
 		TaskIDs:       roundOneTaskIDs(loopSpec),
@@ -247,10 +245,10 @@ func (k *Kernel) watchPlanLoop(planID string, loop *taskfabric.PlanLoop) {
 		<-loop.Done()
 		k.releasePlanLoop(planID)
 		if err := loop.Err(); err != nil {
-			log.Printf("agentsyscall: plan loop %q ended with error after round %d: %v", planID, loop.Round(), err)
+			log.Warn("agentsyscall: plan loop ended with error", "plan_id", planID, "round", loop.Round(), "error", err)
 			return
 		}
-		log.Printf("agentsyscall: plan loop %q finished after round %d", planID, loop.Round())
+		log.Info("agentsyscall: plan loop finished", "plan_id", planID, "round", loop.Round())
 	}()
 }
 

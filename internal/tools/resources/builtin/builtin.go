@@ -3,7 +3,6 @@ package builtin
 import (
 	stderrors "errors"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -253,7 +252,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			// On conflict (e.g. duplicate name from a prior registration), log a
 			// warning and continue with the remaining tools instead of aborting
 			// the whole registration. The pre-existing tool wins.
-			log.Printf("WARN: builtin: failed to register tool %q: %v", tool.Name(), err)
+			log.Warn("builtin: failed to register tool", "tool", tool.Name(), "error", err)
 			errs = append(errs, fmt.Errorf("%s: %w", tool.Name(), err))
 			continue
 		}

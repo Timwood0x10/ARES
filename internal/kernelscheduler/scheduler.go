@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -215,7 +214,7 @@ func (s *Scheduler) consumeBudget(winner string) {
 		return
 	}
 	if err := s.governance.ConsumeResource(winner, 0, 1); err != nil {
-		log.Printf("kernel scheduler: agent %s budget consumption: %v", winner, err)
+		log.Warn("kernel scheduler: agent budget consumption", "agent", winner, "error", err)
 	}
 }
 
@@ -307,7 +306,7 @@ func (s *Scheduler) WithTTL(ttl time.Duration) *Scheduler {
 //   - ctx: lifetime of the scheduling loop.
 func (s *Scheduler) Run(ctx context.Context) {
 	if s.fabric == nil {
-		log.Printf("kernel scheduler: fabric nil, scheduler disabled")
+		log.Warn("kernel scheduler: fabric nil, scheduler disabled")
 		return
 	}
 	// K5: the readiness flag goes up before the loop blocks so an Adopt-time
@@ -345,7 +344,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("kernel scheduler: panic in preemption sweep, continuing: %v", r)
+							log.Error("kernel scheduler: panic in preemption sweep, continuing", "panic", r)
 						}
 					}()
 					s.PreemptLowerPriority(s.fabric.ResumableTasks())
@@ -371,10 +370,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			},
 		})
 		if err != nil {
-			log.Printf("kernel scheduler: event subscribe failed, polling only: %v", err)
+			log.Warn("kernel scheduler: event subscribe failed, polling only", "error", err)
 		} else {
 			events = ch
-			log.Printf("kernel scheduler: event-driven drain enabled (task lifecycle events)")
+			log.Info("kernel scheduler: event-driven drain enabled (task lifecycle events)")
 		}
 	}
 
@@ -391,7 +390,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// loop falls back to pure polling instead of busy-spinning on a
 			// closed channel (N5: closed-events spin).
 			if !ok {
-				log.Printf("kernel scheduler: event subscription closed, polling only")
+				log.Info("kernel scheduler: event subscription closed, polling only")
 				events = nil
 				continue
 			}
@@ -416,7 +415,7 @@ func (s *Scheduler) preemptInterval() time.Duration {
 func (s *Scheduler) safeDrain(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("kernel scheduler: panic in drain, continuing: %v", r)
+			log.Error("kernel scheduler: panic in drain, continuing", "panic", r)
 		}
 	}()
 	s.drain(ctx)
@@ -493,7 +492,7 @@ func (s *Scheduler) drain(ctx context.Context) {
 			defer func() { <-sem }()
 			defer func() {
 				if recover() != nil {
-					log.Printf("kernel scheduler: panic executing task %q, continuing", id)
+					log.Error("kernel scheduler: panic executing task, continuing", "task_id", id)
 				}
 			}()
 			if err := s.execute(ctx, id); err != nil {
@@ -546,7 +545,7 @@ func (s *Scheduler) PreemptLowerPriority(ready []string) {
 			// stale epoch is a benign race, not worth log spam.
 			continue
 		}
-		log.Printf("kernel scheduler: preempted %q (priority %d) for higher-priority work (max ready %d)", rt.ID, rt.Priority, maxReady)
+		log.Info("kernel scheduler: preempted for higher-priority work", "task_id", rt.ID, "priority", rt.Priority, "max_ready", maxReady)
 	}
 }
 
@@ -564,7 +563,7 @@ func (s *Scheduler) logFailure(taskID string, err error) {
 		}
 		s.lastNoCandidateLog = now
 	}
-	log.Printf("kernel scheduler: execute task %q failed: %v", taskID, err)
+	log.Error("kernel scheduler: execute task failed", "task_id", taskID, "error", err)
 }
 
 // Submission-time metadata (UserProfile + Payload + UsedExperienceID) rides in
@@ -737,20 +736,20 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			// contract holds in cases 1 and 2.
 			if s.HasCapableExecutor(taskID) {
 				if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-					log.Printf("kernel scheduler: release %q for stale winner %q failed: %v", taskID, winner, releaseErr)
+					log.Error("kernel scheduler: release for stale winner failed", "task_id", taskID, "winner", winner, "error", releaseErr)
 				}
 				return nil
 			}
 			if s.hasRecoveryHint() {
 				if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-					log.Printf("kernel scheduler: release %q for stale winner %q failed: %v", taskID, winner, releaseErr)
+					log.Error("kernel scheduler: release for stale winner failed", "task_id", taskID, "winner", winner, "error", releaseErr)
 					return nil
 				}
-				log.Printf("kernel scheduler: winner %q for task %q is no longer executable; released to READY and nominated for recovery", winner, taskID)
+				log.Warn("kernel scheduler: winner no longer executable; released to READY and nominated for recovery", "winner", winner, "task_id", taskID)
 				s.notifyRecovery(taskID)
 				return nil
 			}
-			log.Printf("kernel scheduler: winner %q for task %q is no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry", winner, taskID)
+			log.Warn("kernel scheduler: winner no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry", "winner", winner, "task_id", taskID)
 			return nil
 		}
 	}
@@ -763,7 +762,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// alive through an arbitrary number of yield→resume cycles.
 	meta, decodeErr := taskfabric.DecodeCheckpoint(tk.Checkpoint)
 	if decodeErr != nil {
-		log.Printf("kernel scheduler: decode checkpoint for task %q: %v", taskID, decodeErr)
+		log.Warn("kernel scheduler: decode checkpoint failed", "task_id", taskID, "error", decodeErr)
 	}
 	// P3 pre-quantum gate: if the winner's budget/deadline is exhausted, yield
 	// the task back (release the lease) so another capable agent (or a later
@@ -772,7 +771,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// drives the requeue, matching the plan's "budget.exceeded → yield()".
 	if !s.budgetOK(winner) {
 		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Printf("kernel scheduler: release %q for budget-exhausted %q failed: %v", taskID, winner, releaseErr)
+			log.Error("kernel scheduler: release for budget-exhausted failed", "task_id", taskID, "winner", winner, "error", releaseErr)
 		}
 		return nil
 	}
@@ -802,7 +801,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 				return nil
 			case <-ticker.C:
 				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
-					log.Printf("kernel scheduler: lease renew for task %q by %q failed, stopping heartbeat: %v", taskID, winner, rerr)
+					log.Error("kernel scheduler: lease renew failed, stopping heartbeat", "task_id", taskID, "winner", winner, "error", rerr)
 					return nil
 				}
 			}
@@ -836,7 +835,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 				// trail for an executor panic, and the load slot is released
 				// so the agent stays schedulable (the fabric's expired-lease
 				// requeue reclaims the stuck task separately).
-				log.Printf("kernel scheduler: panic in executor for task %q on agent %q, releasing load slot: %v", taskID, winner, r)
+				log.Error("kernel scheduler: panic in executor, releasing load slot", "task_id", taskID, "agent", winner, "panic", r)
 				s.tracker.EndNeutral(winner)
 				slotReleased = true
 			}
@@ -897,7 +896,7 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 	}
 	if boundID := s.unbindFor(taskID); boundID != "" {
 		s.UnregisterExecutor(boundID)
-		log.Printf("kernel scheduler: unregistered recovery executor %q after task %q reached %s", boundID, taskID, tk2.State)
+		log.Info("kernel scheduler: unregistered recovery executor after task reached state", "executor", boundID, "task_id", taskID, "state", tk2.State)
 	}
 }
 
@@ -914,7 +913,7 @@ func (s *Scheduler) reconcileFabricDeaths() {
 			continue // recovery replacements are unregistered at terminal state
 		}
 		if _, err := s.agents.Get(id); err != nil {
-			log.Printf("kernel scheduler: unregistering executor %q — agent no longer in fabric (killed or retired)", id)
+			log.Info("kernel scheduler: unregistering executor — agent no longer in fabric (killed or retired)", "executor", id)
 			s.UnregisterExecutor(id)
 		}
 	}
@@ -1037,7 +1036,7 @@ func quantumRetries(err error) int {
 func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err error, latency time.Duration, retries int) {
 	if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
 		s.tracker.EndNeutral(winner)
-		log.Printf("kernel scheduler: quantum for task %q ended by preemption fencing (benign); outcome not attributed", taskID)
+		log.Debug("kernel scheduler: quantum ended by preemption fencing (benign); outcome not attributed", "task_id", taskID)
 		return
 	}
 	s.tracker.End(winner, err == nil)
@@ -1071,7 +1070,7 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	}
 	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
 	if err != nil {
-		log.Printf("kernel scheduler: toModelTask decode checkpoint for task %q: %v", tk.ID, err)
+		log.Warn("kernel scheduler: toModelTask decode checkpoint failed", "task_id", tk.ID, "error", err)
 		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}
 		return t
 	}

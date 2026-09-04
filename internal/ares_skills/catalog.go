@@ -3,7 +3,6 @@ package ares_skills
 import (
 	"context"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -322,7 +321,7 @@ func (c *Catalog) Refresh() (IndexChange, error) {
 	if err := c.SyncGitSources(syncCtx); err != nil {
 		// Degrade: index the local checkouts as they are; a git failure is
 		// never fatal to a refresh triggered by an MCP listChanged.
-		log.Printf("skill catalog: refresh git sync failed (indexing local checkouts): %v", err)
+		log.Warn("skill catalog: refresh git sync failed (indexing local checkouts)", "error", err)
 	}
 
 	c.mu.Lock()

@@ -585,3 +585,139 @@ func (q *EmbeddingQueue) reconcileTable(
 
 	return nil
 }
+
+// PurgeDeadLetters removes dead-letter entries older than the given age.
+//
+// Dead letters accumulate forever without this: MarkFailed moves exhausted tasks
+// into embedding_dead_letter, and Reconcile skips rows that are already there.
+// Without periodic purging, the table grows unbounded and the NOT EXISTS probes
+// in Reconcile scan an ever-larger set on every tick.
+//
+// Entries are deleted by created_at age (the timestamp copied from queued_at at
+// dead-letter time), so an entry is eligible for purging only after it has been
+// dead for at least `age`. This gives operators a window to inspect or requeue
+// before automatic cleanup.
+//
+// Args:
+//   - ctx: database operation context.
+//   - age: minimum age of dead-letter entries to purge. Must be positive.
+//
+// Returns the number of purged rows, or an error if the operation fails.
+func (q *EmbeddingQueue) PurgeDeadLetters(ctx context.Context, age time.Duration) (int64, error) {
+	if age <= 0 {
+		return 0, fmt.Errorf("age must be positive: %w", errors.ErrInvalidArgument)
+	}
+
+	result, err := q.db.Exec(ctx, `
+		DELETE FROM embedding_dead_letter
+		WHERE created_at < NOW() - ($1 * INTERVAL '1 microsecond')
+	`, age.Microseconds())
+	if err != nil {
+		return 0, errors.Wrap(err, "purge dead letters")
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, errors.Wrap(err, "check purged rows")
+	}
+
+	return rows, nil
+}
+
+// RequeueDeadLetter re-enqueues a single dead-letter task back into the queue.
+//
+// This is the manual recovery path for content that was given up on after
+// MaxRetries failures. The operator inspects the dead-letter entry, fixes the
+// root cause (e.g. transient model outage, content too long), and requeues it.
+//
+// The dead-letter entry is deleted atomically with the enqueue so a crash between
+// the two operations cannot create a duplicate or lose the task. The re-enqueued
+// task starts with a fresh retry_count of 0.
+//
+// Args:
+//   - ctx: database operation context.
+//   - taskID: the task identifier (matches the source row id).
+//   - table: the source table name.
+//
+// Returns ErrDeadLetterNotFound if no dead-letter entry matches, or another error
+// if the operation fails.
+var ErrDeadLetterNotFound = stderrors.New("dead letter entry not found")
+
+func (q *EmbeddingQueue) RequeueDeadLetter(ctx context.Context, taskID, table string) error {
+	tx, err := q.db.Begin(ctx)
+	if err != nil {
+		return errors.Wrap(err, "begin requeue transaction")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				log.Error("Failed to rollback requeue transaction", "error", rbErr)
+			}
+		}
+	}()
+
+	// Load the dead-letter entry within the same transaction so the subsequent
+	// delete + enqueue is atomic with the read.
+	var (
+		content  string
+		tenantID string
+		model    string
+		version  int
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT content, tenant_id, embedding_model, embedding_version
+		FROM embedding_dead_letter
+		WHERE task_id = $1 AND table_name = $2
+		FOR UPDATE
+	`, taskID, table).Scan(&content, &tenantID, &model, &version)
+
+	if err == sql.ErrNoRows {
+		return errors.Wrap(ErrDeadLetterNotFound, "requeue dead letter")
+	}
+	if err != nil {
+		return errors.Wrap(err, "load dead letter entry")
+	}
+
+	// Build the dedupe key exactly like Enqueue so the requeued task deduplicates
+	// correctly against any entry that may have been created by a concurrent
+	// producer or Reconcile pass.
+	dedupeKey := q.generateDedupeKey(&EmbeddingTask{
+		TaskID:   taskID,
+		Table:    table,
+		Content:  content,
+		TenantID: tenantID,
+		Model:    model,
+		Version:  version,
+	})
+
+	// Enqueue with the same revive-on-completed logic as a normal Enqueue. If a
+	// fresh queue entry was created by someone else in the meantime (e.g.
+	// Reconcile ran), the ON CONFLICT branch revives it instead of creating a
+	// duplicate.
+	result, err := tx.ExecContext(ctx, enqueueSQL,
+		taskID, table, content, tenantID, model, version, dedupeKey)
+	if err != nil {
+		return errors.Wrap(err, "enqueue requeued task")
+	}
+	// RowsAffected == 0 means a pending/processing entry already exists —
+	// the task is already being handled. Still remove the dead-letter entry
+	// below so it doesn't interfere with future Reconcile NOT EXISTS probes.
+	_, _ = result.RowsAffected()
+
+	// Delete the dead-letter entry within the same transaction.
+	_, err = tx.ExecContext(ctx, `
+		DELETE FROM embedding_dead_letter
+		WHERE task_id = $1 AND table_name = $2
+	`, taskID, table)
+	if err != nil {
+		return errors.Wrap(err, "delete dead letter entry")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return errors.Wrap(err, "commit requeue transaction")
+	}
+	committed = true
+
+	return nil
+}

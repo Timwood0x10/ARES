@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	stdlog "log"
 	"os"
 	"strings"
 	"sync"
@@ -55,7 +55,7 @@ func (s *failingEventStore) StreamVersion(ctx context.Context, streamID string) 
 
 // logCapture is the global log capture buffer. It must be set before a test
 // that wants to assert on log output and cleared after. This avoids per-test
-// log.SetOutput complexity (the fabric's record method calls log.Printf
+// log.SetOutput complexity (the fabric's record method calls log.Error
 // directly, which writes to the default logger).
 var (
 	logCaptureMu sync.Mutex
@@ -66,14 +66,14 @@ func startLogCapture() *strings.Builder {
 	logCaptureMu.Lock()
 	defer logCaptureMu.Unlock()
 	logCapture = &strings.Builder{}
-	log.SetOutput(logCapture)
+	stdlog.SetOutput(logCapture)
 	return logCapture
 }
 
 func stopLogCapture() {
 	logCaptureMu.Lock()
 	defer logCaptureMu.Unlock()
-	log.SetOutput(os.Stderr)
+	stdlog.SetOutput(os.Stderr)
 	logCapture = nil
 }
 

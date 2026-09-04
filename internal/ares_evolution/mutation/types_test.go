@@ -1,7 +1,9 @@
 package mutation
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestMutationTypeString(t *testing.T) {
@@ -69,5 +71,102 @@ func TestMutationRootRoundTrip(t *testing.T) {
 
 	if got := ParseMutationType(MutationRoot.String()); got != MutationRoot {
 		t.Errorf("ParseMutationType(MutationRoot.String()) = %d, want %d", got, MutationRoot)
+	}
+}
+
+// TestComputeEvidenceKey_IncludesToolsField verifies Y.3-ACT: the tool
+// whitelist in Params["tools"] is included in the evidence key so two
+// strategies that differ only in tool selection land on different keys.
+func TestComputeEvidenceKey_IncludesToolsField(t *testing.T) {
+	t.Parallel()
+
+	base := Strategy{
+		ID:             "test-evidence-tools",
+		Version:        1,
+		PromptTemplate: "default prompt",
+		Params:         map[string]any{"temperature": 0.5},
+		CreatedAt:      time.Now(),
+	}
+
+	stratA := base.Clone()
+	stratA.Params["tools"] = "web_search,calculator"
+
+	stratB := base.Clone()
+	stratB.Params["tools"] = "web_search,code_exec"
+
+	keyA := stratA.ComputeEvidenceKey()
+	keyB := stratB.ComputeEvidenceKey()
+
+	if keyA == keyB {
+		t.Errorf("strategies with different tool whitelists must have different evidence keys: both got %q", keyA)
+	}
+}
+
+// TestComputeEvidenceKey_ToolOrderIndependent verifies that the tool field
+// in the evidence key is order-independent: "b,a" and "a, b" produce the same
+// key because the set of tools is what matters, not the order.
+func TestComputeEvidenceKey_ToolOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	base := Strategy{
+		ID:             "test-evidence-order",
+		Version:        1,
+		PromptTemplate: "default prompt",
+		Params:         map[string]any{"temperature": 0.5},
+		CreatedAt:      time.Now(),
+	}
+
+	stratA := base.Clone()
+	stratA.Params["tools"] = "web_search,calculator"
+
+	stratB := base.Clone()
+	stratB.Params["tools"] = "calculator, web_search"
+
+	keyA := stratA.ComputeEvidenceKey()
+	keyB := stratB.ComputeEvidenceKey()
+
+	if keyA != keyB {
+		t.Errorf("evidence key must be order-independent for tools: got %q and %q", keyA, keyB)
+	}
+}
+
+// TestComputeEvidenceKey_NoToolsField verifies that strategies without a
+// tools field produce a key without the tools suffix.
+func TestComputeEvidenceKey_NoToolsField(t *testing.T) {
+	t.Parallel()
+
+	s := Strategy{
+		ID:             "test-evidence-no-tools",
+		Version:        1,
+		PromptTemplate: "default prompt",
+		Params:         map[string]any{"temperature": 0.5},
+		CreatedAt:      time.Now(),
+	}
+
+	key := s.ComputeEvidenceKey()
+
+	// Key should not contain "|tools="
+	if strings.Contains(key, "|tools=") {
+		t.Errorf("evidence key should not contain tools suffix when no tools field: got %q", key)
+	}
+}
+
+// TestComputeEvidenceKey_EmptyToolsField verifies that an empty tools string
+// does not add the tools suffix to the evidence key.
+func TestComputeEvidenceKey_EmptyToolsField(t *testing.T) {
+	t.Parallel()
+
+	s := Strategy{
+		ID:             "test-evidence-empty-tools",
+		Version:        1,
+		PromptTemplate: "default prompt",
+		Params:         map[string]any{"temperature": 0.5, "tools": ""},
+		CreatedAt:      time.Now(),
+	}
+
+	key := s.ComputeEvidenceKey()
+
+	if strings.Contains(key, "|tools=") {
+		t.Errorf("evidence key should not contain tools suffix for empty tools: got %q", key)
 	}
 }

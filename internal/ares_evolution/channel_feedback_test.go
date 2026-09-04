@@ -3,6 +3,7 @@ package evolution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -221,6 +222,38 @@ func TestChannelFeedback_UnobservedOutcomeIsNotEvidence(t *testing.T) {
 	}
 	if rec.Dropped() != 0 {
 		t.Errorf("dropped = %d, want 0 — an unobserved attempt is not a lost measurement", rec.Dropped())
+	}
+}
+
+// appendFailStore is a test double whose Append always fails, so a test can
+// verify that a refused store write is counted as a drop (Dropped() must be a
+// faithful lower bound on lost evidence, including samples the store turned
+// away). Query/Aggregate delegate to the embedded MemoryStore.
+type appendFailStore struct {
+	evidence.Store
+}
+
+func (s *appendFailStore) Append(_ context.Context, _ evidence.Evidence) error {
+	return errors.New("injected append failure")
+}
+
+// TestChannelFeedback_AppendFailureCountsAsDrop locks that a sample the store
+// refuses to persist is scored as lost evidence: the drain must count it
+// rather than silently swallow it, or Dropped() would under-report how much
+// fitness feedback never reached the judgment path.
+func TestChannelFeedback_AppendFailureCountsAsDrop(t *testing.T) {
+	store := &appendFailStore{Store: evidence.NewMemoryStore()}
+	rec, err := NewChannelFeedbackRecorder(store, func() string { return "strategy-A" },
+		ChannelFeedbackChannels{ToolCalls: true})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	rec.Start(context.Background())
+	rec.OnToolCall(feedback.ToolCallOutcome{Tool: "web_search", Outcome: feedback.OutcomeSuccess})
+	rec.Stop()
+
+	if rec.Dropped() != 1 {
+		t.Errorf("dropped = %d, want 1 (a store-refused sample is a lost one)", rec.Dropped())
 	}
 }
 

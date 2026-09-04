@@ -302,6 +302,23 @@ func (c *chatCognition) decodeChatStepState(task *models.Task) (*chatStepState, 
 // Contract: the caller has verified st.Round < st.MaxRounds.
 func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*models.RecommendItem, bool, error) {
 	schemas := c.toolBinder.GetToolSchemas()
+
+	// Y.3-ACT: filter the tool schemas by the active strategy's whitelist
+	// (Params["tools"]) before converting them to LLM tools. An empty or
+	// missing whitelist means "all tools" (zero-value usable). Filtering at
+	// the schema layer — not at CallTool time — ensures the LLM never sees a
+	// tool it should not call, avoiding wasted rounds and not_found pollution.
+	whitelist := agents.ToolWhitelistFromParams(st.Params)
+	if whitelist != nil {
+		filtered := make([]resources.ToolSchema, 0, len(schemas))
+		for _, s := range schemas {
+			if whitelist[s.Name] {
+				filtered = append(filtered, s)
+			}
+		}
+		schemas = filtered
+	}
+
 	llmTools := make([]core.Tool, 0, len(schemas))
 	for _, s := range schemas {
 		llmTools = append(llmTools, resources.ToolSchemaToLLMTool(s))

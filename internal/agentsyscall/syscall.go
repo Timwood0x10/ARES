@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 
@@ -252,11 +251,11 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	if executor != nil && k.register != nil {
 		k.register(agent.Identity, executor)
 		registered = true
-		log.Printf("agentsyscall: spawned agent %q (%s) registered as executor", agent.Identity, args.Capability)
+		log.Info("agentsyscall: spawned agent registered as executor", "agent", agent.Identity, "capability", args.Capability)
 	}
 
 	if !registered {
-		log.Printf("agentsyscall: spawned agent %q (%s) not registered (no factory)", agent.Identity, args.Capability)
+		log.Warn("agentsyscall: spawned agent not registered (no factory)", "agent", agent.Identity, "capability", args.Capability)
 	}
 
 	return &SpawnAgentResult{
@@ -322,7 +321,7 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		return nil, fmt.Errorf("agentsyscall: create task failed: %w", err)
 	}
 
-	log.Printf("agentsyscall: created task %q (%s) → READY", taskID, args.Capability)
+	log.Info("agentsyscall: created task → READY", "task_id", taskID, "capability", args.Capability)
 
 	return &CreateTaskResult{
 		TaskID: taskID,

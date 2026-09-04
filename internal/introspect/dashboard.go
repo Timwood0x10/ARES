@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -152,7 +151,7 @@ func NewDashboard(ctx context.Context, cfg DashboardConfig) (*Dashboard, error) 
 	// Spawn the peer population (real LLM when available, demo otherwise).
 	for _, spec := range cfg.Agents {
 		if _, err := d.spawnAgent(ctx, spec, llmAdapter, chatClient, toolBinder); err != nil {
-			log.Printf("dashboard: spawn %s: %v", spec.ID, err)
+			log.Error("dashboard: spawn agent failed", "agent_id", spec.ID, "error", err)
 			continue
 		}
 		d.peerIDs = append(d.peerIDs, spec.ID)
@@ -234,7 +233,7 @@ func buildFailoverClient(cfg *ares_config.Config) sub.ChatClient {
 	}
 	client, err := llm.NewFailoverClient(configs, timeout, cfg.LLM.ScorerAPIRate, cfg.LLM.ScorerAPIBurst)
 	if err != nil {
-		log.Printf("dashboard: failover client: %v", err)
+		log.Error("dashboard: failover client init failed", "error", err)
 		return nil
 	}
 	return client
@@ -251,7 +250,7 @@ func (d *Dashboard) spawnAgent(ctx context.Context, spec AgentSpec, llmAdapter o
 	}); err != nil {
 		// B6: duplicate agent ID registration must not be silently
 		// swallowed; log and skip so the caller can handle the conflict.
-		log.Printf("introspect: bus register failed, skipping agent %s: %v", agentID, err)
+		log.Error("introspect: bus register failed, skipping agent", "agent_id", agentID, "error", err)
 		return nil, fmt.Errorf("register agent %s on bus: %w", agentID, err)
 	}
 
@@ -301,7 +300,7 @@ func (d *Dashboard) Run(ctx context.Context) error {
 	go d.runShadowVerification(ctx)
 	go func() {
 		if err := d.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("dashboard: http: %v", err)
+			log.Error("dashboard: http server error", "error", err)
 		}
 	}()
 
@@ -329,7 +328,7 @@ func (d *Dashboard) runCollector(ctx context.Context) {
 
 func (d *Dashboard) runSink(ctx context.Context) {
 	if err := d.sink.Run(ctx, d.store); err != nil {
-		log.Printf("dashboard: sink: %v", err)
+		log.Error("dashboard: sink run failed", "error", err)
 	}
 }
 
@@ -412,7 +411,7 @@ func (d *Dashboard) Submit(capability, input string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("submit: %w", err)
 	}
-	log.Printf("dashboard: submitted %s (%s) → %s", taskID, capability, input)
+	log.Info("dashboard: submitted task", "task_id", taskID, "capability", capability, "input", input)
 	return taskID, nil
 }
 

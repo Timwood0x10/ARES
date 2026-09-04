@@ -1,8 +1,6 @@
 package kernelscheduler
 
 import (
-	"log"
-
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -22,7 +20,7 @@ func (s *Scheduler) RegisterExecutor(agentID string, executor CapabilityExecutor
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
 	s.executors[agentID] = executor
-	log.Printf("kernel scheduler: registered replacement executor %q", agentID)
+	log.Info("kernel scheduler: registered replacement executor", "executor", agentID)
 }
 
 // RegisterExecutorIfAbsent atomically registers executor under agentID only
@@ -52,7 +50,7 @@ func (s *Scheduler) RegisterExecutorIfAbsent(agentID string, executor Capability
 		return existing, false
 	}
 	s.executors[agentID] = executor
-	log.Printf("kernel scheduler: registered executor %q (if-absent)", agentID)
+	log.Info("kernel scheduler: registered executor (if-absent)", "executor", agentID)
 	return executor, true
 }
 
@@ -75,7 +73,7 @@ func (s *Scheduler) RegisterExecutorForTask(taskID, agentID string, executor Cap
 	defer s.execMu.Unlock()
 	s.executors[agentID] = executor
 	s.boundExecutors[taskID] = agentID
-	log.Printf("kernel scheduler: registered recovery executor %q bound to task %q", agentID, taskID)
+	log.Info("kernel scheduler: registered recovery executor bound to task", "executor", agentID, "task_id", taskID)
 }
 
 // boundFor returns the executor id bound to taskID, if any. Safe for
