@@ -2,6 +2,7 @@ package sub
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,10 +20,12 @@ import (
 // where an agentic tool loop never converges.
 type loopChatClient struct {
 	calls int
+	tools []core.Tool
 }
 
 func (c *loopChatClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
 	c.calls++
+	c.tools = append([]core.Tool(nil), tools...)
 	return &core.GenerateResponse{
 		Content: "",
 		ToolCalls: []core.ToolCall{
@@ -124,4 +127,52 @@ func TestExecuteWithChatAndToolsToolLoopStillFailsWithoutAdapter(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no text-only adapter")
 	assert.GreaterOrEqual(t, loop.calls, 2)
+}
+
+// finalChatClient is a ChatClient stub that records the tool list it was
+// offered and returns a final text answer on the first call (no tool calls).
+type finalChatClient struct {
+	tools []core.Tool
+}
+
+func (c *finalChatClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
+	c.tools = append([]core.Tool(nil), tools...)
+	return &core.GenerateResponse{
+		Content: `[{"item_id":"i1","category":"general","name":"Result","description":"answer"}]`,
+	}, nil
+}
+
+// TestToolWhitelistZeroIntersectionFallsBackToFullSet locks the empty-tool-list
+// guard: a strategy whitelist that matches NO registered tool must not leave the
+// LLM with an empty tool list. Before the guard, Params["tools"] naming a tool
+// that does not exist filtered every schema out and the executor still entered
+// Chat — the model saw zero tools (a functional dead-end).
+func TestToolWhitelistZeroIntersectionFallsBackToFullSet(t *testing.T) {
+	client := &finalChatClient{}
+	e := &taskExecutor{
+		chatClient:    client,
+		toolBinder:    &stubToolBinder{}, // registers only "web_search"
+		maxToolRounds: 2,
+		template:      output.NewTemplateEngine(),
+		promptTpl:     ares_config.DefaultRecommendationPrompt,
+		maxRetries:    1,
+		logger:        slog.Default(),
+	}
+	// A whitelist with zero intersection: "nonexistent" is not a registered tool.
+	params := map[string]any{"tools": "nonexistent"}
+
+	items, err := e.executeWithChatAndTools(t.Context(), "do something", params)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	// The LLM must still be offered the registered tool (guard fell back to full
+	// set instead of an empty list).
+	require.NotEmpty(t, client.tools, "LLM must not receive an empty tool list after a zero-intersection whitelist")
+	found := false
+	for _, tl := range client.tools {
+		if tl.Function.Name == "web_search" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "web_search should be offered after whitelist fallback")
 }

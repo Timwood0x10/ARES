@@ -151,6 +151,109 @@ func TestComputeEvidenceKey_NoToolsField(t *testing.T) {
 	}
 }
 
+// TestClone_DoesNotInheritHashCache is the regression guard for the fitness
+// bug: Clone() is the first step of every mutation path, so a clone that
+// carried its parent's cached hash would be hash-identical to the parent even
+// after its Params were mutated. StrategyHash's cache fast path would return
+// the parent hash, the score cache would hit the parent's entry, and the child
+// would be scored with its parent's fitness — selection pressure silently
+// zeroed. The clone must therefore start with a cold hash.
+func TestClone_DoesNotInheritHashCache(t *testing.T) {
+	t.Parallel()
+
+	parent := &Strategy{
+		ID:             "parent",
+		Version:        1,
+		PromptTemplate: "prompt",
+		Params:         map[string]any{"temperature": 0.5},
+		CreatedAt:      time.Now(),
+	}
+	parent.SetHash(0xDEADBEEF)
+	if !parent.HashCached() {
+		t.Fatal("precondition: parent must have a cached hash")
+	}
+
+	child := parent.Clone()
+	if child.HashCached() {
+		t.Error("Clone() must not inherit the parent's cached hash: a mutated child would otherwise resolve to the parent's hash and inherit its cached score")
+	}
+	if child.HashValue() == parent.HashValue() && child.HashValue() != 0 {
+		t.Errorf("clone hash value = %#x, want zero value", child.HashValue())
+	}
+
+	// The parent's own cache must survive Clone (it is still valid for the
+	// parent, which was not mutated).
+	if !parent.HashCached() || parent.HashValue() != 0xDEADBEEF {
+		t.Error("Clone() must not disturb the receiver's own hash cache")
+	}
+}
+
+// TestComputeEvidenceKey_IncludesIntegerParams verifies that integer-valued
+// params reach the evidence key. DefaultParamRanges stores untyped int
+// literals for top_k / max_steps / memory_limit, so a float64-only type
+// assertion dropped those dimensions entirely and let two strategies differing
+// only in top_k collapse onto one key — merging their evidence.
+func TestComputeEvidenceKey_IncludesIntegerParams(t *testing.T) {
+	t.Parallel()
+
+	base := Strategy{
+		ID:             "test-evidence-int",
+		Version:        1,
+		PromptTemplate: "default prompt",
+		Params:         map[string]any{"temperature": 0.5},
+		CreatedAt:      time.Now(),
+	}
+
+	stratA := base.Clone()
+	stratA.Params["top_k"] = 20 // int, as DefaultParamRanges yields
+
+	stratB := base.Clone()
+	stratB.Params["top_k"] = 80
+
+	keyA := stratA.ComputeEvidenceKey()
+	keyB := stratB.ComputeEvidenceKey()
+
+	if keyA == keyB {
+		t.Errorf("strategies differing in an integer param must have different evidence keys: both got %q", keyA)
+	}
+	if !strings.Contains(keyA, "top_k=20.00") {
+		t.Errorf("evidence key must include the integer param: got %q", keyA)
+	}
+
+	// An int and its float64 equivalent describe the same phenotype (JSON
+	// round-trips turn ints into float64s), so they must agree on the key —
+	// otherwise a strategy would lose its evidence merely by being reloaded
+	// from the store.
+	stratC := base.Clone()
+	stratC.Params["top_k"] = float64(20)
+	if got := stratC.ComputeEvidenceKey(); got != keyA {
+		t.Errorf("int and float64 forms of the same value must agree: %q vs %q", got, keyA)
+	}
+}
+
+// TestComputeEvidenceKey_SkipsNonNumericParams verifies that non-numeric
+// params (other than the dedicated tools field) stay out of the numeric
+// section of the key rather than being formatted as zero.
+func TestComputeEvidenceKey_SkipsNonNumericParams(t *testing.T) {
+	t.Parallel()
+
+	s := Strategy{
+		ID:             "test-evidence-nonnumeric",
+		Version:        1,
+		PromptTemplate: "p",
+		Params:         map[string]any{"model": "gpt-4", "verbose": true, "temperature": 0.5},
+		CreatedAt:      time.Now(),
+	}
+
+	key := s.ComputeEvidenceKey()
+	if strings.Contains(key, "model=") || strings.Contains(key, "verbose=") {
+		t.Errorf("non-numeric params must not appear in the numeric section: got %q", key)
+	}
+	if !strings.Contains(key, "temperature=0.50") {
+		t.Errorf("numeric param missing from key: got %q", key)
+	}
+}
+
 // TestComputeEvidenceKey_EmptyToolsField verifies that an empty tools string
 // does not add the tools suffix to the evidence key.
 func TestComputeEvidenceKey_EmptyToolsField(t *testing.T) {

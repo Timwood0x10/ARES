@@ -290,6 +290,19 @@ func setupPeerRegistry(
 			bridge.ipc.Bus().WithCollaborationObserver(rec)
 			log.Printf("serve: collaboration feedback channel armed (evolution reads collaboration receipts)")
 		}
+		// Step Y.2-ACT: wire ask_agent to ipc.Send. The syscall Kernel is built
+		// in peer_mode before the bridge exists, so the collaboration primitive
+		// is injected here once the bridge is ready. Reusing ipc.Send means the
+		// ask_agent attempt lands in the SAME "collaboration" feedback source as
+		// bridge-routed collaboration — no new observation point (code_rules:
+		// reuse existing components unless none exists).
+		if kernel != nil && kernel.syscalls != nil {
+			ipc := bridge.ipc
+			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+				return ipc.Send(ctx, from, to, topic, payload)
+			})
+			log.Printf("serve: ask_agent syscall wired to evolution-aware IPC (%d collaboration path)", len(reg.IDs()))
+		}
 		log.Printf("peer registry wired through evolution-aware IPC: %d agents registered", len(reg.IDs()))
 	default:
 		reg = buildPeerRegistry(subAgents)

@@ -147,9 +147,70 @@ func HintFromRankedExperience(ranked *aresExperience.RankedExperience) Evolution
 	}
 }
 
-// extractToolNames performs simple heuristic extraction of tool names from a
-// solution string. It looks for known tool patterns like "search", "read",
-// "write", "exec", "calculate". Returns nil when no tools are detected.
+// registeredToolAliases maps free-text keywords that appear in experience
+// prose to the tool names ACTUALLY registered in the runtime registry
+// (the first argument of NewBaseTool* in internal/tools/resources/builtin).
+//
+// Why this table exists: the previous vocabulary was
+// {"search","read","write","exec","calculate","code","web"} — bare verbs with
+// ZERO intersection with the registered names (web_search / calculator /
+// json_tools / file_tools / ...). Since guidedMutateTool writes the extracted
+// names straight into Params["tools"], every guided tool mutation produced a
+// whitelist that matched no registered tool; the executors then filtered every
+// schema out and handed the model an empty tool list. (The executors now guard
+// against the empty case by falling back to the full set, but that guard makes
+// the mutation a silent no-op — the whitelist still has to name real tools for
+// the tool dimension to actually be evolvable.)
+//
+// Order matters: it defines the output order of extractToolNames, so the
+// entries are grouped per tool with the most specific keyword first. Values
+// MUST stay in sync with the builtin registration names.
+var registeredToolAliases = []struct {
+	keyword string
+	tool    string
+}{
+	{"web_search", "web_search"},
+	{"web search", "web_search"},
+	{"search", "web_search"},
+	{"file_tools", "file_tools"},
+	{"read", "file_tools"},
+	{"write", "file_tools"},
+	{"file", "file_tools"},
+	{"calculator", "calculator"},
+	{"calculate", "calculator"},
+	{"math", "calculator"},
+	{"code_runner", "code_runner"},
+	{"exec", "code_runner"},
+	{"python", "code_runner"},
+	{"code", "code_runner"},
+	{"json_tools", "json_tools"},
+	{"json", "json_tools"},
+	{"http_request", "http_request"},
+	{"http", "http_request"},
+	{"regex_tool", "regex_tool"},
+	{"regex", "regex_tool"},
+	{"web_scraper", "web_scraper"},
+	{"scrape", "web_scraper"},
+	{"memory_search", "memory_search"},
+	{"knowledge_search", "knowledge_search"},
+	{"log_analyzer", "log_analyzer"},
+	{"text_processor", "text_processor"},
+	{"data_validation", "data_validation"},
+	{"data_transform", "data_transform"},
+	{"task_planner", "task_planner"},
+	{"datetime", "datetime"},
+	{"pdf_tool", "pdf_tool"},
+	{"pdf", "pdf_tool"},
+	{"hash_tool", "hash_tool"},
+	{"string_utils", "string_utils"},
+	{"id_generator", "id_generator"},
+}
+
+// extractToolNames performs heuristic extraction of tool names from a solution
+// string, resolving free-text keywords to REGISTERED tool names via
+// registeredToolAliases. Results are deduplicated (several keywords may map to
+// the same tool) and deterministic (alias-table order). Returns nil when no
+// tool is detected.
 func extractToolNames(solution string) []string {
 	if solution == "" {
 		return nil
@@ -157,12 +218,17 @@ func extractToolNames(solution string) []string {
 
 	lower := strings.ToLower(solution)
 	var tools []string
-	knownTools := []string{"search", "read", "write", "exec", "calculate", "code", "web"}
+	seen := make(map[string]struct{}, 4)
 
-	for _, t := range knownTools {
-		if strings.Contains(lower, t) {
-			tools = append(tools, t)
+	for _, alias := range registeredToolAliases {
+		if _, dup := seen[alias.tool]; dup {
+			continue
 		}
+		if !strings.Contains(lower, alias.keyword) {
+			continue
+		}
+		seen[alias.tool] = struct{}{}
+		tools = append(tools, alias.tool)
 	}
 
 	return tools

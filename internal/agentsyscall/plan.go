@@ -351,7 +351,7 @@ func CreatePlanToolSchema() ToolSchema {
 								paramType:        paramTypeInteger,
 								paramDescription: "Total attempt budget. 0 = kernel default (first attempt + one retry).",
 							},
-							"payload": map[string]any{
+							paramPayload: map[string]any{
 								paramType:        paramTypeObject,
 								paramDescription: "Opaque step data (e.g. task_desc, parameters).",
 							},

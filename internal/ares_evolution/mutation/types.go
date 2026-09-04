@@ -164,9 +164,14 @@ func (s *Strategy) Clone() *Strategy {
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
 		GenerationCreated:    s.GenerationCreated,
-		hashCache:            s.hashCache,
-		hashCached:           s.hashCached,
 	}
+	// hashCache/hashCached are deliberately NOT copied. Clone() is the entry
+	// point of every mutation path (Mutator mutates the clone's Params or
+	// PromptTemplate afterwards), so an inherited hash would make the child
+	// hash-identical to its parent, hit the parent's ScoreCache entry, and
+	// return the parent's score as the child's fitness — silently zeroing
+	// selection pressure. Leaving the cache cold costs one fnv pass and is
+	// fail-safe: a stale hash is unrecoverable, a missing one is just slower.
 	if s.DimensionScores != nil {
 		clone.DimensionScores = make(map[string]float64, len(s.DimensionScores))
 		for k, v := range s.DimensionScores {
@@ -218,7 +223,7 @@ func (s *Strategy) ComputeEvidenceKey() string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		v, ok := s.Params[k].(float64)
+		v, ok := numericParam(s.Params[k])
 		if !ok {
 			continue
 		}
@@ -243,6 +248,44 @@ func (s *Strategy) ComputeEvidenceKey() string {
 
 	s.EvidenceKey = evidenceKey
 	return evidenceKey
+}
+
+// numericParam normalizes a param value to float64 for evidence-key purposes.
+// Params are populated from DefaultParamRanges (which stores untyped int
+// literals for top_k / max_steps / memory_limit) and from JSON round-trips
+// (which yield float64), so a bare float64 type assertion would silently drop
+// every integer dimension and let strategies differing only in top_k collapse
+// onto the same EvidenceKey — merging their evidence. Returns false for
+// non-numeric values (strings, bools, slices), which stay out of the key.
+func numericParam(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
 
 // normalizeToolKey splits a comma-separated tool string into individual names,

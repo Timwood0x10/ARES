@@ -360,7 +360,11 @@ func createPeerAgents(
 		agentsyscall.WithLoopLifetime(ctx),
 	)
 	agentsyscall.BindTools(toolBinder, kernelSyscall)
-	log.Printf("peer mode: spawn_agent / create_task syscalls wired into tool binder")
+	// Retain the syscall Kernel on the kernel handle so the collaboration IPC
+	// bridge (built later in setupPeerRegistry) can inject ipc.Send into
+	// ask_agent (Step Y.2-ACT).
+	kernel.syscalls = kernelSyscall
+	log.Printf("peer mode: spawn_agent / create_task / ask_agent syscalls wired into tool binder")
 
 	// Inject agent priorities into the tracker (B2: thread priority).
 	for _, p := range peers {

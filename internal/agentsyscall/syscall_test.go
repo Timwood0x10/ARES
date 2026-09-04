@@ -356,11 +356,12 @@ func TestSpawnedAgentIDsAreUnique(t *testing.T) {
 	}
 }
 
-// TestToolSchemasReturnsBoth verifies ToolSchemas returns both tool schemas.
+// TestToolSchemasReturnsBoth verifies ToolSchemas returns all the peer
+// syscall schemas (spawn_agent, create_task, ask_agent, create_plan).
 func TestToolSchemasReturnsBoth(t *testing.T) {
 	schemas := ToolSchemas()
-	if len(schemas) != 3 { // spawn_agent, create_task, create_plan (W9)
-		t.Fatalf("expected 2 schemas, got %d", len(schemas))
+	if len(schemas) != 4 { // spawn_agent, create_task, ask_agent, create_plan
+		t.Fatalf("expected 4 schemas, got %d", len(schemas))
 	}
 	names := make(map[string]bool)
 	for _, s := range schemas {
@@ -377,6 +378,90 @@ func TestToolSchemasReturnsBoth(t *testing.T) {
 	}
 	if !names[CreateTaskTool] {
 		t.Fatalf("missing %s schema", CreateTaskTool)
+	}
+	if !names[AskAgentTool] {
+		t.Fatalf("missing %s schema", AskAgentTool)
+	}
+}
+
+// TestAskAgent_NotWiredFailsLoud verifies that ask_agent without an injected
+// collaboration primitive (SetAskAgent/WithAskAgent) returns an error rather
+// than silently doing nothing — a nil primitive would make the tool a no-op
+// and leave the collaboration loop open.
+func TestAskAgent_NotWiredFailsLoud(t *testing.T) {
+	_, err := NewKernel(nil, nil, nil, nil).AskAgent(
+		kernelctx.WithCallerID(context.Background(), "agent-A"),
+		AskAgentArgs{To: "agent-B", Topic: "delegate-task"},
+	)
+	if err == nil {
+		t.Fatal("ask_agent must fail when no collaboration primitive is wired")
+	}
+}
+
+// TestAskAgent_EmptyTargetRejected verifies the Kernel enforces a non-empty
+// target even when the primitive is wired.
+func TestAskAgent_EmptyTargetRejected(t *testing.T) {
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+		return nil
+	}))
+	if _, err := kernel.AskAgent(kernelctx.WithCallerID(context.Background(), "agent-A"), AskAgentArgs{To: ""}); err == nil {
+		t.Fatal("ask_agent with empty target must be rejected")
+	}
+}
+
+// TestAskAgent_ForwardsToPrimitive verifies that ask_agent forwards the caller,
+// target, topic and payload to the injected primitive — the primitive call is
+// the observable event that a real collaboration receipt is written from.
+func TestAskAgent_ForwardsToPrimitive(t *testing.T) {
+	var gotFrom, gotTo, gotTopic string
+	var gotPayload map[string]any
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+		gotFrom, gotTo, gotTopic = from, to, topic
+		gotPayload = payload.(map[string]any)
+		return nil
+	}))
+
+	res, err := kernel.AskAgent(kernelctx.WithCallerID(context.Background(), "agent-A"), AskAgentArgs{
+		To:      "agent-B",
+		Topic:   "delegate-task",
+		Payload: map[string]any{"task_desc": "please review"},
+	})
+	if err != nil {
+		t.Fatalf("ask_agent: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatal("ask_agent should report accepted after a successful send")
+	}
+	if gotFrom != "agent-A" {
+		t.Errorf("from = %q, want the context caller agent-A", gotFrom)
+	}
+	if gotTo != "agent-B" || gotTopic != "delegate-task" {
+		t.Errorf("forwarded to=%q topic=%q, want agent-B / delegate-task", gotTo, gotTopic)
+	}
+	if gotPayload["task_desc"] != "please review" {
+		t.Errorf("payload not forwarded verbatim: %v", gotPayload)
+	}
+}
+
+// TestAskAgent_BoundToBinder verifies the ask_agent tool is registered on the
+// binder and decodes its args (to/topic/payload) correctly.
+func TestAskAgent_BoundToBinder(t *testing.T) {
+	binder := &stubBinder{}
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+		return nil
+	}))
+	BindTools(binder, kernel)
+
+	res, err := binder.call(
+		kernelctx.WithCallerID(context.Background(), "agent-A"),
+		AskAgentTool,
+		map[string]any{"to": "agent-B", "topic": "pipeline-stage", "payload": map[string]any{"x": 1}},
+	)
+	if err != nil {
+		t.Fatalf("call ask_agent: %v", err)
+	}
+	if ar, ok := res.(*AskAgentResult); !ok || !ar.Accepted {
+		t.Fatalf("ask_agent result = %#v, want accepted *AskAgentResult", res)
 	}
 }
 

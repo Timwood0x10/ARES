@@ -6,6 +6,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
+	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/introspect"
@@ -49,6 +50,11 @@ type kernelHandle struct {
 	// reachable for agent messaging / capability discovery instead of being
 	// discarded (N4: peer registry return value was dropped).
 	peerRegistry *peer.Registry
+	// syscalls is the agentsyscall.Kernel backing spawn_agent/create_task/
+	// ask_agent. Retained so the collaboration IPC bridge (built later in
+	// setupPeerRegistry) can inject ipc.Send into ask_agent (Step Y.2-ACT).
+	// Nil on partial paths without syscalls.
+	syscalls *agentsyscall.Kernel
 	// compileCoord is the C1 projection coordinator. It projects the live
 	// MutableDAG into taskfabric PlanSteps and records compile provenance
 	// for introspection. Nil when no live DAG is wired.

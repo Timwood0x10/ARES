@@ -316,6 +316,17 @@ func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*mod
 				filtered = append(filtered, s)
 			}
 		}
+		// Guard: a whitelist with ZERO intersection with the registered tools
+		// (e.g. a mutated Params["tools"] naming a tool that does not exist)
+		// must not leave the LLM with an empty tool list. Fall back to the full
+		// set rather than degrade to zero tools — an empty tool list is a
+		// functional dead-end, while ignoring a bad whitelist keeps the agent
+		// usable and is observable via the remainder=full behavior.
+		if len(filtered) == 0 {
+			c.logger.Warn("tool whitelist matched no registered tools; falling back to full set",
+				"whitelist", whitelist, "registered", len(schemas))
+			filtered = schemas
+		}
 		schemas = filtered
 	}
 

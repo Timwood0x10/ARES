@@ -20,6 +20,24 @@ const SpawnAgentTool = "spawn_agent"
 // CreateTaskTool is the tool name exposed to the LLM for creating sub-tasks.
 const CreateTaskTool = "create_task"
 
+// AskAgentTool is the tool name exposed to the LLM for asking a target agent a
+// question (Step Y.2-ACT). Unlike spawn_agent (create a new peer) and
+// create_task (decompose into the task fabric), ask_agent turns "which agent to
+// ask" into an agent-visible, changeable decision — the ACT half of the
+// collaboration channel. The Kernel forwards it to a collabatation IPC
+// primitive injected at serve time (ipc.Send), which lands in the existing
+// "collaboration" feedback source via the CollaborationObserver.
+const AskAgentTool = "ask_agent"
+
+// goconst: reuse the field keys across syscall schemas. The values originated
+// in the schema objects below; hoisting them keeps the ≥3-repetition rule of
+// code_rules_v2 §8.1 satisfied.
+const (
+	paramTopic   = "topic"
+	paramTo      = "to"
+	paramPayload = "payload"
+)
+
 // goconst: these strings appear ≥3 times in ToolSchemas,
 const (
 	paramType        = "type"
@@ -80,6 +98,17 @@ func cognitionFunc(executor Executor) agentfabric.Cognition {
 // method as kernelScheduler.RegisterExecutor.
 type RegisterExecutorFn func(agentID string, executor Executor)
 
+// AskAgentFn is the injected collaboration primitive behind the ask_agent tool.
+// It must send a cross-agent request to target on the given topic and deliver
+// the caller's payload. In production this is wired at serve time to
+// aresrecovery.EvolutionAwareIPC.Send, which routes through the agentipc Bus —
+// so the request lands in the existing "collaboration" feedback source via the
+// CollaborationObserver (Step Y.2), reusing the already-closed OBSERVE half.
+// Declared as a function (not an interface) so this package stays decoupled
+// from agentipc/aresrecovery; the function is set at the consumer (code_rules
+// §5.2).
+type AskAgentFn func(ctx context.Context, from, to, topic string, payload any) error
+
 // Kernel is the ensemble of fabric-level subsystems the syscalls operate on.
 // It is the "Kernel enforces" surface: the syscalls validate against the
 // agent fabric (quota/capability) and the task fabric (task creation).
@@ -88,6 +117,10 @@ type Kernel struct {
 	fabric   *taskfabric.Fabric
 	factory  ExecutorFactory
 	register RegisterExecutorFn
+	// askAgent is the collaboration primitive behind ask_agent (Step Y.2-ACT).
+	// nil means the tool is not wired and ask_agent fails loudly rather than
+	// pretend to collaborate.
+	askAgent AskAgentFn
 	// loopCtx is the lifetime context for plan loops started via the
 	// create_plan loop option. A syscall Kernel is a long-lived managed
 	// object (it backs every agent's tool binder for the whole serve
@@ -128,6 +161,23 @@ func WithMaxPlanLoops(n int) KernelOption {
 			k.maxPlanLoops = n
 		}
 	}
+}
+
+// WithAskAgent injects the collaboration primitive behind ask_agent (Step
+// Y.2-ACT). Passed as a func so the Kernel stays decoupled from
+// agentipc/aresrecovery. Without it, ask_agent fails loudly at call time
+// (code_rules: no silent no-op for a deliberately offered action).
+func WithAskAgent(fn AskAgentFn) KernelOption {
+	return func(k *Kernel) { k.askAgent = fn }
+}
+
+// SetAskAgent replaces the collaboration primitive at runtime. Used at serve
+// time to inject ipc.Send AFTER the Kernel is constructed but the IPC bridge
+// is only built later (setupPeerRegistry). Thread-safe for the one writer /
+// many tool-call readers pattern: askAgent is read on every tool call, and the
+// injection happens once during serve assembly before any task runs.
+func (k *Kernel) SetAskAgent(fn AskAgentFn) {
+	k.askAgent = fn
 }
 
 // NewKernel creates a syscall Kernel over the given fabrics. The factory and
@@ -329,6 +379,49 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 	}, nil
 }
 
+// AskAgentArgs carries the LLM-provided arguments for the ask_agent tool.
+// The LLM decides which agent to ask and on what topic; the Kernel validates
+// and forwards it to the injected collaboration primitive (ipc.Send in
+// production).
+type AskAgentArgs struct {
+	// To is the target agent ID. Required.
+	To string `json:"to"`
+	// Topic is the collaboration subject.
+	Topic string `json:"topic"`
+	// Payload is the question body (JSON-serializable).
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+// AskAgentResult is the return value of the ask_agent tool.
+type AskAgentResult struct {
+	// Accepted reports that the request was handed to the collaboration
+	// primitive (a fire-and-forget send — acceptance is not an answer).
+	Accepted bool `json:"accepted"`
+}
+
+// AskAgent is the Kernel syscall behind the ask_agent tool (Step Y.2-ACT).
+// It forwards a cross-agent request to the injected AskAgentFn, which in
+// production is ipc.Send — so the attempt produces a collaboration receipt
+// in the existing "collaboration" feedback source, attributed to the active
+// strategy. The Kernel enforces:
+//
+//   - a non-empty target is required;
+//   - the primitive MUST be wired (fail-loud); a nil primitive would make the
+//     tool a silent no-op, which is exactly the open-loop the plan removes.
+func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult, error) {
+	if a.To == "" {
+		return nil, errors.New("agentsyscall: ask_agent requires a target agent")
+	}
+	if k.askAgent == nil {
+		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
+	}
+	from := kernelctx.CallerID(ctx)
+	if err := k.askAgent(ctx, from, a.To, a.Topic, a.Payload); err != nil {
+		return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
+	}
+	return &AskAgentResult{Accepted: true}, nil
+}
+
 // BindTools registers the spawn_agent and create_task tools on the given
 // tool binder. The binder is the same sub.ToolBinder the production LLM
 // executor uses for all its tools, so the LLM sees spawn_agent alongside
@@ -370,7 +463,7 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 				}
 			}
 		}
-		if v, ok := args["payload"].(map[string]any); ok {
+		if v, ok := args[paramPayload].(map[string]any); ok {
 			ct.Payload = v
 		}
 		return kernel.CreateTask(ctx, ct)
@@ -378,6 +471,20 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 	// W9: the whole-DAG planning entry. See plan.go. JSON round-trip keeps
 	// the parse strict: type mismatches surface as errors instead of silently
 	// dropping fields (e.g. a string "3" for priority).
+	binder.BindTool(AskAgentTool, func(ctx context.Context, args map[string]any) (any, error) {
+		var aa AskAgentArgs
+		if v, ok := args[paramTo].(string); ok {
+			aa.To = v
+		}
+		if v, ok := args[paramTopic].(string); ok {
+			aa.Topic = v
+		}
+		if v, ok := args[paramPayload].(map[string]any); ok {
+			aa.Payload = v
+		}
+		return kernel.AskAgent(ctx, aa)
+	})
+
 	binder.BindTool(CreatePlanTool, func(ctx context.Context, args map[string]any) (any, error) {
 		raw, err := json.Marshal(args)
 		if err != nil {
@@ -443,12 +550,34 @@ func ToolSchemas() []ToolSchema {
 						paramItems:       map[string]any{paramType: paramTypeString},
 						paramDescription: "Prerequisite task IDs that must complete before this task runs.",
 					},
-					"payload": map[string]any{
+					paramPayload: map[string]any{
 						paramType:        paramTypeObject,
 						paramDescription: "Opaque task data (e.g. task_desc, parameters).",
 					},
 				},
 				paramRequired: []string{paramCapability},
+			},
+		},
+		{
+			Name:        AskAgentTool,
+			Description: "Ask a specific target agent a question on a topic. The request is delivered to the target's collaboration handler. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
+			Parameters: map[string]any{
+				paramType: paramTypeObject,
+				paramProperties: map[string]any{
+					paramTo: map[string]any{
+						paramType:        paramTypeString,
+						paramDescription: "The target agent ID to ask.",
+					},
+					paramTopic: map[string]any{
+						paramType:        paramTypeString,
+						paramDescription: "The collaboration subject (e.g. 'delegate-task').",
+					},
+					paramPayload: map[string]any{
+						paramType:        paramTypeObject,
+						paramDescription: "The question body (JSON-serializable).",
+					},
+				},
+				paramRequired: []string{paramTo},
 			},
 		},
 		CreatePlanToolSchema(),

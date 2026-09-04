@@ -210,8 +210,11 @@ func TestHintFromRankedExperience_EmptyExperience(t *testing.T) {
 	}
 }
 
-// TestExtractToolNames verifies that tool names are correctly extracted
-// from solution strings.
+// TestExtractToolNames verifies that free-text keywords resolve to the tool
+// names ACTUALLY registered in the runtime registry (web_search / file_tools /
+// calculator / ...), not to bare verbs. A bare-verb vocabulary had zero
+// intersection with the registry, so every guided tool mutation wrote a
+// whitelist that matched nothing.
 func TestExtractToolNames(t *testing.T) {
 	t.Parallel()
 
@@ -227,18 +230,28 @@ func TestExtractToolNames(t *testing.T) {
 		},
 		{
 			name:     "no known tools returns nil",
-			solution: "just a regular description without tool references",
+			solution: "just a regular description without any capability reference",
 			expected: nil,
 		},
 		{
-			name:     "multiple known tools detected",
+			name:     "keywords resolve to registered tool names",
 			solution: "use search API and read from database, then write results",
-			expected: []string{"search", "read", "write"},
+			expected: []string{"web_search", "file_tools"},
 		},
 		{
 			name:     "case insensitive matching",
 			solution: "SEARCH and Read and Write",
-			expected: []string{"search", "read", "write"},
+			expected: []string{"web_search", "file_tools"},
+		},
+		{
+			name:     "explicit registered names are preserved",
+			solution: "call calculator then json_tools",
+			expected: []string{"calculator", "json_tools"},
+		},
+		{
+			name:     "duplicate aliases for one tool are deduplicated",
+			solution: "web_search then search again",
+			expected: []string{"web_search"},
 		},
 	}
 
@@ -257,6 +270,33 @@ func TestExtractToolNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestExtractToolNames_AliasTargetsAreRegisteredNames locks the invariant that
+// makes the guided tool mutation meaningful: every alias must point at a
+// snake_case registered tool name, never at a bare verb. If someone adds a
+// keyword-only entry, the whitelist it produces would be filtered out by the
+// executors and the tool dimension would silently stop evolving.
+func TestExtractToolNames_AliasTargetsAreRegisteredNames(t *testing.T) {
+	t.Parallel()
+
+	// The registered builtin tool names (first argument of NewBaseTool* in
+	// internal/tools/resources/builtin).
+	registered := map[string]struct{}{
+		"calculator": {}, "datetime": {}, "text_processor": {},
+		"http_request": {}, "web_scraper": {}, "web_search": {},
+		"file_tools": {}, "json_tools": {}, "data_validation": {},
+		"data_transform": {}, "regex_tool": {}, "log_analyzer": {},
+		"id_generator": {}, "hash_tool": {}, "pdf_tool": {},
+		"string_utils": {}, "code_runner": {}, "task_planner": {},
+		"memory_search": {}, "knowledge_search": {},
+	}
+
+	for _, alias := range registeredToolAliases {
+		if _, ok := registered[alias.tool]; !ok {
+			t.Errorf("alias %q maps to %q which is not a registered tool name", alias.keyword, alias.tool)
+		}
 	}
 }
 
