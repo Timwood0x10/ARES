@@ -32,12 +32,12 @@ func defaultInt(v, def int) int {
 // evolution.{lifecycle,gates} YAML blocks (design doc §7). Zero-value YAML
 // fields fall back to DefaultLifecycleConfig so an absent YAML section
 // preserves the code defaults.
-func lifecycleConfigFromYAML(lc ares_config.EvolutionLifecycleConfig, gc ares_config.EvolutionGateConfig) *evolution.LifecycleConfig {
+func lifecycleConfigFromYAML(lc ares_config.EvolutionLifecycleConfig, gc ares_config.EvolutionGateConfig, cf ares_config.ChannelFeedbackConfig) *evolution.LifecycleConfig {
 	cfg := evolution.DefaultLifecycleConfig()
 	cfg.FitnessWindow = defaultInt(lc.FitnessWindow, cfg.FitnessWindow)
 	cfg.MinSamplesBeforeJudge = defaultInt(lc.MinSamplesBeforeJudge, cfg.MinSamplesBeforeJudge)
 	cfg.ColdStartScore = defaultFloat(lc.ColdStartScore, cfg.ColdStartScore)
-	cfg.Weights = lifecycleWeightsFromYAML(lc)
+	cfg.Weights = lifecycleWeightsFromYAML(lc, cf)
 	if lc.WatchInterval != "" {
 		if d, err := time.ParseDuration(lc.WatchInterval); err == nil && d > 0 {
 			cfg.WatchInterval = d
@@ -64,16 +64,34 @@ func lifecycleConfigFromYAML(lc ares_config.EvolutionLifecycleConfig, gc ares_co
 // used as-is (zero = excluded from the aggregate because the aggregator
 // normalizes by the weight sum at query time) — silently mixing partial
 // specs with defaults would produce a blend the operator did not specify.
-func lifecycleWeightsFromYAML(lc ares_config.EvolutionLifecycleConfig) evolution.FitnessWeights {
+//
+// The Step Y channel weights come from a DIFFERENT YAML block
+// (evolution.channel_feedback) and are applied on top either way: they are not
+// part of the "did the operator specify any weights" question, because a
+// channel weight without the channel's `enabled` switch records nothing to
+// weigh. Leaving them out of that test also means arming a channel cannot
+// accidentally zero out the five classic weights.
+func lifecycleWeightsFromYAML(lc ares_config.EvolutionLifecycleConfig, cf ares_config.ChannelFeedbackConfig) evolution.FitnessWeights {
+	var w evolution.FitnessWeights
 	if lc.OutcomeWeight == 0 && lc.DimensionEvalWeight == 0 && lc.WorkflowWeight == 0 &&
 		lc.SchedulerWeight == 0 && lc.RecoveryWeight == 0 {
-		return evolution.DefaultFitnessWeights()
+		w = evolution.DefaultFitnessWeights()
+	} else {
+		w = evolution.FitnessWeights{
+			Outcome:       lc.OutcomeWeight,
+			DimensionEval: lc.DimensionEvalWeight,
+			Workflow:      lc.WorkflowWeight,
+			Scheduler:     lc.SchedulerWeight,
+			Recovery:      lc.RecoveryWeight,
+		}
 	}
-	return evolution.FitnessWeights{
-		Outcome:       lc.OutcomeWeight,
-		DimensionEval: lc.DimensionEvalWeight,
-		Workflow:      lc.WorkflowWeight,
-		Scheduler:     lc.SchedulerWeight,
-		Recovery:      lc.RecoveryWeight,
+	// A weight only counts when its channel is actually recording: a weighted
+	// source with no producer would contribute nothing while looking configured.
+	if cf.CollabEnabled {
+		w.Collaboration = cf.CollabWeight
 	}
+	if cf.ToolEnabled {
+		w.ToolCall = cf.ToolWeight
+	}
+	return w
 }

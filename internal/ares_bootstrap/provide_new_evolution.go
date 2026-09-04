@@ -69,6 +69,14 @@ type NewEvolutionComponents struct {
 	// Nil when shadow evaluation is disabled.
 	ShadowEvaluator *evolution.ShadowEvaluator
 
+	// ChannelFeedback records the two perception channels that were previously
+	// invisible to evolution (closure plan Step Y.2/Y.3): cross-agent
+	// collaboration receipts and tool-call outcomes. The wiring layer attaches
+	// it to the IPC bus (agentipc.CollaborationObserver) and wraps the tool
+	// binder with it (sub.ToolCallObserver). Nil when
+	// evolution.channel_feedback arms neither channel — the default.
+	ChannelFeedback *evolution.ChannelFeedbackRecorder
+
 	// liveDAG holds the agent's live workflow DAG injected after bootstrap
 	// so the evolution system's executors operate on real runtime state
 	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents

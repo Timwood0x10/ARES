@@ -27,6 +27,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
 
 // peerTopic is the bus topic used for peer-channel messages routed through the
@@ -85,7 +86,11 @@ func wireEvolutionIPC(subAgents []sub.Agent, store evolution.StrategyStore, trac
 			capByAgent[sa.ID()] = string(sa.Type())
 		}
 	}
-	bus := agentipc.NewBus()
+	// WithLogger: a handler panic is contained at the goroutine boundary (P1-3)
+	// and surfaces as ErrHandlerPanic, but the bus never prints on its own
+	// (code_rules §9.1). Without a logger the containment would be invisible to
+	// operators — the caller sees a failed request and nothing explains why.
+	bus := agentipc.NewBus().WithLogger(logger.Module("agentipc"))
 	ipc := aresrecovery.NewEvolutionAwareIPC(bus, ares_bootstrap.NewIPCProtocolPolicySource(store))
 	reg := peer.NewRegistry()
 

@@ -37,9 +37,20 @@ type FitnessWeights struct {
 	Scheduler float64 `json:"scheduler"`
 	// Recovery is the weight for recovery-sourced fitness evidence.
 	Recovery float64 `json:"recovery"`
+	// Collaboration weights cross-agent collaboration receipts (Step Y.2:
+	// "should I have asked THAT agent?"). Default 0 — the channel is opt-in,
+	// so an operator who has not enabled collab feedback sees an unchanged
+	// aggregate even if stray evidence exists.
+	Collaboration float64 `json:"collaboration"`
+	// ToolCall weights tool-invocation outcomes (Step Y.3: "was calling THAT
+	// tool worth it?"). Default 0, same opt-in reasoning as Collaboration.
+	ToolCall float64 `json:"tool_call"`
 }
 
 // DefaultFitnessWeights returns sensible default weights summing to 1.0.
+// Collaboration and ToolCall are deliberately 0: those channels (Step Y.2/Y.3)
+// are opt-in, and giving them a non-zero default would silently redistribute
+// every existing deployment's fitness mix on upgrade.
 func DefaultFitnessWeights() FitnessWeights {
 	return FitnessWeights{
 		Outcome:       0.40,
@@ -156,11 +167,13 @@ type sourceStat struct {
 //     matching recentFitnessSummary's filter).
 //  3. Computes the weighted aggregate across sources.
 //
-// strategyID scoping AND the judging gate (review fix #4): only the
-// "strategy" source is scoped by the ID (its records carry a strategy_id
-// payload key written by RuntimeObserver). The workflow/scheduler/recovery
-// sources are runtime-global — they measure the system that runs the active
-// strategy, not a specific candidate — so they intentionally ignore the ID.
+// strategyID scoping AND the judging gate (review fix #4): the "strategy"
+// source is scoped by the ID (its records carry a strategy_id payload key
+// written by RuntimeObserver), and so are the two Step Y channels
+// ("collaboration" / "tool_call" — a receipt is earned by the strategy that
+// chose to ask/call). The workflow/scheduler/recovery sources are
+// runtime-global — they measure the system that runs the active strategy, not
+// a specific candidate — so they intentionally ignore the ID.
 //
 //   - When strategyID is NON-empty (the rollback-decision path), the
 //     "strategy" source must ITSELF hold ≥ MinSamplesBeforeJudge records for
@@ -201,11 +214,24 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string
 		name       string
 		weight     float64
 		strategyID string
+		// optIn marks a source that is INERT at weight 0: it is skipped
+		// entirely rather than merely contributing 0 to the weighted mean.
+		// This matters because a counted source also advances totalCount,
+		// which is the staging path's judging gate — a channel nobody opted
+		// into must not license a staging verdict.
+		optIn bool
 	}{
-		{"strategy", cfg.Weights.Outcome, strategyID},
-		{"workflow", cfg.Weights.Workflow, ""},
-		{"scheduler", cfg.Weights.Scheduler, ""},
-		{"recovery", cfg.Weights.Recovery, ""},
+		{name: "strategy", weight: cfg.Weights.Outcome, strategyID: strategyID},
+		{name: "workflow", weight: cfg.Weights.Workflow},
+		{name: "scheduler", weight: cfg.Weights.Scheduler},
+		{name: "recovery", weight: cfg.Weights.Recovery},
+		// Step Y.2/Y.3 channels. Both are strategy-SCOPED: unlike the
+		// runtime-global sources above, a collaboration receipt or a tool
+		// outcome is produced BY a specific strategy's decisions ("ask that
+		// agent", "call that tool"), so crediting it to another strategy would
+		// be a mis-attribution.
+		{name: collaborationEvidenceSource, weight: cfg.Weights.Collaboration, strategyID: strategyID, optIn: true},
+		{name: toolCallEvidenceSource, weight: cfg.Weights.ToolCall, strategyID: strategyID, optIn: true},
 	}
 
 	// Also query dimension_eval evidence.
@@ -222,6 +248,11 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string
 	var weightSum float64
 
 	for _, src := range sources {
+		if src.optIn && src.weight <= 0 {
+			// Not opted in: skip entirely so the source contributes neither
+			// weight nor sample count (see the optIn field comment).
+			continue
+		}
 		m, c, srcLastAt := a.querySourceMean(ctx, store, src.name, evidence.KindFitness, cfg.WindowSize, src.strategyID)
 		if c == 0 {
 			continue

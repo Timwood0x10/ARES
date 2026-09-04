@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -62,6 +63,14 @@ type Bus struct {
 	// deadLetters records failed requests (undeliverable / timed out) for
 	// observability and redelivery (GAP-3). Never nil after NewBus.
 	deadLetters *DeadLetterStore
+	// collabObserver receives one receipt per collaboration attempt (Step
+	// Y.2). Nil = unobserved, the pre-Step-Y behavior. See
+	// collaboration_observer.go.
+	collabObserver CollaborationObserver
+	// logger reports contained handler panics (P1-3). Nil = silent: library
+	// code must not print directly (code_rules §9.1), and the caller still
+	// learns about the failure through ErrHandlerPanic.
+	logger *slog.Logger
 }
 
 // NewBus creates an empty IPC bus.
@@ -88,6 +97,24 @@ func (b *Bus) WithClock(now func() time.Time) *Bus {
 	defer b.mu.Unlock()
 	if now != nil {
 		b.now = now
+	}
+	return b
+}
+
+// WithLogger injects the logger used to report contained handler panics
+// (P1-3). Nil is ignored, leaving the bus silent — the library never prints on
+// its own (code_rules §9.1).
+//
+// Args:
+//   - logger: the structured logger; nil leaves the current one in place.
+//
+// Returns:
+//   - *Bus: the receiver, for chaining.
+func (b *Bus) WithLogger(logger *slog.Logger) *Bus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if logger != nil {
+		b.logger = logger
 	}
 	return b
 }

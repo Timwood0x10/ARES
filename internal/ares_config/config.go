@@ -816,6 +816,22 @@ type EvolutionConfig struct {
 	// Zero values fall back to code defaults.
 	Shadow EvolutionShadowConfig `yaml:"shadow"`
 
+	// ShadowExecution configures real-execution shadow A/B for candidate
+	// strategies (closure plan Step 4 / N-1): when enabled, a submitted
+	// candidate is executed on buffered recent real tasks inside an isolated,
+	// side-effect-free runner before the G2 gate judges it, producing
+	// candidate-specific evidence. Default: disabled — G2 then replays each
+	// strategy's own history, which is NOT candidate-specific for a
+	// never-executed candidate.
+	ShadowExecution ShadowExecutionConfig `yaml:"shadow_execution"`
+
+	// ChannelFeedback configures the two perception channels evolution was
+	// blind to (closure plan Step Y.2/Y.3): cross-agent collaboration receipts
+	// and tool-call outcomes. Both default off — an agent perceives the world
+	// only through task/tool/collaboration, and until an operator opts in, only
+	// the task channel feeds the verdict.
+	ChannelFeedback ChannelFeedbackConfig `yaml:"channel_feedback"`
+
 	// Gates configures the verify-gate pipeline thresholds (eval-suite
 	// minimum score, manual approval hold). Zero values fall back to code
 	// defaults.
@@ -912,6 +928,52 @@ type EvolutionShadowConfig struct {
 	// ReplayQueryLimit caps the evidence records read per window query. Zero/
 	// unset falls back to the default (200).
 	ReplayQueryLimit int `yaml:"replay_query_limit"`
+}
+
+// ShadowExecutionConfig mirrors the `evolution.shadow_execution` YAML block
+// (closure plan Step 4 / N-1): real-execution A/B for candidate strategies.
+type ShadowExecutionConfig struct {
+	// Enabled turns on real-execution shadow A/B. Default: false — when
+	// disabled, the G2 gate judges candidates by replaying each strategy's
+	// own history, which is not candidate-specific for a never-executed
+	// candidate.
+	Enabled bool `yaml:"enabled"`
+	// SampleSize is how many of the most recent finalized real tasks each
+	// candidate judgment executes in isolation (both A/B arms per task).
+	// Default: 3. Non-positive values fall back to the default.
+	SampleSize int `yaml:"sample_size"`
+}
+
+// ChannelFeedbackConfig mirrors the `evolution.channel_feedback` YAML block
+// (closure plan Step Y.2/Y.3). It arms the collaboration and tool-call
+// perception channels as evolution fitness dimensions.
+//
+// Each channel has an `enabled` switch AND a weight. The switch controls
+// whether the observation is RECORDED (the producer-side instrumentation); the
+// weight controls whether it COUNTS in the fitness aggregate. They are separate
+// on purpose: an operator can turn a channel on to inspect the evidence in the
+// audit trail before letting it move any verdict.
+type ChannelFeedbackConfig struct {
+	// CollabEnabled records cross-agent collaboration receipts (initiator,
+	// target, topic, outcome, latency) as fitness evidence under
+	// source="collaboration". Default: false.
+	CollabEnabled bool `yaml:"collab_enabled"`
+	// CollabWeight is the collaboration channel's weight in the JUDGE
+	// aggregate. Default: 0 — recorded but not yet trusted to move a verdict.
+	CollabWeight float64 `yaml:"collab_weight"`
+	// ToolEnabled records tool-call outcomes (tool, caller, outcome, latency)
+	// as fitness evidence under source="tool_call". Default: false.
+	ToolEnabled bool `yaml:"tool_enabled"`
+	// ToolWeight is the tool channel's weight in the JUDGE aggregate.
+	// Default: 0 — same staged-adoption reasoning as CollabWeight.
+	ToolWeight float64 `yaml:"tool_weight"`
+}
+
+// AnyEnabled reports whether at least one channel is armed. The wiring layer
+// uses it to decide whether to build the recorder at all: with both channels
+// off, constructing an observer that nothing feeds would be dead wiring.
+func (c ChannelFeedbackConfig) AnyEnabled() bool {
+	return c.CollabEnabled || c.ToolEnabled
 }
 
 // EvolutionGateConfig mirrors the `evolution.gates` YAML block.

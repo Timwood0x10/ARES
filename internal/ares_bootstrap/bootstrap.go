@@ -564,6 +564,19 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		comp.Runtime.RegisterAgentDAG(ares_runtime.AgentDAGEvolutionKey, dag)
 	}
 
+	// Closure plan N-4 / Step 7.3: a standalone Bootstrap has no agent
+	// population, so no live agent DAG exists at this point — evolution
+	// verdicts are available but have no live topology to act on. Say so
+	// explicitly instead of letting the synthetic graph silently take
+	// promotions. The serve entry (buildLiveAgentDAG + UpdateLiveDAG) is the
+	// only live-DAG supplier and supersedes this placeholder afterwards.
+	if cfg.Evolution.Enabled {
+		log.InfoContext(ctx, "bootstrap: evolution verdicts available but no live agent topology to act on",
+			"live_dag_registered", false,
+			"synthetic_dag_key", ares_runtime.AgentDAGEvolutionKey,
+		)
+	}
+
 	// 9. Wire the GA population adapter, coordinator bridge, and background
 	// evolution ticker (extracted to wireGAEvolution to keep Bootstrap's
 	// cyclomatic complexity within lint limits).

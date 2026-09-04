@@ -26,6 +26,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/kernelscheduler"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
@@ -95,8 +96,11 @@ func NewDashboard(ctx context.Context, cfg DashboardConfig) (*Dashboard, error) 
 	cfg = applyDashboardDefaults(cfg)
 
 	d := &Dashboard{
-		cfg:    cfg,
-		bus:    agentipc.NewBus(),
+		cfg: cfg,
+		// WithLogger: handler panics are contained at the bus goroutine
+		// boundary (P1-3); the bus itself never prints (code_rules §9.1), so
+		// without a logger a contained panic would be invisible here too.
+		bus:    agentipc.NewBus().WithLogger(logger.Module("introspect")),
 		collab: NewCollabReporter(),
 		chaos:  NewChaosReporter(),
 	}

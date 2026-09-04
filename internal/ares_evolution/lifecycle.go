@@ -384,6 +384,16 @@ func WithLifecycleShadowSampler(s *ShadowSampler) LifecycleOption {
 	}
 }
 
+// ShadowSampler returns the wired task-level shadow feeder, or nil. The serve
+// layer uses it to attach the real-execution A/B feeder (closure plan Step 4
+// / N-1), which needs the serve-time cognition stack and is therefore
+// constructed after the evolution system.
+func (l *StrategyLifecycle) ShadowSampler() *ShadowSampler {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sampler
+}
+
 // WithShadowGateDisabled suppresses the automatic G2 registration for the
 // documented no-scorer-plus-armed-rollback case (evolution loop closure E2).
 // It is deliberately explicit: the gate's absence must be a decision at the

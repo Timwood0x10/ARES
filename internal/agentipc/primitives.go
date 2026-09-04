@@ -3,7 +3,11 @@ package agentipc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/feedback"
 )
 
 // taskIDKey is the canonical payload key carrying a task identifier across
@@ -14,6 +18,14 @@ const taskIDKey = "task_id"
 // defaultRequestTimeout is used when Request is called with timeout <= 0
 // (B16: prevents indefinite blocking on a missing timeout).
 const defaultRequestTimeout = 30 * time.Second
+
+// ErrHandlerPanic is returned to the caller when a registered handler panics
+// during a Request. The panic is contained at the goroutine boundary
+// (code_rules §4.2: a goroutine must have a recover boundary or be guaranteed
+// not to panic) so a buggy or third-party handler fails ONE request instead of
+// terminating the process — a panic in a goroutine cannot be recovered by the
+// caller's stack, so containment has to happen where the goroutine runs.
+var ErrHandlerPanic = errors.New("agentipc: handler panicked")
 
 // Send is the fire-and-forget primitive: deliver a message to a target agent
 // without waiting for a reply. The target's handler is invoked synchronously
@@ -30,12 +42,38 @@ const defaultRequestTimeout = 30 * time.Second
 // Returns:
 //   - error: ErrAgentNotRegistered / ErrNoHandler, or the handler error.
 func (b *Bus) Send(ctx context.Context, from, to, topic string, payload any) error {
+	// Step Y.2: measure the delivery receipt. A fire-and-forget send has no
+	// answer to judge, but "the agent I addressed does not exist" and "its
+	// handler rejected my message" are still feedback about the initiator's
+	// choice of collaborator — and Send is the primitive the production peer
+	// bridge actually uses (cmd/ares/evolution_ipc.go routes every peer
+	// message through it), so leaving it unobserved would mean the
+	// collaboration channel records nothing in production.
+	started := b.allocNow()
+	// Start at "unobserved" and set a verdict only at a known exit. If the
+	// handler panics, it unwinds through this defer with no verdict assigned —
+	// and an unobserved record is discarded rather than scored. Initializing to
+	// success instead would silently write a FALSE success for the one case
+	// where the collaboration most clearly failed.
+	outcome := feedback.OutcomeUnobserved
+	defer func() {
+		b.observeCollaboration(feedback.CollaborationOutcome{
+			Initiator: from,
+			Target:    to,
+			Topic:     topic,
+			Kind:      feedback.CollabSend,
+			Outcome:   outcome,
+			Latency:   b.allocNow().Sub(started),
+		})
+	}()
+
 	b.mu.RLock()
 	h, ok := b.handlers[to]
 	b.mu.RUnlock()
 	if !ok {
 		// GAP-3: the target does not exist — the message is undeliverable.
 		b.deadLetters.Record(from, to, topic, payload, ErrAgentNotRegistered.Error())
+		outcome = feedback.OutcomeNotFound
 		return ErrAgentNotRegistered
 	}
 	msg := &Message{
@@ -50,8 +88,11 @@ func (b *Bus) Send(ctx context.Context, from, to, topic string, payload any) err
 	if err != nil {
 		// GAP-3: record undelivered/failed fire-and-forget sends.
 		b.deadLetters.Record(from, to, topic, payload, err.Error())
+		outcome = feedback.OutcomeFailure
+		return err
 	}
-	return err
+	outcome = feedback.OutcomeSuccess
+	return nil
 }
 
 // Request is the synchronous request/reply primitive: send a message to a
@@ -82,10 +123,29 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Step Y.2: measure the collaboration receipt. started is captured before
+	// the handler lookup so the latency covers what the initiator actually
+	// waited, including an addressing failure. The verdict starts unobserved
+	// and is set only at a known exit, so an unforeseen return path writes no
+	// record rather than a fabricated success.
+	started := b.allocNow()
+	outcome := feedback.OutcomeUnobserved
+	defer func() {
+		b.observeCollaboration(feedback.CollaborationOutcome{
+			Initiator: from,
+			Target:    to,
+			Topic:     topic,
+			Kind:      feedback.CollabRequest,
+			Outcome:   outcome,
+			Latency:   b.allocNow().Sub(started),
+		})
+	}()
+
 	b.mu.RLock()
 	h, ok := b.handlers[to]
 	b.mu.RUnlock()
 	if !ok {
+		outcome = feedback.OutcomeNotFound
 		return nil, ErrAgentNotRegistered
 	}
 	corrID := b.allocID() + "-corr"
@@ -109,29 +169,14 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 	// stamped and delivered through the same reply channel. If the handler
 	// returns an error, a nil reply is delivered so the caller's select wakes
 	// up and the error is surfaced.
-	go func() {
-		reply, err := h(reqCtx, req)
-		if err != nil {
-			// Surface the error: deliver a sentinel nil reply so the caller
-			// wakes up; the actual error is stashed on the pending entry.
-			b.stashError(corrID, err)
-			_ = b.deliverReply(corrID, nil)
-			return
-		}
-		if reply != nil {
-			// Copy the handler-returned reply and stamp it — never mutate the
-			// caller's message (the handler may return a shared template
-			// across concurrent requests, so in-place stamping would race).
-			stamped := *reply
-			stamped.CorrelationID = corrID
-			stamped.To = from
-			stamped.From = to
-			_ = b.deliverReply(corrID, &stamped)
-		}
-		// If the handler returned nil with no error, it intends to reply
-		// asynchronously later via Reply. The select below waits for the
-		// timeout in that case.
-	}()
+	//
+	// P1-3 (deep review 2026-09-03): the goroutine carries a recover boundary.
+	// Handlers are foreign code — a registered agent handler, a collaboration
+	// executor, a third-party plugin — and a panic inside a goroutine cannot be
+	// recovered by the caller's stack, so without this the whole process dies
+	// on one bad handler. Contained here, a panic fails exactly ONE request
+	// (ErrHandlerPanic), which is the same blast radius as a returned error.
+	go b.invokeHandler(reqCtx, h, req, corrID, from, to)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -151,23 +196,110 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 			// A nil reply signals a handler error — pull it from the stash.
 			if err := b.popError(corrID); err != nil {
 				replyErr = err
+				outcome = feedback.OutcomeFailure
 				return nil, err
 			}
 			replyErr = ErrTimeout
+			outcome = feedback.OutcomeTimeout
 			return nil, ErrTimeout
 		}
+		outcome = feedback.OutcomeSuccess
 		return reply, nil
-	case <-ctx.Done():
-		// Caller-side cancellation / deadline propagation is NOT a delivery
+	case <-ctx.Done(): // Caller-side cancellation / deadline propagation is NOT a delivery
 		// failure: the request may well have been delivered and handled. The
 		// dead-letter queue is a bounded FIFO reserved for genuine delivery
 		// failures, so recording cancellations here would evict them. Leave
 		// replyErr nil.
+		//
+		// Step Y.2: it is not a collaboration outcome either — the initiator
+		// walked away, which says nothing about the target's quality. Scoring
+		// it would punish whichever agent happened to be asked when the
+		// caller's context expired.
+		outcome = feedback.OutcomeUnobserved
 		return nil, ctx.Err()
 	case <-timer.C:
 		replyErr = ErrTimeout
+		outcome = feedback.OutcomeTimeout
 		return nil, ErrTimeout
 	}
+}
+
+// invokeHandler runs one request handler inside the managed goroutine spawned
+// by Request, with the P1-3 recover boundary.
+//
+// PANIC CONTAINMENT (code_rules §4.2): the handler is foreign code and runs on
+// its own goroutine, so a panic there is unrecoverable from the caller's stack
+// and would take the process down. The recover converts it into
+// ErrHandlerPanic delivered through the SAME sentinel-nil-reply path an ordinary
+// handler error uses, so the waiting Request wakes up immediately instead of
+// burning its full timeout — a panicking handler is never going to reply, and
+// making the caller wait for the deadline would turn a fast failure into a slow
+// one. The panic value is deliberately not embedded in the error: it may carry
+// internal paths or request data (code_rules §3.5), so it goes to the log with
+// context keys instead.
+//
+// Args:
+//   - ctx: the request-scoped context (already bounded by the timeout).
+//   - h: the target's handler.
+//   - req: the stamped request message.
+//   - corrID: the correlation id the reply must carry.
+//   - from: the initiator agent id (becomes the reply's To).
+//   - to: the target agent id (becomes the reply's From).
+func (b *Bus) invokeHandler(ctx context.Context, h Handler, req *Message, corrID, from, to string) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		b.logHandlerPanic(req, from, to, r)
+		// Same wake-up protocol as a handler error: stash, then deliver the
+		// sentinel nil reply.
+		b.stashError(corrID, ErrHandlerPanic)
+		_ = b.deliverReply(corrID, nil) // best-effort: an orphan reply is a documented no-op
+	}()
+
+	reply, err := h(ctx, req)
+	if err != nil {
+		// Surface the error: deliver a sentinel nil reply so the caller
+		// wakes up; the actual error is stashed on the pending entry.
+		b.stashError(corrID, err)
+		_ = b.deliverReply(corrID, nil) // best-effort: see deliverReply
+		return
+	}
+	if reply != nil {
+		// Copy the handler-returned reply and stamp it — never mutate the
+		// caller's message (the handler may return a shared template
+		// across concurrent requests, so in-place stamping would race).
+		stamped := *reply
+		stamped.CorrelationID = corrID
+		stamped.To = from
+		stamped.From = to
+		_ = b.deliverReply(corrID, &stamped) // best-effort: see deliverReply
+	}
+	// If the handler returned nil with no error, it intends to reply
+	// asynchronously later via Reply. The caller's select waits for the
+	// timeout in that case.
+}
+
+// logHandlerPanic reports a contained handler panic through the injected
+// logger. Library code must not print directly (code_rules §9.1), so a bus
+// without a logger stays silent rather than writing to stderr — the caller
+// still learns about the failure through ErrHandlerPanic.
+func (b *Bus) logHandlerPanic(req *Message, from, to string, panicValue any) {
+	b.mu.RLock()
+	logger := b.logger
+	b.mu.RUnlock()
+	if logger == nil {
+		return
+	}
+	logger.Error("agentipc: handler panicked",
+		"from", from,
+		"to", to,
+		"topic", req.Topic,
+		"message_id", req.ID,
+		"panic", fmt.Sprintf("%v", panicValue),
+		"stack", string(debug.Stack()),
+	)
 }
 
 // Reply delivers a reply to a pending request identified by the correlation

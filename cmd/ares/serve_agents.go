@@ -281,6 +281,15 @@ func setupPeerRegistry(
 			return nil, fmt.Errorf("wire evolution IPC: %w", err)
 		}
 		reg = bridge.reg
+		// Step Y.2: arm the collaboration perception channel. Attaching here
+		// (rather than inside wireEvolutionIPC) keeps the bridge builder free
+		// of an evolution-observer parameter, and this is the only production
+		// site where the bus and the recorder are both in scope. A nil recorder
+		// (channel not armed — the default) leaves the bus unobserved.
+		if rec := comp.NewEvolution.ChannelFeedback; rec.CollaborationArmed() {
+			bridge.ipc.Bus().WithCollaborationObserver(rec)
+			log.Printf("serve: collaboration feedback channel armed (evolution reads collaboration receipts)")
+		}
 		log.Printf("peer registry wired through evolution-aware IPC: %d agents registered", len(reg.IDs()))
 	default:
 		reg = buildPeerRegistry(subAgents)

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_archive"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -292,6 +293,17 @@ func runServe() error {
 	if bridge := newPlannerBridge(internalReg); bridge != nil {
 		toolBinder.WithPlannerBridge(bridge)
 		log.Println("planner bridge: attached")
+	}
+
+	// Step Y.3: arm the tool-call perception channel. The decorator wraps the
+	// binder AFTER the planner bridge is attached, so planner-resolved calls are
+	// measured too, and it is applied at the single site every execution body
+	// (sub executor and agentfabric ChatCognition) receives its binder from —
+	// instrumenting either loop instead would leave the other blind. A nil
+	// recorder (channel not armed — the default) returns the binder untouched.
+	if comp.NewEvolution != nil && comp.NewEvolution.ChannelFeedback.ToolCallsArmed() {
+		toolBinder = sub.ObserveToolCalls(toolBinder, comp.NewEvolution.ChannelFeedback)
+		log.Printf("serve: tool-call feedback channel armed (evolution reads tool outcomes)")
 	}
 
 	// --- ChatClient for native tool calling ---

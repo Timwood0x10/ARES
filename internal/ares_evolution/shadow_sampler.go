@@ -62,6 +62,14 @@ type ShadowSampler struct {
 	// windowSpan is the width of one replay window. Zero falls back to
 	// replayWindowSpan.
 	windowSpan time.Duration
+	// execFeeder is the optional real-execution A/B feeder (closure plan
+	// Step 4 / N-1, see shadow_executor.go). When set, Prime runs it BEFORE
+	// the replay windows and uses its paired comparisons as the G2 evidence;
+	// replay stays the fallback for the no-traffic case. Set via
+	// SetExecutionFeeder after construction (the feeder needs the serve-time
+	// cognition stack, which is built after the evolution system). Guarded
+	// by mu alongside Prime.
+	execFeeder ShadowExecutionFeeder
 	mu         sync.Mutex // serializes Prime so two submissions cannot interleave StartShadow/Evaluate
 }
 
@@ -167,6 +175,22 @@ func (s *ShadowSampler) Prime(ctx context.Context, candidate, active *mutation.S
 	anchor := time.Now()
 	s.evaluator.SetActiveStrategy(active)
 	s.evaluator.StartShadow(candidate)
+	// Step 4 (closure plan N-1): real-execution A/B FIRST. Both arms run on
+	// the same buffered task copies under the same isolation standard, so the
+	// comparisons are candidate-specific — the property replay-only evidence
+	// can never provide for a never-executed candidate. The feeder runs
+	// BEFORE the anchor so the evidence it writes still lands inside the
+	// first replay window should it produce nothing and we fall through.
+	if s.execFeeder != nil {
+		fed := 0
+		for _, p := range s.execFeeder.Feed(primeCtx, candidate, active) {
+			s.evaluator.RecordResult(p.ActiveScore, p.ShadowScore)
+			fed++
+		}
+		if fed > 0 {
+			return
+		}
+	}
 	for i := 0; i < s.samples; i++ {
 		if primeCtx.Err() != nil {
 			return
@@ -181,8 +205,29 @@ func (s *ShadowSampler) Prime(ctx context.Context, candidate, active *mutation.S
 	}
 }
 
-// TODO(tech-debt): replay windows make the comparisons disjoint in TIME, but a
-// never-executed candidate still has no records of its own and scores the
-// cold-start prior in every window (see the ShadowSampler doc comment).
-// Replace with per-task real-execution sampling (one comparison per live task,
-// candidate vs active) once a task-level A/B execution path exists.
+// SetExecutionFeeder wires the real-execution A/B feeder (closure plan Step 4
+// / N-1, see shadow_executor.go). When set, Prime executes the candidate and
+// active strategies on buffered real task copies inside the isolation runner
+// and records the paired results as the G2 comparisons, falling back to the
+// replay windows only when the feeder produced nothing (no buffered tasks,
+// runner failure). It is a setter rather than a constructor option because
+// the feeder needs the serve-time cognition stack, which is built after the
+// evolution system.
+//
+// Args:
+//
+//	f - the real-execution feeder; nil clears it.
+func (s *ShadowSampler) SetExecutionFeeder(f ShadowExecutionFeeder) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.execFeeder = f
+}
+
+// TODO(tech-debt): the real-execution feeder (shadow_executor.go) removes the
+// never-executed-candidate blind spot when it is wired AND buffered task
+// traffic exists. The replay-window fallback above still scores a candidate
+// with no records at the cold-start prior in every window; keep that path
+// fail-closed and delete this note once shadow execution is the default.

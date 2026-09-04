@@ -102,6 +102,13 @@ type Scheduler struct {
 	// Guarded by execMu alongside the executor registry so runtime
 	// registration races with the drain loop stay safe.
 	quantumHook QuantumHook
+	// shadowHook is the optional real-execution shadow A/B capture point
+	// (closure plan Step 4 / N-1). When wired, every successfully finalized
+	// task is handed to the hook so the evolution layer can buffer it and
+	// later execute a candidate strategy on it in isolation. The hook fires
+	// on the drain path and MUST NOT block (see shadow.go). Nil = no shadow
+	// capture (backward compatible).
+	shadowHook ShadowExecutionHook
 	// running reports whether the drain loop is actually running (K5: the
 	// System Runtime readiness gate must mean "drain loop alive", not
 	// "object exists"). Set at Run entry, cleared on exit.
@@ -854,6 +861,14 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	s.afterQuantum(ctx, taskID, winner, err)
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
 	slotReleased = true
+	// Step 4 (closure plan N-1): hand the finalized task to the shadow A/B
+	// executor so a candidate strategy can be executed on it in isolation.
+	// Contract: the hook buffers and returns — it never blocks the drain
+	// path. Only successful finalizations are sampled; a failed quantum says
+	// nothing about how a candidate would have run the task.
+	if s.shadowHook != nil && err == nil {
+		s.shadowHook.OnTaskFinalized(s.ToModelTask(tk))
+	}
 	// P3 post-quantum bookkeeping: record the quantum's consumption (1 tool
 	// round) so the next gate sees the new balance. Runs even on step errors —
 	// the quantum did execute (or partially execute) and spent budget.

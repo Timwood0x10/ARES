@@ -276,7 +276,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// Design doc §7: the lifecycle control plane (window/judge/gates/watch
 	// interval) is YAML-configurable; the same config also feeds the G3
 	// eval-gate MinScore further below.
-	gaCfg.Lifecycle = lifecycleConfigFromYAML(cfg.Evolution.Lifecycle, cfg.Evolution.Gates)
+	gaCfg.Lifecycle = lifecycleConfigFromYAML(cfg.Evolution.Lifecycle, cfg.Evolution.Gates, cfg.Evolution.ChannelFeedback)
 	// E2: the lifecycle must know whether the rollback net is armed (it owns
 	// the watch loop) — the same tri-state decision as the ASM wiring above.
 	gaCfg.Lifecycle.RollbackArmed = rollbackArmed
@@ -464,12 +464,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 			evolution.WithObserverEvidenceStore(newEvol.EvidenceStore),
 		}
 		if wired.ActiveStrategyManager != nil {
-			obsOpts = append(obsOpts, evolution.WithObserverActiveIDFunc(func() string {
-				if cur := wired.ActiveStrategyManager.Current(); cur != nil {
-					return cur.ID
-				}
-				return ""
-			}))
+			obsOpts = append(obsOpts, evolution.WithObserverActiveIDFunc(activeStrategyIDFunc(wired.ActiveStrategyManager)))
 		}
 		observer := evolution.NewRuntimeObserver(comp.EventStore, obsOpts...)
 		if err := observer.Start(ctx); err != nil {
@@ -482,6 +477,12 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 			})
 		}
 	}
+
+	// Step Y.2/Y.3: the OBSERVE stage for the other two perception channels.
+	// The recorder is only built when a channel is armed AND the strategy is
+	// attributable — a recorder with no ASM would drop every record as
+	// unattributable, i.e. dead wiring that looks live.
+	newEvol.ChannelFeedback = startChannelFeedback(ctx, comp, newEvol, wired.ActiveStrategyManager, cfg.Evolution.ChannelFeedback)
 
 	// In the full configuration, attach the GA adapter to the existing
 	// old-system scheduler; otherwise the GA system's own scheduler

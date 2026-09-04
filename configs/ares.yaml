@@ -175,6 +175,43 @@ evolution:
   #   min_samples: 20
   #   min_win_rate: 0.55
 
+  # shadow_execution: real-execution A/B for candidate strategies (closure
+  #   plan Step 4 / N-1). When enabled, each judged candidate AND the active
+  #   strategy are executed on buffered copies of recent real tasks inside an
+  #   isolated runner whose side effects are denied at the interface level
+  #   (no production memory writes, tool calls intercepted), and the G2 gate
+  #   judges the paired result — candidate-specific evidence, unlike the
+  #   replay-only fallback (which reads each strategy's own history and is
+  #   NOT candidate-specific for a never-executed candidate).
+  #   Default: disabled. sample_size = how many recent tasks each judgment
+  #   executes in isolation (both arms per task); default 3.
+  # shadow_execution:
+  #   enabled: false
+  #   sample_size: 3
+
+  # channel_feedback: the two perception channels evolution was previously blind
+  #   to (closure plan Step Y.2/Y.3). An agent can only perceive the outside
+  #   world through three channels — its own task outcomes, the tools it called,
+  #   and the collaboration receipts other agents sent back. Task outcomes
+  #   already feed the loop (RuntimeObserver); these two knobs add the other
+  #   two, each as its OWN evidence source ("collaboration" / "tool_call") so
+  #   they never contaminate the strategy/shadow verdicts.
+  #   Without them, evolution cannot learn "stop asking that agent" or "stop
+  #   calling that tool" — the reason N-11 forbade claiming the loop covers
+  #   collaboration and tool selection.
+  #
+  #   `*_enabled` controls RECORDING; `*_weight` controls whether the channel
+  #   COUNTS in the fitness aggregate. They are separate so an operator can
+  #   inspect the evidence in the audit trail before letting it move a verdict.
+  #   A weight without its enabled flag is ignored (nothing would be recorded to
+  #   weigh); a weight of 0 leaves the channel inert — it adds neither score nor
+  #   sample count. Default: both channels off, matching pre-Step-Y behavior.
+  # channel_feedback:
+  #   collab_enabled: false
+  #   collab_weight: 0.0              # e.g. 0.15 once the evidence looks sane
+  #   tool_enabled: false
+  #   tool_weight: 0.0                # e.g. 0.15
+
   # gates: the remaining verify-gate thresholds.
   # gates:
   #   eval_min_score: 0.7             # minimum G3 eval-suite score

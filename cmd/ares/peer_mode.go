@@ -191,6 +191,13 @@ func createPeerAgents(
 	kernel.scheduler = sched
 	kernel.flipped = true
 
+	// Step 4 (closure plan N-1): real-execution shadow A/B for candidate
+	// strategies. Default off; when enabled the scheduler buffers finalized
+	// tasks and the G2 gate judges candidates on isolated executions (with a
+	// side-effect deny-list) of those buffered tasks instead of replay-only
+	// evidence. See shadow_execution.go.
+	wireShadowExecution(cfg, comp, sched, llmAdapter, chatClient, toolBinder)
+
 	// W4 evolution feedback loop: record execution outcomes per agent +
 	// capability, and periodically push the derived confidence back into the
 	// tracker so the next Schedule prefers historically-successful executors.
