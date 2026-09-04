@@ -37,9 +37,10 @@ const (
 	wfOpSwap
 	wfOpSplit
 	wfOpMerge
+	wfOpSetMetadata
 )
 
-var wfOps = []wfMutationOp{wfOpInsertNode, wfOpRemoveNode, wfOpReplaceNode, wfOpParallelize, wfOpSerialize, wfOpSwap, wfOpSplit, wfOpMerge}
+var wfOps = []wfMutationOp{wfOpInsertNode, wfOpRemoveNode, wfOpReplaceNode, wfOpParallelize, wfOpSerialize, wfOpSwap, wfOpSplit, wfOpMerge, wfOpSetMetadata}
 
 // WorkflowGenomeConfig controls the DAG topology evolution behaviour.
 type WorkflowGenomeConfig struct {
@@ -136,6 +137,8 @@ func (g *WorkflowGenome) Mutate(_ context.Context, n int) ([]Genome, error) {
 			child.mutateSplitNode()
 		case wfOpMerge:
 			child.mutateMergeNodes()
+		case wfOpSetMetadata:
+			child.mutateSetMetadata()
 		}
 		children = append(children, child)
 	}
@@ -255,15 +258,64 @@ func (g *WorkflowGenome) mutateReplaceNode() {
 	oldStep := steps[rand.Intn(len(steps))]
 	agentType := g.config.AgentPool[rand.Intn(len(g.config.AgentPool))]
 
+	// C4: preserve Metadata through replace – previously the new step was
+	// built without Metadata, which meant a metadata-only gene mutation
+	// produced ZERO patches (the differ saw only topology changes) and the
+	// evolution could never select for a metadata variant.
+	var mdCopy map[string]string
+	if oldStep.Metadata != nil {
+		mdCopy = make(map[string]string, len(oldStep.Metadata))
+		for k, v := range oldStep.Metadata {
+			mdCopy[k] = v
+		}
+	}
+
 	newStep := &engine.Step{
 		ID:        oldStep.ID,
 		Name:      oldStep.Name + "-v2",
 		AgentType: agentType,
 		Input:     oldStep.Input,
 		DependsOn: oldStep.DependsOn,
+		Metadata:  mdCopy,
 	}
 	if err := g.dag.ReplaceNode(context.Background(), oldStep.ID, newStep); err != nil {
 		wfLog.Warn("replace node mutation failed", "node", oldStep.ID, "error", err)
+	}
+}
+
+// mutateSetMetadata mutates a random node's Metadata in place (C4 作动面).
+// It twiddles a budget/prior/enabled-style attribute to produce a metadata-only
+// diff that WorkflowDiffer now surfaces as a PatchSetNodeMetadata. Without this
+// operator, evolution could never explore the metadata dimension — the genome
+// had no way to produce a child that differs ONLY by node attributes.
+func (g *WorkflowGenome) mutateSetMetadata() {
+	steps := g.dag.Steps()
+	if len(steps) == 0 {
+		return
+	}
+	step := steps[rand.Intn(len(steps))]
+
+	md := make(map[string]string)
+	if step.Metadata != nil {
+		for k, v := range step.Metadata {
+			md[k] = v
+		}
+	}
+
+	// Flip one well-known attribute; default to "budget" for a fresh node. The
+	// value must be non-empty and changeable so the diff is not a no-op.
+	const budgetKey = "budget"
+	switch md[budgetKey] {
+	case "":
+		md[budgetKey] = "10"
+	case "10":
+		md[budgetKey] = "20"
+	default:
+		md[budgetKey] = "10"
+	}
+
+	if err := g.dag.SetNodeMetadata(step.ID, md); err != nil {
+		wfLog.Warn("set-node-metadata mutation failed", "node", step.ID, "error", err)
 	}
 }
 

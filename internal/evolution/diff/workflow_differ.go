@@ -89,7 +89,41 @@ func (d *WorkflowDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimeP
 		}
 	}
 
+	// Find metadata-only changes on nodes that persist across the diff.
+	// C4: a metadata change on a common node emits a PatchSetNodeMetadata (not a
+	// ReplaceNode), so evolution can patch a ToolStep node's enabled/budget/prior
+	// attributes WITHOUT restructuring the DAG. The differ compares the per-node
+	// Metadata snapshot carried on DAGNode; the inverse (rollback) patch restores
+	// the OLD step's metadata.
+	for nodeID, newNode := range newDAG.Nodes {
+		oldNode, exists := oldDAG.Nodes[nodeID]
+		if !exists {
+			continue // inserted; handled above
+		}
+		if !metadataEqual(oldNode.Metadata, newNode.Metadata) {
+			patches = append(patches, patch.RuntimePatch{
+				Type:   patch.PatchSetNodeMetadata,
+				Target: nodeID,
+				Value:  newNode.Metadata,
+				Source: srcWorkflow,
+			})
+		}
+	}
+
 	return patches, nil
+}
+
+// metadataEqual reports whether two metadata maps are semantically equal.
+func metadataEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // toSet converts a string slice to a set for O(1) lookup.

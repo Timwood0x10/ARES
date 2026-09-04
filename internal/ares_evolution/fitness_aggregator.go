@@ -331,6 +331,15 @@ func (a *RuntimeFitnessAggregator) Window(ctx context.Context, strategyID string
 // The store is passed in (not read from the receiver) so Window can snapshot
 // it under its lock and keep this helper lock-free.
 func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID string) (float64, int, time.Time) {
+	return a.querySourceMeanScoped(ctx, store, source, kind, limit, strategyID, "")
+}
+
+// querySourceMeanScoped is querySourceMean with an optional tool_step_id
+// sub-filter (Y1 C3). When toolStepID is non-empty, only tool_call evidence
+// whose payload tool_step_id matches is counted — enabling process-level
+// attribution ("this strategy calling the tool THIS way") distinct from the
+// coarse per-strategy bucket.
+func (a *RuntimeFitnessAggregator) querySourceMeanScoped(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID, toolStepID string) (float64, int, time.Time) {
 	if store == nil {
 		return 0, 0, time.Time{}
 	}
@@ -352,6 +361,7 @@ func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, store ev
 		var fe struct {
 			Value      float64 `json:"value"`
 			StrategyID string  `json:"strategy_id"`
+			ToolStepID string  `json:"tool_step_id"`
 		}
 		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
 			continue
@@ -360,6 +370,9 @@ func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, store ev
 			continue
 		}
 		if strategyID != "" && fe.StrategyID != strategyID {
+			continue
+		}
+		if toolStepID != "" && fe.ToolStepID != toolStepID {
 			continue
 		}
 		sum += fe.Value
@@ -372,4 +385,43 @@ func (a *RuntimeFitnessAggregator) querySourceMean(ctx context.Context, store ev
 		return 0, 0, time.Time{}
 	}
 	return sum / float64(count), count, lastAt
+}
+
+// WindowToolStep computes the aggregate fitness scoped to a specific tool step
+// (strategyID, toolStepID) for the tool_call channel (Y1 C3). The tool_step
+// dimension surfaces process-level attribution: two strategies — or two
+// argument shapes under the same strategy — calling the same tool no longer
+// blend into one undifferentiated signal. It reuses the same cold-start gate
+// and source weights as Window; the returned Ok reflects the tool_step-scoped
+// sample count only when a non-empty strategyID is supplied.
+func (a *RuntimeFitnessAggregator) WindowToolStep(ctx context.Context, strategyID, toolStepID string) WindowResult {
+	if toolStepID == "" {
+		return a.Window(ctx, strategyID)
+	}
+	a.mu.RLock()
+	cfg := a.cfg
+	store := a.store
+	a.mu.RUnlock()
+	if store == nil {
+		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]sourceStat{}}
+	}
+
+	m, c, lastAt := a.querySourceMeanScoped(ctx, store, toolCallEvidenceSource, evidence.KindFitness, cfg.WindowSize, strategyID, toolStepID)
+	result := WindowResult{PerSource: map[string]sourceStat{}}
+	if c == 0 {
+		result.Mean = cfg.ColdStartScore
+		result.Ok = false
+		return result
+	}
+	result.PerSource[toolStepID] = sourceStat{Mean: m, Count: c, LastAt: lastAt}
+	result.Mean = m
+	result.Count = c
+	result.LastAt = lastAt
+	// When no strategy is supplied the projection-level query is not scoped by
+	// strategy (the tool-step audit is per-agent/session, and the Projector has
+	// no strategy to stamp). Judge on sample count — the staging-path gate —
+	// just like Window's non-strategy path, so the audit read is usable rather
+	// than permanently cold-start.
+	result.Ok = c >= cfg.MinSamplesBeforeJudge
+	return result
 }

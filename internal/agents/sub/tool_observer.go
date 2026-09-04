@@ -23,6 +23,8 @@ package sub
 import (
 	"context"
 	stderrors "errors"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -83,12 +85,31 @@ func (b *observedToolBinder) CallTool(ctx context.Context, name string, args map
 	started := time.Now()
 	result, err := b.ToolBinder.CallTool(ctx, name, args)
 	b.obs.OnToolCall(feedback.ToolCallOutcome{
-		Tool:    name,
-		Caller:  kernelctx.CallerID(ctx),
-		Outcome: toolCallOutcome(ctx, err),
-		Latency: time.Since(started),
+		Tool:       name,
+		Caller:     kernelctx.CallerID(ctx),
+		Outcome:    toolCallOutcome(ctx, err),
+		Latency:    time.Since(started),
+		ToolStepID: toolStepID(name, args),
 	})
 	return result, err
+}
+
+// toolStepID builds the process-level attribution key (Y1 C3): toolName#argShape,
+// where argShape is the sorted set of argument KEY names (values dropped). This
+// mirrors ares_events.ToolArgShape but accepts a decoded map (the binder hands
+// the observer a struct, not the raw JSON string), so the recorder and the
+// projection layer attribute tool-call fitness at the same granularity.
+func toolStepID(name string, args map[string]any) string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	shape := strings.Join(keys, ",")
+	if shape == "" {
+		return name // no args: attribute at the tool (not tool-step) granularity
+	}
+	return name + "#" + shape
 }
 
 // toolCallOutcome classifies one invocation result.

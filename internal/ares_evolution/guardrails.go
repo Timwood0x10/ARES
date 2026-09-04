@@ -26,6 +26,13 @@ const (
 	ErrCodeScoreDecline GuardrailErrorCode = "EVAL_SCORE_DECLINE"
 	// ErrCodeDiversityCollapse indicates critically low population diversity.
 	ErrCodeDiversityCollapse GuardrailErrorCode = "EVAL_DIVERSITY_COLLAPSE"
+	// ErrCodeInvalidToolSet indicates an evolved tool whitelist violates the
+	// upper bound or would leave the agent with zero enabled tools (C6). The
+	// former wastes the tool budget; the latter is the exact dead-end the
+	// zero-intersection fallback guard (chat_cognition.go / sub/executor.go)
+	// prevents at runtime — the guardrail catches it at selection time, before
+	// a bad mutation is promoted.
+	ErrCodeInvalidToolSet GuardrailErrorCode = "EVAL_INVALID_TOOL_SET"
 )
 
 // GuardrailError wraps an error code with metadata for automated handling.
@@ -115,6 +122,21 @@ type EvolutionGuardrails struct {
 	// MaxLineageShare is the maximum allowed share for a single lineage (0-1, 0=disabled).
 	MaxLineageShare float64
 
+	// MaxToolsEnabled is the upper bound on the size of an evolved tool
+	// whitelist (C6). 0 disables the upper-bound check (all tools allowed, the
+	// pre-C6 behavior). A positive value means a Params["tools"] set larger than
+	// this is rejected at selection time — a spawned tool set that exceeds the
+	// budget both wastes capacity and may surface tools the deployment never
+	// intended to expose.
+	MaxToolsEnabled int
+
+	// requireAnyTool, when true, rejects an evolved whitelist that enables ZERO
+	// tools — the agent would otherwise be handed an empty tool list (the
+	// zero-intersection dead-end the runtime guard falls back from). Guarded by
+	// the manager so a legitimate "text-only" strategy is not rejected by
+	// default.
+	requireAnyTool bool
+
 	// Events stores historical guardrail events.
 	events []GuardrailEvent
 
@@ -146,6 +168,23 @@ func WithMaxStagnantGenerations(n int) GuardrailOption {
 func WithMaxLineageShare(share float64) GuardrailOption {
 	return func(g *EvolutionGuardrails) {
 		g.MaxLineageShare = share
+	}
+}
+
+// WithMaxToolsEnabled sets the upper bound on an evolved tool whitelist size
+// (C6). A non-positive value disables the bound.
+func WithMaxToolsEnabled(n int) GuardrailOption {
+	return func(g *EvolutionGuardrails) {
+		g.MaxToolsEnabled = n
+	}
+}
+
+// WithRequireAnyTool enables the "zero enabled tools is invalid" check (C6).
+// Off by default so text-only strategies are not rejected; the deployment turns
+// it on when it wants every strategy to advertise at least one tool.
+func WithRequireAnyTool(enabled bool) GuardrailOption {
+	return func(g *EvolutionGuardrails) {
+		g.requireAnyTool = enabled
 	}
 }
 
@@ -394,6 +433,69 @@ func (g *EvolutionGuardrails) RecordEvent(event GuardrailEvent) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.recordEventLocked(event)
+}
+
+// ValidateToolSet checks an evolved tool whitelist against the C6 guards: an
+// upper bound on set size and (optionally) the "at least one tool" invariant.
+// It does NOT mutate any state — it reports whether a candidate's chosen tool
+// set may move into selection/promotion. Called at selection time, before a bad
+// mutation is promoted, complementing the runtime zero-intersection fallback.
+//
+// Args:
+//   - generation: the generation number for event attribution.
+//   - tools: the parsed tool names the candidate whitelist would enable.
+//
+// Returns a GuardrailResult; ShouldStop=true means the proposed set is invalid.
+func (g *EvolutionGuardrails) ValidateToolSet(generation int, tools []string) *GuardrailResult {
+	result := &GuardrailResult{ShouldStop: false, Events: []GuardrailEvent{}}
+
+	g.mu.RLock()
+	maxTools := g.MaxToolsEnabled
+	requireAny := g.requireAnyTool
+	g.mu.RUnlock()
+
+	if maxTools > 0 && len(tools) > maxTools {
+		event := GuardrailEvent{
+			Level:           GuardrailWarning,
+			Rule:            "tool_set_upper_bound",
+			ErrorCode:       ErrCodeInvalidToolSet,
+			Message:         fmt.Sprintf("evolved tool whitelist (%d tools) exceeds upper bound %d", len(tools), maxTools),
+			Score:           float64(len(tools)),
+			Generation:      generation,
+			Timestamp:       time.Now(),
+			SuggestedAction: "cap the tool whitelist during mutation",
+		}
+		log.Warn("guardrail: tool set exceeds upper bound",
+			"code", ErrCodeInvalidToolSet,
+			"generation", generation,
+			"tool_count", len(tools),
+			"max_tools", maxTools,
+		)
+		result.Events = append(result.Events, event)
+		result.ShouldStop = true
+		g.RecordEvent(event)
+	}
+
+	if requireAny && len(tools) == 0 {
+		event := GuardrailEvent{
+			Level:           GuardrailCritical,
+			Rule:            "tool_set_empty",
+			ErrorCode:       ErrCodeInvalidToolSet,
+			Message:         "evolved strategy enables zero tools",
+			Generation:      generation,
+			Timestamp:       time.Now(),
+			SuggestedAction: "ensure the mutated tool whitelist keeps at least one tool enabled",
+		}
+		log.Warn("guardrail: evolved strategy enables zero tools",
+			"code", ErrCodeInvalidToolSet,
+			"generation", generation,
+		)
+		result.Events = append(result.Events, event)
+		result.ShouldStop = true
+		g.RecordEvent(event)
+	}
+
+	return result
 }
 
 // recordEventLocked stores an event and invokes the handler if set.

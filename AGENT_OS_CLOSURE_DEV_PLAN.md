@@ -88,7 +88,7 @@
 
 - **性质**：行为已满足，仅是观测缺口，不改变闭环结论。
 
-### N-11（Step Y 交付中）跨 agent 协作与工具特征不进入进化判定 —— 度量已闭环 ✅ / 作动未闭环 ⛔（2026-09-04 修订）
+### N-11（Step Y 交付中）跨 agent 协作与工具特征不进入进化判定 —— 度量已闭环 ✅ / 作动：工具 ✅、协作 ⛔（2026-09-04 二次修订）
 
 - **原状**：`agentipc.Bus` 无协作 success/timeout 度量，协作反馈完全未进进化；`agents/sub/executor.go` 的工具成败仅进经验蒸馏旁路（`emitSubTaskResult`），未作 evolved genome 特征。
 
@@ -96,25 +96,25 @@
 
 - **度量半边已落地（2026-09-04）**：`Request` 与 `Send` 两处出口各发一条协作回执（`feedback.CollaborationKind` 区分回答/投递受理）；每次工具调用经 binder 装饰器发一条回执。两者写 `collaboration` / `tool_call` 独立 source 的 fitness 证据，按 `asm.Current()` 现取归因，`RuntimeFitnessAggregator` 按策略 scope 加权读取。默认关闭。
 
-- **作动半边未落地（下一步的真实工作量）**：进化能**看到**协作与工具的真实成败，但**改不动**它们——
+- **作动半边：工具已落地 ✅ / 协作未落地 ⛔**——
 
-  - 工具通道：`GetToolSchemas()` 无条件把全量工具投给 LLM，且**已有** `Params["tools"]` 字段（`Mutator.mutateTool` 会变异它）在两条执行体**不曾被读取**来过滤——旋钮在但没接线；同时该字段不进 `EvidenceKey`（只含数值参数），工具差异无法归因。候选策略之间在工具维度上**实际同构**：分数会因工具成败而不同，但差异不来自它们各自的工具选择。原验收标准「一个『少调无用工具』的候选能因工具成功率提升而被 promote」当前**无法达成**。
+  - 工具通道 ✅（2026-09-04，Y.3-ACT）：`Params["tools"]` 已接到两条执行体的 schema 过滤（`agents.ToolWhitelistFromParams` + `agentfabric/chat_cognition.go:311`、`sub/executor.go:867`；零交集回退全量并告警），且归一化后的工具串已并入 `ComputeEvidenceKey`（`mutation/types.go:199`，排序、顺序无关）。端到端断言 `tool_dimension_transmission_test.go`：仅 `Params["tools"]` 不同的两个策略在 `StrategyHash`、`EvidenceKey`、`tool_call` 通道、聚合 `Window` 四个环节全部分得开。原验收标准「『少调无用工具』的候选因工具成功率提升被 promote」**已可达成**（需 `tool_weight > 0`）。
 
-  - 协作通道：`agentsyscall` 对 agent 暴露的只有 `spawn_agent` / `create_task`，**没有「问某个 agent」这个可调动作**；协作由 bridge 按 topic 路由触发（`cmd/ares/evolution_ipc.go`），不是 agent 的决策。所以"问哪个 agent 该不该"目前不是策略能做的选择。
+  - 协作通道 ⛔：`agentsyscall` 对 agent 暴露的只有 `spawn_agent` / `create_task`，**没有「问某个 agent」这个可调动作**；协作由 bridge 按 topic 路由触发（`cmd/ares/evolution_ipc.go`），不是 agent 的决策。所以"问哪个 agent 该不该"目前不是策略能做的选择。
 
-- **影响（修订）**：N-11 从「进化看不见」降级为「进化看得见但改不动」。前者是盲区，后者是**开环反馈**——证据在积累、判决分会分化，但下一代不会因此在协作/工具维度上真的变好。
+- **影响（再修订）**：工具维度已从「看得见改不动」转为闭环（默认 `tool_weight=0` 是刻意闸门，不是缺陷）；协作维度仍是**开环反馈**——证据在积累、判决分会分化，但下一代不会因此在协作维度上真的变好。
 
-- **0.3.1 发布措辞（修订）**：可写"协作与工具的真实成败已作为独立证据源进入进化判决（默认关闭）"；**禁止**写"进化作用于跨 agent 协作与工具选择"——作动器落地前，判决影响不到这两个维度的行为。
+- **0.3.1 发布措辞（再修订）**：可写"协作与工具的真实成败已作为独立证据源进入进化判决（默认关闭）"，且可写"进化可作用于工具选择（白名单已接线，需开启 `tool_weight`）"；**禁止**写"进化作用于跨 agent 协作"——协作作动器未落地。
 
-### N-12（新增，2026-09-04，已核实修正 2026-09-04）进化的可变面窄于三通道反馈的维度
+### N-12（2026-09-04 新增，同日两次修正）进化的可变面窄于三通道反馈的维度 —— 工具半边已闭 ✅
 
-- **现状（修正）**：`mutation.Strategy`（`internal/ares_evolution/mutation/types.go:82`）的**顶层**可变字段只有 `PromptTemplate` 与 `Params`，但 `Params` 是任意 map，**工具字段实际已存在**——`Mutator.mutateTool`（`mutation/mutator.go:390`）读写 `Params["tools"]`（`string`，逗号分隔工具名），由 `option.go` 的 `WithToolPool` 配置候选顶替。即"旋钮已存在且 mutation 已覆盖"，**不是没有旋钮**。
+- **原判**：`mutation.Strategy` 顶层可变字段只有 `PromptTemplate` 与 `Params`，但工具旋钮**本就存在**——`Mutator.mutateTool`（`mutation/mutator.go:400`）读写 `Params["tools"]`（`string`，逗号分隔），由 `option.go` 的 `WithToolPool` 供候选。缺的是**接线 + 归因入 key**，不是缺字段。
 
-- **真正的缺口（本次修正的核心）**：这个已存在的 `Params["tools"]` **没有接到执行器上**——两条执行体 `GetToolSchemas()`（`sub/executor.go:860`、`agentfabric/chat_cognition.go:304`）无条件全量投给 LLM，从不读 `Params["tools"]` 过滤。且 `ComputeEvidenceKey`（`mutation/types.go:194`）**只把** **`float64`** **数值参数纳入 key**，`string`/`[]string` 工具字段**不进 EvidenceKey**——两个只在工具字段上不同的策略会落在同一 EvidenceKey，`tool_call` 证据归到一起，无法按"工具选择"区分归因。
+- **已闭（Y.3-ACT）**：接线与归因两项均落地（见 N-11 工具半边）。同批修掉两个会让工具维度静默失效的缺陷：`Clone()` 不再继承 hash 缓存（否则子代命中父代 ScoreCache 拿到父代分数，选择压力归零）；`numericParam` 覆盖 int/uint/float 全族（此前裸 `float64` 断言丢掉 `top_k`/`max_steps`/`memory_limit`）。
 
-- **后果**：工具选择与协作对象这两类反馈，都不被现有可变面结构性约束（协作甚至没有字段）。工具的缺的不是字段本身，而是**接线 + 归因入 key**；协作的缺的是**字段/可调动作**。两者不可混为一谈。
+- **仍缺的是协作半边**：agent 没有"问某个 agent"的字段/可调动作。工具与协作不可混为一谈。
 
-- **性质**：这是 N-11 作动半边的根因（工具半边），也是 Step Y 修订后的核心交付对象（见 Y.3-ACT）。不是新缺陷，是原计划未识别的前置条件。
+- **遗留（2026-09-04 更新，不改变上述结论）**：原列三项已闭——`agentloop/engine.go` 第三执行体已接白名单（C5，`Request.ToolWhitelist`）、`Payload["tools"]→params` 装配优先级已定（C5，`agents.MergeNodeParams`，节点 Metadata > 全局策略）、工具集 allowlist 上界校验已接进选择路径（C6，`dream_cycle.findWinner` 调 `ValidateToolSet`，越界候选进 arena 前即被拒）。**真正仍缺的是 `budget`/`prior` 的消费语义**：两者只被装进 params，没有执行体实现"budget 用尽后该工具不再出现"（见 `Y1_SINGLE_AGENT_TOOL_DAG_DESIGN.md` §12.5-2）。
 
 ***
 
@@ -406,25 +406,25 @@ Bootstrap 单独使用时没有 agent population，也就没有 live DAG。此�
 
 ## 交付边界（2026-09-04 更新）
 
-Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因」；Step 7 交付「判决作用于真实 agent 拓扑」；Step 4 交付「候选特异性判决（真实执行 A/B，默认关闭）」；**Step Y 的 OBSERVE 半边交付「三通道真实反馈进入判决（默认关闭）」**。
+Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因」；Step 7 交付「判决作用于真实 agent 拓扑」；Step 4 交付「候选特异性判决（真实执行 A/B，默认关闭）」；**Step Y 的 OBSERVE 半边交付「三通道真实反馈进入判决（默认关闭）」，ACT 半边交付「工具选择可被进化作动」（Y.3-ACT，默认** **`tool_weight=0`）**。
 
-**`进化已作用于真实 agent（单任务 + 协作）`** **目前仍不可写进发布文档。** 缺的是 Step Y 的 ACT 半边：判决分已经会因协作/工具的真实成败而分化，但下一代在这两个维度上的**行为**不会因此改变（N-11 修订、N-12）。
+**`进化已作用于真实 agent（单任务 + 协作）`** **目前仍不可写进发布文档。** 工具维度的 ACT 已闭环（Y.3-ACT），但协作维度仍是开环：判决分会因协作真实成败而分化，下一代在协作维度上的**行为**却不会因此改变（N-11 二次修订、N-12）。
 
 仍需如实声明的边界：
 
-| 编号   | 内容                                                   | 状态                                                |
-| ---- | ---------------------------------------------------- | ------------------------------------------------- |
-| N-3  | 覆盖率 59.2% < 65% GA 目标                                | 0.4.x 补覆盖；`postgres/repositories` 需真 PG 环境，非补测试可解 |
-| N-11 | 协作与工具：**看得见、改不动**（开环反馈）                              | OBSERVE ✅ / ACT ⛔                                 |
-| N-12 | 工具字段 `Params["tools"]` 存在但未接线、不进 EvidenceKey；协作无可调动作 | ACT 根因：工具走"接线+归因入 key"，协作需新字段/syscall             |
-| N-2  | 进化改不到单 agent 内部步骤                                    | Y.1 已重估为改执行模型，拆出单独立项                              |
+| 编号   | 内容                                | 状态                                                |
+| ---- | --------------------------------- | ------------------------------------------------- |
+| N-3  | 覆盖率 59.2% < 65% GA 目标             | 0.4.x 补覆盖；`postgres/repositories` 需真 PG 环境，非补测试可解 |
+| N-11 | 工具：看得见也改得动 ✅；协作：**看得见、改不动**（开环反馈） | OBSERVE ✅ / ACT：工具 ✅、协作 ⛔                         |
+| N-12 | 工具半边已闭（接线 + 归因入 key 均落地）；协作仍无可调动作 | 工具 ✅；协作需新字段/syscall                               |
+| N-2  | 进化改不到单 agent 内部步骤                 | Y.1 已重估为改执行模型，拆出单独立项                              |
 
 ### 下一步排期建议（按「能否独立完成」排序）
 
-1. **Y.3-ACT（工具通道接线 + 归因入 key）** — 不依赖任何方向决策，是让 OBSERVE 侧证据从死数据变成可作用反馈的最小改动。建议先做这个（复用既有 `Params["tools"]`，非新增字段）。
-2. **P1-2**（`agentloop/engine.go:325,332` 吞错无注释）— deep review 已核实项，两行注释或改返回。
-3. **Y.2-ACT（协作 syscall）** — 新增 syscall 语义，属方向性改动，按 §0.4 先经认可；与「影子 deny-list 扩到协作」绑定同批。
-4. **Y.1（单 agent DAG）** — 改执行模型，单独立项，先答清三个前置问题（见 Y.1）。
+1. **~~Y.3-ACT（工具通道接线 + 归因入 key）~~** ✅ 已完成（2026-09-04）。原列三项小尾巴（第三执行体接线、`Payload["tools"]→params` 优先级、工具集 allowlist 上界）已随方案 C5/C6 全部闭合；剩余边界见 `Y1_SINGLE_AGENT_TOOL_DAG_DESIGN.md` §12.5。
+2. **~~P1-2~~**~~（`agentloop/engine.go`~~ ~~吞错无注释）~~ ✅ 已落地（2026-09-04，与 C1 同批复核）：`engine.go:346-356` 等处的最佳失效注释已存在并核实为完整（`_ = AddStructuredMessage`/`_ = AddMessage` 均带 "best-effort" + 理由）。
+3. **Y.2-ACT（协作 syscall）** — `ask_agent` syscall 已随 commit b501eb10 落地；与「影子 deny-list 扩到协作」绑定同批。
+4. **Y.1（单 agent DAG）** — 方案 C（§11 C1–C7）执行记录见 `Y1_SINGLE_AGENT_TOOL_DAG_DESIGN.md` §12（2026-09-04）。**诚实状态**：C1/C4/C5-tools 生产真实生效；C6 接线进 dream\_cycle 选择路径；C7 为真实集成测试（事件→投影→evidence→WindowToolStep）；C2 投影层可运行但**未接进 serve 循环**（部署决策）；C3 生产 tool\_call evidence 经 recorder 写入、`WindowToolStep` 可读出。**budget/prior 消费语义未落地**。`make check` 全绿。详见 §12.5 边界。
 
 ***
 
@@ -446,13 +446,13 @@ Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因�
 
 ### Y.0 现状核实（2026-09-03 首次核实 / 2026-09-04 更新）
 
-| 通道         | OBSERVE                                      | ACT                                                                          | 代码位置                                                              |
-| ---------- | -------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| 单 agent 任务 | ✅ 已闭环（`RuntimeObserver` 读任务事件）               | ⚠️ 只作动到 peer 拓扑，改不到 agent 内部步骤（N-2）                                          | `agentloop.Engine.Run` / `executor.Execute`                       |
-| 工具调用       | ✅ **已落地**（2026-09-04，binder 装饰器）             | ⚠️ **旋钮有但没接线**：`Params["tools"]` 已存在且可变异，但两条执行体不读取过滤，也不进 `EvidenceKey`（N-12） | `sub/tool_observer.go` / `agentfabric/chat_cognition.go:380`      |
-| 跨 agent 协作 | ✅ **已落地**（2026-09-04，`Request` + `Send` 双出口） | ❌ **无可调动作**：agent 没有「问某个 agent」的工具，协作由 bridge 路由触发                           | `agentipc/primitives.go`（非 `bus.go`）/ `cmd/ares/evolution_ipc.go` |
+| 通道         | OBSERVE                                      | ACT                                                                                                            | 代码位置                                                                                |
+| ---------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 单 agent 任务 | ✅ 已闭环（`RuntimeObserver` 读任务事件）               | ⚠️ 只作动到 peer 拓扑，改不到 agent 内部步骤（N-2）                                                                            | `agentloop.Engine.Run` / `executor.Execute`                                         |
+| 工具调用       | ✅ **已落地**（2026-09-04，binder 装饰器）             | ✅ **已落地**（2026-09-04，Y.3-ACT）：`Params["tools"]` 已接两条执行体的 schema 过滤 + 并入 `EvidenceKey`，默认 `tool_weight=0` 为刻意闸门 | `sub/tool_observer.go` / `agentfabric/chat_cognition.go:311` / `agents/strategy.go` |
+| 跨 agent 协作 | ✅ **已落地**（2026-09-04，`Request` + `Send` 双出口） | ❌ **无可调动作**：agent 没有「问某个 agent」的工具，协作由 bridge 路由触发                                                             | `agentipc/primitives.go`（非 `bus.go`）/ `cmd/ares/evolution_ipc.go`                   |
 
-**结论（修订）**：`ShadowExecutor`（N-1/Step4）已把"候选实跑"做实；三条通道的 OBSERVE 现已全部闭环。**剩下的全部工作量在 ACT 半边**，而它的前置条件是把已存在的旋钮接到执行器，并补上归因缺口（N-12）——工具已有旋钮，只缺接线和归因。
+**结论（二次修订）**：`ShadowExecutor`（N-1/Step4）已把"候选实跑"做实；三条通道的 OBSERVE 全部闭环；ACT 半边工具维度已闭环（接线 + 归因均落地）。**剩下的 ACT 工作量集中在协作维度**——它缺的不是接线而是「问某个 agent」这个可调动作本身（N-12）。
 
 ### Y.1 单 agent 内部任务 DAG 供给（闭 N-2 的一半）—— ⛔ 已重估：改执行模型，非接线，单独排期
 
@@ -516,30 +516,26 @@ Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因�
 
 `outcome` 分类：`nil` → success；`ErrToolNotFound` → **not\_found**（策略要了一个不存在的工具，是决策错误，与"工具跑了但失败"不同，值得区分）；其余 → failure；ctx 已死 → `Unobserved`。装饰位置在 planner bridge 挂载**之后**，所以 planner 兜底解析的调用也被计量。
 
-#### Y.3-ACT ⛔ 未落地 —— **这是下一步最小可行的真实交付**
+#### Y.3-ACT ✅ 已落地（2026-09-04）
 
-原文要"新增 `ToolSelectionGenome`"。核实后**不需要新增任何字段**——工具旋钮已存在（`mutation.Strategy.Params["tools"]`，`string` 逗号分隔，`Mutator.mutateTool` 会变异它），缺的是**接线到执行器 + 归因入 EvidenceKey**。
+原文要"新增 `ToolSelectionGenome`"。核实后**不需要新增任何字段**——工具旋钮已存在（`mutation.Strategy.Params["tools"]`，`string` 逗号分隔，`Mutator.mutateTool` 会变异它），缺的是**接线到执行器 + 归因入 EvidenceKey**，两项现已完成。
 
-- 现状：`GetToolSchemas()` 无条件把全量工具投给 LLM（`chat_cognition.go:302`、`executor.go:860`），两条执行体**从不读取** `Params["tools"]` 过滤；且 `ComputeEvidenceKey` 只含 `float64` 数值参数（`types.go:194-230`），工具字段不进 key。
+**实际做法**：
 
-- 后果：候选策略之间在工具维度**实际同构**。分数会因工具成败而不同，但差异不来自它们各自的工具选择——原验收标准「一个『少调无用工具』的候选能因工具成功率提升而被 promote」**当前无法达成**。
+1. **接线**：新增 `agents.ToolWhitelistFromParams`（`agents/strategy.go`）解析 `Params["tools"]`，两条执行体在把 schema 转成 LLM 工具**之前**过滤（`agentfabric/chat_cognition.go:311`、`sub/executor.go:867`）。过滤在投给 LLM 之前而不是在 `CallTool` 处拒绝：让 LLM 看见再拦会浪费一轮，并把"被策略自己禁掉"误记成 `not_found`。
+2. **归因入 key**：`ComputeEvidenceKey`（`mutation/types.go:199`）并入归一化工具串（trim + 排序，故 `"b,a"` 与 `"a, b"` 同 key）。这是与"只接执行器"的本质差别——只接执行器改变行为但不改变归因，两个只在工具上不同的策略仍会落在同一 key、`tool_call` 证据混在一起。
+3. **空白名单 guard**：白名单与注册工具零交集时**回退全量**并告警，不把空工具表交给 LLM（否则 `available_tools=0` 饿死）。空/缺失 `Params["tools"]` = 不过滤，默认行为不变（零值可用，§5.4）。
+4. **同批修掉两个静默失效点**：`Clone()` 不继承 hash 缓存（否则子代命中父代 ScoreCache、拿父代分数，选择压力归零）；`numericParam` 覆盖 int/uint/float 全族（裸 `float64` 断言会丢 `top_k`/`max_steps`/`memory_limit`）。另把 `extractToolNames` 的词表从裸动词换成真实注册名别名表（`experience_hints.go`），否则 guided 变异持续写出零交集白名单。
 
-**最小可行做法（建议下一步做这个）**：
+**验收结果**：
 
-1. **接线**：两条执行体读取活跃策略时，按 `Params["tools"]` 白名单**过滤** **`GetToolSchemas()`** **的输出**。读取点已存在（`activeStrategy(ctx)` / `renderPromptAndParams`），无需新接线。若执行体已接入但字段为 `string`，只需解析逗号分隔的工具名并过滤。工具池（`WithToolPool`）维持现状即可——变异仍可产出不同工具组合。
-2. **归因入 key**：让工具字段进入 `ComputeEvidenceKey`。这是本次与"新增字段"方案的本质差别——单接执行器只改变行为，不改变归因；两个只在 `Params["tools"]` 上不同的策略必须落在**不同 EvidenceKey**，否则它们的 `tool_call` 证据混在一起，判决分无法按"工具选择"区分。需要把规范化后的工具串（排序后的工具名）并入 EvidenceKey。
-3. 过滤发生在**投给 LLM 之前**，不是在 `CallTool` 处拒绝：让 LLM 看见再拦，浪费一轮并污染 `not_found` 计数（会被记成"策略要了不存在的工具"，而实际是被策略自己禁掉的）。
-4. 空/缺失 `Params["tools"]` = 不过滤（零值可用，§5.4），默认行为不变。
+- `TestToolWhitelistFromParams` / `TestToolWhitelistZeroIntersectionFallsBackToFullSet`：旋钮能拧，且零交集不致空表。
 
-**验收（可独立完成，不依赖任何方向决策）**：
+- `TestComputeEvidenceKey_IncludesToolsField` / `_ToolOrderIndependent` / `_NoToolsField` / `_IncludesIntegerParams`：归因分得开、顺序无关、无工具字段时不加后缀。
 
-- 两个候选策略只在 `Params["tools"]` 上不同 → `GetToolSchemas()` 投给 LLM 的工具集不同（这是"旋钮真的能拧"的直接断言）。
+- **端到端** `tool_dimension_transmission_test.go`（§9.5 最小验收信号）：按四链断言"仅 `Params["tools"]` 不同 → fitness 不同"——①`StrategyHash` 分得开 ②`EvidenceKey` 分得开 ③`Weights.ToolCall>0` 通道已武装 ④`Window` 真读到差异，失败工具集的均分更低。配套 `TestToolDimension_UnarmedChannelIsInert` 把默认 0 权重固化为**刻意闸门**：同样的证据在未武装时不移动任何分数。
 
-- 白名单外的工具从不进入 LLM 的工具列表，且**不产生** **`not_found`** **记录**（区分"策略禁用"与"工具不存在"）。
-
-- **归因断言**：两个只在 `Params["tools"]` 上不同的策略落在**不同的** **`EvidenceKey`**；它们各自产生的 `tool_call` 证据被分开读取，判决可区分。
-
-- **端到端**：给定一个总是失败的工具，把它排除的候选在 `tool_call` 源上的均分高于未排除的候选（`tool_weight > 0` 时判决分随之分化）。这才是原验收标准可达成的形式。
+**遗留（2026-09-04 更新，不影响本项验收）**：初稿列的三项已随方案 C 闭合——第三执行体（`agentloop/engine.go`）已接过滤、`Payload["tools"]→params` 优先级已定、工具集 allowlist 上界已接进 `findWinner`。剩余边界见 `Y1_SINGLE_AGENT_TOOL_DAG_DESIGN.md` §12.5（`budget`/`prior` 无消费语义；`Projector` 未接 serve 循环；genome 候选生成路径未接护栏）。
 
 ### Y.4 三条通道合并成"一条线"（收口）✅ 机制已就绪（做法与原计划不同）
 
@@ -571,9 +567,9 @@ Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因�
 
 **Y-OBSERVE 验收 ✅ 已达成**：开启 `channel_feedback` 两通道 + 非零权重，跑真实协作与工具调用 → 三通道各产生归因到策略的独立源证据 → G2 判定读三维 → 两个任务通道表现相同的策略因协作/工具差异而判决分化。
 
-**Y-ACT 验收 ⛔ 未达成**：候选**因自己在某通道上的不同选择**（而非同构下的运气）被 promote，且部署后同 agent 在该通道的表现提升。Y.3-ACT（工具白名单）落地后工具维度可达成；协作维度需先有协作 syscall。
+**Y-ACT 验收：工具维度 ✅ 已达成 / 协作维度 ⛔ 未达成**：候选**因自己在某通道上的不同选择**（而非同构下的运气）被 promote。工具维度由 Y.3-ACT 落地，`tool_dimension_transmission_test.go` 断言仅工具白名单不同即产生不同判决分（需 `tool_weight > 0`）；协作维度需先有协作 syscall。
 
-**发布措辞的硬约束**：只有 Y-ACT 达成后，才可以写「进化已作用于真实 agent（单任务 + 协作）」。当前只能写「协作与工具的真实成败已进入进化判决（默认关闭）」。
+**发布措辞的硬约束（二次修订）**：可以写「进化已作用于工具选择（默认关闭）」；**不可以**写「进化已作用于真实 agent（单任务 + 协作）」——协作 ACT 未达成，单 agent 内部步骤仍受 N-2 限制。
 
 ***
 
@@ -599,26 +595,26 @@ Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因�
 
 > 对 Y.2-OBSERVE / Y.3-OBSERVE / P1-3 三项落地实现的复核。
 
-| 检查点                                                            | 结果                                                  |
-| -------------------------------------------------------------- | --------------------------------------------------- |
-| `internal/feedback` 纯数据包（零依赖标准库以外），生产方与消费方各自在消费点声明 observer 接口 | ✅ 内核 IPC 总线与工具层零 import 进化层；接口在消费方（§5.2）            |
-| `Send` 与 `Request` 双出口观测                                       | ✅ 生产路径（bridge 走 `Send`）确实被覆盖——这是原计划会漏掉的那处           |
-| `CollaborationKind` 区分 request/send                            | ✅ 两者度量对象不同，不合并成单一成功率                                |
-| `outcome` 初值 `Unobserved`，只在已知出口赋值                             | ✅ 未预见的返回路径（含 panic unwind）不写假成功                     |
-| 调用方 cancel → 不产生记录                                             | ✅ 发起方走开不说明被问方好坏；`Observable()` 在 recorder 侧统一过滤     |
-| `Broadcast` 不观测                                                | ✅ 扇出无单一归因对象，记聚合投递数是错误归责                             |
-| 工具侧用 binder 装饰器而非执行体内埋点                                        | ✅ 一处覆盖两条生产执行体，第三条路径无法绕过；嵌入接口，将来新增方法不会静默丢实现          |
-| `ErrToolNotFound` 单列 `not_found`                               | ✅ "策略要了不存在的工具"是决策错误，与"工具跑了但失败"分开                    |
-| 装饰位置在 planner bridge 之后                                        | ✅ planner 兜底解析的调用也被计量                               |
-| 独立 source + 按策略 scope + weight=0 整源跳过                          | ✅ 守住 N-1 隔离；未开启的通道不得用样本数许可 staging 判决               |
-| `enabled` / `weight` 分离                                        | ✅ 可先审计证据再放权重（分阶段采纳）                                 |
-| 归因用 `asm.Current()` 现取                                         | ✅ 同 Step 6.2 的理由，不冻结快照                              |
-| 不可归因记录丢弃并计数（`Dropped()`）                                       | ✅ 静默丢弃比计数丢弃更坏；`latency_ms` 仅审计不折进分数                 |
-| P1-3：panic 走与 handler error 相同的唤醒协议                            | ✅ 只 log 不唤醒会让调用方白等满 timeout（有专门测试断言不烧 timeout）      |
-| P1-3：panic 值不进 error，只进注入 logger                               | ✅ 可能含内部路径/请求数据（§3.5）；库层不直接打印（§9.1），两个生产构造点已接 logger |
-| P1-3：`Send` 的同步 panic 刻意不 recover                              | ✅ 跑在调用方 goroutine 上，调用方可自行 recover，吞掉才是隐藏错误         |
-| 队列有界（256）+ 满则丢弃并计数                                             | ✅ 丢一条 fitness 样本可接受，给 agent 的工具调用加上存储延迟不可接受         |
-| 遗留                                                             | ⚠️ 影子 deny-list 未扩到协作（当前无协作发起路径，风险为零；与 Y.2-ACT 绑定）  |
-| 遗留                                                             | ⚠️ OBSERVE 已闭环但 ACT 未闭环 → 开环反馈，见 N-11 修订            |
+| 检查点                                                            | 结果                                                       |
+| -------------------------------------------------------------- | -------------------------------------------------------- |
+| `internal/feedback` 纯数据包（零依赖标准库以外），生产方与消费方各自在消费点声明 observer 接口 | ✅ 内核 IPC 总线与工具层零 import 进化层；接口在消费方（§5.2）                 |
+| `Send` 与 `Request` 双出口观测                                       | ✅ 生产路径（bridge 走 `Send`）确实被覆盖——这是原计划会漏掉的那处                |
+| `CollaborationKind` 区分 request/send                            | ✅ 两者度量对象不同，不合并成单一成功率                                     |
+| `outcome` 初值 `Unobserved`，只在已知出口赋值                             | ✅ 未预见的返回路径（含 panic unwind）不写假成功                          |
+| 调用方 cancel → 不产生记录                                             | ✅ 发起方走开不说明被问方好坏；`Observable()` 在 recorder 侧统一过滤          |
+| `Broadcast` 不观测                                                | ✅ 扇出无单一归因对象，记聚合投递数是错误归责                                  |
+| 工具侧用 binder 装饰器而非执行体内埋点                                        | ✅ 一处覆盖两条生产执行体，第三条路径无法绕过；嵌入接口，将来新增方法不会静默丢实现               |
+| `ErrToolNotFound` 单列 `not_found`                               | ✅ "策略要了不存在的工具"是决策错误，与"工具跑了但失败"分开                         |
+| 装饰位置在 planner bridge 之后                                        | ✅ planner 兜底解析的调用也被计量                                    |
+| 独立 source + 按策略 scope + weight=0 整源跳过                          | ✅ 守住 N-1 隔离；未开启的通道不得用样本数许可 staging 判决                    |
+| `enabled` / `weight` 分离                                        | ✅ 可先审计证据再放权重（分阶段采纳）                                      |
+| 归因用 `asm.Current()` 现取                                         | ✅ 同 Step 6.2 的理由，不冻结快照                                   |
+| 不可归因记录丢弃并计数（`Dropped()`）                                       | ✅ 静默丢弃比计数丢弃更坏；`latency_ms` 仅审计不折进分数                      |
+| P1-3：panic 走与 handler error 相同的唤醒协议                            | ✅ 只 log 不唤醒会让调用方白等满 timeout（有专门测试断言不烧 timeout）           |
+| P1-3：panic 值不进 error，只进注入 logger                               | ✅ 可能含内部路径/请求数据（§3.5）；库层不直接打印（§9.1），两个生产构造点已接 logger      |
+| P1-3：`Send` 的同步 panic 刻意不 recover                              | ✅ 跑在调用方 goroutine 上，调用方可自行 recover，吞掉才是隐藏错误              |
+| 队列有界（256）+ 满则丢弃并计数                                             | ✅ 丢一条 fitness 样本可接受，给 agent 的工具调用加上存储延迟不可接受              |
+| 遗留                                                             | ⚠️ 影子 deny-list 未扩到协作（当前无协作发起路径，风险为零；与 Y.2-ACT 绑定）       |
+| 遗留                                                             | ⚠️ 协作维度 OBSERVE 已闭环但 ACT 未闭环 → 开环反馈，见 N-11 二次修订（工具维度已闭环） |
 
 **验证**：`go build ./...`、`go vet ./...`、`gofmt -l .`、`golangci-lint run`（0 issues）、`go test -race`（agentipc / ares\_evolution / agents/sub / ares\_bootstrap / ares\_config / aresrecovery / introspect / cmd/ares）、`make gate`、`git diff --check` 全部通过。

@@ -242,6 +242,17 @@ func (e *taskExecutor) emitEvent(ctx context.Context, eventType ares_events.Even
 	}
 }
 
+// toolErrorMessage normalizes a tool execution error into the C1 event
+// contract's error field (the same contract chat_cognition.go uses). nil ->
+// "" so the unified payload is JSON-friendly and the trajectory projection
+// can distinguish "failed with message" from "no error".
+func toolErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // emitSubTaskResult publishes a sub_task.result event when a task completes,
 // so consumers (SkillOutcomeRecorder, experience distillation) observe the
 // outcome. No-op when the event store is nil or the task carries no id.
@@ -706,6 +717,12 @@ func (e *taskExecutor) renderPromptAndParams(ctx context.Context, task *models.T
 		}
 	}
 
+	// C5: overlay node-level ToolStep attributes (tools/budget/prior) from the
+	// task payload onto the global strategy params, with NODE OVER GLOBAL
+	// priority (§8.5). Mirrors chat_cognition.go so both peer executors honour
+	// the same node-level tool-selection knob.
+	params = agents.MergeNodeParams(params, task.Payload)
+
 	prompt, err := e.renderPrompt(tpl, task, profile)
 	if err != nil {
 		return "", nil, err
@@ -920,24 +937,36 @@ func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*mode
 		Content:   resp.Content,
 		ToolCalls: resp.ToolCalls,
 	})
-	for _, tc := range resp.ToolCalls {
+	for seq, tc := range resp.ToolCalls {
 		e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
-			KeyAgentID:     agentID,
-			"tool_name":    tc.Function.Name,
-			"tool_call_id": tc.ID,
+			ares_events.EventKeyAgentID:    agentID,
+			ares_events.EventKeyToolName:   tc.Function.Name,
+			ares_events.EventKeyToolCallID: tc.ID,
+			ares_events.EventKeyRound:      st.Round,
+			ares_events.EventKeySeq:        seq,
 		})
 
 		result, err := e.executeToolCall(ctx, tc, agentID)
+		success := err == nil
 		if err != nil {
 			log.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
 			result = fmt.Sprintf("error: %s", err.Error())
 		}
 
-		e.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
-			KeyAgentID:     agentID,
-			"tool_name":    tc.Function.Name,
-			"tool_call_id": tc.ID,
-		})
+		// C1: unified tool-call completed contract (round/seq/success/error/
+		// arg_shape). Mirrors chat_cognition.go so the trajectory projection
+		// (Y1 C2) reads the same keys from both production executors.
+		e.emitEvent(ctx, ares_events.EventToolCallCompleted, ares_events.ToolCompletedPayload{
+			AgentID:     agentID,
+			ToolName:    tc.Function.Name,
+			ToolCallID:  tc.ID,
+			Round:       st.Round,
+			Seq:         seq,
+			Success:     success,
+			Error:       toolErrorMessage(err),
+			ArgShape:    ares_events.ToolArgShape(tc.Function.Arguments),
+			ExtraResult: result,
+		}.AsMap())
 		st.Messages = append(st.Messages, &core.LLMMessage{
 			Role:       "tool",
 			Content:    result,

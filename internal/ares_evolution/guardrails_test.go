@@ -612,3 +612,52 @@ func TestGuardrailEvent_ScoreFieldPopulated(t *testing.T) {
 	require.Len(t, result2.Events, 1)
 	assert.Equal(t, 40.0, result2.Events[0].Score)
 }
+
+func TestValidateToolSet(t *testing.T) {
+	defer discardLogs()()
+
+	t.Run("within_bound_no_stop", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithMaxToolsEnabled(3), WithRequireAnyTool(true))
+		res := g.ValidateToolSet(1, []string{"a", "b"})
+		assert.False(t, res.ShouldStop, "a 2-tool set within bound 3 must not stop")
+		assert.Empty(t, res.Events)
+	})
+
+	t.Run("exceeds_bound_stops_and_counts", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithMaxToolsEnabled(2))
+		res := g.ValidateToolSet(1, []string{"a", "b", "c"})
+		assert.True(t, res.ShouldStop, "a 3-tool set against bound 2 must stop")
+		require.Len(t, res.Events, 1)
+		assert.Equal(t, ErrCodeInvalidToolSet, res.Events[0].ErrorCode)
+		assert.Equal(t, "tool_set_upper_bound", res.Events[0].Rule)
+		// The event is recorded so the metrics/metrics observer can count it.
+		assert.Len(t, g.Events(), 1)
+	})
+
+	t.Run("zero_tools_rejected_when_required", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithRequireAnyTool(true))
+		res := g.ValidateToolSet(1, nil)
+		assert.True(t, res.ShouldStop, "zero enabled tools must stop when requireAnyTool")
+		require.Len(t, res.Events, 1)
+		assert.Equal(t, "tool_set_empty", res.Events[0].Rule)
+	})
+
+	t.Run("zero_tools_allowed_when_not_required", func(t *testing.T) {
+		// Text-only strategies are legitimate; the check is opt-in.
+		g, _ := NewEvolutionGuardrails()
+		res := g.ValidateToolSet(1, nil)
+		assert.False(t, res.ShouldStop)
+	})
+
+	t.Run("disabled_bound_does_not_cap", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails() // MaxToolsEnabled == 0 (disabled)
+		res := g.ValidateToolSet(1, []string{"a", "b", "c", "d", "e"})
+		assert.False(t, res.ShouldStop, "a disabled upper bound must not reject any set size")
+	})
+
+	t.Run("exactly_at_bound_ok", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithMaxToolsEnabled(3))
+		res := g.ValidateToolSet(1, []string{"a", "b", "c"})
+		assert.False(t, res.ShouldStop, "a set exactly at the bound is allowed")
+	})
+}

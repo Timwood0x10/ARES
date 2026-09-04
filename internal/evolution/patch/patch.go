@@ -40,6 +40,15 @@ const (
 
 	// ── Agent role mutations ──────────────────────────
 	PatchChangeInstruction // Change an AgentProfile.Instructions (candidate evolution)
+
+	// ── Node attribute mutations ─────────────────────
+	// PatchSetNodeMetadata updates a single live-DAG node's Metadata map
+	// (Y1 方案C C4). This is the "作动面" for a ToolStep node: enabled/budget/
+	// prior are node attributes the evolution can patch without restructuring
+	// the DAG. The differ emits this only for metadata-only changes; a DAG used
+	// to produce ZERO patches for those (WorkflowDiffer only compared node/edge
+	// presence), so a metadata-only gene mutation was invisible to evolution.
+	PatchSetNodeMetadata
 )
 
 // String returns a human-readable name for the patch type.
@@ -71,6 +80,8 @@ func (pt PatchType) String() string {
 		return "change_backoff"
 	case PatchChangeInstruction:
 		return "change_instruction"
+	case PatchSetNodeMetadata:
+		return "set_node_metadata"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(pt))
 	}

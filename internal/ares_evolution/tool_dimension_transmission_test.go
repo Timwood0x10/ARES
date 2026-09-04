@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/toolprojection"
 )
 
 // This file holds the end-to-end assertion demanded by the Y.1 design review
@@ -146,4 +148,117 @@ func TestToolDimension_UnarmedChannelIsInert(t *testing.T) {
 	if goodWin.Mean != badWin.Mean {
 		t.Errorf("with the channel unarmed the tool difference must be invisible: good=%v bad=%v", goodWin.Mean, badWin.Mean)
 	}
+}
+
+// TestToolStepMetadata_EndToEndClosedLoop is the C7 acceptance of the Y.1 plan:
+// a metadata-only gene difference — the C4 作动面 (an evolved ToolStep node's
+// budget/prior/enabled attribute) — must transmit all the way to a different
+// selection signal, via the tool_step_id process attribution that the C1 event
+// contract feeds and the C2 projection aggregates.
+//
+// The plan (§11 C7) phrases it as: two genes that differ only in ONE node's
+// ToolStep.Metadata must split the transmission links AND let the GA promote
+// the higher-success-rate side (needs tool_weight>0). Here we assert the
+// observable backbone of that loop: distinct tool_step_ids from a differing
+// metadata-driven tool set produce a distinct aggregated window (the G2 judge
+// reads this), so evolution can select for the better process.
+func TestToolStepMetadata_EndToEndClosedLoop(t *testing.T) {
+	// REAL chain (C7 accepted as an integration test, not a hand-built one):
+	// 1. C1 contract events (exactly what the three executors emit) land in the
+	//    event store.
+	// 2. Projector.Run (C2) reads them, projects ToolSteps, and writes each
+	//    step's success rate as tool_call fitness evidence carrying tool_step_id.
+	// 3. RuntimeFitnessAggregator.WindowToolStep (C3) reads the evidence and
+	//    reports a HIGHER window for the higher-success-rate step.
+	// The tool_step_id is produced by the projection from the event payload
+	// (arg_shape), NOT hand-written into evidence — so a broken C1→C2→C3 link
+	// fails here instead of being papered over.
+
+	// C1 events: two strategies call the same tool with different argument
+	// shapes. "web_search#q,k" (key set q,k) mostly succeeds; "web_search#k"
+	// (key set k) always fails.
+	es := ares_events.NewMemoryEventStore()
+	events := []*ares_events.Event{
+		toolCompletedEvent("agent-a", "web_search", `{"q":"a","k":1}`, true),
+		toolCompletedEvent("agent-a", "web_search", `{"q":"b","k":2}`, true),
+		toolCompletedEvent("agent-a", "web_search", `{"q":"c","k":3}`, false), // 2/3 success
+		toolCompletedEvent("agent-b", "web_search", `{"k":9}`, false),
+		toolCompletedEvent("agent-b", "web_search", `{"k":8}`, false),
+	}
+	for _, ev := range events {
+		if err := es.Append(context.Background(), ev.StreamID, []*ares_events.Event{ev}, ev.Version); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+	}
+
+	// C2: project → write tool_call fitness evidence.
+	evStore := evidence.NewMemoryStore()
+	proj, err := toolprojection.NewProjector(es, evStore)
+	if err != nil {
+		t.Fatalf("NewProjector: %v", err)
+	}
+	written, err := proj.Run(context.Background(), toolprojection.Options{})
+	if err != nil {
+		t.Fatalf("Projector.Run: %v", err)
+	}
+	// Two distinct steps: web_search#q,k and web_search#k.
+	if written != 2 {
+		t.Fatalf("Projector wrote %d tool-step evidence records, want 2", written)
+	}
+
+	// C3: aggregate per tool_step_id and assert the higher-success step wins.
+	// The projector assigns by agent/session (the C1 events carry agent_id, not
+	// strategy_id), so the tool-step audit read is not strategy-scoped — pass an
+	// empty strategyID and rely on the projection-level agent attribution.
+	// NOTE: the toolStepID must be computed via ToolArgShape (keys are SORTED),
+	// so {"q","k"} → "k,q"; hardcoding "q,k" would query a shape that the
+	// projection never produced and vacuously pass.
+	goodID := toolprojection.ToolStepID("web_search", ares_events.ToolArgShape(`{"q":"a","k":1}`))
+	badID := toolprojection.ToolStepID("web_search", ares_events.ToolArgShape(`{"k":9}`))
+
+	cfg := DefaultAggregatorConfig()
+	cfg.MinSamplesBeforeJudge = 1
+	cfg.Weights.ToolCall = 0.3 // GA must be armed to select on the tool dimension
+	agg := NewRuntimeFitnessAggregator(evStore, cfg)
+
+	goodWin := agg.WindowToolStep(context.Background(), "", goodID)
+	badWin := agg.WindowToolStep(context.Background(), "", badID)
+
+	if !goodWin.Ok || !badWin.Ok {
+		t.Fatalf("both tool-step windows must pass the judge gate: good.Ok=%v bad.Ok=%v", goodWin.Ok, badWin.Ok)
+	}
+	if goodWin.Mean <= badWin.Mean {
+		t.Fatalf("the higher-success-rate tool step must win selection: good=%v bad=%v (gene differs only in ToolStep.Metadata)", goodWin.Mean, badWin.Mean)
+	}
+}
+
+// toolCompletedEvent builds a C1-contract EventToolCallCompleted the way the
+// executors emit it (ares_events.ToolCompletedPayload.AsMap), so the projection
+// reads the real key set rather than a test-only shape.
+func toolCompletedEvent(agentID, tool, argsJSON string, ok bool) *ares_events.Event {
+	shape := ares_events.ToolArgShape(argsJSON)
+	return &ares_events.Event{
+		Type:     ares_events.EventToolCallCompleted,
+		StreamID: agentID,
+		Payload: ares_events.ToolCompletedPayload{
+			AgentID:     agentID,
+			ToolName:    tool,
+			ToolCallID:  "call-" + tool + "-" + shape,
+			Round:       0,
+			Seq:         0,
+			Success:     ok,
+			Error:       toolErrorMessage(ok),
+			ArgShape:    shape,
+			ExtraResult: "",
+		}.AsMap(),
+		ModuleName: "agentfabric",
+	}
+}
+
+// toolErrorMessage mirrors the executor-side normalization for the C1 contract.
+func toolErrorMessage(ok bool) string {
+	if ok {
+		return ""
+	}
+	return "boom"
 }

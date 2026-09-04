@@ -199,6 +199,15 @@ type Request struct {
 	// callable). When no discover_tools call happens, behaviour is identical to
 	// passing no expander.
 	ToolExpander ToolExpander
+	// ToolWhitelist, when non-nil, restricts which of the active tools reach the
+	// LLM on every iteration (Y1 方案C C5 third-executor wiring). An empty or
+	// missing map means "all tools" (zero-value usable). This mirrors the
+	// Params["tools"] whitelist the two peer executors (chat_cognition.go,
+	// sub/executor.go) apply via agents.ToolWhitelistFromParams — the agentloop
+	// ReAct loop is the third production execution body, so without this it was
+	// the only path that ignored the tool-selection knob. Filtering happens
+	// before the LLM sees the tool list, not at execution time.
+	ToolWhitelist map[string]bool
 }
 
 // Result mirrors the execution outcome of sdk.Agent.Run, expressed without
@@ -268,9 +277,22 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 		// observer sees the full thread timeline, not just tool boundaries.
 		e.emitLLMCall(ctx, req.AgentName, iter, len(st.messages), len(st.activeTools))
 
+		// C5: the agentloop is the third execution body — respect the tool
+		// whitelist before handing the tool set to the LLM. An empty whitelist
+		// means "all tools".
+		granted := st.activeTools
+		if len(req.ToolWhitelist) > 0 {
+			granted = make([]core.Tool, 0, len(st.activeTools))
+			for _, t := range st.activeTools {
+				if req.ToolWhitelist[t.Function.Name] {
+					granted = append(granted, t)
+				}
+			}
+		}
+
 		resp, err := e.LLM.Generate(ctx, &core.GenerateRequest{
 			Messages: st.messages,
-			Tools:    st.activeTools,
+			Tools:    granted,
 		})
 		if err != nil {
 			return nil, FriendlyErr("llm generate", e.LLM.GetProvider(), err)
@@ -359,7 +381,7 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 			}, nil
 		}
 
-		if err := e.executeToolCalls(ctx, req, st, resp.ToolCalls); err != nil {
+		if err := e.executeToolCalls(ctx, req, st, iter, resp.ToolCalls); err != nil {
 			return nil, err
 		}
 	}
@@ -383,8 +405,8 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 // executeToolCalls runs the human-in-the-loop check, event emission, and tool
 // execution for one batch of tool calls, appending tool messages to st.messages.
 // Returns an error only when HumanInput returns an error (aborting the run).
-func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterState, calls []core.ToolCall) error {
-	for _, tc := range calls {
+func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterState, iter int, calls []core.ToolCall) error {
+	for seq, tc := range calls {
 		args := parseArgs(tc.Function.Arguments)
 
 		// Human-in-the-loop check.
@@ -408,7 +430,13 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 
 		st.toolCount++
 		e.emitToolEvent(ctx, req.AgentName, ares_events.EventToolCallStarted,
-			map[string]any{roleTool: tc.Function.Name, "args": tc.Function.Arguments})
+			map[string]any{
+				ares_events.EventKeyToolName:   tc.Function.Name,
+				ares_events.EventKeyToolCallID: tc.ID,
+				ares_events.EventKeyRound:      iter,
+				ares_events.EventKeySeq:        seq,
+				ares_events.EventKeyTool:       tc.Function.Name,
+			})
 		e.trace("[ares:trace] %s → tool call: %s(%s)",
 			req.AgentName, tc.Function.Name, tc.Function.Arguments)
 
@@ -436,10 +464,16 @@ func (e *Engine) executeToolCalls(ctx context.Context, req *Request, st *iterSta
 
 		e.emitToolEvent(ctx, req.AgentName, ares_events.EventToolCallCompleted,
 			map[string]any{
-				"tool":    tc.Function.Name,
-				"args":    tc.Function.Arguments,
-				"result":  resultContent,
-				"success": err == nil,
+				ares_events.EventKeyToolName:   tc.Function.Name,
+				ares_events.EventKeyToolCallID: tc.ID,
+				ares_events.EventKeyTool:       tc.Function.Name,
+				ares_events.EventKeyRound:      iter,
+				ares_events.EventKeySeq:        seq,
+				ares_events.EventKeySuccess:    err == nil,
+				ares_events.EventKeyError:      toolErrorMessage(err),
+				ares_events.EventKeyArgShape:   ares_events.ToolArgShape(tc.Function.Arguments),
+				"args":                         tc.Function.Arguments,
+				"result":                       resultContent,
 			})
 
 		// Runtime tool discovery: when the agent called the discover_tools
@@ -539,6 +573,17 @@ func (e *Engine) emitLLMCall(ctx context.Context, agentName string, iter, msgCou
 			"iter", iter,
 			"error", err)
 	}
+}
+
+// toolErrorMessage normalizes a tool execution error into the C1 event
+// contract's error field, matching the peer executors (chat_cognition.go,
+// sub/executor.go). nil -> "" so the unified payload is JSON-friendly and the
+// trajectory projection can distinguish "failed with message" from "no error".
+func toolErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // emitToolEvent appends a single tool-call event (Started or Completed) to the

@@ -20,6 +20,9 @@ const (
 	ChangeRemoveEdge
 	// ChangeReplaceNode indicates a node was replaced (swap migration).
 	ChangeReplaceNode
+	// ChangeSetNodeMetadata indicates a node's Metadata map was replaced in
+	// place (C4 metadata patch).
+	ChangeSetNodeMetadata
 )
 
 // GraphChange describes a single mutation to the DAG.

@@ -287,6 +287,12 @@ func (r *ChannelFeedbackRecorder) OnToolCall(out feedback.ToolCallOutcome) {
 			"tool":    out.Tool,
 			"caller":  out.Caller,
 			"outcome": string(out.Outcome),
+			// Process-level attribution (Y1 C3): toolStepID = tool#argShape.
+			// Carried verbatim so the aggregator / projection layer can scope by
+			// (strategyID, toolStepID) instead of the coarse per-strategy bucket —
+			// two strategies calling the same tool with different shapes no longer
+			// blend into one signal.
+			"tool_step_id": out.ToolStepID,
 			// Audit-only, same reasoning as the collaboration latency.
 			"latency_ms": out.Latency.Milliseconds(),
 		},

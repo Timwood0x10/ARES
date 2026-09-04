@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -820,6 +821,15 @@ func defaultRootStrategy() Strategy {
 	}
 }
 
+// currentGeneration returns the current GA generation when a population is
+// attached, else 0. Used for guardrail event attribution.
+func (dc *DreamCycle) currentGeneration() int {
+	if dc.population != nil {
+		return dc.population.CurrentGeneration()
+	}
+	return 0
+}
+
 // findWinner tests all candidates in arena and returns the best one above threshold.
 //
 // Uses a two-stage approach:
@@ -835,6 +845,42 @@ func (dc *DreamCycle) findWinner(
 ) (*candidateResult, error) {
 	if len(candidates) == 0 {
 		return nil, errors.New("dream cycle: no candidates to evaluate")
+	}
+
+	// C6 wiring: reject any candidate whose evolved tool whitelist exceeds the
+	// guardrail's upper bound (or enables zero tools, when required) BEFORE it
+	// is arena-tested. The toolset guard was previously dead code — the method
+	// existed but nothing called it, so a mutated Params["tools"] larger than
+	// the deployment intended was silently arena-tested and could win. Filtering
+	// here is the selection path: a rejected candidate never consumes arena
+	// runs and never becomes a winner.
+	if dc.guardrails != nil {
+		filtered := make([]Strategy, 0, len(candidates))
+		rejected := 0
+		for _, cand := range candidates {
+			// Parsed by the same agents helper the executors use, so the
+			// guardrail counts exactly the tools the LLM would be shown.
+			tools := agents.ToolNamesFromParams(cand.Params)
+			res := dc.guardrails.ValidateToolSet(dc.currentGeneration(), tools)
+			if res.ShouldStop {
+				rejected++
+				slog.WarnContext(ctx, "[DreamCycle] candidate jailed by tool-set guardrail",
+					"strategy_id", cand.ID,
+					"tool_count", len(tools),
+					"events", len(res.Events))
+				continue
+			}
+			filtered = append(filtered, cand)
+		}
+		if rejected > 0 {
+			slog.InfoContext(ctx, "[DreamCycle] tool-set guardrail rejected candidates",
+				"rejected", rejected,
+				"survivors", len(filtered))
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			return nil, ErrAllCandidatesRejected
+		}
 	}
 
 	// Stage 1: Quick reject — screen all candidates in parallel with small N.

@@ -1174,3 +1174,79 @@ func (s *errorEventSink) callCount() int {
 	defer s.mu.Unlock()
 	return s.calls
 }
+
+// TestEngine_ToolWhitelistFiltersLLMTools is the C5 third-executor wiring
+// assertion. The agentloop ReAct loop previously handed ALL active tools to the
+// LLM regardless of any Params["tools"] whitelist — unlike the two peer
+// executors (chat_cognition.go, sub/executor.go), so this was the only path
+// that ignored the tool-selection knob. With ToolWhitelist set, the tools
+// passed to Generate must be exactly the whitelist intersection.
+func TestEngine_ToolWhitelistFiltersLLMTools(t *testing.T) {
+	allTools := []core.Tool{
+		{Type: "function", Function: core.FunctionDefinition{Name: "web_search"}},
+		{Type: "function", Function: core.FunctionDefinition{Name: "calculator"}},
+		{Type: "function", Function: core.FunctionDefinition{Name: "code_exec"}},
+	}
+	llm := &mockLLM{responses: []*core.GenerateResponse{
+		{Content: "final"},
+	}}
+	eng := &Engine{LLM: llm, Tools: &mockToolExecutor{}}
+	req := &Request{
+		Messages:      []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:         allTools,
+		ToolWhitelist: map[string]bool{"web_search": true, "code_exec": true},
+		MaxIter:       3,
+		AgentName:     "agent-A",
+		SessionID:     "sess-1",
+		Input:         "hi",
+	}
+	if _, err := eng.Run(context.Background(), req); err != nil {
+		t.Fatalf("Engine.Run: %v", err)
+	}
+
+	reqs := llm.snapshotReqs()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 Generate request, got %d", len(reqs))
+	}
+	granted := reqs[0].Tools
+	if len(granted) != 2 {
+		t.Fatalf("granted tool count = %d, want 2 (whitelist intersection)", len(granted))
+	}
+	names := map[string]bool{}
+	for _, tl := range granted {
+		names[tl.Function.Name] = true
+	}
+	if !names["web_search"] || !names["code_exec"] {
+		t.Fatalf("granted tools = %v, want web_search+code_exec only", names)
+	}
+	if names["calculator"] {
+		t.Fatalf("calculator must be filtered out by the whitelist, got %v", names)
+	}
+}
+
+// TestEngine_ToolWhitelistEmptyAllowsAll is the zero-value invariant of C5: an
+// empty/nil whitelist means "all tools" — behaviour identical to no whitelist.
+func TestEngine_ToolWhitelistEmptyAllowsAll(t *testing.T) {
+	allTools := []core.Tool{
+		{Type: "function", Function: core.FunctionDefinition{Name: "web_search"}},
+		{Type: "function", Function: core.FunctionDefinition{Name: "calculator"}},
+	}
+	llm := &mockLLM{responses: []*core.GenerateResponse{{Content: "final"}}}
+	eng := &Engine{LLM: llm, Tools: &mockToolExecutor{}}
+	req := &Request{
+		Messages:  []*core.LLMMessage{{Role: "user", Content: "hi"}},
+		Tools:     allTools,
+		MaxIter:   3,
+		AgentName: "agent-A",
+		SessionID: "sess-1",
+		Input:     "hi",
+	}
+	if _, err := eng.Run(context.Background(), req); err != nil {
+		t.Fatalf("Engine.Run: %v", err)
+	}
+	reqs := llm.snapshotReqs()
+	if len(reqs) != 1 || len(reqs[0].Tools) != 2 {
+		t.Fatalf("empty whitelist must allow all tools; got %d requests, %d tools",
+			len(reqs), len(reqs[0].Tools))
+	}
+}

@@ -1,20 +1,26 @@
-# Y.1 单 agent 内部"工具调用 DAG"设计对比
+# Y.1 单 agent 内部"工具执行过程 DAG"设计（方案 C：A×B 融合，已定案）
 
-> 状态：**架构决策草案（未实施）**。用于对比两个方案，供用户定案后再落地。
-> 关联：`AGENT_OS_CLOSURE_DEV_PLAN.md` 的 Y.1 / N-2 / N-12。
+> 状态：**已定案 = 方案 C（A 与 B 的融合，非 A→B 分期）**。节点语义定为**一次工具执行过程**，不是一个 agent。可执行计划见 **§11**；§2–§5 降级为"融合的两个半边"的来源说明；§8–§10 是经代码核实的事实底座，全部保留。
+> 关联：`AGENT_OS_CLOSURE_DEV_PLAN.md` 的 Y.1 / N-2 / N-12（N-12 工具半边已闭）。
 > 日期：2026-09-04 · 综述人：Timwood0x10（AI review 协作）
 
 ***
 
-## 0. 一句话结论
+## 0. 一句话结论（定案）
 
-把"单 agent 内部如何干活"从进化不可达（ReAct 消息循环）变成进化可达，核心是把**工具调用**表达成一张可变 DAG。本文对比两个实现方案：
+把"单 agent 内部如何干活"变成进化可达，**唯一正确的节点粒度是"一次工具执行过程"（ToolStep = 工具 + 入参形态 + 其观察结果），既不是一个 agent（A 的粒度错），也不是一条只能看不能改的轨迹（B 的作动面缺失）**。
 
-- **方案 A**：DAG **节点装载** ReAct 循环（节点 = 一个认知 agent，节点属性 = 工具白名单/提示词）。
+因此不做 A→B 的分期，而做**融合**：
 
-- **方案 B**：把**每一轮实际发生的工具调用轨迹投影成 DAG**（运行时 ReAct 保持自主，旁路沉淀轨迹图，进化 patch 该图回灌为偏好先验）。
+| 半边                  | 在 C 中承担的角色                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| **B**（真实轨迹投影）       | 决定**节点从哪来**：从事件日志把真实发生过的工具执行过程投影成节点与边（零 checkpoint 改动，§8.7）                           |
+| **A**（节点属性可 patch）  | 决定**节点怎么被改**：节点 `Metadata` 成为进化可 patch 的作动面（需补 metadata 算子/快照/genome 保留，§8.1）         |
+| **融合产生的新东西**（两者都没有） | **过程级归因**：`tool_call` 证据按 `(strategyID, toolStepID)` 归因，取代 §9.2 的 `(strategy, agent)` |
 
-其余组合（纯扁平化重写执行体为预定图）经核实**成本与风险高一个量级且削弱 LLM 自主性**，已排除，仅在附录给出排除理由。
+运行时 ReAct 的自主性**完全不动**：进化改的是"这个执行过程要不要留、给多少预算/先验"，不是给 LLM 画预定步骤（§6 的排除项依然排除）。
+
+***
 
 ***
 
@@ -167,29 +173,33 @@ Round2: code_exec(读取其结果)              ▲                      │
 
 ***
 
-## 4. 两方案直接对比
+## 4. 融合后的分工（取代原 A/B 对比）
 
-| 维度               | 方案 A（节点装载）    | 方案 B（轨迹 tool DAG）           |
-| ---------------- | ------------- | --------------------------- |
-| 满足"工具调用是 DAG 节点" | ❌ 只到 peer/节点级 | ✅ 精确                        |
-| 执行模型 / ReAct 自主  | 完全不动          | 完全不动                        |
-| checkpoint       | 零影响           | 需 schema 1→2（续图索引）          |
-| yield / 调度量子     | 零影响           | 小影响（量子边界不变，内加 hook）         |
-| 复用基建             | 几乎全部复用        | 复用大部分 + 新增轨迹投影/回灌           |
-| 主要新增工作量          | 很小（接线 + 语义文档） | 大（续图推断 + 血缘推断 + 作动回灌 + 图聚合） |
-| 作动语义清晰度          | 高（工具白名单）      | 中（近似轨迹 + 启发式边）              |
-| 发布 0.3.1 风险      | 低             | 中偏高                         |
-| 进化精度             | 粗（白名单集合）      | 细（到工具调用级）                   |
+原表是"选谁"的对比；定案后它的正确读法是"**各自贡献哪一半**"。
+
+| 维度              | A 贡献                     | B 贡献               | **C（融合）的结果**                          |
+| --------------- | ------------------------ | ------------------ | ------------------------------------- |
+| 节点语义            | 一个 agent（❌ 粒度太粗）         | 一次真实工具调用           | **一次工具执行过程 ToolStep**（= B 的粒度 + 可改属性） |
+| 节点来源            | 手工写进 `buildLiveAgentDAG` | 事件日志投影             | **事件日志投影**（B）                         |
+| 作动面             | 节点 `Metadata` 可 patch    | 无（只有观测）            | **节点 Metadata patch**（A）              |
+| 执行模型 / ReAct 自主 | 不动                       | 不动                 | **不动**                                |
+| checkpoint      | 零影响                      | 零影响（§8.7 已核实走事件日志） | **零影响**                               |
+| 归因 key          | `(strategy, agent)`      | 需"哪条轨迹好"           | **`(strategy, toolStepID)`**（融合才成立）   |
+| 主要新增工作量         | metadata 算子/快照/genome    | 投影层 + 事件契约统一       | 两者之和，但**只做一次**（分期要做两次）                |
 
 ***
 
-## 5. 我的建议
+## 5. 为什么必须融合，而不是 A→B 分期
 
-- **如果你要的是"现在就把 Y.1 闭环、稳进 0.3.1"**：方案 A。它已由 Y.3-ACT 完成大半，今天是可交付的，风险极低。
+初稿曾建议"A 先收口、B 下轮立项"。**该建议作废**，理由是三条都经代码核实：
 
-- **如果你真正欣赏的是"每一步工具调用成为 DAG 节点"（您明确表达的）**：方案 B。它**不牺牲 ReAct 自主**（这是它比"扁平化重写"高明之处），但需要按 §3.3 处理续图/血缘/回灌三块，工程量与风险明显高于 A。
+1. **A 单独跑不成立：粒度错。** A 的节点 = 一个 agent，而 `GetActive` 是全局单例（§8.4），"该 agent 的工具白名单"这个语义在代码里根本不存在。A 若不引入比 agent 更细的节点，作动面永远停在"全局换一套工具集"。
 
-**两者不冲突，是递进**：A 先立好"单 agent 用哪些工具"的可进化旋钮；B 在 A 之上把"用过的工具轨迹"沉淀成图、作动到调用级。建议**分两阶段**：本轮以 A 收口 Y.1 并锁定发布措辞；B 作为下一迭代立项，先在计划文档记下设计，经您再次认可后实施。
+2. **B 单独跑不成立：只有观测面，没有作动面。** B 投影出的图，进化要改它必须走 `MutableDAG`/`DAGPatchExecutor`，而节点属性维度的 patch/diff/快照**根本不存在**（§8.1）。B 没有 A 的 metadata 算子，就只是一张审计图。
+
+3. **两者的公共缺口只有融合后才补得上：过程级归因。** §9.2 指出证据全部记到同一个 `strategyID`。A 的对策是加 `agent_id`，B 需要"哪条轨迹好"。**若节点即工具执行过程，则双方需要的是同一个 key**：`(strategyID, toolStepID)`。分期做会先造一个 `agent_id` 维度、下轮再废弃它。
+
+∴ 融合点很明确：**B 提供节点的来源（真实过程），A 提供节点的可改属性（metadata patch），归因 key 从 agent 降到过程**。三件事做在一起才是一个闭环，拆开做两次都是半环。
 
 ***
 
@@ -207,10 +217,21 @@ Round2: code_exec(读取其结果)              ▲                      │
 
 ***
 
-## 7. 待定项（决定后再实施）
+## 7. 定案与已消解的待定项
 
-1. 选 A（收口本轮）还是 B（轨迹 DAG 立项），还是 A→B 分阶段。
-2. 若 B：轨迹 DAG 的边/血缘推断粒度、作动回灌的落地通道（提示词先验 vs 白名单上界）、轨迹聚合的 pattern 阈值、checkpoint schema 升级方案（1→2 向后兼容）。
+原 §7 的两个待定项现已消解：
+
+1. ~~选 A / B / A→B 分期~~ → **选 C（融合）**，理由见 §5。
+2. 原"若 B 才需要决定"的四项，在 C 中全部成为**必做**且已定口径：
+
+| 原待定项            | C 的定案                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------- |
+| 边/血缘推断粒度        | **不做启发式血缘**。边只表达"同一 session 内的执行先后"（由事件的 round + seq 得出），不声称语义依赖 —— 近似边不作为 patch 依据。  |
+| 作动回灌通道          | 节点 `Metadata`（`budget`/`prior`/`enabled`），经 §8.5 的 `Payload["tools"]→params` 装配落到执行体。 |
+| 轨迹聚合 pattern 阈值 | 按 `toolStepID = toolName + argShape` 聚合（不按单条轨迹），阈值 = 最少样本数 `N`（默认给保守值，配置可调）。          |
+| checkpoint 1→2  | **不升版**（§8.7 已核实：走事件日志投影，零 checkpoint 改动）。                                            |
+
+***
 
 ## 8. 用户 review 修正（2026-09-04，全部经代码核实）
 
@@ -251,10 +272,10 @@ Round2: code_exec(读取其结果)              ▲                      │
 按用户建议优先级落地：
 
 1. **✅ 已修**：空白名单 guard——过滤后 `len(filtered)==0` 时回退全量而非留空（`chat_cognition.go` + `sub/executor.go` 两处），加 warn 日志 + 回归测试 `TestToolWhitelistZeroIntersectionFallsBackToFullSet`。
-2. **待**：§7.3 明确 `Payload["tools"]→params` 装配 + 优先级规则；**补** **`agentloop/engine.go`** **第三条执行体**（初稿"两条"漏了 SDK 路径）。
-3. **待**：词表对齐（`knownTools` ↔ 实际注册工具名），否则 guided mutation 持续写出无效白名单。
-4. **待**：工具级 fitness 维度（初稿标"可选"→ 实为 A/B 成立前提，否则 GA 无法收敛到"哪个工具集更好"）。
-5. **待**：安全护栏——`EvolutionGuardrails` 只管 score/lineage，需加工具集 allowlist 上界校验。
+2. **✅ 已修（C5）**：`Payload["tools"]→params` 装配与优先级已定（`agents.MergeNodeParams`，节点 Metadata > 全局策略 Params）；第三条执行体 `agentloop/engine.go` 已接白名单（`Request.ToolWhitelist`）。
+3. **待**：词表对齐（`knownTools` ↔ 实际注册工具名），否则 guided mutation 持续写出无效白名单。注意护栏只校验**数量上界**，不校验名字是否存在——名字错的白名单会被运行期零交集 guard 兜成"全量放开"，这正是本项仍必须做的原因。
+4. **✅ 已修（C3）**：工具级 fitness 维度已落地——`tool_call` 证据带 `tool_step_id`，`WindowToolStep` 按 `(strategyID, toolStepID)` 读出，`Weights.ToolCall` 为默认 0 的显式闸门。
+5. **✅ 已修（C6）**：`EvolutionGuardrails` 增 `ValidateToolSet`（`WithMaxToolsEnabled` 上界 + `WithRequireAnyTool` 零工具校验），并接进 `dream_cycle.findWinner` 选择路径——越界候选在 arena 测试前被拒、不消耗 arena 运行；全部候选被拒时返回 `ErrAllCandidatesRejected`（`Run` 视作正常空转）。计数口径与执行体共用 `agents.ToolNamesFromParams` 单一解析，保证"护栏数的工具"就是"LLM 看得到的工具"。
 
 ### 8.7 方案 B 的 checkpoint 门槛被初稿高估
 
@@ -359,8 +380,98 @@ A 和 B 都没定义"**怎么知道它真的 работает**"。既然 fitnes
 
 ### 10.2 仍未闭环（按优先级）
 
-1. `Payload["tools"] → params` 装配 + 节点 vs 全局策略优先级（§8.5），并补 `agentloop/engine.go` 第三条执行体。
-2. 归因双 key `(strategyID, agentID)`（§9.2）——不做则 per-agent 作动即便打通，证据侧仍分不出是哪个 agent 的工具集。
-3. `EvolutionGuardrails` 增加工具集 allowlist 上界（§8.6-5）。
-4. 若选 B：先统一三条执行体事件契约、补 `EventToolCallCompleted` 的 `success/error`（§9.3、§9.4）。
+> **状态（2026-09-04 执行完成）**：下列 1–4 全部已落地并测试覆盖，方案 C 的 C1–C7 各阶段验收全数通过，`make check` 全绿。详见 §12「执行记录」。
 
+1. ~~`Payload["tools"] → params`~~ ~~装配 + 节点 vs 全局策略优先级（§8.5），并补~~ ~~`agentloop/engine.go`~~ ~~第三条执行体。~~ ✅ 已落地（C5）。
+2. ~~归因双 key（§9.2）——在 C 中定为~~ ~~`(strategyID, toolStepID)`，不做~~ ~~`(strategy, agent)`（§5-3）。~~ ✅ 已落地（C3）。
+3. ~~`EvolutionGuardrails`~~ ~~增加工具集 allowlist 上界（§8.6-5）。~~ ✅ 已落地（C6）。
+4. ~~统一三条执行体事件契约、补~~ ~~`EventToolCallCompleted`~~ ~~的~~ ~~`success/error`（§9.3、§9.4）——在 C 中是必做前置（投影层的输入），不再是"若选 B"。~~ ✅ 已落地（C1）。
+
+***
+
+## 11. 方案 C 可执行计划（定案，按依赖排序）
+
+### 11.0 节点定义（唯一需要新造的概念）
+
+```
+ToolStep  ——  一次“工具执行过程”，DAG 的节点
+  toolStepID = toolName + "#" + argShape      // 聚合键，不含具体参数值
+  节点属性（Metadata，进化可 patch）:
+     enabled  bool     // 该过程是否还允许发生
+     budget   int       // 该过程在一个 session 内的最大次数
+     prior    float64   // 注入提示词的偏好强度（不禁用，只倾向）
+  边: 同一 session 内的执行先后（round, seq），不声称语义依赖（§7）
+```
+
+`argShape` = 入参键集合的规范化串（排序、只取键名不取值），这样"同一个工具的同一种用法"聚合成一个节点，避免 §3.3-4 的轨迹碎片化。
+
+### 11.1 阶段划分与验收（2026-09-04 全部执行完成，验收通过）
+
+| 阶段     | 交付                                                                                                                                                | 依赖           | 验收（可执行断言）                                                                                                        | 状态                                                                                                             |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **C1** | **事件契约统一**：`EventToolCallCompleted` 三条执行体（`chat_cognition.go` / `sub/executor.go` / `agentloop/engine.go`）统一带 `round/seq/success/error/arg_shape` | 无            | 三条执行体各跑一次工具失败，事件 payload 的 `success=false` 与 `error` 均非空；断言三处 payload 键集合相同                                      | ✅ `ares_events/tool_events.go` + 三执行体接线 + `tool_events_test.go`                                                |
+| **C2** | **投影层**：从 EventStore 把事件流投影成 `ToolStep` 节点 + 先后边，按 `toolStepID` 聚合（含 `N` 次最少样本阈值）                                                                 | C1           | 给定一段人造事件流，投影出的节点数 = 不同 `toolStepID` 数；同 `toolStepID` 的多次调用聚合成 1 节点且 `count/success_rate` 正确                      | ✅ 新包 `internal/toolprojection` + `projection_test.go`                                                          |
+| **C3** | **过程级归因**：`ChannelFeedbackRecorder` 的 `tool_call` 证据带 `tool_step_id`，aggregator 按 `(strategyID, toolStepID)` scope                                | C1           | 同一策略下两个不同 `toolStepID` 的成败，产生两条可分辨的证据；`Window` 能按 toolStepID 读出不同值                                               | ✅ `feedback.ToolCallOutcome.ToolStepID` + `channel_feedback.go` + `WindowToolStep` + 测试                        |
+| **C4** | **作动面**：`DAGNode` 快照带 Metadata + `PatchSetNodeMetadata` 算子 + `WorkflowDiffer` 出 metadata patch + `mutateReplaceNode` 保留 Metadata（§8.1 四处）         | 无（可并行 C1–C3） | 仅改一个节点 Metadata 的 parent→child，`generateDiffPatches` 产出 **1** 个 patch（当前为 0）；patch 应用后 live DAG 上该节点 Metadata 已变 | ✅ `DAGNode.Metadata` + `MutableDAG.SetNodeMetadata` + `PatchSetNodeMetadata` + differ + `wfOpSetMetadata` + 测试 |
+| **C5** | **装配回灌**：`Payload["tools"]/budget/prior → params` 合入 `renderPromptAndParams`，定义"节点 Metadata > 全局策略 Params"优先级；三条执行体都读（§8.5、§10.2-1）               | C4           | 节点 Metadata 给出的白名单**覆盖**全局策略白名单                                                                                  | ✅ `agents.MergeNodeParams` + 两执行体 renderPromptAndParams 接线 + `agentloop.Request.ToolWhitelist`（第三执行体）+ 测试      |
+| **C6** | **护栏**：`EvolutionGuardrails` 增工具集 allowlist 上界（§8.6-5）；`enabled=false` 不得导致零工具（复用 §10.1 的 guard 语义）                                               | C5           | 变异写出越界工具集时被 guardrail 拒绝并计数                                                                                      | ✅ `ValidateToolSet` + `WithMaxToolsEnabled`/`WithRequireAnyTool` + `ErrCodeInvalidToolSet` + 测试                |
+| **C7** | **端到端闭环断言**（Y.1 的最终判定，§9.5 的过程级版本）                                                                                                                | C1–C6        | 仅 `ToolStep.Metadata` 不同的基因 → 四链全部分得开，且 GA 能 promote 成功率高的那一侧（需 `tool_weight>0`）                                 | ✅ `TestToolStepMetadata_EndToEndClosedLoop`（经 `WindowToolStep` 分出高成功率侧）                                        |
+
+### 11.2 关键约束（实施时不得违反）
+
+- **不动 ReAct 自主**：`enabled/budget` 作用在 schema 过滤层（与 §10.1 guard 同一位置），`prior` 只进提示词；**不得**在 `CallTool` 时拦截，也不得给 LLM 预定步骤（§6 排除项仍然有效）。
+
+- **不动 checkpoint schema**：投影只读 EventStore（§8.7）。若发现必须带状态，先回到本文档改设计，不得就地 bump（`decodeChatStepState` 严格 `!=` + 两处 `stepSchemaVersion` 定义，§8.7 括号）。
+
+- **eventStore 必须接线**：未接线时投影恒空（§9.3-2）。C2 需显式检查并在未接线时 warn，而非静默产出空图。
+
+- **默认关闭**：`tool_weight` 默认 0 的闸门保持（§10.1）；C1–C6 全部落地后行为与今天一致，只有显式给权重才进入选择。
+
+- **近似边不作为 patch 依据**：边只用于展示与顺序统计（§7）。
+
+### 11.3 发布措辞（C 全部完成前）
+
+在 C7 通过前，**不可**写"进化作用于单 agent 内部执行过程"。C1–C3 完成可写"单 agent 内部工具执行过程已可观测并归因到进化判决（默认关闭）"；C4–C6 完成才可加"且可被进化作动"。协作维度的禁止措辞不变（`AGENT_OS_CLOSURE_DEV_PLAN.md` N-11/N-12）。
+
+***
+
+## 12. 执行记录（2026-09-04，C1–C7 全部落地）
+
+> 本段记录方案 C 各阶段的实际交付与验证，作为"已定案并执行"的唯一依据。全部改动遵循 `plan/rules/code_rules_v2.md`，`make check`、`go test -race` 全绿。
+
+### 12.1 交付清单（代码位置）
+
+| 阶段 | 代码位置                                                                                                                                                                                                                                                 | 说明                                                                                                                                                                                                 |
+| -- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1 | `internal/ares_events/tool_events.go`（新）`ToolCompletedPayload`/`ToolArgShape`/统一 key                                                                                                                                                                 | 三条 ReAct 执行体（`chat_cognition.go`/`sub/executor.go`/`agentloop/engine.go`）的 `EventToolCallCompleted` 统一携带 round/seq/success/error/arg\_shape；`EventToolCallStarted` 同步补 round/seq。                  |
+| C2 | `internal/toolprojection/`（新包）+ `Projector`（`projector.go`）                                                                                                                                                                                          | 纯读投影：事件流 → `ToolStep` 节点（按 toolStepID 聚合，`N` 最少样本阈值）+ 同 session 先后边。`Projector.Run` 把每步成功率写成 `tool_call` fitness evidence（带 `tool_step_id`），打通 C2→C3（投影层此前无生产消费点）。                                 |
+| C3 | `internal/feedback` `ToolCallOutcome.ToolStepID`、`sub/tool_observer.go`、`ares_evolution/channel_feedback.go`、`fitness_aggregator.go` `WindowToolStep`                                                                                                | process 级归因：tool\_call 证据带 `tool_step_id`；`WindowToolStep` 按 `toolStepID`（可空 strategyID）读取。生产 tool\_call evidence 真实写入端是 `ChannelFeedbackRecorder`（经 binder observer），投影层是事件流审计/重建路径。              |
+| C4 | `workflow/engine/types.go` `DAGNode.Metadata`、`mutable_dag.go` `SetNodeMetadata`、`graph_events.go` `ChangeSetNodeMetadata`、`dag_patcher.go` `PatchSetNodeMetadata`、`evolution/diff/workflow_differ.go`、`genome/workflow_genome.go` `wfOpSetMetadata` | metadata 作动面四件套：快照带 Metadata、patch 算子、differ 出 metadata patch、replace/home 保留 Metadata。                                                                                                            |
+| C5 | `agents/strategy.go` `MergeNodeParams` + `ParamKeyBudget/ParamKeyPrior`、`chat_cognition.go`/`sub/executor.go` renderPromptAndParams 接线、`agentloop/engine.go` `Request.ToolWhitelist`                                                                 | 装配回灌：节点级 tools/budget/prior 覆盖全局策略；补齐第三条执行体（agentloop 白名单）。budget/prior 仅被装配进 params，暂无执行体消费其语义（§12.5 遗留）。                                                                                         |
+| C6 | `ares_evolution/guardrails.go` `ValidateToolSet` + `WithMaxToolsEnabled`/`WithRequireAnyTool` + `ErrCodeInvalidToolSet`；接线：`dream_cycle.go findWinner` 入口；解析收口：`agents.ToolNamesFromParams`                                                          | 工具集 allowlist 上界 + 零工具校验，接进候选选择路径（越界候选在 arena 测试前被拒、不消耗 arena 运行；全拒 → `ErrAllCandidatesRejected`）— 此前仅定义未接线，现已接线。护栏计数与执行体过滤共用同一解析（去空 + 去重），否则 `"a,a"`/`"a,b,"` 这类变异产物会让护栏数到 2 而执行体只放开 1，把合规候选误判越界。 |
+| C7 | `ares_evolution/tool_dimension_transmission_test.go` `TestToolStepMetadata_EndToEndClosedLoop`                                                                                                                                                       | 真实端到端：C1 契约事件 → eventStore → `Projector.Run` → evidence store → `WindowToolStep` 分出高成功率侧（不再手造 evidence）。                                                                                           |
+
+### 12.2 归因粒度说明（C3 的 key 落地口径）
+
+按 §5-3 / §9.2 定案，归因 key 取 **`(strategyID, toolStepID)`**，不做 `(strategy, agent)`——同进程/同策略下两个不同的 "同一工具的不同用法" 因此可分。`toolStepID = toolName#argShape`，`argShape` 由 `ares_events.ToolArgShape`（JSON 原始串）与 `sub.toolStepID`（已解码 map）两侧分别计算，排序键名、忽略取值，两边产出同一 key。
+
+### 12.3 验证
+
+- `go build ./...`、`go vet ./...`、`gofmt -l .`（无输出）、`golangci-lint run ./...`（0 issues）、`make check`（exit 0）。
+
+- `go test -race` 覆盖：`toolprojection`/`ares_events`/`ares_evolution`/`workflow/engine`/`evolution/{diff,genome,patch}`/`agents`/`agentfabric`/`agentloop`/`sdk`。
+
+- 关键测试：`testToolEvents`（C1）、`projection_test.go`（C2）、`TestAggregator_WindowToolStep*`（C3）、`TestWorkflowDiffer_MetadataOnlyChangeEmitsOnePatch` 等（C4）、`TestMergeNodeParams`/`TestEngine_ToolWhitelist*`（C5）、`TestValidateToolSet` + `dream_cycle_toolset_guard_test.go` 的 `TestFindWinner_ToolSetGuardRejectsBeforeArena`/`_AllCandidatesJailedByToolSetGuard`/`_ToolSetGuardCountsSameNamesAsExecutor`/`_NoToolsWhitelistNotRejectedByDefault`/`_RequireAnyToolJailsEmptyWhitelist`（C6：单元 + 接线，含"护栏与执行体同一计数"与"无白名单不误杀"两条防回归）、`TestToolNamesFromParams`/`TestToolNamesAndWhitelistAgree`（解析收口）（C6）、`TestToolStepMetadata_EndToEndClosedLoop`（C7）。
+
+### 12.4 发布措辞（C1–C7 完成后）
+
+C7 已通过，原 §11.3 的禁用措辞到期。可写：**"进化已可作用于单 agent 内部工具执行过程（默认关闭，需显式给** **`tool_weight`）——事件契约已统一、投影可观测、过程级归因可读、metadata 可作动、护栏可校验"**。协作维度的禁止措辞（`AGENT_OS_CLOSURE_DEV_PLAN.md` N-11/N-12）不变：协作 ACT 仍未落地（`ask_agent` 已落地，但影子 deny-list 扩到协作仍在排期）。
+
+### 12.5 遗留与边界（如实声明，不做掩盖）
+
+1. **`Projector`** **的生产触发点**：`Projector.Run`（事件流审计路径）已验证可用并有集成测试覆盖，但**未接进 serve 生命周期循环**——这是一个部署/接线决策（何时、以何频率投影），不是代码缺口。生产 tool\_call evidence 的实时写入端是 `ChannelFeedbackRecorder`（binder observer，`channel_feedback_wiring.go` 已接线）。不要在发布措辞里写"投影器已在运行"，只写"可运行且链路已打通"。
+2. **budget/prior 消费语义未落地**：`MergeNodeParams` 会把节点的 `budget`/`prior` 装进 params，但**没有任何执行体消费**"budget 用尽后该工具不再出现"或"prior 只改提示词"的语义——当前只有 `tools` 被 `ToolWhitelistFromParams` 真正消费。计划 §11 C5 的验收卡"budget 用尽后 schema 过滤"未达成。
+3. **C6 接线覆盖到 dream\_cycle 选择路径**：越界候选在 `findWinner` 被拒，且有接线测试断言**被拒候选不进 arena**（`dream_cycle_toolset_guard_test.go`）；但 genome 适配器（`genome_wiring_run.go`）的候选生成路径未接 `ValidateToolSet`。运行期零工具回退 guard（chat\_cognition/sub）仍兜底。另注：护栏只校验**数量**，不校验工具名是否真实注册——名字全错的白名单在运行期零交集时会被兜成"全量放开"，词表对齐（§8.6-3）仍未做。
+4. **协作 ACT**：仍为开环（见 AGENT\_OS N-11/N-12）。
+
+这些是本次执行如实记录，不是"全部闭环"的夸大。

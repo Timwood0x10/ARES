@@ -160,3 +160,85 @@ func TestAggregator_StagingPathIgnoresUnattributedChannelEvidence(t *testing.T) 
 		t.Errorf("staging mean = %v, want 1.0", got.Mean)
 	}
 }
+
+// appendToolStepFitness writes a tool_call fitness record carrying a
+// process-level tool_step_id (Y1 C3), so the aggregator can scope below the
+// per-strategy bucket to "this strategy calling the tool THIS way".
+func appendToolStepFitness(t *testing.T, store evidence.Store, id, strategyID, toolStepID string, value float64) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"value":               value,
+		"success":             value > 0,
+		evidenceKeyStrategyID: strategyID,
+		"tool_step_id":        toolStepID,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := store.Append(context.Background(), evidence.Evidence{
+		ID:        id,
+		Source:    toolCallEvidenceSource,
+		Kind:      evidence.KindFitness,
+		Payload:   payload,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+}
+
+// TestAggregator_WindowToolStepSeparatesProcesses is the C3 acceptance: under
+// the SAME strategy, two tool steps (same tool, different argument shapes) must
+// produce distinguishable fitness reads. Before process-level attribution both
+// shapes blended into one undifferentiated tool_call signal — the GA could
+// not tell "this way of calling the tool" from "that way".
+func TestAggregator_WindowToolStepSeparatesProcesses(t *testing.T) {
+	store := evidence.NewMemoryStore()
+	// Same strategy calls "search" two ways: shape "k,q" mostly succeeds,
+	// shape "k" mostly fails. Both are the same tool, same strategy.
+	appendToolStepFitness(t, store, "a1", "strategy-A", "search#k,q", 1.0)
+	appendToolStepFitness(t, store, "a2", "strategy-A", "search#k,q", 1.0)
+	appendToolStepFitness(t, store, "a3", "strategy-A", "search#k,q", 0.0)
+	appendToolStepFitness(t, store, "b1", "strategy-A", "search#k", 0.0)
+	appendToolStepFitness(t, store, "b2", "strategy-A", "search#k", 0.0)
+
+	cfg := DefaultAggregatorConfig()
+	cfg.MinSamplesBeforeJudge = 1
+	agg := NewRuntimeFitnessAggregator(store, cfg)
+
+	good := agg.WindowToolStep(context.Background(), "strategy-A", "search#k,q")
+	bad := agg.WindowToolStep(context.Background(), "strategy-A", "search#k")
+
+	if !good.Ok || !bad.Ok {
+		t.Fatalf("both tool steps must pass the judge gate; good.Ok=%v bad.Ok=%v", good.Ok, bad.Ok)
+	}
+	if good.Count != 3 || bad.Count != 2 {
+		t.Fatalf("good.Count=%d (want 3) bad.Count=%d (want 2)", good.Count, bad.Count)
+	}
+	if good.Mean != 2.0/3.0 {
+		t.Errorf("good step mean = %v, want %v", good.Mean, 2.0/3.0)
+	}
+	if bad.Mean != 0.0 {
+		t.Errorf("bad step mean = %v, want 0.0", bad.Mean)
+	}
+	if good.Mean <= bad.Mean {
+		t.Fatalf("process-level attribution failed to separate shapes: good=%v bad=%v", good.Mean, bad.Mean)
+	}
+}
+
+// TestAggregator_WindowToolStepIgnoresOtherSteps locks the sub-filter: a
+// WindowToolStep for one process must not read the OTHER process's records (the
+// whole point of scoping below the tool).
+func TestAggregator_WindowToolStepIgnoresOtherSteps(t *testing.T) {
+	store := evidence.NewMemoryStore()
+	appendToolStepFitness(t, store, "a1", "strategy-A", "search#k", 0.0)
+	appendToolStepFitness(t, store, "b1", "strategy-A", "calc#expr", 1.0)
+
+	cfg := DefaultAggregatorConfig()
+	cfg.MinSamplesBeforeJudge = 1
+	agg := NewRuntimeFitnessAggregator(store, cfg)
+
+	got := agg.WindowToolStep(context.Background(), "strategy-A", "calc#expr")
+	if got.Count != 1 || got.Mean != 1.0 {
+		t.Fatalf("calc#expr read = (count %d, mean %v), want (1, 1.0) — search#k must not leak in", got.Count, got.Mean)
+	}
+}

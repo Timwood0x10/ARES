@@ -168,7 +168,15 @@ type DAG struct {
 
 // DAGNode represents a node in the workflow DAG.
 type DAGNode struct {
-	StepID    string
+	StepID string
+	// Metadata is a snapshot of the owning Step's map at the time the DAG was
+	// built/patched (Y1 方案C C4). It makes a metadata-only change VISIBLE to
+	// WorkflowDiffer: previously DAGNode carried only degrees, so a parent→child
+	// mutation that touched only Step.Metadata produced ZERO patches and the
+	// evolution saw "no topology change" — the metadata operator could not be
+	// selected. Keeping a per-node copy here (instead of reading m.steps at diff
+	// time) keeps the differ pure over the snapshot it is handed.
+	Metadata  map[string]string
 	InDegree  int
 	OutDegree int
 }
@@ -192,9 +200,8 @@ func NewDAG(steps []*Step) (*DAG, error) {
 			return nil, fmt.Errorf("duplicate step ID %q: %w", id, ErrDuplicateID)
 		}
 		dag.Nodes[id] = &DAGNode{
-			StepID:    id,
-			InDegree:  0,
-			OutDegree: 0,
+			StepID:   id,
+			Metadata: cloneMetadata(step.Metadata),
 		}
 	}
 

@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+// cloneMetadata deep-copies a Step.Metadata map; nil stays nil. Used wherever a
+// DAGNode.Metadata snapshot is taken from a Step so the node never aliases the
+// step's live map (code_rules: no shared mutable state without ownership).
+func cloneMetadata(md map[string]string) map[string]string {
+	if md == nil {
+		return nil
+	}
+	out := make(map[string]string, len(md))
+	for k, v := range md {
+		out[k] = v
+	}
+	return out
+}
+
 // Sentinel errors for MutableDAG operations.
 var (
 	ErrNodeNotFound      = errors.New("node not found")
@@ -91,9 +105,8 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 
 	// Add the node.
 	m.dag.Nodes[id] = &DAGNode{
-		StepID:    id,
-		InDegree:  0,
-		OutDegree: 0,
+		StepID:   id,
+		Metadata: cloneMetadata(step.Metadata),
 	}
 
 	// Process dependencies, deduplicating DependsOn.
@@ -420,6 +433,7 @@ func (m *MutableDAG) snapshotDAGLocked() *DAG {
 	nodesCopy := make(map[string]*DAGNode, len(m.dag.Nodes))
 	for id, node := range m.dag.Nodes {
 		nodeCopy := *node
+		nodeCopy.Metadata = cloneMetadata(node.Metadata)
 		nodesCopy[id] = &nodeCopy
 	}
 
@@ -434,6 +448,37 @@ func (m *MutableDAG) snapshotDAGLocked() *DAG {
 		Nodes: nodesCopy,
 		Edges: edgesCopy,
 	}
+}
+
+// SetNodeMetadata replaces a node's Metadata map in place, preserving topology
+// and the *MutableDAG identity. It updates BOTH the owning Step (so the patch
+// survives a snapshot/restore, which is driven by steps) and the DAGNode's
+// metadata snapshot (so WorkflowDiffer sees the metadata-only change as a
+// patch). This is the C4 mutation target for a ToolStep node's enabled/budget/
+// prior attributes.
+func (m *MutableDAG) SetNodeMetadata(nodeID string, md map[string]string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	node, ok := m.dag.Nodes[nodeID]
+	if !ok {
+		return ErrNodeNotFound
+	}
+	node.Metadata = cloneMetadata(md)
+	if step, ok := m.steps[nodeID]; ok {
+		step.Metadata = cloneMetadata(md)
+	}
+	m.version++
+	m.hub.Publish(GraphEvent{
+		Change: GraphChange{
+			Type:      ChangeSetNodeMetadata,
+			NodeID:    nodeID,
+			Step:      m.steps[nodeID],
+			Timestamp: time.Now(),
+		},
+		Success: true,
+	})
+	return nil
 }
 
 // Version returns the current mutation counter.
@@ -735,7 +780,7 @@ func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Ste
 
 	// Apply mutation.
 	if newStep.ID != oldID {
-		m.dag.Nodes[newStep.ID] = &DAGNode{StepID: newStep.ID}
+		m.dag.Nodes[newStep.ID] = &DAGNode{StepID: newStep.ID, Metadata: cloneMetadata(newStep.Metadata)}
 		m.dag.Edges[newStep.ID] = m.dag.Edges[oldID]
 		delete(m.dag.Edges, oldID)
 		for src, targets := range m.dag.Edges {
@@ -780,6 +825,9 @@ func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Ste
 		}
 
 		m.steps[oldID] = newStep
+		// Same-ID replace: refresh the node's Metadata snapshot from the new
+		// step so a metadata-only replace is visible to WorkflowDiffer (C4).
+		m.dag.Nodes[oldID].Metadata = cloneMetadata(newStep.Metadata)
 		// Add new DependsOn edges, checking for duplicates.
 		for _, dep := range newStep.DependsOn {
 			duplicate := false

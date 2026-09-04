@@ -365,24 +365,38 @@ func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*mod
 		Content:   resp.Content,
 		ToolCalls: resp.ToolCalls,
 	})
-	for _, tc := range resp.ToolCalls {
+	for seq, tc := range resp.ToolCalls {
 		c.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
-			KeyAgentID:     c.agentID,
-			"tool_name":    tc.Function.Name,
-			"tool_call_id": tc.ID,
+			ares_events.EventKeyAgentID:    c.agentID,
+			ares_events.EventKeyToolName:   tc.Function.Name,
+			ares_events.EventKeyToolCallID: tc.ID,
+			ares_events.EventKeyRound:      st.Round,
+			ares_events.EventKeySeq:        seq,
 		})
 
 		result, err := c.executeToolCall(ctx, tc)
+		success := err == nil
 		if err != nil {
 			c.logger.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
 			result = fmt.Sprintf("error: %s", err.Error())
 		}
 
-		c.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
-			KeyAgentID:     c.agentID,
-			"tool_name":    tc.Function.Name,
-			"tool_call_id": tc.ID,
-		})
+		// C1: unified tool-call completed contract (round/seq/success/error/
+		// arg_shape). success/error were previously dropped by this executor —
+		// the fire-and-forget emit wrote only identity keys, so the trajectory
+		// projection (Y1 C2) could not tell a failed tool step from a healthy
+		// one.
+		c.emitEvent(ctx, ares_events.EventToolCallCompleted, ares_events.ToolCompletedPayload{
+			AgentID:     c.agentID,
+			ToolName:    tc.Function.Name,
+			ToolCallID:  tc.ID,
+			Round:       st.Round,
+			Seq:         seq,
+			Success:     success,
+			Error:       toolErrorMessage(err),
+			ArgShape:    ares_events.ToolArgShape(tc.Function.Arguments),
+			ExtraResult: result,
+		}.AsMap())
 		st.Messages = append(st.Messages, &core.LLMMessage{
 			Role:       "tool",
 			Content:    result,
@@ -431,6 +445,11 @@ func (c *chatCognition) renderPromptAndParams(ctx context.Context, task *models.
 			params[k] = v
 		}
 	}
+
+	// C5: overlay node-level ToolStep attributes (tools/budget/prior) from the
+	// task payload onto the global strategy params, with NODE OVER GLOBAL
+	// priority (§8.5). A ProjectStep node's Metadata rides this exact payload.
+	params = agents.MergeNodeParams(params, task.Payload)
 
 	prompt, err := c.renderPrompt(tpl, task)
 	if err != nil {
@@ -563,6 +582,17 @@ func (c *chatCognition) emitEvent(ctx context.Context, eventType ares_events.Eve
 	if !ares_events.Emit(ctx, c.eventStore, c.agentID, eventType, "agentfabric", payload) {
 		c.logger.Warn("failed to emit event", "event_type", eventType, "stream_id", c.agentID)
 	}
+}
+
+// toolErrorMessage normalizes a tool execution error into the C1 event
+// contract's error field. nil -> "" so the unified payload is JSON-friendly
+// and the projection layer can distinguish "failed with message" from
+// "no error" without an extra key.
+func toolErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // formatBudget formats a PriceRange for the prompt template.

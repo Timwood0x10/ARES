@@ -108,7 +108,7 @@ func (e *DAGPatchExecutor) Restore(_ context.Context, snap any) error {
 func (e *DAGPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
 	switch p.Type {
 	case patch.PatchInsertNode, patch.PatchRemoveNode, patch.PatchReplaceNode,
-		patch.PatchAddEdge, patch.PatchRemoveEdge:
+		patch.PatchAddEdge, patch.PatchRemoveEdge, patch.PatchSetNodeMetadata:
 		return nil
 	default:
 		return fmt.Errorf("workflow.dag: unsupported patch type %v on target %q", p.Type, p.Target)
@@ -152,6 +152,27 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 			return nil, fmt.Errorf("workflow.dag replace %q: %w", p.Target, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchReplaceNode, Target: p.Target, Value: oldStep}, nil
+
+	case patch.PatchSetNodeMetadata:
+		var md map[string]string
+		switch v := p.Value.(type) {
+		case map[string]string:
+			md = v
+		case *Step:
+			md = v.Metadata
+		case Step:
+			md = v.Metadata
+		default:
+			return nil, fmt.Errorf("workflow.dag set-node-metadata %q: value %T is not a metadata map", p.Target, p.Value)
+		}
+		var old *Step
+		if cur, ok := e.dag.StepIndex()[p.Target]; ok && cur != nil {
+			old = cloneStepForSnapshot(cur)
+		}
+		if err := e.dag.SetNodeMetadata(p.Target, md); err != nil {
+			return nil, fmt.Errorf("workflow.dag set-node-metadata %q: %w", p.Target, err)
+		}
+		return &patch.RuntimePatch{Type: patch.PatchSetNodeMetadata, Target: p.Target, Value: old}, nil
 
 	case patch.PatchAddEdge:
 		to, ok := p.Value.(string)

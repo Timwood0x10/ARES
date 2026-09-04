@@ -117,4 +117,11 @@ type ToolCallOutcome struct {
 	Outcome Outcome
 	// Latency is the invocation wall time.
 	Latency time.Duration
+	// ToolStepID is the process-level attribution key (Y1 C3): toolName#argShape.
+	// It lets the evidence and the RuntimeFitnessAggregator distinguish "WHICH
+	// way this strategy calls the tool" — two strategies that call the same tool
+	// with different argument shapes no longer collapse into one undifferentiated
+	// signal. When the observer cannot compute a shape, it is empty and the
+	// recorder attributes at the tool (not tool-step) granularity.
+	ToolStepID string
 }
