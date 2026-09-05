@@ -273,3 +273,84 @@ func TestComputeEvidenceKey_EmptyToolsField(t *testing.T) {
 		t.Errorf("evidence key should not contain tools suffix for empty tools: got %q", key)
 	}
 }
+
+// TestComputeEvidenceKey_IncludesBudgetPrior verifies the Y1 C5 attribution
+// half of the budget/prior wiring: both change execution behavior, so both
+// must change the key. Without these suffixes two strategies differing only
+// in budget or prior would share one evidence stream and evolution could not
+// select between them (the P1 gap: behavior moves, attribution does not).
+func TestComputeEvidenceKey_IncludesBudgetPrior(t *testing.T) {
+	t.Parallel()
+
+	newBase := func() Strategy {
+		return Strategy{
+			ID:             "test-evidence-budget-prior",
+			Version:        1,
+			PromptTemplate: "default prompt",
+			Params:         map[string]any{"temperature": 0.5},
+			CreatedAt:      time.Now(),
+		}
+	}
+
+	t.Run("prior_only_difference_separates", func(t *testing.T) {
+		t.Parallel()
+		a := newBase()
+		a.Params["prior"] = "prefer web_search"
+		b := newBase()
+		b.Params["prior"] = "prefer calculator"
+		if a.ComputeEvidenceKey() == b.ComputeEvidenceKey() {
+			t.Errorf("strategies differing only in prior must have different evidence keys: both got %q", a.ComputeEvidenceKey())
+		}
+	})
+
+	t.Run("budget_only_difference_separates", func(t *testing.T) {
+		t.Parallel()
+		a := newBase()
+		a.Params["budget"] = 1
+		b := newBase()
+		b.Params["budget"] = 5
+		keyA, keyB := a.ComputeEvidenceKey(), b.ComputeEvidenceKey()
+		if keyA == keyB {
+			t.Errorf("strategies differing only in budget must have different evidence keys: both got %q", keyA)
+		}
+		if !strings.Contains(keyA, "|budget=1") {
+			t.Errorf("evidence key must carry the canonical budget suffix: got %q", keyA)
+		}
+	})
+
+	t.Run("budget_spellings_agree", func(t *testing.T) {
+		t.Parallel()
+		// int (strategy store), float64 (JSON round-trip), and string (node
+		// Metadata) are all spellings the executor accepts for the same cap —
+		// they must agree on one key, or one phenotype splits by spelling.
+		spellings := []any{3, int64(3), float64(3), "3", "  3 "}
+		var want string
+		for i, spelling := range spellings {
+			s := newBase()
+			s.Params["budget"] = spelling
+			got := s.ComputeEvidenceKey()
+			if i == 0 {
+				want = got
+				continue
+			}
+			if got != want {
+				t.Errorf("budget spelling %v (%T) key %q disagrees with %q", spelling, spelling, got, want)
+			}
+		}
+	})
+
+	t.Run("absent_budget_prior_add_no_suffix", func(t *testing.T) {
+		t.Parallel()
+		s := newBase()
+		key := s.ComputeEvidenceKey()
+		if strings.Contains(key, "|budget=") || strings.Contains(key, "|prior=") {
+			t.Errorf("strategies without budget/prior must keep the historical key: got %q", key)
+		}
+		empty := newBase()
+		empty.Params["budget"] = 0
+		empty.Params["prior"] = "   "
+		if got := empty.ComputeEvidenceKey(); got != key {
+			t.Errorf("zero budget / blank prior must be unlimited-identity: %q vs %q", got, key)
+		}
+	})
+}

@@ -58,6 +58,10 @@ type chatStepState struct {
 	Prompt        string             `json:"prompt"`
 	Params        map[string]any     `json:"params,omitempty"`
 	Messages      []*core.LLMMessage `json:"messages"`
+	// ToolUses counts how many times each tool has been called in this
+	// session, persisted across quanta so a resumed task keeps spending the
+	// same node budget (C5). Mirrors agentfabric/chat_cognition.go.
+	ToolUses map[string]int `json:"tool_uses,omitempty"`
 }
 
 // taskExecutor executes recommendation tasks.
@@ -728,6 +732,10 @@ func (e *taskExecutor) renderPromptAndParams(ctx context.Context, task *models.T
 		return "", nil, err
 	}
 
+	// C5: prior is prompt-only — biases tool choice, never restricts the
+	// advertised tool set (mirrors chat_cognition.go).
+	prompt = agents.ApplyPriorHint(prompt, agents.PriorHintFromParams(params))
+
 	// P0-3: prepend the active role's system instructions when the leader
 	// switched this execution to a specialized role via Handoff (Ch.10
 	// multi-stage role transition: same runtime, different role instructions).
@@ -895,11 +903,32 @@ func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*mode
 		// set rather than degrade to zero tools (see chat_cognition.go for the
 		// full rationale).
 		if len(filtered) == 0 {
-			e.logger.Warn("tool whitelist matched no registered tools; falling back to full set",
+			// Package logger, not e.logger: the executor is constructible with a
+			// nil logger (quantum-path fixtures do exactly that), and a guard
+			// must never be the thing that panics.
+			log.Warn("tool whitelist matched no registered tools; falling back to full set",
 				"whitelist", whitelist, "registered", len(schemas))
 			filtered = schemas
 		}
 		schemas = filtered
+	}
+
+	// C5 budget gate: mirrors agentfabric/chat_cognition.go — tools whose
+	// per-session budget is spent are removed from the advertised set, with the
+	// same "never advertise zero tools" fallback.
+	if budget := agents.ToolBudgetFromParams(st.Params); budget > 0 {
+		allowed := make([]resources.ToolSchema, 0, len(schemas))
+		for _, s := range schemas {
+			if agents.ToolAllowedByBudget(s.Name, st.ToolUses, budget) {
+				allowed = append(allowed, s)
+			}
+		}
+		if len(allowed) == 0 {
+			log.Warn("tool budget exhausted for every advertised tool; falling back to full set",
+				"budget", budget, "uses", st.ToolUses, "advertised", len(schemas))
+		} else {
+			schemas = allowed
+		}
 	}
 
 	llmTools := make([]core.Tool, 0, len(schemas))
@@ -938,6 +967,29 @@ func (e *taskExecutor) chatStep(ctx context.Context, st *chatStepState) ([]*mode
 		ToolCalls: resp.ToolCalls,
 	})
 	for seq, tc := range resp.ToolCalls {
+		// C5 intra-round enforcement (mirrors agentfabric/chat_cognition.go):
+		// the schema gate above runs once per round, but a single round can
+		// carry N calls to the same tool. An over-budget call is skipped —
+		// never executed, never counted — with the skip reported as its tool
+		// observation (paired reply preserved) and no tool events emitted
+		// (the call never ran: no success/failure signal exists to project
+		// or score).
+		if budget := agents.ToolBudgetFromParams(st.Params); budget > 0 &&
+			!agents.ToolAllowedByBudget(tc.Function.Name, st.ToolUses, budget) {
+			st.Messages = append(st.Messages, &core.LLMMessage{
+				Role:       "tool",
+				Content:    fmt.Sprintf("tool %s skipped: per-session budget (%d) exhausted", tc.Function.Name, budget),
+				ToolCallID: tc.ID,
+			})
+			continue
+		}
+		// C5: count the call against the node budget BEFORE executing, so a
+		// failing tool still spends its budget (mirrors chat_cognition.go).
+		if st.ToolUses == nil {
+			st.ToolUses = map[string]int{}
+		}
+		st.ToolUses[tc.Function.Name]++
+
 		e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
 			ares_events.EventKeyAgentID:    agentID,
 			ares_events.EventKeyToolName:   tc.Function.Name,

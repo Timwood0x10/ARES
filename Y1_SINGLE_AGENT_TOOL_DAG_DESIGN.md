@@ -273,7 +273,7 @@ Round2: code_exec(读取其结果)              ▲                      │
 
 1. **✅ 已修**：空白名单 guard——过滤后 `len(filtered)==0` 时回退全量而非留空（`chat_cognition.go` + `sub/executor.go` 两处），加 warn 日志 + 回归测试 `TestToolWhitelistZeroIntersectionFallsBackToFullSet`。
 2. **✅ 已修（C5）**：`Payload["tools"]→params` 装配与优先级已定（`agents.MergeNodeParams`，节点 Metadata > 全局策略 Params）；第三条执行体 `agentloop/engine.go` 已接白名单（`Request.ToolWhitelist`）。
-3. **待**：词表对齐（`knownTools` ↔ 实际注册工具名），否则 guided mutation 持续写出无效白名单。注意护栏只校验**数量上界**，不校验名字是否存在——名字错的白名单会被运行期零交集 guard 兜成"全量放开"，这正是本项仍必须做的原因。
+3. **✅ 已修**：词表对齐分两层落地。变异侧 `extractToolNames` 的词表换成 `registeredToolAliases`（keyword → 真实注册名，§10.1），不再写出零交集白名单；护栏侧 `ValidateToolSet` 增第三条规则 `tool_set_unknown_name`（`WithKnownTools`），名字未注册即 Critical + `ShouldStop`——理由正是"名字全错的白名单会被运行期零交集 guard 兜成全量放开"，即静默变成最宽策略而非最窄。边界：`WithKnownTools` 需运营显式提供词表（`service.GuardrailsConfig.KnownTools`），留空则该规则不生效，与 `tool_weight` 默认 0 同属"出厂惰性闸门"。
 4. **✅ 已修（C3）**：工具级 fitness 维度已落地——`tool_call` 证据带 `tool_step_id`，`WindowToolStep` 按 `(strategyID, toolStepID)` 读出，`Weights.ToolCall` 为默认 0 的显式闸门。
 5. **✅ 已修（C6）**：`EvolutionGuardrails` 增 `ValidateToolSet`（`WithMaxToolsEnabled` 上界 + `WithRequireAnyTool` 零工具校验），并接进 `dream_cycle.findWinner` 选择路径——越界候选在 arena 测试前被拒、不消耗 arena 运行；全部候选被拒时返回 `ErrAllCandidatesRejected`（`Run` 视作正常空转）。计数口径与执行体共用 `agents.ToolNamesFromParams` 单一解析，保证"护栏数的工具"就是"LLM 看得到的工具"。
 
@@ -413,8 +413,8 @@ ToolStep  ——  一次“工具执行过程”，DAG 的节点
 | **C2** | **投影层**：从 EventStore 把事件流投影成 `ToolStep` 节点 + 先后边，按 `toolStepID` 聚合（含 `N` 次最少样本阈值）                                                                 | C1           | 给定一段人造事件流，投影出的节点数 = 不同 `toolStepID` 数；同 `toolStepID` 的多次调用聚合成 1 节点且 `count/success_rate` 正确                      | ✅ 新包 `internal/toolprojection` + `projection_test.go`                                                          |
 | **C3** | **过程级归因**：`ChannelFeedbackRecorder` 的 `tool_call` 证据带 `tool_step_id`，aggregator 按 `(strategyID, toolStepID)` scope                                | C1           | 同一策略下两个不同 `toolStepID` 的成败，产生两条可分辨的证据；`Window` 能按 toolStepID 读出不同值                                               | ✅ `feedback.ToolCallOutcome.ToolStepID` + `channel_feedback.go` + `WindowToolStep` + 测试                        |
 | **C4** | **作动面**：`DAGNode` 快照带 Metadata + `PatchSetNodeMetadata` 算子 + `WorkflowDiffer` 出 metadata patch + `mutateReplaceNode` 保留 Metadata（§8.1 四处）         | 无（可并行 C1–C3） | 仅改一个节点 Metadata 的 parent→child，`generateDiffPatches` 产出 **1** 个 patch（当前为 0）；patch 应用后 live DAG 上该节点 Metadata 已变 | ✅ `DAGNode.Metadata` + `MutableDAG.SetNodeMetadata` + `PatchSetNodeMetadata` + differ + `wfOpSetMetadata` + 测试 |
-| **C5** | **装配回灌**：`Payload["tools"]/budget/prior → params` 合入 `renderPromptAndParams`，定义"节点 Metadata > 全局策略 Params"优先级；三条执行体都读（§8.5、§10.2-1）               | C4           | 节点 Metadata 给出的白名单**覆盖**全局策略白名单                                                                                  | ✅ `agents.MergeNodeParams` + 两执行体 renderPromptAndParams 接线 + `agentloop.Request.ToolWhitelist`（第三执行体）+ 测试      |
-| **C6** | **护栏**：`EvolutionGuardrails` 增工具集 allowlist 上界（§8.6-5）；`enabled=false` 不得导致零工具（复用 §10.1 的 guard 语义）                                               | C5           | 变异写出越界工具集时被 guardrail 拒绝并计数                                                                                      | ✅ `ValidateToolSet` + `WithMaxToolsEnabled`/`WithRequireAnyTool` + `ErrCodeInvalidToolSet` + 测试                |
+| **C5** | **装配回灌**：`Payload["tools"]/budget/prior → params` 合入 `renderPromptAndParams`，定义"节点 Metadata > 全局策略 Params"优先级；三条执行体都读（§8.5、§10.2-1）               | C4           | 节点 Metadata 给出的白名单**覆盖**全局策略白名单；budget 用尽后该工具从 schema 层撤下                                                       | ✅ `agents.MergeNodeParams` + `ToolBudgetFromParams`/`ToolAllowedByBudget`/`ApplyPriorHint` + 两执行体 renderPromptAndParams 与预算门接线（`ToolUses` 随 checkpoint 持久化）+ `agentloop.Request.ToolWhitelist`（第三执行体，仅白名单）+ 测试      |
+| **C6** | **护栏**：`EvolutionGuardrails` 增工具集 allowlist 上界（§8.6-5）；`enabled=false` 不得导致零工具（复用 §10.1 的 guard 语义）                                               | C5           | 变异写出越界工具集时被 guardrail 拒绝并计数                                                                                      | ✅ `ValidateToolSet`（上界 / 零工具 / 未注册名三规则）+ `WithMaxToolsEnabled`/`WithRequireAnyTool`/`WithKnownTools` + `ErrCodeInvalidToolSet` + dream\_cycle 与 genome 两条晋升路径接线 + 测试                |
 | **C7** | **端到端闭环断言**（Y.1 的最终判定，§9.5 的过程级版本）                                                                                                                | C1–C6        | 仅 `ToolStep.Metadata` 不同的基因 → 四链全部分得开，且 GA 能 promote 成功率高的那一侧（需 `tool_weight>0`）                                 | ✅ `TestToolStepMetadata_EndToEndClosedLoop`（经 `WindowToolStep` 分出高成功率侧）                                        |
 
 ### 11.2 关键约束（实施时不得违反）
@@ -447,8 +447,8 @@ ToolStep  ——  一次“工具执行过程”，DAG 的节点
 | C2 | `internal/toolprojection/`（新包）+ `Projector`（`projector.go`）                                                                                                                                                                                          | 纯读投影：事件流 → `ToolStep` 节点（按 toolStepID 聚合，`N` 最少样本阈值）+ 同 session 先后边。`Projector.Run` 把每步成功率写成 `tool_call` fitness evidence（带 `tool_step_id`），打通 C2→C3（投影层此前无生产消费点）。                                 |
 | C3 | `internal/feedback` `ToolCallOutcome.ToolStepID`、`sub/tool_observer.go`、`ares_evolution/channel_feedback.go`、`fitness_aggregator.go` `WindowToolStep`                                                                                                | process 级归因：tool\_call 证据带 `tool_step_id`；`WindowToolStep` 按 `toolStepID`（可空 strategyID）读取。生产 tool\_call evidence 真实写入端是 `ChannelFeedbackRecorder`（经 binder observer），投影层是事件流审计/重建路径。              |
 | C4 | `workflow/engine/types.go` `DAGNode.Metadata`、`mutable_dag.go` `SetNodeMetadata`、`graph_events.go` `ChangeSetNodeMetadata`、`dag_patcher.go` `PatchSetNodeMetadata`、`evolution/diff/workflow_differ.go`、`genome/workflow_genome.go` `wfOpSetMetadata` | metadata 作动面四件套：快照带 Metadata、patch 算子、differ 出 metadata patch、replace/home 保留 Metadata。                                                                                                            |
-| C5 | `agents/strategy.go` `MergeNodeParams` + `ParamKeyBudget/ParamKeyPrior`、`chat_cognition.go`/`sub/executor.go` renderPromptAndParams 接线、`agentloop/engine.go` `Request.ToolWhitelist`                                                                 | 装配回灌：节点级 tools/budget/prior 覆盖全局策略；补齐第三条执行体（agentloop 白名单）。budget/prior 仅被装配进 params，暂无执行体消费其语义（§12.5 遗留）。                                                                                         |
-| C6 | `ares_evolution/guardrails.go` `ValidateToolSet` + `WithMaxToolsEnabled`/`WithRequireAnyTool` + `ErrCodeInvalidToolSet`；接线：`dream_cycle.go findWinner` 入口；解析收口：`agents.ToolNamesFromParams`                                                          | 工具集 allowlist 上界 + 零工具校验，接进候选选择路径（越界候选在 arena 测试前被拒、不消耗 arena 运行；全拒 → `ErrAllCandidatesRejected`）— 此前仅定义未接线，现已接线。护栏计数与执行体过滤共用同一解析（去空 + 去重），否则 `"a,a"`/`"a,b,"` 这类变异产物会让护栏数到 2 而执行体只放开 1，把合规候选误判越界。 |
+| C5 | `agents/strategy.go` `MergeNodeParams` + `ParamKeyBudget/ParamKeyPrior` + `ToolBudgetFromParams`/`ToolAllowedByBudget`/`PriorHintFromParams`/`ApplyPriorHint`、`chat_cognition.go`/`sub/executor.go` renderPromptAndParams 接线 + 预算门 + `chatStepState.ToolUses`、`agentloop/engine.go` `Request.ToolWhitelist`                                                                 | 装配回灌：节点级 tools/budget/prior 覆盖全局策略；补齐第三条执行体（agentloop 白名单）。budget 语义按 §11.2 落在 schema 过滤层（用尽即撤下该工具的 schema，不在 `CallTool` 拦截），计数发生在执行**前**（失败调用同样消耗预算），并随 checkpoint 持久化 `ToolUses`（否则 resume 会把预算清零）；prior 只前置进提示词，不改工具集。语义实现只有一份，两执行体共用。                                                                                         |
+| C6 | `ares_evolution/guardrails.go` `ValidateToolSet` + `WithMaxToolsEnabled`/`WithRequireAnyTool`/`WithKnownTools` + `ErrCodeInvalidToolSet`；接线：`dream_cycle.go findWinner` 与 `genome_wiring_run.go` `toolSetRejected`（`Run` 的 lifecycle submit 前 + `deployBestStrategy` 直发前）；解析收口：`agents.ToolNamesFromParams`                                                          | 三条规则：`tool_set_upper_bound`（数量上界）、`tool_set_empty`（零工具）、`tool_set_unknown_name`（§8.6-3 词表，名字未注册即拒）。接进两条晋升路径：dream\_cycle 选择路径（越界候选在 arena 测试前被拒、不消耗 arena 运行；全拒 → `ErrAllCandidatesRejected`）与 genome 适配器的两个出口。护栏计数与执行体过滤共用同一解析（去空 + 去重），否则 `"a,a"`/`"a,b,"` 这类变异产物会让护栏数到 2 而执行体只放开 1，把合规候选误判越界。 |
 | C7 | `ares_evolution/tool_dimension_transmission_test.go` `TestToolStepMetadata_EndToEndClosedLoop`                                                                                                                                                       | 真实端到端：C1 契约事件 → eventStore → `Projector.Run` → evidence store → `WindowToolStep` 分出高成功率侧（不再手造 evidence）。                                                                                           |
 
 ### 12.2 归因粒度说明（C3 的 key 落地口径）
@@ -461,7 +461,7 @@ ToolStep  ——  一次“工具执行过程”，DAG 的节点
 
 - `go test -race` 覆盖：`toolprojection`/`ares_events`/`ares_evolution`/`workflow/engine`/`evolution/{diff,genome,patch}`/`agents`/`agentfabric`/`agentloop`/`sdk`。
 
-- 关键测试：`testToolEvents`（C1）、`projection_test.go`（C2）、`TestAggregator_WindowToolStep*`（C3）、`TestWorkflowDiffer_MetadataOnlyChangeEmitsOnePatch` 等（C4）、`TestMergeNodeParams`/`TestEngine_ToolWhitelist*`（C5）、`TestValidateToolSet` + `dream_cycle_toolset_guard_test.go` 的 `TestFindWinner_ToolSetGuardRejectsBeforeArena`/`_AllCandidatesJailedByToolSetGuard`/`_ToolSetGuardCountsSameNamesAsExecutor`/`_NoToolsWhitelistNotRejectedByDefault`/`_RequireAnyToolJailsEmptyWhitelist`（C6：单元 + 接线，含"护栏与执行体同一计数"与"无白名单不误杀"两条防回归）、`TestToolNamesFromParams`/`TestToolNamesAndWhitelistAgree`（解析收口）（C6）、`TestToolStepMetadata_EndToEndClosedLoop`（C7）。
+- 关键测试：`testToolEvents`（C1）、`projection_test.go`（C2）、`TestAggregator_WindowToolStep*`（C3）、`TestWorkflowDiffer_MetadataOnlyChangeEmitsOnePatch` 等（C4）、`TestMergeNodeParams`/`TestEngine_ToolWhitelist*`（C5 装配与第三执行体）、`strategy_budget_prior_test.go` 的 `TestToolBudgetFromParams`/`TestToolAllowedByBudget`/`TestToolAllowedByBudgetExactCallCount`/`TestPriorHintFromParams`/`TestApplyPriorHint`/`TestPriorDoesNotAffectToolSet`（C5 语义单元）、`sub/executor_tool_budget_test.go` 与 `agentfabric/chat_cognition_tool_budget_test.go` 各 5 例（C5 接线：撤下用尽工具、失败调用仍消耗预算、全用尽回退全量、无预算=无限、与白名单叠加；后者另含 `TestChatCognitionBudgetSurvivesCheckpointRoundTrip` 经 `decodeChatStepState` 往返断言 `ToolUses` 存活）、`TestValidateToolSet` + `TestValidateToolSetKnownTools`（§8.6-3 词表：known/unknown/全 unknown/无词表/空白词表/trim/空集跳过/两规则并发）+ `dream_cycle_toolset_guard_test.go` 的 `TestFindWinner_ToolSetGuardRejectsBeforeArena`/`_AllCandidatesJailedByToolSetGuard`/`_ToolSetGuardCountsSameNamesAsExecutor`/`_NoToolsWhitelistNotRejectedByDefault`/`_RequireAnyToolJailsEmptyWhitelist` + `genome_wiring_toolset_test.go` 的 `TestGenomeWinnerToolSetGuardrail`（越界不部署/合规部署/未注册名不部署/无护栏不变/无白名单可部署）与 `TestToolSetRejectedGuard`（nil strategy、nil guardrails、`"a,a,"` 解析为 1 个名不误杀）（C6：单元 + 两条晋升路径接线，含"护栏与执行体同一计数"与"无白名单不误杀"两条防回归）、`TestToolNamesFromParams`/`TestToolNamesAndWhitelistAgree`（解析收口）、`TestExtractToolNames_AliasTargetsAreRegisteredNames`（词表不变式）、`TestToolStepMetadata_EndToEndClosedLoop`（C7）。
 
 ### 12.4 发布措辞（C1–C7 完成后）
 
@@ -469,9 +469,57 @@ C7 已通过，原 §11.3 的禁用措辞到期。可写：**"进化已可作用
 
 ### 12.5 遗留与边界（如实声明，不做掩盖）
 
-1. **`Projector`** **的生产触发点**：`Projector.Run`（事件流审计路径）已验证可用并有集成测试覆盖，但**未接进 serve 生命周期循环**——这是一个部署/接线决策（何时、以何频率投影），不是代码缺口。生产 tool\_call evidence 的实时写入端是 `ChannelFeedbackRecorder`（binder observer，`channel_feedback_wiring.go` 已接线）。不要在发布措辞里写"投影器已在运行"，只写"可运行且链路已打通"。
-2. **budget/prior 消费语义未落地**：`MergeNodeParams` 会把节点的 `budget`/`prior` 装进 params，但**没有任何执行体消费**"budget 用尽后该工具不再出现"或"prior 只改提示词"的语义——当前只有 `tools` 被 `ToolWhitelistFromParams` 真正消费。计划 §11 C5 的验收卡"budget 用尽后 schema 过滤"未达成。
-3. **C6 接线覆盖到 dream\_cycle 选择路径**：越界候选在 `findWinner` 被拒，且有接线测试断言**被拒候选不进 arena**（`dream_cycle_toolset_guard_test.go`）；但 genome 适配器（`genome_wiring_run.go`）的候选生成路径未接 `ValidateToolSet`。运行期零工具回退 guard（chat\_cognition/sub）仍兜底。另注：护栏只校验**数量**，不校验工具名是否真实注册——名字全错的白名单在运行期零交集时会被兜成"全量放开"，词表对齐（§8.6-3）仍未做。
+1. **✅ `Projector`** **的生产触发点已接线（见 §12.6）**：`internal/ares_bootstrap/tool_projection_worker.go` 把 `Projector.Run` 接进 serve 的后台 goroutine 组，由 `evolution.tool_projection`（默认 `enabled: false`）控制周期与最少样本阈值。它与 `ChannelFeedbackRecorder`（binder observer）**不重复**：后者按次写"这次调用成不成"，前者按窗口投影"这种用法成不成"（`tool_step_id` 维度的唯一生产者）。**边界**：默认关闭，未显式开启时行为与接线前一致；未接 eventStore/evidenceStore 时 worker 拒绝启动并 warn（§9.3-2），不写空图。
+2. **budget/prior 消费语义已落地，但只覆盖两条执行体**：`agents.ToolBudgetFromParams`/`ToolAllowedByBudget` 把 "budget 用尽后该工具不再出现" 落在 **schema 过滤层**（与 §10.1 guard 同一位置，未在 `CallTool` 拦截，符合 §11.2），`PriorHintFromParams`/`ApplyPriorHint` 让 `prior` **只**前置进提示词、不动工具集；两处口径共用同一份实现。计数在执行**前**发生，因此失败调用同样消耗预算；`ToolUses` 随 checkpoint 持久化（pre-budget checkpoint 解码为 nil = "尚未使用"），resume 不会把预算清零；全部工具用尽时沿用 "永不广告零工具" 回退全量并 warn。**边界**：接线只覆盖 `sub/executor.go` 与 `agentfabric/chat_cognition.go`；第三条执行体 `agentloop/engine.go` 仍只消费 `Request.ToolWhitelist`，不消费 budget/prior，且其唯一生产构造点 `sdk/agent.go` 未填充 `ToolWhitelist`（该路径没有策略 params 来源），所以 agentloop 上的工具旋钮目前是"有能力、未接源"。
+3. **✅ C6 接线已覆盖两条晋升路径 + 词表规则已加 + 词表真源已配置化**：越界候选在 `dream_cycle.findWinner` 被拒且有测试断言**被拒候选不进 arena**；genome 适配器路径新增 `toolSetRejected`，接进 `Run`（lifecycle submit 前）与 `deployBestStrategy`（直发前）两个出口，被拒时记护栏事件 + `metrics.RecordEvolutionGuardrail`。护栏现在校验数量上界、零工具、**以及工具名是否真实注册**（`tool_set_unknown_name`）。**工具词表单一真源 = `evolution.tool_pool` / `evolution.guardrails.known_tools` yaml 配置**（`ares_config.EvolutionConfig`），经 `applyGATuning`/`buildEvolutionGuardrails` 下发；`buildMutator` 接 `WithToolPool`，使 elite/random mutation 真正能凭配置产白名单（此前 `WithToolPool` 在 serve 是死配置）。运行期零工具回退 guard（chat\_cognition/sub）仍作兜底。**边界**：`known_tools` 留空则 `tool_set_unknown_name` 静默不生效（配置即真源，未配即不校）。
 4. **协作 ACT**：仍为开环（见 AGENT\_OS N-11/N-12）。
 
 这些是本次执行如实记录，不是"全部闭环"的夸大。
+
+***
+
+## 13. 执行记录（2026-09-05，§12.5-1 遗留项收口：投影器生产触发点）
+
+> 本段只处理 §12.5 第 1 条遗留项："`Projector` 未接进 serve 生命周期循环"。C1–C7 的结论不变。
+
+### 13.1 为什么需要它（不是重复接线）
+
+`tool_step` 这个 fitness 维度此前**没有生产者**：`WindowToolStep` 按 `tool_step_id` 读取，而线上唯一写 `tool_call` evidence 的 `ChannelFeedbackRecorder` 走的是"每次调用一条记录"的路径。两者回答的是不同问题：
+
+| | `ChannelFeedbackRecorder`（既有） | 投影 worker（本次） |
+| --- | --- | --- |
+| 触发 | 每次工具调用（binder observer） | 周期 tick |
+| 单位 | 一次调用 | 一个窗口内同 `toolStepID` 的全部调用 |
+| 回答 | "这次调用成不成" | "这**种用法**成不成"（`tool#argShape` 的成功率） |
+
+成功率是**窗口统计量**，单条事件算不出来（一次调用的成功率只能是 0 或 1，没有统计意义）——所以只能是周期 worker，不能改成事件订阅。二者可同时开启，互不覆盖。
+
+### 13.2 交付
+
+| 位置 | 内容 |
+| --- | --- |
+| `internal/ares_bootstrap/tool_projection_worker.go`（新） | `startToolProjectionWorker`（组装 + 三种拒绝启动条件）+ `runToolProjectionLoop`（周期 + 读游标） |
+| `internal/ares_bootstrap/bootstrap_steps.go` | 在 `startChannelFeedback` 之后接线 |
+| `internal/ares_config` `ToolProjectionConfig` + 默认值 + 校验 | `evolution.tool_projection.{enabled,interval,min_samples}` |
+| `internal/toolprojection/projection.go` `Options.Since` | 让投影支持增量读（`ProjectFromSource` 透传到 `ReadOptions.Since`） |
+| `configs/ares.yaml` | 注释块说明它与 `channel_feedback.tool_enabled` 的分工 |
+
+### 13.3 三个必须这样做的决定（否则是错的，不是风格问题）
+
+1. **游标从"启动时刻"开始，不从日志开头**：若首 tick 读全量历史，会把**历次策略**产生的工具行为算到启动时刻恰好激活的那个策略头上——与 active-strategy 解析器在其它通道上防的是同一类错误归因。
+2. **游标只在成功后前移**：失败 tick 保留窗口，下一 tick 重投影。代价是可能重复写入失败前已写的部分证据（轻微拉低/抬高该步得分）；反向选择（跳过窗口）会**永久丢掉一窗口的工具失败信号**，那正是这条链路存在的意义。故取前者。
+3. **窗口右界在读之前取快照**：否则投影期间落地的调用会被夹在"已读完"与"游标前移"之间整窗丢失。
+4. **未接 eventStore 即拒绝启动**（§11.2 / §9.3-2 明文要求）：否则 worker 会在"看起来已接线"的状态下每 tick 写一张空图。
+
+### 13.4 验证
+
+- `go build ./...`、`go vet`（三包）、`read_lints` 无诊断。
+- `go test -race -count=1`：`internal/toolprojection`、`internal/ares_config`、`internal/ares_bootstrap` 全绿。
+- 新增测试：
+  - `tool_projection_worker_test.go`：`TestToolProjectionLoop_CursorStartsAtNowAndAdvances`（断言首窗口不是零时间——即"不重放全史"这条防回归）、`_FailedRunKeepsCursor`、`_StopsOnContextCancel`、`TestStartToolProjectionWorker_RefusesWithoutStores`（冻结时钟，无 sleep）。
+  - `projection_test.go`：`TestProjectFromSource_ForwardsSinceWindow`（窗口必须真的下推到 store，否则每 tick 重发已投影证据）、`_ZeroSinceReadsWholeLog`（保住按需审计读）。
+  - `evolution_config_test.go`：`TestToolProjectionConfig_YAMLParsesAndDefaults`（缺省关闭、只开 `enabled` 也得到安全窗口、显式值生效、armed 时负 interval 被拒而 disabled 时不拦启动）。
+
+### 13.5 发布措辞更新
+
+§12.5-1 的限制（"只写可运行且链路已打通，不要写投影器已在运行"）到期，替换为：**"投影器已接入 serve 后台循环，默认关闭；开启后按 `evolution.tool_projection.interval` 周期产出 `tool_step` 维度证据"**。其余措辞（含协作 ACT 仍开环）不变。

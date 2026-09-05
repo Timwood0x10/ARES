@@ -12,6 +12,7 @@ import (
 	_ "github.com/lib/pq"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -484,6 +485,12 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// unattributable, i.e. dead wiring that looks live.
 	newEvol.ChannelFeedback = startChannelFeedback(ctx, comp, newEvol, wired.ActiveStrategyManager, cfg.Evolution.ChannelFeedback)
 
+	// Y1 §12-1: the production trigger for the ToolStep projection. Separate
+	// from the recorder above — that writes one record per tool call, this
+	// projects the event log into per-argument-shape success rates, the only
+	// producer of the tool_step fitness dimension.
+	startToolProjectionWorker(ctx, comp, newEvol, cfg.Evolution.ToolProjection)
+
 	// In the full configuration, attach the GA adapter to the existing
 	// old-system scheduler; otherwise the GA system's own scheduler
 	// (registered above on the LLM callback registry) drives it.
@@ -671,6 +678,12 @@ func applyGATuning(gaCfg *evolution.SystemConfig, ec *ares_config.EvolutionConfi
 	if ec.SelectionStrategy != "" && ec.SelectionStrategy != ares_config.DefaultEvolutionSelectionStrategy {
 		gaCfg.SelectionStrategy = ec.SelectionStrategy
 	}
+	// ToolPool: wire the deployment-configured tool-whitelist pool into the
+	// mutator (single source for tool mutation vocabulary). Empty keeps tool
+	// mutation disabled (guided mutation may still produce choices from hints).
+	if len(ec.ToolPool) > 0 {
+		gaCfg.ToolPool = ec.ToolPool
+	}
 }
 
 // targetFitnessScale converts the YAML evolution.target_fitness (documented as
@@ -678,6 +691,48 @@ func applyGATuning(gaCfg *evolution.SystemConfig, ec *ares_config.EvolutionConfi
 // against, since its BaselineScore is measured against the same values fed to
 // PostEvolveCheckForSource.
 const targetFitnessScale = 100.0
+
+// findUnknownPoolTools cross-checks the deployment-configured mutation pool
+// (evolution.tool_pool, each entry a comma-separated whitelist) against the
+// registered-tool vocabulary (evolution.guardrails.known_tools). It returns
+// the offending entries mapped to their unknown names, or nil when everything
+// resolves (or when either side is empty — no vocabulary means no judgment,
+// same opt-in rule as the unknown-name guard itself).
+//
+// Parsing goes through agents.ToolNamesFromParams — the same single parser the
+// executors and the guardrail use — so "a,a," counts as one name here exactly
+// as it does at selection and execution time.
+func findUnknownPoolTools(pool, known []string) map[string][]string {
+	if len(pool) == 0 || len(known) == 0 {
+		return nil
+	}
+	knownSet := make(map[string]bool, len(known))
+	for _, k := range known {
+		if k = strings.TrimSpace(k); k != "" {
+			knownSet[k] = true
+		}
+	}
+	if len(knownSet) == 0 {
+		return nil
+	}
+	var bad map[string][]string
+	for _, entry := range pool {
+		names := agents.ToolNamesFromParams(map[string]any{agents.ParamKeyTools: entry})
+		var unknown []string
+		for _, name := range names {
+			if !knownSet[name] {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			if bad == nil {
+				bad = make(map[string][]string)
+			}
+			bad[entry] = unknown
+		}
+	}
+	return bad
+}
 
 // buildEvolutionGuardrails constructs the G1 population-level guardrails from
 // the YAML evolution section (B2).
@@ -729,6 +784,28 @@ func buildEvolutionGuardrails(
 	}
 	if ec.TargetFitness > 0 {
 		opts = append(opts, evolution.WithBaselineScore(ec.TargetFitness/targetFitnessScale))
+	}
+	// C6: tool-set selection guardrails from the evolution.guardrails YAML block.
+	// All three are opt-in — zero-value disables, preserving prior behavior.
+	if gr := ec.Guardrails; gr.MaxToolsEnabled > 0 {
+		opts = append(opts, evolution.WithMaxToolsEnabled(gr.MaxToolsEnabled))
+	}
+	if ec.Guardrails.RequireAnyTool {
+		opts = append(opts, evolution.WithRequireAnyTool(true))
+	}
+	if len(ec.Guardrails.KnownTools) > 0 {
+		opts = append(opts, evolution.WithKnownTools(ec.Guardrails.KnownTools))
+	}
+	// P2b: loud misconfiguration check — a tool_pool entry naming tools
+	// outside the known vocabulary silently jails every candidate it produces
+	// (unknown-name guard), so the generation burns with no promotion and
+	// evolution looks stalled rather than misconfigured. Warn, don't
+	// fail-closed: the pool only feeds the elite/random mutation path
+	// (guided mutation still works), and blocking bootstrap on a soft
+	// evolution knob would violate graceful degradation.
+	for entry, unknown := range findUnknownPoolTools(ec.ToolPool, ec.Guardrails.KnownTools) {
+		log.WarnContext(ctx, "bootstrap: evolution tool_pool entry names unregistered tools; candidates from this entry will be jailed by the tool-set guardrail",
+			"entry", entry, "unknown", unknown, "known_count", len(ec.Guardrails.KnownTools))
 	}
 	if metrics != nil {
 		opts = append(opts, evolution.WithGuardrailEventHandler(func(evt evolution.GuardrailEvent) {

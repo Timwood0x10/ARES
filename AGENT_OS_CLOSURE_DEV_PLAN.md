@@ -114,7 +114,7 @@
 
 - **仍缺的是协作半边**：agent 没有"问某个 agent"的字段/可调动作。工具与协作不可混为一谈。
 
-- **遗留（2026-09-04 更新，不改变上述结论）**：原列三项已闭——`agentloop/engine.go` 第三执行体已接白名单（C5，`Request.ToolWhitelist`）、`Payload["tools"]→params` 装配优先级已定（C5，`agents.MergeNodeParams`，节点 Metadata > 全局策略）、工具集 allowlist 上界校验已接进选择路径（C6，`dream_cycle.findWinner` 调 `ValidateToolSet`，越界候选进 arena 前即被拒）。**真正仍缺的是 `budget`/`prior` 的消费语义**：两者只被装进 params，没有执行体实现"budget 用尽后该工具不再出现"（见 `Y1_SINGLE_AGENT_TOOL_DAG_DESIGN.md` §12.5-2）。
+- **遗留（2026-09-04 更新，不改变上述结论）**：原列三项已闭——`agentloop/engine.go` 第三执行体已接白名单（C5，`Request.ToolWhitelist`）、`Payload["tools"]→params` 装配优先级已定（C5，`agents.MergeNodeParams`，节点 Metadata > 全局策略）、工具集 allowlist 上界校验已接进选择路径（C6，`dream_cycle.findWinner` 调 `ValidateToolSet`，越界候选进 arena 前即被拒）。**真正仍缺的是** **`budget`/`prior`** **的消费语义**：两者只被装进 params，没有执行体实现"budget 用尽后该工具不再出现"（见 `Y1_SINGLE_AGENT_TOOL_DAG_DESIGN.md` §12.5-2）。
 
 ***
 
@@ -618,3 +618,192 @@ Step 1-5 交付「判决语义正确」；Step 6 交付「判决输入可归因�
 | 遗留                                                             | ⚠️ 协作维度 OBSERVE 已闭环但 ACT 未闭环 → 开环反馈，见 N-11 二次修订（工具维度已闭环） |
 
 **验证**：`go build ./...`、`go vet ./...`、`gofmt -l .`、`golangci-lint run`（0 issues）、`go test -race`（agentipc / ares\_evolution / agents/sub / ares\_bootstrap / ares\_config / aresrecovery / introspect / cmd/ares）、`make gate`、`git diff --check` 全部通过。
+
+***
+
+# 附录 M — 计划收敛合并（2026-09-05）
+
+> 为收敛根目录计划文档，本附录把以下三个文件的关键信息（去重后）并入本主计划，随后删除原文件：
+> `AGENT_OS_END_TO_END_CLOSURE_PLAN.md`、`ARES_FULL_DEEP_REVIEW_2026-09-03.md`、`DAG_FIRST_EXECUTION_PLAN.md`。
+> 本附录只做**信息保全**，不重写已落地结论；凡与本主计划正文重复处不再赘述，以免二次膨胀。
+
+## M.1 端到端闭环深化（原 END\_TO\_END，2026-09-03 / HEAD c5f36d45，draft v1）
+
+> 目标：「进化从能跑，变有意义」——三条互相咬合的验收主张：每条业务链路端到端 / 候选有自身证据 / 进化有意义。
+
+### M.1.1 两条进化系统（事实，不合并）
+
+| <br /> | v1 `internal/ares_evolution`                                    | v2 `internal/evolution`                                                   |
+| ------ | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 进化对象   | 策略 `mutation.Strategy`（temperature/top\_k/prompt）               | 工作流 DAG / knowledge / memory（`RuntimePatch`）                              |
+| 门控链    | G1 guardrail → G2 shadow → G3 eval → G4 staging（`lifecycle.go`） | CandidateVerifier 三选网（G1结构/G2evidence/G3regression）+ Coordinator+Deployer |
+| 证据来源   | `evidence.Store` KindFitness（记策略自身历史）                           | Coordinator 评估回调                                                          |
+| 候选特异   | **否**（v1，回退 prior）                                              | 部分（v2）                                                                    |
+
+两套都在线上跑、都不能删 → 收敛是 0.4.x 单独工作；本计划不合并它们。
+
+### M.1.2 六支柱业务链路（端到端清单，可被 system\_runtime/orchestrator 编排）
+
+1. **任务/调度**：`taskfabric` + `kernelscheduler`（executeWithCandidates → RunQuantum → attribution）
+2. **进化归因**：`aresrecovery` DeterministicScorer / ExecutionAttribution（RecordWithMetrics 吃 latency/retry/recover）
+3. **证据存储**：`evidence.Store`（Memory/Postgres）+ `RuntimeObserver.writeEvidence`（observer.go:285 记 `source="strategy"`）
+4. **门控判定**：`StrategyLifecycle` G1–G4（lifecycle.go）+ ShadowEvaluator/ReplayScorer
+5. **DAG/工作流编排**：`system_runtime` + `taskfabric.PlanLoop`（GAP-2 / K1–K5）
+6. **预报回滚**：`RollbackPolicy` + bootstrap recovery loop
+
+### M.1.3 验收矩阵（E1–E5 与 Step 对应）
+
+| #  | 陈形                                          | 现况                         | 对应                           |
+| -- | ------------------------------------------- | -------------------------- | ---------------------------- |
+| E1 | 候选 G2 判定前确实执行过且有自己的 evidence                | 否（replay 只读历史）             | Step A / 本计划 N-1（✅ 已落地）      |
+| E2 | G2「更好」由候选自身结果产生                             | 否                          | Step A / N-1（✅）              |
+| E3 | v2 patch 从真实 live 工件产生、经 staging、promote/回滚 | 部分                         | Step B / 本计划 Step 2/3/6/7（✅） |
+| E4 | 六支柱每跳有测试与可观测                                | 缺「归因→门控→回流」接缝              | Step C                       |
+| E5 | G3/G4 零-token 与满配置行为明确、不橡皮图章                | G3 缺 registry 有意缺失；G4 默认未验 | Step D                       |
+
+### M.1.4 明确不做（防过度设计）
+
+- 不重写 `mutation.Strategy`/`Coordinator`/kernel 架构；不删旧 GA（v1 保留 baseline 对照）；不引入新外部依赖/进化库。
+
+- `shadow_execution` / v2 patch 回流默认关闭，需配置显式打开。
+
+- 收敛前置（0.4.x）：抽 `internal/evolution/verify/` 共享 G1–G4 门控 + evidence 读写 + promote/rollback，v1/v2 复用。
+
+## M.2 全仓深度 review（原 ARES\_FULL\_DEEP\_REVIEW，2026-09-03，基准 code\_rules\_v2）
+
+> 36 万行 Go 单体，代码质量整体高，但有三类系统性问题。方法：AST 规模扫描 + 4 路并行 subagent + 逐项人工核实；「已核实」=开源确认，「需确认」=模式扫描待复核。**不编造不存在的 bug。**
+
+### M.2.1 真 bug / 未闭环（P0/P1）
+
+- **P1-1 候选无自身证据（G2 非候选特异）** ✅ 已闭环（2026-09-03 Step 4 / N-1）。
+
+- **P1-1b 协作与工具通道「看得见改不动」** ✅ 度量已闭环（Y.2/Y.3-OBSERVE）；作动工具维度已闭环（Y.3-ACT），协作维度仍开环（N-11/N-12）。
+
+- **P1-2 error 被吞无注释** ✅ 已闭环（2026-09-04，engine.go 已补 best-effort 注释）。
+
+- **P1-3 裸 goroutine 无 recover** ✅ agentipc 部分已修（Bus.invokeHandler，2026-09-04）；`Send` 同步 panic 刻意不 recover（见正文复核表）。
+
+- **P1-4 超长生产函数隐藏风险**（非漏洞但高风险）：`mutable_dag.go:659 ReplaceNode 154行`、`write_buffer.go:285 flushBatch 127行`、`validator.go:79 validateValue 115行`。
+
+- **P1-5 异步嵌入死信无人强制回收** ⚠️ 需确认：`embedding_dead_letter` 存量清理/重试未见回收循环，死信累积不回收 → 写入可能卡 NULL vector（Query 过滤 `embedding IS NOT NULL`）。**W1 待办**。
+
+### M.2.2 测试敷衍（P3）
+
+- **T-1** `*_coverage_test.go` 巨型硬凑（4 个）：workflow/engine/coverage\_test.go(608行)、postgres/coverage\_test.go、manager\_coverage\_test.go、offline\_coverage\_test.go——多为「调方法断言不 panic」，少反向/错误路径 → 虚增覆盖率。
+
+- **T-2** 测试用 `time.Sleep` 同步 **251 处**（规范 §7.3 明令禁止）：runtime\_test.go 45、shutdown\_comprehensive\_test.go 19、scheduler\_test.go 13、runtime\_resurrection\_test.go 11。风险 flaky/CI慢。
+
+- **T-3** 空壳/无断言测试 ⚠️ 需逐文件确认。
+
+### M.2.3 规范违规（P2，已量化）
+
+| 项                              | 结论                                                                                                                                      |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| V-1 单文件 >1000 行                | ✅ 6 个：lifecycle.go 1287 / scheduler.go 1185 / dream\_cycle.go 1081 / genome\_wiring\_system.go 1059 / fabric.go 1048 / executor.go 1044 |
+| V-2 单函数 >100 行                 | ✅ 156 个（多为表驱动/多分支，功能正确但违上限）                                                                                                             |
+| V-3 库层 `fmt.Println/log.Print` | ✅ 65 处（ares\_protocol、若干 load/init）                                                                                                     |
+| V-4 注释代码块                      | ✅ 142 处（事件/工具/工作流模块）                                                                                                                    |
+| V-6 硬编码魔数（goconst）             | ✅ 47 处抽样（`30 * time.Second` 等）                                                                                                          |
+| V-7 吞错                         | ✅ introspect/control.go 43 处 HTTP encode best-effort（可接受需注释）；knowledge 21 处需确认                                                          |
+
+### M.2.4 整改建议优先级（2026-09-03 快照）
+
+- W1：`embedding_dead_letter` 死信重投/过期清理（P1-5）；拆 6 个 1000+ 行文件 + 156 个 100+ 行函数（V-1/V-2）；灭 251 处 test Sleep（T-2）；清 142 注释代码 + 65 库层打印 + 47 魔数（V-3/V-4/V-6）。
+
+- W2：重构 4 个 `*_coverage_test.go` 为真语义断言（T-1）；`agentfabric` 未覆盖模块补深查。
+
+- 已闭环标注：P1-1/P1-1b(度量)/P1-2/P1-3、补扫 N-8（agentsyscall/plan.go:246 goroutine 已确收受管）。
+
+（注：本附录 M.2 为某次 review 快照；其中「待办」若与本主计划正文冲突，以正文最新落地状态为准。）
+
+## M.3 DAG-First 执行模型（原 DAG\_FIRST\_EXECUTION\_PLAN，方向草案）
+
+> 状态：**方向草案，需按 code\_rules\_v2 §0.4 经确认后再动手**。目标：单 agent 内按 `MutableDAG` 逐步推进，撤销顶层 ReAct 循环；ReAct 只保留为单个节点类型，不再作为执行模型。约束：不引入新依赖、不并存两套执行循环（§5.1）、零值可用（§5.4）、单文件<1000 行 / 单函数<100 行。
+
+### M.3.1 为什么
+
+- 现在：`chat_cognition.go` 的 `chatStepState{Messages[]}` 线性推进，进化只能拧 `Params["tools"]`，拓扑靠事后投影（`toolprojection`）硬造。
+
+- 已有：`workflow/engine` 的 `MutableDAG` + patch/differ/executor + per-node Metadata，进化已能直接 patch 它（Y1-C4）。
+
+- 结论：让任务**真正按图跑**，投影层退役。LLM 自主性不丢——退到 Planner（产图）与节点内的单次决策。
+
+### M.3.2 v1 范围（只做这些）
+
+- `DAGCognition`：实现现有 `agentfabric.Cognition` 接口，一节点一量子，拓扑序顺序执行。
+
+- 节点类型只两种：`tool`（调一次 `ToolBinder.CallTool`）与 `llm`（一次文本总结，可选）。
+
+- Planner 只确定性模板：按 `task.AgentType` 查静态步骤；`task.Payload["dag"]` 显式给图时优先。
+
+- checkpoint v2（§M.3.4），事件沿用 C1 契约。
+
+**明确不做（v1）**：LLM Planner（prompt 产图，v2 事）、并行分支（v1 串行）、动态扩图（执行中 InsertNode，v1 禁止）、`budget/prior` 消费（v1 只透传 tools）、重试/恢复策略（v1 fail-fast）、新包/新存储/新事件类型。
+
+### M.3.3 Planner 接口
+
+```go
+type Planner interface {
+    Plan(task *models.Task) ([]*engine.Step, error) // 返回 nil,nil = 无模板，调用方回退
+}
+```
+
+- 实现只一个：`StaticPlanner map[AgentType][]StepTemplate`；`StepTemplate{ID, Tool, ArgsJSON}`。
+
+- ID 去重/空 ID/未知工具名 → Plan 直接 error，不产半张图；`task.Payload["dag"]` 覆盖模板。
+
+- 位置：`internal/agentfabric/dag_plan.go`。
+
+### M.3.4 checkpoint v2（dagStepState，schema==2）
+
+```go
+type dagStepState struct {
+    SchemaVersion int               `json:"schema_version"` // == 2
+    TaskID        string            `json:"task_id"`
+    Steps         []*engine.Step    `json:"steps"`
+    Done          []string          `json:"done"`
+    Outputs       map[string]string `json:"outputs"`
+    Params        map[string]any    `json:"params,omitempty"`
+}
+```
+
+- decode：`SchemaVersion != 2` 拒绝；`TaskID` 不一致拒绝恢复（同 v1）。
+
+- 输出截断 4KB，超限截断 + 记 `truncated:true`；无 hash 字段（同 v1 强度）。
+
+### M.3.5 量子语义（一节点一量子）
+
+1. 无 checkpoint → Plann.Plan 建冻结图；空图/Plan error 即 error（fail-loud，§0.2）。
+2. 拓扑序取第一个不在 Done 的节点（`DAG.GetExecutionOrder` 直接用）。
+3. `tool` 节点：`ToolBinder.CallTool` → 写 Outputs → 发 C1 两事件（round=节点序号，seq=0）→ 追加 Done → 有剩余即 yield，无剩余 Done=true。
+4. `llm` 节点：`LLMAdapter.GenerateWithParams`（无 adapter 则跳过，输出 ""，不失败）。
+5. 任一节点 error → 整任务 error（v1 无重试）。
+
+Result 组装：每节点一条 `RecommendItem`（ItemID=nodeID，Content=Outputs\[id]，超 500 字截断），不做 LLM 汇总。`ctx` 首参透传；无新增 goroutine；`ToolBinder` 仍走现有白名单过滤（Y.3-ACT）。
+
+### M.3.6 回滚预案
+
+- 总闸：`agentfabric.DAGExecution.Enabled=false` 默认关闭（零值=老行为，§5.4）；关闭时 CognitionFactory 返回老 chatCognition，开启时返回 dagCognition。
+
+- checkpoint 互斥：老代码读 v2 即拒绝；新代码读 v1 即拒绝并建议重提任务，不做 v1→v2 迁移（任务短生命周期）。
+
+- 删除路径（合入前须 §5.5+§8.4）：验证通过后删 `chat_cognition.go` 循环体（保留 ToolBinder/ChatClient 接口定义供复用），grep `chatStepState/decodeChatStepState` 引用归零，`toolprojection` 标记 Deprecated 下一版删除。
+
+- 任一步骤失败：关闸即回老路，无数据残留。
+
+### M.3.7 文件与验收
+
+- 新增（≤2）：`dag_cognition.go`（dagStepState+dagCognition）、`dag_plan.go`（Planner+StaticPlanner）。
+
+- 复用：`workflow/engine/{types,mutable_dag}`、`agents/strategy.go` 白名单、`ares_events` C1 契约。
+
+- 测试（合同优先，禁 Sleep，§7）：
+
+  1. `TestDAG_OneNodeOneQuantum`：3 节点恰 3 次 ExecuteStep（前 2 yield 第 3 Done），顺序=拓扑序。
+  2. `TestDAG_ResumeRefusesForeignTask` + `TestDAG_RejectsV1Checkpoint`：身份与版本校验。
+  3. `TestDAG_ToolFailureFailsTask`：中间节点失败即 error，无静默跳过。
+  4. `TestDAG_EmptyPlanFailsLoud`：无模板+无 Payload\["dag"] 即 error。
+  5. 存量 `make check` 全绿。
+
+- 关系：Y1-C2 投影层退役；Y1-C4/C5（Metadata 作动/装配）从「补丁 hack」变「原生语义」；N-2（单 agent 内 DAG）即其落地。
+

@@ -212,12 +212,59 @@ evolution:
   #   tool_enabled: false
   #   tool_weight: 0.0                # e.g. 0.15
 
+  # tool_projection: the production trigger for the ToolStep projection (Y1
+  #   §12-1). It is NOT a duplicate of channel_feedback.tool_enabled above:
+  #   that writes ONE evidence record per tool call as it happens, while this
+  #   worker periodically projects the tool-call EVENT LOG into
+  #   per-(tool#arg_shape) success rates carrying `tool_step_id` — the key the
+  #   tool_step-scoped fitness read filters on. Without this worker that
+  #   dimension has no live producer and stays an on-demand audit read only.
+  #   Both may be enabled: they answer "did this call work" versus "does this
+  #   WAY of calling this tool work".
+  #
+  #   Requires a wired event store — with none, the projection is permanently
+  #   empty, so the worker refuses to start (logged) instead of writing empty
+  #   graphs on a timer.
+  #
+  #   Each tick reads only events since the previous successful tick, so
+  #   records are not re-emitted for calls already projected. Startup begins
+  #   the window at "now": projecting the whole history in one burst would
+  #   judge the CURRENT strategy on behavior it never produced.
+  #
+  #   min_samples drops steps with too few calls — a single call yields a
+  #   success rate of exactly 0 or 1, which carries no statistical signal.
+  #   Default: disabled, matching pre-Y1 behavior.
+  # tool_projection:
+  #   enabled: false
+  #   interval: 10m                   # projection period
+  #   min_samples: 3                  # skip steps with fewer calls
+
   # gates: the remaining verify-gate thresholds.
   # gates:
   #   eval_min_score: 0.7             # minimum G3 eval-suite score
   #   # require_manual_approval holds every candidate in SHADOW until an
   #   # operator calls POST /api/evolution/approve.
   #   require_manual_approval: false
+
+  # tool_pool: the tool-whitelist configurations the GA mutator may emit as
+  #   Params["tools"] (each entry is a comma-separated registered tool list).
+  #   Empty disables pool-based tool mutation; guided mutation may still produce
+  #   tool choices from experience hints. Values MUST name REGISTERED tools —
+  #   a whitelist naming unknown tools intersects to zero at runtime and the
+  #   executors fall back to the FULL set (see guardrails.known_tools below).
+  # tool_pool:
+  #   - "web_search,calculator"
+  #   - "web_search,calculator,code_runner,file_tools"
+
+  # guardrails: the tool-set selection guards. All opt-in — absent defaults are
+  #   the pre-existing permissive behavior (no bound, no vocabulary check).
+  # guardrails:
+  #   max_tools_enabled: 4             # reject whitelists enabling >4 tools
+  #   require_any_tool: false          # true = reject zero-tool strategies
+  #   known_tools:                     # registered vocabulary; unknown names rejected
+  #     - "web_search"
+  #     - "calculator"
+  #     - "code_runner"
 
 # ── Agents ───────────────────────────────────────────────────
 # C1 flat peer structure (DEFAULT): a flat set of equal capability agents

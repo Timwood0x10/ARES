@@ -1,7 +1,9 @@
 package toolprojection
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 )
@@ -123,5 +125,51 @@ func TestToolStepIDCollapsesValuesOnSameShape(t *testing.T) {
 	}
 	if p.Steps[0].Count != 2 {
 		t.Fatalf("search count = %d, want 2", p.Steps[0].Count)
+	}
+}
+
+// recordingSource captures the ReadOptions the projection passed down.
+type recordingSource struct {
+	got    ares_events.ReadOptions
+	events []*ares_events.Event
+}
+
+func (r *recordingSource) ReadAll(_ context.Context, opts ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	r.got = opts
+	return r.events, nil
+}
+
+// TestProjectFromSource_ForwardsSinceWindow guards the incremental-read contract
+// the periodic production trigger depends on: without Since reaching the store,
+// every run would re-read the entire event log and re-emit fitness records for
+// tool calls already projected, letting stale behavior keep voting forever.
+func TestProjectFromSource_ForwardsSinceWindow(t *testing.T) {
+	since := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	src := &recordingSource{events: []*ares_events.Event{
+		completed("s1", "search", "q", 0, 0, true),
+	}}
+
+	p, err := ProjectFromSource(context.Background(), src, Options{Since: since})
+	if err != nil {
+		t.Fatalf("ProjectFromSource: %v", err)
+	}
+	if !src.got.Since.Equal(since) {
+		t.Errorf("ReadOptions.Since = %s, want %s — the window never reached the event store",
+			src.got.Since, since)
+	}
+	if p.TotalEvents != 1 {
+		t.Errorf("TotalEvents = %d, want 1", p.TotalEvents)
+	}
+}
+
+// TestProjectFromSource_ZeroSinceReadsWholeLog keeps the on-demand audit read
+// working: an unset window must not be turned into a bogus filter.
+func TestProjectFromSource_ZeroSinceReadsWholeLog(t *testing.T) {
+	src := &recordingSource{}
+	if _, err := ProjectFromSource(context.Background(), src, Options{}); err != nil {
+		t.Fatalf("ProjectFromSource: %v", err)
+	}
+	if !src.got.Since.IsZero() {
+		t.Errorf("ReadOptions.Since = %s, want zero (read everything)", src.got.Since)
 	}
 }

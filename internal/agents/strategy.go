@@ -3,6 +3,7 @@ package agents
 
 import (
 	"context"
+	"strconv"
 	"strings"
 )
 
@@ -99,6 +100,86 @@ func ToolNamesFromParams(params map[string]any) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ToolBudgetFromParams parses Params["budget"] into a per-tool call cap for the
+// current session. It returns 0 when the key is missing, malformed, or
+// non-positive — meaning UNLIMITED (zero-value usable, code_rules_v2 §5.4), so
+// a strategy that never sets a budget behaves exactly as before this gate
+// existed.
+//
+// The value rides Step.Metadata → PlanStep.Payload as JSON, so it may arrive as
+// a string ("50"), an int, or a float64. All three are accepted; anything else
+// is treated as "no budget" rather than an error, because a malformed mutation
+// must not break execution — it must only fail to restrict it.
+func ToolBudgetFromParams(params map[string]any) int {
+	if len(params) == 0 {
+		return 0
+	}
+	switch v := params[ParamKeyBudget].(type) {
+	case int:
+		if v > 0 {
+			return v
+		}
+	case int64:
+		if v > 0 {
+			return int(v)
+		}
+	case float64:
+		if v >= 1 {
+			return int(v)
+		}
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// ToolAllowedByBudget reports whether a tool may still be advertised to the LLM
+// given how many times it has already run this session and the node budget.
+//
+// This is the read side of the §11 C5 acceptance card ("budget 用尽后 schema
+// 过滤"): the gate is applied where the tool SCHEMAS are assembled, not at
+// CallTool time, for the same reason the whitelist is — letting the model see an
+// exhausted tool and then rejecting the call wastes a round and pollutes the
+// not_found metric (code_rules_v2 §5.3).
+//
+// budget <= 0 means unlimited, so this returns true.
+func ToolAllowedByBudget(name string, uses map[string]int, budget int) bool {
+	if budget <= 0 {
+		return true
+	}
+	return uses[name] < budget
+}
+
+// PriorHintFromParams returns the trimmed Params["prior"] hint, or "" when
+// absent. prior is advisory ONLY: it biases the model through the prompt and
+// must never remove a tool from the advertised set — that is the whitelist's and
+// the budget's job. Keeping the two effects separate is what makes a bad prior
+// harmless.
+func PriorHintFromParams(params map[string]any) string {
+	if len(params) == 0 {
+		return ""
+	}
+	s, ok := params[ParamKeyPrior].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+// ApplyPriorHint prepends the node's prior hint to a rendered prompt. Returns
+// the prompt unchanged when the hint is empty, so the non-evolved path produces
+// byte-identical prompts.
+func ApplyPriorHint(prompt, hint string) string {
+	if hint == "" {
+		return prompt
+	}
+	return "Tool preference hint (advisory, does not restrict which tools you may call): " +
+		hint + "\n\n" + prompt
 }
 
 // ToolWhitelistFromParams extracts the tool whitelist from a strategy's

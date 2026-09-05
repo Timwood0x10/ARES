@@ -151,6 +151,14 @@ type GuardrailConfig struct {
 	// MaxLineageShare is the maximum fraction [0-1] of the population
 	// that can belong to a single lineage (default 0.8).
 	MaxLineageShare float64
+
+	// KnownTools is the registered tool vocabulary used to reject an evolved
+	// tool whitelist that names tools which do not exist. Empty disables the
+	// check. Supplying it matters because an all-unknown whitelist does not
+	// narrow the tool set at runtime — it intersects to zero and the executors
+	// fall back to the FULL set, so the strategy silently becomes the broadest
+	// one instead of the narrowest.
+	KnownTools []string
 }
 
 // MemoryAwareScoringConfig configures memory-aware scoring that adjusts

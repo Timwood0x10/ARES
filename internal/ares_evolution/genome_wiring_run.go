@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
@@ -97,7 +98,12 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	// the legacy direct-deploy path (backward compatible).
 	if a.lifecycle != nil {
 		if best := a.pop.BestStrategy(); best != nil {
-			a.lifecycle.Submit(ctx, best, a.pop.Stats().Generation)
+			if a.toolSetRejected(ctx, best) {
+				log.WarnContext(ctx, "best strategy jailed by tool-set guardrail, not submitted to lifecycle",
+					"method", "Run", "strategy_id", best.ID)
+			} else {
+				a.lifecycle.Submit(ctx, best, a.pop.Stats().Generation)
+			}
 		}
 	} else if a.activeStrategyMgr != nil {
 		a.deployBestStrategy(ctx)
@@ -288,6 +294,42 @@ func (a *GenomePopulationAdapter) runPostGuardrails(ctx context.Context) error {
 	return nil
 }
 
+// toolSetRejected reports whether the C6 tool-set guardrail rejects a
+// strategy's evolved tool whitelist. It closes the genome-path gap left by the
+// dream_cycle-only wiring: the genome adapter promotes its own winner (lifecycle
+// submit / direct deploy) without ever passing through findWinner, so an
+// out-of-bounds or unregistered-name whitelist could reach the live agent from
+// this path even though the dream path rejected the same shape.
+//
+// Parsing goes through the same agents helper the executors use, so the count
+// the guardrail bounds is exactly the set the LLM would be shown.
+//
+// Returns false when no guardrails are wired (guardrails disabled = unchanged
+// behavior).
+func (a *GenomePopulationAdapter) toolSetRejected(ctx context.Context, s *mutation.Strategy) bool {
+	if a.guardrails == nil || s == nil {
+		return false
+	}
+	tools := agents.ToolNamesFromParams(s.Params)
+	res := a.guardrails.ValidateToolSet(a.pop.Stats().Generation, tools)
+	if !res.ShouldStop {
+		return false
+	}
+	for _, evt := range res.Events {
+		log.WarnContext(ctx, "tool-set guardrail triggered on genome winner",
+			"method", "toolSetRejected",
+			"strategy_id", s.ID,
+			"rule", evt.Rule,
+			"message", evt.Message,
+			"suggested_action", evt.SuggestedAction,
+		)
+		if a.metrics != nil {
+			a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+		}
+	}
+	return true
+}
+
 // deployBestStrategy persists the current best-evolved strategy to the active
 // strategy store so the live agent can consume it. It is a no-op when no
 // ActiveStrategyManager is wired or no evaluated strategy exists.
@@ -302,6 +344,14 @@ func (a *GenomePopulationAdapter) deployBestStrategy(ctx context.Context) {
 	best := a.pop.BestStrategy()
 	if best == nil {
 		log.DebugContext(ctx, "no evaluated strategy to deploy", "method", "deployBestStrategy")
+		return
+	}
+	// C6: the direct-deploy path bypasses the lifecycle verify gates, so the
+	// tool-set guardrail must be checked here too — otherwise disabling the
+	// lifecycle would silently disable the guard.
+	if a.toolSetRejected(ctx, best) {
+		log.WarnContext(ctx, "best strategy jailed by tool-set guardrail, not deployed",
+			"method", "deployBestStrategy", "strategy_id", best.ID)
 		return
 	}
 	if err := a.activeStrategyMgr.Deploy(ctx, best); err != nil {

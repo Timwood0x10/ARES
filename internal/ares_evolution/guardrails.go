@@ -6,6 +6,7 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -137,6 +138,15 @@ type EvolutionGuardrails struct {
 	// default.
 	requireAnyTool bool
 
+	// knownTools is the vocabulary of ACTUALLY REGISTERED tool names (§8.6-3).
+	// Nil/empty disables the check (no vocabulary supplied = cannot judge).
+	// Without it the guardrail only bounds the SIZE of a whitelist: a mutation
+	// that produces three names none of which exist passes the bound, then hits
+	// the runtime zero-intersection fallback and is silently promoted to "all
+	// tools enabled" — the exact opposite of what the whitelist asked for.
+	// Comparing against the registry catches that at selection time.
+	knownTools map[string]bool
+
 	// Events stores historical guardrail events.
 	events []GuardrailEvent
 
@@ -185,6 +195,31 @@ func WithMaxToolsEnabled(n int) GuardrailOption {
 func WithRequireAnyTool(enabled bool) GuardrailOption {
 	return func(g *EvolutionGuardrails) {
 		g.requireAnyTool = enabled
+	}
+}
+
+// WithKnownTools supplies the registered-tool vocabulary used to validate that
+// an evolved whitelist names tools that actually exist (§8.6-3). An empty or nil
+// set disables the check, preserving pre-existing behavior for deployments that
+// cannot enumerate their registry at guardrail-construction time.
+func WithKnownTools(names []string) GuardrailOption {
+	return func(g *EvolutionGuardrails) {
+		if len(names) == 0 {
+			g.knownTools = nil
+			return
+		}
+		known := make(map[string]bool, len(names))
+		for _, n := range names {
+			n = strings.TrimSpace(n)
+			if n != "" {
+				known[n] = true
+			}
+		}
+		if len(known) == 0 {
+			g.knownTools = nil
+			return
+		}
+		g.knownTools = known
 	}
 }
 
@@ -452,6 +487,7 @@ func (g *EvolutionGuardrails) ValidateToolSet(generation int, tools []string) *G
 	g.mu.RLock()
 	maxTools := g.MaxToolsEnabled
 	requireAny := g.requireAnyTool
+	known := g.knownTools
 	g.mu.RUnlock()
 
 	if maxTools > 0 && len(tools) > maxTools {
@@ -493,6 +529,41 @@ func (g *EvolutionGuardrails) ValidateToolSet(generation int, tools []string) *G
 		result.Events = append(result.Events, event)
 		result.ShouldStop = true
 		g.RecordEvent(event)
+	}
+
+	// §8.6-3 vocabulary alignment: every named tool must exist in the registry.
+	// A whitelist of names that do not resolve is not a narrower tool set — at
+	// runtime it intersects to zero and the executors fall back to the FULL set,
+	// so the strategy silently becomes the broadest possible one. Reject it here
+	// instead of discovering it as an unexplained capability expansion.
+	if len(known) > 0 && len(tools) > 0 {
+		var unknown []string
+		for _, name := range tools {
+			if !known[name] {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			event := GuardrailEvent{
+				Level:           GuardrailCritical,
+				Rule:            "tool_set_unknown_name",
+				ErrorCode:       ErrCodeInvalidToolSet,
+				Message:         fmt.Sprintf("evolved tool whitelist names %d unregistered tool(s): %s", len(unknown), strings.Join(unknown, ",")),
+				Score:           float64(len(unknown)),
+				Generation:      generation,
+				Timestamp:       time.Now(),
+				SuggestedAction: "restrict mutation to the registered tool vocabulary",
+			}
+			log.Warn("guardrail: tool whitelist names unregistered tools",
+				"code", ErrCodeInvalidToolSet,
+				"generation", generation,
+				"unknown", unknown,
+				"known_count", len(known),
+			)
+			result.Events = append(result.Events, event)
+			result.ShouldStop = true
+			g.RecordEvent(event)
+		}
 	}
 
 	return result

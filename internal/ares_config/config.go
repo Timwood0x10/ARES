@@ -832,10 +832,56 @@ type EvolutionConfig struct {
 	// the task channel feeds the verdict.
 	ChannelFeedback ChannelFeedbackConfig `yaml:"channel_feedback"`
 
+	// ToolProjection configures the periodic ToolStep projection worker (Y1
+	// §12-1): the production trigger that turns the tool-call event log into
+	// per-(tool#arg_shape) fitness evidence. Default: disabled — the projection
+	// then stays an on-demand audit read, matching pre-Y1 behavior.
+	ToolProjection ToolProjectionConfig `yaml:"tool_projection"`
+
 	// Gates configures the verify-gate pipeline thresholds (eval-suite
 	// minimum score, manual approval hold). Zero values fall back to code
 	// defaults.
 	Gates EvolutionGateConfig `yaml:"gates"`
+
+	// ToolPool is the list of tool-whitelist configurations the GA mutator may
+	// emit as Params["tools"] (e.g. a "narrow" config naming only web_search and
+	// a "broad" one naming everything). Each entry is a comma-separated tool
+	// whitelist string written verbatim into a candidate's Params["tools"]. Empty
+	// disables pool-based tool mutation (guided mutation may still produce tool
+	// choices from experience hints). This is the SINGLE source for the mutator's
+	// tool vocabulary — the value must name REGISTERED tools (see
+	// EvolutionGuardrailsConfig.KnownTools), because a whitelist naming unknown
+	// tools intersects to zero at runtime and the executors fall back to the full
+	// set. Default: empty.
+	ToolPool []string `yaml:"tool_pool"`
+
+	// Guardrails configures the tool-set selection guardrails (upper bound,
+	// require-any-tool, and the registered-tool vocabulary used to reject
+	// whitelists naming unregistered tools). Absent = code defaults (bound
+	// disabled, vocabulary disabled), preserving prior behavior.
+	Guardrails EvolutionGuardrailsConfig `yaml:"guardrails"`
+}
+
+// EvolutionGuardrailsConfig mirrors the `evolution.guardrails` YAML block. It
+// maps onto evolution.EvolutionGuardrails options in bootstrap. All fields are
+// opt-in: zero/zero-value disables the corresponding check.
+type EvolutionGuardrailsConfig struct {
+	// MaxToolsEnabled is the upper bound on an evolved tool whitelist size.
+	// 0 (default) disables the bound. A positive value rejects any candidate
+	// whose Params["tools"] enables more than this many tools.
+	MaxToolsEnabled int `yaml:"max_tools_enabled"`
+
+	// RequireAnyTool, when true, rejects an evolved strategy that enables zero
+	// tools. Off by default so text-only strategies are not rejected.
+	RequireAnyTool bool `yaml:"require_any_tool"`
+
+	// KnownTools is the REGISTERED tool vocabulary. A candidate whitelist naming
+	// a tool not in this list is rejected at selection time — the runtime would
+	// otherwise intersect an all-unknown whitelist to zero and silently fall back
+	// to the FULL tool set, turning a "narrow" strategy into the broadest one.
+	// Supplied in YAML as the actual registered tool names; empty disables the
+	// check.
+	KnownTools []string `yaml:"known_tools"`
 }
 
 // EvolutionLifecycleConfig mirrors the `evolution.lifecycle` YAML block
@@ -974,6 +1020,31 @@ type ChannelFeedbackConfig struct {
 // off, constructing an observer that nothing feeds would be dead wiring.
 func (c ChannelFeedbackConfig) AnyEnabled() bool {
 	return c.CollabEnabled || c.ToolEnabled
+}
+
+// ToolProjectionConfig mirrors the `evolution.tool_projection` YAML block (Y1
+// §12-1). It arms the periodic ToolStep projection worker: the production
+// trigger that turns the tool-call event log into per-(tool#arg_shape) fitness
+// evidence stamped with `tool_step_id`.
+//
+// It is deliberately NOT folded into ChannelFeedbackConfig.ToolEnabled. That
+// switch records ONE evidence record per tool call at call time ("did this call
+// work"); this worker projects the accumulated event log into per-argument-shape
+// success rates ("does this WAY of calling this tool work") — the only producer
+// of the tool_step dimension the scoped fitness read filters on. Enabling one
+// says nothing about the other, so they are independent switches.
+type ToolProjectionConfig struct {
+	// Enabled starts the projection worker. Default: false — the projection
+	// then remains an on-demand audit read, matching pre-Y1 behavior.
+	Enabled bool `yaml:"enabled"`
+	// Interval is the projection period. Zero falls back to
+	// DefaultToolProjectionInterval.
+	Interval time.Duration `yaml:"interval"`
+	// MinSamples drops ToolSteps with fewer calls in the window. A single call
+	// yields a success rate of exactly 0 or 1, which carries no statistical
+	// signal, so the default is above 1 (DefaultToolProjectionMinSamples).
+	// Negative values are rejected by validation.
+	MinSamples int `yaml:"min_samples"`
 }
 
 // EvolutionGateConfig mirrors the `evolution.gates` YAML block.

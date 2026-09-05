@@ -284,6 +284,21 @@ func (c *Config) validateEvolution() error {
 				c.Evolution.LLMScoring.MaxCallsPerGeneration)
 		}
 	}
+	// The projection worker's knobs are only rejected when it is armed: a
+	// nonsensical value in a disabled block should not block startup, but a
+	// negative interval on an ARMED worker would panic time.NewTicker, and a
+	// negative min_samples silently means "no threshold" — the opposite of what
+	// an operator typing a negative number intends.
+	if c.Evolution.ToolProjection.Enabled {
+		if c.Evolution.ToolProjection.Interval <= 0 {
+			return fmt.Errorf("evolution: tool_projection.interval must be > 0, got %s",
+				c.Evolution.ToolProjection.Interval)
+		}
+		if c.Evolution.ToolProjection.MinSamples < 0 {
+			return fmt.Errorf("evolution: tool_projection.min_samples must be >= 0, got %d",
+				c.Evolution.ToolProjection.MinSamples)
+		}
+	}
 	return nil
 }
 

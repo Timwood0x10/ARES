@@ -121,6 +121,90 @@ func TestLoadInvalidFile(t *testing.T) {
 	}
 }
 
+// TestLoad_ToolPoolAndGuardrails parses the evolution.tool_pool and
+// evolution.guardrails YAML blocks. These are the C6/KnownTools single-source
+// configuration: the yaml enumerates the registered tool vocabulary and the
+// tool-whitelist pool, so the mutator and the guardrail agree on what a valid
+// whitelist looks like.
+func TestLoad_ToolPoolAndGuardrails(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configContent := `
+server:
+  host: "localhost"
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+agents:
+  sub: []
+evolution:
+  tool_pool:
+    - "web_search,calculator"
+    - "web_search,calculator,code_runner"
+  guardrails:
+    max_tools_enabled: 4
+    require_any_tool: true
+    known_tools:
+      - "web_search"
+      - "calculator"
+      - "code_runner"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Evolution.ToolPool) != 2 {
+		t.Fatalf("ToolPool len = %d, want 2: %v", len(cfg.Evolution.ToolPool), cfg.Evolution.ToolPool)
+	}
+	if cfg.Evolution.ToolPool[0] != "web_search,calculator" {
+		t.Errorf("ToolPool[0] = %q, want %q", cfg.Evolution.ToolPool[0], "web_search,calculator")
+	}
+	g := cfg.Evolution.Guardrails
+	if g.MaxToolsEnabled != 4 {
+		t.Errorf("MaxToolsEnabled = %d, want 4", g.MaxToolsEnabled)
+	}
+	if !g.RequireAnyTool {
+		t.Error("RequireAnyTool = false, want true")
+	}
+	if len(g.KnownTools) != 3 || g.KnownTools[0] != "web_search" {
+		t.Errorf("KnownTools = %v, want [web_search calculator code_runner]", g.KnownTools)
+	}
+}
+
+// TestLoad_GuardrailsAbsentDefaultsZero asserts an absent `guardrails` block
+// yields zero-values (bound disabled, vocabulary disabled) — preserving the
+// pre-existing permissive selection behavior.
+func TestLoad_GuardrailsAbsentDefaultsZero(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configContent := `
+server:
+  host: "localhost"
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+agents:
+  sub: []
+evolution:
+  enabled: true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	g := cfg.Evolution.Guardrails
+	if g.MaxToolsEnabled != 0 || g.RequireAnyTool || len(g.KnownTools) != 0 {
+		t.Errorf("absent guardrails must default zero, got MaxToolsEnabled=%d RequireAnyTool=%v KnownTools=%v",
+			g.MaxToolsEnabled, g.RequireAnyTool, g.KnownTools)
+	}
+}
+
 // TestLoadInvalidYAML tests loading invalid YAML.
 func TestLoadInvalidYAML(t *testing.T) {
 	tmpDir := t.TempDir()

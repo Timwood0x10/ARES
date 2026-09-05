@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 )
@@ -74,15 +75,20 @@ type Options struct {
 	// MinSamples is the minimum Count a ToolStep needs to be included (plan §7
 	// pattern-aggregation threshold). 0 includes all steps.
 	MinSamples int
+	// Since narrows the event read to events at or after this instant. Zero
+	// reads the whole log. A periodic caller MUST set it: re-reading the full
+	// history every tick would re-emit a fitness record for calls already
+	// projected, letting old behavior keep voting forever.
+	Since time.Time
 }
 
-// ProjectFromSource reads all events from src and projects them into ToolSteps.
+// ProjectFromSource reads events from src and projects them into ToolSteps.
 // It is the eventStore-wired entry point (plan §11 C2 "从 EventStore 投影").
 func ProjectFromSource(ctx context.Context, src EventSource, opts Options) (*Projection, error) {
 	if src == nil {
 		return nil, fmt.Errorf("toolprojection: event source is nil")
 	}
-	events, err := src.ReadAll(ctx, ares_events.ReadOptions{})
+	events, err := src.ReadAll(ctx, ares_events.ReadOptions{Since: opts.Since})
 	if err != nil {
 		return nil, fmt.Errorf("toolprojection: read events: %w", err)
 	}

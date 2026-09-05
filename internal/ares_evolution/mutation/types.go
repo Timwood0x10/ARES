@@ -6,6 +6,7 @@ package mutation
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -197,14 +198,19 @@ func (s *Strategy) SetHash(h uint64) {
 }
 
 // ComputeEvidenceKey derives a stable evidence key from behaviorally relevant
-// fields: prompt template, sorted numeric params, and the tool whitelist.
-// The key format is: "promptTemplate|key1=value1,key2=value2|tools=t1,t2".
-// Only numeric values (float64) in Params are included, sorted by key for
-// determinism. The tool whitelist (Params["tools"]) is normalized (sorted,
-// trimmed) and included so two strategies that differ only in tool selection
-// land on different EvidenceKeys — otherwise their tool_call evidence would
-// be merged and the evolution verdict could not distinguish them by tool
-// choice (Y.3-ACT归因入key).
+// fields: prompt template, sorted numeric params, the tool whitelist, and the
+// C5 tool-step attributes (budget/prior).
+// The key format is:
+// "promptTemplate|key1=value1,key2=value2|tools=t1,t2|budget=N|prior=hint".
+// Only numeric values in Params are included, sorted by key for determinism.
+// The tool whitelist (Params["tools"]) is normalized (sorted, trimmed) and
+// included so two strategies that differ only in tool selection land on
+// different EvidenceKeys — otherwise their tool_call evidence would be merged
+// and the evolution verdict could not distinguish them by tool choice
+// (Y.3-ACT归因入key). The same rule extends to budget and prior (Y1 C5): both
+// change execution behavior, so both must change the key, or two strategies
+// differing only in budget/prior would share one evidence stream and
+// evolution could not select between them.
 func (s *Strategy) ComputeEvidenceKey() string {
 	if s == nil {
 		return ""
@@ -223,6 +229,14 @@ func (s *Strategy) ComputeEvidenceKey() string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
+		if k == "budget" {
+			// Canonicalized separately below: the generic float formatting
+			// would record int/float forms ("budget=3.00") but drop the
+			// string form ("3") the executor accepts, splitting one
+			// phenotype across keys by spelling — or worse, merging a
+			// string-budget strategy with a no-budget one.
+			continue
+		}
 		v, ok := numericParam(s.Params[k])
 		if !ok {
 			continue
@@ -246,8 +260,64 @@ func (s *Strategy) ComputeEvidenceKey() string {
 		}
 	}
 
+	// Y1 C5: include the normalized per-tool call budget so strategies that
+	// differ only in budget are distinguishable. Unlimited (missing /
+	// malformed / non-positive) adds no suffix, keeping the pre-budget key
+	// stable for the non-evolved path (zero-value usable).
+	if budget, ok := normalizeBudgetKey(s.Params); ok {
+		evidenceKey = evidenceKey + fmt.Sprintf("|budget=%d", budget)
+	}
+
+	// Y1 C5: include the trimmed prior hint so strategies that differ only in
+	// prior do not merge their evidence. prior is advisory prompt text, but it
+	// changes the rendered prompt and hence behavior — without this suffix two
+	// priors would share one evidence stream. Empty/missing prior adds no
+	// suffix, keeping the pre-prior key stable.
+	if prior, ok := s.Params["prior"].(string); ok {
+		if trimmed := strings.TrimSpace(prior); trimmed != "" {
+			evidenceKey = evidenceKey + "|prior=" + trimmed
+		}
+	}
+
 	s.EvidenceKey = evidenceKey
 	return evidenceKey
+}
+
+// normalizeBudgetKey canonicalizes Params["budget"] to a positive int cap.
+// It mirrors agents.ToolBudgetFromParams (the execution-side twin, same
+// accepted shapes: int, int64, float64, numeric string): every spelling of
+// the same cap must map to one key, or one phenotype would split across keys
+// by spelling. Returns false for missing/malformed/non-positive values —
+// unlimited adds no suffix. The key names ("budget"/"prior") are literals
+// matching agents.ParamKeyBudget/ParamKeyPrior; this package stays stdlib-only
+// (cf. the pre-existing normalizeToolKey / ToolNamesFromParams split).
+func normalizeBudgetKey(params map[string]any) (int, bool) {
+	if len(params) == 0 {
+		return 0, false
+	}
+	v, ok := params["budget"]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		if n > 0 {
+			return n, true
+		}
+	case int64:
+		if n > 0 {
+			return int(n), true
+		}
+	case float64:
+		if n >= 1 {
+			return int(n), true
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && parsed > 0 {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 // numericParam normalizes a param value to float64 for evidence-key purposes.

@@ -189,6 +189,9 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		if cfg.Guardrails.MaxLineageShare > 0 {
 			guardrailOpts = append(guardrailOpts, evolution.WithMaxLineageShare(cfg.Guardrails.MaxLineageShare))
 		}
+		if len(cfg.Guardrails.KnownTools) > 0 {
+			guardrailOpts = append(guardrailOpts, evolution.WithKnownTools(cfg.Guardrails.KnownTools))
+		}
 		guardrails, err := evolution.NewEvolutionGuardrails(guardrailOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("new evolution guardrails: %w", err)

@@ -84,10 +84,16 @@ type ScoringConfig struct {
 
 // MutationConfig groups mutation and crossover settings.
 type MutationConfig struct {
-	MutatorSeed                    int64                               `json:"mutator_seed,omitempty"`
-	CrossoverSeed                  int64                               `json:"crossover_seed,omitempty"`
-	PromptCrossoverMode            int                                 `json:"prompt_crossover_mode"`
-	PromptTemplates                []string                            `json:"prompt_templates,omitempty"`
+	MutatorSeed         int64    `json:"mutator_seed,omitempty"`
+	CrossoverSeed       int64    `json:"crossover_seed,omitempty"`
+	PromptCrossoverMode int      `json:"prompt_crossover_mode"`
+	PromptTemplates     []string `json:"prompt_templates,omitempty"`
+	// ToolPool is the set of tool-whitelist configurations the mutator may emit
+	// as Params["tools"] (each entry is a comma-separated whitelist string). It
+	// is wired to mutation.WithToolPool so the elite/random mutation path can
+	// actually produce tool choices from the deployment's config; without it the
+	// pool was dead configuration (only guided mutation produced tool choices).
+	ToolPool                       []string                            `json:"tool_pool,omitempty"`
 	EnableExperienceGuidedMutation bool                                `json:"enable_experience_guided_mutation,omitempty"`
 	GuidanceProvider               GuidanceProvider                    `json:"-"`
 	AdaptiveDistConfig             mutation.AdaptiveDistributionConfig `json:"adaptive_distribution,omitempty"`
@@ -188,6 +194,16 @@ func buildMutator(cfg SystemConfig) (*mutatorResult, error) {
 	var mutatorOpts []mutation.MutatorOption
 	if len(cfg.PromptTemplates) > 0 {
 		mutatorOpts = append(mutatorOpts, mutation.WithPromptPool(cfg.PromptTemplates))
+	}
+	// Wire the deployment-configured tool whitelist pool so the elite/random
+	// mutation path can actually emit Params["tools"] choices. Previously this
+	// option was never supplied here, making the pool path dead configuration —
+	// only guided mutation produced tool choices (and always from registered-name
+	// aliases). With a pool wired, both paths share the deployment's config as
+	// the single source for the tool vocabulary. An empty pool keeps tool mutation
+	// disabled (unchanged behavior).
+	if len(cfg.ToolPool) > 0 {
+		mutatorOpts = append(mutatorOpts, mutation.WithToolPool(cfg.ToolPool))
 	}
 	if cfg.MutatorSeed != 0 {
 		mutatorOpts = append(mutatorOpts, mutation.WithSeed(cfg.MutatorSeed))

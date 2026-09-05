@@ -661,3 +661,81 @@ func TestValidateToolSet(t *testing.T) {
 		assert.False(t, res.ShouldStop, "a set exactly at the bound is allowed")
 	})
 }
+
+// TestValidateToolSetKnownTools covers §8.6-3: a whitelist naming tools that are
+// not registered is NOT a narrower tool set. At runtime it intersects to zero and
+// the executors fall back to the FULL set, so such a strategy silently becomes
+// the broadest one. The guardrail must catch that at selection time.
+func TestValidateToolSetKnownTools(t *testing.T) {
+	defer discardLogs()()
+
+	t.Run("all_names_known_no_stop", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithKnownTools([]string{"web_search", "calculator"}))
+		res := g.ValidateToolSet(1, []string{"calculator"})
+		assert.False(t, res.ShouldStop)
+		assert.Empty(t, res.Events)
+	})
+
+	t.Run("unknown_name_stops", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithKnownTools([]string{"web_search"}))
+		res := g.ValidateToolSet(7, []string{"web_search", "hallucinated_tool"})
+		assert.True(t, res.ShouldStop, "an unregistered tool name must stop promotion")
+		require.Len(t, res.Events, 1)
+		assert.Equal(t, "tool_set_unknown_name", res.Events[0].Rule)
+		assert.Equal(t, ErrCodeInvalidToolSet, res.Events[0].ErrorCode)
+		assert.Equal(t, GuardrailCritical, res.Events[0].Level)
+		assert.Equal(t, 7, res.Events[0].Generation)
+		assert.Contains(t, res.Events[0].Message, "hallucinated_tool")
+		// Only the unknown name is scored, not the whole set.
+		assert.Equal(t, float64(1), res.Events[0].Score)
+		assert.Len(t, g.Events(), 1, "event must be recorded for the metrics observer")
+	})
+
+	t.Run("all_names_unknown_stops", func(t *testing.T) {
+		// The worst case: zero intersection with the registry, which the
+		// executors would promote to "all tools enabled".
+		g, _ := NewEvolutionGuardrails(WithKnownTools([]string{"web_search"}))
+		res := g.ValidateToolSet(1, []string{"x", "y"})
+		assert.True(t, res.ShouldStop)
+		require.Len(t, res.Events, 1)
+		assert.Equal(t, float64(2), res.Events[0].Score)
+	})
+
+	t.Run("no_vocabulary_disables_check", func(t *testing.T) {
+		// Deployments that cannot enumerate their registry keep prior behavior.
+		g, _ := NewEvolutionGuardrails()
+		res := g.ValidateToolSet(1, []string{"anything"})
+		assert.False(t, res.ShouldStop)
+	})
+
+	t.Run("empty_vocabulary_disables_check", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithKnownTools([]string{"  ", ""}))
+		res := g.ValidateToolSet(1, []string{"anything"})
+		assert.False(t, res.ShouldStop, "a blank-only vocabulary must disable, not reject-all")
+	})
+
+	t.Run("vocabulary_names_are_trimmed", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(WithKnownTools([]string{" web_search "}))
+		res := g.ValidateToolSet(1, []string{"web_search"})
+		assert.False(t, res.ShouldStop)
+	})
+
+	t.Run("empty_tool_set_skips_vocabulary_check", func(t *testing.T) {
+		// An empty set is the requireAnyTool rule's business, not this one's;
+		// it must not also produce an unknown-name event.
+		g, _ := NewEvolutionGuardrails(WithKnownTools([]string{"web_search"}))
+		res := g.ValidateToolSet(1, nil)
+		assert.False(t, res.ShouldStop)
+		assert.Empty(t, res.Events)
+	})
+
+	t.Run("both_rules_can_fire", func(t *testing.T) {
+		g, _ := NewEvolutionGuardrails(
+			WithMaxToolsEnabled(1),
+			WithKnownTools([]string{"web_search"}),
+		)
+		res := g.ValidateToolSet(1, []string{"web_search", "ghost"})
+		assert.True(t, res.ShouldStop)
+		assert.Len(t, res.Events, 2, "over-bound and unknown-name are independent findings")
+	})
+}

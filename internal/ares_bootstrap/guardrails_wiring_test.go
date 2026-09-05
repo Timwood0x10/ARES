@@ -182,3 +182,36 @@ func TestBuildEvolutionGuardrailsReturnsDistinctInstances(t *testing.T) {
 	assert.Empty(t, schedulerStagnated.Events,
 		"the untouched guardrail must not inherit the other path's stagnation")
 }
+
+// TestFindUnknownPoolTools is the P2b contract: a tool_pool entry naming tools
+// outside known_tools must be reported at wiring time, or every candidate from
+// that entry is silently jailed by the unknown-name guard and evolution looks
+// stalled rather than misconfigured.
+func TestFindUnknownPoolTools(t *testing.T) {
+	known := []string{"web_search", "calculator"}
+
+	t.Run("clean_pool_reports_nothing", func(t *testing.T) {
+		pool := []string{"web_search,calculator", "web_search"}
+		assert.Nil(t, findUnknownPoolTools(pool, known))
+	})
+
+	t.Run("unknown_names_reported_per_entry", func(t *testing.T) {
+		pool := []string{"web_search,ghost_tool", "web_search"}
+		bad := findUnknownPoolTools(pool, known)
+		require.Len(t, bad, 1)
+		assert.Equal(t, []string{"ghost_tool"}, bad["web_search,ghost_tool"])
+	})
+
+	t.Run("empty_sides_disable_the_check", func(t *testing.T) {
+		assert.Nil(t, findUnknownPoolTools(nil, known))
+		assert.Nil(t, findUnknownPoolTools([]string{"ghost"}, nil))
+		assert.Nil(t, findUnknownPoolTools([]string{"ghost"}, []string{"  "}))
+	})
+
+	t.Run("parses_like_the_executor", func(t *testing.T) {
+		// "a,a," is ONE name to the executor and the guardrail (dedup); the
+		// cross-check must agree, or it would cry wolf on a compliant entry.
+		pool := []string{"web_search,web_search,"}
+		assert.Nil(t, findUnknownPoolTools(pool, known))
+	})
+}

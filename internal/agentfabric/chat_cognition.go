@@ -83,6 +83,12 @@ type chatStepState struct {
 	Prompt        string             `json:"prompt"`
 	Params        map[string]any     `json:"params,omitempty"`
 	Messages      []*core.LLMMessage `json:"messages"`
+	// ToolUses counts how many times each tool has been called in this
+	// session. It rides the checkpoint so a resumed task does not reset the
+	// node's budget (C5): without persistence, every yield would hand the
+	// tool a fresh budget and the cap would never bind. Optional field —
+	// a pre-budget checkpoint decodes to nil, which reads as "no uses yet".
+	ToolUses map[string]int `json:"tool_uses,omitempty"`
 }
 
 // ChatCognitionDeps carries the tool-loop's dependencies. It is the
@@ -330,6 +336,27 @@ func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*mod
 		schemas = filtered
 	}
 
+	// C5 budget gate: drop tools whose per-session call budget is spent, at the
+	// same schema layer as the whitelist. budget<=0 means unlimited, so the
+	// non-evolved path is untouched. Same zero-result fallback as the whitelist:
+	// a budget that would exhaust EVERY tool must not hand the LLM an empty tool
+	// list — that dead-end is worse than an over-run budget, and the fallback is
+	// observable in the log.
+	if budget := agents.ToolBudgetFromParams(st.Params); budget > 0 {
+		allowed := make([]resources.ToolSchema, 0, len(schemas))
+		for _, s := range schemas {
+			if agents.ToolAllowedByBudget(s.Name, st.ToolUses, budget) {
+				allowed = append(allowed, s)
+			}
+		}
+		if len(allowed) == 0 {
+			c.logger.Warn("tool budget exhausted for every advertised tool; falling back to full set",
+				"budget", budget, "uses", st.ToolUses, "advertised", len(schemas))
+		} else {
+			schemas = allowed
+		}
+	}
+
 	llmTools := make([]core.Tool, 0, len(schemas))
 	for _, s := range schemas {
 		llmTools = append(llmTools, resources.ToolSchemaToLLMTool(s))
@@ -366,6 +393,33 @@ func (c *chatCognition) chatStep(ctx context.Context, st *chatStepState) ([]*mod
 		ToolCalls: resp.ToolCalls,
 	})
 	for seq, tc := range resp.ToolCalls {
+		// C5 intra-round enforcement: the schema gate above runs once per
+		// round, but a single round can carry N calls to the same tool. A
+		// call already over budget is skipped — never executed, never
+		// counted — or one round could overshoot the cap by up to
+		// len(ToolCalls)-1. The skip is reported as the tool observation so
+		// the assistant message keeps its paired tool reply; no tool events
+		// are emitted because the call never ran (there is no
+		// success/failure signal to project or score). Deliberately NOT a
+		// CallTool-time rejection (cf. ToolAllowedByBudget): the model must
+		// not be offered what it may not spend.
+		if budget := agents.ToolBudgetFromParams(st.Params); budget > 0 &&
+			!agents.ToolAllowedByBudget(tc.Function.Name, st.ToolUses, budget) {
+			st.Messages = append(st.Messages, &core.LLMMessage{
+				Role:       "tool",
+				Content:    fmt.Sprintf("tool %s skipped: per-session budget (%d) exhausted", tc.Function.Name, budget),
+				ToolCallID: tc.ID,
+			})
+			continue
+		}
+		// C5: count the call against the node budget BEFORE executing, so a
+		// failing tool still spends its budget — otherwise a tool that always
+		// errors would be retried without limit and the cap would not bind.
+		if st.ToolUses == nil {
+			st.ToolUses = map[string]int{}
+		}
+		st.ToolUses[tc.Function.Name]++
+
 		c.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
 			ares_events.EventKeyAgentID:    c.agentID,
 			ares_events.EventKeyToolName:   tc.Function.Name,
@@ -455,6 +509,10 @@ func (c *chatCognition) renderPromptAndParams(ctx context.Context, task *models.
 	if err != nil {
 		return "", nil, err
 	}
+
+	// C5: prior is prompt-only — it biases tool choice without removing any
+	// tool from the advertised set (that is the whitelist's / budget's job).
+	prompt = agents.ApplyPriorHint(prompt, agents.PriorHintFromParams(params))
 
 	// P0-3: prepend the active role's system instructions when the execution
 	// was switched to a specialized role via Handoff (Ch.10 multi-stage role
