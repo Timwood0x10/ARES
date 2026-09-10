@@ -718,6 +718,14 @@ func (c *CompileCoordinator) SubscribeGraphEvents(ctx context.Context, dag *engi
 				if err != nil {
 					log.Error("planprojection: incremental compile failed",
 						"change", int(evt.Change.Type), "node", evt.Change.NodeID, "error", err)
+					// A failed incremental compile is itself a convergence
+					// signal: the node's dependency task is not yet in the
+					// fabric. The drop counter was already consumed by an
+					// earlier reconcile, so the tail-check alone would no-op and
+					// leave the tail unmaterialized forever. Kick a full
+					// topological reconcile now so the missing dependency chain
+					// is created; a follow-up event for this node then compiles.
+					c.reconcileNow(ctx, dag, "incremental compile failed")
 					armTailCheck(tailCheck)
 					continue
 				}

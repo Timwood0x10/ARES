@@ -10,7 +10,11 @@ import (
 // constants (rather than inline literals) so goconst stays quiet and the
 // values are grep-able.
 const (
-	defaultServerHost   = "localhost"
+	// defaultServerHost is the loopback bind (M-S1): the introspect read
+	// side carries task payloads, so the default must be an explicit
+	// loopback IP — never a wildcard, and not the "localhost" name (which
+	// a hosts-file remap could point off-loopback).
+	defaultServerHost   = "127.0.0.1"
 	defaultLLMProvider  = "ollama"
 	defaultLLMModel     = "gemma4"
 	defaultOutputFormat = "simple"

@@ -11,6 +11,7 @@ const redactedMarker = "***"
 //   - LLM.APIKey and each LLM.Fallbacks[].APIKey
 //   - Storage.Password
 //   - Security.JWTSecret
+//   - Introspect.Token
 //
 // Storage.Password also carries json:"-" so default JSON marshaling omits it,
 // but this method makes the redaction explicit and YAML-safe.
@@ -42,6 +43,12 @@ func (c *Config) Redacted() *Config {
 	out.Security = c.Security
 	if out.Security.JWTSecret != "" {
 		out.Security.JWTSecret = redactedMarker
+	}
+
+	// Introspect read-side bearer token.
+	out.Introspect = c.Introspect
+	if out.Introspect.Token != "" {
+		out.Introspect.Token = redactedMarker
 	}
 
 	return &out

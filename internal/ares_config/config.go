@@ -69,6 +69,7 @@ type Config struct {
 	Discovery  DiscoveryConfig  `yaml:"discovery"`
 	Kernel     KernelConfig     `yaml:"kernel"`
 	Security   SecurityConfig   `yaml:"security"`
+	Introspect IntrospectConfig `yaml:"introspect"`
 }
 
 // KernelConfig controls the dual-track dispatch kernel
@@ -237,10 +238,13 @@ type EmbeddingConfig struct {
 
 // ServerConfig holds server configuration.
 type ServerConfig struct {
-	// Host is the actual HTTP bind address (default "localhost" from
-	// setDefaults): the introspect read side (/api/v1/introspect/*) is
-	// unauthenticated, so serve must never default to a wildcard bind.
-	// "0.0.0.0" opts into all interfaces and requires security.auth_enabled.
+	// Host is the actual HTTP bind address (default "127.0.0.1" from
+	// setDefaults): the introspect read side (/api/v1/introspect/*) carries
+	// task payloads, so serve must never default to a wildcard bind. The
+	// default is the explicit loopback IP rather than the "localhost" name
+	// so the bind cannot be widened by a hosts-file remap. "0.0.0.0" opts
+	// into all interfaces and requires security.auth_enabled (or
+	// introspect.token) to keep the read side closed.
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
 }
@@ -263,6 +267,22 @@ type SecurityConfig struct {
 	// safer than open). Default false preserves the pre-JWT behavior for
 	// read-only surfaces; destructive endpoints always require auth.
 	AuthEnabled bool `yaml:"auth_enabled"`
+}
+
+// IntrospectConfig configures the runtime introspection read side: the
+// /introspect panel UI, the /api/v1/introspect/* JSON feed, the LLM cost
+// dashboard, and the read-only control-server surfaces under /api/*. It is
+// the M-S1 closure of the "panel carries agent/task/event data with no auth
+// of its own" exposure.
+type IntrospectConfig struct {
+	// Token is a static bearer token for the introspect read side. Empty
+	// (default): the read side is open, protected only by the loopback
+	// default bind (server.host 127.0.0.1) — startup logs a Warn stating
+	// that posture. Non-empty: non-loopback clients must present
+	// "Authorization: Bearer <token>" (constant-time compare); loopback
+	// clients stay open. It composes with security.auth_enabled: a valid
+	// read-permission JWT or the legacy API key also passes the read gate.
+	Token string `yaml:"token"`
 }
 
 // LLMConfig holds LLM provider configuration.

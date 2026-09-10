@@ -22,7 +22,7 @@ func TestServerBindAddr(t *testing.T) {
 			name: "empty_host_falls_back_to_loopback",
 			host: "",
 			port: 8080,
-			want: "localhost:8080",
+			want: "127.0.0.1:8080",
 		},
 		{
 			name: "explicit_wildcard_is_preserved",

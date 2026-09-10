@@ -679,18 +679,49 @@ func startServeHTTPAndHooks(
 	fmt.Println("Press Ctrl+C to stop.")
 	fmt.Println()
 
-	// The introspect read side (/api/v1/introspect/*) carries task payloads
-	// with no auth of its own; a wildcard bind exposes it to the network.
-	// Fail-safe posture: warn loudly (do not block startup) so operators who
-	// deliberately opt into 0.0.0.0 without auth still see the exposure.
-	if isWildcardHost(cfg.Server.Host) && !cfg.Security.AuthEnabled {
-		log.Info("WARNING: server.host binds all interfaces while security.auth_enabled is false — the unauthenticated introspect read API (/api/v1/introspect/*) is reachable from the network; set security.auth_enabled or bind localhost", "host", cfg.Server.Host)
-	}
+	// The introspect read side (/api/v1/introspect/*) carries task payloads;
+	// its credential layers are the JWT read middleware, the legacy API key,
+	// and the static introspect.token. Fail-safe posture: warn loudly (do
+	// not block startup) so operators who deliberately opt into a wider bind
+	// without credentials still see the exposure.
+	authConfigured := cfg.Security.AuthEnabled && cfg.Security.JWTSecret != ""
 
 	// API key for destructive endpoints (agents/chaos/tools). When empty,
 	// all destructive requests are denied (deny-by-default). Configure via
 	// ARES_API_KEY environment variable.
 	serveAPIKey := os.Getenv("ARES_API_KEY")
+
+	// M-S1: the control plane's exposure state is printed on every startup —
+	// bind address, credential layers, introspect token — so the effective
+	// security posture is visible, not implied by defaults.
+	log.Info("serve: control-plane exposure state",
+		"bind", addr,
+		"wildcard_bind", isWildcardHost(cfg.Server.Host),
+		"auth", authConfigured,
+		"api_key", serveAPIKey != "",
+		"introspect_token", cfg.Introspect.Token != "",
+	)
+	if cfg.Introspect.Token == "" {
+		log.Warn("introspect read side: localhost only, no token — set introspect.token to require a bearer token from non-loopback clients")
+	}
+	// M-S2: the endpoint registry is the control-plane inventory — print its
+	// auth-level distribution so the startup log answers "how many endpoints
+	// are public / read-gated / write-gated" without reading code.
+	routeLevels := map[authLevel]int{}
+	for _, spec := range actionRoutes {
+		routeLevels[spec.Auth]++
+	}
+	log.Info("serve: control-plane endpoint registry",
+		"routes", len(actionRoutes),
+		"none", routeLevels[authNone],
+		"read", routeLevels[authRead],
+		"write", routeLevels[authWrite],
+		"local", routeLevels[authLocal],
+	)
+	if isWildcardHost(cfg.Server.Host) && !authConfigured {
+		log.Info("WARNING: server.host binds all interfaces while security.auth_enabled is false — the unauthenticated introspect read API (/api/v1/introspect/*) is reachable from the network; set security.auth_enabled, introspect.token, or bind localhost", "host", cfg.Server.Host)
+	}
+
 	// One shared audit sink for the actionHandler, so auth decisions and
 	// destructive actions land in the same process log stream.
 	auditLogger := ares_security.NewAuditLogger(slog.Default())
@@ -703,7 +734,7 @@ func startServeHTTPAndHooks(
 	// cost API) so enabling auth closes those too — not just the mutators.
 	var authMW *ares_security.AuthMiddleware
 	var readAuthMW *ares_security.AuthMiddleware
-	if cfg.Security.AuthEnabled && cfg.Security.JWTSecret != "" {
+	if authConfigured {
 		authMW = ares_security.NewAuthMiddleware([]byte(cfg.Security.JWTSecret), ares_security.PermWrite,
 			ares_security.WithAudit(auditLogger))
 		readAuthMW = ares_security.NewAuthMiddleware([]byte(cfg.Security.JWTSecret), ares_security.PermRead,
@@ -724,6 +755,10 @@ func startServeHTTPAndHooks(
 		auth:     authMW,
 		readAuth: readAuthMW,
 		audit:    auditLogger,
+		// Introspect read-side bearer token (introspect.token, M-S1): a
+		// lightweight credential for the panel read API when full JWT auth
+		// is not wired — non-loopback clients must present it.
+		introspectToken: cfg.Introspect.Token,
 		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
 		// (submitPeerTask).
 		kernel: peerKernel,
@@ -929,8 +964,10 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 var ErrNoLLMAdapter = errors.New("serve: no LLM adapter available")
 
 // defaultServeHost is the fallback bind host when the config leaves
-// server.host empty (a hand-built Config may skip setDefaults).
-const defaultServeHost = "localhost"
+// server.host empty (a hand-built Config may skip setDefaults). The explicit
+// loopback IP, not the "localhost" name — the bind must not depend on
+// hosts-file resolution (M-S1).
+const defaultServeHost = "127.0.0.1"
 
 // serverBindAddr resolves the HTTP listen address from the server config.
 // The host is the real bind address (default "localhost"); empty falls back

@@ -452,8 +452,8 @@ func TestSetDefaults(t *testing.T) {
 	cfg.setDefaults()
 
 	// Verify default values
-	if cfg.Server.Host != "localhost" {
-		t.Errorf("Server.Host default = %v, want localhost", cfg.Server.Host)
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("Server.Host default = %v, want 127.0.0.1 (loopback bind)", cfg.Server.Host)
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("Server.Port default = %v, want 8080", cfg.Server.Port)

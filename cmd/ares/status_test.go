@@ -55,8 +55,8 @@ func TestStatusConfigToStatusMinimal(t *testing.T) {
 	if !out.Minimal {
 		t.Fatal("expected minimal=true")
 	}
-	if out.Server.Host != "localhost" || out.Server.Port != 8080 {
-		t.Fatalf("server = %s:%d, want localhost:8080", out.Server.Host, out.Server.Port)
+	if out.Server.Host != "127.0.0.1" || out.Server.Port != 8080 {
+		t.Fatalf("server = %s:%d, want 127.0.0.1:8080 (loopback default bind)", out.Server.Host, out.Server.Port)
 	}
 	if out.LLM.Provider != "ollama" || out.LLM.Model != "llama3.2" {
 		t.Fatalf("llm = %s/%s, want ollama/llama3.2", out.LLM.Provider, out.LLM.Model)

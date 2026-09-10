@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -120,6 +121,14 @@ type actionHandler struct {
 	// HTML UI (/introspect) and /metrics stay open regardless — the UI
 	// carries no data itself, and metrics follow the scraper convention.
 	readAuth *ares_security.AuthMiddleware
+	// introspectToken is the static bearer token for the introspect read
+	// side (config introspect.token, M-S1). Empty: the read side is open,
+	// protected only by the loopback default bind. Non-empty: non-loopback
+	// clients must present "Authorization: Bearer <token>" (constant-time
+	// compare) — a lightweight credential for deployments that expose the
+	// panel without wiring full JWT auth. It composes with readAuth and
+	// the legacy API key: any one of the three passes.
+	introspectToken string
 }
 
 // buildCostMux registers the cost dashboard routes on a dedicated mux, once
@@ -193,15 +202,12 @@ func (h *actionHandler) auditAction(action, target string, princ *ares_security.
 }
 
 // checkAuthRead gates the JSON read surfaces at READ permission: a valid
-// JWT with read permission or the legacy API key (a write key may read).
-// When auth is not configured at all it allows the request — the same policy
-// the introspect surface documented before, safe only under the loopback
-// default bind. Returns false after writing the 401/403 response.
+// JWT with read permission, the legacy API key (a write key may read), or
+// the introspect read token. When no credential at all is configured it
+// allows the request — the same policy the introspect surface documented
+// before, safe only under the loopback default bind. Returns false after
+// writing the 401/403 response.
 func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bool {
-	if h.readAuth == nil && h.apiKey == "" {
-		// Auth not configured: unauthenticated read access, loopback by default.
-		return true
-	}
 	// JWT path first: a valid token with READ permission (agent role qualifies).
 	if h.readAuth != nil {
 		if _, status := h.readAuth.Verify(r); status == http.StatusOK {
@@ -210,205 +216,412 @@ func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bo
 	}
 	// Legacy API key path: a write credential may also read.
 	if h.apiKey != "" {
-		auth := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if strings.HasPrefix(auth, prefix) {
-			token := strings.TrimPrefix(auth, prefix)
-			if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1 {
-				return true
-			}
+		if token := bearerToken(r); token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1 {
+			return true
 		}
+	}
+	// Introspect read token (M-S1): a static bearer credential for the read
+	// side. Non-loopback clients must present it (or one of the credentials
+	// above); loopback stays open — but only while no stronger credential
+	// layer is configured, so an auth-enabled deployment is never weakened
+	// because an operator also set introspect.token.
+	if h.introspectToken != "" {
+		if token := bearerToken(r); token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.introspectToken)) == 1 {
+			return true
+		}
+		if h.readAuth == nil && h.apiKey == "" && isLoopbackRequest(r) {
+			return true
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		writeJSON(w, map[string]any{"error": "introspect read side requires a bearer token (introspect.token)"})
+		return false
+	}
+	// Auth not configured at all: unauthenticated read access, loopback by default.
+	if h.readAuth == nil && h.apiKey == "" {
+		return true
 	}
 	w.WriteHeader(http.StatusUnauthorized)
 	writeJSON(w, map[string]any{"error": "invalid credentials"})
 	return false
 }
 
-// serveIntrospect handles the read-only introspection surface: the panel UI,
-// its JSON feed under /api/v1/introspect/*, and a root redirect to the panel.
-// Returns true when it handled the request.
-//
-// Auth policy: the JSON feed — task payloads, raw events, live
-// scheduler state — requires READ credentials whenever auth is configured
-// (checkAuthRead); the panel HTML (/introspect), the root redirect and
-// /metrics stay open (the UI carries no data itself; metrics follow the
-// scraper convention). With auth unconfigured every read route is open,
-// which is safe only under the loopback default bind.
-func (h *actionHandler) serveIntrospect(w http.ResponseWriter, r *http.Request, path string) bool {
-	if h.intro == nil || r.Method != http.MethodGet {
-		return false
+// bearerToken extracts the bearer token from the Authorization header
+// ("" when the header is absent or not Bearer). Shared by the API-key and
+// introspect-token comparisons.
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return ""
 	}
-	switch {
-	case path == "/introspect" || strings.HasPrefix(path, "/introspect/"):
-		// Panel UI: static HTML shell, no data — stays open.
-		h.intro.ServeHTTP(w, r)
-		return true
-	case strings.HasPrefix(path, "/api/v1/introspect/"):
-		// JSON feed: task payloads and raw events — read-gated.
-		if !h.checkAuthRead(w, r) {
-			return true
-		}
-		h.intro.ServeHTTP(w, r)
-		return true
-	case path == "/metrics":
-		// Prometheus scrape endpoint (the old :8090 dashboard server mounted
-		// /metrics; re-mounted here so scraping the ARES runtime survives
-		// the dashboard deletion).
-		observability.MetricsHTTPHandler().ServeHTTP(w, r)
-		return true
-	case h.cost != nil && (strings.HasPrefix(path, "/api/v1/observability/cost") ||
-		path == "/api/v1/observability/dashboard"):
-		// LLM cost dashboard (read-only GET). The mux is built once via
-		// buildCostMux in the construction literal — rebuilding per request
-		// was pure waste. Cost data is read-gated too.
-		if !h.checkAuthRead(w, r) {
-			return true
-		}
-		h.costMux.ServeHTTP(w, r)
-		return true
-	case path == "/":
-		http.Redirect(w, r, "/introspect", http.StatusFound)
-		return true
-	}
-	return false
+	return strings.TrimPrefix(auth, prefix)
 }
 
-//nolint:gocyclo
-func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+// isLoopbackRequest reports whether the request's TCP peer is a loopback
+// address — the "local operator" the introspect read side trusts when no
+// token is required. RemoteAddr is always host:port on server-side
+// requests; a parse failure fails closed (not loopback).
+func isLoopbackRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
+// ── Endpoint registry (M-S2) ─────────────────────────────
+//
+// The control plane's HTTP surface used to be a hand-written routing switch:
+// every endpoint's auth level lived in an if-branch, and a new endpoint
+// without a branch silently inherited whatever fell through to it. The
+// registry below declares every route with its method, path pattern, and
+// auth level, and the dispatcher enforces the declared level before the
+// handler runs — an endpoint cannot exist in the table without stating its
+// authentication requirement.
+
+// authLevel classifies a route's credential requirement.
+type authLevel int
+
+const (
+	// authNone: public — the panel HTML shell (no data), the Prometheus
+	// scrape, and the non-API 404 tail.
+	authNone authLevel = iota
+	// authRead: the JSON read surfaces (checkAuthRead) — read-permission
+	// JWT, legacy API key, or the introspect read token for non-loopback
+	// clients.
+	authRead
+	// authWrite: the destructive endpoints (checkAuth) — write-permission
+	// JWT or legacy API key, deny-by-default. Finer RBAC (e.g. chaos
+	// requires admin) is enforced inside the handlers on the verified
+	// principal.
+	authWrite
+	// authLocal: loopback-only (no route uses it today; declared so the
+	// level exists for endpoints that should never see a network client).
+	authLocal
+)
+
+// String renders the level for startup/audit logging.
+func (a authLevel) String() string {
+	switch a {
+	case authNone:
+		return "none"
+	case authRead:
+		return "read"
+	case authWrite:
+		return "write"
+	case authLocal:
+		return "local"
+	default:
+		return "unknown"
+	}
+}
+
+// routeSpec is one entry in the control-plane endpoint registry.
+type routeSpec struct {
+	// Method is the HTTP method ("GET", "POST", or "*" for any).
+	Method string
+	// Path is the route pattern, in one of three forms:
+	//   "/api/tasks"                  exact match
+	//   "/api/v1/introspect/..."      prefix match (trailing "..." is the marker)
+	//   "/api/mcp/tools/{name}/call"  segment match ("{name}" matches one segment)
+	Path string
+	// Auth is the credential level the dispatcher enforces before Handler.
+	Auth authLevel
+	// Available reports whether the route participates in dispatch at all
+	// (nil = always). Wiring-dependent surfaces use it: the panel routes
+	// exist only when the introspect handler is wired, the cost routes only
+	// when the dashboard is — mirroring the pre-registry serveIntrospect
+	// early-returns.
+	Available func(*actionHandler) bool
+	// Handler serves the request; princ is the verified principal on
+	// authWrite routes (nil otherwise). These are dispatch glue only — the
+	// handler bodies are the pre-registry functions, untouched.
+	Handler func(*actionHandler, http.ResponseWriter, *http.Request, *ares_security.Principal)
+	// Desc documents the route (one line, for the registry audit in
+	// ARCHITECTURE_REVIEW_MERMAID.md §6 / M-S3).
+	Desc string
+}
+
+// panelAvailable gates the introspect-handler surfaces: the panel UI, its
+// JSON feed, /metrics and the root redirect all route through h.intro; when
+// it is not wired the whole family falls to the control-server tail.
+func panelAvailable(h *actionHandler) bool { return h.intro != nil }
+
+// costAvailable gates the cost dashboard routes: they additionally require
+// the dashboard to be wired (cost != nil implies costMux != nil — the pair
+// is constructed atomically, see buildCostMux).
+func costAvailable(h *actionHandler) bool { return h.intro != nil && h.cost != nil }
+
+// actionRoutes is the endpoint registry, in dispatch priority order (the
+// order the pre-registry switch checked its branches). The final two
+// entries are the tail: every /api/* path not claimed above is read-gated
+// and passed to the read-only control server; every non-API path passes
+// straight through.
+var actionRoutes = []routeSpec{
+	{Method: "POST", Path: "/api/agents/...", Auth: authWrite,
+		Desc:    "agent lifecycle: /api/agents/:id/{kill,resume,retry} (unknown shapes fall to the control-server tail)",
+		Handler: (*actionHandler).routeAgentLifecycle},
+	{Method: "GET", Path: "/introspect", Auth: authNone, Available: panelAvailable,
+		Desc:    "introspect panel UI shell (no data)",
+		Handler: (*actionHandler).routePanel},
+	{Method: "GET", Path: "/introspect/...", Auth: authNone, Available: panelAvailable,
+		Desc:    "introspect panel UI assets",
+		Handler: (*actionHandler).routePanel},
+	{Method: "GET", Path: "/api/v1/introspect/...", Auth: authRead, Available: panelAvailable,
+		Desc:    "introspect JSON feed: task payloads, raw events, scheduler state",
+		Handler: (*actionHandler).routePanel},
+	{Method: "GET", Path: "/metrics", Auth: authNone, Available: panelAvailable,
+		Desc:    "Prometheus scrape endpoint",
+		Handler: (*actionHandler).routeMetrics},
+	{Method: "GET", Path: "/api/v1/observability/cost...", Auth: authRead, Available: costAvailable,
+		Desc:    "LLM cost API (read-only)",
+		Handler: (*actionHandler).routeCost},
+	{Method: "GET", Path: "/api/v1/observability/dashboard", Auth: authRead, Available: costAvailable,
+		Desc:    "LLM cost dashboard HTML (read-only)",
+		Handler: (*actionHandler).routeCost},
+	{Method: "GET", Path: "/", Auth: authNone, Available: panelAvailable,
+		Desc:    "root redirect to the panel",
+		Handler: (*actionHandler).routeRoot},
+	{Method: "POST", Path: "/api/chaos/...", Auth: authWrite,
+		Desc:    "chaos: {random-kill,kill-all,recover} require admin role; stop additionally requires X-Chaos-Token",
+		Handler: (*actionHandler).routeChaos},
+	{Method: "POST", Path: "/api/evolution/approve", Auth: authWrite,
+		Desc:    "evolution manual-approval gate release",
+		Handler: (*actionHandler).routeEvolutionApprove},
+	{Method: "POST", Path: "/api/tools/call", Auth: authWrite,
+		Desc:    "tool invocation",
+		Handler: (*actionHandler).routeCallTool},
+	{Method: "GET", Path: "/api/tools", Auth: authRead,
+		Desc:    "tool inventory (reconnaissance surface)",
+		Handler: (*actionHandler).routeListTools},
+	{Method: "GET", Path: "/api/mcp/tools", Auth: authRead,
+		Desc:    "MCP tool inventory (reconnaissance surface)",
+		Handler: (*actionHandler).routeListMCPTools},
+	{Method: "POST", Path: "/api/mcp/tools/{name}/call", Auth: authWrite,
+		Desc:    "MCP tool invocation",
+		Handler: (*actionHandler).routeCallMCPTool},
+	{Method: "POST", Path: "/api/tasks", Auth: authWrite,
+		Desc:    "peer task submission (submitPeerTask)",
+		Handler: (*actionHandler).routeSubmitTask},
+	{Method: "POST", Path: "/api/graphs", Auth: authWrite,
+		Desc:    "collaboration graph submission (DAG)",
+		Handler: (*actionHandler).routeSubmitGraph},
+	{Method: "*", Path: "/api/...", Auth: authRead,
+		Desc:    "read-only control server: /api/agents, /api/health, /api/runtime/config, /api/flight/*, /api/observability/spans, /api/insights, /api/anomalies, /api/evolution/trajectory",
+		Handler: (*actionHandler).routeInner},
+	{Method: "*", Path: "/...", Auth: authNone,
+		Desc:    "non-API tail (control-server 404), left ungated so probing a wrong URL needs no token",
+		Handler: (*actionHandler).routeInner},
+}
+
+// match reports whether the request's method and path match the spec.
+func (s routeSpec) match(method, path string) bool {
+	if s.Method != "*" && s.Method != method {
+		return false
+	}
+	if prefix, ok := strings.CutSuffix(s.Path, "/..."); ok {
+		return strings.HasPrefix(path, prefix)
+	}
+	if strings.Contains(s.Path, "{") {
+		return matchSegments(s.Path, path)
+	}
+	return path == s.Path
+}
+
+// matchSegments matches path against a pattern containing "{param}"
+// segments: each "{param}" captures exactly one "/"-delimited segment
+// (possibly empty, matching strings.Split semantics), literal segments
+// compare exactly. Handlers re-derive their captured values from the path
+// the same way the pre-registry switch did.
+func matchSegments(pattern, path string) bool {
+	p := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	s := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(p) != len(s) {
+		return false
+	}
+	for i, seg := range p {
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+			continue
+		}
+		if seg != s[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// authorize enforces the route's auth level. It returns the verified
+// principal (non-nil only for authWrite, whose handlers audit on it) and
+// whether the request may proceed; a denial has already been written to w.
+func (h *actionHandler) authorize(level authLevel, w http.ResponseWriter, r *http.Request) (*ares_security.Principal, bool) {
+	switch level {
+	case authNone:
+		return nil, true
+	case authRead:
+		if !h.checkAuthRead(w, r) {
+			return nil, false
+		}
+		return nil, true
+	case authWrite:
+		princ := h.checkAuth(w, r)
+		if princ == nil {
+			return nil, false
+		}
+		return princ, true
+	case authLocal:
+		if !isLoopbackRequest(r) {
+			w.WriteHeader(http.StatusForbidden)
+			writeJSON(w, map[string]any{"error": "localhost only"})
+			return nil, false
+		}
+		return nil, true
+	default:
+		// Unknown level: deny. The registry is the only source of levels,
+		// so this is unreachable — but a future level without an enforcement
+		// case must never become an implicit allow.
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(w, map[string]any{"error": "unhandled auth level"})
+		return nil, false
+	}
+}
+
+// ServeHTTP dispatches through the endpoint registry: the first available
+// route matching the method+path gets its declared auth level enforced,
+// then its handler runs. The registry replaced the hand-written routing
+// switch one-for-one; the handler bodies are unchanged.
+func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Limit request body on all POST endpoints to 1MB to prevent
 	// memory exhaustion from oversized payloads.
 	if r.Method == http.MethodPost && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
 	}
-
-	// Agent lifecycle: POST /api/agents/:id/{kill,resume,retry}
-	if r.Method == "POST" && strings.HasPrefix(path, "/api/agents/") {
-		princ := h.checkAuth(w, r)
-		if princ == nil {
+	for _, spec := range actionRoutes {
+		if spec.Available != nil && !spec.Available(h) {
+			continue
+		}
+		if !spec.match(r.Method, r.URL.Path) {
+			continue
+		}
+		princ, ok := h.authorize(spec.Auth, w, r)
+		if !ok {
 			return
 		}
-		parts := strings.Split(strings.TrimPrefix(path, "/api/agents/"), "/")
-		if len(parts) == 2 {
-			agentID, action := parts[0], parts[1]
-			switch action {
-			case "kill":
-				h.handleAction(w, r, agentID, "kill", princ, h.mgr.StopAgent)
-				return
-			case "resume", "retry":
-				h.handleAction(w, r, agentID, action, princ, func(ctx context.Context, id string) error {
-					return h.mgr.RestartAgent(ctx, id)
-				})
-				return
-			}
-		}
-	}
-
-	// Read-only introspection + metrics routes (panel UI, JSON feed, root
-	// redirect, Prometheus scrape) — all unauthenticated GET pass-throughs.
-	if h.serveIntrospect(w, r, path) {
+		spec.Handler(h, w, r, princ)
 		return
 	}
+	// Unreachable in practice — the registry's final entry matches every
+	// path — but kept as the fail-safe: an exotic request target still
+	// reaches the control server instead of a silent no-response.
+	h.inner.ServeHTTP(w, r)
+}
 
-	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover,stop}
-	if r.Method == "POST" && strings.HasPrefix(path, "/api/chaos/") {
-		princ := h.checkAuth(w, r)
-		if princ == nil {
+// ── Registry route adapters ──────────────────────────────
+//
+// One thin adapter per registry entry. They only translate (w, r, princ)
+// into the pre-registry handler signatures; no business logic lives here.
+
+// routeAgentLifecycle dispatches POST /api/agents/:id/{kill,resume,retry}.
+// The write credential is enforced by the dispatcher (authWrite) BEFORE the
+// path shape is parsed — matching the pre-registry switch, which ran
+// checkAuth on the whole /api/agents/ prefix — and an unknown shape falls
+// through to the control-server tail (read-gate + inner) instead of a local
+// 404.
+func (h *actionHandler) routeAgentLifecycle(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/agents/"), "/")
+	if len(parts) == 2 {
+		agentID, action := parts[0], parts[1]
+		switch action {
+		case "kill":
+			h.handleAction(w, r, agentID, "kill", princ, h.mgr.StopAgent)
 			return
-		}
-		h.handleChaos(w, r, princ, strings.TrimPrefix(path, "/api/chaos/"))
-		return
-	}
-
-	// Evolution governance: POST /api/evolution/approve (manual gate).
-	if r.Method == "POST" && path == "/api/evolution/approve" {
-		princ := h.checkAuth(w, r)
-		if princ == nil {
-			return
-		}
-		h.handleEvolutionApprove(w, r, princ)
-		return
-	}
-
-	// Tool API: POST /api/tools/call
-	if r.Method == "POST" && path == "/api/tools/call" {
-		princ := h.checkAuth(w, r)
-		if princ == nil {
-			return
-		}
-		h.handleCallTool(w, r, princ)
-		return
-	}
-
-	// Tool API: GET /api/tools — read-gated: the tool inventory is
-	// reconnaissance surface, so it requires READ credentials when auth is
-	// configured (same policy as the introspect JSON feed).
-	if r.Method == "GET" && path == "/api/tools" {
-		if !h.checkAuthRead(w, r) {
-			return
-		}
-		h.handleListTools(w)
-		return
-	}
-
-	// MCP tool API (migrated from the old gin server into the actionHandler
-	// so the control plane stays unified):
-	//   GET  /api/mcp/tools           → list available tools (read-gated)
-	//   POST /api/mcp/tools/:name/call → invoke a tool (requires auth)
-	if r.Method == "GET" && path == "/api/mcp/tools" {
-		if !h.checkAuthRead(w, r) {
-			return
-		}
-		h.handleListMCPTools(w)
-		return
-	}
-	if r.Method == "POST" && strings.HasPrefix(path, "/api/mcp/tools/") {
-		parts := strings.Split(strings.TrimPrefix(path, "/api/mcp/tools/"), "/")
-		if len(parts) == 2 && parts[1] == "call" {
-			princ := h.checkAuth(w, r)
-			if princ == nil {
-				return
-			}
-			h.handleCallMCPTool(w, r, princ, parts[0])
+		case "resume", "retry":
+			h.handleAction(w, r, agentID, action, princ, func(ctx context.Context, id string) error {
+				return h.mgr.RestartAgent(ctx, id)
+			})
 			return
 		}
 	}
-
-	// Peer task submission: POST /api/tasks — the user-facing entry of the
-	// peer runtime loop (submitPeerTask). A task is created in the Task
-	// Fabric and the kernel scheduler drives it to completion asynchronously.
-	if r.Method == "POST" && path == "/api/tasks" {
-		princ := h.checkAuth(w, r)
-		if princ == nil {
-			return
-		}
-		h.handleSubmitTask(w, r, princ)
+	// Unknown shape: the control-server tail, exactly as the fall-through
+	// of the pre-registry switch.
+	if !h.checkAuthRead(w, r) {
 		return
 	}
+	h.inner.ServeHTTP(w, r)
+}
 
-	// Collaboration graph submission: a caller posts
-	// a DAG description; the kernel fabric executes it node-by-node.
-	if r.Method == "POST" && path == "/api/graphs" {
-		princ := h.checkAuth(w, r)
-		if princ == nil {
-			return
-		}
-		h.handleSubmitGraph(w, r, princ)
-		return
-	}
+// routePanel serves the introspect panel UI and its JSON feed (the feed's
+// read gate is enforced by the dispatcher's authRead level).
+func (h *actionHandler) routePanel(w http.ResponseWriter, r *http.Request, _ *ares_security.Principal) {
+	h.intro.ServeHTTP(w, r)
+}
 
-	// Pass through to the read-only control server (introspect.ControlServer:
-	// /api/agents, /api/health, /api/runtime/config, /api/flight/*,
-	// /api/observability/spans, /api/insights, /api/anomalies,
-	// /api/evolution/trajectory). These are read-gated for the same reason as
-	// the introspect feed (one policy across equally sensitive read
-	// surfaces): the flight recorder carries scheduling decisions and
-	// diagnostics, /api/agents the live agent topology. Non-/api paths (the
-	// 404 tail) are left ungated so probing a wrong URL does not need a token.
-	if strings.HasPrefix(path, "/api/") && !h.checkAuthRead(w, r) {
-		return
-	}
+// routeMetrics serves the Prometheus scrape endpoint (the old :8090
+// dashboard server mounted /metrics; re-mounted here so scraping the ARES
+// runtime survives the dashboard deletion).
+func (h *actionHandler) routeMetrics(w http.ResponseWriter, r *http.Request, _ *ares_security.Principal) {
+	observability.MetricsHTTPHandler().ServeHTTP(w, r)
+}
+
+// routeCost serves the LLM cost dashboard API/HTML through the mux built
+// once at handler construction (buildCostMux); the read gate is enforced
+// by the dispatcher.
+func (h *actionHandler) routeCost(w http.ResponseWriter, r *http.Request, _ *ares_security.Principal) {
+	h.costMux.ServeHTTP(w, r)
+}
+
+// routeRoot redirects the console root to the panel.
+func (h *actionHandler) routeRoot(w http.ResponseWriter, r *http.Request, _ *ares_security.Principal) {
+	http.Redirect(w, r, "/introspect", http.StatusFound)
+}
+
+// routeChaos dispatches POST /api/chaos/{random-kill,kill-all,recover,stop};
+// the admin-role RBAC and the X-Chaos-Token check live inside handleChaos.
+func (h *actionHandler) routeChaos(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	h.handleChaos(w, r, princ, strings.TrimPrefix(r.URL.Path, "/api/chaos/"))
+}
+
+// routeEvolutionApprove releases the evolution manual-approval gate.
+func (h *actionHandler) routeEvolutionApprove(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	h.handleEvolutionApprove(w, r, princ)
+}
+
+// routeCallTool invokes a tool from the ARES registry by name.
+func (h *actionHandler) routeCallTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	h.handleCallTool(w, r, princ)
+}
+
+// routeListTools lists the ARES tool inventory.
+func (h *actionHandler) routeListTools(w http.ResponseWriter, _ *http.Request, _ *ares_security.Principal) {
+	h.handleListTools(w)
+}
+
+// routeListMCPTools lists the MCP tool inventory.
+func (h *actionHandler) routeListMCPTools(w http.ResponseWriter, _ *http.Request, _ *ares_security.Principal) {
+	h.handleListMCPTools(w)
+}
+
+// routeCallMCPTool invokes an MCP tool; the tool name is the {name}
+// segment, re-derived from the path exactly as the pre-registry switch did.
+func (h *actionHandler) routeCallMCPTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/mcp/tools/"), "/")
+	h.handleCallMCPTool(w, r, princ, parts[0])
+}
+
+// routeSubmitTask submits a task to the peer runtime (POST /api/tasks).
+func (h *actionHandler) routeSubmitTask(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	h.handleSubmitTask(w, r, princ)
+}
+
+// routeSubmitGraph submits a collaboration graph (POST /api/graphs).
+func (h *actionHandler) routeSubmitGraph(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
+	h.handleSubmitGraph(w, r, princ)
+}
+
+// routeInner passes through to the read-only control server. The /api/*
+// tail entry already applied the read gate (authRead) at the dispatcher;
+// the non-API tail entry is ungated by policy.
+func (h *actionHandler) routeInner(w http.ResponseWriter, r *http.Request, _ *ares_security.Principal) {
 	h.inner.ServeHTTP(w, r)
 }
 
