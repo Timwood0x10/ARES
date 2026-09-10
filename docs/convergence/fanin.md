@@ -73,11 +73,11 @@
 | `internal/ares_ratelimit` | 4 | 不动 |
 | `internal/agentloop` | 3 | D5 已裁定冻结不删 |
 | `internal/ares_shutdown` | 2 | 不动 |
-| `internal/ares_ctxutil` | 2 | 不动 |
+| ~~`internal/ares_ctxutil`~~ | 2 | 已并入 internal/runtime（D3，2026-09-10），包删除 |
 | `internal/detector` | 1（`sdk/quickstart.go`） | 留 |
 | `internal/discovery` | 1（`provide_discovery.go`） | 留 |
 | `internal/llmservice` | 0（仅 `api/service/llm` 引用） | 随 `api/` 留 |
-| `internal/ares_integration` | 0（仅自包 `_test` 引用） | 测试资产，原样保留，不计入"≤15" |
+| ~~`internal/ares_integration`~~ | 0（仅自包 `_test` 引用） | 已迁 `tests/integration/`（D1，2026-09-10），目录删除 |
 
 ## 顶层包（非 internal/）
 

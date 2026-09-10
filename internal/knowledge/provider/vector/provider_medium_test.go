@@ -14,7 +14,7 @@ type fakeVectorStore struct {
 	createErr error
 }
 
-func (f *fakeVectorStore) Search(_ context.Context, _ string, _ []float64, _ int) ([]*storage.SearchResult, error) {
+func (f *fakeVectorStore) Search(_ context.Context, _, _ string, _ []float64, _ int) ([]*storage.SearchResult, error) {
 	return nil, nil
 }
 
@@ -37,6 +37,7 @@ func TestNewVectorProviderCreateCollectionErrorPropagates(t *testing.T) {
 	_, err := NewVectorProvider(&fakeVectorStore{createErr: wantErr}, Config{
 		Name:            "test-provider",
 		Collection:      "test_collection",
+		TenantID:        "default",
 		VectorDimension: 8,
 	})
 	if err == nil {
@@ -50,6 +51,7 @@ func TestNewVectorProviderCreateCollectionErrorPropagates(t *testing.T) {
 	p, err := NewVectorProvider(&fakeVectorStore{}, Config{
 		Name:            "test-provider",
 		Collection:      "test_collection",
+		TenantID:        "default",
 		VectorDimension: 8,
 	})
 	if err != nil {

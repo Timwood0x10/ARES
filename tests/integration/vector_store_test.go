@@ -1,6 +1,6 @@
 // package integration provides end-to-end integration tests for VectorStore
 // implementations (in-memory and PostgreSQL).
-package ares_integration
+package integration
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func (m *memVectorStore) AddEmbedding(_ context.Context, table, id string, embed
 	return nil
 }
 
-func (m *memVectorStore) Search(_ context.Context, table string, query []float64, limit int) ([]*storage.SearchResult, error) {
+func (m *memVectorStore) Search(_ context.Context, table, _ string, query []float64, limit int) ([]*storage.SearchResult, error) {
 	if _, ok := m.collections[table]; !ok {
 		return nil, fmt.Errorf("collection %q does not exist", table)
 	}
@@ -138,7 +138,7 @@ func TestVectorStoreInMemoryCreateAddSearchDelete(t *testing.T) {
 	}
 
 	// Search: vec1 should match doc-1 best.
-	results, err := store.Search(ctx, collectionName, vec1, 10)
+	results, err := store.Search(ctx, collectionName, "default", vec1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestVectorStoreInMemoryCreateAddSearchDelete(t *testing.T) {
 	}
 
 	// Search: vec2 should match doc-2 best.
-	results, err = store.Search(ctx, collectionName, vec2, 10)
+	results, err = store.Search(ctx, collectionName, "default", vec2, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestVectorStorePostgresCreateAddCosineSearch(t *testing.T) {
 	}
 
 	// Cosine search: vec1 should match vs-doc-1 best.
-	results, err := searcher.Search(ctx, collectionName, vec1, 10)
+	results, err := searcher.Search(ctx, collectionName, "default", vec1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestVectorStorePostgresSearchWithLimit(t *testing.T) {
 	queryVec[0] = 1.0
 
 	// Search with limit 3.
-	results, err := searcher.Search(ctx, collectionName, queryVec, 3)
+	results, err := searcher.Search(ctx, collectionName, "default", queryVec, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestVectorStorePostgresDeleteAndSearch(t *testing.T) {
 	}
 
 	// Verify it exists.
-	results, err := searcher.Search(ctx, collectionName, vec, 10)
+	results, err := searcher.Search(ctx, collectionName, "default", vec, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestVectorStorePostgresDeleteAndSearch(t *testing.T) {
 	}
 
 	// Should no longer appear.
-	results, err = searcher.Search(ctx, collectionName, vec, 10)
+	results, err = searcher.Search(ctx, collectionName, "default", vec, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestVectorStorePostgresInvalidInputs(t *testing.T) {
 
 	// Search with zero limit should fail.
 	vec := make([]float64, 128)
-	_, err = searcher.Search(ctx, "any_table", vec, 0)
+	_, err = searcher.Search(ctx, "any_table", "default", vec, 0)
 	if err == nil {
 		t.Error("expected error for zero limit")
 	}
@@ -410,7 +410,7 @@ func TestVectorStorePostgresLargeVector(t *testing.T) {
 	}
 
 	// Search with the same vector.
-	results, err := searcher.Search(ctx, collectionName, vec, 1)
+	results, err := searcher.Search(ctx, collectionName, "default", vec, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

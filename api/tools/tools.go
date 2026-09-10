@@ -67,7 +67,6 @@ func WithFileSandboxDir(dir string) BuiltinToolsOption {
 func FilePath(path string) (string, error) { return apitools.FilePath(path) }
 
 // WithAllowedDir restricts file operations to paths under the given directory.
-//
-// Deprecated: forwarded for source compatibility only; the option type is
-// unexported, so the returned value cannot be used outside internal/apitools.
-var WithAllowedDir = apitools.WithAllowedDir
+func WithAllowedDir(dir string) apitools.FileToolOption {
+	return apitools.WithAllowedDir(dir)
+}

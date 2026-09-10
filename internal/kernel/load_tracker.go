@@ -138,12 +138,22 @@ func (t *LoadTracker) Forget(agentID string) {
 	delete(t.priority, agentID)
 	delete(t.load, agentID)
 	delete(t.agentConfidenceOverride, agentID)
-	prefix := agentID + "|"
+	prefix := capConfidenceKey(agentID, "")
 	for key := range t.capabilityConfidenceOverride {
 		if _, found := strings.CutPrefix(key, prefix); found {
 			delete(t.capabilityConfidenceOverride, key)
 		}
 	}
+}
+
+// capConfidenceKey builds the capabilityConfidenceOverride map key. The
+// separator is NUL, not "|": "|" is legal in agent IDs and capabilities, so
+// an agent "a|b" with capability "c" would collide with agent "a" capability
+// "b|c" — and Forget's prefix delete would over-delete across the collision.
+// NUL cannot appear in either component (they come from JSON/YAML identifiers
+// and LLM tool arguments).
+func capConfidenceKey(agentID, capability string) string {
+	return agentID + "\x00" + capability
 }
 
 func (t *LoadTracker) Load(agentID string) float64 {
@@ -182,7 +192,7 @@ func (t *LoadTracker) SetAgentConfidence(agentID string, confidence float64) {
 func (t *LoadTracker) SetCapabilityConfidence(agentID, capability string, confidence float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	key := agentID + "|" + capability
+	key := capConfidenceKey(agentID, capability)
 	// Negative values clear the capability override so ConfidenceFor falls
 	// back to the agent-level confidence / neutral prior (ConfidenceInjector
 	// contract: "a negative value (< 0) clears it").
@@ -196,7 +206,7 @@ func (t *LoadTracker) SetCapabilityConfidence(agentID, capability string, confid
 func (t *LoadTracker) ConfidenceFor(agentID, capability string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	key := agentID + "|" + capability
+	key := capConfidenceKey(agentID, capability)
 	if v, ok := t.capabilityConfidenceOverride[key]; ok {
 		return v
 	}
@@ -219,7 +229,7 @@ func (t *LoadTracker) ConfidenceFor(agentID, capability string) float64 {
 func (t *LoadTracker) ConfidenceForMeasured(agentID, capability string) (float64, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	key := agentID + "|" + capability
+	key := capConfidenceKey(agentID, capability)
 	if v, ok := t.capabilityConfidenceOverride[key]; ok {
 		return v, true
 	}
@@ -300,7 +310,7 @@ func (t *LoadTracker) Snapshot() LoadTrackerSnapshot {
 			a.ConfidenceOverride = v
 			a.HasConfidenceOverride = true
 		}
-		prefix := id + "|"
+		prefix := capConfidenceKey(id, "")
 		for key, v := range t.capabilityConfidenceOverride {
 			if capName, found := strings.CutPrefix(key, prefix); found {
 				a.CapabilityOverrides[capName] = v

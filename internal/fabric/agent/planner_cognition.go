@@ -310,13 +310,12 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	}
 
 	// Token accounting (the fitness cost channel, M4): this quantum's LLM
-	// usage rides the StepOutcome result metadata; the scheduler's
-	// re-wrap path accumulates it into the checkpoint envelope, so the
-	// session's total spend surfaces on the terminal task.completed event
-	// for the RuntimeObserver's cost penalty. A provider that reports no
-	// usage contributes zero — the observer then scores on outcome and
-	// latency alone.
-	stampTokenUsage(resp)
+	// usage rides the StepOutcome result metadata via tokenUsageMetadata;
+	// the scheduler's re-wrap path accumulates it into the checkpoint
+	// envelope, so the session's total spend surfaces on the terminal
+	// task.completed event for the RuntimeObserver's cost penalty. A
+	// provider that reports no usage contributes zero — the observer then
+	// scores on outcome and latency alone.
 
 	// No tool calls: the LLM gave a final answer. Grow an answer node.
 	if len(resp.ToolCalls) == 0 {
@@ -389,15 +388,13 @@ func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Tas
 		{Role: "user", Content: rootPrompt},
 	}
 
-	// Walk the predecessor chain from this plan node back to the root. The
-	// walk is newest-first, so the collected nodes are REVERSED before
-	// being appended: the LLM must observe tool results in execution order,
-	// the same order ReAct's Messages[] presented them. Appending in walk
-	// order would invert the history and change what the model concludes.
-	var chain []string
-	for predID := g.Predecessor(task.TaskID); predID != "" && predID != rootID; predID = g.Predecessor(predID) {
-		chain = append(chain, predID)
-	}
+	// Collect this plan node's full ancestor set (BFS over ALL DependsOn
+	// edges, nearest-first). The walk is nearest-first, so the collected
+	// nodes are REVERSED before being appended: the LLM must observe tool
+	// results in execution order, the same order ReAct's Messages[] presented
+	// them. Appending in walk order would invert the history and change what
+	// the model concludes.
+	chain := g.Ancestors(task.TaskID)
 	steps := g.DAG().StepIndex()
 	for i := len(chain) - 1; i >= 0; i-- {
 		nodeID := chain[i]
@@ -847,13 +844,6 @@ const (
 	resultMetaInputTokens  = "input_tokens"
 	resultMetaOutputTokens = "output_tokens"
 )
-
-// stampTokenUsage is the call-site marker for the M4 cost channel: the
-// quantum that made an LLM call reports its usage. Kept as a no-op function
-// (not inlined into the call sites) so the accounting point is grep-able and
-// future metrics hook one place. resp may be nil (defensive; every call site
-// has a non-nil response after the error check).
-func stampTokenUsage(resp *llmcore.GenerateResponse) {}
 
 // tokenUsageMetadata extracts the response's token usage into result
 // metadata. A nil response or zero usage yields nil — the scheduler's

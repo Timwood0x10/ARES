@@ -57,14 +57,20 @@ func NewVectorSearcherWithDB(db DBTX, embeddingConfig *EmbeddingConfig) *VectorS
 // Deprecated: Use storage.SearchResult directly.
 type SearchResult = storage.SearchResult
 
-// Search performs a vector similarity search.
+// Search performs a vector similarity search scoped to one tenant.
 // This is a simplified implementation that uses pgvector if available.
-func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []float64, limit int) ([]*SearchResult, error) {
+func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, embedding []float64, limit int) ([]*SearchResult, error) {
 	// Reject a negative limit: PostgreSQL interprets a negative LIMIT as
 	// "no limit" and would return every row, turning a bounded search into
 	// an unbounded query.
 	if limit < 0 {
 		return nil, fmt.Errorf("limit must not be negative: %d", limit)
+	}
+	// Tenant scope is mandatory: the table is tenant-scoped (tenant_id NOT
+	// NULL) and an unscoped search would leak rows across tenants. Empty is
+	// rejected (fail closed), same posture as compat/vector/pgvector.
+	if tenantID == "" {
+		return nil, fmt.Errorf("vector search: tenantID is required (tenant-scoped table %q)", table)
 	}
 
 	// Validate table name against whitelist (consistent with base_repository.go).
@@ -76,6 +82,7 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 	query := fmt.Sprintf(`
 		SELECT id, 1 - (embedding <=> $1::vector) as distance, metadata
 		FROM %s
+		WHERE tenant_id = $3
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2
 	`, safeTable)
@@ -85,7 +92,7 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 		return nil, errors.Wrap(err, "marshal embedding")
 	}
 
-	rows, err := v.db.QueryContext(ctx, query, embeddingJSON, limit)
+	rows, err := v.db.QueryContext(ctx, query, embeddingJSON, limit, tenantID)
 	if err != nil {
 		return nil, errors.Wrap(err, "vector search")
 	}

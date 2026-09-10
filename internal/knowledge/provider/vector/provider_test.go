@@ -27,7 +27,7 @@ func newMemVectorStore() *memVectorStore {
 	}
 }
 
-func (m *memVectorStore) Search(_ context.Context, table string, _ []float64, limit int) ([]*storage.SearchResult, error) {
+func (m *memVectorStore) Search(_ context.Context, table, _ string, _ []float64, limit int) ([]*storage.SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -70,7 +70,7 @@ func (m *memVectorStore) CreateCollection(_ context.Context, name string, dimens
 
 func TestVectorProvider_Name(t *testing.T) {
 	store := newMemVectorStore()
-	p, err := NewVectorProvider(store, Config{Name: "test-vec", Collection: "docs"})
+	p, err := NewVectorProvider(store, Config{Name: "test-vec", Collection: "docs", TenantID: "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +84,7 @@ func TestVectorProvider_IntentMatch(t *testing.T) {
 	p, err := NewVectorProvider(store, Config{
 		Name:       "test-vec",
 		Collection: "docs",
+		TenantID:   "default",
 		IntentTags: []string{"knowledge", "doc", "guide"},
 	})
 	if err != nil {
@@ -124,6 +125,7 @@ func TestVectorProvider_Stream(t *testing.T) {
 		Name:       "vec-test",
 		Namespace:  "test",
 		Collection: "docs",
+		TenantID:   "default",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +183,7 @@ func TestVectorProvider_Stream_EmptyCollection(t *testing.T) {
 		Name:       "empty-vec",
 		Namespace:  "test",
 		Collection: "nonexistent",
+		TenantID:   "default",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -216,10 +219,11 @@ func TestVectorProvider_Validation(t *testing.T) {
 		cfg     Config
 		wantErr bool
 	}{
-		{"nil store", nil, Config{Name: "x", Collection: "c"}, true},
-		{"empty name", store, Config{Name: "", Collection: "c"}, true},
-		{"empty collection", store, Config{Name: "x", Collection: ""}, true},
-		{"valid", store, Config{Name: "x", Collection: "c"}, false},
+		{"nil store", nil, Config{Name: "x", Collection: "c", TenantID: "default"}, true},
+		{"empty name", store, Config{Name: "", Collection: "c", TenantID: "default"}, true},
+		{"empty collection", store, Config{Name: "x", Collection: "", TenantID: "default"}, true},
+		{"empty tenant", store, Config{Name: "x", Collection: "c", TenantID: ""}, true},
+		{"valid", store, Config{Name: "x", Collection: "c", TenantID: "default"}, false},
 	}
 
 	for _, tt := range tests {
@@ -278,7 +282,7 @@ func (m *mockEmbedder) GetTimeout() time.Duration         { return time.Second }
 
 func TestVectorProvider_HashQueryVector_Deterministic(t *testing.T) {
 	store := newMemVectorStore()
-	p, err := NewVectorProvider(store, Config{Name: "vec", Collection: "docs", VectorDimension: 8})
+	p, err := NewVectorProvider(store, Config{Name: "vec", Collection: "docs", TenantID: "default", VectorDimension: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +320,7 @@ func TestVectorProvider_GenerateQueryVector_UsesEmbedder(t *testing.T) {
 	store := newMemVectorStore()
 	em := &mockEmbedder{dim: 8}
 	p, err := NewVectorProvider(store, Config{
-		Name: "vec", Collection: "docs", VectorDimension: 8, Embedder: em,
+		Name: "vec", Collection: "docs", TenantID: "default", VectorDimension: 8, Embedder: em,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +351,7 @@ func TestVectorProvider_GenerateQueryVector_EmbedderError(t *testing.T) {
 	store := newMemVectorStore()
 	em := &mockEmbedder{dim: 8, fail: true}
 	p, err := NewVectorProvider(store, Config{
-		Name: "vec", Collection: "docs", VectorDimension: 8, Embedder: em,
+		Name: "vec", Collection: "docs", TenantID: "default", VectorDimension: 8, Embedder: em,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +367,7 @@ func TestVectorProvider_GenerateQueryVector_EmbedderEmptyVector(t *testing.T) {
 	store := newMemVectorStore()
 	em := &emptyVectorEmbedder{}
 	p, err := NewVectorProvider(store, Config{
-		Name: "vec", Collection: "docs", VectorDimension: 8, Embedder: em,
+		Name: "vec", Collection: "docs", TenantID: "default", VectorDimension: 8, Embedder: em,
 	})
 	if err != nil {
 		t.Fatal(err)

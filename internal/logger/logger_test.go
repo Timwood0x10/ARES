@@ -97,3 +97,34 @@ func TestModule_WithContext(t *testing.T) {
 		t.Errorf("expected trace_id 'abc123', got %v", result["trace_id"])
 	}
 }
+
+// TestNewWithBase_InjectableLogger pins the 3.13#9 testability seam: a Logger
+// built with NewWithBase routes through the injected handler without touching
+// the global slog default.
+func TestNewWithBase_InjectableLogger(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Poison the global default: entries routed through it would land here,
+	// not in buf — the test fails if the Logger resolves the global.
+	var globalBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&globalBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.Default()) })
+
+	log := NewWithBase("test-module", base)
+	log.Info(context.Background(), "TestMethod", "injected", "k", 1)
+
+	if globalBuf.Len() != 0 {
+		t.Fatalf("entry leaked to the global default: %s", globalBuf.String())
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse injected log output: %v: %s", err, buf.String())
+	}
+	if result["module"] != "test-module" {
+		t.Errorf("module = %v, want test-module", result["module"])
+	}
+	if result["method"] != "TestMethod" {
+		t.Errorf("method = %v, want TestMethod", result["method"])
+	}
+}

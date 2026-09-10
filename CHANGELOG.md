@@ -80,6 +80,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (second-signal force-exit watcher, bounded recovery sweep, one-shot arena
   stream).
 
+- **M4 fitness cost channel — token accounting end-to-end** (M4 second
+  batch): the planner stamps each quantum's LLM `resp.Usage` onto the
+  `StepOutcome` result metadata; the kernel scheduler accumulates it into the
+  `CheckpointEnvelope` (schema **v4**, adding `InputTokens`/`OutputTokens`
+  with forward compatibility from v3); `taskfabric.recordLocked` stamps
+  `input_tokens`/`output_tokens`/`total_tokens` on terminal
+  `task.completed` events; and the RuntimeObserver applies a multiplicative
+  `costPenalty` of `1/(1+tokens/100k)` alongside the latency penalty
+  (correctness still dominates, unmeasured tasks are never invented a cost).
+  A USD-denominated term was deliberately removed: the token dimension
+  carries the cost signal, no price table exists to denominate it.
+- **Skill-confidence loop closed** (M4.4): the starved
+  `SkillOutcomeRecorder` (its event shape never existed) is replaced by a
+  writer on the production terminal-event stream — `task.completed/failed`
+  events now carry a `capability` payload key and
+  `startSkillOutcomeWriter` records `{capability → success rate}` priors on
+  the Experience store. The read side was also un-masked: history-less
+  candidates used to keep the tracker's neutral 1.0 confidence, hiding any
+  recorded prior; `ConfidenceForMeasured` now lets the fabric's prior fill
+  genuinely unmeasured candidates (measured values always win).
+- **Arena preserved-case regression gate** (auto-armed by default since
+  M-G2): `ArenaRegressionGate` runs candidate-vs-active A/B over the eval
+  suite's cases (Welch t-test) and rejects only a statistically significant
+  drop; ties pass to the staging channel. `evolution.gates.regression_enabled`
+  is tri-state — unset arms the gate automatically when `eval_suite` and the
+  LLM client exist, `false` is the Warn-logged opt-out, `true` makes missing
+  prerequisites fatal.
+- **M5 internalization**: the api/ packages' canonical definitions moved to
+  `internal/` (llmcore, embedding, llmexp, knowledgeapi, apitools,
+  mcpclient, llmsvcapi, evoapi, discoveryapi); api/ itself is now a pure
+  forwarding layer (type aliases + function delegation) for examples and
+  external consumers, with the full surface compile-locked in
+  `test/apifwd`. `api/discovery` and `api/evolution` (incl. genome and
+  mutation) were removed outright once their examples migrated.
+- **PostgreSQL events retention** (`storage.events_retention_days`,
+  default 0 = keep forever): a periodic maintenance worker deletes event rows
+  older than the configured retention, bounding the events table (PG mode
+  has no archive and no compaction — the table IS the durable history).
+- **Giant-file split** (M-C2): `cmd/ares/agent.go` (3021 lines) is now a
+  528-line routing shell over `agent_routes_{agents,chaos,tasks,tools}.go`
+  and `agent_kernel.go`; `serve.go` (2868) extracted seven assembly-stage
+  functions plus the arena and chaos domains. All 87 agent-side top-level
+  functions verified moved with zero loss.
+
 ### Changed
 
 - **Experience distillation now defaults to ON** (P0-3): `memory.enable_distillation`
@@ -103,8 +147,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **G1 reachability gate whitelist matches full package paths** instead of bare
   substrings, so an entry can no longer silently exempt unrelated packages.
 
+- **Promote-gate defaults hardened** (M-G): an ARMED G3 eval gate
+  (`eval_suite` set) with missing registry/LLM client now fails bootstrap
+  (was a silent pass-through); a built gate is always runtime-strict (a
+  runtime infrastructure loss rejects candidates). `eval_strict` now governs
+  ONLY whether a missing suite is fatal, not the strictness of a built gate.
+  The arena regression gate auto-arms by default (see above). Operators who
+  relied on the old permissive defaults will see bootstrap failures — the
+  escape hatches (`eval_strict: false`, `regression_enabled: false`) are
+  Warn-logged.
+- **Introspect read side closed by default** (M-S1): the HTTP console binds
+  `127.0.0.1` (was `localhost`, which a hosts remap could widen); a new
+  `introspect.token` config adds a constant-time bearer credential for
+  non-loopback read access that composes with (never weakens) JWT/API-key
+  auth; startup logs print the full exposure posture (bind / wildcard /
+  auth / token / per-route auth levels).
+- **Control-plane routing is registry-driven** (M-S2): the handwritten
+  dispatch switch in `cmd/ares/agent.go` is now an 18-entry endpoint
+  registry (`routeSpec`: method, path pattern, explicit auth level,
+  availability gate) with a single dispatcher — golden-diff-locked against
+  the old switch, handler bodies moved untouched.
+- **sub.New signature** (agents/sub dead-code burial): the handler and
+  heartbeat-monitor parameters were removed (zero call sites / always-nil in
+  production); `SubAgentConfig.EnableTools`, `WithActionLog`, `MessageHandler`,
+  and the heartbeatSender were deleted with `TODO(tech-debt)` markers.
+
+### Security
+
+- **Nine critical defect fixes from the deep code review** (each with a
+  red→green regression test): fabric `ReplaceNode` dropping newly declared
+  dependency edges (could schedule before prerequisites); nil-checkpoint
+  `Yield` erasing the saved checkpoint envelope; empty-capability tasks
+  vanishing on cross-restart restore; PG `Subscribe` permanently starving
+  subscribers past a 100-event window (keyset pagination fix); the knowledge
+  PG `Stream` double-error deadlock; MCP client connections bound to the
+  caller context (a returning `skill_activate` killed the stdio children);
+  per-disconnect SSE goroutine leaks; YAML `llm.temperature`/`max_tokens`
+  validated then silently discarded; concurrent `Stop` double-close panic.
+- **SSRF hardening**: the block list gained RFC 6598 CGNAT (100.64/10 —
+  Kubernetes pod CIDRs), IPv4-mapped IPv6 normalization, dial-time
+  re-validation of the resolved IP (DNS-rebinding TOCTOU), and proxy
+  inheritance disabled so `http_proxy` cannot bypass the dial check.
+- **Tenant isolation**: the knowledge tools no longer take `tenant_id` from
+  LLM tool arguments (server-side constant); `content_hash` dedup became
+  per-tenant; PG vector search rejects empty tenant IDs.
+- **Code-runner sandbox honestly documented**: the Python validator is a
+  mistake-guard, not a security boundary — enabling it equals host RCE; it
+  stays disabled by default and the docs now say so.
+
 ### Known limitations
 
+- **0.3.1 hardening update (2026-09-10)**: the deep-review batch (~230
+  fixes), M-S control-plane hardening, and M-G gate defaults landed after
+  the limitations below were written; entries below are preserved for
+  history but several have since moved — most notably the promote-gate
+  chain is now fail-closed by construction (armed gates never silently
+  degrade), and the introspect read side is loopback-bound with optional
+  token auth.
 - **Unified orchestration covers only `ares serve`** (release-readiness K6):
   the `sdk` runtime and the `arena` / non-serve peer paths do not build a
   System Runtime orchestrator; their background loops keep the bootstrap
@@ -211,6 +310,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rolls back every created task even when individual deletes fail, and joins the
   create error with all rollback failures so each stays reachable through
   `errors.Is`/`errors.As`.
+
+### Fixed (deep code review 2026-09)
+
+- **Deep-review batch (HIGH/MEDIUM highlights, ~200 fixes total)**: PG event
+  append uses an advisory lock so concurrent same-stream appends no longer
+  drop batches; `flushAppends` ordering-barrier timeouts no longer poison
+  every later event with a 30s stall; `MutableDAG.Steps()/StepIndex()`
+  return isolated copies (data race); the reaper no longer orphans READY
+  tasks whose COMPLETED predecessor it harvested; `RestartAgent` restart
+  budgets are reserved atomically (concurrent bypass); write-buffer poison
+  pills (unsupported tables) are dead-lettered instead of looping forever;
+  LLM cost attribution uses the real input/output token split instead of a
+  50/50 guess; `MetricsTracer` generates per-call trace IDs so the cost
+  dashboard populates; `llm.Generate` streams carry the provider usage
+  counts; the regex tool clamps result counts and skips empty matches (OOM);
+  the PDF tool resolves symlinks once for both validation and I/O (TOCTOU);
+  streaming LLM calls are no longer cut off by a 30s request timeout;
+  Anthropic parallel tool results merge into a single user message (HTTP
+  400); `BestMatch("")` no longer matches every record; and the eval
+  gate-chain latency penalty is on by default again (a regression that
+  silently disabled it in every deployment was caught and reverted).
+
+### Removed (breaking)
+
+- **`api/discovery` and `api/evolution` packages deleted** (incl. genome and
+  mutation subpackages): their canonical definitions live in
+  `internal/discoveryapi` and `internal/evoapi`; the six consuming examples
+  migrated. The remaining seven api/ packages (core, embedding, experience,
+  knowledge, tools, mcp, service/llm) remain as deprecated forwarding layers
+  for external consumers until 0.4.x.
+- **agents/sub dead surface**: `MessageHandler`/`NewMessageHandler`,
+  `WithActionLog`, the heartbeat sender, `SubAgentConfig.EnableTools`, and
+  the `SubAgentCognition` parity adapter — all had zero production call
+  sites; `internal/agents/actionlog` went with them.
+- **Runtime plugin capability dispatch** (M-C1.3): the CapCheckpoint /
+  CapMemory / CapEvolution discovery branches and their plugin types
+  (CheckpointPlugin, MemoryPlugin, EvolutionPlugin, router_memory,
+  router_evolution, outcome recorder, state snapshots) were removed — each
+  domain has its own wiring since M4/M5 (fabric CheckpointEnvelope,
+  retriever_wiring, direct ares_evolution consumption). The LoopPlugin
+  round clock stays.
+- **distilled_memories schema ghost**: repository, `distilled_memory_search`
+  tool, the `db create-table`/`db check-rls` subcommands, and the DDL family
+  from migrate_storage.go — the table saw zero reads/writes in production
+  (the `user_profile` tool keeps its memory-manager path).
+- **`internal/runtime/arena.go` (ArenaPlugin)**: plugin-bus fault-injection
+  demo with zero production consumers; the live `internal/runtime/arena/`
+  RegressionTester family is unaffected.
+- **CostUSD plumbing**: `StrategySample.CostUSD` and the `cost_usd`
+  evidence payload key — the token dimension carries the cost signal.
 
 ## [0.3.0] - 2026-08-25
 

@@ -13,13 +13,18 @@ type VectorStore interface {
 	// Args:
 	//   ctx - timeout and cancellation context.
 	//   table - the collection/table to search in.
+	//   tenantID - the tenant scope to search within; REQUIRED and non-empty.
+	//     The production table (knowledge_chunks_1024) is tenant-scoped
+	//     (tenant_id NOT NULL), so an unscoped search would leak rows across
+	//     tenants. Empty is rejected (fail closed), matching the pgvector
+	//     compat layer.
 	//   embedding - the query vector.
 	//   limit - max number of results.
 	//
 	// Returns:
 	//   results - ordered by similarity (highest first).
 	//   err - ErrRecordNotFound if no results, or backend error.
-	Search(ctx context.Context, table string, embedding []float64, limit int) ([]*SearchResult, error)
+	Search(ctx context.Context, table, tenantID string, embedding []float64, limit int) ([]*SearchResult, error)
 
 	// AddEmbedding stores a vector with associated metadata.
 	//

@@ -13,11 +13,6 @@ type Lease struct {
 	Epoch uint64
 }
 
-// NewLease creates a lease for owner with a ttl duration.
-func NewLease(owner string, ttl time.Duration, epoch uint64) Lease {
-	return Lease{Owner: owner, ExpiresAt: time.Now().Add(ttl), Epoch: epoch}
-}
-
 // IsExpired reports whether the lease has passed its expiry.
 func (l Lease) IsExpired(now time.Time) bool {
 	return !l.ExpiresAt.After(now)

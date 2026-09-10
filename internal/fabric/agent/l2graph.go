@@ -116,26 +116,38 @@ func (g *L2Graph) PlanDepth() int {
 	return depth
 }
 
-// Predecessor returns the FIRST direct predecessor node ID of the given
-// node, or "" when the node has no predecessor or is not in the graph. The
-// planner uses this to walk the dependency path when assembling LLM context
-// from predecessor outputs.
-//
-// KNOWN LIMITATION: only DependsOn[0] is returned. A node with multiple
-// dependencies contributes ONLY its first one to the planner's context walk
-// (planner_cognition.go), so sibling dependency outputs are silently absent
-// from the LLM's history. Accepted while plans are mostly linear chains.
-// TODO(tech-debt): walk ALL DependsOn edges (BFS, newest-per-level) so a
-// diamond dependency's outputs are not dropped.
-func (g *L2Graph) Predecessor(nodeID string) string {
+// Ancestors returns every ancestor of nodeID reachable through DependsOn
+// edges, nearest-first: BFS from the node, each level expanded in DependsOn
+// declaration order, with a seen-set so diamond dependencies contribute each
+// node exactly once. The root node is NOT special-cased — callers filter it.
+// Used by the planner's context walk so a node's sibling dependencies are
+// all present in the LLM history, not just the first edge.
+func (g *L2Graph) Ancestors(nodeID string) []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	steps := g.dag.StepIndex()
-	s, ok := steps[nodeID]
-	if !ok || len(s.DependsOn) == 0 {
-		return ""
+	seen := map[string]struct{}{nodeID: {}}
+	var out []string
+	queue := []string{nodeID}
+	for len(queue) > 0 {
+		current := queue
+		queue = nil
+		for _, id := range current {
+			s, ok := steps[id]
+			if !ok {
+				continue
+			}
+			for _, dep := range s.DependsOn {
+				if _, dup := seen[dep]; dup {
+					continue
+				}
+				seen[dep] = struct{}{}
+				out = append(out, dep)
+				queue = append(queue, dep)
+			}
+		}
 	}
-	return s.DependsOn[0]
+	return out
 }
 
 // HasNode reports whether the given node ID exists in the L2 graph. The

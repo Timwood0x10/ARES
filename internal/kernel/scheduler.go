@@ -1580,7 +1580,11 @@ func (s *Scheduler) Snapshot() SchedulerSnapshot {
 		AgentFabricWired: s.agents != nil,
 	}
 	if snap.MaxConcurrent <= 0 {
-		snap.MaxConcurrent = execN // mirror drain's default: executor count
+		// Mirror drainLimit's auto mode exactly (registry MAX fabric
+		// population) — the snapshot must report the parallelism the drain
+		// actually runs at, not the registry count alone (peer mode fans
+		// out to fabric candidates the registry doesn't know about).
+		snap.MaxConcurrent = max(execN, s.fabricCandidateCount())
 	}
 	if snap.MaxConcurrent <= 0 {
 		snap.MaxConcurrent = 1

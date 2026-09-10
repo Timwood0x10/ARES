@@ -4,6 +4,7 @@ package services
 
 import (
 	"context"
+	stderrors "errors"
 	"math"
 	"strings"
 	"sync"
@@ -114,7 +115,7 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 	// Check if precision mode should be used
 	if s.isPrecisionMode(query) {
 		log.Info("Using precision mode", "query", query)
-		return s.searchPrecision(ctx, tenantID, query), nil
+		return s.searchPrecision(ctx, tenantID, query)
 	}
 
 	// Generate embedding using unified pipeline when available.
@@ -195,40 +196,49 @@ func (s *SimpleRetrievalService) isPrecisionMode(query string) bool {
 }
 
 // searchPrecision executes the precision retrieval pipeline for SimpleRetrievalService.
-func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, query string) []*SimpleSearchResult {
+// The exact→keyword→vector chain degrades gracefully per stage, but a total
+// failure (every stage errored AND the vector fallback produced nothing) is
+// propagated as an error: an outage must not be indistinguishable from empty
+// knowledge (DEEP_CODE_REVIEW_2026 3.7#8).
+func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	log.Debug("Executing precision search pipeline", "query", query)
+
+	var stageErrs []error
 
 	// 1. Exact Match (highest priority)
 	exact, err := s.searchExact(ctx, tenantID, query)
 	if err != nil {
 		log.Error("Failed to execute exact match search, falling back to keyword", "error", err)
+		stageErrs = append(stageErrs, err)
 		exact = nil
 	}
 	if len(exact) > 0 {
 		log.Debug("Precision search: exact match found", "count", len(exact))
-		return exact
+		return exact, nil
 	}
 
 	// 2. Keyword Search (second priority)
 	keyword, err := s.searchKeyword(ctx, tenantID, query)
 	if err != nil {
 		log.Error("Failed to execute keyword search, falling back to vector", "error", err)
+		stageErrs = append(stageErrs, err)
 		keyword = nil
 	}
 	if len(keyword) > 0 {
 		log.Debug("Precision search: keyword match found", "count", len(keyword))
-		return keyword
+		return keyword, nil
 	}
 
 	// 3. Vector Search (fallback)
 	vector, err := s.searchVector(ctx, tenantID, query)
 	if err != nil {
 		log.Error("Failed to execute vector search", "error", err)
-		return []*SimpleSearchResult{}
+		stageErrs = append(stageErrs, err)
+		return nil, errors.Wrap(stderrors.Join(stageErrs...), "precision search: all stages failed")
 	}
 	log.Debug("Precision search: using vector fallback", "count", len(vector))
 
-	return vector
+	return vector, nil
 }
 
 // searchExact performs exact substring matching.

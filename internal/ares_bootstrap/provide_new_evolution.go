@@ -572,6 +572,7 @@ func BuildKnowledgeRuntime(
 			Name:            "knowledge-vectors",
 			Namespace:       fitnessSourceKnowledge,
 			Collection:      tableKnowledgeChunks,
+			TenantID:        defaultDistillTenant,
 			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
 			VectorDimension: 1024,
 			Embedder:        emb,

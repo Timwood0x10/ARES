@@ -1,4 +1,4 @@
-package ares_integration
+package integration
 
 import (
 	"context"

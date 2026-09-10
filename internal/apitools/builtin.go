@@ -81,7 +81,7 @@ func RegisterBuiltinTools(r *Registry, opts ...BuiltinToolsOption) error {
 		}
 	}
 	// Then register the self-contained legacy tools.
-	var fileOpts []fileToolOption
+	var fileOpts []FileToolOption
 	if cfg.fileAllowedDir != "" {
 		fileOpts = append(fileOpts, WithAllowedDir(cfg.fileAllowedDir))
 	}
@@ -595,14 +595,14 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 
 // ── File Tools ───────────────────────────────────────────
 
-// fileToolOption configures a fileTool at construction time.
-type fileToolOption func(*fileTool)
+// FileToolOption configures a fileTool at construction time.
+type FileToolOption func(*fileTool)
 
 // WithAllowedDir restricts file operations to paths under the given directory.
 // When set, any path that resolves outside the allowed directory is rejected.
 // This mitigates path-traversal attacks when the tool is exposed to untrusted
 // callers. When unset, the tool behaves as before (no sandbox).
-func WithAllowedDir(dir string) fileToolOption {
+func WithAllowedDir(dir string) FileToolOption {
 	return func(t *fileTool) {
 		t.allowedDir = dir
 	}
@@ -610,7 +610,7 @@ func WithAllowedDir(dir string) fileToolOption {
 
 // newFileTool creates a file tool with default options (no sandbox).
 // Pass WithAllowedDir(...) to restrict file operations to a directory.
-func newFileTool(opts ...fileToolOption) *fileTool {
+func newFileTool(opts ...FileToolOption) *fileTool {
 	t := &fileTool{}
 	for _, opt := range opts {
 		opt(t)

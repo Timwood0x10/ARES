@@ -840,3 +840,18 @@ func TestMemoryManager_NoEventStore(t *testing.T) {
 	err = mgr.AddMessage(ctx, sessionID, "user", "Hello")
 	require.NoError(t, err)
 }
+
+// TestMemoryManager_SearchSimilarTasksNegativeLimit pins the M2 fix: a
+// negative limit previously panicked on make(_, 0, limit) (and read as
+// "no limit" on the PG backend); it must be rejected with an error instead.
+func TestMemoryManager_SearchSimilarTasksNegativeLimit(t *testing.T) {
+	ctx := context.Background()
+	config := DefaultMemoryConfig()
+	mgr, err := NewMemoryManagerWithDistiller(config, &testEmbedder{}, &testExpRepo{})
+	require.NoError(t, err)
+	defer func() { _ = mgr.Stop(ctx) }()
+
+	_, err = mgr.SearchSimilarTasks(ctx, "anything", -1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "limit must not be negative")
+}

@@ -1,7 +1,3 @@
-// Package knowledge is the DEPRECATED public alias of
-// internal/knowledgeapi (M5). New code MUST import internal/knowledgeapi;
-// this package exists only for external consumers and is scheduled for
-// removal.
 package knowledge
 
 import (

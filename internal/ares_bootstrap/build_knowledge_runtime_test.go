@@ -51,7 +51,7 @@ func TestBuildKnowledgeRuntime_WithStoreDeps(t *testing.T) {
 // testVectorStore is a minimal in-memory storage.VectorStore for wiring tests.
 type testVectorStore struct{}
 
-func (s *testVectorStore) Search(context.Context, string, []float64, int) ([]*storage.SearchResult, error) {
+func (s *testVectorStore) Search(context.Context, string, string, []float64, int) ([]*storage.SearchResult, error) {
 	return nil, nil
 }
 func (s *testVectorStore) AddEmbedding(context.Context, string, string, []float64, map[string]any) error {

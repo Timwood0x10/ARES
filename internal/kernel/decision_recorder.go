@@ -87,6 +87,12 @@ func (r *DecisionRecorder) Snapshot() []ScheduleDecision {
 	defer r.mu.Unlock()
 	out := make([]ScheduleDecision, len(r.decisions))
 	copy(out, r.decisions)
+	// Deep-copy the Candidates slices: the struct copy above shares each
+	// backing array with the ring, and a re-sliced ring's append could
+	// otherwise write through to a snapshot's view.
+	for i := range out {
+		out[i].Candidates = append([]CandidateScore(nil), r.decisions[i].Candidates...)
+	}
 	// Newest first (reverse in place).
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]

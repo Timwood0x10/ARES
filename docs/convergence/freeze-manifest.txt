@@ -29,9 +29,7 @@ apitools
 ares_bootstrap
 ares_callbacks
 ares_config
-ares_ctxutil
 ares_events
-ares_integration
 ares_ratelimit
 ares_security
 ares_shutdown

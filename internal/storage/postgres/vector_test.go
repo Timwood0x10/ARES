@@ -63,7 +63,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		results, err := searcher.Search(context.Background(), "embeddings", embedding, 10)
+		results, err := searcher.Search(context.Background(), "embeddings", "default", embedding, 10)
 		if err != nil {
 			t.Logf("Expected error without database: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 
 		embedding := []float64{}
 
-		_, err = searcher.Search(context.Background(), "embeddings", embedding, 10)
+		_, err = searcher.Search(context.Background(), "embeddings", "default", embedding, 10)
 		if err != nil {
 			t.Logf("Expected error with empty embedding: %v", err)
 		}
@@ -109,7 +109,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		_, err = searcher.Search(context.Background(), "embeddings", embedding, 0)
+		_, err = searcher.Search(context.Background(), "embeddings", "default", embedding, 0)
 		if err != nil {
 			t.Logf("Expected error with zero limit: %v", err)
 		}
@@ -132,7 +132,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		_, err = searcher.Search(context.Background(), "embeddings", embedding, -10)
+		_, err = searcher.Search(context.Background(), "embeddings", "default", embedding, -10)
 		if err != nil {
 			t.Logf("Expected error with negative limit: %v", err)
 		}
@@ -376,7 +376,7 @@ func TestVectorSearcher_Integration(t *testing.T) {
 			searchEmbedding[i] = 0.15
 		}
 
-		results, err := searcher.Search(context.Background(), "integration_test", searchEmbedding, 5)
+		results, err := searcher.Search(context.Background(), "integration_test", "default", searchEmbedding, 5)
 		if err != nil {
 			t.Logf("Step 3 - Search error: %v", err)
 		}

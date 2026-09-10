@@ -35,7 +35,7 @@ func (*Noop) Name() string { return "builtin.noop" }
 
 // Description returns a human-readable summary.
 func (*Noop) Description() string {
-	return "Noop placeholder tool that echoes its args; for骨架 wiring only."
+	return "Noop placeholder tool that echoes its args; for skeleton wiring only."
 }
 
 // Compile-time interface assertion.

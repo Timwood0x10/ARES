@@ -43,8 +43,13 @@ func NewStrategyRepository(db postgres.DBTX) *StrategyRepository {
 	return &StrategyRepository{db: db}
 }
 
-// GetActive returns the currently active strategy.
-// Returns nil if no strategy is marked as active.
+// GetActive returns the currently active strategy, or nil when no strategy
+// is marked active.
+//
+// Single-tenant by design: evolution_strategies has no tenant_id column —
+// the GA population is process-global, matching the evolution system's
+// single-trust-root scope. Multi-tenant isolation here would require a
+// schema migration and is out of scope until evolution itself is scoped.
 //
 // Args:
 //

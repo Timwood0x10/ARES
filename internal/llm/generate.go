@@ -106,7 +106,7 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 	}
 
 	var result string
-	var err error
+	var usage llmcore.TokenUsage
 
 	// Apply rate limiter before making the API call.
 	if c.limiter != nil {
@@ -123,23 +123,32 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 	}
 
 	// Run the provider call under the retry policy and circuit breaker:
-	// 429/5xx/transport errors are retried with exponential backoff, and the
-	// breaker fails fast while a provider is degraded.
-	result, err = withRetry(c, ctx, func() (string, error) {
+	// 429/5xx/transport errors are retried with exponential backoff, and
+	// the breaker fails fast while a provider is degraded.
+	type genResult struct {
+		content string
+		usage   llmcore.TokenUsage
+	}
+	gr, err := withRetry(c, ctx, func() (genResult, error) {
 		switch ProviderType(c.config.Provider) {
 		case ProviderOpenAI, ProviderOpenRouter:
-			return c.generateOpenRouter(ctx, prompt, o)
+			content, usage, perr := c.generateOpenRouter(ctx, prompt, o)
+			return genResult{content, usage}, perr
 		case ProviderOllama:
-			return c.generateOllama(ctx, prompt, o)
+			content, usage, perr := c.generateOllama(ctx, prompt, o)
+			return genResult{content, usage}, perr
 		case ProviderAnthropic:
-			return c.generateAnthropic(ctx, prompt, o)
+			content, usage, perr := c.generateAnthropic(ctx, prompt, o)
+			return genResult{content, usage}, perr
 		default:
-			return "", fmt.Errorf("unsupported provider: %s", c.config.Provider)
+			return genResult{}, fmt.Errorf("unsupported provider: %s", c.config.Provider)
 		}
 	})
+	result = gr.content
+	usage = gr.usage
 
 	duration := time.Since(start)
-	c.recordLLMCall(ctx, prompt, result, llmcore.TokenUsage{}, start, err)
+	c.recordLLMCall(ctx, prompt, result, usage, start, err)
 
 	if err != nil {
 		c.emitCallback(&ares_callbacks.Context{
@@ -163,9 +172,9 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 }
 
 // generateOpenRouter generates text using OpenRouter API.
-func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o requestOverrides) (string, error) {
+func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o requestOverrides) (string, llmcore.TokenUsage, error) {
 	if c.config.APIKey == "" {
-		return "", errors.New("API key is required for OpenRouter")
+		return "", llmcore.TokenUsage{}, errors.New("API key is required for OpenRouter")
 	}
 
 	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
@@ -187,12 +196,12 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", errors.Wrap(err, "marshal request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "marshal request")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.config.BaseURL+"/chat/completions", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return "", errors.Wrap(err, "create request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "create request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -201,7 +210,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", errors.Wrap(err, "send request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "send request")
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -214,9 +223,11 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 		if readErr != nil {
 			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
-		return "", &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("openrouter error (status %d): %s", resp.StatusCode, string(body))}
+		return "", llmcore.TokenUsage{}, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("openrouter error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
+	// Decode the provider-reported token split so Generate calls are metered
+	// like Chat calls (previously every Generate run recorded zero usage).
 	var response struct {
 		Choices []struct {
 			Message struct {
@@ -224,14 +235,18 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 				Reasoning string `json:"reasoning"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", errors.Wrap(err, "decode response")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "decode response")
 	}
 
 	if len(response.Choices) == 0 {
-		return "", errors.New("no choices in response")
+		return "", llmcore.TokenUsage{}, errors.New("no choices in response")
 	}
 
 	result := response.Choices[0].Message.Content
@@ -239,11 +254,16 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 		result = response.Choices[0].Message.Reasoning
 	}
 
-	return result, nil
+	usage := llmcore.TokenUsage{
+		PromptTokens:     response.Usage.PromptTokens,
+		CompletionTokens: response.Usage.CompletionTokens,
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return result, usage, nil
 }
 
 // generateOllama generates text using Ollama API.
-func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOverrides) (string, error) {
+func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOverrides) (string, llmcore.TokenUsage, error) {
 	requestBody := map[string]interface{}{
 		"model":  c.config.Model,
 		"prompt": prompt,
@@ -257,7 +277,7 @@ func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOve
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", errors.Wrap(err, "marshal request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "marshal request")
 	}
 
 	baseURL := c.config.BaseURL
@@ -267,14 +287,14 @@ func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOve
 
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/generate", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return "", errors.Wrap(err, "create request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "create request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", errors.Wrap(err, "send request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "send request")
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -287,28 +307,38 @@ func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOve
 		if readErr != nil {
 			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
-		return "", &HTTPError{
+		return "", llmcore.TokenUsage{}, &HTTPError{
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("unexpected status code: %d, body: %s", resp.StatusCode, string(body)),
 		}
 	}
 
+	// Ollama's native token accounting: prompt_eval_count (input) and
+	// eval_count (output), mirroring the Chat path so Generate calls are
+	// metered too.
 	var response struct {
-		Response string `json:"response"`
+		Response        string `json:"response"`
+		PromptEvalCount int    `json:"prompt_eval_count"`
+		EvalCount       int    `json:"eval_count"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", errors.Wrap(err, "decode response")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "decode response")
 	}
 
-	return response.Response, nil
+	usage := llmcore.TokenUsage{
+		PromptTokens:     response.PromptEvalCount,
+		CompletionTokens: response.EvalCount,
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return response.Response, usage, nil
 }
 
 // generateAnthropic generates text using Anthropic API.
 // Anthropic uses a different API format: /v1/messages endpoint with required max_tokens.
-func (c *Client) generateAnthropic(ctx context.Context, prompt string, o requestOverrides) (string, error) {
+func (c *Client) generateAnthropic(ctx context.Context, prompt string, o requestOverrides) (string, llmcore.TokenUsage, error) {
 	if c.config.APIKey == "" {
-		return "", errors.New("API key is required for Anthropic")
+		return "", llmcore.TokenUsage{}, errors.New("API key is required for Anthropic")
 	}
 
 	anthropicMaxTokens := o.applyMaxTokens(c.config.MaxTokens)
@@ -334,12 +364,12 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 
 	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", errors.Wrap(err, "marshal anthropic request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "marshal anthropic request")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.config.BaseURL+"/messages", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return "", errors.Wrap(err, "create anthropic request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "create anthropic request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -348,7 +378,7 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", errors.Wrap(err, "send anthropic request")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "send anthropic request")
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -361,7 +391,7 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 		if readErr != nil {
 			log.Warn("llm: failed to read anthropic error response body", "error", readErr)
 		}
-		return "", &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic error (status %d): %s", resp.StatusCode, string(body))}
+		return "", llmcore.TokenUsage{}, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
 	var response struct {
@@ -369,10 +399,14 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", errors.Wrap(err, "decode anthropic response")
+		return "", llmcore.TokenUsage{}, errors.Wrap(err, "decode anthropic response")
 	}
 
 	var result strings.Builder
@@ -382,5 +416,10 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 		}
 	}
 
-	return result.String(), nil
+	usage := llmcore.TokenUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CompletionTokens: response.Usage.OutputTokens,
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return result.String(), usage, nil
 }

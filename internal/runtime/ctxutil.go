@@ -1,5 +1,6 @@
-// Package ctxutil provides context utilities for tracing and lifecycle management.
-package ares_ctxutil
+// detached-context utilities for tracing and lifecycle management, formerly
+// the standalone internal/ares_ctxutil package (consolidation D3).
+package runtime
 
 import (
 	"context"

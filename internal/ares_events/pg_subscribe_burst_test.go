@@ -38,7 +38,11 @@ func TestPostgresEventStore_SubscribeBurstDeliversAll(t *testing.T) {
 	const total = 250
 
 	// Timestamps: groups of 5 share a value → ties straddle the LIMIT cut.
-	base := time.Now().Add(-time.Hour)
+	// NOTE: base must be at/after the subscription start — the poll query is
+	// `created_at >= cursor` and the cursor starts at Subscribe time, so
+	// back-dated events (an earlier version of this test used now-1h) are
+	// legitimately invisible to the subscriber by design.
+	base := time.Now()
 	events := make([]*Event, 0, total)
 	for i := 0; i < total; i++ {
 		events = append(events, &Event{

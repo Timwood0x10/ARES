@@ -1,5 +1,5 @@
 // package integration provides end-to-end integration tests with real PostgreSQL.
-package ares_integration
+package integration
 
 import (
 	"context"
@@ -344,7 +344,7 @@ func TestVectorSearcherAddAndDelete(t *testing.T) {
 	require.NoError(t, searcher.DeleteEmbedding(ctx, collectionName, "doc-1"))
 
 	// Verify deletion by searching - should only find doc-2.
-	results, err := searcher.Search(ctx, collectionName, embedding2, 10)
+	results, err := searcher.Search(ctx, collectionName, "default", embedding2, 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 	assert.Equal(t, "doc-2", results[0].ID)
@@ -383,11 +383,11 @@ func TestVectorSearcherSearchWithLimit(t *testing.T) {
 	// Search with limit 3.
 	queryEmbedding := make([]float64, 1536)
 	queryEmbedding[0] = 1.0
-	results, err := searcher.Search(ctx, collectionName, queryEmbedding, 3)
+	results, err := searcher.Search(ctx, collectionName, "default", queryEmbedding, 3)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(results), 3, "expected at most 3 results")
 
 	// Invalid limit should fail.
-	_, err = searcher.Search(ctx, collectionName, queryEmbedding, 0)
+	_, err = searcher.Search(ctx, collectionName, "default", queryEmbedding, 0)
 	require.Error(t, err)
 }

@@ -1,5 +1,5 @@
 // package integration provides end-to-end integration tests with real PostgreSQL.
-package ares_integration
+package integration
 
 import (
 	"context"

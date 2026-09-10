@@ -696,7 +696,7 @@ func LoadFromEnv(cfg *Config) error {
 	}
 	// Security environment variables. JWTSecret prefers ARES_JWT_SECRET and
 	// must not be stored in committed YAML; ARES_AUTH_ENABLED toggles the
-	// middleware (any non-empty value enables).
+	// middleware (enables unless the value is "0" or "false").
 	if v := os.Getenv("ARES_JWT_SECRET"); v != "" {
 		cfg.Security.JWTSecret = v
 	}

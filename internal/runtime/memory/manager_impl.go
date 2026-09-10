@@ -733,6 +733,12 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 	if m.pipeline == nil || m.expRepo == nil {
 		return nil, errors.New("distillation engine not initialized, use NewMemoryManagerWithDistiller")
 	}
+	// Reject a negative limit: it would panic on make(_, 0, limit) below and
+	// the backing repositories treat it as either "no limit" (Postgres LIMIT
+	// < 0) or "unbounded scan" (in-memory loop guard needs limit > 0).
+	if limit < 0 {
+		return nil, errors.New("limit must not be negative")
+	}
 
 	log.Info("[Memory Search] Searching for similar tasks",
 		"query", truncpkg.WithEllipsis(query, 50),

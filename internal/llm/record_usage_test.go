@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -65,4 +67,100 @@ func TestRecordLLMCallCarriesUsageSplit(t *testing.T) {
 	if tracer.call.TokensUsed != 15 {
 		t.Fatalf("derived TokensUsed = %d, want 15", tracer.call.TokensUsed)
 	}
+}
+
+// TestGenerateRecordsProviderUsage pins the Generate-path token accounting
+// (backlog M7): the provider-reported usage split must be decoded on the
+// plain Generate path (all three providers) and survive into the tracer's
+// LLMCall. Previously only Chat decoded usage — every Generate run recorded
+// zero tokens, so token budgets and cost dashboards saw nothing.
+func TestGenerateRecordsProviderUsage(t *testing.T) {
+	t.Run("openai_provider_usage", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":12,"completion_tokens":7}}`))
+		}))
+		defer server.Close()
+
+		client, err := NewClient(&Config{
+			Provider: "openai",
+			BaseURL:  server.URL,
+			Model:    "test-model",
+			APIKey:   "test-key",
+			Timeout:  5,
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		tracer := &captureTracer{}
+		client.SetTracer(tracer)
+
+		if _, err := client.Generate(context.Background(), "hello"); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if tracer.call == nil {
+			t.Fatal("tracer must receive the call")
+		}
+		if tracer.call.InputTokens != 12 || tracer.call.OutputTokens != 7 {
+			t.Fatalf("usage split lost: input=%d output=%d, want 12/7", tracer.call.InputTokens, tracer.call.OutputTokens)
+		}
+		if tracer.call.TokensUsed != 19 {
+			t.Fatalf("TokensUsed = %d, want 19", tracer.call.TokensUsed)
+		}
+	})
+
+	t.Run("ollama_provider_usage", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"response":"hi","prompt_eval_count":30,"eval_count":9}`))
+		}))
+		defer server.Close()
+
+		client, err := NewClient(&Config{
+			Provider: "ollama",
+			BaseURL:  server.URL,
+			Model:    "test-model",
+			Timeout:  5,
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		tracer := &captureTracer{}
+		client.SetTracer(tracer)
+
+		if _, err := client.Generate(context.Background(), "hello"); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if tracer.call.InputTokens != 30 || tracer.call.OutputTokens != 9 {
+			t.Fatalf("usage split lost: input=%d output=%d, want 30/9", tracer.call.InputTokens, tracer.call.OutputTokens)
+		}
+	})
+
+	t.Run("anthropic_provider_usage", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":8,"output_tokens":3}}`))
+		}))
+		defer server.Close()
+
+		client, err := NewClient(&Config{
+			Provider: "anthropic",
+			BaseURL:  server.URL,
+			Model:    "test-model",
+			APIKey:   "test-key",
+			Timeout:  5,
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		tracer := &captureTracer{}
+		client.SetTracer(tracer)
+
+		if _, err := client.Generate(context.Background(), "hello"); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if tracer.call.InputTokens != 8 || tracer.call.OutputTokens != 3 {
+			t.Fatalf("usage split lost: input=%d output=%d, want 8/3", tracer.call.InputTokens, tracer.call.OutputTokens)
+		}
+	})
 }

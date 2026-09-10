@@ -1,6 +1,6 @@
 // package integration provides end-to-end integration tests for event-driven
 // distillation: emitting ares_events, subscribing, filtering, and ordering.
-package ares_integration
+package integration
 
 import (
 	"context"

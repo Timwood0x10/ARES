@@ -1,5 +1,5 @@
 // package integration provides end-to-end integration tests for the ares_runtime layer.
-package ares_integration
+package integration
 
 import (
 	"context"

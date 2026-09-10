@@ -45,13 +45,15 @@ type fabricAgentExecutor struct {
 func (e *fabricAgentExecutor) ID() string { return e.id }
 
 // Type returns the fabric agent's primary declared capability (the first of
-// the declared set; the full set is used for candidate scoring).
+// the declared set; the full set is used for candidate scoring). Read via
+// CapabilitiesOf (copy under the fabric lock) — Get returns the live agent
+// pointer and a lock-free field read would race state transitions.
 func (e *fabricAgentExecutor) Type() models.AgentType {
-	a, err := e.agents.Get(e.id)
-	if err != nil || len(a.Capabilities) == 0 {
+	caps, err := e.agents.CapabilitiesOf(e.id)
+	if err != nil || len(caps) == 0 {
 		return models.AgentTypeTop
 	}
-	return models.AgentType(a.Capabilities[0])
+	return models.AgentType(caps[0])
 }
 
 // ExecuteStep runs one quantum through the fabric agent's Cognition.

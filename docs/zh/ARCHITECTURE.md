@@ -60,7 +60,6 @@ graph TB
         CALLBACKS["internal/ares_callbacks"]
         EVAL["internal/ares_eval"]
         CONFIG["internal/ares_config"]
-        CTXUTIL["internal/ares_ctxutil"]
         TRUNCATE["internal/truncate"]
         CMDUTIL["internal/cmdutil"]
         PROTOCOL["internal/ares_protocol/ahp<br/>Heartbeat / Queue / DLQ / Codec"]
@@ -169,7 +168,6 @@ graph TB
             LOGGER["logger<br/>Debug / Info / Warn / Error"]
             CORE["core<br/>errors/ / models/"]
             TRUNCATE["truncate"]
-            CTXUTIL["ares_ctxutil"]
             CONFIG["ares_config"]
             OBSERV["ares_observability"]
             SHUTDOWN["ares_shutdown<br/>Manager / Phase / Signal"]
@@ -310,13 +308,13 @@ graph TB
 | `internal/ares_protocol/ahp` | 协议 | AHP 协议：Heartbeat/Queue/DLQ/Codec |
 | `internal/evidence` | 数据 | Evidence 数据结构与存储 |
 | `internal/ares_callbacks` | 运行时 | 事件回调机制 |
-| `internal/ares_ctxutil` | 工具 | Context 工具函数 |
+| ~~`internal/ares_ctxutil`~~ | 工具 | 已并入 `internal/runtime`（D3，2026-09-10） |
 | `internal/truncate` | 工具 | 内容截断公用逻辑 |
 | `internal/plugins` | 运行时 | 插件（Resurrection） |
 | `internal/ares_observability` | 可观测 | 可观测性基础设施 |
 | `internal/ares_eval` | 评估 | Agent 评估框架 |
 | `internal/ares_flight` | 可观测 | 飞行记录器 |
-| `internal/ares_integration` | 测试 | 集成测试 |
+| ~~`internal/ares_integration`~~ | 测试 | 已迁 `tests/integration/`（D1，2026-09-10） |
 | `internal/llm` | LLM | LLM 客户端、Provider、Failover、Output 解析 |
 | `internal/llmservice` | LLM | LLM 服务封装 |
 | `internal/memoryservice` | 记忆 | 记忆服务封装 |

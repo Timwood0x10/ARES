@@ -9,7 +9,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
@@ -108,9 +107,9 @@ func (m *Manager) Stop() error {
 
 	// Stop all agents concurrently with an overall timeout.
 	// Use a detached context because m.gctx is already cancelled by m.cancel() above.
-	stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
+	stopCtx, stopCancel := WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
 	defer stopCancel()
-	defer ares_ctxutil.DoneBackground("runtime:stop") // balance the label registration
+	defer DoneBackground("runtime:stop") // balance the label registration
 
 	// Capture final snapshots for stateful agents, then mark all as stopped.
 	type agentStopInfo struct {
@@ -186,7 +185,7 @@ func (m *Manager) Stop() error {
 	}
 
 	_ = g.Wait()
-	ares_ctxutil.DoneBackground("runtime:pre-start") // group drained; release the label
+	DoneBackground("runtime:pre-start") // group drained; release the label
 
 	// Wait for all errgroup goroutines.
 	if g := m.getG(); g != nil {
@@ -219,7 +218,7 @@ func (m *Manager) Stats() RuntimeStats {
 		ActiveAgents:    active,
 		TotalRestarts:   m.totalRestarts,
 		Uptime:          uptime,
-		BackgroundTasks: ares_ctxutil.BackgroundStats(),
+		BackgroundTasks: BackgroundStats(),
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 )
@@ -103,7 +102,7 @@ func New(config *Config, eventStore ares_events.EventStore, memManager memory.Me
 	// Initialize errgroup with a labeled detached context so that m.g.Go() never
 	// panics even if called before Start(). Start() will re-initialize with
 	// the caller's context.
-	g, gctx := errgroup.WithContext(ares_ctxutil.WithDetachedLabel("runtime:pre-start"))
+	g, gctx := errgroup.WithContext(WithDetachedLabel("runtime:pre-start"))
 	m := &Manager{
 		agents:      make(map[string]*managedAgent),
 		factories:   make(map[string]AgentFactory),
@@ -551,7 +550,18 @@ func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory
 }
 
 // launchAgentGoroutine starts the agent in a managed goroutine with panic recovery.
+// The goroutine is registered with the errgroup UNDER m.mu: Stop sets
+// isStopped under the same lock before it waits on the group, so a launch
+// that observes !isStopped is always visible to that Wait. Registering after
+// Unlock (the pre-fix shape) left a TOCTOU window where g.Go could land on a
+// group Stop was already waiting on — or had finished waiting on — panicking
+// on WaitGroup reuse.
 func (m *Manager) launchAgentGoroutine(ctx context.Context, agentID string, agent base.Agent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.isStopped {
+		return
+	}
 	m.getG().Go(func() error {
 		defer func() {
 			if r := recover(); r != nil {
@@ -627,8 +637,8 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 	// The detached label registers a background job for observability; it
 	// must be released when the emit completes, or the active-count
 	// only ever grows.
-	emitCtx := ares_ctxutil.WithDetachedLabel("runtime:notify-agent-dead")
-	defer ares_ctxutil.DoneBackground("runtime:notify-agent-dead")
+	emitCtx := WithDetachedLabel("runtime:notify-agent-dead")
+	defer DoneBackground("runtime:notify-agent-dead")
 	m.emitEvent(emitCtx, agentID, ares_events.EventAgentStopped, map[string]any{
 		FieldAgentID:   agentID,
 		FieldReason:    reason,

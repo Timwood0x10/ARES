@@ -45,6 +45,13 @@ type VectorHit struct {
 	Score float64
 }
 
+// defaultMaxVectorsPerModel bounds each model's slice of the in-memory
+// index so a long-lived single-node deployment cannot grow the map without
+// limit (DEEP_CODE_REVIEW_2026 §四 knowledge: "InMemoryVectorIndex 无驱逐/
+// 上限"). Eviction is FIFO over insertion order. Declared as a var so tests
+// can shrink it.
+var defaultMaxVectorsPerModel = 10000
+
 // InMemoryVectorIndex is the default VectorIndex: a thread-safe, brute-force
 // index suitable for tests and single-node deployments. Recall is O(n) per
 // query, which is fine up to a few tens of thousands of vectors; beyond that,
@@ -54,12 +61,18 @@ type InMemoryVectorIndex struct {
 	// so concurrent Upsert/Search/Delete are race-free.
 	mu   sync.RWMutex
 	vecs map[string]map[string][]float32
+	// order tracks per-model insertion order for FIFO eviction. IDs may be
+	// stale (deleted or replaced); the evictor skips them.
+	order       map[string][]string
+	maxPerModel int
 }
 
 // NewInMemoryVectorIndex creates an empty in-memory vector index.
 func NewInMemoryVectorIndex() *InMemoryVectorIndex {
 	return &InMemoryVectorIndex{
-		vecs: make(map[string]map[string][]float32),
+		vecs:        make(map[string]map[string][]float32),
+		order:       make(map[string][]string),
+		maxPerModel: defaultMaxVectorsPerModel,
 	}
 }
 
@@ -86,7 +99,29 @@ func (i *InMemoryVectorIndex) Upsert(_ context.Context, objectID, model string, 
 		objs = make(map[string][]float32)
 		i.vecs[model] = objs
 	}
+	if _, exists := objs[objectID]; !exists {
+		i.order[model] = append(i.order[model], objectID)
+	}
 	objs[objectID] = cp
+	// FIFO eviction when the per-model cap is exceeded. Queue entries may be
+	// stale (deleted or replaced IDs); drain them without counting against
+	// the cap, and never evict the entry just inserted.
+	for i.maxPerModel > 0 && len(objs) > i.maxPerModel {
+		queue := i.order[model]
+		drained := false
+		for len(queue) > 0 && len(objs) > i.maxPerModel {
+			oldest := queue[0]
+			queue = queue[1:]
+			if _, live := objs[oldest]; live && oldest != objectID {
+				delete(objs, oldest)
+			}
+			drained = true
+		}
+		i.order[model] = queue
+		if !drained {
+			break
+		}
+	}
 	return nil
 }
 

@@ -109,6 +109,21 @@ func (f *Fabric) Get(agentID string) (*Agent, error) {
 	return a, nil
 }
 
+// CapabilitiesOf returns a copy of the agent's declared capabilities, read
+// under the fabric lock. Callers that only need the capability list (e.g.
+// the kernel's fabricAgentExecutor.Type) must use this instead of Get +
+// field read: Get hands back the live pointer and reading it after Unlock
+// races any state transition under f.mu.
+func (f *Fabric) CapabilitiesOf(agentID string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		return nil, ErrAgentNotFound
+	}
+	return append([]string(nil), a.Capabilities...), nil
+}
+
 // Agents returns the sorted list of registered agent IDs.
 func (f *Fabric) Agents() []string {
 	f.mu.Lock()

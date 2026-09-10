@@ -50,6 +50,11 @@ type Config struct {
 	// Examples: "knowledge_chunks_1024", "doc_embeddings", "my_collection".
 	Collection string
 
+	// TenantID scopes the vector search to one tenant. REQUIRED: the
+	// production table is tenant-scoped (tenant_id NOT NULL) and an unscoped
+	// search would leak rows across tenants (DEEP_CODE_REVIEW_2026 2.13#66).
+	TenantID string
+
 	// IntentTags are keywords used by IntentMatch to score relevance.
 	// Tags matching the query goal increase the provider's selection score.
 	IntentTags []string
@@ -89,6 +94,9 @@ func NewVectorProvider(store storage.VectorStore, cfg Config) (*VectorProvider, 
 	}
 	if cfg.Collection == "" {
 		return nil, fmt.Errorf("vector provider %s: collection is required", cfg.Name)
+	}
+	if cfg.TenantID == "" {
+		return nil, fmt.Errorf("vector provider %s: tenant id is required (vector search is tenant-scoped)", cfg.Name)
 	}
 	if cfg.VectorDimension <= 0 {
 		cfg.VectorDimension = 1024
@@ -174,7 +182,7 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			limit = 200 // safety cap
 		}
 
-		results, err := p.store.Search(gCtx, p.config.Collection, queryVec, limit)
+		results, err := p.store.Search(gCtx, p.config.Collection, p.config.TenantID, queryVec, limit)
 		if err != nil {
 			// If the collection doesn't exist yet, return empty (not an error).
 			errCh <- fmt.Errorf("vector search %s: %w", p.config.Collection, err)

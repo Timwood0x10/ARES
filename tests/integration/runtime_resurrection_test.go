@@ -1,6 +1,6 @@
 // package integration provides end-to-end integration tests for the
 // Runtime + EventStore + Agent resurrection flow.
-package ares_integration
+package integration
 
 import (
 	"context"

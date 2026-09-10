@@ -633,8 +633,17 @@ func (m *ExperienceGuidedMutator) guidedMutateParameter(
 	guidance guidedSignal,
 ) (*Strategy, error) {
 	// When we have param hints, try to bias toward suggested values.
+	// Iterate param names in sorted order: map range order is randomized per
+	// run, and the first matching hint wins — unsorted iteration made the
+	// chosen parameter non-deterministic across identical runs.
 	if guidance.hasParamHints {
-		for paramName, suggestedVal := range guidance.paramHints {
+		hintNames := make([]string, 0, len(guidance.paramHints))
+		for paramName := range guidance.paramHints {
+			hintNames = append(hintNames, paramName)
+		}
+		sort.Strings(hintNames)
+		for _, paramName := range hintNames {
+			suggestedVal := guidance.paramHints[paramName]
 			// Check if this parameter exists in the parent.
 			if _, exists := parent.Params[paramName]; exists {
 				child := parent.Clone()
