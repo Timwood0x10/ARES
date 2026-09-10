@@ -84,13 +84,22 @@ func (e *llmEvalExecutor) Execute(ctx context.Context, input string) (string, []
 // buildEvalGate constructs the G3 verify gate from the evaluator registry,
 // the eval LLM client, and the YAML-configured suite path.
 //
-// Absent inputs (no registry/client/suite) mean the gate is intentionally
-// not configured: with strict=false it returns errEvalGateNotConfigured and
-// bootstrap runs without G3 (the documented degradation, not a fake
-// pass-through); with strict=true (evolution.gates.eval_strict) the
-// absence itself fails bootstrap — an unwired gate must not silently pass
-// every candidate. A CONFIGURED suite that cannot be loaded always fails
-// (fail closed — see the package comment).
+// Semantics (M-G1, 2026-09-10 — defaults aligned with G2/G4's fail-closed
+// posture):
+//   - No suite configured (eval_suite empty): the gate is intentionally
+//     absent — bootstrap logs a loud Warn ("promote gate chain degrades to
+//     G1+G2") and runs without G3. An operator who wants absence itself to
+//     fail sets evolution.gates.eval_strict.
+//   - Suite configured but infrastructure missing (no registry / no LLM
+//     client) or unloadable: bootstrap FAILS — an ARMED gate must never
+//     silently degrade (this is the same fail-closed posture the arena
+//     regression gate and eval_strict have).
+//   - Suite configured and loadable: the gate is ALWAYS runtime-strict
+//     (infrastructure gaps were rejected at bootstrap; a runtime loss —
+//     e.g. evaluators producing no results — must reject, never pass).
+//
+// eval_strict therefore governs ONLY the absence case (no suite configured
+// → fatal vs. degraded-with-Warn); it does NOT relax a built gate.
 func buildEvalGate(
 	registry *eval.EvaluatorRegistry,
 	client eval.LLMClient,
@@ -98,14 +107,24 @@ func buildEvalGate(
 	minScore float64,
 	strict bool,
 ) (*evolution.EvalGate, error) {
-	if registry == nil || client == nil || strings.TrimSpace(suitePath) == "" {
+	if strings.TrimSpace(suitePath) == "" {
+		// No suite: intentional absence. The gate chain degrades to G1+G2 —
+		// loudly. Only eval_strict turns the absence itself into a bootstrap
+		// failure.
 		if strict {
 			// Deliberately NOT wrapping the sentinel: the caller only
 			// tolerates errEvalGateNotConfigured, so strict absence must
 			// surface as a hard error and fail bootstrap.
-			return nil, fmt.Errorf("bootstrap: G3 eval gate is strict (evolution.gates.eval_strict) but not configured (registry/client/suite missing)")
+			return nil, fmt.Errorf("bootstrap: G3 eval gate is strict (evolution.gates.eval_strict) but no eval_suite is configured")
 		}
 		return nil, errEvalGateNotConfigured
+	}
+	// Suite configured but infrastructure missing: an ARMED gate must never
+	// silently degrade — fail bootstrap (M-G1 fail-closed alignment; the
+	// pre-M-G behavior of passing through with strict=false is exactly the
+	// "default discounted" posture the hardening plan removes).
+	if registry == nil || client == nil {
+		return nil, fmt.Errorf("bootstrap: G3 eval gate armed (eval_suite %q) but eval infrastructure is missing (registry/client) — refusing to run with a silently degraded gate chain", suitePath)
 	}
 	suite, err := eval.NewLoader().Load(suitePath)
 	if err != nil {
@@ -126,9 +145,12 @@ func buildEvalGate(
 	if minScore > 0 {
 		gateCfg.MinScore = minScore
 	}
-	// StrictMode also governs the gate's own Check: once built, a runtime
-	// loss of infrastructure rejects instead of passing.
-	gateCfg.StrictMode = strict
+	// Runtime strictness is ALWAYS on for a built gate (M-G1): infrastructure
+	// gaps were already rejected at bootstrap (armed-fail-closed above), so
+	// the only remaining gap is a runtime loss (e.g. evaluators produce no
+	// results) — which must reject, never pass. eval_strict governs ONLY the
+	// absence case (no suite configured → fatal vs. degraded-with-Warn).
+	gateCfg.StrictMode = true
 	gate := evolution.NewEvalGate(registry, runner, *suite, gateCfg,
 		evolution.WithEvalGateBeforeRun(exec.setCandidate),
 	)

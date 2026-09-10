@@ -1241,3 +1241,49 @@ kernel:
 		}
 	})
 }
+
+// TestLoad_IntrospectSection verifies the introspect.token yaml key parses
+// end to end, and that an absent section leaves the token empty (read side
+// open under the loopback default bind — the M-S1 default posture).
+func TestLoad_IntrospectSection(t *testing.T) {
+	skeleton := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+`
+	t.Run("token present", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		content := skeleton + `
+introspect:
+  token: "panel-read-token"
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write config file: %v", err)
+		}
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Introspect.Token != "panel-read-token" {
+			t.Errorf("introspect.token = %q, want panel-read-token", cfg.Introspect.Token)
+		}
+	})
+
+	t.Run("section absent stays legal", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(configPath, []byte(skeleton), 0644); err != nil {
+			t.Fatalf("Failed to write config file: %v", err)
+		}
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Introspect.Token != "" {
+			t.Errorf("absent introspect.token = %q, want empty", cfg.Introspect.Token)
+		}
+	})
+}

@@ -135,6 +135,13 @@ func (g *EvalGate) SkippedCount() int64 {
 	return g.skippedCount.Load()
 }
 
+// StrictModeEnabled reports whether the gate rejects on a runtime loss of
+// infrastructure (the M-G1 production default). Wiring layers surface it in
+// the bootstrap gate-chain log.
+func (g *EvalGate) StrictModeEnabled() bool {
+	return g.cfg.StrictMode
+}
+
 // Check runs the candidate through the eval suite and returns pass=true when
 // the weighted average score meets or exceeds MinScore. When no registry or
 // runner is wired, the gate is a pass-through — UNLESS StrictMode is enabled,

@@ -45,32 +45,66 @@ test_cases:
     input: "Refactor the parser loop."
 `
 
+// regressionOn / regressionOff return pointers to the explicit YAML values
+// (the M-G2 tri-state: nil = auto-arm).
+func regressionOn() *bool  { v := true; return &v }
+func regressionOff() *bool { v := false; return &v }
+
 func TestBuildRegressionGateDisabled(t *testing.T) {
-	gate, err := buildRegressionGate(false, stubEvalClient{}, ares_config.EvolutionGateConfig{})
-	require.ErrorIs(t, err, errRegressionGateNotConfigured, "disabled = the intentional-absence sentinel")
+	gate, err := buildRegressionGate(regressionOff(), stubEvalClient{}, ares_config.EvolutionGateConfig{})
+	require.ErrorIs(t, err, errRegressionGateNotConfigured, "explicit false = the intentional-absence sentinel")
 	assert.Nil(t, gate, "disabled = honest absence, not a pass-through")
+}
+
+// TestBuildRegressionGateAutoArmsWithoutOptIn pins M-G2: with the suite and
+// client present and NO explicit knob, the gate arms (previously required
+// regression_enabled=true).
+func TestBuildRegressionGateAutoArmsWithoutOptIn(t *testing.T) {
+	path := writeSuiteFile(t, suiteYAML)
+	gate, err := buildRegressionGate(nil, stubEvalClient{}, ares_config.EvolutionGateConfig{EvalSuite: path})
+	require.NoError(t, err)
+	require.NotNil(t, gate, "nil (auto) with infrastructure present must ARM the gate")
+	assert.Equal(t, "arena_regression", gate.Name())
+}
+
+// TestBuildRegressionGateAutoWithoutSuiteIsHonestAbsence: auto + no suite =
+// sentinel, not an error.
+func TestBuildRegressionGateAutoWithoutSuiteIsHonestAbsence(t *testing.T) {
+	gate, err := buildRegressionGate(nil, stubEvalClient{}, ares_config.EvolutionGateConfig{})
+	require.ErrorIs(t, err, errRegressionGateNotConfigured)
+	assert.Nil(t, gate)
+}
+
+// TestBuildRegressionGateAutoWithoutClientDegradesLoudlyButNotArmed: auto +
+// suite but no client = sentinel (half-wired infrastructure must not arm a
+// gate that can only fail every candidate).
+func TestBuildRegressionGateAutoWithoutClientDegradesLoudlyButNotArmed(t *testing.T) {
+	path := writeSuiteFile(t, suiteYAML)
+	gate, err := buildRegressionGate(nil, nil, ares_config.EvolutionGateConfig{EvalSuite: path})
+	require.ErrorIs(t, err, errRegressionGateNotConfigured)
+	assert.Nil(t, gate)
 }
 
 func TestBuildRegressionGateFailClosed(t *testing.T) {
 	t.Run("enabled_without_suite", func(t *testing.T) {
-		_, err := buildRegressionGate(true, stubEvalClient{}, ares_config.EvolutionGateConfig{})
+		_, err := buildRegressionGate(regressionOn(), stubEvalClient{}, ares_config.EvolutionGateConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no eval_suite")
 	})
 
 	t.Run("enabled_without_llm_client", func(t *testing.T) {
-		gates := ares_config.EvolutionGateConfig{RegressionEnabled: true, EvalSuite: "whatever.yaml"}
-		_, err := buildRegressionGate(true, nil, gates)
+		gates := ares_config.EvolutionGateConfig{RegressionEnabled: regressionOn(), EvalSuite: "whatever.yaml"}
+		_, err := buildRegressionGate(regressionOn(), nil, gates)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no eval LLM client")
 	})
 
 	t.Run("enabled_with_unloadable_suite", func(t *testing.T) {
 		gates := ares_config.EvolutionGateConfig{
-			RegressionEnabled: true,
+			RegressionEnabled: regressionOn(),
 			EvalSuite:         filepath.Join(t.TempDir(), "missing.yaml"),
 		}
-		_, err := buildRegressionGate(true, stubEvalClient{}, gates)
+		_, err := buildRegressionGate(regressionOn(), stubEvalClient{}, gates)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "load regression suite")
 	})
@@ -82,8 +116,8 @@ test_cases:
   - id: c1
     input: "   "
 `)
-		gates := ares_config.EvolutionGateConfig{RegressionEnabled: true, EvalSuite: path}
-		_, err := buildRegressionGate(true, stubEvalClient{}, gates)
+		gates := ares_config.EvolutionGateConfig{RegressionEnabled: regressionOn(), EvalSuite: path}
+		_, err := buildRegressionGate(regressionOn(), stubEvalClient{}, gates)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no usable cases")
 	})
@@ -92,12 +126,12 @@ test_cases:
 func TestBuildRegressionGateBuildsFromSuite(t *testing.T) {
 	path := writeSuiteFile(t, suiteYAML)
 	gates := ares_config.EvolutionGateConfig{
-		RegressionEnabled:    true,
+		RegressionEnabled:    regressionOn(),
 		EvalSuite:            path,
 		RegressionRuns:       3,
 		RegressionMinWinRate: 0.6,
 	}
-	gate, err := buildRegressionGate(true, stubEvalClient{}, gates)
+	gate, err := buildRegressionGate(regressionOn(), stubEvalClient{}, gates)
 	require.NoError(t, err)
 	require.NotNil(t, gate)
 	assert.Equal(t, "arena_regression", gate.Name())

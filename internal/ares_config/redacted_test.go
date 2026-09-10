@@ -22,12 +22,15 @@ func TestConfigRedacted(t *testing.T) {
 		Security: SecurityConfig{
 			JWTSecret: "jwt-secret",
 		},
+		Introspect: IntrospectConfig{
+			Token: "panel-token",
+		},
 	}
 
 	got := cfg.Redacted()
 
 	// Receiver must be untouched.
-	if cfg.LLM.APIKey != "sk-secret-1" || cfg.Storage.Password != "db-pass" || cfg.Security.JWTSecret != "jwt-secret" {
+	if cfg.LLM.APIKey != "sk-secret-1" || cfg.Storage.Password != "db-pass" || cfg.Security.JWTSecret != "jwt-secret" || cfg.Introspect.Token != "panel-token" {
 		t.Fatal("Redacted must not mutate the receiver")
 	}
 
@@ -40,6 +43,9 @@ func TestConfigRedacted(t *testing.T) {
 	}
 	if got.Security.JWTSecret != "***" {
 		t.Errorf("Security.JWTSecret = %q, want ***", got.Security.JWTSecret)
+	}
+	if got.Introspect.Token != "***" {
+		t.Errorf("Introspect.Token = %q, want ***", got.Introspect.Token)
 	}
 
 	// Fallback keys redacted.
@@ -66,5 +72,8 @@ func TestConfigRedactedEmptySecrets(t *testing.T) {
 	}
 	if got.Storage.Password != "" {
 		t.Errorf("empty password must stay empty, got %q", got.Storage.Password)
+	}
+	if got.Introspect.Token != "" {
+		t.Errorf("empty Introspect.Token must stay empty, got %q", got.Introspect.Token)
 	}
 }

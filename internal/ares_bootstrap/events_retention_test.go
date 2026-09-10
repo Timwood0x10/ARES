@@ -48,7 +48,9 @@ func TestEventsRetentionCleanerFor(t *testing.T) {
 func TestRegressionGateConfigSurface(t *testing.T) {
 	// The YAML knobs exist and default to disabled/harmless zero values.
 	var cfg ares_config.EvolutionGateConfig
-	assert.False(t, cfg.RegressionEnabled, "regression gate must be opt-in")
+	// M-G2: RegressionEnabled is nil (auto-arm when infrastructure exists)
+	// — see regression_gate_wiring_test for the tri-state contract.
+	assert.Nil(t, cfg.RegressionEnabled, "nil = auto-arm (M-G2 default)")
 	assert.Equal(t, 0, cfg.RegressionRuns, "0 = gate default (5)")
 	assert.Equal(t, 0.0, cfg.RegressionMinWinRate, "0 = gate default (0.55)")
 }

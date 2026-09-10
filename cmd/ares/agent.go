@@ -420,7 +420,11 @@ func (s routeSpec) match(method, path string) bool {
 	if s.Method != "*" && s.Method != method {
 		return false
 	}
-	if prefix, ok := strings.CutSuffix(s.Path, "/..."); ok {
+	// A trailing "..." marks a prefix pattern: the marker is appended
+	// directly to the prefix, so "/api/agents/..." prefixes "/api/agents/"
+	// while "/api/v1/observability/cost..." prefixes the bare
+	// "/api/v1/observability/cost" (mirroring the pre-registry HasPrefix).
+	if prefix, ok := strings.CutSuffix(s.Path, "..."); ok {
 		return strings.HasPrefix(path, prefix)
 	}
 	if strings.Contains(s.Path, "{") {

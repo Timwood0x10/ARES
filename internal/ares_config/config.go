@@ -1082,12 +1082,15 @@ type EvolutionGateConfig struct {
 	EvalStrict bool `yaml:"eval_strict"`
 	// RegressionEnabled arms the arena preserved-case regression gate
 	// (candidate vs active strategy A/B over the eval suite's cases, Welch
-	// significance; rejects only on a significant drop). Opt-in because
-	// each check runs 2×regression_runs LLM scoring rounds. Requires
-	// eval_suite and the eval LLM client; enabling without them fails
-	// bootstrap (fail closed — a configured gate must not silently skip).
-	// Default: false.
-	RegressionEnabled bool `yaml:"regression_enabled"`
+	// significance; rejects only on a significant drop). M-G2 default:
+	// when eval_suite and the eval LLM client are available the gate arms
+	// automatically (nil = auto). An explicit `regression_enabled: false`
+	// is the documented opt-out (Warn-logged at bootstrap); an explicit
+	// `true` also makes missing prerequisites a bootstrap error instead of
+	// silent degradation. Each check costs 2×regression_runs LLM scoring
+	// rounds.
+	// Default: nil (auto-arm when infrastructure exists).
+	RegressionEnabled *bool `yaml:"regression_enabled"`
 	// RegressionRuns is the per-strategy run count for the regression gate
 	// (baseline and compare each run the preserved cases this many times).
 	// Default 5 when zero.

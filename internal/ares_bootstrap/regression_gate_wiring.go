@@ -29,23 +29,43 @@ import (
 // means an ARMED gate is broken and fails bootstrap.
 var errRegressionGateNotConfigured = errors.New("bootstrap: arena regression gate not configured")
 
-// buildRegressionGate constructs the arena regression gate. enabled=false
-// returns (nil, errRegressionGateNotConfigured) — honest absence, the caller
-// skips wiring. enabled=true with missing prerequisites (suite path, LLM
-// client, unloadable or empty suite) returns a real error — fail closed.
+// buildRegressionGate constructs the arena regression gate.
+//
+// M-G2 tri-state semantics (2026-09-10): the gate defaults to AUTO-ARMED —
+// when eval_suite and the eval LLM client both exist, the gate is wired
+// with no explicit opt-in (a promote chain that has the infrastructure for
+// regression checking must use it). The explicit knobs:
+//   - regression_enabled: false — documented opt-out (the caller Warn-logs);
+//   - regression_enabled: true — armed AND missing prerequisites become
+//     bootstrap errors (fail closed, same as an armed G3).
+//
+// In the auto path (nil), missing prerequisites are honest absence (no
+// suite = nothing to regress against) and return the not-configured
+// sentinel.
 func buildRegressionGate(
-	enabled bool,
+	enabled *bool,
 	client eval.LLMClient,
 	gates ares_config.EvolutionGateConfig,
 ) (*evolution.ArenaRegressionGate, error) {
-	if !enabled {
+	// Explicit opt-out: the caller logs the Warn.
+	if enabled != nil && !*enabled {
 		return nil, errRegressionGateNotConfigured
 	}
+	// Auto path with no suite: honest absence.
 	if strings.TrimSpace(gates.EvalSuite) == "" {
-		return nil, fmt.Errorf("bootstrap: regression gate enabled (evolution.gates.regression_enabled) but no eval_suite is configured — the gate needs the preserved-case suite")
+		if enabled != nil && *enabled {
+			return nil, fmt.Errorf("bootstrap: regression gate enabled (evolution.gates.regression_enabled) but no eval_suite is configured — the gate needs the preserved-case suite")
+		}
+		return nil, errRegressionGateNotConfigured
 	}
 	if client == nil {
-		return nil, fmt.Errorf("bootstrap: regression gate enabled (evolution.gates.regression_enabled) but no eval LLM client is wired")
+		if enabled != nil && *enabled {
+			return nil, fmt.Errorf("bootstrap: regression gate enabled (evolution.gates.regression_enabled) but no eval LLM client is wired")
+		}
+		// Auto path, suite present but no LLM client: the infrastructure is
+		// half-wired. Degrade loudly rather than arming a gate that can only
+		// fail closed on every candidate.
+		return nil, errRegressionGateNotConfigured
 	}
 	suite, err := eval.NewLoader().Load(gates.EvalSuite)
 	if err != nil {

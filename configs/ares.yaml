@@ -12,12 +12,26 @@
 
 # ── HTTP server ──────────────────────────────────────────────
 server:
-  # host: actual HTTP bind address (default "localhost").
-  # The introspect read API (/api/v1/introspect/*) is unauthenticated, so
+  # host: actual HTTP bind address (default "127.0.0.1" — explicit loopback,
+  # not the "localhost" name, so a hosts-file remap cannot widen the bind).
+  # The introspect read API (/api/v1/introspect/*) carries task payloads, so
   # serve binds loopback by default. To accept connections from other hosts
-  # (e.g. inside docker), set host: 0.0.0.0 AND enable security.auth_enabled.
-  # host: localhost
+  # (e.g. inside docker), set host: 0.0.0.0 AND enable security.auth_enabled
+  # (or set introspect.token below) to keep the read side closed.
+  # host: 127.0.0.1
   # port: 8080
+
+# ── Introspection read side ──────────────────────────────────
+# The /introspect panel, its JSON feed (/api/v1/introspect/*), the cost
+# dashboard and the read-only /api/* control surfaces.
+introspect:
+  # token: static bearer token for the read side. Empty (default): the read
+  # side is open, protected only by the loopback default bind (server.host
+  # 127.0.0.1) — startup logs a Warn describing that posture. Non-empty:
+  # non-loopback clients must send "Authorization: Bearer <token>";
+  # loopback clients stay open. Composes with security.auth_enabled and
+  # ARES_API_KEY (any one credential passes).
+  # token: change-me-panels-are-read-only
 
 # ── LLM provider ─────────────────────────────────────────────
 llm:
@@ -242,7 +256,19 @@ evolution:
   # gates: the remaining verify-gate thresholds.
   # gates:
   #   eval_min_score: 0.7             # minimum G3 eval-suite score
-  #   eval_strict: false              # true = G3 fails closed when eval infra is missing (E3)
+  #   # eval_strict: M-G1 semantics — true = a MISSING eval_suite is fatal at
+  #   # bootstrap (default false = degrade to G1+G2 with a Warn). A CONFIGURED
+  #   # suite with missing infrastructure (registry/LLM client) is ALWAYS
+  #   # fatal; a built gate is always runtime-strict.
+  #   eval_strict: false
+  #   # regression_enabled: M-G2 tri-state — unset (default) = the arena
+  #   # regression gate arms AUTOMATICALLY when eval_suite + LLM client
+  #   # exist; false = explicit opt-out (Warn-logged); true = armed AND
+  #   # missing prerequisites are fatal. Each check costs 2×regression_runs
+  #   # LLM scoring rounds.
+  #   # regression_enabled: true
+  #   regression_runs: 5                # per-strategy runs (A/B sides)
+  #   regression_min_win_rate: 0.55     # informational floor (reject is significance-based)
   #   # require_manual_approval holds every candidate in SHADOW until an
   #   # operator calls POST /api/evolution/approve.
   #   require_manual_approval: false

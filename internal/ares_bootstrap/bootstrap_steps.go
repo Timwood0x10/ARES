@@ -432,24 +432,25 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 			strict,
 		)
 		if gerr != nil && !errors.Is(gerr, errEvalGateNotConfigured) {
-			// A CONFIGURED but broken suite fails bootstrap (fail closed);
-			// an intentionally absent gate just skips G3.
+			// An ARMED but broken/incomplete gate fails bootstrap (fail
+			// closed); an intentionally absent gate just skips G3.
 			return gerr
 		}
 		if evalGate != nil {
 			evolution.WithLifecycleGates(evalGate)(wired.Lifecycle)
 			log.InfoContext(ctx, "bootstrap: G3 eval gate wired",
-				"suite", suitePath, "min_score", minScore, "strict_mode", strict,
+				"suite", suitePath, "min_score", minScore, "strict_mode", evalGate.StrictModeEnabled(),
 				"skipped_count", evalGate.SkippedCount())
+		} else {
+			log.WarnContext(ctx, "bootstrap: no eval_suite configured — promote gate chain degrades to G1+G2 (set evolution.gates.eval_suite to arm G3; evolution.gates.eval_strict makes absence fatal)")
 		}
 
-		// Arena regression gate (the M4 "回归门 arena 接线"): the RELATIVE
-		// complement to the G3 absolute-score gate — candidate vs active
-		// strategy A/B over the same preserved-case suite, rejecting only a
-		// statistically significant drop. Opt-in via
-		// evolution.gates.regression_enabled (each check costs 2×runs LLM
-		// scoring rounds); enabling it without a suite or LLM client fails
-		// bootstrap (fail closed — a configured gate must not silently skip).
+		// Arena regression gate (M4 接线; M-G2 起默认 AUTO-ARMED): the
+		// RELATIVE complement to the G3 absolute-score gate — candidate vs
+		// active strategy A/B over the same preserved-case suite, rejecting
+		// only a statistically significant drop. Defaults to armed whenever
+		// the infrastructure (eval_suite + LLM client) exists;
+		// regression_enabled=false is the documented opt-out (Warn below).
 		regGate, rgerr := buildRegressionGate(
 			cfg.Evolution.Gates.RegressionEnabled,
 			comp.Evolution.EvalLLMClient,
@@ -462,10 +463,13 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		}
 		if regGate != nil {
 			evolution.WithLifecycleGates(regGate)(wired.Lifecycle)
-			log.InfoContext(ctx, "bootstrap: arena regression gate wired",
+			log.InfoContext(ctx, "bootstrap: arena regression gate armed (auto: infrastructure present)",
 				"suite", cfg.Evolution.Gates.EvalSuite,
 				"runs", cfg.Evolution.Gates.RegressionRuns,
 			)
+		} else if cfg.Evolution.Gates.RegressionEnabled != nil && !*cfg.Evolution.Gates.RegressionEnabled {
+			log.WarnContext(ctx, "bootstrap: arena regression gate DISABLED via evolution.gates.regression_enabled=false — promote gate chain runs without the preserved-case regression check",
+				"suite_available", strings.TrimSpace(cfg.Evolution.Gates.EvalSuite) != "")
 		}
 	}
 
