@@ -158,7 +158,7 @@ SUSPENDED─(下轮 drain re-acquire)→LEASED；过期租约→CheckExpiredLeas
 
 - sub.Agent（agents/sub）：身份层 + recovery 保险执行面（newPeerExecutor 走 cognitionExecutor 驱动 L2 router）。死面（messageHandler/heartbeatSender/actionLog/tools 字段/EnableTools/SubAgentCognition）已随 M5 收官批下葬。
 - runtime.Manager（leader 运行时）：注册表+HTTP 操作面，"agents are scheduled, not orchestrated"（serve.go:382）。
-- PluginBus 能力插件：只注册 LoopPlugin（轮次时钟），CapCheckpoint/CapMemory/CapEvolution 无生产注册者。
+- PluginBus 能力插件：能力面已下葬（C1.3，2026-09-10）——CapCheckpoint/CapMemory/CapEvolution 及其插件契约（CheckpointPlugin/Flusher/CheckpointStore/ExperienceCheckpoint、MemoryPlugin/RouteAdvice、EvolutionPlugin/ExecutionState/RuntimeRecommendation/ExecutionOutcome、MemoryRouter/EvolutionRouter、OutcomeExperienceRecorder、StateSnapshot、collector.MergeInto）全删（零生产注册者，OnRoundEnd 能力分发是唯一消费者）；只注册 LoopPlugin（轮次时钟：ShouldExecuteRound/round budget/Iteration），继任路径 fabric/task CheckpointEnvelope、retriever_wiring memory、ares_evolution 直接消费。
 - legacy evolution scheduler / dream cycle：config gate 关闭。
 - compat/（内部引用已清零，目录留待 0.4.x release-note 决策）、api/（纯转发层，examples 在用）、arena、dashboard 遗留面。
 

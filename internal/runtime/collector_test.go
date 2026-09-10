@@ -133,35 +133,6 @@ func TestExecutionCollector_ThreadSafety(t *testing.T) {
 	assert.Len(t, c.ErrorLog(), 100)
 }
 
-func TestExecutionCollector_MergeInto(t *testing.T) {
-	c := NewExecutionCollector("exec-1")
-	c.RecordRoute("s1", "s2", "test", "expression")
-	c.RecordTool("s1", "calc", "1+1", "2", time.Second, true)
-	c.RecordMemoryHit("s1", "query", 1, 0.5, nil)
-	c.RecordInterrupt("s1", "approve", "looks good")
-	c.RecordError("s2", "timeout")
-
-	ckpt := &ExperienceCheckpoint{
-		ExecutionID: "exec-1",
-	}
-	c.MergeInto(ckpt)
-
-	assert.Len(t, ckpt.RouteHistory, 1)
-	assert.Equal(t, "s2", ckpt.RouteHistory[0].ToStepID)
-	assert.Len(t, ckpt.ToolHistory, 1)
-	assert.Equal(t, "calc", ckpt.ToolHistory[0].ToolName)
-	assert.Len(t, ckpt.MemoryHits, 1)
-	assert.Equal(t, 0.5, ckpt.MemoryHits[0].Similarity)
-	assert.Len(t, ckpt.InterruptHistory, 1)
-	assert.True(t, ckpt.InterruptHistory[0].Approved)
-	assert.Len(t, ckpt.ErrorHistory, 1)
-	assert.Equal(t, "timeout", ckpt.ErrorHistory[0].Message)
-}
-
-func TestExecutionCollector_MergeIntoEmptyCollector(t *testing.T) {
-	c := NewExecutionCollector("exec-1")
-	ckpt := &ExperienceCheckpoint{ExecutionID: "exec-1"}
-	c.MergeInto(ckpt)
-	assert.Empty(t, ckpt.RouteHistory)
-	assert.Empty(t, ckpt.ToolHistory)
-}
+// MergeInto tests were removed with C1.3 (runtime plugin half-closed-loop
+// burial): the method's only consumer was CheckpointPlugin, deleted with its
+// capability face.

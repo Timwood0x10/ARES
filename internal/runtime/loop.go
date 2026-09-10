@@ -1,6 +1,5 @@
 package runtime
 
-//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"sync"
@@ -22,17 +21,20 @@ type LoopConfig struct {
 //
 // It does NOT drive the loop itself (the executor does). Instead it provides:
 // - Round boundary decisions (ShouldExecuteRound)
-// - Between-round orchestration (OnRoundEnd: checkpoint + memory + evolution)
-// - Configuration and round tracking
+// - Round tracking (OnRoundEnd records the settled round; Iteration reads it)
+// - Configuration and round budgeting
 //
-// Services (CheckpointPlugin, MemoryPlugin, EvolutionPlugin) are discovered
-// via the EventBus / PluginBus at runtime.
+// C1.3 (runtime plugin half-closed-loop burial): OnRoundEnd no longer
+// dispatches to capability plugins — the CapCheckpoint flush / CapMemory
+// advise / CapEvolution record blocks were deleted with those capability
+// faces (zero production registrations). Successor paths: fabric/task
+// CheckpointEnvelope (checkpointing), retriever_wiring (memory),
+// ares_evolution direct consumption (evolution outcomes).
 type LoopPlugin struct {
 	mu        sync.Mutex
 	name      string
 	config    LoopConfig
-	bus       EventBus // saved from Start; used for service discovery
-	iteration int      // current round (1-based)
+	iteration int // current round (1-based)
 }
 
 // NewLoopPlugin creates a LoopPlugin with the given configuration.
@@ -56,9 +58,9 @@ func (p *LoopPlugin) Capabilities() []Capability {
 	return []Capability{CapLoop}
 }
 
-// Start saves the EventBus reference for service discovery.
-func (p *LoopPlugin) Start(_ context.Context, bus EventBus) error {
-	p.bus = bus
+// Start satisfies the RuntimePlugin contract. The bus parameter is ignored:
+// the plugin no longer discovers capability services (C1.3).
+func (p *LoopPlugin) Start(_ context.Context, _ EventBus) error {
 	return nil
 }
 
@@ -112,14 +114,14 @@ func (p *LoopPlugin) ShouldExecuteRound(nextRound int, vars map[string]any) bool
 	return true
 }
 
-// OnRoundEnd is called after each round completes. It:
-//  1. Flushes the CheckpointPlugin (if available on the bus)
-//  2. Advises MemoryPlugin for round outcomes (if available)
-//  3. Records outcomes to EvolutionPlugin (if available)
+// OnRoundEnd is called after each round completes. It records the settled
+// round for Iteration() readers.
 //
-// This is the boundary where DAG mutations, strategy adjustments, and
-// experience recording happen.
-func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID string) {
+// C1.3: the former capability dispatch blocks (CheckpointPlugin flush,
+// MemoryPlugin advise, EvolutionPlugin record) were deleted with those
+// capability faces. Successor paths: fabric/task CheckpointEnvelope,
+// retriever_wiring memory, ares_evolution direct consumption.
+func (p *LoopPlugin) OnRoundEnd(_ context.Context, round int, executionID string) {
 	p.mu.Lock()
 	p.iteration = round
 	p.mu.Unlock()
@@ -128,61 +130,6 @@ func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID stri
 		"round", round,
 		"execution_id", executionID,
 	)
-
-	pb, ok := p.bus.(*PluginBus)
-	if !ok || pb == nil {
-		return
-	}
-
-	// 1. Flush checkpoint
-	for _, cp := range pb.PluginsByCap(CapCheckpoint) {
-		if f, ok := cp.(Flusher); ok {
-			if err := f.Flush(ctx, executionID); err != nil {
-				log.Warn("loop: checkpoint flush failed",
-					"round", round,
-					"execution_id", executionID,
-					"error", err,
-				)
-			}
-		}
-	}
-
-	// 2. Memory update — advise memory plugin for round completion.
-	// OnRoundEnd only receives the executionID and round number, so the
-	// RouteState is populated with those real fields. Richer turn data
-	// (step output, variables, collector history) is not available at this
-	// boundary and would require expanding the OnRoundEnd signature.
-	for _, mp := range pb.PluginsByCap(CapMemory) {
-		if mem, ok := mp.(MemoryPlugin); ok {
-			state := RouteState{
-				ExecutionID: executionID,
-				Variables:   map[string]any{"round": round},
-			}
-			if _, err := mem.AdviseRoute(ctx, state); err != nil {
-				log.Warn("loop: memory advise failed",
-					"round", round,
-					"execution_id", executionID,
-					"error", err,
-				)
-			}
-		}
-	}
-
-	// 3. Evolution outcome recording
-	for _, ep := range pb.PluginsByCap(CapEvolution) {
-		if evo, ok := ep.(EvolutionPlugin); ok {
-			outcome := ExecutionOutcome{
-				ExecutionID: executionID,
-			}
-			if err := evo.RecordOutcome(ctx, outcome); err != nil {
-				log.Warn("loop: evolution record failed",
-					"round", round,
-					"execution_id", executionID,
-					"error", err,
-				)
-			}
-		}
-	}
 }
 
 var _ RuntimePlugin = (*LoopPlugin)(nil)

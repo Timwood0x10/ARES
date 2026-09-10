@@ -1,24 +1,23 @@
-// serve — merged CLI source: serve.go, serve_routine.go, serve_agents.go,
-// serve_chaos.go, serve_live_dag.go, arena.go.
+// serve — the `ares serve` command: runServe assembly skeleton, event store,
+// config/LLM/tool wiring, agent + peer registry setup, control plane, and
+// HTTP start. The chaos wiring lives in serve_chaos_domain.go, the L1/Live
+// DAG builders in serve_live_dag.go, and the arena CLI in serve_arena.go —
+// all split from the former merged serve.go (M-C2), which in turn came from
+// serve.go, serve_routine.go, serve_agents.go, serve_chaos.go,
+// serve_live_dag.go, arena.go.
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"sort"
 	"strconv"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -34,15 +33,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
-	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/evidence"
-	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
-	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -51,11 +46,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/runtime/archive"
-	arena "github.com/Timwood0x10/ares/internal/runtime/arena"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	flight "github.com/Timwood0x10/ares/internal/runtime/observability/flight"
 	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
-	"github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
+	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -129,97 +123,13 @@ func runServe() error {
 	// atomic.Store/Load so the goroutine never races with the Bootstrap
 	// assignment on the main goroutine.
 	var compPtr atomic.Pointer[ares_bootstrap.Components]
-	g.Go(func() error {
-		select {
-		case <-sigCh:
-			fmt.Println("\nShutting down...")
-			// A second SIGINT/SIGTERM during the graceful shutdown forces an
-			// immediate exit — a hung shutdown phase (or a stuck component)
-			// must never trap the operator in an unstoppable process.
-			// NOT adopted into the orchestrator: this watcher
-			// must stay alive while the managed pools are being drained —
-			// exactly the window when adopted loops are being torn down.
-			// One-shot short task with its own recover boundary.
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						fmt.Fprintf(os.Stderr, "force-exit watcher panicked: %v\n", r)
-						os.Exit(1)
-					}
-				}()
-				<-sigCh
-				fmt.Fprintln(os.Stderr, "\nSecond signal received: forcing immediate exit")
-				os.Exit(1)
-			}()
-			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
-			// bounded overall timeout. cancel() afterwards stops background
-			// goroutines (event bridge, task submission) that wait on ctx.
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer shutdownCancel()
-			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
-				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
-			}
-			// Give SystemRuntime Shutdown its own 15s budget so it
-			// is not starved by phase callbacks that consumed the shared
-			// 30s shutdownCtx. An expired context would skip MCP/Runtime/
-			// FlightRecorder Stop, leaking goroutines and connections.
-			sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer sysRuntimeCancel()
-			shutdownSystemRuntime(&compPtr, sysRuntimeCtx)
-			cancel()
-		case <-ctx.Done():
-		}
-		comp := compPtr.Load()
-		if comp == nil {
-			return nil
-		}
-		// Record the pre-shutdown component snapshot for shutdown diagnostics
-		// (which components were still running before background exit).
-		if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
-			log.Info("system_runtime snapshot (shutdown)", "snap_json", string(snapJSON))
-		}
-		// Wait for Bootstrap's background goroutines (distillation subscriber,
-		// GA evolution ticker, LLM suggestion ticker) to exit after the
-		// context is cancelled, so none outlives the graceful shutdown.
-		comp.WaitBackground()
-		return nil
-	})
+	wiringServeSignalWatch(g, sigCh, ctx, cancel, shutdownMgr, &compPtr)
 
-	// --- EventStore (Postgres when storage is configured, archive-enabled
-	// memory otherwise) ---
-	// Persistence contract (M4.1): when cfg.Storage points at Postgres, the
-	// serve event stream is the durable events table via PostgresEventStore —
-	// fitness evidence and the task.* log survive restarts, and the Task
-	// Fabric folds them back on boot (createPeerAgents → RestoreFromStore).
-	// PG construction failures are FATAL, mirroring Bootstrap's evidence-pool
-	// posture: silently falling back to the in-memory store would make the
-	// persistence feature lie about durability. Memory mode keeps the
-	// archive-enabled compactable store (round_N.json archive +
-	// compaction/trim) unchanged.
-	serveStore, closeStore, err := newServeEventStore(cfg)
+	// --- EventStore + Bootstrap ---
+	comp, store, mgr, err := wiringServeEventStore(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("create event store: %w", err)
+		return err
 	}
-
-	// --- Bootstrap: infrastructure components via single wiring hub ---
-	// Uses internal/ares_bootstrap for EventStore, Runtime, Memory.
-	// MCP setup is handled separately below for registry bridging. The store
-	// is passed via deps so Bootstrap wires Runtime/Memory against the real
-	// serve store instead of creating a throwaway MemoryEventStore. On
-	// success the store's shutdown is owned by the System Runtime (the
-	// eventstore stop hook closes it in reverse-topological order).
-	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
-		EventStore: serveStore,
-	})
-	if err != nil {
-		// Bootstrap ran its own cleanups; the store came from serve, so its
-		// resources (the PG pool) are released here — mirroring Bootstrap's
-		// cleanup of its evidence pool on partial failure.
-		_ = closeStore() // best-effort cleanup on the failure path
-		return fmt.Errorf("bootstrap: %w", err)
-	}
-	// Publish the assembled components to the signal goroutine via the atomic
-	// pointer so the shutdown snapshot/WaitBackground reads never race.
 	compPtr.Store(comp)
 	// Assembly-phase exit check — if a shutdown signal arrived during the
 	// (potentially long) Bootstrap, abort the startup instead of proceeding
@@ -228,128 +138,14 @@ func runServe() error {
 		log.Info("serve: shutdown was requested during assembly; aborting startup", "err", err)
 		return normalizeShutdownErr(err)
 	}
-	store := comp.EventStore
-	mgr := comp.Runtime
 
-	// --- Runtime config store + hot-reload watcher ---
-	// The store holds the last-good config and its reload history, served via
-	// /runtime/config on the console HTTP server. When the serve command was
-	// started with an explicit config file, an fsnotify watcher hot-reloads it
-	// on change (failed reloads keep the previous config). With no config file
-	// (minimal --llm-url mode) the watcher is skipped — the store still serves
-	// the effective config snapshot.
-	cfgStore := ares_config.NewConfigStore(cfg)
-	if serveConfigPath != "" {
-		cfgPath := serveConfigPath
-		g.Go(func() error {
-			// Watch blocks until ctx cancels; a reload error is logged inside
-			// the store (recorded to history), so returning here is only for
-			// watcher setup failures and ctx cancellation.
-			return cfgStore.Watch(ctx, cfgPath)
-		})
-	}
-
-	// EventStore is wired into Memory during Bootstrap,
-	// not post-Bootstrap here. validateServeConfig has already enforced that
-	// the full agent-serving entry point has its required Memory component.
-
-	// Stage 1 observability: report the System Runtime component snapshot
-	// (names, modes, lifecycle states) so operators can confirm which
-	// components were assembled and reached Ready at startup.
-	if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
-		log.Info("system_runtime snapshot (startup)", "snap_json", string(snapJSON))
-	} else {
-		log.Warn("system_runtime snapshot unavailable", "err", snapErr)
-	}
+	// --- Runtime config store + hot-reload watcher + startup snapshot ---
+	cfgStore := wiringServeCfgStoreWatch(ctx, g, cfg, comp)
 
 	// --- LLM adapter with fallback ---
 	llmAdapter, err := createLLMAdapterWithFallback(cfg)
 	if err != nil {
 		return fmt.Errorf("create llm adapter: %w", err)
-	}
-
-	// --- Tool registry (public API) ---
-	registry, err := newToolRegistry()
-	if err != nil {
-		return fmt.Errorf("create tool registry: %w", err)
-	}
-
-	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
-	// single set of connections; its Stop hook is registered below) and bridge
-	// its tools into the internal + public registries. ---
-	internalReg, err := setupMCP(ctx, comp.MCP, registry, ares_bootstrap.ToolDepsFromComponents(comp))
-	if err != nil {
-		return fmt.Errorf("MCP setup: %w", err)
-	}
-
-	// Register AKF (Knowledge Fabric) tools into the internal registry using
-	// the shared KnowledgeRuntime from bootstrap. This is the critical wiring
-	// that makes knowledge genome patches (ChangeBudget/ChangePlanner/
-	// ChangeReducer) affect the actual runtime used by the agent's knowledge
-	// tools — because both the evolution system's KnowledgePatchExecutor and
-	// the agent's AKF tools share the same comp.KnowledgeRuntime instance.
-	if comp.KnowledgeRuntime != nil {
-		akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
-		for _, akfTool := range akfSvc.Tools() {
-			t := akfTool // capture
-			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
-			if err := internalReg.Register(adapted); err != nil {
-				log.Warn("AKF: failed to register tool", "name", t.Name, "err", err)
-			}
-		}
-		log.Info("AKF tools registered with shared KnowledgeRuntime", "count", len(akfSvc.Tools()))
-	}
-
-	// --- ToolBinder for agents ---
-	// Primitive 7 wiring: probe host commands from the ARES_NATIVE_TOOLS
-	// allowlist and register them into the internal registry (command -v +
-	// --help; security boundary = allowlist only). Registered tools flow into
-	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
-	// subset per task (progressive disclosure), and serve keeps the full set
-	// active by default (zero-value behavior, no change to LLM tool injection).
-	if err := registerNativeTools(ctx, internalReg); err != nil {
-		return fmt.Errorf("register native tools: %w", err)
-	}
-
-	// Expose the environment-capability searcher as
-	// the `search_capabilities` tool so agents can actively discover tools,
-	// skills, and native commands. Registered before the binder is built so it
-	// flows into the agent tool set naturally. comp.SkillsRegistry may be nil
-	// (skills disabled) — the searcher skips that source.
-	if err := registerCapabilitySearch(internalReg, comp.SkillsRegistry); err != nil {
-		return fmt.Errorf("register capability search: %w", err)
-	}
-
-	// Expose the skill catalog as first-class agent tools
-	// (skill_search / skill_load / ...) so the LLM can drive progressive
-	// disclosure itself instead of only receiving the resident prompt block.
-	if comp.SkillCatalog != nil {
-		for _, t := range ares_skills.CatalogTools(comp.SkillCatalog) {
-			if err := internalReg.Register(t); err != nil {
-				log.Warn("serve: register skill tool skipped", "tool", t.Name(), "err", err)
-			}
-		}
-		log.Info("serve: skill catalog tools registered (progressive disclosure active)")
-	}
-
-	toolBinder := newToolBinder(internalReg)
-	log.Info("tools registered", "count", len(toolBinder.ListTools()))
-
-	// --- Capability Planner bridge for agent tool fallback ---
-	if bridge := newPlannerBridge(internalReg); bridge != nil {
-		toolBinder.WithPlannerBridge(bridge)
-		log.Info("planner bridge: attached")
-	}
-
-	// Step Y.3: arm the tool-call perception channel. The decorator wraps the
-	// binder AFTER the planner bridge is attached, so planner-resolved calls are
-	// measured too, and it is applied at the single site every execution body
-	// receives its binder from — instrumenting the cognition loop instead
-	// would miss calls resolved elsewhere. A nil
-	// recorder (channel not armed — the default) returns the binder untouched.
-	if comp.NewEvolution != nil && comp.NewEvolution.ChannelFeedback.ToolCallsArmed() {
-		toolBinder = sub.ObserveToolCalls(toolBinder, comp.NewEvolution.ChannelFeedback)
-		log.Info("serve: tool-call feedback channel armed (evolution reads tool outcomes)")
 	}
 
 	// --- ChatClient for native tool calling ---
@@ -358,6 +154,12 @@ func runServe() error {
 		return fmt.Errorf("create chat client: %w", err)
 	}
 	log.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+
+	// --- Tools + MCP + binder ---
+	toolBinder, registry, internalReg, err := wiringServeToolchain(ctx, cfg, comp)
+	if err != nil {
+		return err
+	}
 
 	// --- Create + register agents with the runtime manager ---
 	subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
@@ -414,6 +216,252 @@ func runServe() error {
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
 	// normalized to nil so `ares serve` exits 0 on Ctrl-C.
 	return normalizeShutdownErr(g.Wait())
+}
+
+// wiringServeSignalWatch starts the signal-handling goroutine on the errgroup
+// (M-C2 segment extraction: body moved verbatim from runServe). compPtr is
+// the atomic slot the Bootstrap assignment publishes to.
+func wiringServeSignalWatch(
+	g *errgroup.Group,
+	sigCh <-chan os.Signal,
+	ctx context.Context,
+	cancel context.CancelFunc,
+	shutdownMgr *ares_shutdown.Manager,
+	compPtr *atomic.Pointer[ares_bootstrap.Components],
+) {
+	g.Go(func() error {
+		select {
+		case <-sigCh:
+			fmt.Println("\nShutting down...")
+			// A second SIGINT/SIGTERM during the graceful shutdown forces an
+			// immediate exit — a hung shutdown phase (or a stuck component)
+			// must never trap the operator in an unstoppable process.
+			// NOT adopted into the orchestrator: this watcher
+			// must stay alive while the managed pools are being drained —
+			// exactly the window when adopted loops are being torn down.
+			// One-shot short task with its own recover boundary.
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(os.Stderr, "force-exit watcher panicked: %v\n", r)
+						os.Exit(1)
+					}
+				}()
+				<-sigCh
+				fmt.Fprintln(os.Stderr, "\nSecond signal received: forcing immediate exit")
+				os.Exit(1)
+			}()
+			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
+			// bounded overall timeout. cancel() afterwards stops background
+			// goroutines (event bridge, task submission) that wait on ctx.
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer shutdownCancel()
+			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
+			}
+			// Give SystemRuntime Shutdown its own 15s budget so it
+			// is not starved by phase callbacks that consumed the shared
+			// 30s shutdownCtx. An expired context would skip MCP/Runtime/
+			// FlightRecorder Stop, leaking goroutines and connections.
+			sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer sysRuntimeCancel()
+			shutdownSystemRuntime(compPtr, sysRuntimeCtx)
+			cancel()
+		case <-ctx.Done():
+		}
+		comp := compPtr.Load()
+		if comp == nil {
+			return nil
+		}
+		// Record the pre-shutdown component snapshot for shutdown diagnostics
+		// (which components were still running before background exit).
+		if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
+			log.Info("system_runtime snapshot (shutdown)", "snap_json", string(snapJSON))
+		}
+		// Wait for Bootstrap's background goroutines (distillation subscriber,
+		// GA evolution ticker, LLM suggestion ticker) to exit after the
+		// context is cancelled, so none outlives the graceful shutdown.
+		comp.WaitBackground()
+		return nil
+	})
+}
+
+// wiringServeEventStore builds the serve event store and runs Bootstrap
+// (M-C2 segment extraction: body moved verbatim from runServe — EventStore
+// first, Postgres when storage is configured / archive-enabled memory
+// otherwise, then the infrastructure components via the single wiring hub).
+//
+// Persistence contract (M4.1): when cfg.Storage points at Postgres, the
+// serve event stream is the durable events table via PostgresEventStore —
+// fitness evidence and the task.* log survive restarts, and the Task
+// Fabric folds them back on boot (createPeerAgents → RestoreFromStore).
+// PG construction failures are FATAL, mirroring Bootstrap's evidence-pool
+// posture: silently falling back to the in-memory store would make the
+// persistence feature lie about durability. Memory mode keeps the
+// archive-enabled compactable store (round_N.json archive +
+// compaction/trim) unchanged.
+//
+// The store is passed via deps so Bootstrap wires Runtime/Memory against the
+// real serve store instead of creating a throwaway MemoryEventStore. On
+// success the store's shutdown is owned by the System Runtime (the
+// eventstore stop hook closes it in reverse-topological order).
+func wiringServeEventStore(ctx context.Context, cfg *ares_config.Config) (*ares_bootstrap.Components, ares_events.EventStore, *runtime.Manager, error) {
+	serveStore, closeStore, err := newServeEventStore(cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create event store: %w", err)
+	}
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
+		EventStore: serveStore,
+	})
+	if err != nil {
+		// Bootstrap ran its own cleanups; the store came from serve, so its
+		// resources (the PG pool) are released here — mirroring Bootstrap's
+		// cleanup of its evidence pool on partial failure.
+		_ = closeStore() // best-effort cleanup on the failure path
+		return nil, nil, nil, fmt.Errorf("bootstrap: %w", err)
+	}
+	return comp, comp.EventStore, comp.Runtime, nil
+}
+
+// wiringServeCfgStoreWatch builds the runtime config store + hot-reload
+// watcher and reports the startup component snapshot (M-C2 segment
+// extraction: body moved verbatim from runServe).
+//
+// The store holds the last-good config and its reload history, served via
+// /runtime/config on the console HTTP server. When the serve command was
+// started with an explicit config file, an fsnotify watcher hot-reloads it
+// on change (failed reloads keep the previous config). With no config file
+// (minimal --llm-url mode) the watcher is skipped — the store still serves
+// the effective config snapshot.
+func wiringServeCfgStoreWatch(ctx context.Context, g *errgroup.Group, cfg *ares_config.Config, comp *ares_bootstrap.Components) *ares_config.ConfigStore {
+	cfgStore := ares_config.NewConfigStore(cfg)
+	if serveConfigPath != "" {
+		cfgPath := serveConfigPath
+		g.Go(func() error {
+			// Watch blocks until ctx cancels; a reload error is logged inside
+			// the store (recorded to history), so returning here is only for
+			// watcher setup failures and ctx cancellation.
+			return cfgStore.Watch(ctx, cfgPath)
+		})
+	}
+
+	// EventStore is wired into Memory during Bootstrap,
+	// not post-Bootstrap here. validateServeConfig has already enforced that
+	// the full agent-serving entry point has its required Memory component.
+
+	// Stage 1 observability: report the System Runtime component snapshot
+	// (names, modes, lifecycle states) so operators can confirm which
+	// components were assembled and reached Ready at startup.
+	if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
+		log.Info("system_runtime snapshot (startup)", "snap_json", string(snapJSON))
+	} else {
+		log.Warn("system_runtime snapshot unavailable", "err", snapErr)
+	}
+	return cfgStore
+}
+
+// wiringServeToolchain assembles the tool plane: public registry, MCP bridge,
+// AKF tools, native tool discovery, capability search, skill catalog tools,
+// and the ToolBinder with its planner bridge and tool-call feedback channel
+// (M-C2 segment extraction: body moved verbatim from runServe).
+func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ares_bootstrap.Components) (toolBinder sub.ToolBinder, registry *api_tools.Registry, internalReg *core_tools.Registry, err error) {
+	// --- Tool registry (public API) ---
+	registry, err = newToolRegistry()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create tool registry: %w", err)
+	}
+
+	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
+	// single set of connections; its Stop hook is registered below) and bridge
+	// its tools into the internal + public registries. ---
+	internalReg, err = setupMCP(ctx, comp.MCP, registry, ares_bootstrap.ToolDepsFromComponents(comp))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("MCP setup: %w", err)
+	}
+
+	// Register AKF (Knowledge Fabric) tools into the internal registry using
+	// the shared KnowledgeRuntime from bootstrap. This is the critical wiring
+	// that makes knowledge genome patches (ChangeBudget/ChangePlanner/
+	// ChangeReducer) affect the actual runtime used by the agent's knowledge
+	// tools — because both the evolution system's KnowledgePatchExecutor and
+	// the agent's AKF tools share the same comp.KnowledgeRuntime instance.
+	wiringServeAKFTools(comp, internalReg)
+
+	// --- ToolBinder for agents ---
+	// Primitive 7 wiring: probe host commands from the ARES_NATIVE_TOOLS
+	// allowlist and register them into the internal registry (command -v +
+	// --help; security boundary = allowlist only). Registered tools flow into
+	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
+	// subset per task (progressive disclosure), and serve keeps the full set
+	// active by default (zero-value behavior, no change to LLM tool injection).
+	if err := registerNativeTools(ctx, internalReg); err != nil {
+		return nil, nil, nil, fmt.Errorf("register native tools: %w", err)
+	}
+
+	// Expose the environment-capability searcher as
+	// the `search_capabilities` tool so agents can actively discover tools,
+	// skills, and native commands. Registered before the binder is built so it
+	// flows into the agent tool set naturally. comp.SkillsRegistry may be nil
+	// (skills disabled) — the searcher skips that source.
+	if err := registerCapabilitySearch(internalReg, comp.SkillsRegistry); err != nil {
+		return nil, nil, nil, fmt.Errorf("register capability search: %w", err)
+	}
+
+	// Expose the skill catalog as first-class agent tools
+	// (skill_search / skill_load / ...) so the LLM can drive progressive
+	// disclosure itself instead of only receiving the resident prompt block.
+	if comp.SkillCatalog != nil {
+		for _, t := range ares_skills.CatalogTools(comp.SkillCatalog) {
+			if err := internalReg.Register(t); err != nil {
+				log.Warn("serve: register skill tool skipped", "tool", t.Name(), "err", err)
+			}
+		}
+		log.Info("serve: skill catalog tools registered (progressive disclosure active)")
+	}
+
+	toolBinder = newToolBinder(internalReg)
+	log.Info("tools registered", "count", len(toolBinder.ListTools()))
+
+	// --- Capability Planner bridge for agent tool fallback ---
+	if bridge := newPlannerBridge(internalReg); bridge != nil {
+		toolBinder.WithPlannerBridge(bridge)
+		log.Info("planner bridge: attached")
+	}
+
+	// Step Y.3: arm the tool-call perception channel. The decorator wraps the
+	// binder AFTER the planner bridge is attached, so planner-resolved calls are
+	// measured too, and it is applied at the single site every execution body
+	// receives its binder from — instrumenting the cognition loop instead
+	// would miss calls resolved elsewhere. A nil
+	// recorder (channel not armed — the default) returns the binder untouched.
+	if comp.NewEvolution != nil && comp.NewEvolution.ChannelFeedback.ToolCallsArmed() {
+		toolBinder = sub.ObserveToolCalls(toolBinder, comp.NewEvolution.ChannelFeedback)
+		log.Info("serve: tool-call feedback channel armed (evolution reads tool outcomes)")
+	}
+
+	return toolBinder, registry, internalReg, nil
+}
+
+// wiringServeAKFTools registers the AKF (Knowledge Fabric) tools into the
+// internal registry using the shared KnowledgeRuntime from bootstrap (M-C2
+// segment extraction: body moved verbatim from runServe). This is the
+// critical wiring that makes knowledge genome patches (ChangeBudget/
+// ChangePlanner/ChangeReducer) affect the actual runtime used by the agent's
+// knowledge tools — because both the evolution system's
+// KnowledgePatchExecutor and the agent's AKF tools share the same
+// comp.KnowledgeRuntime instance.
+func wiringServeAKFTools(comp *ares_bootstrap.Components, internalReg *core_tools.Registry) {
+	if comp.KnowledgeRuntime != nil {
+		akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
+		for _, akfTool := range akfSvc.Tools() {
+			t := akfTool // capture
+			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
+			if err := internalReg.Register(adapted); err != nil {
+				log.Warn("AKF: failed to register tool", "name", t.Name, "err", err)
+			}
+		}
+		log.Info("AKF tools registered with shared KnowledgeRuntime", "count", len(akfSvc.Tools()))
+	}
 }
 
 // normalizeShutdownErr treats context cancellation (graceful shutdown) as a
@@ -1397,517 +1445,6 @@ func injectToolClassDAG(comp *ares_bootstrap.Components, toolBinder sub.ToolBind
 	}
 }
 
-// chaosStopControl is the process-level kill switch for the live chaos loop
-// (the emergency stop). The HTTP handler POST /api/chaos/stop
-// calls RequestStop; the loop polls Stopped and exits permanently. Shadow
-// mode is unaffected — it never touches production agents.
-type chaosStopControl struct {
-	mu      sync.Mutex
-	stopped bool
-}
-
-// liveChaosCtl is the singleton control for this process.
-var liveChaosCtl = &chaosStopControl{}
-
-// RequestStop trips the kill switch.
-func (c *chaosStopControl) RequestStop() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.stopped = true
-}
-
-// Stopped reports whether the kill switch has been tripped.
-func (c *chaosStopControl) Stopped() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.stopped
-}
-
-// shadowSandboxLoop runs a periodic shadow Sandbox verification: it constructs
-// an independent scratch fabric, replays a canonical failure scenario
-// (agent kill → lease expire → recovery), and logs the result. Production
-// agents are never touched — the sandbox uses its own scratch fabrics.
-//
-// The chaos subsystem defaults to shadow
-// mode, which verifies recovery capability without impacting live agents.
-//
-// The status reporter records the latest verification outcome so the
-// introspection panel can surface shadow-sandbox health.
-func shadowSandboxLoop(ctx context.Context, interval time.Duration, status *introspect.ChaosReporter) {
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	log.Info("serve: shadow sandbox loop started (production agents untouched)", "interval", interval.String())
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("serve: shadow sandbox loop stopping (context cancelled)")
-			return
-		case <-ticker.C:
-			runShadowSandbox(ctx, status)
-		}
-	}
-}
-
-// runShadowSandbox constructs a scratch fabric, runs a canonical
-// agent-kill→recovery scenario, and logs the outcome. All scratch fabrics
-// are local to this call and discarded after — production is never touched.
-// The outcome (recovered_ready / errored) is recorded to the panel status.
-func runShadowSandbox(ctx context.Context, status *introspect.ChaosReporter) {
-	// Build scratch fabrics — completely independent from production.
-	scratchTasks := taskfabric.NewFabric()
-	scratchAgents := agentfabric.NewFabric()
-
-	// Build a scratch Recovery wired to the scratch fabrics.
-	scratchRecovery := aresrecovery.New(scratchTasks, scratchAgents, aresrecovery.DefaultRestartPolicy())
-
-	// Build the Sandbox on the scratch fabrics.
-	sandbox := aresrecovery.NewSandbox(scratchTasks, scratchAgents, scratchRecovery)
-
-	// Scripted scenario: spawn agent → create task → agent acquires task →
-	// agent is killed → lease expires → recovery runs.
-	events := []aresrecovery.SandboxEvent{
-		{Type: aresrecovery.SandboxEventAgentSpawn, AgentID: "shadow-agent-1"},
-		{Type: aresrecovery.SandboxEventTaskCreate, TaskID: "shadow-task-1"},
-		{Type: aresrecovery.SandboxEventTaskAcquire, TaskID: "shadow-task-1", AgentID: "shadow-agent-1"},
-		{Type: aresrecovery.SandboxEventAgentKill, AgentID: "shadow-agent-1"},
-		{Type: aresrecovery.SandboxEventLeaseExpire, TaskID: "shadow-task-1"},
-		{Type: aresrecovery.SandboxEventRecoverAll},
-	}
-
-	outcomes, err := sandbox.Replay(ctx, events)
-	if err != nil {
-		log.Info("serve: shadow sandbox replay failed: (recovery verification inconclusive)", "err", err)
-		if status != nil {
-			status.RecordShadow(introspect.ShadowResult{
-				LastRun:   time.Now(),
-				Events:    len(events),
-				Recovered: false,
-				Errored:   true,
-			})
-		}
-		return
-	}
-
-	// Check the final outcome — the recovery chain must have fully recovered
-	// the requeued task (RecoverFromAgentDeath re-acquires it for a
-	// replacement agent, so the final state is LEASED, not READY). The
-	// reliable signal is the recovered-task count carried on the
-	// recover.all outcome's Detail. A missing/empty outcome list is treated
-	// as inconclusive.
-	if len(outcomes) == 0 {
-		log.Info("serve: shadow sandbox replay produced no outcomes (recovery verification inconclusive)")
-		if status != nil {
-			status.RecordShadow(introspect.ShadowResult{
-				LastRun:   time.Now(),
-				Events:    len(events),
-				Recovered: false,
-				Errored:   true,
-			})
-		}
-		return
-	}
-	last := outcomes[len(outcomes)-1]
-	recovered, _ := last.Detail["recovered"].(int)
-	recoveredOK := recovered > 0
-	log.Info("serve: shadow sandbox completed", "events", len(outcomes), "final_task_state", last.TaskState, "recovered", recovered)
-	if !recoveredOK {
-		log.Info("serve: shadow sandbox WARNING — recovery chain did not recover the requeued task; chain may be degraded")
-	}
-	if status != nil {
-		status.RecordShadow(introspect.ShadowResult{
-			LastRun:   time.Now(),
-			Events:    len(outcomes),
-			Recovered: recoveredOK,
-			Errored:   false,
-		})
-	}
-}
-
-// wireChaos wires the chaos subsystem based on the kernel config. By default
-// (chaos disabled or mode=shadow), only the shadow sandbox loop is started.
-// When mode=live AND allow_live=true, a real Chaos harness is also constructed
-// — but only for dedicated testing environments. Production deployments should
-// never enable live mode.
-//
-// The shadow sandbox loop is attached to the provided context and runs as a
-// managed background loop (runBackground — panic-recovered, joined by the
-// orchestrator/bootstrap on shutdown, never a bare `go`). It is best-effort:
-// a panic in the sandbox is recovered and logged, never crashing the process.
-//
-// status bridges the loops into the introspection panel; it may be
-// nil when the panel is not wired — the loops then only log.
-func wireChaos(ctx context.Context, comp *ares_bootstrap.Components, cfg *ares_config.Config, peerKernel *kernelHandle, gaActive func() bool, status *introspect.ChaosReporter) {
-	if status != nil {
-		if cfg.Kernel.Chaos.Enabled {
-			status.SetConfig(true, effectiveChaosMode(cfg))
-		} else {
-			status.SetConfig(false, "off")
-		}
-	}
-	if !cfg.Kernel.Chaos.Enabled {
-		log.Info("serve: chaos subsystem disabled (kernel.chaos.enabled=false)")
-		return
-	}
-
-	mode := cfg.Kernel.Chaos.Mode
-	if mode == "" {
-		mode = "shadow"
-	}
-
-	startShadow := func() {
-		interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-		runBackground(ctx, comp, "chaos-shadow", func(loopCtx context.Context) error {
-			shadowSandboxLoop(loopCtx, interval, status)
-			return nil
-		})
-	}
-
-	switch mode {
-	case "shadow":
-		startShadow()
-
-	case "live":
-		if !cfg.Kernel.Chaos.AllowLive {
-			log.Info("serve: chaos mode=live but allow_live=false — falling back to shadow mode")
-			startShadow()
-			return
-		}
-		// Live chaos is dangerous: it kills real production agents.
-		// Only construct the Chaos harness when explicitly confirmed AND a
-		// non-empty target whitelist is configured: an empty
-		// eligible_capabilities list must disable injection entirely rather
-		// than default to "everything is a target".
-		if len(cfg.Kernel.Chaos.EligibleCapabilities) == 0 {
-			log.Info("serve: live chaos requested but eligible_capabilities is empty — refusing to arm (falling back to shadow)")
-			startShadow()
-			return
-		}
-		if peerKernel != nil && peerKernel.agents != nil && peerKernel.recovery != nil {
-			if cfg.Kernel.Chaos.StopToken == "" {
-				log.Info("serve: live chaos requested but stop_token is empty — refusing to arm without an emergency-stop credential")
-				startShadow()
-				return
-			}
-			chaos := aresrecovery.NewChaos(peerKernel.agents, peerKernel.recovery)
-			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
-			runBackground(ctx, comp, "chaos-live", func(loopCtx context.Context) error {
-				liveChaosLoop(loopCtx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive, status)
-				return nil
-			})
-			log.Warn("serve: LIVE chaos mode enabled — agents WILL be killed", "interval", interval.String(), "rate_per_min", cfg.Kernel.Chaos.RatePerMin, "eligible_capabilities", cfg.Kernel.Chaos.EligibleCapabilities)
-		} else {
-			log.Info("serve: live chaos requested but kernel handle incomplete — falling back to shadow")
-			startShadow()
-		}
-
-	default:
-		log.Info("serve: unknown chaos mode — defaulting to shadow", "mode", mode)
-		startShadow()
-	}
-}
-
-// effectiveChaosMode resolves the mode that will actually run given the
-// arming guards (allow_live, whitelist, stop token, kernel handle). It mirrors
-// the branching inside wireChaos so the panel reports the true effective mode
-// rather than the raw configured string.
-func effectiveChaosMode(cfg *ares_config.Config) string {
-	mode := cfg.Kernel.Chaos.Mode
-	if mode == "" {
-		mode = "shadow"
-	}
-	if mode != "live" || !cfg.Kernel.Chaos.AllowLive {
-		return "shadow"
-	}
-	if len(cfg.Kernel.Chaos.EligibleCapabilities) == 0 || cfg.Kernel.Chaos.StopToken == "" {
-		return "shadow"
-	}
-	return "live"
-}
-
-// liveChaosGuard holds the enforced safety state for a live chaos loop:
-// the rate limiter, per-agent cooldowns, the round-robin cursor, and the
-// fail-safe stop latch.
-type liveChaosGuard struct {
-	limiter     *ares_ratelimit.TokenBucketLimiter
-	cooldownFor time.Duration
-	nextIndex   int
-
-	mu       sync.Mutex
-	cooldown map[string]time.Time // agentID -> earliest next injection time
-	stopped  bool                 // set when recovery verification fails; stops all future injections
-}
-
-func newLiveChaosGuard(ratePerMin int, cooldown time.Duration) *liveChaosGuard {
-	if ratePerMin <= 0 {
-		ratePerMin = 2
-	}
-	if cooldown <= 0 {
-		cooldown = 10 * time.Minute
-	}
-	return &liveChaosGuard{
-		// Token bucket: ratePerMin injections per minute → per-second rate,
-		// burst 1 so injections can never stack.
-		limiter: ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{
-			Rate:  float64(ratePerMin) / 60.0,
-			Burst: 1,
-		}),
-		cooldownFor: cooldown,
-		cooldown:    make(map[string]time.Time),
-	}
-}
-
-// allowTarget reports whether agentID is outside its cooldown window. An
-// expired cooldown entry is dropped on first touch so the map stays bounded to
-// in-cooldown agents instead of accumulating every injected id forever.
-func (g *liveChaosGuard) allowTarget(agentID string, now time.Time) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	until, ok := g.cooldown[agentID]
-	if !ok {
-		return true
-	}
-	if now.After(until) {
-		delete(g.cooldown, agentID)
-		return true
-	}
-	return false
-}
-
-// markInjected records that agentID was just injected and advances the
-// round-robin cursor past it.
-func (g *liveChaosGuard) markInjected(agentID string, now time.Time) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.cooldown[agentID] = now.Add(g.cooldownFor)
-}
-
-// stop trips the fail-safe latch; after this no further injections run.
-func (g *liveChaosGuard) stop() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.stopped = true
-}
-
-func (g *liveChaosGuard) isStopped() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.stopped
-}
-
-// liveChaosLoop runs periodic live chaos injections. This is the dangerous
-// path: real production agents are killed/suspended. Every injection cycle is
-// gated by six enforced guardrails:
-//
-//  1. Emergency stop — POST /api/chaos/stop (X-Chaos-Token) exits the loop
-//     permanently.
-//  2. Fail-safe latch — if recovery verification ever fails, ALL further
-//     injections stop until process restart.
-//  3. GA quiet window — when cfg.PauseDuringGA is set, injections are deferred
-//     while gaActive() reports a generation mid-flight.
-//  4. Rate limit — token bucket capped at cfg.RatePerMin injections/minute.
-//  5. Cooldown — an injected agent is not targeted again for cfg.Cooldown.
-//  6. Target whitelist — only agents declaring a capability from
-//     cfg.EligibleCapabilities qualify (arming itself refuses an empty list).
-//
-// status surfaces the loop's operational state to the panel
-// (active / injections / fail-safe / GA pause); it may be nil.
-func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig, gaActive func() bool, status *introspect.ChaosReporter) {
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-
-	ratePerMin := cfg.RatePerMin
-	if ratePerMin <= 0 {
-		ratePerMin = 2
-	}
-	cooldown := parseChaosInterval(cfg.Cooldown, 10*time.Minute)
-	guard := newLiveChaosGuard(ratePerMin, cooldown)
-	pausedForGA := false
-
-	// Report the armed live state to the panel on loop start.
-	if status != nil {
-		status.SetLive(introspect.LiveChaosState{Active: true})
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	log.Info("serve: live chaos loop started (rate limit and cooldown enforced)", "interval", interval.String(), "rate_per_min", ratePerMin, "cooldown", cooldown.String(), "eligible_capabilities", cfg.EligibleCapabilities, "pause_during_ga", cfg.PauseDuringGA)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("serve: live chaos loop stopping (context cancelled)")
-			if status != nil {
-				status.SetLive(introspect.LiveChaosState{Active: false})
-			}
-			return
-		case <-ticker.C:
-			// Emergency stop: POST /api/chaos/stop trips
-			// this permanently — the loop exits rather than idles.
-			if liveChaosCtl.Stopped() {
-				log.Info("serve: live chaos loop stopped by emergency stop endpoint")
-				if status != nil {
-					status.SetLive(introspect.LiveChaosState{
-						Active:           false,
-						StoppedByControl: true,
-					})
-				}
-				return
-			}
-			if guard.isStopped() {
-				log.Info("serve: live chaos loop stopped by fail-safe latch (earlier recovery verification failed)")
-				if status != nil {
-					status.SetLive(introspect.LiveChaosState{
-						Active:          false,
-						FailSafeTripped: true,
-					})
-				}
-				return
-			}
-			// GA quiet window: defer injections while a
-			// generation is mid-flight. State transitions are logged once so
-			// operators can see the pause engaging and releasing.
-			if cfg.PauseDuringGA && gaActive != nil && gaActive() {
-				if !pausedForGA {
-					pausedForGA = true
-					log.Info("serve: live chaos paused — GA generation in flight (quiet window)")
-					if status != nil {
-						status.SetLive(introspect.LiveChaosState{Active: true, PausedForGA: true})
-					}
-				}
-				continue
-			}
-			if pausedForGA {
-				pausedForGA = false
-				log.Info("serve: live chaos resumed — GA generation finished")
-				if status != nil {
-					status.SetLive(introspect.LiveChaosState{Active: true, PausedForGA: false})
-				}
-			}
-			runLiveChaosInjection(ctx, chaos, fabric, guard, cfg.EligibleCapabilities, status)
-		}
-	}
-}
-
-// runLiveChaosInjection performs a single chaos injection cycle against the
-// next round-robin target that is outside its cooldown window. It injects a
-// kill, then verifies recovery; a failed verification trips the fail-safe
-// latch so no further injections occur. The cycle is wrapped in panic
-// recovery so a chaos failure never crashes the process.
-//
-// status records the injection count and fail-safe state; it may be
-// nil.
-func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard, eligible []string, status *introspect.ChaosReporter) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("serve: live chaos injection panicked (recovered)", "panic", r)
-		}
-	}()
-
-	agents := fabric.Agents()
-	if len(agents) == 0 {
-		log.Info("serve: live chaos — no agents available for injection")
-		return
-	}
-
-	now := time.Now()
-
-	// Round-robin target selection, skipping agents inside their cooldown
-	// window AND agents whose declared capabilities are not whitelisted. If no agent qualifies, skip this cycle entirely.
-	var target string
-	for i := 0; i < len(agents); i++ {
-		candidate := agents[guard.nextIndex%len(agents)]
-		guard.nextIndex++
-		if !guard.allowTarget(candidate, now) {
-			continue
-		}
-		if !agentEligibleForChaos(fabric, candidate, eligible) {
-			continue
-		}
-		target = candidate
-		break
-	}
-	if target == "" {
-		log.Info("serve: live chaos — no eligible target (cooldown or whitelist), skipping cycle")
-		return
-	}
-
-	// Enforced rate limit: the token bucket admits at most RatePerMin
-	// injections per minute regardless of ticker cadence.
-	if allowed, err := guard.limiter.Allow(ctx); err != nil || !allowed {
-		log.Info("serve: live chaos — rate limited, skipping injection on", "err", err, "target", target)
-		return
-	}
-
-	if err := chaos.InjectFailure(ctx, target, aresrecovery.FailureKill); err != nil {
-		log.Warn("serve: live chaos inject kill failed", "target", target, "err", err)
-		return
-	}
-	guard.markInjected(target, now)
-
-	// Report injection to the panel.
-	if status != nil {
-		status.AddInjection(now)
-	}
-
-	// Verify recovery. VerifyRecovery returns the count of recovered agents;
-	// zero means the recovery chain did not restore anything — trip the
-	// fail-safe latch so no further injections run.
-	recovered := chaos.VerifyRecovery(ctx)
-	if recovered == 0 {
-		guard.stop()
-		log.Info("serve: live chaos — recovery verification FAILED for (0 agents recovered); FURTHER INJECTIONS STOPPED by fail-safe latch", "target", target)
-		if status != nil {
-			status.SetLive(introspect.LiveChaosState{
-				Active:          true,
-				FailSafeTripped: true,
-			})
-		}
-		return
-	}
-	log.Info("serve: live chaos — agent killed and recovered (agents recovered)", "target", target, "recovered", recovered)
-}
-
-// parseChaosInterval parses the chaos interval string, returning the default
-// on empty or invalid input.
-func parseChaosInterval(s string, defaultInterval time.Duration) time.Duration {
-	if s == "" {
-		return defaultInterval
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil || d <= 0 {
-		return defaultInterval
-	}
-	return d
-}
-
-// agentEligibleForChaos reports whether the named agent declares at least one
-// capability present in the whitelist. The whitelist is matched
-// against the agent's own Capabilities list; an unknown agent is never
-// eligible.
-func agentEligibleForChaos(fabric *agentfabric.Fabric, agentID string, whitelist []string) bool {
-	if len(whitelist) == 0 {
-		return false
-	}
-	a, err := fabric.Get(agentID)
-	if err != nil || a == nil {
-		return false
-	}
-	for _, capName := range a.Capabilities {
-		for _, w := range whitelist {
-			if capName == w {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // errNoLiveAgentDAG is returned when no peers are configured: the caller
 // keeps the bootstrap placeholder rather than injecting an empty graph.
 var errNoLiveAgentDAG = errors.New("no peer agents configured for a live DAG")
@@ -2041,828 +1578,4 @@ func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, err
 		return nil, fmt.Errorf("build toolclass DAG: %w", err)
 	}
 	return dag, nil
-}
-
-var arenaCmd = &cobra.Command{
-	Use:   "arena",
-	Short: "Chaos Engineering Arena commands",
-	Long: `Run, validate, list, and inspect chaos engineering scenarios.
-Also includes a built-in HTTP server and survival testing.`,
-}
-
-var arenaRunCmd = &cobra.Command{
-	Use:   "run <scenario.yaml>",
-	Short: "Run a scenario against a remote arena server",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := arena.LoadScenarioFile(args[0])
-		if err != nil {
-			return fmt.Errorf("load scenario: %w", err)
-		}
-		if err := arena.ValidateScenario(s); err != nil {
-			return fmt.Errorf("validation failed: %w", err)
-		}
-
-		fmt.Printf("Running scenario: %s\n", s.Name)
-		if s.Description != "" {
-			fmt.Printf("  Description: %s\n", s.Description)
-		}
-		fmt.Printf("  Actions: %d\n", len(s.Actions))
-		fmt.Printf("  Target:   %s\n\n", arenaRunAddr)
-
-		bodyData, err := json.Marshal(s)
-		if err != nil {
-			return fmt.Errorf("marshal scenario: %w", err)
-		}
-
-		url := arenaRunAddr + "/arena/scenario/run"
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bodyData)))
-		if err != nil {
-			return fmt.Errorf("create request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		setArenaAuthHeader(req)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("send request: %w", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("read response: %w", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(respBody))
-		}
-
-		var report arena.ScenarioReport
-		if err := json.Unmarshal(respBody, &report); err != nil {
-			return fmt.Errorf("parse scenario report: %w (body: %s)", err, string(respBody))
-		}
-		printReport(&report)
-		return nil
-	},
-}
-
-var arenaValidateCmd = &cobra.Command{
-	Use:   "validate <scenario.yaml>",
-	Short: "Validate a scenario file",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		scenarioPath := args[0]
-
-		if arenaValidateRemote {
-			return validateRemote(scenarioPath, arenaValidateAddr)
-		}
-
-		s, err := arena.LoadScenarioFile(scenarioPath)
-		if err != nil {
-			return fmt.Errorf("load scenario: %w", err)
-		}
-		if err := arena.ValidateScenario(s); err != nil {
-			fmt.Printf("❌ INVALID: %s\n\n", scenarioPath)
-			fmt.Printf("  Error: %v\n", err)
-			fmt.Printf("  Name:   %s\n", s.Name)
-			fmt.Printf("  Actions: %d\n", len(s.Actions))
-			os.Exit(1)
-		}
-
-		fmt.Printf("✅ VALID: %s\n", scenarioPath)
-		fmt.Printf("  Name:        %s\n", s.Name)
-		fmt.Printf("  Description: %s\n", s.Description)
-		fmt.Printf("  Tags:        %v\n", s.Tags)
-		fmt.Printf("  Actions:     %d\n", len(s.Actions))
-		if s.Config.StopOnError {
-			fmt.Printf("  Config:      stop_on_error=true\n")
-		}
-		if s.Config.Warmup > 0 {
-			fmt.Printf("  Config:      warmup=%v\n", s.Config.Warmup)
-		}
-		if s.Config.Cooldown > 0 {
-			fmt.Printf("  Config:      cooldown=%v\n", s.Config.Cooldown)
-		}
-		if s.Config.Timeout > 0 {
-			fmt.Printf("  Config:      timeout=%v\n", s.Config.Timeout)
-		}
-		return nil
-	},
-}
-
-var arenaListCmd = &cobra.Command{
-	Use:   "list [dir]",
-	Short: "List available scenarios in a directory",
-	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		dir := "."
-		if len(args) >= 1 {
-			dir = args[0]
-		}
-
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return fmt.Errorf("read directory %s: %w", dir, err)
-		}
-
-		var scenarios []string
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			name := entry.Name()
-			ext := filepath.Ext(name)
-			if ext == ".yaml" || ext == ".yml" || ext == ".json" {
-				scenarios = append(scenarios, name)
-			}
-		}
-
-		if len(scenarios) == 0 {
-			fmt.Printf("No scenario files found in %s\n", dir)
-			return nil
-		}
-
-		fmt.Printf("Scenarios in %s:\n", dir)
-		for i, name := range scenarios {
-			fullPath := filepath.Join(dir, name)
-			s, err := arena.LoadScenarioFile(fullPath)
-			if err != nil {
-				fmt.Printf("  %d. %s (parse error: %v)\n", i+1, name, err)
-				continue
-			}
-			desc := s.Description
-			if desc == "" {
-				desc = "(no description)"
-			}
-			tags := ""
-			if len(s.Tags) > 0 {
-				tags = fmt.Sprintf("[%s]", strings.Join(s.Tags, ", "))
-			}
-			fmt.Printf("  %d. %-30s  %s %s\n", i+1, name, desc, tags)
-		}
-		return nil
-	},
-}
-
-// setArenaAuthHeader attaches the arena API key from the environment to an
-// outgoing request. Client subcommands need this because the arena server
-// denies unauthenticated requests by default; without it every CLI call would
-// 401 against a properly configured server, pushing operators towards
-// --allow-anonymous and undoing the hardening.
-func setArenaAuthHeader(req *http.Request) {
-	if key := os.Getenv("ARENA_API_KEY"); key != "" {
-		req.Header.Set("X-API-Key", key)
-	}
-}
-
-var arenaServeCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Start arena HTTP server",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// Real providers — chaos injections now operate on the
-		// arena process's own agent pool and mutable DAG (see
-		// buildArenaInjector / arenaRuntimeProvider / arenaDAGProvider).
-		inj, arenaMgr := buildArenaInjector()
-		defer func() { _ = arenaMgr.Stop() }()
-		// Share the evolution components' evidence store so chaos failures land
-		// in the same store the GA genomes consume for fitness evaluation.
-		ev, err := getNewEvolution()
-		if err != nil {
-			return fmt.Errorf("get evolution components: %w", err)
-		}
-		var evStore evidence.Store
-		if ev != nil && ev.EvidenceStore != nil {
-			evStore = ev.EvidenceStore
-		}
-		svc := arena.NewService(inj, nil, evStore)
-
-		// Wire the evolution bridge: chaos fault detection → coordinator.
-		if ev != nil && ev.Coordinator != nil {
-			bridge := arena.NewEvolutionBridge(ev.Coordinator)
-			svc.SetEvolutionBridge(bridge)
-		}
-
-		handler := arena.NewHandler(svc)
-		// Enable API key auth when configured via env or flag. Without a key,
-		// the middleware denies every request unless anonymous access was
-		// explicitly requested (local development only).
-		apiKey := arenaServeAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("ARENA_API_KEY")
-		}
-		if apiKey != "" {
-			handler.SetAPIKey(apiKey)
-		} else if arenaServeAllowAnon {
-			handler.AllowAnonymous(true)
-		} else {
-			return errors.New("arena serve requires an API key: set --api-key or ARENA_API_KEY, " +
-				"or pass --allow-anonymous to run without authentication (local development only)")
-		}
-
-		mux := http.NewServeMux()
-		handler.RegisterRoutes(mux)
-		authWrapped := handler.APIKeyAuthMiddleware(mux)
-		wrapped := arena.RecoverMiddleware(authWrapped)
-
-		server := &http.Server{
-			Addr:         arenaServeAddr,
-			Handler:      wrapped,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			IdleTimeout:  60 * time.Second,
-		}
-
-		fmt.Printf("Arena server listening on %s\n", arenaServeAddr)
-		if apiKey != "" {
-			fmt.Printf("Auth: API key enabled (header: X-API-Key)\n")
-		} else {
-			fmt.Printf("Auth: DISABLED via --allow-anonymous — destructive endpoints " +
-				"are reachable without credentials. Do not expose this port.\n")
-		}
-		fmt.Printf("Endpoints:\n")
-		fmt.Printf("  POST /arena/scenario/run       Run a scenario\n")
-		fmt.Printf("  POST /arena/scenario/validate   Validate a scenario\n")
-		fmt.Printf("  GET  /arena/stats               View statistics\n")
-		fmt.Printf("  GET  /arena/history             View action history\n")
-		fmt.Printf("  GET  /arena/stream              SSE event stream\n")
-		fmt.Printf("  GET  /arena/score               Resilience score\n")
-		fmt.Printf("  GET  /arena/metrics             Detailed metrics\n")
-		fmt.Printf("  POST /arena/survival            Start survival test (background)\n")
-		fmt.Printf("  POST /arena/survival/stop       Stop survival test\n")
-		fmt.Printf("  GET  /arena/survival/status     Survival progress\n")
-		fmt.Printf("  GET  /arena/flight/timeline     Flight recorder timeline\n")
-		fmt.Printf("  GET  /arena/flight/diagnostics  Diagnostic records\n")
-
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("server error: %w", err)
-		}
-		return nil
-	},
-}
-
-var arenaSurvivalCmd = &cobra.Command{
-	Use:   "survival",
-	Short: "Run survival mode against a remote server",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := map[string]any{
-			"duration": arenaSurvivalDuration.String(),
-			"interval": arenaSurvivalInterval.String(),
-		}
-		body, err := json.Marshal(cfg)
-		if err != nil {
-			return fmt.Errorf("marshal config: %w", err)
-		}
-
-		fmt.Println(strings.Repeat("=", 59))
-		fmt.Println("  Arena Survival Mode")
-		fmt.Println(strings.Repeat("=", 59))
-		fmt.Printf("  Duration: %s  Interval: %s\n", arenaSurvivalDuration, arenaSurvivalInterval)
-		fmt.Printf("  Server:   %s\n\n", arenaSurvivalAddr)
-
-		baseURL := strings.TrimRight(arenaSurvivalAddr, "/")
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			baseURL+"/arena/survival", bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("create start request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		setArenaAuthHeader(req)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("start survival: %w", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("server returned status %d", resp.StatusCode)
-		}
-
-		fmt.Println("  Survival started. Press Ctrl+C to stop.")
-		return pollSurvival(ctx, baseURL)
-	},
-}
-
-var arenaInspectCmd = &cobra.Command{
-	Use:   "inspect",
-	Short: "Inspect arena run results from a remote server",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		baseURL := strings.TrimRight(arenaInspectAddr, "/")
-
-		fmt.Println(strings.Repeat("=", 59))
-		fmt.Println("  Arena Inspection Report")
-		fmt.Println(strings.Repeat("=", 59))
-
-		// Bound the inspection requests so a hanging server cannot block forever.
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		score := getScore(ctx, baseURL)
-		if score != nil {
-			s, _ := score["score"].(float64)
-			g, _ := score["grade"].(string)
-			rr, _ := score["recovery_rate"].(float64)
-			totalF, _ := score["total_faults"].(float64)
-			recF, _ := score["recovered_faults"].(float64)
-			failF, _ := score["failed_faults"].(float64)
-
-			fmt.Printf("\n  Score:          %.1f (%s)\n", s, g)
-			fmt.Printf("  Recovery Rate:  %.1f%%\n", rr)
-			fmt.Printf("  Faults:         %.0f total, %.0f recovered, %.0f failed\n",
-				totalF, recF, failF)
-
-			if av, ok := score["availability_score"].(float64); ok {
-				fmt.Printf("  Availability:   %.1f\n", av)
-			}
-			if cs, ok := score["consistency_score"].(float64); ok {
-				fmt.Printf("  Consistency:    %.1f\n", cs)
-			}
-		} else {
-			fmt.Println("  ⚠ Score data unavailable")
-		}
-
-		metrics := getMetrics(ctx, baseURL)
-		if metrics != nil {
-			fmt.Print("\n  Metrics:\n")
-			if avg, ok := metrics["avg_recovery_time"].(string); ok && avg != "" && avg != "0" {
-				fmt.Printf("    Avg Recovery Time: %s\n", avg)
-			}
-			if minR, ok := metrics["min_recovery_time"].(string); ok && minR != "" {
-				fmt.Printf("    Min Recovery Time: %s\n", minR)
-			}
-			if maxR, ok := metrics["max_recovery_time"].(string); ok && maxR != "" {
-				fmt.Printf("    Max Recovery Time: %s\n", maxR)
-			}
-			if fc, ok := metrics["failover_count"].(float64); ok && fc > 0 {
-				fmt.Printf("    Failovers:         %.0f\n", fc)
-			}
-			if dr, ok := metrics["data_consistency_rate"].(float64); ok && dr > 0 {
-				fmt.Printf("    Data Consistency:  %.1f%%\n", dr)
-			}
-		}
-
-		if arenaInspectTimeline {
-			printInspectTimeline(ctx, baseURL)
-		}
-		if arenaInspectDiagnostics {
-			printInspectDiagnostics(ctx, baseURL)
-		}
-
-		fmt.Println()
-		return nil
-	},
-}
-
-// Flags
-var (
-	arenaRunAddr            string
-	arenaValidateRemote     bool
-	arenaValidateAddr       string
-	arenaServeAddr          string
-	arenaServeAPIKey        string
-	arenaServeAllowAnon     bool
-	arenaSurvivalAddr       string
-	arenaSurvivalDuration   time.Duration
-	arenaSurvivalInterval   time.Duration
-	arenaInspectAddr        string
-	arenaInspectTimeline    bool
-	arenaInspectDiagnostics bool
-)
-
-// Arena init. Order-independent from the serve init above (each only wires
-// its own disjoint cobra tree and flag sets; the pre-merge files ran them in
-// filename order — arena.go before serve.go — which is not preserved here,
-// and nothing depends on it).
-func init() {
-	rootCmd.AddCommand(arenaCmd)
-
-	arenaCmd.AddCommand(arenaRunCmd)
-	arenaRunCmd.Flags().StringVar(&arenaRunAddr, "addr", "http://localhost:8080", "Arena server address")
-
-	arenaCmd.AddCommand(arenaValidateCmd)
-	arenaValidateCmd.Flags().BoolVar(&arenaValidateRemote, "remote", false, "Validate against remote server")
-	arenaValidateCmd.Flags().StringVar(&arenaValidateAddr, "addr", "http://localhost:8080", "Arena server address (used with --remote)")
-
-	arenaCmd.AddCommand(arenaListCmd)
-
-	arenaCmd.AddCommand(arenaServeCmd)
-	arenaServeCmd.Flags().StringVar(&arenaServeAddr, "addr", ":8080", "Listen address")
-	arenaServeCmd.Flags().StringVar(&arenaServeAPIKey, "api-key", "", "API key required for all arena endpoints (also via ARENA_API_KEY env)")
-	arenaServeCmd.Flags().BoolVar(&arenaServeAllowAnon, "allow-anonymous", false,
-		"Serve arena endpoints without authentication (local development only; destructive endpoints become unprotected)")
-
-	arenaCmd.AddCommand(arenaSurvivalCmd)
-	arenaSurvivalCmd.Flags().StringVar(&arenaSurvivalAddr, "addr", "http://localhost:8080", "Arena server address")
-	arenaSurvivalCmd.Flags().DurationVar(&arenaSurvivalDuration, "duration", 5*time.Minute, "Survival test duration")
-	arenaSurvivalCmd.Flags().DurationVar(&arenaSurvivalInterval, "interval", 10*time.Second, "Interval between fault injections")
-
-	arenaCmd.AddCommand(arenaInspectCmd)
-	arenaInspectCmd.Flags().StringVar(&arenaInspectAddr, "addr", "http://localhost:8080", "Arena server address")
-	arenaInspectCmd.Flags().BoolVar(&arenaInspectTimeline, "timeline", true, "Show timeline events")
-	arenaInspectCmd.Flags().BoolVar(&arenaInspectDiagnostics, "diagnostics", true, "Show diagnostics breakdown")
-}
-
-// ── Shared helpers ──────────────────────────────────────────
-
-func validateRemote(scenarioPath, addr string) error {
-	s, err := arena.LoadScenarioFile(scenarioPath)
-	if err != nil {
-		return fmt.Errorf("load scenario: %w", err)
-	}
-
-	bodyData, err := json.Marshal(s)
-	if err != nil {
-		return fmt.Errorf("marshal scenario: %w", err)
-	}
-
-	url := addr + "/arena/scenario/validate"
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bodyData)))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	setArenaAuthHeader(req)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("send request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("remote validation failed (status %d): %s", resp.StatusCode, string(respBody))
-	}
-	fmt.Println(string(respBody))
-	return nil
-}
-
-func pollSurvival(ctx context.Context, baseURL string) error {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nSurvival stopped.")
-			printFinalScore(ctx, baseURL)
-			return nil
-		case <-ticker.C:
-			printSurvivalStatus(ctx, baseURL)
-		}
-	}
-}
-
-func printSurvivalStatus(ctx context.Context, baseURL string) {
-	s := getSurvivalStatus(ctx, baseURL)
-	if s == nil {
-		return
-	}
-	status, _ := s["status"].(string)
-	if status == "" {
-		return
-	}
-	progress, _ := s["progress"].(float64)
-	statusMsg := status
-	if progress > 0 {
-		statusMsg = fmt.Sprintf("%s (%.0f%%)", status, progress)
-	}
-	fmt.Printf("\r  Status: %-20s", statusMsg)
-}
-
-func getSurvivalStatus(ctx context.Context, baseURL string) map[string]any {
-	return getJSON(ctx, baseURL+"/arena/survival/status")
-}
-
-func getScore(ctx context.Context, baseURL string) map[string]any {
-	return getJSON(ctx, baseURL+"/arena/score")
-}
-
-func getMetrics(ctx context.Context, baseURL string) map[string]any {
-	return getJSON(ctx, baseURL+"/arena/metrics")
-}
-
-func printFinalScore(ctx context.Context, baseURL string) {
-	score := getScore(ctx, baseURL)
-	if score == nil {
-		return
-	}
-	s, _ := score["score"].(float64)
-	g, _ := score["grade"].(string)
-	fmt.Printf("\n\nFinal Score: %.1f (%s)\n", s, g)
-}
-
-func printInspectTimeline(ctx context.Context, baseURL string) {
-	tlData := getJSON(ctx, baseURL+"/arena/flight/timeline")
-	if tlData == nil {
-		return
-	}
-
-	if events, ok := tlData["events"].([]any); ok && len(events) > 0 {
-		fmt.Print("\n  Timeline Events:\n")
-		for i, evt := range events {
-			if m, ok := evt.(map[string]any); ok {
-				t := stringOr(m, "type", "?")
-				agent := stringOr(m, "agent_id", "?")
-				ts := stringOr(m, "timestamp", "")
-				if len(ts) > 19 {
-					ts = ts[:19]
-				}
-				fmt.Printf("    %d. [%s] agent=%s @ %s\n", i+1, t, agent, ts)
-			}
-		}
-	}
-}
-
-func printInspectDiagnostics(ctx context.Context, baseURL string) {
-	diagData := getJSON(ctx, baseURL+"/arena/flight/diagnostics")
-	if diagData == nil {
-		return
-	}
-
-	if records, ok := diagData["records"].([]any); ok && len(records) > 0 {
-		fmt.Print("\n  Diagnostics:\n")
-		for i, rec := range records {
-			if m, ok := rec.(map[string]any); ok {
-				cat := stringOr(m, "category", "?")
-				agent := stringOr(m, "agent_id", "?")
-				cause := stringOr(m, "root_cause", "")
-				if len(cause) > 60 {
-					cause = cause[:60] + "..."
-				}
-				fmt.Printf("    %d. [%s] agent=%s cause=%q\n", i+1, cat, agent, cause)
-			}
-		}
-	}
-}
-
-// getJSON performs an HTTP GET with the given context and decodes the JSON
-// response body into a map. Returns nil on any error. The context provides
-// cancellation/timeout control and supersedes the legacy http.Get calls.
-func getJSON(ctx context.Context, url string) map[string]any {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-	return result
-}
-
-func printReport(report *arena.ScenarioReport) {
-	fmt.Println("=" + strings.Repeat("=", 59))
-	fmt.Printf("  Scenario Report: %s\n", report.ScenarioName)
-	fmt.Println("=" + strings.Repeat("=", 59))
-
-	if report.Description != "" {
-		fmt.Printf("  Description: %s\n", report.Description)
-	}
-
-	fmt.Printf("  Started:    %s\n", report.StartedAt.Format(time.RFC3339))
-	fmt.Printf("  Finished:   %s\n", report.FinishedAt.Format(time.RFC3339))
-	fmt.Printf("  Duration:   %s\n", report.Duration.Truncate(time.Millisecond))
-	fmt.Println()
-	fmt.Printf("  Results:    %d passed, %d failed\n",
-		report.Passed, report.Failed)
-	fmt.Printf("  Score:      %.1f (%s)\n", report.Score.Score, report.Score.Grade)
-	fmt.Printf("  Verified:   %t\n", report.Verified)
-	fmt.Println()
-
-	if len(report.Results) > 0 {
-		fmt.Println("  Action Details:")
-		fmt.Println("  " + strings.Repeat("-", 59))
-		for i, r := range report.Results {
-			status := "✅ PASS"
-			if !r.Success {
-				status = "❌ FAIL"
-			}
-			actionType := string(r.Action.Type)
-			label := ""
-			if r.Action.Metadata != nil {
-				if l, ok := r.Action.Metadata["label"].(string); ok {
-					label = l
-				}
-			}
-			if label != "" {
-				fmt.Printf("    %d. [%s] %s (%s) - %s\n",
-					i+1, status, actionType, label, r.Duration.Truncate(time.Millisecond))
-			} else {
-				fmt.Printf("    %d. [%s] %s - %s\n",
-					i+1, status, actionType, r.Duration.Truncate(time.Millisecond))
-			}
-			if r.Error != "" {
-				fmt.Printf("       Error: %s\n", r.Error)
-			}
-		}
-	}
-
-	fmt.Println()
-	fmt.Printf("  Recovery Rate: %.1f%%\n", report.Score.RecoveryRate)
-	if report.Score.AvgRecoveryTime > 0 {
-		fmt.Printf("  Avg Recovery: %s\n", report.Score.AvgRecoveryTime.Truncate(time.Millisecond))
-	}
-	fmt.Println()
-}
-
-func stringOr(m map[string]any, key, fallback string) string {
-	if v, ok := m[key]; ok {
-		if s, ok2 := v.(string); ok2 {
-			return s
-		}
-	}
-	return fallback
-}
-
-// arenaRuntimeProvider adapts the arena process's own runtime.Manager to
-// arena.RuntimeProvider. Manager implements the chaos methods natively
-// (manager_chaos.go); the explicit delegation keeps the adapter decoupled
-// from interface drift on either side.
-type arenaRuntimeProvider struct{ mgr *runtime.Manager }
-
-func (p *arenaRuntimeProvider) StopAgent(ctx context.Context, agentID string) error {
-	return p.mgr.StopAgent(ctx, agentID)
-}
-
-func (p *arenaRuntimeProvider) ListAgents() []runtime.AgentInfo {
-	return p.mgr.ListAgents()
-}
-
-func (p *arenaRuntimeProvider) PauseAgent(ctx context.Context, agentID string) error {
-	return p.mgr.PauseAgent(ctx, agentID)
-}
-
-func (p *arenaRuntimeProvider) ResumeAgent(ctx context.Context, agentID string) error {
-	return p.mgr.ResumeAgent(ctx, agentID)
-}
-
-func (p *arenaRuntimeProvider) SlowAgent(ctx context.Context, agentID string, delay time.Duration) error {
-	return p.mgr.SlowAgent(ctx, agentID, delay)
-}
-
-func (p *arenaRuntimeProvider) PartitionNetwork(ctx context.Context, agentID string) error {
-	return p.mgr.PartitionNetwork(ctx, agentID)
-}
-
-func (p *arenaRuntimeProvider) ToolTimeout(ctx context.Context, agentID string, timeout time.Duration) error {
-	return p.mgr.ToolTimeout(ctx, agentID, timeout)
-}
-
-func (p *arenaRuntimeProvider) CorruptMemory(ctx context.Context, agentID string) error {
-	return p.mgr.CorruptMemory(ctx, agentID)
-}
-
-func (p *arenaRuntimeProvider) DisconnectMCP(ctx context.Context, agentID string) error {
-	return p.mgr.DisconnectMCP(ctx, agentID)
-}
-
-func (p *arenaRuntimeProvider) InjectLLMFailure(ctx context.Context, agentID string, errType string) error {
-	return p.mgr.InjectLLMFailure(ctx, agentID, errType)
-}
-
-// arenaDAGProvider adapts a workflow engine MutableDAG to arena.DAGProvider.
-// The DAG snapshot supplies node/edge listings; mutations delegate to the
-// live mutable DAG so evolution patches and chaos removals share one graph.
-type arenaDAGProvider struct{ dag *engine.MutableDAG }
-
-// ListNodes implements arena.DAGProvider.
-func (p *arenaDAGProvider) ListNodes(_ context.Context) []string {
-	snap := p.dag.Snapshot()
-	ids := make([]string, 0, len(snap.Nodes))
-	for id := range snap.Nodes {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-// ListEdges implements arena.DAGProvider.
-func (p *arenaDAGProvider) ListEdges(_ context.Context) [][2]string {
-	snap := p.dag.Snapshot()
-	var edges [][2]string
-	for from, tos := range snap.Edges {
-		for _, to := range tos {
-			edges = append(edges, [2]string{from, to})
-		}
-	}
-	sort.Slice(edges, func(i, j int) bool {
-		if edges[i][0] != edges[j][0] {
-			return edges[i][0] < edges[j][0]
-		}
-		return edges[i][1] < edges[j][1]
-	})
-	return edges
-}
-
-// RemoveNode implements arena.DAGProvider.
-func (p *arenaDAGProvider) RemoveNode(ctx context.Context, id string) error {
-	return p.dag.RemoveNode(ctx, id)
-}
-
-// RemoveEdge implements arena.DAGProvider.
-func (p *arenaDAGProvider) RemoveEdge(ctx context.Context, from, to string) error {
-	return p.dag.RemoveEdge(ctx, from, to)
-}
-
-// buildArenaInjector assembles the arena fault injector against the arena
-// process's own runtime and DAG (demo positioning): the Manager
-// starts with a small pool of registered demo agents so every chaos injection
-// has a real target immediately, and the mutable DAG gives the node/edge
-// removals a live graph to operate on.
-//
-// Args:
-//
-//	none.
-//
-// Returns:
-//   - *arena.Injector: the wired injector. A provider is nil only when its
-//     backing component failed to construct, in which case the corresponding
-//     injections fail loudly (ErrRuntimeNil / ErrDAGNil) instead of silently
-//     reporting success against a pool that never started.
-//   - *runtime.Manager: the demo agent pool (stopped by the caller).
-func buildArenaInjector() (*arena.Injector, *runtime.Manager) {
-	mgr := runtime.New(nil, nil, nil)
-	for _, id := range []string{"arena-worker-1", "arena-worker-2", "arena-worker-3"} {
-		mgr.RegisterAgent(newArenaDemoAgent(id, "coder"), nil)
-	}
-	// A pool that failed to start has no live agents: hand the injector a nil
-	// RuntimeProvider so kill/pause/slow return ErrRuntimeNil rather than
-	// appearing to act on agents that are not running.
-	var rt arena.RuntimeProvider
-	if err := mgr.Start(context.Background()); err != nil {
-		log.Info("arena serve: demo agent pool start failed; agent injections disabled", "err", err)
-	} else {
-		rt = &arenaRuntimeProvider{mgr: mgr}
-	}
-	dag, err := engine.NewMutableDAG(nil)
-	if err != nil {
-		log.Info("arena serve: mutable DAG unavailable; DAG injections disabled", "err", err)
-		return arena.NewInjector(rt, nil), mgr
-	}
-	return arena.NewInjector(rt, &arenaDAGProvider{dag: dag}), mgr
-}
-
-// arenaDemoAgent is a minimal base.Agent standing in for a real executor in
-// the arena drill process: its only job is to exist so kill/pause/slow/
-// partition injections have a lifecycle to act on.
-type arenaDemoAgent struct {
-	id     string
-	typ    models.AgentType
-	status atomic.Value // models.AgentStatus
-}
-
-func newArenaDemoAgent(id, typ string) *arenaDemoAgent {
-	a := &arenaDemoAgent{id: id, typ: models.AgentType(typ)}
-	a.status.Store(models.AgentStatusOffline)
-	return a
-}
-
-func (a *arenaDemoAgent) ID() string                 { return a.id }
-func (a *arenaDemoAgent) Type() models.AgentType     { return a.typ }
-func (a *arenaDemoAgent) Status() models.AgentStatus { return a.status.Load().(models.AgentStatus) }
-func (a *arenaDemoAgent) Start(context.Context) error {
-	a.status.Store(models.AgentStatusReady)
-	return nil
-}
-func (a *arenaDemoAgent) Stop(context.Context) error {
-	a.status.Store(models.AgentStatusOffline)
-	return nil
-}
-func (a *arenaDemoAgent) Process(context.Context, any) (any, error) {
-	return map[string]any{"demo": "arena agent processed input"}, nil
-}
-func (a *arenaDemoAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	ch := make(chan base.AgentEvent, 1)
-	// One-shot short task (feed one result, close), not a
-	// long-lived loop — adoption would outlive the per-request stream it
-	// serves. Carries its own recover boundary so a panic cannot kill the
-	// arena process; the channel closes either way.
-	go func() {
-		defer func() {
-			close(ch)
-			if r := recover(); r != nil {
-				log.Error("arena: demo agent stream panicked (recovered)", "panic", r)
-			}
-		}()
-		out, _ := a.Process(ctx, input)
-		ch <- base.AgentEvent{Source: a.id, Data: out}
-	}()
-	return ch, nil
 }

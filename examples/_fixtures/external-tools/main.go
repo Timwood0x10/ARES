@@ -18,7 +18,7 @@
 //   - tools.NewRegistry / RegisterBuiltinTools / Register / Execute / List /
 //     CoreRegistry (api/tools)
 //   - mcp.ConnectStdio / (*Client).ListTools / (*Client).CallTool (api/mcp)
-//   - discovery.NewEngine / DiscoverNow / List (api/discovery)
+//   - discoveryapi.NewEngine / DiscoverNow / List (internal/discoveryapi)
 //   - toolsource.NewRegistrySource / NewDiscoverToolsTool
 //     (internal/tools/toolsource)
 //
@@ -40,9 +40,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Timwood0x10/ares/api/discovery"
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/discoveryapi"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 
@@ -114,7 +114,7 @@ func main() {
 	// entry prefixed "mcp.<server>.<tool>" so agents can call it like any
 	// other tool.
 	fmt.Println("\n=== MCP Auto-Discovery ===")
-	engine := discovery.NewEngine(discovery.EngineConfig{})
+	engine := discoveryapi.NewEngine(discoveryapi.EngineConfig{})
 	_ = engine.DiscoverNow(ctx)
 	services, _ := engine.List(ctx)
 	if len(services) == 0 {
@@ -191,7 +191,7 @@ func main() {
 
 // bestConf returns the highest confidence percentage across a service's
 // discovery records, for display.
-func bestConf(svc *discovery.DiscoveredService) int {
+func bestConf(svc *discoveryapi.DiscoveredService) int {
 	best := 0
 	for _, r := range svc.Records {
 		if int(r.Confidence) > best {

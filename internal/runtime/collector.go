@@ -6,8 +6,8 @@ import (
 )
 
 // ExecutionCollector collects execution data across hook calls for
-// consumption by CheckpointPlugin, memory distill, and evolution scoring.
-// All methods are thread-safe.
+// observability (interrupt/tool recording) and export. All methods are
+// thread-safe.
 type ExecutionCollector struct {
 	mu           sync.Mutex
 	executionID  string
@@ -245,47 +245,5 @@ func (c *ExecutionCollector) Import(data map[string]any) {
 	}
 	if errs, ok := data["error_log"].([]ErrorRecord); ok {
 		c.errorLog = append(c.errorLog, errs...)
-	}
-}
-
-// MergeInto copies collector data into an ExperienceCheckpoint.
-// This is called before the checkpoint is saved so that route, tool,
-// memory, interrupt, and error data collected by plugins is included.
-func (c *ExecutionCollector) MergeInto(ckpt *ExperienceCheckpoint) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, r := range c.routeHistory {
-		ckpt.RouteHistory = append(ckpt.RouteHistory, RouteEntry{
-			FromStepID: r.StepID,
-			ToStepID:   r.Decision,
-			Reason:     r.Reason,
-		})
-	}
-	for _, t := range c.toolHistory {
-		ckpt.ToolHistory = append(ckpt.ToolHistory, ToolEntry{
-			StepID:   t.StepID,
-			ToolName: t.ToolName,
-			Input:    t.Input,
-			Output:   t.Output,
-			Duration: t.Duration,
-			Success:  t.Success,
-		})
-	}
-	for _, m := range c.memoryHits {
-		ckpt.MemoryHits = append(ckpt.MemoryHits, MemoryEntry{
-			StepID:     m.StepID,
-			Similarity: m.BestScore,
-			TaskID:     "",
-		})
-	}
-	for _, i := range c.interruptLog {
-		ckpt.InterruptHistory = append(ckpt.InterruptHistory, InterruptEntry{
-			StepID:   i.StepID,
-			Approved: i.Action == "approve",
-			Feedback: i.Feedback,
-		})
-	}
-	for _, e := range c.errorLog {
-		ckpt.ErrorHistory = append(ckpt.ErrorHistory, ErrorEntry(e))
 	}
 }

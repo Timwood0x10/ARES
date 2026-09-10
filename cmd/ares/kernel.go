@@ -1185,8 +1185,10 @@ func (h *pluginBusHook) AfterQuantum(ctx context.Context, taskID, agentID string
 //
 // executionID is the ROUND's identity, not the boundary task's taskID: one
 // round spans LoopRoundQuanta quanta over multiple different tasks, so the
-// task that happens to land on the boundary would flush only its own
-// execution context while every other task of the round is silently skipped.
+// task that happens to land on the boundary must not stand in for the round
+// as a whole. (C1.3: the per-round identity used to be observable via the
+// checkpoint flush it triggered; with capability dispatch retired it is only
+// logged at the round boundary.)
 //
 // Budget enforcement is derived from the caller's own `count`, NOT from
 // loopStop. loopStop is read-then-set, so N concurrent boundary callers can
@@ -1240,18 +1242,17 @@ func (h *pluginBusHook) driveLoopRound(ctx context.Context) {
 //
 // Registration order is load-bearing: PluginBus.Register REJECTS plugins
 // after Start (ErrBusAlreadyStarted), and PluginBus.Start is what hands each
-// plugin its EventBus reference — LoopPlugin.OnRoundEnd service discovery
-// (`p.bus.(*PluginBus)`) only works when the plugin was registered BEFORE
-// Start. Registering after Start fails twice over: the Register error is
-// downgraded to a log line, and the plugin never receives a bus, so every
-// round-end action becomes a silent no-op while the beat keeps ticking.
+// plugin its EventBus reference — a plugin registered after Start never
+// receives a bus and stays a silent no-op while the beat keeps ticking.
 //
-// This wires the ROUND CLOCK (LoopPlugin beat). The downstream
-// capability plugins LoopPlugin discovers on round end (CapCheckpoint flush,
-// CapMemory advise, CapEvolution record) are a separate wiring item —
-// until they are registered the clock beats and the actions are no-ops,
-// which the falsifiable tests cover by proving a registered fake
-// CapCheckpoint Flusher IS flushed on every round boundary.
+// This wires the ROUND CLOCK (LoopPlugin beat). C1.3 (runtime plugin
+// half-closed-loop burial) removed the per-round capability dispatch from
+// OnRoundEnd — the CapCheckpoint/CapMemory/CapEvolution plugin faces were
+// deleted with their zero-production implementations, so OnRoundEnd now only
+// records the settled round (Iteration()). The clock itself is alive:
+// ShouldExecuteRound/round budget gate the loop, and the falsifiable tests
+// (runtime_bridge_loop_test.go) lock the settle-then-gate order and the
+// budget's concurrency contract via Iteration() and bus passthrough.
 //
 // Args:
 //

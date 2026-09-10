@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -106,29 +105,6 @@ func (p *panickingPlugin) Start(_ context.Context, _ EventBus) error {
 	panic("start panic")
 }
 func (p *panickingPlugin) Stop(_ context.Context) error { return nil }
-
-// memoryCheckpointStore is an in-memory CheckpointStore for testing.
-type memoryCheckpointStore struct {
-	mu   sync.Mutex
-	data map[string][]byte
-}
-
-func newMemoryCheckpointStore() *memoryCheckpointStore {
-	return &memoryCheckpointStore{data: make(map[string][]byte)}
-}
-
-func (s *memoryCheckpointStore) Save(_ context.Context, key string, data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data[key] = data
-	return nil
-}
-
-func (s *memoryCheckpointStore) Load(_ context.Context, key string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.data[key], nil
-}
 
 // ---------------------------------------------------------------------------
 // PluginBus tests
@@ -443,7 +419,7 @@ func TestPluginBus_PluginsByCap(t *testing.T) {
 
 	p1 := newTestPlugin("obs1", []Capability{CapObserver})
 	p2 := newTestPlugin("obs2", []Capability{CapObserver})
-	p3 := newTestPlugin("ckpt", []Capability{CapCheckpoint})
+	p3 := newTestPlugin("tool1", []Capability{CapTool})
 
 	require.NoError(t, b.Register(p1))
 	require.NoError(t, b.Register(p2))
@@ -452,9 +428,9 @@ func TestPluginBus_PluginsByCap(t *testing.T) {
 	obs := b.PluginsByCap(CapObserver)
 	assert.Len(t, obs, 2)
 
-	ckpt := b.PluginsByCap(CapCheckpoint)
-	assert.Len(t, ckpt, 1)
-	assert.Equal(t, "ckpt", ckpt[0].Name())
+	tools := b.PluginsByCap(CapTool)
+	assert.Len(t, tools, 1)
+	assert.Equal(t, "tool1", tools[0].Name())
 
 	none := b.PluginsByCap(CapRouter)
 	assert.Len(t, none, 0)
@@ -519,202 +495,11 @@ func TestObserverPlugin_EmptyNameDefaults(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // CheckpointPlugin tests
+// (removed with C1.3, the runtime plugin half-closed-loop burial:
+// CheckpointPlugin + CheckpointStore + ExperienceCheckpoint were deleted —
+// zero production registrations; successor path is fabric/task
+// CheckpointEnvelope.)
 // ---------------------------------------------------------------------------
-
-func TestCheckpointPlugin_SavesAfterStep(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	bus := NewPluginBus()
-
-	p := NewCheckpointPlugin("test-checkpoint", ckptStore)
-	require.NoError(t, bus.Register(p))
-	require.NoError(t, bus.Start(context.Background()))
-
-	err := bus.AfterStep(context.Background(), "exec-1", &StepResult{
-		StepID: "s1", Status: StepStatusCompleted, Output: "hello",
-	})
-	require.NoError(t, err)
-
-	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-1")
-	require.NoError(t, err)
-	require.NotNil(t, data)
-
-	var ckpt ExperienceCheckpoint
-	err = json.Unmarshal(data, &ckpt)
-	require.NoError(t, err)
-	assert.Equal(t, 1, ckpt.SchemaVersion)
-	assert.Equal(t, "exec-1", ckpt.ExecutionID)
-	require.Len(t, ckpt.StepStates, 1)
-	assert.Equal(t, "s1", ckpt.StepStates[0].StepID)
-	assert.Equal(t, StepStatusCompleted, ckpt.StepStates[0].Status)
-	assert.Equal(t, "hello", ckpt.StepStates[0].Output)
-}
-
-func TestCheckpointPlugin_EmptyNameDefaults(t *testing.T) {
-	store := newMemoryCheckpointStore()
-	p := NewCheckpointPlugin("", store)
-	assert.Equal(t, "checkpoint", p.Name())
-}
-
-func TestCheckpointPlugin_NoStore(t *testing.T) {
-	p := NewCheckpointPlugin("no-store", nil)
-	err := p.AfterStep(context.Background(), "exec-1", &StepResult{StepID: "s1"})
-	require.NoError(t, err)
-}
-
-func TestCheckpointPlugin_BeforeStepCreatesCheckpoint(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	bus := NewPluginBus()
-
-	p := NewCheckpointPlugin("test-cp", ckptStore)
-	require.NoError(t, bus.Register(p))
-	require.NoError(t, bus.Start(context.Background()))
-
-	err := bus.BeforeStep(context.Background(), "exec-1", &Step{
-		ID: "s1", Name: "Step One", Status: StepStatusRunning,
-	})
-	require.NoError(t, err)
-
-	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-1")
-	require.NoError(t, err)
-	require.NotNil(t, data)
-
-	var ckpt ExperienceCheckpoint
-	err = json.Unmarshal(data, &ckpt)
-	require.NoError(t, err)
-	assert.Equal(t, "exec-1", ckpt.ExecutionID)
-	assert.Equal(t, "running", ckpt.Status)
-	require.Len(t, ckpt.StepStates, 1)
-	assert.Equal(t, "s1", ckpt.StepStates[0].StepID)
-	assert.Equal(t, StepStatusRunning, ckpt.StepStates[0].Status)
-}
-
-func TestCheckpointPlugin_AccumulatesMultipleSteps(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	bus := NewPluginBus()
-
-	p := NewCheckpointPlugin("test-cp", ckptStore)
-	require.NoError(t, bus.Register(p))
-	require.NoError(t, bus.Start(context.Background()))
-
-	ctx := context.Background()
-
-	// Step 1 lifecycle.
-	_ = bus.BeforeStep(ctx, "exec-1", &Step{ID: "s1"})
-	_ = bus.AfterStep(ctx, "exec-1", &StepResult{StepID: "s1", Status: StepStatusCompleted, Output: "out1"})
-
-	// Step 2 lifecycle.
-	_ = bus.BeforeStep(ctx, "exec-1", &Step{ID: "s2"})
-	_ = bus.AfterStep(ctx, "exec-1", &StepResult{StepID: "s2", Status: StepStatusCompleted, Output: "out2"})
-
-	data, err := ckptStore.Load(ctx, "checkpoint/exec-1")
-	require.NoError(t, err)
-	require.NotNil(t, data)
-
-	var ckpt ExperienceCheckpoint
-	err = json.Unmarshal(data, &ckpt)
-	require.NoError(t, err)
-	require.Len(t, ckpt.StepStates, 2)
-
-	assert.Equal(t, "s1", ckpt.StepStates[0].StepID)
-	assert.Equal(t, StepStatusCompleted, ckpt.StepStates[0].Status)
-	assert.Equal(t, "out1", ckpt.StepStates[0].Output)
-
-	assert.Equal(t, "s2", ckpt.StepStates[1].StepID)
-	assert.Equal(t, StepStatusCompleted, ckpt.StepStates[1].Status)
-	assert.Equal(t, "out2", ckpt.StepStates[1].Output)
-
-	assert.Greater(t, ckpt.StateVersion, int64(0))
-}
-
-func TestCheckpointPlugin_RecordsFailures(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	bus := NewPluginBus()
-
-	p := NewCheckpointPlugin("test-cp", ckptStore)
-	require.NoError(t, bus.Register(p))
-	require.NoError(t, bus.Start(context.Background()))
-
-	_ = bus.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-	_ = bus.AfterStep(context.Background(), "exec-1", &StepResult{
-		StepID: "s1", Status: StepStatusFailed, Error: "oops",
-	})
-
-	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-1")
-	require.NoError(t, err)
-	require.NotNil(t, data)
-
-	var ckpt ExperienceCheckpoint
-	err = json.Unmarshal(data, &ckpt)
-	require.NoError(t, err)
-	assert.Equal(t, StepStatusFailed, ckpt.StepStates[0].Status)
-	assert.Equal(t, "oops", ckpt.StepStates[0].Error)
-	require.Len(t, ckpt.ErrorHistory, 1)
-	assert.Equal(t, "oops", ckpt.ErrorHistory[0].Message)
-}
-
-func TestCheckpointPlugin_SchemaVersion(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	p := NewCheckpointPlugin("test-cp", ckptStore)
-
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-
-	data, _ := ckptStore.Load(context.Background(), "checkpoint/exec-1")
-	var ckpt ExperienceCheckpoint
-	_ = json.Unmarshal(data, &ckpt)
-	assert.Equal(t, 1, ckpt.SchemaVersion, "schema version must be 1")
-}
-
-func TestCheckpointPlugin_WithCollector_MergesData(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	bus := NewPluginBus()
-
-	collector := NewExecutionCollector("exec-1")
-	cp := NewCheckpointPlugin("test-cp", ckptStore).WithCollector(collector)
-	require.NoError(t, bus.Register(cp))
-	require.NoError(t, bus.Start(context.Background()))
-
-	// Record data through collector.
-	collector.RecordRoute("s1", "s2", "test route", "expression")
-	collector.RecordTool("s1", "calc", "1+1", "2", time.Second, true)
-	collector.RecordError("s1", "test error")
-
-	// Trigger a checkpoint save via AfterStep.
-	err := bus.AfterStep(context.Background(), "exec-1", &StepResult{
-		StepID: "s1", Status: StepStatusCompleted, Output: "done",
-	})
-	require.NoError(t, err)
-
-	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-1")
-	require.NoError(t, err)
-	require.NotNil(t, data)
-
-	var ckpt ExperienceCheckpoint
-	err = json.Unmarshal(data, &ckpt)
-	require.NoError(t, err)
-
-	require.Len(t, ckpt.RouteHistory, 1)
-	assert.Equal(t, "s2", ckpt.RouteHistory[0].ToStepID)
-	require.Len(t, ckpt.ToolHistory, 1)
-	assert.Equal(t, "calc", ckpt.ToolHistory[0].ToolName)
-	require.Len(t, ckpt.ErrorHistory, 1)
-	assert.Equal(t, "test error", ckpt.ErrorHistory[0].Message)
-}
-
-func TestCheckpointPlugin_WithCollector_EmptyCollector(t *testing.T) {
-	ckptStore := newMemoryCheckpointStore()
-	collector := NewExecutionCollector("exec-1")
-	cp := NewCheckpointPlugin("test-cp", ckptStore).WithCollector(collector)
-
-	_ = cp.AfterStep(context.Background(), "exec-1", &StepResult{
-		StepID: "s1", Status: StepStatusCompleted,
-	})
-
-	data, _ := ckptStore.Load(context.Background(), "checkpoint/exec-1")
-	var ckpt ExperienceCheckpoint
-	_ = json.Unmarshal(data, &ckpt)
-	assert.Empty(t, ckpt.RouteHistory)
-	assert.Empty(t, ckpt.ToolHistory)
-}
 
 func TestExpressionRouter_RegisteredAsPlugin(t *testing.T) {
 	bus := NewPluginBus()
@@ -925,40 +710,42 @@ func TestLoopPlugin_EmptyNameDefaults(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Integration: ObserverPlugin + CheckpointPlugin together
+// Integration: ObserverPlugin + InterruptPlugin together
+// (formerly ObserverPlugin + CheckpointPlugin; the checkpoint half was
+// removed with C1.3 — see the tombstone above the ExpressionRouter tests.)
 // ---------------------------------------------------------------------------
 
 func TestPluginBus_MultiplePlugins(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
-	ckptStore := newMemoryCheckpointStore()
+	collector := NewExecutionCollector("exec-1")
 
 	bus := NewPluginBus()
 	obs := NewObserverPlugin("obs", eventStore)
-	ckpt := NewCheckpointPlugin("ckpt", ckptStore)
+	hitl := NewInterruptPlugin("hitl").WithCollector(collector)
 
 	require.NoError(t, bus.Register(obs))
-	require.NoError(t, bus.Register(ckpt))
+	require.NoError(t, bus.Register(hitl))
 	require.NoError(t, bus.Start(context.Background()))
 
 	ctx := context.Background()
 
 	bus.Emit(ctx, "exec-1", EventWorkflowStarted, "test", nil)
 	_ = bus.BeforeStep(ctx, "exec-1", &Step{ID: "s1"})
-	_ = bus.AfterStep(ctx, "exec-1", &StepResult{StepID: "s1", Status: StepStatusCompleted})
+	// A human-rejected skipped step records an interrupt via the collector.
+	_ = bus.AfterStep(ctx, "exec-1", &StepResult{StepID: "s1", Status: StepStatusSkipped, Error: "rejected by human"})
 	bus.Emit(ctx, "exec-1", EventWorkflowCompleted, "test", nil)
 
 	time.Sleep(100 * time.Millisecond)
 
 	evts, err := eventStore.Read(ctx, "exec-1", ares_events.ReadOptions{})
 	require.NoError(t, err)
-	// workflow.started + workflow.completed + 2× checkpoint.saved (from BeforeStep/AfterStep)
-	assert.Len(t, evts, 4)
+	// workflow.started + workflow.completed (observer); the interrupt plugin
+	// emits EventInterruptCreated on the same stream, but the observer only
+	// subscribes to workflow lifecycle + checkpoint events.
+	assert.Len(t, evts, 2)
 
-	data, err := ckptStore.Load(ctx, "checkpoint/exec-1")
-	require.NoError(t, err)
-	require.NotNil(t, data)
-
-	var ckptData2 ExperienceCheckpoint
-	_ = json.Unmarshal(data, &ckptData2)
-	assert.Equal(t, StepStatusCompleted, ckptData2.StepStates[0].Status)
+	interrupts := collector.InterruptLog()
+	require.Len(t, interrupts, 1)
+	assert.Equal(t, "s1", interrupts[0].StepID)
+	assert.Equal(t, "reject", interrupts[0].Action)
 }

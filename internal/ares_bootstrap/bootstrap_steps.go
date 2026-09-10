@@ -463,7 +463,12 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		}
 		if regGate != nil {
 			evolution.WithLifecycleGates(regGate)(wired.Lifecycle)
-			log.InfoContext(ctx, "bootstrap: arena regression gate armed (auto: infrastructure present)",
+			mode := "auto"
+			if cfg.Evolution.Gates.RegressionEnabled != nil {
+				mode = "explicit"
+			}
+			log.InfoContext(ctx, "bootstrap: arena regression gate armed",
+				"mode", mode,
 				"suite", cfg.Evolution.Gates.EvalSuite,
 				"runs", cfg.Evolution.Gates.RegressionRuns,
 			)

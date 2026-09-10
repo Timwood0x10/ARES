@@ -4,11 +4,13 @@
 // (the same suite the G3 eval gate scores in absolute terms — the regression
 // gate re-runs it as a candidate-vs-active A/B).
 //
-// Configuration contract (evolution.gates.*):
-//   - regression_enabled unset/false → NO gate (opt-in: each Check costs
-//     2×regression_runs LLM scoring rounds);
-//   - regression_enabled true but no eval_suite / no eval LLM client →
-//     Bootstrap FAILS: an explicitly armed gate must not silently skip
+// Configuration contract (evolution.gates.regression_enabled, tri-state):
+//   - unset (nil, default): AUTO-ARM — the gate arms whenever eval_suite +
+//     the eval LLM client exist (each Check costs 2×regression_runs LLM
+//     scoring rounds); missing prerequisites are honest absence (sentinel,
+//     no gate wired);
+//   - false: explicit opt-out — NO gate (the caller Warn-logs);
+//   - true: armed AND missing prerequisites become bootstrap errors
 //     (fail closed, same posture as eval_strict).
 package ares_bootstrap
 
@@ -24,9 +26,10 @@ import (
 )
 
 // errRegressionGateNotConfigured signals the INTENTIONAL absence of the
-// regression gate (regression_enabled=false). The caller tolerates exactly
-// this error and skips wiring; any other error from buildRegressionGate
-// means an ARMED gate is broken and fails bootstrap.
+// regression gate (explicit regression_enabled=false, or auto mode without
+// the suite/client prerequisites). The caller tolerates exactly this error
+// and skips wiring; any other error from buildRegressionGate means an ARMED
+// gate is broken and fails bootstrap.
 var errRegressionGateNotConfigured = errors.New("bootstrap: arena regression gate not configured")
 
 // buildRegressionGate constructs the arena regression gate.

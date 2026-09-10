@@ -56,7 +56,7 @@ func (p *BasicRecoveryPlugin) Start(_ context.Context, _ EventBus) error { retur
 func (p *BasicRecoveryPlugin) Stop(_ context.Context) error { return nil }
 
 // ShouldRecover returns true if the failed step's ID is in the allowlist.
-func (p *BasicRecoveryPlugin) ShouldRecover(_ context.Context, failure StepFailure, _ ExecutionState) bool {
+func (p *BasicRecoveryPlugin) ShouldRecover(_ context.Context, failure StepFailure) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ok := p.allowlist[failure.StepID]

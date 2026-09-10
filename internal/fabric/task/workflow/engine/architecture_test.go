@@ -40,7 +40,7 @@ import (
 var deadTypeAllowlist = map[string]string{
 	"InterruptConfig":   "HITL interrupt config; engine has no interrupt executor — NewInterruptPlugin is the future home (ares_runtime)",
 	"WorkflowExecution": "legacy whole-run state container; execution lives in StepResult + kernel scheduling",
-	"StepState":         "superseded by StepResult fields (status/started/finished); ares_runtime has its own StepStateSnapshot",
+	"StepState":         "superseded by StepResult fields (status/started/finished)",
 	"WorkflowStatus":    "only referenced by dead types (WorkflowExecution/WorkflowResult fields); orphaned once those are digested",
 	"WorkflowResult":    "engine never produces a whole-run result type; dataflow ends at StepResult",
 }

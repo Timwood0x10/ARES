@@ -57,7 +57,7 @@ Legend: ★ flagship · LLM = needs a configured provider · dry = runs without 
 | Example | Concept | Needs LLM |
 |---|---|---|
 | [05-evolution-demo](_fixtures/05-evolution-demo/) | Strategy evolution intro (`rt.Evolve`) | yes |
-| [10-ga-full-evolution](_fixtures/10-ga-full-evolution/) | Full GA pipeline on public api/evolution blocks | no |
+| [10-ga-full-evolution](_fixtures/10-ga-full-evolution/) | Full GA pipeline on internal/evoapi evolution blocks | no |
 | [19-ga-candidate-e2e](_fixtures/19-ga-candidate-e2e/) | Multi-generation GA → champion → CandidateVerifier gates | no |
 | [22-evolution-blocks](_fixtures/22-evolution-blocks/) | Zero-internal composition path for external embedders | no |
 | [runtime_evolution/](_fixtures/runtime_evolution/) | Genome patching over engine DAGs (workflow/knowledge/recovery) | no |

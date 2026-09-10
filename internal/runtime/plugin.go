@@ -13,16 +13,23 @@ import (
 type Capability string
 
 const (
-	CapObserver   Capability = "observer"
-	CapCheckpoint Capability = "checkpoint"
-	CapRouter     Capability = "router"
-	CapLoop       Capability = "loop"
-	CapMemory     Capability = "memory"
-	CapEvolution  Capability = "evolution"
-	CapTool       Capability = "tool"
-	CapRecovery   Capability = "recovery"
-	CapInterrupt  Capability = "interrupt"
+	CapObserver  Capability = "observer"
+	CapRouter    Capability = "router"
+	CapLoop      Capability = "loop"
+	CapTool      Capability = "tool"
+	CapRecovery  Capability = "recovery"
+	CapInterrupt Capability = "interrupt"
 )
+
+// C1.3 (runtime plugin half-closed-loop burial, review-followup-hardening
+// plan): CapCheckpoint/CapMemory/CapEvolution and their plugin contracts
+// (CheckpointPlugin+Flusher+CheckpointStore+ExperienceCheckpoint,
+// MemoryPlugin+RouteAdvice, EvolutionPlugin+ExecutionState+
+// RuntimeRecommendation+ExecutionOutcome) were deleted — they had zero
+// production registrations and the loop's per-round capability dispatch was
+// the only consumer. Successor paths: fabric/task CheckpointEnvelope
+// (checkpointing), retriever_wiring (memory), ares_evolution direct
+// consumption (evolution).
 
 // RuntimePlugin is the interface all plugins must implement.
 type RuntimePlugin interface {
@@ -54,77 +61,12 @@ type WorkflowHook interface {
 	AfterStep(ctx context.Context, executionID string, result *StepResult) error
 }
 
-// MemoryPlugin provides memory-aware routing advice and task context
-// for workflow execution. Implementations query the memory system for
-// similar past executions and return routing suggestions.
-type MemoryPlugin interface {
-	RuntimePlugin
-	// AdviseRoute returns routing suggestions based on similar past executions.
-	AdviseRoute(ctx context.Context, state RouteState) ([]RouteAdvice, error)
-}
-
-// RouteAdvice is a single routing suggestion from a MemoryPlugin.
-type RouteAdvice struct {
-	NextStepID string  `json:"next_step_id"`
-	Confidence float64 `json:"confidence"`
-	Reason     string  `json:"reason"`
-}
-
-// EvolutionPlugin provides runtime recommendations based on evolutionary
-// computation (genome, scoring, mutation). It consumes execution outcomes
-// and produces suggestions for agent selection, routing, and recovery.
-type EvolutionPlugin interface {
-	RuntimePlugin
-	// Recommend returns a runtime recommendation based on execution state.
-	Recommend(ctx context.Context, state ExecutionState) (*RuntimeRecommendation, error)
-	// RecordOutcome ingests a completed execution outcome for offline learning.
-	RecordOutcome(ctx context.Context, outcome ExecutionOutcome) error
-}
-
-// ExecutionState contains the inputs an EvolutionPlugin needs to make a
-// recommendation.
-type ExecutionState struct {
-	ExecutionID    string
-	WorkflowID     string
-	CurrentStepID  string
-	StepHistory    []StepResult
-	RouteHistory   []RouteRecord
-	ToolHistory    []ToolRecord
-	MemoryHits     []MemoryHitRecord
-	ScoringSignals []ScoringSignal
-}
-
-// RuntimeRecommendation is the output of an EvolutionPlugin.Recommend call.
-type RuntimeRecommendation struct {
-	PreferredAgent string  `json:"preferred_agent,omitempty"`
-	RouterWeight   float64 `json:"router_weight,omitempty"`
-	MutationHint   string  `json:"mutation_hint,omitempty"`
-	Confidence     float64 `json:"confidence"`
-}
-
-// ExecutionOutcome represents the final state of a completed execution for
-// evolution consumption.
-type ExecutionOutcome struct {
-	ExecutionID    string
-	WorkflowID     string
-	Status         string
-	Duration       int64 // milliseconds
-	TotalSteps     int
-	FailedSteps    int
-	SkippedSteps   int
-	RouteCount     int
-	ToolCount      int
-	MemoryHitCount int
-	InterruptCount int
-	ErrorCount     int
-}
-
 // RecoveryPlugin provides step recovery decisions when a step fails.
 type RecoveryPlugin interface {
 	RuntimePlugin
 	// ShouldRecover returns true if the step should be recovered. Plugins
-	// may use the failure details and execution state to decide.
-	ShouldRecover(ctx context.Context, failure StepFailure, state ExecutionState) bool
+	// may use the failure details to decide.
+	ShouldRecover(ctx context.Context, failure StepFailure) bool
 }
 
 // StepFailure captures the context of a failed step for recovery decisions.

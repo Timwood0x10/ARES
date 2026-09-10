@@ -1,5 +1,5 @@
 // Example 10 — GA Full Evolution: a complete genetic-algorithm pipeline
-// using only the public api/evolution building blocks (no internal/ imports).
+// built on the internal/evoapi evolution building blocks.
 //
 // Purpose:
 //
@@ -15,13 +15,13 @@
 //   - Use a Promoter to evaluate and promote the champion strategy.
 //
 // Core APIs used:
-//   - github.com/Timwood0x10/ares/api/evolution.Strategy
-//   - github.com/Timwood0x10/ares/api/evolution.DefaultPopulationConfig
-//   - github.com/Timwood0x10/ares/api/evolution.NewPopulation
-//   - github.com/Timwood0x10/ares/api/evolution.Population (ScoreAgents, Evolve, BestStrategy, BestScore, Size, CurrentGeneration)
-//   - github.com/Timwood0x10/ares/api/evolution.NewPromoter
-//   - github.com/Timwood0x10/ares/api/evolution/mutation.NewMutator
-//   - github.com/Timwood0x10/ares/api/evolution/mutation.Mutator.Mutate
+//   - github.com/Timwood0x10/ares/internal/evoapi.Strategy
+//   - github.com/Timwood0x10/ares/internal/evoapi.DefaultPopulationConfig
+//   - github.com/Timwood0x10/ares/internal/evoapi.NewPopulation
+//   - github.com/Timwood0x10/ares/internal/evoapi.Population (ScoreAgents, Evolve, BestStrategy, BestScore, Size, CurrentGeneration)
+//   - github.com/Timwood0x10/ares/internal/evoapi.NewPromoter
+//   - github.com/Timwood0x10/ares/internal/evoapi/mutation.NewMutator
+//   - github.com/Timwood0x10/ares/internal/evoapi/mutation.Mutator.Mutate
 //
 // Run:
 //
@@ -58,8 +58,8 @@ import (
 	"os"
 	"time"
 
-	pubevolution "github.com/Timwood0x10/ares/api/evolution"
-	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
+	evoapi "github.com/Timwood0x10/ares/internal/evoapi"
+	mutation "github.com/Timwood0x10/ares/internal/evoapi/mutation"
 )
 
 // exitf logs a formatted message and exits with code 1, canceling the
@@ -84,7 +84,7 @@ func main() {
 	// ScoreAgents will fill the score before Evolve runs.
 	// Uses the mutation sub-package Strategy because Mutator lives there;
 	// converted to the top-level evolution.Strategy when fed to Population.
-	base := &pubmutation.Strategy{
+	base := &mutation.Strategy{
 		ID:             "root-strategy",
 		Version:        1,
 		PromptTemplate: "You are a helpful assistant. Complete the task efficiently.",
@@ -104,7 +104,7 @@ func main() {
 	// the full MutatorConfig (ranges/pools/probabilities). The top-level
 	// evolution.NewMutator only takes probabilities, not ranges — sub-package
 	// is the right entry point for external callers who need custom ranges.
-	mutator, err := pubmutation.NewMutator(pubmutation.MutatorConfig{
+	mutator, err := mutation.NewMutator(mutation.MutatorConfig{
 		ParamRanges: map[string][]any{
 			"temperature":   {0.1, 0.3, 0.5, 0.7, 0.9},
 			"top_k":         {10, 20, 40, 60, 80, 100},
@@ -142,7 +142,7 @@ func main() {
 	// ── Step 4: Create the Population (GA core engine) ──
 	// Population lives at the top-level evolution package and consumes the
 	// top-level Strategy — convert the mutation.Strategy seed here.
-	pubBase := &pubevolution.Strategy{
+	pubBase := &evoapi.Strategy{
 		ID:             base.ID,
 		Version:        base.Version,
 		PromptTemplate: base.PromptTemplate,
@@ -150,14 +150,14 @@ func main() {
 	}
 	// DefaultPopulationConfig provides sane defaults; override the
 	// fields below to tune population dynamics.
-	popCfg := pubevolution.DefaultPopulationConfig()
+	popCfg := evoapi.DefaultPopulationConfig()
 	popCfg.Size = 20                        // number of individuals per generation
 	popCfg.EliteCount = 3                   // top strategies carried over unchanged
 	popCfg.MutationRate = 0.2               // probability of mutation per individual
 	popCfg.SurvivalRate = 0.6               // fraction of population that survives selection
 	popCfg.SelectionStrategy = "tournament" // tournament selection
 	popCfg.TournamentSize = 3               // number of contestants per tournament
-	population, err := pubevolution.NewPopulation(pubBase, popCfg)
+	population, err := evoapi.NewPopulation(pubBase, popCfg)
 	if err != nil {
 		exitf(cancel, "create population: %v", err)
 	}
@@ -183,7 +183,7 @@ func main() {
 	for gen := 0; gen < 5; gen++ {
 		// Score every agent with the multi-objective scorer before evolving —
 		// Evolve rejects agents with score=-1 (unevaluated).
-		population.ScoreAgents(func(s *pubevolution.Strategy) float64 {
+		population.ScoreAgents(func(s *evoapi.Strategy) float64 {
 			return multiObjectiveScore(s, hintProvider)
 		})
 
@@ -219,7 +219,7 @@ func main() {
 	// NewPromoter creates a promoter with the given promotion criteria.
 	// Evaluate checks whether the champion should be promoted/demoted;
 	// Promote marks it as the active production strategy.
-	promoter := pubevolution.NewPromoter(&pubevolution.PromotionCriteria{
+	promoter := evoapi.NewPromoter(&evoapi.PromotionCriteria{
 		MinSampleCount:     1,
 		MinSuccessRate:     0.5,
 		MinConfidence:      0.5,
@@ -246,7 +246,7 @@ func main() {
 
 // multiObjectiveScore computes fitness from quality, cost, and latency.
 // Memory-guided confidence from the hint provider biases quality upward.
-func multiObjectiveScore(s *pubevolution.Strategy, hp *mockHintProvider) float64 {
+func multiObjectiveScore(s *evoapi.Strategy, hp *mockHintProvider) float64 {
 	quality := scoreQuality(s)
 	cost := scoreCost(s)
 	latency := scoreLatency(s)
@@ -261,7 +261,7 @@ func multiObjectiveScore(s *pubevolution.Strategy, hp *mockHintProvider) float64
 }
 
 // scoreQuality estimates strategy quality based on params.
-func scoreQuality(s *pubevolution.Strategy) float64 {
+func scoreQuality(s *evoapi.Strategy) float64 {
 	score := 50.0
 	if v, ok := s.Params["temperature"]; ok {
 		if t := toFloat64(v); t >= 0.5 && t <= 0.8 {
@@ -289,7 +289,7 @@ func scoreQuality(s *pubevolution.Strategy) float64 {
 }
 
 // scoreCost estimates computational cost of a strategy.
-func scoreCost(s *pubevolution.Strategy) float64 {
+func scoreCost(s *evoapi.Strategy) float64 {
 	cost := 10.0
 	if v, ok := s.Params["max_tokens"]; ok {
 		cost += float64(toInt(v)) / 500
@@ -304,7 +304,7 @@ func scoreCost(s *pubevolution.Strategy) float64 {
 }
 
 // scoreLatency estimates execution latency of a strategy.
-func scoreLatency(s *pubevolution.Strategy) float64 {
+func scoreLatency(s *evoapi.Strategy) float64 {
 	latency := 5.0
 	if v, ok := s.Params["search_depth"]; ok {
 		latency += float64(toInt(v)) * 8
@@ -331,7 +331,7 @@ type mockHintProvider struct {
 
 // confidenceForStrategy returns the highest confidence hint matching the
 // strategy's current tool_selector. Zero means no historical evidence.
-func (m *mockHintProvider) confidenceForStrategy(s *pubevolution.Strategy) float64 {
+func (m *mockHintProvider) confidenceForStrategy(s *evoapi.Strategy) float64 {
 	confidence := 0.0
 	if sel, ok := s.Params["tool_selector"]; ok {
 		for _, h := range m.hints {

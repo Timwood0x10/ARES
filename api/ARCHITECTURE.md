@@ -23,9 +23,7 @@ flowchart TB
         TOOLS["tools<br/>Registry · Tool · ToolFunc<br/>RegisterBuiltinTools"]
         COREP["core<br/>LLM/Memory/Cleaning 公共类型<br/>LLMService · LLMRepository 接口"]
         EMB["embedding<br/>EmbeddingService 接口"]
-        EVOP["evolution<br/>Strategy · Lineage · DreamCycle<br/>mutation · genome"]
         MCPP["mcp<br/>JSON-RPC Client (stdio/SSE)"]
-        DISC["discovery<br/>Engine 服务发现"]
         KNOW["knowledge<br/>类型别名 + service 适配"]
         EXPP["experience<br/>ExperienceRepository 接口"]
         LLMSVC["service/llm<br/>公开 LLM Service"]
@@ -36,8 +34,6 @@ flowchart TB
     INT --> COREP
     INT --> EMB
     EX --> MCPP
-    EX --> DISC
-    EX --> EVOP
     INT --> KNOW
     INT --> EXPP
 
@@ -80,9 +76,7 @@ flowchart TB
 | 包 | 内容 | 消费者 |
 |----|------|--------|
 | `api/embedding` | `EmbeddingService` 接口 | internal 14 处（embedding 管线、知识运行时） |
-| `api/evolution` | `Strategy` · `Lineage` · `DreamCycle` · Promoter · mutation/genome 子包 | GA 相关 examples |
 | `api/mcp` | MCP JSON-RPC `Client`（ListTools/CallTool）+ stdio/SSE transport | examples（mcp-registry 等） |
-| `api/discovery` | 服务发现 `Engine`（Register/List/DiscoverNow/CheckHealth） | examples（discovery） |
 | `api/knowledge` | knowledge 领域类型别名 + service 适配 | `internal/knowledge/service` |
 | `api/experience` | `ExperienceRepository` 接口 + 经验类型 | 蒸馏路径 |
 

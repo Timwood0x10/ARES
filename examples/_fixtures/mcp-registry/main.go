@@ -16,11 +16,11 @@
 //     and are mutated with UpdateTags.
 //
 // Core APIs (with package paths):
-//   - discovery.NewEngine / discovery.EngineConfig (api/discovery)
+//   - discoveryapi.NewEngine / discoveryapi.EngineConfig (internal/discoveryapi)
 //   - (*Engine).OnEvent / DiscoverNow / Register / List / UpdateTags /
 //     Unregister
-//   - discovery.NewMemoryStore / discovery.RegisterRequest /
-//     discovery.UpdateTagsRequest
+//   - discoveryapi.NewMemoryStore / discoveryapi.RegisterRequest /
+//     discoveryapi.UpdateTagsRequest
 //
 // Run:
 //
@@ -40,7 +40,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Timwood0x10/ares/api/discovery"
+	"github.com/Timwood0x10/ares/internal/discoveryapi"
 )
 
 func main() {
@@ -49,8 +49,8 @@ func main() {
 	// ── Step 1: Create the engine over an in-memory store ──
 	// NewMemoryStore is the default store; passing it explicitly mirrors the
 	// production pattern where a durable store would be injected instead.
-	store := discovery.NewMemoryStore()
-	engine := discovery.NewEngine(discovery.EngineConfig{
+	store := discoveryapi.NewMemoryStore()
+	engine := discoveryapi.NewEngine(discoveryapi.EngineConfig{
 		ProjectDir: ".",
 		Store:      store,
 	})
@@ -58,7 +58,7 @@ func main() {
 	// ── Step 2: Subscribe to lifecycle events ──
 	// Every Register/Unregister/UpdateTags fires an event; printing them
 	// shows the engine's lifecycle in action.
-	engine.OnEvent(func(evt discovery.Event) {
+	engine.OnEvent(func(evt discoveryapi.Event) {
 		fmt.Printf("  [event] %-25s %s\n", evt.Type, evt.ServiceID)
 	})
 
@@ -82,7 +82,7 @@ func main() {
 	// Register manually adds known MCP servers (not auto-discovered). Tags
 	// declare capabilities so a later query can match by capability.
 	fmt.Println("\n=== Phase 2: Registration ===")
-	mockServices := []discovery.RegisterRequest{
+	mockServices := []discoveryapi.RegisterRequest{
 		{
 			Name:     "codegraph",
 			Endpoint: "codegraph serve --mcp",
@@ -132,7 +132,7 @@ func main() {
 	// UpdateTags adds/removes tags on an existing service — reclassifying a
 	// capability without re-registering.
 	fmt.Println("\n=== Phase 4: Tag Management ===")
-	if err := engine.UpdateTags(ctx, "codegraph", discovery.UpdateTagsRequest{
+	if err := engine.UpdateTags(ctx, "codegraph", discoveryapi.UpdateTagsRequest{
 		Add: []string{"domain:source-code"},
 	}); err != nil {
 		fmt.Printf("  ✗ update tags: %v\n", err)

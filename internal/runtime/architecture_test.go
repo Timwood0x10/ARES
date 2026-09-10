@@ -40,9 +40,12 @@ import (
 // (NewArenaPlugin was removed with internal/runtime/arena.go: the plugin-bus
 // fault-injection demo had zero production consumers and was superseded by
 // the arena/ package's RegressionTester family — RUNTIME.md §8-A6.)
+// (NewCheckpointPlugin and NewEvolutionPlugin were removed with C1.3, the
+// runtime plugin half-closed-loop burial: CheckpointPlugin/EvolutionPlugin
+// had zero production registrations and the loop's per-round capability
+// dispatch — their only consumer — was deleted. Successor paths: fabric/task
+// CheckpointEnvelope, ares_evolution direct consumption.)
 var testOnlyPluginAllowlist = map[string]string{
-	"NewCheckpointPlugin":    "downstream registration item of W-L1 (loop clock flush) — needs a real CheckpointStore in cmd/ares wiring",
-	"NewEvolutionPlugin":     "evolution record plugin; needs cmd/ares wiring alongside the population adapter",
 	"NewInterruptPlugin":     "HITL interrupt plugin; no human-approval transport exists yet",
 	"NewObserverPlugin":      "event-mirror plugin; needs a real EventStore in cmd/ares wiring",
 	"NewBasicRecoveryPlugin": "recovery patch plugin; kernel recovery loop uses aresrecovery directly today",

@@ -53,8 +53,9 @@ func TestBuildEvalGateArmedWithoutInfraFailsBootstrap(t *testing.T) {
 	})
 }
 
-// A built gate defaults to runtime StrictMode=true; eval_strict=false is the
-// explicit escape hatch that turns it off.
+// A built gate is ALWAYS runtime-strict (M-G1): eval_strict=false must NOT
+// relax a built gate — the knob governs only whether a MISSING suite is
+// fatal. Also pins the absence arm of eval_strict.
 func TestBuildEvalGateStrictModeDefaultOn(t *testing.T) {
 	path := writeEvalSuite(t, evalSuiteYAML)
 	registry := eval.NewEvaluatorRegistry()

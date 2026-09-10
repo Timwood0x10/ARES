@@ -1,15 +1,14 @@
 // Command 22-evolution-blocks demonstrates composing the evolution system
-// from the public api/evolution building blocks — WITHOUT importing any
-// internal/ package. This is the integration path for external modules
-// and AI assistants that want to assemble their own evolution pipeline.
+// from the internal/evoapi building blocks. This is the integration path
+// for modules inside this repository that want to assemble their own
+// evolution pipeline.
 //
 // Purpose:
 //
-//	Show the full, external-friendly path to building a self-evolving
-//	strategy pipeline: seed a base Strategy, build a Mutator, build a
-//	Population, score agents, run a generation, and finally use a Promoter
-//	to decide a candidate's fate. Every component comes from the public
-//	api/evolution package, so no internal/ import is needed.
+//	Show the full path to building a self-evolving strategy pipeline:
+//	seed a base Strategy, build a Mutator, build a Population, score
+//	agents, run a generation, and finally use a Promoter to decide a
+//	candidate's fate. Every component comes from internal/evoapi.
 //
 // Learning objectives:
 //   - How a base Strategy seeds the genotype that evolution mutates.
@@ -21,7 +20,7 @@
 //   - How NewPromoter + PromotionCriteria decide champion/demote/keep.
 //
 // Core APIs used:
-//   - github.com/Timwood0x10/ares/api/evolution
+//   - github.com/Timwood0x10/ares/internal/evoapi
 //     Strategy, MutationConfig, NewMutator, Mutator.Mutate,
 //     PopulationConfig, DefaultPopulationConfig, NewPopulation,
 //     Population (Size, CurrentGeneration, BestScore, BestStrategy,
@@ -60,7 +59,7 @@ import (
 	"os"
 	"time"
 
-	pubevolution "github.com/Timwood0x10/ares/api/evolution"
+	evoapi "github.com/Timwood0x10/ares/internal/evoapi"
 )
 
 // exitf logs a formatted message and exits with code 1, canceling the
@@ -81,7 +80,7 @@ func main() {
 	// lineage, PromptTemplate is the instruction text, and Params holds the
 	// knobs the mutator may perturb (temperature, top_k, max_tokens...).
 	// Evolution always starts from one such seed.
-	base := &pubevolution.Strategy{
+	base := &evoapi.Strategy{
 		ID:             "base-strategy-001",
 		Version:        1,
 		PromptTemplate: "You are a helpful assistant. Answer concisely.",
@@ -99,7 +98,7 @@ func main() {
 	// probabilities: ParamMutationProb gates param perturbation and
 	// PromptMutationProb gates prompt rewriting. A zero cfg falls back to
 	// sensible defaults (0.3 each).
-	mutator, err := pubevolution.NewMutator("ollama/llama3.2", pubevolution.MutationConfig{
+	mutator, err := evoapi.NewMutator("ollama/llama3.2", evoapi.MutationConfig{
 		ParamMutationProb:  0.4, // 40% chance any single param is perturbed
 		PromptMutationProb: 0.2, // 20% chance the prompt is rewritten
 	})
@@ -125,9 +124,9 @@ func main() {
 	// DefaultPopulationConfig() gives sensible elite/survival/selection
 	// defaults; overriding Size scales the demo. The population starts at
 	// generation 0 with best_score 0.00 (no scoring yet).
-	popCfg := pubevolution.DefaultPopulationConfig()
+	popCfg := evoapi.DefaultPopulationConfig()
 	popCfg.Size = 10 // smaller population for the demo
-	population, err := pubevolution.NewPopulation(base, popCfg)
+	population, err := evoapi.NewPopulation(base, popCfg)
 	if err != nil {
 		exitf(cancel, "create population: %v", err)
 	}
@@ -141,7 +140,7 @@ func main() {
 	// — an LLM judge, a benchmark harness, a success-rate counter.
 	// The mock here rewards lower temperature (stable answers) and higher
 	// max_tokens (thorough answers), as a simple fitness proxy.
-	population.ScoreAgents(func(s *pubevolution.Strategy) float64 {
+	population.ScoreAgents(func(s *evoapi.Strategy) float64 {
 		score := 0.0
 		if t, ok := s.Params["temperature"].(float64); ok {
 			score += (1.0 - t) // lower temp → higher score
@@ -175,7 +174,7 @@ func main() {
 	// accumulated evidence. PromotionCriteria knobs include MinSampleCount,
 	// MinSuccessRate, MinConfidence, ChampionHoldPeriod, DemotionThreshold,
 	// and MaxChampionTenure.
-	promoter := pubevolution.NewPromoter(&pubevolution.PromotionCriteria{
+	promoter := evoapi.NewPromoter(&evoapi.PromotionCriteria{
 		MinSampleCount:     1,   // demo: accept after 1 sample
 		MinSuccessRate:     0.5, // require ≥50% success
 		MinConfidence:      0.5, // require ≥50% confidence

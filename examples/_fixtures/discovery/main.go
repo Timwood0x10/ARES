@@ -1,23 +1,23 @@
-// discovery demonstrates the Service Discovery Engine (api/discovery).
+// discovery demonstrates the Service Discovery Engine (internal/discoveryapi).
 //
 // Purpose:
 //
 //	This example shows the full lifecycle of service discovery: active
 //	discovery of MCP servers, passive registration of known services, tag
 //	management, health checking, listing with confidence/source details, and
-//	unregistration — all through the public api/discovery engine.
+//	unregistration — all through the internal/discoveryapi engine.
 //
 // Learning objectives:
-//   - How discovery.NewEngine orchestrates providers, stores, and events.
+//   - How discoveryapi.NewEngine orchestrates providers, stores, and events.
 //   - The two registration paths: active (DiscoverNow) and passive (Register).
 //   - How tag updates, health checks, and unregistration mutate service state.
 //   - How per-service confidence and source records are aggregated for display.
 //
 // Core APIs (with package paths):
-//   - discovery.NewEngine / discovery.EngineConfig (api/discovery)
+//   - discoveryapi.NewEngine / discoveryapi.EngineConfig (internal/discoveryapi)
 //   - (*Engine).DiscoverNow / Register / UpdateTags / CheckHealth / List /
 //     Unregister / OnEvent
-//   - discovery.RegisterRequest / discovery.UpdateTagsRequest
+//   - discoveryapi.RegisterRequest / discoveryapi.UpdateTagsRequest
 //
 // Run:
 //
@@ -36,7 +36,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Timwood0x10/ares/api/discovery"
+	"github.com/Timwood0x10/ares/internal/discoveryapi"
 )
 
 func main() {
@@ -47,7 +47,7 @@ func main() {
 	// checks. Store nil falls back to an in-memory store; pass your own
 	// ServiceStore (SQLite, Postgres, JSON file — see custom-store example)
 	// for durability.
-	engine := discovery.NewEngine(discovery.EngineConfig{
+	engine := discoveryapi.NewEngine(discoveryapi.EngineConfig{
 		ProjectDir: "",
 		Store:      nil, // Uses MemoryStore by default.
 	})
@@ -55,7 +55,7 @@ func main() {
 	// ── Step 2: Subscribe to lifecycle events ──
 	// OnEvent registers a callback fired on service add/remove/update and
 	// health changes; production systems persist these to an audit store.
-	engine.OnEvent(func(evt discovery.Event) {
+	engine.OnEvent(func(evt discoveryapi.Event) {
 		fmt.Printf("  [event] %-25s %s\n", evt.Type, evt.ServiceID)
 	})
 
@@ -74,7 +74,7 @@ func main() {
 	// manually configured MCP endpoint. Tags and metadata make the service
 	// findable by capability and team.
 	fmt.Println("\n=== 2. Passive Registration ===")
-	err := engine.Register(ctx, discovery.RegisterRequest{
+	err := engine.Register(ctx, discoveryapi.RegisterRequest{
 		Name:     "my-custom-mcp",
 		Endpoint: "/usr/local/bin/my-custom-mcp",
 		Tags:     []string{"capability:analytics", "domain:business"},
@@ -90,7 +90,7 @@ func main() {
 	// UpdateTags atomically adds and removes tags on a service — useful for
 	// reclassifying capabilities without re-registering.
 	fmt.Println("\n=== 3. Tag Management ===")
-	err = engine.UpdateTags(ctx, "my-custom-mcp", discovery.UpdateTagsRequest{
+	err = engine.UpdateTags(ctx, "my-custom-mcp", discoveryapi.UpdateTagsRequest{
 		Add:    []string{"capability:export", "priority:high"},
 		Remove: []string{"domain:business"},
 	})
@@ -147,8 +147,8 @@ func main() {
 
 // bestConfidence returns the highest confidence across all discovery records
 // of a service, used to show how certain the engine is about it.
-func bestConfidence(svc *discovery.DiscoveredService) discovery.Confidence {
-	var best discovery.Confidence
+func bestConfidence(svc *discoveryapi.DiscoveredService) discoveryapi.Confidence {
+	var best discoveryapi.Confidence
 	for _, r := range svc.Records {
 		if r.Confidence > best {
 			best = r.Confidence
@@ -159,7 +159,7 @@ func bestConfidence(svc *discovery.DiscoveredService) discovery.Confidence {
 
 // sourceList renders the distinct discovery sources with their confidence,
 // e.g. "mcp-scan(95%), config(80%)", deduplicating repeated sources.
-func sourceList(svc *discovery.DiscoveredService) string {
+func sourceList(svc *discoveryapi.DiscoveredService) string {
 	sources := make([]string, 0, len(svc.Records))
 	seen := make(map[string]bool)
 	for _, r := range svc.Records {

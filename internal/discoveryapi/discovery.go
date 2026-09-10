@@ -8,7 +8,7 @@
 //
 // Usage:
 //
-//	import "github.com/Timwood0x10/ares/api/discovery"
+//	import "github.com/Timwood0x10/ares/internal/discoveryapi"
 //
 //	// Create engine with custom store (e.g. SQLite).
 //	store := NewSQLiteStore("discovery.db")
