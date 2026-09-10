@@ -30,12 +30,18 @@ type LineageNode struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
-// Genealogy tracks the complete family tree of all agents.
+// Genealogy tracks the family tree of all agents.
 type Genealogy struct {
 	roots []*LineageNode
 	nodes map[string]*LineageNode
 	mu    sync.RWMutex
 }
+
+// maxGenealogyNodes caps the genealogy's node map: agent rotation
+// (resurrection chains, repeated spawn/death cycles) otherwise grows it
+// without bound for the process lifetime. Declared as a var so white-box
+// tests can shrink it; nothing outside the package mutates it.
+var maxGenealogyNodes = 1000
 
 // NewGenealogy creates an empty genealogy tree.
 func NewGenealogy() *Genealogy {
@@ -79,6 +85,7 @@ func (g *Genealogy) RecordSpawn(parentID, childID, agentType string, metadata ma
 	}
 
 	g.nodes[childID] = child
+	g.evictLocked()
 }
 
 // RecordResurrection records that oldID died and was resurrected as newID.
@@ -127,6 +134,7 @@ func (g *Genealogy) RecordResurrection(oldID, newID string) {
 	}
 
 	g.nodes[newID] = newNode
+	g.evictLocked()
 }
 
 // RecordRoot records a root agent (no parent).
@@ -151,6 +159,7 @@ func (g *Genealogy) RecordRoot(id, agentType string, metadata map[string]any) {
 			node.SpawnedAt = time.Now()
 		}
 	}
+	g.evictLocked()
 }
 
 // RecordDeath marks an agent as dead.
@@ -162,6 +171,86 @@ func (g *Genealogy) RecordDeath(agentID string) {
 		node.IsAlive = false
 		node.DiedAt = time.Now()
 	}
+}
+
+// evictLocked bounds the genealogy's memory (caller holds g.mu for
+// writing). When the node count exceeds maxGenealogyNodes:
+//
+//  1. Whole oldest root subtrees are dropped while more than one root
+//     remains — a retired lineage is history, and dropping it by the root
+//     keeps the tree shape consistent (descendants go with their ancestor).
+//  2. Within the remaining subtree(s), the oldest DEAD leaf nodes are pruned
+//     one by one until under the cap or no dead leaf remains. Live nodes are
+//     never pruned, so the active lineage is always fully queryable; dead
+//     interior nodes become leaves as their descendants are pruned and are
+//     reclaimed by later evictions.
+func (g *Genealogy) evictLocked() {
+	if maxGenealogyNodes <= 0 || len(g.nodes) <= maxGenealogyNodes {
+		return
+	}
+	// Phase 1: retire whole oldest root subtrees (roots are in insertion
+	// order; RecordResurrection replaces in place).
+	for len(g.roots) > 1 && len(g.nodes) > maxGenealogyNodes {
+		oldest := g.roots[0]
+		g.roots = g.roots[1:]
+		g.removeSubtreeLocked(oldest)
+	}
+	// Phase 2: prune oldest dead leaves in the surviving subtree(s).
+	for len(g.nodes) > maxGenealogyNodes {
+		if !g.pruneOldestDeadLeafLocked() {
+			break
+		}
+	}
+}
+
+// removeSubtreeLocked deletes a node and every descendant from the nodes
+// map (caller holds g.mu).
+func (g *Genealogy) removeSubtreeLocked(n *LineageNode) {
+	if n == nil {
+		return
+	}
+	delete(g.nodes, n.ID)
+	for _, c := range n.Children {
+		g.removeSubtreeLocked(c)
+	}
+}
+
+// pruneOldestDeadLeafLocked removes the oldest dead leaf node (no children,
+// not alive) and unlinks it from its parent (or the roots list). Reports
+// whether anything was pruned. Caller holds g.mu.
+func (g *Genealogy) pruneOldestDeadLeafLocked() bool {
+	var victim *LineageNode
+	for _, n := range g.nodes {
+		if n == nil || n.IsAlive || len(n.Children) > 0 {
+			continue
+		}
+		if victim == nil || n.SpawnedAt.Before(victim.SpawnedAt) {
+			victim = n
+		}
+	}
+	if victim == nil {
+		return false
+	}
+	delete(g.nodes, victim.ID)
+	if victim.ParentID != "" {
+		if parent, ok := g.nodes[victim.ParentID]; ok {
+			kept := make([]*LineageNode, 0, len(parent.Children))
+			for _, c := range parent.Children {
+				if c != victim {
+					kept = append(kept, c)
+				}
+			}
+			parent.Children = kept
+		}
+	} else {
+		for i, r := range g.roots {
+			if r == victim {
+				g.roots = append(g.roots[:i], g.roots[i+1:]...)
+				break
+			}
+		}
+	}
+	return true
 }
 
 // RecordPromotion marks an agent as promoted to leader.

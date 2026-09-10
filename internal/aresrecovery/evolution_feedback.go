@@ -29,8 +29,25 @@ type HumanFeedback struct {
 // CombinedFitness blends the automatic score with the human rating
 // The weights favor human judgment early and automatic scoring
 // later — the default 0.3/0.7 split is the roadmap recommendation.
+//
+// Scale normalization: autoScore is a GA fitness/win-rate on [0,1] while
+// humanRating is a 1-5 review scale (0 = unrated). Blending them raw let
+// the 1-5 scale dominate (a mid 3 beat every possible auto score, an
+// unrated 0 sank below every one), so the rating is first mapped onto
+// [0,1] via (rating-1)/4. An unrated entry (rating <= 0) contributes no
+// human judgment and the auto score stands alone.
 func CombinedFitness(autoScore, humanRating float64) float64 {
-	return 0.3*autoScore + 0.7*humanRating
+	if humanRating <= 0 {
+		return autoScore
+	}
+	norm := (humanRating - 1) / 4
+	if norm < 0 {
+		norm = 0
+	}
+	if norm > 1 {
+		norm = 1
+	}
+	return 0.3*autoScore + 0.7*norm
 }
 
 // FeedbackStore records human feedback entries and serves them to the
@@ -55,8 +72,21 @@ func (s *FeedbackStore) WithMaxEntries(n int) *FeedbackStore {
 	s.max = n
 	if n > 0 && len(s.entries) > n {
 		s.entries = append([]HumanFeedback(nil), s.entries[len(s.entries)-n:]...)
+		// Rebuild the candidate index after trimming: the old indices point
+		// past the truncated slice, so ForCandidate would silently miss (or
+		// mis-resolve) every retained candidate.
+		s.rebuildIndexLocked()
 	}
 	return s
+}
+
+// rebuildIndexLocked rebuilds byCandID from the current entries slice.
+// Callers must hold s.mu.
+func (s *FeedbackStore) rebuildIndexLocked() {
+	s.byCandID = make(map[string]int, len(s.entries))
+	for i := range s.entries {
+		s.byCandID[s.entries[i].CandidateID] = i
+	}
 }
 
 // Add records one human feedback entry. A re-review of the same candidate
@@ -81,10 +111,7 @@ func (s *FeedbackStore) Add(fb HumanFeedback) {
 		drop := len(s.entries) - s.max
 		s.entries = append([]HumanFeedback(nil), s.entries[drop:]...)
 		// Rebuild the candidate index after trimming.
-		s.byCandID = make(map[string]int, len(s.entries))
-		for i := range s.entries {
-			s.byCandID[s.entries[i].CandidateID] = i
-		}
+		s.rebuildIndexLocked()
 	}
 }
 

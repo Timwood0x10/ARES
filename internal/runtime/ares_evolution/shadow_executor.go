@@ -248,7 +248,10 @@ func (s *ShadowExecutor) runSide(ctx context.Context, t *models.Task, strategy *
 
 // cloneTask copies the finalized task description for one isolated run. The
 // runner mutates its copy (yield checkpoints ride in the payload), so each
-// arm gets a fresh clone and the buffered original is never touched.
+// arm gets a fresh clone and the buffered original is never touched. Nested
+// payload values are deep-copied too: a top-level-only copy would let arm
+// A's nested writes leak into the buffered original and arm B's run
+// (REVIEW 3.4#10).
 func (s *ShadowExecutor) cloneTask(t *models.Task) *models.Task {
 	cp := models.NewTask(t.TaskID+"#shadow", t.AgentType, t.UserProfile)
 	cp.UsedExperienceID = t.UsedExperienceID
@@ -256,7 +259,7 @@ func (s *ShadowExecutor) cloneTask(t *models.Task) *models.Task {
 	if t.Payload != nil {
 		cp.Payload = make(map[string]any, len(t.Payload))
 		for k, v := range t.Payload {
-			cp.Payload[k] = v
+			cp.Payload[k] = deepCopyValue(v)
 		}
 	}
 	return cp

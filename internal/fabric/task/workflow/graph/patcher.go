@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
 )
@@ -17,6 +18,11 @@ import (
 // It wraps a *Graph and applies InsertNode/RemoveNode/ReplaceNode/AddEdge/RemoveEdge/ChangeScheduler.
 // Implements patch.RuntimeComponent for unified runtime evolution.
 type GraphPatchExecutor struct {
+	// mu guards the graph pointer: the executor is registered on the patch
+	// registry BEFORE a live graph exists, and SetGraph rebinds it later —
+	// possibly while patches from the evolution loop apply concurrently. An
+	// unlocked pointer swap was a data race with every Apply/Snapshot read.
+	mu    sync.RWMutex
 	graph *Graph
 }
 
@@ -38,15 +44,25 @@ func (e *GraphPatchExecutor) SetGraph(g *Graph) {
 	if g == nil {
 		return
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.graph = g
+}
+
+// currentGraph returns the bound graph under the read lock.
+func (e *GraphPatchExecutor) currentGraph() *Graph {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.graph
 }
 
 // Snapshot returns the current graph structure as a serializable snapshot.
 func (e *GraphPatchExecutor) Snapshot(_ context.Context) (any, error) {
-	if e.graph == nil {
+	g := e.currentGraph()
+	if g == nil {
 		return nil, patch.ErrNoSnapshot
 	}
-	return e.graph, nil
+	return g, nil
 }
 
 // Ensure GraphPatchExecutor implements patch.RuntimeComponent.
@@ -54,22 +70,25 @@ var _ patch.RuntimeComponent = (*GraphPatchExecutor)(nil)
 
 // Apply applies a runtime patch to the graph.
 func (e *GraphPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
-	if e.graph == nil {
+	g := e.currentGraph()
+	if g == nil {
 		return nil, errors.New("graph executor: graph is nil (call SetGraph first)")
 	}
 	switch p.Type {
 	case patch.PatchInsertNode:
-		return e.applyInsertNode(ctx, p)
+		return e.applyInsertNode(ctx, g, p)
 	case patch.PatchRemoveNode:
-		return e.applyRemoveNode(ctx, p)
+		return e.applyRemoveNode(ctx, g, p)
 	case patch.PatchReplaceNode:
-		return e.applyReplaceNode(ctx, p)
+		return e.applyReplaceNode(ctx, g, p)
 	case patch.PatchAddEdge:
-		return e.applyAddEdge(ctx, p)
+		return e.applyAddEdge(ctx, g, p)
 	case patch.PatchRemoveEdge:
-		return e.applyRemoveEdge(ctx, p)
+		return e.applyRemoveEdge(ctx, g, p)
 	case patch.PatchChangeScheduler:
-		return e.applyChangeScheduler(ctx, p)
+		return e.applyChangeScheduler(ctx, g, p)
+	case patch.PatchRestoreNode:
+		return e.applyRestoreNode(ctx, g, p)
 	default:
 		return nil, fmt.Errorf("graph executor: unsupported patch type %s", p.Type)
 	}
@@ -77,7 +96,7 @@ func (e *GraphPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*
 
 // CanApply checks whether a patch can be applied.
 func (e *GraphPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
-	if e.graph == nil {
+	if e.currentGraph() == nil {
 		return errors.New("graph executor: graph is nil")
 	}
 	switch p.Type {
@@ -116,6 +135,11 @@ func (e *GraphPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) e
 		return nil
 	case patch.PatchChangeScheduler:
 		return nil
+	case patch.PatchRestoreNode:
+		if _, ok := p.Value.(nodeRestore); !ok {
+			return errors.New("graph executor: restore node value must be a nodeRestore payload")
+		}
+		return nil
 	default:
 		return fmt.Errorf("graph executor: unsupported patch type %s", p.Type)
 	}
@@ -123,7 +147,7 @@ func (e *GraphPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) e
 
 // ── Apply implementations ───────────────────
 
-func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, g *Graph, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Determine the node to insert.
 	var node Node
 	if n, ok := p.Value.(Node); ok {
@@ -138,11 +162,11 @@ func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, p patch.RuntimeP
 	}
 
 	// Capture the old node if it exists (for rollback).
-	e.graph.mu.RLock()
-	oldNode := e.graph.nodes[p.Target]
-	e.graph.mu.RUnlock()
+	g.mu.RLock()
+	oldNode := g.nodes[p.Target]
+	g.mu.RUnlock()
 
-	_, err := e.graph.Node(p.Target, node)
+	_, err := g.Node(p.Target, node)
 	if err != nil {
 		return nil, fmt.Errorf("graph executor: insert node %s: %w", p.Target, err)
 	}
@@ -155,33 +179,98 @@ func (e *GraphPatchExecutor) applyInsertNode(_ context.Context, p patch.RuntimeP
 	}, nil
 }
 
-func (e *GraphPatchExecutor) applyRemoveNode(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
-	// Capture the node before removing (for rollback).
-	e.graph.mu.RLock()
-	oldNode, exists := e.graph.nodes[p.Target]
-	e.graph.mu.RUnlock()
+// nodeRestore captures everything Graph.RemoveNode destroys so a failed
+// removal can be rolled back completely: the node itself, every edge that
+// touched it (in and out, with their conditions), and whether the removed
+// node was the graph's start node.
+type nodeRestore struct {
+	Node     Node
+	Edges    []RuntimeEdge
+	WasStart bool
+}
+
+func (e *GraphPatchExecutor) applyRemoveNode(_ context.Context, g *Graph, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	// Capture the node AND its edges before removing (for rollback): the
+	// plain insert-node rollback restored the node but silently dropped
+	// every edge that touched it — a rolled-back hub node reappeared as an
+	// isolated vertex, disconnecting the workflow.
+	var snap nodeRestore
+	g.mu.RLock()
+	oldNode, exists := g.nodes[p.Target]
 	if !exists {
+		g.mu.RUnlock()
 		return nil, fmt.Errorf("graph executor: node %q not found", p.Target)
 	}
+	snap.Node = oldNode
+	snap.WasStart = g.start == p.Target
+	for from, edges := range g.edges {
+		for _, edge := range edges {
+			if edge.from == p.Target || edge.to == p.Target {
+				snap.Edges = append(snap.Edges, RuntimeEdge{
+					From:      from,
+					To:        edge.to,
+					Condition: edge.cond,
+				})
+			}
+		}
+	}
+	g.mu.RUnlock()
 
-	_, err := e.graph.RemoveNode(p.Target)
+	_, err := g.RemoveNode(p.Target)
 	if err != nil {
 		return nil, fmt.Errorf("graph executor: remove node %s: %w", p.Target, err)
 	}
 
 	return &patch.RuntimePatch{
-		Type:   patch.PatchInsertNode,
+		Type:   patch.PatchRestoreNode,
 		Target: p.Target,
-		Value:  oldNode,
-		Reason: "rollback: re-insert removed node",
+		Value:  snap,
+		Reason: "rollback: restore removed node with its edges",
 	}, nil
 }
 
-func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+// applyRestoreNode re-inserts a previously removed node with every captured
+// edge and, when it was the start node, the start pointer. Best-effort per
+// edge: an edge whose OTHER endpoint was also removed by a later patch
+// cannot be restored and is skipped — a partial rollback is strictly better
+// than failing the whole rollback.
+func (e *GraphPatchExecutor) applyRestoreNode(_ context.Context, g *Graph, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	snap, ok := p.Value.(nodeRestore)
+	if !ok {
+		return nil, fmt.Errorf("graph executor: restore node %q: value %T is not a nodeRestore payload", p.Target, p.Value)
+	}
+	if snap.Node == nil {
+		return nil, fmt.Errorf("graph executor: restore node %q: payload carries no node", p.Target)
+	}
+	if _, err := g.Node(p.Target, snap.Node); err != nil {
+		// The id is occupied again (a replacement node was inserted after
+		// the removal) — nothing sensible to restore on top of it.
+		return nil, fmt.Errorf("graph executor: restore node %s: %w", p.Target, err)
+	}
+	for _, re := range snap.Edges {
+		// Edge() validates both endpoints exist and suppresses duplicates;
+		// an edge whose other endpoint is gone is skipped (best-effort).
+		if _, err := g.Edge(re.From, re.To, re.Condition); err != nil {
+			continue
+		}
+	}
+	if snap.WasStart && g.StartNode() == "" {
+		if _, err := g.Start(p.Target); err != nil {
+			return nil, fmt.Errorf("graph executor: restore start %s: %w", p.Target, err)
+		}
+	}
+	return &patch.RuntimePatch{
+		Type:   patch.PatchRemoveNode,
+		Target: p.Target,
+		Reason: "rollback: remove restored node",
+	}, nil
+}
+
+func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, g *Graph, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Remove old node and insert new node in its place.
-	e.graph.mu.RLock()
-	oldNode, exists := e.graph.nodes[p.Target]
-	e.graph.mu.RUnlock()
+	g.mu.RLock()
+	oldNode, exists := g.nodes[p.Target]
+	g.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("graph executor: node %q not found for replace", p.Target)
 	}
@@ -197,9 +286,9 @@ func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, p patch.Runtime
 		newNode = fn
 	}
 
-	e.graph.mu.Lock()
-	e.graph.nodes[p.Target] = newNode
-	e.graph.mu.Unlock()
+	g.mu.Lock()
+	g.nodes[p.Target] = newNode
+	g.mu.Unlock()
 
 	return &patch.RuntimePatch{
 		Type:   patch.PatchReplaceNode,
@@ -209,13 +298,13 @@ func (e *GraphPatchExecutor) applyReplaceNode(_ context.Context, p patch.Runtime
 	}, nil
 }
 
-func (e *GraphPatchExecutor) applyAddEdge(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func (e *GraphPatchExecutor) applyAddEdge(_ context.Context, g *Graph, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	to, ok := p.Value.(string)
 	if !ok {
 		return nil, errors.New("graph executor: add edge value must be string (to node ID)")
 	}
 
-	_, err := e.graph.Edge(p.Target, to)
+	_, err := g.Edge(p.Target, to)
 	if err != nil {
 		return nil, fmt.Errorf("graph executor: add edge %s→%s: %w", p.Target, to, err)
 	}
@@ -228,13 +317,13 @@ func (e *GraphPatchExecutor) applyAddEdge(_ context.Context, p patch.RuntimePatc
 	}, nil
 }
 
-func (e *GraphPatchExecutor) applyRemoveEdge(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func (e *GraphPatchExecutor) applyRemoveEdge(_ context.Context, g *Graph, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	to, ok := p.Value.(string)
 	if !ok {
 		return nil, errors.New("graph executor: remove edge value must be string (to node ID)")
 	}
 
-	_, err := e.graph.RemoveEdge(p.Target, to)
+	_, err := g.RemoveEdge(p.Target, to)
 	if err != nil {
 		return nil, fmt.Errorf("graph executor: remove edge %s→%s: %w", p.Target, to, err)
 	}
@@ -249,6 +338,7 @@ func (e *GraphPatchExecutor) applyRemoveEdge(_ context.Context, p patch.RuntimeP
 
 func (e *GraphPatchExecutor) applyChangeScheduler(
 	_ context.Context,
+	g *Graph,
 	p patch.RuntimePatch,
 ) (*patch.RuntimePatch, error) {
 	newSched, ok := p.Value.(Scheduler)
@@ -256,15 +346,15 @@ func (e *GraphPatchExecutor) applyChangeScheduler(
 		return nil, errors.New("graph executor: change scheduler value must be a Scheduler")
 	}
 
-	// Capture old scheduler for rollback. e.graph.scheduler is guarded by
-	// e.graph.mu (SetScheduler writes it under the write lock), so the read
+	// Capture old scheduler for rollback. g.scheduler is guarded by
+	// g.mu (SetScheduler writes it under the write lock), so the read
 	// must hold the read lock too — matching the pattern used by the sibling
 	// apply* functions and avoiding a data race with concurrent SetScheduler.
-	e.graph.mu.RLock()
-	oldSched := e.graph.scheduler
-	e.graph.mu.RUnlock()
+	g.mu.RLock()
+	oldSched := g.scheduler
+	g.mu.RUnlock()
 
-	_, err := e.graph.SetScheduler(newSched)
+	_, err := g.SetScheduler(newSched)
 	if err != nil {
 		return nil, fmt.Errorf("graph executor: change scheduler: %w", err)
 	}

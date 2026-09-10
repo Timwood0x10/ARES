@@ -391,29 +391,40 @@ func (o *Orchestrator) Go(fn func() error) {
 // and not Failed; a duplicate name is rejected (existing state is never
 // overwritten). Adopt during or after Shutdown returns ErrShuttingDown —
 // the teardown always wins the race.
+//
+// Shutdown race: the authoritative stopped-check and the registration run
+// atomically under the orchestrator mutex, so a component that registers
+// successfully is ALWAYS visible to a Shutdown that starts afterwards
+// (Shutdown sets its flag under the same mutex before snapshotting the stop
+// order). Pre-fix, an Adopt that passed the early flag check could still
+// register after Shutdown had already computed its stop list — the
+// component ran forever. Component code (Dependencies, Bind, Ready) runs
+// OUTSIDE the mutex; a shutdown that starts mid-adoption is detected by
+// re-checking the root context before the Started/Ready writes, so a
+// torn-down component is never resurrected.
 func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error {
+	if c == nil || isNilComponent(c) {
+		return errors.New("kernel: cannot adopt nil component")
+	}
+	name := c.Name()
+	// Cheap pre-flight: a shutdown that already began fails fast. The
+	// authoritative check is the one under o.mu below.
 	o.mu.Lock()
 	stopped := o.stopped
 	o.mu.Unlock()
 	if stopped {
 		return ErrShuttingDown
 	}
-	// The errgroup root context is cancelled at the top of Shutdown, so it
-	// is the authoritative in-flight signal for a shutdown that started
-	// between the flag check above and now.
 	select {
 	case <-o.rootCtx.Done():
 		return ErrShuttingDown
 	default:
 	}
 
-	if c == nil || isNilComponent(c) {
-		return errors.New("kernel: cannot adopt nil component")
-	}
-	name := c.Name()
 	// Fail-loud dependency validation before registration: a missing or
 	// failed dependency means the adopted component would join the graph in
-	// a state that can never become Ready.
+	// a state that can never become Ready. Runs before the lock — component
+	// code must never execute under the orchestrator mutex.
 	for _, dep := range c.Dependencies() {
 		st, ok := o.registry.GetStatus(dep)
 		if !ok {
@@ -424,7 +435,19 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 				name, dep, st.Reason)
 		}
 	}
-	if err := o.registry.Register(c, mode); err != nil {
+	// Atomic admission: the stopped-flag check and Register share one
+	// critical section with Shutdown's flag set, so only two orders exist:
+	//   Adopt's critical section first → Shutdown's TopologicalOrder (taken
+	//     after its own critical section) sees the new component.
+	//   Shutdown's flag set first → Adopt observes stopped and refuses.
+	o.mu.Lock()
+	if o.stopped {
+		o.mu.Unlock()
+		return ErrShuttingDown
+	}
+	err := o.registry.Register(c, mode)
+	o.mu.Unlock()
+	if err != nil {
 		return err
 	}
 
@@ -435,6 +458,14 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 			o.setStatus(name, StateFailed, err.Error())
 			return fmt.Errorf("kernel: adopt %q bind: %w", name, err)
 		}
+	}
+	// A shutdown that started while Bind ran owns this component now: it is
+	// registered, hence in the stop list — but marking it Started/Ready
+	// after it has been stopped would corrupt the final status snapshot.
+	select {
+	case <-o.rootCtx.Done():
+		return ErrShuttingDown
+	default:
 	}
 	// The component is already running (adoption implies started work);
 	// record the started timestamp so Snapshot shows a real instance.
@@ -452,10 +483,19 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 			return fmt.Errorf("kernel: adopt %q ready: %w", name, err)
 		}
 	}
-	current, _ := o.registry.GetStatus(name)
-	if current.State != StateDegraded {
-		o.setStatus(name, StateReady, "")
-	}
+	// Final state: never overwrite a state another writer recorded while
+	// Ready ran (a background loop may have marked the component Failed —
+	// resurrecting it to Ready would hide a dead component), and never
+	// resurrect a component that Shutdown already stopped.
+	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		switch st.State {
+		case StateDegraded, StateFailed, StateStopped:
+			// Keep the more specific/terminal state.
+		default:
+			st.State = StateReady
+			st.Reason = ""
+		}
+	})
 	final, _ := o.registry.GetStatus(name)
 	log.Info("kernel: component adopted",
 		"component", name, "state", final.State)
@@ -533,11 +573,17 @@ func (o *Orchestrator) markBackgroundFailed(name, reason string) {
 		return
 	default:
 	}
-	if st, ok := o.registry.GetStatus(name); ok {
+	// Field-level atomic update: a whole-status overwrite from a stale copy
+	// would revert StartedAt/InstanceID stamped by a concurrent
+	// setStatusStarted (lost update). A component Shutdown already stopped
+	// stays Stopped — the teardown report owns the terminal state.
+	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		if st.State == StateStopped {
+			return
+		}
 		st.State = StateFailed
 		st.Reason = reason
-		o.registry.SetStatus(name, st)
-	}
+	})
 	if o.events == nil {
 		return
 	}
@@ -581,25 +627,22 @@ func (o *Orchestrator) Cancel() {
 	o.cancel()
 }
 
-// setStatus updates the component status in the registry.
+// setStatus updates the component status in the registry. The mutation runs
+// atomically under the registry lock (UpdateStatus) so a concurrent writer
+// (setStatusStarted, markBackgroundFailed) cannot be silently reverted by a
+// stale-copy overwrite.
 func (o *Orchestrator) setStatus(name string, state State, reason string) {
-	status, ok := o.registry.GetStatus(name)
-	if !ok {
-		return
-	}
-	status.State = state
-	status.Reason = reason
-	o.registry.SetStatus(name, status)
+	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		st.State = state
+		st.Reason = reason
+	})
 }
 
 // setStatusStarted updates status with a timestamp when a component starts.
 func (o *Orchestrator) setStatusStarted(name string, state State) {
-	status, ok := o.registry.GetStatus(name)
-	if !ok {
-		return
-	}
-	status.State = state
-	status.StartedAt = time.Now()
-	status.InstanceID = fmt.Sprintf("%s-%d", name, status.StartedAt.UnixNano())
-	o.registry.SetStatus(name, status)
+	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		st.State = state
+		st.StartedAt = time.Now()
+		st.InstanceID = fmt.Sprintf("%s-%d", name, st.StartedAt.UnixNano())
+	})
 }

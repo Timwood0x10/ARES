@@ -108,24 +108,42 @@ func (c *Compactor) CompactAll(ctx context.Context, knownStreamIDs []string) (in
 }
 
 // compactStream performs the actual compaction for a single stream.
+//
+// The candidate read is bounded: compaction summarizes everything EXCEPT
+// the most recent KeepRecent events, so the read is capped at version
+// (streamVersion - KeepRecent) via ReadOptions.ToVersion instead of loading
+// the whole stream into memory. Pre-fix the unbounded read pulled every
+// event of the stream — OOM on a very long stream, and pure waste: the
+// keep-recent tail is never a compaction candidate. The bound is exact even
+// on trimmed streams (prefix deletions only shift the earliest version, and
+// the version cap naturally skips the missing prefix).
 func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, error) {
-	// Read all events in the stream to determine what to compact.
+	// The stream's max version defines the candidate boundary: events at
+	// versions <= version-KeepRecent are the candidates, everything newer
+	// must stay live. (Versions are assigned monotonically per stream.)
+	// KeepRecent < 0 is a nonsensical (unsanitized) config: refuse rather
+	// than slice out of range — NewCompactor sanitizes it, but the guard
+	// keeps a hand-built config from panicking the compaction worker.
+	version, err := c.store.StreamVersion(ctx, streamID)
+	if err != nil {
+		return false, fmt.Errorf("check stream version: %w", err)
+	}
+	if c.config.KeepRecent < 0 || version <= int64(c.config.KeepRecent) {
+		return false, nil
+	}
+
+	// Read only the candidate window (ascending, inclusive version cap).
 	allEvents, err := c.store.Read(ctx, streamID, ReadOptions{
 		Direction: ReadAscending,
+		ToVersion: version - int64(c.config.KeepRecent),
 	})
 	if err != nil {
 		return false, fmt.Errorf("read stream for compaction: %w", err)
 	}
 
-	totalEvents := len(allEvents)
-	if c.config.KeepRecent < 0 || totalEvents <= c.config.KeepRecent {
-		return false, nil
-	}
-
-	// Candidate events are everything except the most recent KeepRecent events.
-	candidateCount := totalEvents - c.config.KeepRecent
-	candidates := allEvents[:candidateCount]
-
+	// On a trimmed stream the candidate window may legitimately be empty
+	// (an earlier compaction already trimmed these versions away).
+	candidates := allEvents
 	if len(candidates) == 0 {
 		return false, nil
 	}
@@ -145,6 +163,15 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 		"version_range", fmt.Sprintf("%d-%d", summary.StartVersion, summary.EndVersion),
 	)
 
+	// Enforce the per-stream summary cap: the config field was documented
+	// ("older summaries are merged or pruned when this limit is exceeded")
+	// but never enforced anywhere — summaries accumulated without bound.
+	// Prune the OLDEST summaries beyond the cap (best-effort: a failed
+	// delete is logged and the loop continues).
+	if c.config.MaxSummariesPerStream > 0 {
+		c.pruneSummaries(ctx, streamID)
+	}
+
 	// Optionally trim compacted events from the live store.
 	if c.config.EnableTrimming && c.trimStore != nil {
 		if removed, err := c.trimStore.TrimBefore(ctx, streamID, summary.EndVersion); err != nil {
@@ -158,6 +185,41 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 	}
 
 	return true, nil
+}
+
+// pruneSummaries deletes the oldest summaries of a stream beyond the
+// configured MaxSummariesPerStream. Sorted defensively by StartVersion with
+// EndVersion/CreatedAt tie-breaks (the repository contract promises ascending
+// StartVersion order, but the prune must not depend on it — and overlapping
+// windows can share a StartVersion, in which case the shorter/older window
+// is the one to drop).
+func (c *Compactor) pruneSummaries(ctx context.Context, streamID string) {
+	existing, err := c.repo.FindByStreamID(ctx, streamID)
+	if err != nil {
+		log.Warn("compaction: summary cap prune could not list summaries",
+			"stream_id", streamID, "error", err)
+		return
+	}
+	if len(existing) <= c.config.MaxSummariesPerStream {
+		return
+	}
+	sort.Slice(existing, func(i, j int) bool {
+		if existing[i].StartVersion != existing[j].StartVersion {
+			return existing[i].StartVersion < existing[j].StartVersion
+		}
+		if existing[i].EndVersion != existing[j].EndVersion {
+			return existing[i].EndVersion < existing[j].EndVersion
+		}
+		return existing[i].CreatedAt.Before(existing[j].CreatedAt)
+	})
+	excess := len(existing) - c.config.MaxSummariesPerStream
+	for _, s := range existing[:excess] {
+		if err := c.repo.Delete(ctx, s.ID); err != nil {
+			log.Warn("compaction: summary cap prune delete failed",
+				"stream_id", streamID, "summary_id", s.ID, "error", err)
+			continue
+		}
+	}
 }
 
 // buildSummary constructs an EventSummary from a slice of events using rule-based aggregation.
@@ -475,7 +537,14 @@ func DefaultSummarizer(events []*Event) string {
 }
 
 // CleanupOldSummaries removes expired summaries based on the configured TTL.
+// A SummaryTTL <= 0 DISABLES cleanup instead of deleting everything: with
+// the zero value flowing straight into the threshold computation, the first
+// cleanup pass used to delete every summary created before "now" — i.e.
+// all of them.
 func (c *Compactor) CleanupOldSummaries(ctx context.Context) (int64, error) {
+	if c.config.SummaryTTL <= 0 {
+		return 0, nil
+	}
 	threshold := time.Now().Add(-c.config.SummaryTTL)
 	return c.repo.DeleteOlderThan(ctx, threshold)
 }

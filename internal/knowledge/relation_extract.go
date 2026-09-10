@@ -78,6 +78,14 @@ func NewRelationExtractor() *RelationExtractor {
 // Extract returns Relations found in the object's Normalized+Summary text.
 // Only predicates in AllowedPredicates are kept. It returns an empty (non-nil)
 // slice when nothing matched.
+//
+// KNOWN LIMITATION: the entity capture group is greedy to the end of the
+// matched text, so "fixes the login bug and the cache" yields ONE relation
+// whose target is the whole remainder, not two clean entities. Acceptable
+// for the current rule-based extractor (targets are matched against the
+// entity dict downstream, so overlong targets simply fail to canonicalize).
+// TODO(tech-debt): terminate the capture at conjunction/punctuation
+// boundaries (，。；, ; and) for multi-entity sentences.
 func (e *RelationExtractor) Extract(obj *KnowledgeObject) []Relation {
 	rels := []Relation{}
 	if obj == nil {

@@ -273,8 +273,14 @@ func (c *DefaultCompiler) formatJSON(graph *knowledge.WorkingGraph, cfg CompileC
 			b.WriteString(",\n")
 		}
 		first = false
-		fmt.Fprintf(&b, "    {\"from\":%q,\"to\":%q,\"name\":%q,\"score\":%.2f}",
-			e.From, e.To, e.Name, e.Score)
+		// Same as the node fields above: json.Marshal, not %q — %q emits
+		// Go-only escapes (\a, \x…) that break JSON consumers when edge
+		// fields contain control characters.
+		fromJSON, _ := json.Marshal(e.From)
+		toJSON, _ := json.Marshal(e.To)
+		nameJSON, _ := json.Marshal(e.Name)
+		fmt.Fprintf(&b, "    {\"from\":%s,\"to\":%s,\"name\":%s,\"score\":%.2f}",
+			fromJSON, toJSON, nameJSON, e.Score)
 	}
 
 	b.WriteString("\n  ]\n}\n")
@@ -320,8 +326,10 @@ func (c *DefaultCompiler) formatXML(graph *knowledge.WorkingGraph, cfg CompileCo
 			if cfg.MaxEdges > 0 && i >= cfg.MaxEdges {
 				break
 			}
-			fmt.Fprintf(&b, "    <relation from=%q to=%q name=%q score=\"%.2f\"/>\n",
-				e.From, e.To, e.Name, e.Score)
+			// Same as the node attributes above: escapeXMLAttr, not %q — %q
+			// emits Go quoting and leaves &/< unescaped, breaking XML parsing.
+			fmt.Fprintf(&b, "    <relation from=%s to=%s name=%s score=\"%.2f\"/>\n",
+				escapeXMLAttr(e.From), escapeXMLAttr(e.To), escapeXMLAttr(e.Name), e.Score)
 		}
 		b.WriteString("  </relations>\n")
 	}

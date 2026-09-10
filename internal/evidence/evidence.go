@@ -68,12 +68,24 @@ type Evidence struct {
 // [since, until) semantics (e.g. abutting replay windows that must not share a
 // boundary record) must adjust the boundary themselves — pass `until` minus one
 // nanosecond so the inclusive store excludes the shared instant.
+//
+// PAYLOAD FILTER: PayloadFilter matches records whose JSON payload object
+// contains the given key/value pairs (JSONB containment semantics). It exists
+// so equality filters on payload keys — strategy_id, tool_step_id — can be
+// applied BEFORE the Limit, instead of querying the most recent N records and
+// filtering client-side. With multi-strategy traffic the client-side order
+// meant the window could fill entirely with OTHER strategies' records, so the
+// scoped strategy's sample count stayed 0 and judge gates never opened.
 type Filter struct {
 	Source string       `json:"source,omitempty"`
 	Kind   EvidenceKind `json:"kind,omitempty"`
 	Since  time.Time    `json:"since,omitempty"`
 	Until  time.Time    `json:"until,omitempty"`
 	Limit  int          `json:"limit,omitempty"`
+	// PayloadFilter requires the payload JSON object to contain each of
+	// these key/value pairs. Values must be JSON scalars (string/number/
+	// bool); nil disables payload matching.
+	PayloadFilter map[string]any `json:"payload_filter,omitempty"`
 }
 
 // AggregateFn computes a single float64 value from a slice of float64 values.
@@ -129,7 +141,8 @@ func (s *MemoryStore) Append(_ context.Context, e Evidence) error {
 // Store contract; Limit is applied AFTER sorting so callers asking for the
 // top N receive the most recent N, not the oldest N. Expired records (those
 // whose TTL has elapsed since Append) are excluded (TTL was previously
-// a dead field).
+// a dead field). PayloadFilter (when set) is applied BEFORE the Limit so a
+// payload-scoped window contains the most recent N MATCHING records.
 func (s *MemoryStore) Query(_ context.Context, filter Filter) ([]Evidence, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -151,6 +164,9 @@ func (s *MemoryStore) Query(_ context.Context, filter Filter) ([]Evidence, error
 		}
 		// Skip expired records (zero TTL means no expiry).
 		if e.TTL > 0 && now.Sub(e.Timestamp) > e.TTL {
+			continue
+		}
+		if len(filter.PayloadFilter) > 0 && !payloadMatches(e.Payload, filter.PayloadFilter) {
 			continue
 		}
 		result = append(result, e)
@@ -183,6 +199,34 @@ func (s *MemoryStore) Aggregate(ctx context.Context, filter Filter, fn Aggregate
 		return 0, nil
 	}
 	return fn(values), nil
+}
+
+// payloadMatches reports whether a raw JSON payload object contains all the
+// given key/value pairs. Payloads that are not JSON objects (or fail to
+// unmarshal) never match — mirroring PostgresStore's `payload @> jsonb`
+// containment, which is false for non-object jsonb values.
+func payloadMatches(payload json.RawMessage, want map[string]any) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
+		return false
+	}
+	for k, v := range want {
+		got, ok := obj[k]
+		if !ok {
+			return false
+		}
+		// Compare via re-marshal: JSON numbers unmarshal to float64 while a
+		// caller may pass an int, and direct != would misjudge equal values.
+		gotJSON, err1 := json.Marshal(got)
+		wantJSON, err2 := json.Marshal(v)
+		if err1 != nil || err2 != nil || string(gotJSON) != string(wantJSON) {
+			return false
+		}
+	}
+	return true
 }
 
 // Ensure MemoryStore implements Store.

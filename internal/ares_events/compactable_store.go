@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -35,14 +36,21 @@ type CompactableEventStore struct {
 	// archiveSink archives round records at task-terminal boundaries and before
 	// compaction. nil = no archiving. Set via WithArchiveSink.
 	archiveSink ArchiveSink
-	// archiveMu protects roundCounter and lastArchivedVersion. It is separate
-	// from mu so I/O (stream Read, sink call) never holds mu.
+	// archiveMu protects roundCounter, lastArchivedVersion and
+	// archiveInflight. It is separate from mu so I/O (stream Read, sink
+	// call) never holds mu.
 	archiveMu sync.Mutex
 	// roundCounter maps streamID -> next round number to assign (1-based).
 	roundCounter map[string]int
 	// lastArchivedVersion maps streamID -> stream version through which rounds
 	// are archived. Reads for archiving start at this version (inclusive).
 	lastArchivedVersion map[string]int64
+	// archiveInflight marks streams whose round archive is currently being
+	// claimed (read → sink → commit). The pre-fix "CAS" only detected a
+	// claimant that arrived AFTER a commit — two goroutines could both pass
+	// the boundary check, both invoke the sink for the same round, and
+	// archive it twice. An in-flight claim is exclusive per stream.
+	archiveInflight map[string]bool
 
 	// lctx is the store-owned lifecycle context for background compaction work.
 	// It is intentionally decoupled from any single Append caller's context:
@@ -89,6 +97,7 @@ func NewCompactableEventStore(
 		lastChecked:         make(map[string]int64),
 		roundCounter:        make(map[string]int),
 		lastArchivedVersion: make(map[string]int64),
+		archiveInflight:     make(map[string]bool),
 	}
 	// Background compaction outlives any single request, so derive its lifecycle
 	// context from Background (cancelled by Close) rather than a caller ctx.
@@ -206,6 +215,12 @@ func (s *CompactableEventStore) Append(
 // but summaries exist for the stream, it falls back to returning the summaries
 // as synthetic events. This prevents ReplaySession from breaking after compaction
 // has trimmed old raw events.
+//
+// The synthetic fallback honors the caller's ReadOptions (version window,
+// time filter, direction, limit): pre-fix it ignored them entirely, so a
+// bounded or descending read on a fully-compacted stream returned every
+// summary in ascending order — callers paging with Limit got an unbounded
+// slice and DESC callers got the oldest-first order.
 func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts ReadOptions) ([]*Event, error) {
 	events, err := s.EventStore.Read(ctx, streamID, opts)
 	if err != nil {
@@ -243,7 +258,39 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 			Timestamp: sum.CreatedAt,
 		})
 	}
-	return synthetic, nil
+	return applyReadOptions(synthetic, opts), nil
+}
+
+// applyReadOptions filters and orders a synthetic event slice per the
+// caller's ReadOptions (same semantics as the stores' Read: FromVersion and
+// ToVersion inclusive, Since inclusive, Direction, Limit). The input is
+// normalized to ascending version order first — the repo's ordering
+// contract is start_version ASC, but defensive sorting keeps the fallback
+// correct for any repository implementation.
+func applyReadOptions(events []*Event, opts ReadOptions) []*Event {
+	sort.Slice(events, func(i, j int) bool { return events[i].Version < events[j].Version })
+	filtered := make([]*Event, 0, len(events))
+	for _, ev := range events {
+		if opts.FromVersion > 0 && ev.Version < opts.FromVersion {
+			continue
+		}
+		if opts.ToVersion > 0 && ev.Version > opts.ToVersion {
+			continue
+		}
+		if !opts.Since.IsZero() && ev.Timestamp.Before(opts.Since) {
+			continue
+		}
+		filtered = append(filtered, ev)
+	}
+	if opts.Direction == ReadDescending {
+		for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+			filtered[i], filtered[j] = filtered[j], filtered[i]
+		}
+	}
+	if opts.Limit > 0 && len(filtered) > opts.Limit {
+		filtered = filtered[:opts.Limit]
+	}
+	return filtered
 }
 
 // Debounce divisor: skip compaction check until version advances by at least
@@ -417,10 +464,33 @@ func (s *CompactableEventStore) archivePendingRoundsOnce(ctx context.Context, st
 		return false, nil
 	}
 
-	// Step 1: snapshot the round boundary (last archived terminal version).
+	// Step 1: claim the stream exclusively. The pre-fix boundary check alone
+	// was not a claim: two goroutines could both observe the same
+	// lastArchivedVersion (neither had written anything yet), both pass, and
+	// both invoke the sink for the same round — the round was archived
+	// twice. An in-flight flag under archiveMu makes the claim exclusive;
+	// it is released when this attempt finishes (success, failure, or
+	// nothing-to-archive), so a failed sink attempt is retried by the next
+	// drain as before.
 	s.archiveMu.Lock()
+	if s.archiveInflight[streamID] {
+		s.archiveMu.Unlock()
+		return false, nil
+	}
+	s.archiveInflight[streamID] = true
 	roundStart := s.lastArchivedVersion[streamID]
 	s.archiveMu.Unlock()
+	releaseClaim := func() {
+		s.archiveMu.Lock()
+		delete(s.archiveInflight, streamID)
+		s.archiveMu.Unlock()
+	}
+	// The claim is released EXACTLY once, by this defer, on every return
+	// path. Explicit release calls on individual returns must not exist:
+	// releaseClaim has no ownership token, so a second release between an
+	// explicit call and the defer would strip a concurrent drainer's freshly
+	// acquired claim and re-open the double-archive window this flag closes.
+	defer releaseClaim()
 
 	// Step 2: page through the un-archived window, accumulating events until
 	// the next terminal event or the end of the stream. lastSeen is both the

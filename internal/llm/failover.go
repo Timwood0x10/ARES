@@ -195,6 +195,24 @@ func (fc *FailoverClient) cooldownForError(err error) time.Duration {
 // response. All errors trigger cooldown so the next call skips the provider
 // instead of waiting for the same timeout/429 again.
 func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, error) {
+	return fc.generateAttempting(ctx, func(c *Client, cctx context.Context) (string, error) {
+		return c.Generate(cctx, prompt)
+	})
+}
+
+// GenerateWithParams tries each LLM client in order with per-call parameter
+// overrides, applying the same cooldown policy as Generate. It lets the
+// service layer forward request-level Temperature/MaxTokens through the
+// failover path instead of silently dropping them.
+func (fc *FailoverClient) GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error) {
+	return fc.generateAttempting(ctx, func(c *Client, cctx context.Context) (string, error) {
+		return c.GenerateWithParams(cctx, prompt, params)
+	})
+}
+
+// generateAttempting runs call against each client in order until one
+// succeeds, applying the cooldown policy on failure.
+func (fc *FailoverClient) generateAttempting(ctx context.Context, call func(*Client, context.Context) (string, error)) (string, error) {
 	var lastErr error
 
 	for _, client := range fc.clients {
@@ -209,7 +227,7 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		}
 
 		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
-		resp, err := client.Generate(cctx, prompt)
+		resp, err := call(client, cctx)
 		cancel()
 
 		if err == nil {
@@ -327,6 +345,25 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 				continue
 			}
 			first = chunk
+			if first.Err != nil {
+				// The handshake completed but the provider errored on the
+				// first chunk. That is a FAILED attempt, not a success:
+				// treating it as success cleared the cooldown and returned
+				// a dead stream, so a persistently broken provider never
+				// triggered failover (REVIEW 3.8).
+				attemptCancel()
+				lastErr = fmt.Errorf("stream from %s: first chunk carried error: %w",
+					client.GetProvider(), first.Err)
+				cd := fc.cooldownForError(first.Err)
+				fc.markCooldown(key, cd)
+				log.Warn("FailoverClient: provider errored on first chunk, cooling down and failing over",
+					"provider", client.GetProvider(),
+					"model", client.GetModel(),
+					"cooldown", cd,
+					"error", first.Err,
+				)
+				continue
+			}
 		case <-timer.C:
 			attemptCancel()
 			lastErr = fmt.Errorf("stream from %s: no first chunk within %s", client.GetProvider(), fc.timeout)

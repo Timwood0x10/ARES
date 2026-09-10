@@ -40,9 +40,13 @@ type GraphNode struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-// Graph represents an agent call graph — a tree of agents, tools, and LLM calls.
+// Graph represents an agent call graph — a forest of per-agent trees
+// (agents, their tools, and their LLM calls). Multi-agent processes carry
+// one root per agent; exports render every root's subtree, not just the
+// first-started agent's.
 type Graph struct {
 	root            *GraphNode
+	roots           []*GraphNode
 	nodes           map[string]*GraphNode
 	pendingChildren map[string][]*GraphNode
 	mu              sync.RWMutex
@@ -99,11 +103,24 @@ func (g *Graph) AddNode(node *GraphNode) {
 	}
 
 	if node.ParentID == "" {
-		// Only adopt the first root; subsequent root nodes (multi-agent)
-		// must not overwrite g.root, or the export would render only the
-		// last-started agent's subtree.
+		// Root bookkeeping: g.root keeps the FIRST root for the
+		// backward-compatible Root() accessor; roots keeps EVERY agent's
+		// root so exports render all subtrees (multi-agent processes used
+		// to render only one agent's subtree). A re-added root id (agent
+		// restart) replaces its earlier entry instead of duplicating it.
 		if g.root == nil {
 			g.root = node
+		}
+		replaced := false
+		for i, r := range g.roots {
+			if r != nil && r.ID == node.ID {
+				g.roots[i] = node
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			g.roots = append(g.roots, node)
 		}
 		return
 	}
@@ -148,11 +165,22 @@ func (g *Graph) UpdateNodeStatus(id string, status NodeStatus, endAt time.Time) 
 	}
 }
 
-// Root returns the root node.
+// Root returns the first root node (backward-compatible single-agent
+// accessor; Roots returns every agent's root).
 func (g *Graph) Root() *GraphNode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.root
+}
+
+// Roots returns every root node — one per agent. Multi-agent exports render
+// each root's subtree.
+func (g *Graph) Roots() []*GraphNode {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	result := make([]*GraphNode, len(g.roots))
+	copy(result, g.roots)
+	return result
 }
 
 // Nodes returns all nodes.
@@ -166,14 +194,17 @@ func (g *Graph) Nodes() []*GraphNode {
 	return result
 }
 
-// Depth returns the maximum depth of the tree.
+// Depth returns the maximum depth across every root's tree.
 func (g *Graph) Depth() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.root == nil {
-		return 0
+	maxDepth := 0
+	for _, root := range g.roots {
+		if d := nodeDepth(root, 0); d > maxDepth {
+			maxDepth = d
+		}
 	}
-	return nodeDepth(g.root, 0)
+	return maxDepth
 }
 
 func nodeDepth(n *GraphNode, current int) int {
@@ -203,28 +234,29 @@ func nodeDepthVisited(n *GraphNode, current int, visited map[string]bool) int {
 	return maxChild
 }
 
-// ExportMermaid renders the graph as a Mermaid flowchart.
+// ExportMermaid renders every agent's subtree as a Mermaid flowchart.
 func (g *Graph) ExportMermaid() string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	if g.root == nil {
+	if len(g.roots) == 0 {
 		return "graph LR\n    empty[No data]"
 	}
 
 	var b strings.Builder
 	b.WriteString("graph LR\n")
 
-	g.writeMermaidNode(&b, g.root, "    ")
+	visited := make(map[string]bool)
+	for _, root := range g.roots {
+		g.writeMermaidNodeVisited(&b, root, "    ", visited)
+	}
 	return b.String()
 }
 
-func (g *Graph) writeMermaidNode(b *strings.Builder, n *GraphNode, indent string) {
-	g.writeMermaidNodeVisited(b, n, indent, make(map[string]bool))
-}
-
-// writeMermaidNodeVisited is writeMermaidNode with cycle detection so a
-// cyclic Children graph cannot recurse forever.
+// writeMermaidNodeVisited writes one node and its subtree with cycle
+// detection so a cyclic Children graph cannot recurse forever. The shared
+// visited map lets multi-root exports skip nodes reachable from an earlier
+// root.
 func (g *Graph) writeMermaidNodeVisited(b *strings.Builder, n *GraphNode, indent string, visited map[string]bool) {
 	if n == nil || visited[n.ID] {
 		return
@@ -275,12 +307,12 @@ func sanitizeID(id string) string {
 	return strings.ReplaceAll(id, "-", "_")
 }
 
-// ExportDOT renders the graph as a Graphviz DOT diagram.
+// ExportDOT renders every agent's subtree as a Graphviz DOT diagram.
 func (g *Graph) ExportDOT() string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	if g.root == nil {
+	if len(g.roots) == 0 {
 		return "digraph {}"
 	}
 
@@ -289,17 +321,17 @@ func (g *Graph) ExportDOT() string {
 	b.WriteString("  rankdir=LR;\n")
 	b.WriteString("  node [shape=box, style=rounded];\n")
 
-	g.writeDOTNode(&b, g.root)
+	visited := make(map[string]bool)
+	for _, root := range g.roots {
+		g.writeDOTNodeVisited(&b, root, visited)
+	}
 	b.WriteString("}\n")
 	return b.String()
 }
 
-func (g *Graph) writeDOTNode(b *strings.Builder, n *GraphNode) {
-	g.writeDOTNodeVisited(b, n, make(map[string]bool))
-}
-
-// writeDOTNodeVisited is writeDOTNode with cycle detection so a cyclic
-// Children graph cannot recurse forever.
+// writeDOTNodeVisited writes one node and its subtree with cycle detection
+// so a cyclic Children graph cannot recurse forever; the shared visited map
+// lets multi-root exports skip nodes reachable from an earlier root.
 func (g *Graph) writeDOTNodeVisited(b *strings.Builder, n *GraphNode, visited map[string]bool) {
 	if n == nil || visited[n.ID] {
 		return
@@ -331,9 +363,14 @@ func nodeColor(s NodeStatus) string {
 	}
 }
 
-// ExportJSON serializes the graph as JSON.
+// ExportJSON serializes every agent's root subtree as a JSON array. (The
+// historical single-object form rendered only the first root; the array
+// covers multi-agent processes.)
 func (g *Graph) ExportJSON() ([]byte, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return json.MarshalIndent(g.root, "", "  ")
+	if len(g.roots) == 0 {
+		return json.MarshalIndent([]struct{}{}, "", "  ")
+	}
+	return json.MarshalIndent(g.roots, "", "  ")
 }

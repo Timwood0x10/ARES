@@ -44,6 +44,16 @@ func NewMemorySearch(memoryMgr memory.MemoryManager) *MemorySearch {
 }
 
 // Execute performs memory search.
+//
+// SECURITY BOUNDARY (single-tenant v1): the search is scoped to the memory
+// manager's CURRENT tenant (see ProductionMemoryManager.getCurrentTenantID)
+// with no per-user isolation — every tool caller in the process reads the
+// same tenant's task payloads. Accepted for the single-tenant, in-process
+// v1 deployment where all agents share one memory; NOT a property to rely
+// on once multiple users or tenants share a runtime.
+//
+// TODO(tech-debt): thread the caller's tenant/user identity through the
+// tool execution context so memory_search scopes queries per principal.
 func (t *MemorySearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	query, ok := params["query"].(string)
 	if !ok || query == "" {

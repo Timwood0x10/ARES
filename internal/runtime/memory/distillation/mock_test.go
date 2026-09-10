@@ -3,6 +3,7 @@ package distillation
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -53,12 +54,22 @@ func (m *MockEmbeddingService) GetTimeout() time.Duration {
 // MockExperienceRepository is a mock implementation of ExperienceRepository for testing.
 type MockExperienceRepository struct {
 	experiences []Experience
+	mu          sync.Mutex
+	deleted     []string
 }
 
 func NewMockExperienceRepository(experiences []Experience) *MockExperienceRepository {
 	return &MockExperienceRepository{
 		experiences: experiences,
 	}
+}
+
+// DeletedIDs returns the ids passed to Delete (the assertion surface for the
+// ReplaceOld conflict-resolution regression).
+func (m *MockExperienceRepository) DeletedIDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.deleted...)
 }
 
 func (m *MockExperienceRepository) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]Experience, error) {
@@ -81,14 +92,22 @@ func (m *MockExperienceRepository) Update(ctx context.Context, experience *Exper
 }
 
 func (m *MockExperienceRepository) Delete(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleted = append(m.deleted, id)
 	return nil
 }
 
 func (m *MockExperienceRepository) DeleteBatch(ctx context.Context, ids []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleted = append(m.deleted, ids...)
 	return nil
 }
 
 func (m *MockExperienceRepository) Create(ctx context.Context, experience *Experience) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.experiences = append(m.experiences, *experience)
 	return nil
 }

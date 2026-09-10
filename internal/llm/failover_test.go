@@ -312,3 +312,51 @@ func TestIsRateLimitError(t *testing.T) {
 		})
 	}
 }
+
+// TestFailoverClient_StreamFirstChunkErrorFailsOver locks REVIEW 3.8: the
+// first-chunk handshake check must treat a chunk carrying Err as a FAILED
+// attempt. The old code only checked channel closure, so a provider whose
+// HTTP handshake succeeded but whose stream immediately errored was marked
+// successful — cooldown cleared, no failover, caller stuck with a dead
+// stream.
+func TestFailoverClient_StreamFirstChunkErrorFailsOver(t *testing.T) {
+	// Primary: HTTP 200 (handshake OK) but a body that is not valid
+	// NDJSON, so the client's very FIRST stream chunk carries Err.
+	primary, primaryCount := mockLLMServer(200, "definitely-not-json")
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"response":"fallback-stream","done":false}`+"\n"+`{"done":true}`+"\n")
+	}))
+	defer fallback.Close()
+
+	fc, err := NewFailoverClient([]*Config{
+		{Provider: "ollama", BaseURL: primary.URL, Model: "primary"},
+		{Provider: "ollama", BaseURL: fallback.URL, Model: "fallback"},
+	}, 5*time.Second, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFailoverClient: %v", err)
+	}
+	defer fc.Close()
+
+	ch, err := fc.GenerateStream(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("GenerateStream must fail over instead of returning the primary's stream error: %v", err)
+	}
+
+	var got string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk carried error after failover: %v", chunk.Err)
+		}
+		got += chunk.Content
+	}
+	if got != "fallback-stream" {
+		t.Fatalf("expected fallback-stream, got %q", got)
+	}
+	if atomic.LoadInt32(primaryCount) != 1 {
+		t.Fatalf("expected primary called once, got %d", atomic.LoadInt32(primaryCount))
+	}
+}

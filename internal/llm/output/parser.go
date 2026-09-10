@@ -14,7 +14,6 @@ import (
 // Pre-compiled regular expressions for better performance.
 var (
 	markdownPattern = regexp.MustCompile("```(?:json)?\\s*([\\s\\S]*?)\\s*```")
-	trailingComma   = regexp.MustCompile(`,\s*([\}\]])`)
 )
 
 // Parser parses LLM output into structured types.
@@ -189,13 +188,12 @@ func (p *Parser) fixJSONString(jsonStr string) (string, error) {
 		return jsonStr, nil
 	}
 
-	fixed := trailingComma.ReplaceAllString(jsonStr, "$1")
-
-	if json.Valid([]byte(fixed)) {
-		return fixed, nil
-	}
-
-	fixed = scanFixJSON(fixed)
+	// scanFixJSON performs ALL repairs (comments, unquoted keys, single
+	// quotes, trailing commas) inside its string-aware state machine. The
+	// old trailingComma regex ran BEFORE the scan and rewrote ", ]" / ", }"
+	// sequences inside string VALUES, corrupting payloads that merely
+	// contained those characters.
+	fixed := scanFixJSON(jsonStr)
 
 	if !json.Valid([]byte(fixed)) {
 		return "", errors.New("failed to fix JSON")
@@ -203,8 +201,11 @@ func (p *Parser) fixJSONString(jsonStr string) (string, error) {
 	return fixed, nil
 }
 
-// scanFixJSON applies comment removal, unquoted-key fixing, and single-quote
-// fixing using a character-level state machine that tracks string boundaries.
+// scanFixJSON applies comment removal, unquoted-key fixing, single-quote
+// fixing, and trailing-comma removal using a character-level state machine
+// that tracks string boundaries (so repairs never touch string VALUES).
+//
+//nolint:gocyclo // a flat character-dispatch loop: one branch per repair, no nesting.
 func scanFixJSON(s string) string {
 	var buf strings.Builder
 	buf.Grow(len(s))
@@ -231,6 +232,20 @@ func scanFixJSON(s string) string {
 			buf.WriteByte(c)
 			i++
 			continue
+		}
+
+		// Trailing comma removal (string-aware): a comma whose next
+		// non-whitespace character closes the container is dropped. A
+		// ", ]" inside a string value never reaches this branch.
+		if c == ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				i++ // drop the comma; the closer is written by the main loop
+				continue
+			}
 		}
 
 		if c == '/' && i+1 < len(s) {

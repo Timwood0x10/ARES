@@ -5,20 +5,32 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// serverTenantID is the tenant every knowledge tool operates on (#63).
+//
+// Multi-tenant isolation MUST NOT depend on LLM honesty: these tools are
+// invoked with model-generated parameters, and the previous contract took
+// tenant_id from those parameters — a hallucinated (or hostile) tenant_id
+// read and wrote another tenant's knowledge. v1 is single-tenant, so the
+// server side pins the tenant to ares_events.DefaultTenantID — the same
+// constant the distillation and GA guidance paths use, keeping the whole
+// pipeline on one tenant scope. TODO(tech-debt): when real multi-tenancy
+// arrives, thread the authenticated caller's tenant through the server
+// request context instead of ever accepting it as a tool parameter.
+const serverTenantID = ares_events.DefaultTenantID
+
 // Parameter key constants for knowledge tools
 const (
-	paramTenantID = "tenant_id"
 	paramQuery    = "query"
 	paramItemID   = "item_id"
 	paramContent  = "content"
 	paramCategory = "category"
 	paramTags     = "tags"
 	paramMetadata = "metadata"
-	descTenantID  = "Tenant identifier for multi-tenant isolation"
 )
 
 // Result field constants
@@ -83,10 +95,6 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
-			paramTenantID: {
-				Type:        "string",
-				Description: descTenantID,
-			},
 			paramQuery: {
 				Type:        "string",
 				Description: "Search query text",
@@ -102,7 +110,7 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 				Default:     0.4,
 			},
 		},
-		Required: []string{paramTenantID, paramQuery},
+		Required: []string{paramQuery},
 	}
 
 	ks := &KnowledgeSearch{
@@ -113,15 +121,12 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 	return ks
 }
 
-// Execute performs the knowledge base search.
+// Execute performs the knowledge base search. The tenant is server-side
+// (serverTenantID, #63): it is never taken from the tool parameters, so the
+// model cannot steer cross-tenant access.
 func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.searcher == nil {
 		return core.NewErrorResult("knowledge search unavailable: searcher not configured"), nil
-	}
-
-	tenantID, ok := params[paramTenantID].(string)
-	if !ok || tenantID == "" {
-		return core.NewErrorResult("tenant_id is required"), nil
 	}
 
 	query, ok := params[paramQuery].(string)
@@ -131,7 +136,7 @@ func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interfa
 
 	// Note: For now, we use the simple search. Advanced filtering (top_k, min_score)
 	// can be implemented if the searcher supports it.
-	results, err := t.searcher.Search(ctx, tenantID, query)
+	results, err := t.searcher.Search(ctx, serverTenantID, query)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -166,10 +171,6 @@ func NewKnowledgeUpdate(service KnowledgeService) *KnowledgeUpdate {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
-			"tenant_id": {
-				Type:        "string",
-				Description: "Tenant identifier for multi-tenant isolation",
-			},
 			"item_id": {
 				Type:        "string",
 				Description: "Knowledge item ID to update",
@@ -195,7 +196,7 @@ func NewKnowledgeUpdate(service KnowledgeService) *KnowledgeUpdate {
 				Description: "Reason for the update (e.g., 'correction', 'outdated', 'expansion')",
 			},
 		},
-		Required: []string{"tenant_id", "item_id", "content"},
+		Required: []string{"item_id", "content"},
 	}
 
 	ku := &KnowledgeUpdate{
@@ -206,16 +207,14 @@ func NewKnowledgeUpdate(service KnowledgeService) *KnowledgeUpdate {
 	return ku
 }
 
-// Execute updates a knowledge item.
+// Execute updates a knowledge item. The tenant is server-side
+// (serverTenantID, #63): tenant_id is not a tool parameter.
 func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.service == nil {
 		return core.NewErrorResult("knowledge update unavailable: service not configured"), nil
 	}
 
-	tenantID, ok := params["tenant_id"].(string)
-	if !ok || tenantID == "" {
-		return core.NewErrorResult("tenant_id is required"), nil
-	}
+	tenantID := serverTenantID
 
 	itemID, ok := params["item_id"].(string)
 	if !ok || itemID == "" {
@@ -288,10 +287,6 @@ func NewKnowledgeAdd(service KnowledgeService) *KnowledgeAdd {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
-			"tenant_id": {
-				Type:        "string",
-				Description: "Tenant identifier for multi-tenant isolation",
-			},
 			"content": {
 				Type:        "string",
 				Description: "Knowledge content to add",
@@ -309,7 +304,7 @@ func NewKnowledgeAdd(service KnowledgeService) *KnowledgeAdd {
 				Description: "Tags for categorization",
 			},
 		},
-		Required: []string{"tenant_id", "content"},
+		Required: []string{"content"},
 	}
 
 	ka := &KnowledgeAdd{
@@ -320,15 +315,11 @@ func NewKnowledgeAdd(service KnowledgeService) *KnowledgeAdd {
 	return ka
 }
 
-// Execute adds a new knowledge item.
+// Execute adds a new knowledge item. The tenant is server-side
+// (serverTenantID, #63): tenant_id is not a tool parameter.
 func (t *KnowledgeAdd) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.service == nil {
 		return core.NewErrorResult("knowledge add unavailable: service not configured"), nil
-	}
-
-	tenantID, ok := params["tenant_id"].(string)
-	if !ok || tenantID == "" {
-		return core.NewErrorResult("tenant_id is required"), nil
 	}
 
 	content, ok := params["content"].(string)
@@ -337,7 +328,7 @@ func (t *KnowledgeAdd) Execute(ctx context.Context, params map[string]interface{
 	}
 
 	item := &KnowledgeItem{
-		TenantID: tenantID,
+		TenantID: serverTenantID,
 		Content:  content,
 	}
 
@@ -381,10 +372,6 @@ func NewKnowledgeDelete(service KnowledgeService) *KnowledgeDelete {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
-			"tenant_id": {
-				Type:        "string",
-				Description: "Tenant identifier for multi-tenant isolation",
-			},
 			"item_id": {
 				Type:        "string",
 				Description: "Knowledge item ID to delete",
@@ -394,7 +381,7 @@ func NewKnowledgeDelete(service KnowledgeService) *KnowledgeDelete {
 				Description: "Reason for deletion (e.g., 'incorrect', 'outdated', 'duplicate')",
 			},
 		},
-		Required: []string{"tenant_id", "item_id"},
+		Required: []string{"item_id"},
 	}
 
 	kd := &KnowledgeDelete{
@@ -405,15 +392,11 @@ func NewKnowledgeDelete(service KnowledgeService) *KnowledgeDelete {
 	return kd
 }
 
-// Execute deletes a knowledge item.
+// Execute deletes a knowledge item. The tenant is server-side
+// (serverTenantID, #63): tenant_id is not a tool parameter.
 func (t *KnowledgeDelete) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.service == nil {
 		return core.NewErrorResult("knowledge delete unavailable: service not configured"), nil
-	}
-
-	tenantID, ok := params["tenant_id"].(string)
-	if !ok || tenantID == "" {
-		return core.NewErrorResult("tenant_id is required"), nil
 	}
 
 	itemID, ok := params["item_id"].(string)
@@ -423,7 +406,7 @@ func (t *KnowledgeDelete) Execute(ctx context.Context, params map[string]interfa
 
 	reason := getString(params, "reason")
 
-	err := t.service.DeleteKnowledge(ctx, tenantID, itemID)
+	err := t.service.DeleteKnowledge(ctx, serverTenantID, itemID)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("delete failed: %v", err)), nil
 	}

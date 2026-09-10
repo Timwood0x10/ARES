@@ -9,7 +9,15 @@ type Task struct {
 	// has one (REVIEW #61). Populated by callers that know the session
 	// (e.g. DistillTask reading agent_checkpoints); empty for session-less
 	// sources (experience search, collaboration tasks).
-	SessionID        string         `json:"session_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// TaskType and AgentType are MIRRORS: both carry the capability of the
+	// agent that executes the task, kept as two fields only because
+	// different consumers read different JSON keys ("task_type" is the
+	// persistence/event key, "agent_type" the scheduler-facing one).
+	// NewTask stamps both; writers that set one after construction must set
+	// the other too, or the mirrors diverge (the known drift risk).
+	// TODO(tech-debt): collapse to one field with both JSON keys served at
+	// the serialization boundary.
 	TaskType         AgentType      `json:"task_type"`
 	AgentType        AgentType      `json:"agent_type"`
 	UserProfile      *UserProfile   `json:"user_profile"`

@@ -44,6 +44,10 @@ func (d *Distiller) ResetMetrics() {
 // gate and fire immediately. A threshold of 0 preserves the legacy
 // ungated behaviour: every event fires immediately.
 //
+// The subscription runs until the caller's ctx is cancelled, the store
+// closes the channel, or Stop is called. Call Stop during shutdown to
+// cancel and join the subscription goroutine deterministically.
+//
 // Args:
 //
 //	ctx - operation context. Cancelling it closes the subscription.
@@ -52,38 +56,46 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 	if store == nil {
 		return
 	}
-	ch, err := store.Subscribe(ctx, ares_events.EventFilter{
+	subCtx, cancel := context.WithCancel(ctx)
+	ch, err := store.Subscribe(subCtx, ares_events.EventFilter{
 		Types: []ares_events.EventType{
 			ares_events.EventMessageAdded,
 			ares_events.EventTaskCompleted,
 		},
 	})
 	if err != nil {
+		cancel()
 		log.Error("failed to subscribe to ares_events for distillation", "error", err)
 		return
 	}
 
+	d.subMu.Lock()
+	d.subCancel = cancel
+	d.subMu.Unlock()
+
 	log.InfoContext(ctx, "[Memory Distillation] Event subscription started")
 
 	// Lifecycle is ctx-driven: the goroutine exits on ctx cancellation or
-	// channel close. The errgroup holds it so a panic in the subscription
-	// loop surfaces through the group instead of killing the process.
+	// channel close. The errgroup holds it so Stop can join it (REVIEW
+	// 3.3#9: the group previously had no Wait caller, leaving the
+	// subscription goroutine unjoined at shutdown).
 	d.distillEg.Go(func() error {
+		defer cancel()
 		var roundCounter int
 		for {
 			select {
-			case <-ctx.Done():
-				log.InfoContext(ctx, "[Memory Distillation] Event subscription stopped by context")
-				return ctx.Err()
+			case <-subCtx.Done():
+				log.InfoContext(subCtx, "[Memory Distillation] Event subscription stopped by context")
+				return subCtx.Err()
 			case event, ok := <-ch:
 				if !ok {
-					log.InfoContext(ctx, "[Memory Distillation] Event channel closed")
+					log.InfoContext(subCtx, "[Memory Distillation] Event channel closed")
 					return nil
 				}
 				// Task completion bypasses the round gate: tasks are terminal
 				// signals whose distillation should not be delayed.
 				if event.Type == ares_events.EventTaskCompleted {
-					d.processEvent(ctx, event)
+					d.processEvent(subCtx, event)
 					continue
 				}
 				// Threshold 0 preserves legacy ungated behaviour.
@@ -91,21 +103,34 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 				threshold := d.config.DistillationThreshold
 				d.configMu.RUnlock()
 				if threshold <= 0 {
-					d.processEvent(ctx, event)
+					d.processEvent(subCtx, event)
 					continue
 				}
 				roundCounter++
 				if roundCounter%threshold != 0 {
-					log.DebugContext(ctx, "[Memory Distillation] Round gate holding",
+					log.DebugContext(subCtx, "[Memory Distillation] Round gate holding",
 						"round", roundCounter, "threshold", threshold)
 					continue
 				}
-				log.InfoContext(ctx, "[Memory Distillation] Round gate reached, triggering distillation",
+				log.InfoContext(subCtx, "[Memory Distillation] Round gate reached, triggering distillation",
 					"round", roundCounter, "threshold", threshold)
-				d.processEvent(ctx, event)
+				d.processEvent(subCtx, event)
 			}
 		}
 	})
+}
+
+// Stop cancels the event subscription started by SubscribeAndDistill (if
+// any) and waits for its goroutine to drain. Safe to call multiple times
+// and when no subscription was ever started.
+func (d *Distiller) Stop() {
+	d.subMu.Lock()
+	cancel := d.subCancel
+	d.subMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	_ = d.distillEg.Wait()
 }
 
 // processEvent handles a single event for distillation.

@@ -889,23 +889,35 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 		}
 		log.Warn("fallback LLM failed", "provider", fbCfg.Provider, "err", err)
 	}
-	// Last resort: ollama local
-	log.Info("all remote LLMs failed, falling back to local ollama")
-	ollamaCfg := &output.Config{
-		Provider:  "ollama",
-		BaseURL:   "http://localhost:11434",
-		Model:     "llama3.2",
-		Timeout:   120,
-		MaxTokens: 2048,
-	}
-	adapter, err = factory.Create("ollama", ollamaCfg)
-	if err != nil {
+	// Last resort: local ollama — but ONLY when the config did not
+	// explicitly name any LLM. Silently switching an explicitly configured
+	// hosted provider (bad key, wrong base URL) to a local llama hides the
+	// misconfiguration and changes model behavior without notice; that is
+	// a hard error now. An empty/unset LLM config is the legitimate
+	// "local dev" case where the ollama default is a real convenience.
+	llmConfigured := cfg.LLM.Provider != "" || len(cfg.LLM.Fallbacks) > 0
+	if !llmConfigured {
+		log.Info("no LLM configured, defaulting to local ollama (llama3.2)")
+		ollamaCfg := &output.Config{
+			Provider:  "ollama",
+			BaseURL:   "http://localhost:11434",
+			Model:     "llama3.2",
+			Timeout:   120,
+			MaxTokens: 2048,
+		}
+		adapter, err = factory.Create("ollama", ollamaCfg)
+		if err == nil {
+			return adapter, nil
+		}
 		// Wrap the sentinel so callers can errors.Is(err, ErrNoLLMAdapter)
 		// while still retaining the underlying adapter-creation error.
 		return nil, fmt.Errorf("no LLM adapter available: %w (last attempt: %v)", ErrNoLLMAdapter, err)
 	}
-	log.Info("LLM fallback to ollama: model=llama3.2")
-	return adapter, nil
+	// The user configured LLM provider(s) and every one of them failed:
+	// surface that instead of papering over it with an unrequested local
+	// model.
+	return nil, fmt.Errorf("all configured LLM providers failed (primary %q + %d fallback(s)): %w",
+		cfg.LLM.Provider, len(cfg.LLM.Fallbacks), ErrNoLLMAdapter)
 }
 
 // ErrNoLLMAdapter is the sentinel returned by createLLMAdapterWithFallback when

@@ -14,8 +14,12 @@ import (
 	"time"
 )
 
-// Default buffer size for reading subprocess stdout lines (1 MB).
-const stdoutBufferSize = 1024 * 1024
+// Max buffer size for reading subprocess stdout lines. MCP tool results can
+// be very large (a single read_file on a big file returns the whole content
+// in one JSON-RPC message); bufio.Scanner's default 64KB cap — or a tight 1MB
+// — makes the scan fail permanently and kills the client. 64MB bounds the
+// memory cost while leaving generous headroom for large tool payloads.
+const stdoutBufferSize = 64 * 1024 * 1024
 
 // stdioWriteTimeout bounds a single stdin write. A subprocess that
 // stops reading its stdin would otherwise block Send forever while holding
@@ -99,7 +103,9 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	}
 	t.stdoutPipe = stdoutPipe
 	t.stdout = bufio.NewScanner(stdoutPipe)
-	t.stdout.Buffer(make([]byte, 0, stdoutBufferSize), stdoutBufferSize)
+	// Start with a small buffer and let it grow up to stdoutBufferSize; the
+	// scanner only allocates the max when a line actually requires it.
+	t.stdout.Buffer(make([]byte, 0, 64*1024), stdoutBufferSize)
 
 	t.stderr, err = t.cmd.StderrPipe()
 	if err != nil {

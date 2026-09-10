@@ -166,13 +166,15 @@ func executeAndScore(ctx context.Context, r *Runtime, agent *Agent, task string,
 	evolvedAgent := &Agent{
 		name:        agent.name,
 		instruction: s.PromptTemplate,
-		tools:       applyToolSelector(agent.tools, s.Params),
-		runtime:     agent.runtime,
-		humanInput:  agent.humanInput,
-		maxIter:     applySearchDepth(agent.maxIter, s.Params),
-		discovery:   agent.discovery,
-		toolSource:  agent.toolSource,
-		selector:    agent.selector,
+		// snapshotTools: the base agent's tools may be reassigned by a
+		// concurrent Evolve while this candidate is scoring.
+		tools:      applyToolSelector(agent.snapshotTools(), s.Params),
+		runtime:    agent.runtime,
+		humanInput: agent.humanInput,
+		maxIter:    applySearchDepth(agent.currentMaxIter(), s.Params),
+		discovery:  agent.discovery,
+		toolSource: agent.toolSource,
+		selector:   agent.selector,
 	}
 
 	start := time.Now()
@@ -230,6 +232,11 @@ func applyToolSelector(toolList []tools.Tool, params map[string]any) []tools.Too
 // ReAct iterations). There are no unwired dimensions — all evolved params are
 // consumed.
 func applyEvolvedParams(agent *Agent, params map[string]any) {
+	// Under evolveMu: Evolve may apply the winning params while another
+	// goroutine is mid-Run on the same agent, and Run reads these fields
+	// through the same lock (snapshotTools/currentMaxIter).
+	agent.evolveMu.Lock()
+	defer agent.evolveMu.Unlock()
 	if v, ok := params[paramToolSelector]; ok {
 		if selector, isString := v.(string); isString {
 			agent.tools = applyToolSelector(agent.tools, map[string]any{paramToolSelector: selector})

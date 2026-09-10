@@ -78,12 +78,23 @@ func (r *Reaper) GracePeriod() time.Duration {
 // In-flight tasks (LEASED/RUNNING/SUSPENDED) are refused by Delete's guard
 // and skipped — they finish naturally and become harvestable on the next
 // sweep.
+//
+// Referenced tasks are skipped: depsCompletedLocked treats a missing
+// dependency as unsatisfied forever, so harvesting a terminal predecessor
+// while another task still lists it in Dependencies would strand that
+// dependent permanently. The skip converges: once the referencing tasks
+// themselves reach a terminal state and are harvested, a later sweep reclaims
+// the predecessor (housekeeping may take a few passes, correctness never
+// yields).
 func (r *Reaper) Sweep() int {
 	if r == nil || r.fabric == nil {
 		return 0
 	}
 	removed := 0
 	now := time.Now()
+	// One pass over the dependency graph under a single fabric lock beats a
+	// per-candidate Dependents scan (O(n) each, O(n²) per sweep).
+	referenced := r.fabric.ReferencedDependencies()
 	for _, id := range r.fabric.IDs() {
 		if r.prefix != "" && !strings.HasPrefix(id, r.prefix) {
 			continue
@@ -104,6 +115,11 @@ func (r *Reaper) Sweep() int {
 		// Grace period: a task that just transitioned to terminal may
 		// still be read by the session's answer path.
 		if now.Sub(tk.UpdatedAt) < r.gracePeriod {
+			continue
+		}
+		// Dangling-dependency guard: another task still waits on (or reads)
+		// this one — deleting it now would strand the dependent forever.
+		if _, ref := referenced[id]; ref {
 			continue
 		}
 		if derr := r.fabric.Delete(id); derr == nil {

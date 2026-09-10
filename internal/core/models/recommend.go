@@ -26,13 +26,20 @@ type RecommendResult struct {
 // Category, Colors, and MatchReason are optional and should only be populated when
 // the downstream consumer expects them.
 type RecommendItem struct {
-	ItemID           string         `json:"item_id"`
-	Category         string         `json:"category"`
-	Name             string         `json:"name"`
-	Brand            string         `json:"brand"`
-	Price            float64        `json:"price"`
-	URL              string         `json:"url"`
-	ImageURL         string         `json:"image_url"`
+	ItemID   string  `json:"item_id"`
+	Category string  `json:"category"`
+	Name     string  `json:"name"`
+	Brand    string  `json:"brand"`
+	Price    float64 `json:"price"`
+	URL      string  `json:"url"`
+	ImageURL string  `json:"image_url"`
+	// AgentPreferences carries the user's style tags. The JSON tag is
+	// deliberately "style" (the LLM output schema key, see
+	// llm/output/schema.go keyStyle); note the validator's normalized map
+	// re-serializes the same field as "agent_preferences" — a known naming
+	// divergence kept for schema compatibility.
+	// TODO(tech-debt): unify the serialization name across the schema, the
+	// struct tag, and the validator map.
 	AgentPreferences []StyleTag     `json:"style"`
 	Colors           []string       `json:"colors"`
 	Description      string         `json:"description"`

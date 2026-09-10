@@ -32,6 +32,65 @@ func New() *Store {
 	}
 }
 
+// cloneObject deep-copies a KnowledgeObject. The in-memory store hands out
+// and accepts pointers, so without a copy at BOTH boundaries the stored
+// object aliases caller-owned slices/maps: a caller mutating an object after
+// Save (or through a previously returned pointer) races with every reader
+// under RLock. SQL-backed stores are naturally isolated (each row scan
+// allocates fresh values); the copy restores that contract here.
+func cloneObject(obj *knowledge.KnowledgeObject) *knowledge.KnowledgeObject {
+	if obj == nil {
+		return nil
+	}
+	cp := *obj
+	cp.Raw = append([]byte(nil), obj.Raw...)
+	if obj.Metadata != nil {
+		cp.Metadata = make(map[string]any, len(obj.Metadata))
+		for k, v := range obj.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	if obj.Tags != nil {
+		cp.Tags = append([]string(nil), obj.Tags...)
+	}
+	if obj.Evidence != nil {
+		cp.Evidence = append([]knowledge.Evidence(nil), obj.Evidence...)
+	}
+	if obj.Representations != nil {
+		cp.Representations = make(map[string]string, len(obj.Representations))
+		for k, v := range obj.Representations {
+			cp.Representations[k] = v
+		}
+	}
+	if obj.Quality != nil {
+		q := *obj.Quality
+		cp.Quality = &q
+	}
+	if obj.Relations != nil {
+		cp.Relations = append([]knowledge.Relation(nil), obj.Relations...)
+	}
+	return &cp
+}
+
+// cloneRepresentation deep-copies a Representation (Vector slice, Metadata
+// map) — same isolation contract as cloneObject.
+func cloneRepresentation(rep *knowledge.Representation) *knowledge.Representation {
+	if rep == nil {
+		return nil
+	}
+	cp := *rep
+	if rep.Vector != nil {
+		cp.Vector = append([]float32(nil), rep.Vector...)
+	}
+	if rep.Metadata != nil {
+		cp.Metadata = make(map[string]string, len(rep.Metadata))
+		for k, v := range rep.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
 func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -39,7 +98,9 @@ func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) e
 		if obj.ID == "" {
 			return errors.New("knowledge object ID cannot be empty")
 		}
-		s.objects[obj.ID] = obj
+		// Store a private copy so later caller mutations cannot corrupt the
+		// stored state (see cloneObject).
+		s.objects[obj.ID] = cloneObject(obj)
 	}
 	return nil
 }
@@ -51,7 +112,7 @@ func (s *Store) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, e
 	if !ok {
 		return nil, ErrObjectNotFound
 	}
-	return obj, nil
+	return cloneObject(obj), nil
 }
 
 func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.KnowledgeObject, error) {
@@ -92,7 +153,7 @@ func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.Knowle
 				continue
 			}
 		}
-		result = append(result, obj)
+		result = append(result, cloneObject(obj))
 	}
 
 	// Sort by confidence descending.
@@ -148,7 +209,7 @@ func (s *Store) Search(_ context.Context, text string, model string, limit int) 
 			}
 		}
 		if score > 0 {
-			scored = append(scored, obj)
+			scored = append(scored, cloneObject(obj))
 		}
 	}
 
@@ -167,7 +228,7 @@ func (s *Store) SaveRepresentation(_ context.Context, rep *knowledge.Representat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := rep.ObjectID + ":" + rep.Model
-	s.reps[key] = rep
+	s.reps[key] = cloneRepresentation(rep)
 	return nil
 }
 
@@ -179,7 +240,7 @@ func (s *Store) GetRepresentation(_ context.Context, objectID string, model stri
 	if !ok {
 		return nil, ErrObjectNotFound
 	}
-	return rep, nil
+	return cloneRepresentation(rep), nil
 }
 
 // HybridSearch performs vector + lexical scoring over in-memory objects.
@@ -259,6 +320,13 @@ func (s *Store) HybridSearch(_ context.Context, req knowledge.HybridSearchReques
 	if len(scored) > finalK {
 		scored = scored[:finalK]
 	}
+	// The results embed pointers to the STORED objects; hand the caller
+	// private copies so it cannot mutate store state through a returned
+	// pointer (see cloneObject). The reps map above is internal-only and
+	// never escapes.
+	for i := range scored {
+		scored[i].Object = cloneObject(scored[i].Object)
+	}
 	return scored, nil
 }
 
@@ -280,7 +348,7 @@ func (s *Store) ListByStatus(_ context.Context, ns string, status knowledge.Obje
 				continue
 			}
 		}
-		result = append(result, obj)
+		result = append(result, cloneObject(obj))
 		if limit > 0 && len(result) >= limit {
 			break
 		}
@@ -310,7 +378,14 @@ func (s *Store) Promote(_ context.Context, id string, q *knowledge.Quality) erro
 		return ErrObjectNotFound
 	}
 	obj.Status = knowledge.StatusActive
-	obj.Quality = q
+	// Copy the caller's Quality: storing the pointer verbatim would alias
+	// caller-owned memory (same isolation contract as cloneObject).
+	if q != nil {
+		qc := *q
+		obj.Quality = &qc
+	} else {
+		obj.Quality = nil
+	}
 	obj.UpdatedAt = time.Now().UTC()
 	return nil
 }

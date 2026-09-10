@@ -3,10 +3,12 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	coreerrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -453,5 +455,53 @@ func TestGenerateStreamLongPromptCallback(t *testing.T) {
 	}
 	if ev.Duration < 0 {
 		t.Error("Duration should be non-negative even for stream errors")
+	}
+}
+
+// TestClientCallbacksReceiveSanitizedPrompt locks REVIEW 3.8: emitCallback
+// used to forward the RAW prompt (Input) to callback observers, leaking any
+// secret embedded in it (e.g. an sk- API key pasted into a prompt) to UI /
+// audit consumers, while recordLLMCall already sanitized its copy. The
+// callback must see the same masked copy.
+func TestClientCallbacksReceiveSanitizedPrompt(t *testing.T) {
+	reg := ares_callbacks.NewRegistry()
+
+	var mu sync.Mutex
+	var inputs []string
+	collect := func(ctx *ares_callbacks.Context) {
+		mu.Lock()
+		defer mu.Unlock()
+		inputs = append(inputs, ctx.Input)
+	}
+	reg.On(ares_callbacks.EventLLMStart, collect)
+	reg.On(ares_callbacks.EventLLMError, collect)
+	reg.On(ares_callbacks.EventLLMEnd, collect)
+
+	client, err := NewClient(&Config{
+		Provider: "ollama",
+		BaseURL:  "http://localhost:11434",
+		Model:    "llama3",
+		Timeout:  5,
+	}, WithCallbacks(reg), WithSanitizer(ares_security.NewSanitizer()))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer client.Close()
+
+	// The provider is unreachable, so the request fails — which is fine:
+	// the error event carries Input too, and what matters is that every
+	// event that fires carries a masked Input.
+	prompt := "my key is sk-1234567890abcdefghijklmnopqrstuvwx please help"
+	_, _ = client.GenerateStream(context.Background(), prompt)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(inputs) == 0 {
+		t.Fatal("expected at least one callback event carrying Input")
+	}
+	for _, in := range inputs {
+		if strings.Contains(in, "sk-1234567890abcdefghijklmnopqrstuvwx") {
+			t.Fatalf("callback received the raw secret prompt: %q", in)
+		}
 	}
 }

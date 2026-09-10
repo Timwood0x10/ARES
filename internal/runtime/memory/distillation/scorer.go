@@ -4,10 +4,12 @@ package distillation
 import (
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ImportanceScorer calculates importance scores for memories.
 type ImportanceScorer struct {
+	mu                sync.RWMutex
 	minImportance     float64
 	enableLengthBonus bool
 	lengthThreshold   int
@@ -50,6 +52,22 @@ func NewImportanceScorerWithConfig(minImportance float64, enableLengthBonus bool
 		enableLengthBonus: enableLengthBonus,
 		lengthThreshold:   60,
 		lengthBonus:       0.1,
+	}
+}
+
+// UpdateThresholds replaces the scorer's thresholds at runtime. The fields
+// are guarded by a mutex because the distiller's UpdateConfig may run
+// concurrently with an in-flight DistillConversation.
+func (s *ImportanceScorer) UpdateThresholds(minImportance float64, enableLengthBonus bool, lengthThreshold int, lengthBonus float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.minImportance = minImportance
+	s.enableLengthBonus = enableLengthBonus
+	if lengthThreshold > 0 {
+		s.lengthThreshold = lengthThreshold
+	}
+	if lengthBonus > 0 {
+		s.lengthBonus = lengthBonus
 	}
 }
 
@@ -96,8 +114,13 @@ func (s *ImportanceScorer) ScoreMemory(memoryType MemoryType, problem, solution 
 	}
 
 	// Length bonus (more complete experiences are more valuable)
-	if s.enableLengthBonus && totalLength > s.lengthThreshold {
-		score += s.lengthBonus
+	s.mu.RLock()
+	bonusEnabled := s.enableLengthBonus
+	bonusThreshold := s.lengthThreshold
+	bonusValue := s.lengthBonus
+	s.mu.RUnlock()
+	if bonusEnabled && totalLength > bonusThreshold {
+		score += bonusValue
 	}
 
 	// Length penalty for very short content without strong keywords
@@ -150,6 +173,8 @@ func (s *ImportanceScorer) ScoreMemory(memoryType MemoryType, problem, solution 
 //
 //	true if the memory should be kept, false otherwise.
 func (s *ImportanceScorer) ShouldKeep(score float64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return score >= s.minImportance
 }
 
@@ -171,8 +196,11 @@ func (s *ImportanceScorer) TopNFilter(experiences []Experience, maxCount int) []
 
 	// Filter by minimum importance
 	var filtered []Experience
+	s.mu.RLock()
+	minImportance := s.minImportance
+	s.mu.RUnlock()
 	for _, exp := range experiences {
-		if exp.Confidence >= s.minImportance {
+		if exp.Confidence >= minImportance {
 			filtered = append(filtered, exp)
 		}
 	}
@@ -211,5 +239,7 @@ func (s *ImportanceScorer) SortByImportance(memories []Experience) {
 //
 //	float64 - the minimum importance score.
 func (s *ImportanceScorer) GetMinImportance() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.minImportance
 }

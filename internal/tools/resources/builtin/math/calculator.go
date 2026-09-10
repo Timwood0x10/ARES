@@ -128,6 +128,16 @@ func (t *Calculator) buildEnvironment() map[string]interface{} {
 // expressions.
 const maxCompiledPrograms = 512
 
+// maxExprNodes bounds the expression AST size accepted by the compiler
+// (see getOrCompileProgram).
+const maxExprNodes = 10000
+
+// maxFactorialInput bounds factorial-style functions whose runtime is linear
+// (or worse) in the argument: factorial(1e9) would otherwise pin a CPU core
+// for minutes on a float64 loop that overflows to +Inf long before n is
+// even large enough to be interesting.
+const maxFactorialInput = 100000
+
 // getOrCompileProgram gets cached program or compiles new one.
 // Thread-safe: uses RWMutex to allow concurrent reads while serializing writes.
 func (t *Calculator) getOrCompileProgram(expression string, env map[string]interface{}) (*vm.Program, error) {
@@ -139,8 +149,14 @@ func (t *Calculator) getOrCompileProgram(expression string, env map[string]inter
 		return program, nil
 	}
 
-	opts := make([]expr.Option, 0, 1+len(t.getAllFunctions()))
+	opts := make([]expr.Option, 0, 2+len(t.getAllFunctions()))
 	opts = append(opts, expr.Env(env))
+	// MaxNodes bounds the compiled AST size: without it an adversarial
+	// expression (deeply nested operators / huge literal sequences) makes
+	// the compiler itself burn unbounded CPU and memory. The vm's Run
+	// takes no ctx, so compile-time + function-input bounds are the CPU
+	// containment for this tool.
+	opts = append(opts, expr.MaxNodes(maxExprNodes))
 	opts = append(opts, t.getAllFunctions()...)
 	program, err := expr.Compile(expression, opts...)
 	if err != nil {
@@ -283,6 +299,9 @@ func (t *Calculator) factorialFunc() func(...interface{}) (interface{}, error) {
 		n := int(toFloat64(params[0]))
 		if n < 0 {
 			return nil, errors.New("factorial: n must be >= 0")
+		}
+		if n > maxFactorialInput {
+			return nil, fmt.Errorf("factorial: n must be <= %d (CPU-bound loop)", maxFactorialInput)
 		}
 		result := 1.0
 		for i := 2; i <= n; i++ {

@@ -17,13 +17,24 @@ type flightRecorderWrapper struct {
 	recorder *flight.FlightRecorder
 }
 
-// Diagnostics returns access to diagnostic reports.
+// Diagnostics returns access to diagnostic reports. A nil wrapper or a nil
+// recorder yields nil — callers (FlightToExperienceAdapter.processEvent)
+// already treat a nil accessor as "no diagnostics", so a partially wired
+// bootstrap degrades instead of panicking.
 func (w *flightRecorderWrapper) Diagnostics() evolution.DiagnosticsAccessor {
+	if w == nil || w.recorder == nil {
+		return nil
+	}
 	return &diagnosticsAccessorWrapper{engine: w.recorder.Diagnostics()}
 }
 
-// EventStore returns the event store subscriber.
+// EventStore returns the event store subscriber. Nil-safe like Diagnostics:
+// the adapter's Run surfaces a nil subscriber as a wiring error instead of
+// a nil-pointer panic.
 func (w *flightRecorderWrapper) EventStore() evolution.EventStoreSubscriber {
+	if w == nil || w.recorder == nil {
+		return nil
+	}
 	return &eventStoreSubscriberWrapper{store: w.recorder.EventStoreRef()}
 }
 

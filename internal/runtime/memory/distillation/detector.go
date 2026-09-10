@@ -28,6 +28,11 @@ func IsProblem(text string) bool {
 	// word separators, so unambiguous Chinese acknowledgment phrases are
 	// matched as substrings. Polite-prefix tokens (e.g. Chinese "please") are deliberately excluded: they
 	// introduce genuine questions rather than acknowledgments.
+	// Imperative request openers ("show me", "tell me", "what is this",
+	// "what's happening") are deliberately NOT listed here: they begin
+	// genuine instruction-style questions ("show me how to fix the timeout
+	// error"), and the negative check runs before the problem-keyword
+	// check, so listing them silently rejected those questions (REVIEW 3.3#7).
 	englishNegativeKeywords := []string{
 		// English acknowledgments
 		"thanks", "thank you", "ok", "okay", "got it", "understood",
@@ -36,7 +41,6 @@ func IsProblem(text string) bool {
 		"correct", "agree", "cool", "nice", "sounds good",
 		"that works", "makes sense", "got it, thanks", "thanks for the",
 		"you're welcome", "glad i could", "appreciate", "welcome",
-		"show me", "tell me", "what's happening", "what is this",
 		"hi", "hello",
 	}
 	// Multi-character Chinese acknowledgment phrases that never appear

@@ -45,10 +45,15 @@ func TestRecoveryPatchExecutor_Apply_ChangeMaxRetries(t *testing.T) {
 	dag := newTestDAG(t)
 	exec := NewRecoveryPatchExecutor(dag)
 
-	// First set a recovery policy on step A.
-	steps := dag.Steps()
-	require.Greater(t, len(steps), 0)
-	steps[0].RecoveryPolicy = &RecoveryPolicy{Strategy: RecoveryRetry, MaxAttempts: 2}
+	// Install a recovery policy on every step through the patch API itself.
+	// (Steps() returns isolated copies since the live-pointer fix, so the
+	// old snapshot-poke no longer reaches the live DAG.)
+	_, err := exec.Apply(context.Background(), patch.RuntimePatch{
+		Type:   patch.PatchChangeRecoveryStrategy,
+		Target: "recovery.strategy",
+		Value:  string(RecoveryRetry),
+	})
+	require.NoError(t, err)
 
 	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
 		Type:   patch.PatchChangeMaxRetries,
@@ -59,18 +64,27 @@ func TestRecoveryPatchExecutor_Apply_ChangeMaxRetries(t *testing.T) {
 	require.NotNil(t, rollback)
 	assert.Equal(t, patch.PatchChangeMaxRetries, rollback.Type)
 
-	// Verify the policy was updated.
-	assert.Equal(t, 5, steps[0].RecoveryPolicy.MaxAttempts)
+	// Verify the policy was updated, read through a FRESH snapshot.
+	steps := dag.Steps()
+	require.Greater(t, len(steps), 0)
+	for _, step := range steps {
+		require.NotNil(t, step.RecoveryPolicy, "step %s must have a policy", step.ID)
+		assert.Equal(t, 5, step.RecoveryPolicy.MaxAttempts, "step %s", step.ID)
+	}
 }
 
 func TestRecoveryPatchExecutor_Apply_ChangeBackoff(t *testing.T) {
 	dag := newTestDAG(t)
 	exec := NewRecoveryPatchExecutor(dag)
 
-	// First set a recovery policy on step A.
-	steps := dag.Steps()
-	require.Greater(t, len(steps), 0)
-	steps[0].RecoveryPolicy = &RecoveryPolicy{Strategy: RecoveryRetry, MaxAttempts: 2}
+	// Install a recovery policy on every step through the patch API itself
+	// (see ChangeMaxRetries for why the snapshot-poke is gone).
+	_, err := exec.Apply(context.Background(), patch.RuntimePatch{
+		Type:   patch.PatchChangeRecoveryStrategy,
+		Target: "recovery.strategy",
+		Value:  string(RecoveryRetry),
+	})
+	require.NoError(t, err)
 
 	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
 		Type:   patch.PatchChangeBackoff,
@@ -81,8 +95,14 @@ func TestRecoveryPatchExecutor_Apply_ChangeBackoff(t *testing.T) {
 	require.NotNil(t, rollback)
 	assert.Equal(t, patch.PatchChangeBackoff, rollback.Type)
 
-	// Verify the policy was updated and the rollback carries a snapshot.
-	assert.Equal(t, 500*time.Millisecond, steps[0].RecoveryPolicy.Backoff)
+	// Verify the policy was updated and the rollback carries a snapshot,
+	// read through a FRESH snapshot.
+	steps := dag.Steps()
+	require.Greater(t, len(steps), 0)
+	for _, step := range steps {
+		require.NotNil(t, step.RecoveryPolicy, "step %s must have a policy", step.ID)
+		assert.Equal(t, 500*time.Millisecond, step.RecoveryPolicy.Backoff, "step %s", step.ID)
+	}
 	_, ok := rollback.Value.(*recoveryBackoffSnapshot)
 	assert.True(t, ok, "rollback Value must be a *recoveryBackoffSnapshot")
 }

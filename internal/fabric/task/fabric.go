@@ -233,6 +233,13 @@ func (f *Fabric) Create(t *Task) error {
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
+	return f.createLocked(t, strategyID, &pending)
+}
+
+// createLocked is Create's body for callers that already hold f.mu (the
+// CompilePlan batch compiler). The caller owns flushing the accumulated
+// pending appends after releasing the lock.
+func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingAppend) error {
 	if t.ID == "" {
 		return ErrTaskIDRequired
 	}
@@ -262,7 +269,7 @@ func (f *Fabric) Create(t *Task) error {
 	// checkpoint envelope (once per Create; a pre-stamped envelope wins).
 	stampStrategyAttribution(&cp, strategyID)
 	f.tasks[t.ID] = &cp
-	pending = append(pending, f.recordLocked(&cp, EventTaskCreated))
+	*pending = append(*pending, f.recordLocked(&cp, EventTaskCreated))
 	return nil
 }
 
@@ -386,6 +393,12 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 // (the kernel dispatch reads it back from the completed task — the serve
 // result-reflux fix). The scheduler calls this instead of Complete when the
 // step's quantum produced a real result.
+//
+// The state transition is validated BEFORE the checkpoint is written: a task
+// whose current state forbids COMPLETED (e.g. LEASED but never started)
+// fails with ErrIllegalState and keeps its previous checkpoint — writing the
+// checkpoint first and failing the transition afterwards left a
+// never-completed task with the completed run's result embedded in it.
 func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) error {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
@@ -395,10 +408,10 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 	if err != nil {
 		return err
 	}
-	t.Checkpoint = checkpoint
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}
+	t.Checkpoint = checkpoint
 	pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 	return nil
 }
@@ -455,9 +468,8 @@ func (f *Fabric) Renew(id, agentID string, epoch uint64, ttl time.Duration) erro
 	if err != nil {
 		return err
 	}
-	if t.Lease == nil {
-		return ErrTaskNotFound
-	}
+	// ownerLocked guarantees Lease != nil on success, so no nil check here
+	// (the previous defensive branch was unreachable dead code).
 	t.Lease.ExpiresAt = f.now().Add(ttl)
 	return nil
 }
@@ -715,8 +727,10 @@ func (f *Fabric) ownerLocked(id, agentID string, epoch uint64) (*Task, error) {
 // released. recordLocked builds it under the lock (cheap, in-memory only);
 // flushAppends performs the actual store.Append I/O off-lock so a slow or
 // blocking event store never stalls the fabric's CAS/state-machine mutex.
-// Bounds for the durable-append path in flushAppends.
-const (
+// Bounds for the durable-append path in flushAppends. Declared as vars (not
+// consts) so white-box tests can shrink them — the production values are the
+// defaults and nothing outside the package mutates them.
+var (
 	// flushAppendTimeout bounds a single store.Append. The fabric's in-memory
 	// transition is already committed by the time the flush runs, so a store
 	// that stops answering must fail this write rather than pin the caller's
@@ -915,10 +929,23 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			timer.Stop()
 		}
 		if orderTimedOut {
+			// A skipped event counts as PROCESSED for ordering purposes:
+			// advance flushedSeq past it (still under the cond lock, still
+			// monotonic). Without the advance, one timed-out skip permanently
+			// poisons the barrier — the skipped seq is never completed by
+			// anyone, so every later event would re-wait the full
+			// flushOrderWaitTimeout only to skip as well, degrading every
+			// subsequent fabric mutation to one timeout each. The skipped
+			// event itself is lost from the durable log (logged below as a
+			// divergence); liveness of everything behind it is restored.
+			if p.seq > f.flushedSeq {
+				f.flushedSeq = p.seq
+			}
+			flushed := f.flushedSeq
 			f.flushCond.L.Unlock()
 			f.flushCond.Broadcast()
 			log.Error("taskfabric: durable append ordering timed out; skipping causal barrier",
-				"event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", f.flushedSeq)
+				"event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
 			continue
 		}
 		var appendErr error
@@ -936,6 +963,34 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			}
 		}
 	}
+}
+
+// discardAppends claims pending durable-append sequence numbers that will
+// never be written (CompilePlan batch rollback: flushing them would publish
+// phantom task.created events for tasks that no longer exist). Mirrors the
+// timeout-skip semantics of flushAppends deliberately — the discarded seqs
+// count as PROCESSED for ordering purposes, so flushedSeq advances past them
+// and the causal barrier is not poisoned by a gap nobody will ever complete.
+// Without this, the next fabric mutation's flushAppends would wait the full
+// flushOrderWaitTimeout on the abandoned seqs and then lose its own event to
+// the timeout-skip path. Off-lock contract: call after releasing f.mu, same
+// as flushAppends.
+func (f *Fabric) discardAppends(pending *[]*pendingAppend) {
+	var maxSeq uint64
+	for _, p := range *pending {
+		if p != nil && p.seq > maxSeq {
+			maxSeq = p.seq
+		}
+	}
+	if maxSeq == 0 {
+		return
+	}
+	f.flushCond.L.Lock()
+	if maxSeq > f.flushedSeq {
+		f.flushedSeq = maxSeq
+	}
+	f.flushCond.L.Unlock()
+	f.flushCond.Broadcast()
 }
 
 // isMustPersistEvent reports whether a lifecycle event is a must-persist
@@ -1104,6 +1159,25 @@ func (f *Fabric) Dependents(id string) []string {
 	return out
 }
 
+// ReferencedDependencies returns the set of every task id that appears in at
+// least one other task's Dependencies — the union of the dependency graph's
+// "targets". Housekeeping sweeps (the reaper) use it to avoid deleting a
+// terminal task that live tasks still reference: depsCompletedLocked treats
+// a missing dependency as unsatisfied forever, so deleting a referenced
+// predecessor would strand its dependents permanently. One O(n·d) pass under
+// a single lock instead of a per-candidate Dependents scan.
+func (f *Fabric) ReferencedDependencies() map[string]struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]struct{})
+	for _, t := range f.tasks {
+		for _, dep := range t.Dependencies {
+			out[dep] = struct{}{}
+		}
+	}
+	return out
+}
+
 // Delete removes a task from the fabric entirely (submitted
 // submitted collaboration graphs are EPHEMERAL — results are harvested by the
 // caller before deletion, so long-running kernels must not accumulate zombie
@@ -1121,6 +1195,12 @@ func (f *Fabric) Dependents(id string) []string {
 func (f *Fabric) Delete(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.deleteLocked(id)
+}
+
+// deleteLocked is Delete's body for callers that already hold f.mu (the
+// CompilePlan batch compiler's rollback).
+func (f *Fabric) deleteLocked(id string) error {
 	t, ok := f.tasks[id]
 	if !ok {
 		return ErrTaskNotFound
@@ -1132,6 +1212,40 @@ func (f *Fabric) Delete(id string) error {
 	default:
 		return ErrTaskUndeletable
 	}
+}
+
+// RestoreTask re-installs a task snapshot that Delete removed, preserving the
+// captured state (including terminal states). It is the rollback primitive
+// for delete-then-rebuild flows: the compile coordinator deletes the previous
+// compile's tasks before compiling the replacement batch, and a failed
+// compile restores the snapshots so the graph stays runnable instead of
+// silently losing the deleted work.
+//
+// The snapshot must come from Task (a fabric-owned copy) and carry a non-empty
+// ID; an occupied id is refused with ErrTaskExists. Like Delete, it emits no
+// lifecycle event: it is bookkeeping that undoes bookkeeping (the durable log
+// keeps the events of the task's first life), not a state transition.
+func (f *Fabric) RestoreTask(t *Task) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t == nil || t.ID == "" {
+		return ErrTaskIDRequired
+	}
+	if _, exists := f.tasks[t.ID]; exists {
+		return ErrTaskExists
+	}
+	// Same aliasing discipline as Create: scalars by value, reference fields
+	// copied explicitly so the fabric owns an isolated instance.
+	cp := *t
+	if len(t.Dependencies) > 0 {
+		cp.Dependencies = append([]string(nil), t.Dependencies...)
+	}
+	if t.Lease != nil {
+		l := *t.Lease
+		cp.Lease = &l
+	}
+	f.tasks[t.ID] = &cp
+	return nil
 }
 
 // IDs returns a snapshot of every task id in the fabric (any state). Used by

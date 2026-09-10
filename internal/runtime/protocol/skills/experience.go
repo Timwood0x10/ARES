@@ -172,6 +172,12 @@ func (e *Experience) BestMatch(taskPattern string) (ExperienceRecord, bool) {
 	defer e.mu.RUnlock()
 
 	needle := strings.ToLower(strings.TrimSpace(taskPattern))
+	// An empty pattern must match nothing: strings.Contains(x, "") is
+	// always true, so without this guard every record scores 1.0 and the
+	// "best" prior is whichever record the iteration surfaced first.
+	if needle == "" {
+		return ExperienceRecord{}, false
+	}
 	needleTokens := tokenize(needle)
 	best := ExperienceRecord{}
 	bestScore := 0.0

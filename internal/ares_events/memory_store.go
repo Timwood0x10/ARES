@@ -125,10 +125,12 @@ func (s *MemoryEventStore) Read(_ context.Context, streamID string, opts ReadOpt
 		return []*Event{}, nil
 	}
 
-	// Filter by FromVersion (inclusive per ReadOptions contract).
+	// Filter by FromVersion (inclusive per ReadOptions contract) and the
+	// inclusive ToVersion cap (zero = uncapped).
 	var filtered []*Event
 	for _, event := range stream {
-		if event.Version >= opts.FromVersion {
+		if event.Version >= opts.FromVersion &&
+			(opts.ToVersion <= 0 || event.Version <= opts.ToVersion) {
 			filtered = append(filtered, event)
 		}
 	}

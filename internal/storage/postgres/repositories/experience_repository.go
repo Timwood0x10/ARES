@@ -461,6 +461,32 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 	return experiences, nil
 }
 
+// CountByType counts experiences of a type within a tenant without
+// materializing rows. It backs the memory distiller's per-type cap checks
+// (e.g. MaxSolutionsPerTenant = 5000), which read counts far beyond any sane
+// ListByType limit — deriving the count from a limited listing silently
+// plateaued at the limit and made the cap unreachable.
+// Args:
+// ctx - database operation context.
+// expType - experience type filter.
+// tenantID - tenant identifier for isolation.
+// Returns the number of live (non-decayed) experiences of the type.
+func (r *ExperienceRepository) CountByType(ctx context.Context, expType, tenantID string) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM experiences_1024
+		WHERE type = $1
+		  AND tenant_id = $2
+		  AND (decay_at IS NULL OR decay_at > NOW())
+	`
+
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, expType, tenantID).Scan(&count); err != nil {
+		return 0, errors.Wrap(err, "count experiences by type")
+	}
+	return count, nil
+}
+
 // UpdateScore updates the score of an experience.
 // Args:
 // ctx - database operation context.

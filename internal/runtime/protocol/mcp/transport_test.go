@@ -2,6 +2,8 @@ package ares_mcp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"testing"
 	"time"
@@ -88,8 +90,21 @@ func TestSSETransportStartEmptyURL(t *testing.T) {
 }
 
 func TestSSETransportDoubleStart(t *testing.T) {
-	// Start with a URL that won't be connected to (we just test the guard).
-	tr := NewSSETransport(SSEConfig{URL: "http://localhost:0"})
+	// Start now blocks until the SSE handshake completes, so the test needs
+	// a live endpoint: a successful first Start proves the connection is
+	// established (readiness contract, REVIEW 3.9).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Hold the stream open until the client disconnects.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	tr := NewSSETransport(SSEConfig{URL: srv.URL})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -102,6 +117,18 @@ func TestSSETransportDoubleStart(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for double start, got nil")
 	}
+}
+
+func TestSSETransportStartSurfacesHandshakeError(t *testing.T) {
+	// An unreachable endpoint must surface the dial error from Start itself
+	// instead of returning nil and failing later with a confusing receive
+	// error (the old fire-and-forget contract).
+	tr := NewSSETransport(SSEConfig{URL: "http://localhost:0", Timeout: 2 * time.Second})
+	if err := tr.Start(context.Background()); err == nil {
+		_ = tr.Close()
+		t.Fatal("expected handshake error from Start for unreachable endpoint, got nil")
+	}
+	_ = tr.Close()
 }
 
 func TestSSETransportCloseUnstarted(t *testing.T) {

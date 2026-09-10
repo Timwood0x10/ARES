@@ -70,6 +70,11 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 	// it after evolve against the post-evolve best-ever would always yield 0
 	// because BestStrategy() and BestEverScore() both read the same bestEver.
 	prevBestEverScore := dc.population.BestEverScore()
+	// Capture the baseline strategy ID at the same point as the score:
+	// after ScoreAgents/Evolve the bestEver may already be THIS cycle's
+	// winner, and using the child's ID as the parent baseline mis-attributed
+	// shadow comparisons, genealogy (self-parent), and "active_id" logs.
+	prevBestEverID := dc.population.BestEverID()
 	hasBaseline := genome.IsScoreEvaluated(prevBestEverScore)
 	if !hasBaseline {
 		// Cold-start first generation: BestEverScore returns the -1 sentinel.
@@ -146,7 +151,7 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 		return nil
 	}
 	parent := mutation.Strategy{
-		ID:    best.ID,
+		ID:    prevBestEverID,
 		Score: prevBestEverScore,
 	}
 	return dc.deployWinner(ctx, cycleCtx, data, winner, parent)

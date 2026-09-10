@@ -17,6 +17,7 @@ import (
 // LLMClient is the interface satisfied by both *llm.Client and *llm.FailoverClient.
 type LLMClient interface {
 	Generate(ctx context.Context, prompt string) (string, error)
+	GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
 	Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error)
 	IsEnabled() bool
@@ -152,7 +153,10 @@ func (s *Service) Generate(ctx context.Context, request *llmcore.GenerateRequest
 	// Build prompt from messages for plain text generation.
 	prompt := s.buildPrompt(request.Messages)
 
-	content, err := s.client.Generate(ctx, prompt)
+	// Forward request-level Temperature/MaxTokens instead of dropping them:
+	// the plain-text path used to call Generate with no overrides, so the
+	// provider defaults always won (REVIEW 3.8).
+	content, err := s.client.GenerateWithParams(ctx, prompt, plainTextParams(request))
 	if err != nil {
 		return nil, errors.Wrap(err, "generate text")
 	}
@@ -188,6 +192,23 @@ func (s *Service) hasToolMessages(messages []*llmcore.LLMMessage) bool {
 		}
 	}
 	return false
+}
+
+// plainTextParams extracts the per-call overrides that the plain-text
+// Generate path forwards to the underlying client. A nil map means "use
+// configured defaults".
+func plainTextParams(request *llmcore.GenerateRequest) map[string]any {
+	params := map[string]any{}
+	if request.Temperature != nil {
+		params["temperature"] = *request.Temperature
+	}
+	if request.MaxTokens != nil {
+		params["max_tokens"] = *request.MaxTokens
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
 }
 
 // generateWithChat routes the request through the Chat API with tool support.

@@ -151,15 +151,15 @@ func (q *MessageQueue) Peek() (*AHPMessage, error) {
 		if !ok {
 			return nil, errors.ErrQueueClosed
 		}
-		// Try to put the message back immediately.
-		select {
-		case q.messages <- msg:
-			return msg, nil
-		default:
-			// Channel full; store in backup buffer.
-			q.backupBuffer = append(q.backupBuffer, msg)
-			return msg, nil
-		}
+		// A channel is FIFO: writing the message back appends it at the
+		// TAIL, which rotates the queue (head becomes tail) and breaks
+		// delivery order for subsequent Peek/Dequeue calls. Park it in the
+		// backup buffer instead — Dequeue drains the backup buffer first,
+		// so ordering is preserved and the message is still delivered
+		// exactly once. The buffer holds at most one message because Peek
+		// only reads from the channel while it is empty.
+		q.backupBuffer = append(q.backupBuffer, msg)
+		return msg, nil
 	default:
 		return nil, errors.ErrQueueEmpty
 	}

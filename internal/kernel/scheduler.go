@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -471,9 +474,10 @@ func (s *Scheduler) drain(ctx context.Context) {
 	// previous drain, cooperatively preempt the lower one so a capable
 	// executor can pick up the higher-priority work. Preempt hands the task
 	// back to READY with its checkpoint preserved (it resumes later), and the
-	// fencing token guarantees only the current holder is affected. This runs
-	// BEFORE this drain spawns its own goroutines — between quanta — so a
-	// quantum is never interrupted mid-step.
+	// fencing token guarantees only the current holder is affected. This
+	// drain-site call runs BEFORE this drain spawns its own goroutines —
+	// between quanta. (The background sweeper in Run may additionally preempt
+	// mid-quantum; that is safe by fencing — see PreemptLowerPriority.)
 	s.PreemptLowerPriority(tasks)
 	sem := make(chan struct{}, s.drainLimit())
 	var wg sync.WaitGroup
@@ -489,8 +493,16 @@ drainLoop:
 			break drainLoop
 		default:
 		}
+		// The semaphore send must also select on ctx cancellation: with every
+		// slot held by a stuck quantum, a bare send parks this loop forever
+		// even though shutdown was requested — wg.Wait would then block
+		// shutdown on executors that never return.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break drainLoop
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(id string) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -557,12 +569,30 @@ func (s *Scheduler) fabricCandidateCount() int {
 	return count
 }
 
-// preemptLowerPriority cooperatively preempts any RUNNING task whose priority
-// is lower than the highest-priority READY task in this drain, so the next
-// drain can hand the executor to the higher-priority work. No-op when no
-// priority information exists (all zeros) — the scheduler never churns a
-// running task on a tie or on unset priorities. The preempted task keeps its
-// checkpoint and returns to READY for a later quantum.
+// preemptLowerPriority cooperatively preempts low-priority RUNNING tasks —
+// but only as MANY as the higher-priority READY work actually needs, and only
+// when no free capable agent can absorb that work without evicting anyone.
+// The preempted tasks keep their checkpoints and return to READY for a later
+// quantum. No-op when no priority information exists (all zeros) — the
+// scheduler never churns a running task on a tie or on unset priorities.
+//
+// Need computation: for every READY task that carries a priority, the free
+// pool is the set of agents that (a) could run at least one of those tasks
+// (capability overlap) and (b) are not currently holding a RUNNING task. When
+// the prioritized ready work exceeds that pool, the deficit is the number of
+// preemptions; the LOWEST-priority running tasks are preempted first so the
+// churn is minimal. Preempting a task whose owner cannot run the ready work is
+// still useful: the next sweep re-evaluates against the reduced running set
+// and preempts further only while the deficit persists.
+//
+// Boundary semantics: the drain() call site runs between quanta (before its
+// own goroutines spawn); the background sweeper in Run() deliberately calls
+// this MID-quantum (that is its reason to exist — drain blocks on wg.Wait, so
+// drain-entry checks alone could never observe a RUNNING task). Mid-quantum
+// preemption stays cooperative: only durable state moves (task → READY,
+// checkpoint preserved) and the stale holder's late completion is rejected by
+// the fencing token, so no quantum is ever double-applied — its in-flight
+// work is simply discarded and resumed later.
 func (s *Scheduler) PreemptLowerPriority(ready []string) {
 	// The guard must also check fabric agents, not just static executors.
 	// In production mode (agent fabric wired), the static executor count may
@@ -572,15 +602,56 @@ func (s *Scheduler) PreemptLowerPriority(ready []string) {
 		return
 	}
 	maxReady := 0
+	// prioritized carries the capability of every ready task that actually
+	// competes for preemption (priority > 0).
+	var prioritizedCaps []string
+	prioritized := 0
 	for _, id := range ready {
-		if tk, err := s.fabric.Task(id); err == nil && tk.Priority > maxReady {
+		tk, err := s.fabric.Task(id)
+		if err != nil || tk.Priority <= 0 {
+			continue
+		}
+		prioritized++
+		prioritizedCaps = append(prioritizedCaps, tk.Capability)
+		if tk.Priority > maxReady {
 			maxReady = tk.Priority
 		}
 	}
 	if maxReady <= 0 {
 		return
 	}
-	for _, rt := range s.fabric.RunningTasks() {
+	running := s.fabric.RunningTasks()
+	if len(running) == 0 {
+		return
+	}
+	// Free capable pool: distinct agents that could run at least one
+	// prioritized ready task and are not currently holding a RUNNING task.
+	busy := make(map[string]struct{}, len(running))
+	for _, rt := range running {
+		busy[rt.Owner] = struct{}{}
+	}
+	freeCapable := s.freeCapableAgents(prioritizedCaps, busy)
+	need := prioritized - freeCapable
+	if need <= 0 {
+		// Every prioritized ready task has a free capable agent to land on:
+		// preempting anyone here would throw away in-flight quantum work for
+		// no benefit.
+		return
+	}
+	// Preempt at most `need` tasks, lowest priority first (ties broken by
+	// task id for determinism). A running task whose priority is at or above
+	// maxReady is never a candidate — only strictly outranked work moves.
+	sort.Slice(running, func(i, j int) bool {
+		if running[i].Priority != running[j].Priority {
+			return running[i].Priority < running[j].Priority
+		}
+		return running[i].ID < running[j].ID
+	})
+	preempted := 0
+	for _, rt := range running {
+		if preempted >= need {
+			break
+		}
 		if rt.Priority >= maxReady {
 			continue
 		}
@@ -589,8 +660,69 @@ func (s *Scheduler) PreemptLowerPriority(ready []string) {
 			// stale epoch is a benign race, not worth log spam.
 			continue
 		}
+		preempted++
 		log.Info("kernel scheduler: preempted for higher-priority work", "task_id", rt.ID, "priority", rt.Priority, "max_ready", maxReady)
 	}
+}
+
+// freeCapableAgents counts the distinct agents that (a) could run at least
+// one of the required capabilities (CapabilityOverlap: an empty required
+// capability is unconstrained and matches everything) and (b) are not
+// currently holding a RUNNING task. Sources mirror buildCandidates: the
+// static registry (minus recovery-bound reservations) plus live IDLE fabric
+// agents, deduplicated by agent id.
+func (s *Scheduler) freeCapableAgents(required []string, busy map[string]struct{}) int {
+	freeCapable := 0
+	seen := make(map[string]struct{})
+	for agentID, agent := range s.allExecutors() {
+		if agent == nil || s.isBoundToAnyTask(agentID) {
+			continue
+		}
+		if _, isBusy := busy[agentID]; isBusy {
+			continue
+		}
+		if !capableForAny(required, []string{string(agent.Type())}) {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		freeCapable++
+	}
+	if s.agents == nil {
+		return freeCapable
+	}
+	for _, id := range s.agents.Agents() {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		if !s.agents.IsIdle(id) {
+			continue
+		}
+		a, err := s.agents.Get(id)
+		if err != nil || a == nil || !a.Executable() {
+			continue
+		}
+		if _, isBusy := busy[id]; isBusy {
+			continue
+		}
+		if !capableForAny(required, a.Capabilities) {
+			continue
+		}
+		seen[id] = struct{}{}
+		freeCapable++
+	}
+	return freeCapable
+}
+
+// capableForAny reports whether an agent's declared capabilities overlap any
+// of the required capabilities (taskfabric.CapabilityOverlap: empty required
+// means unconstrained and matches everything).
+func capableForAny(required []string, have []string) bool {
+	for _, r := range required {
+		if taskfabric.CapabilityOverlap(r, have) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // logFailure logs a task failure, throttling ErrNoCapableCandidate: an
@@ -646,13 +778,23 @@ func (s *Scheduler) execute(ctx context.Context, taskID string) error {
 	if boundID, bound := s.boundFor(taskID); bound {
 		cands := make([]taskfabric.Candidate, 0, 1)
 		if agent, ok := execs[boundID]; ok && agent != nil {
-			cands = append(cands, taskfabric.Candidate{
-				AgentID:      boundID,
-				Capabilities: []string{string(agent.Type())},
-				Load:         s.tracker.Load(boundID),
-				Confidence:   s.tracker.Confidence(boundID),
-				Priority:     s.tracker.Priority(boundID),
-			})
+			// A binding is only meaningful while the replacement can actually
+			// RUN the task. A bound executor whose capability does not overlap
+			// used to strand the task forever: it was the only candidate, Pick
+			// scored it 0, Schedule failed with ErrNoCapableCandidate on every
+			// drain, and the binding is only released at terminal state —
+			// which never comes. Fall through to the general pool instead so
+			// any other capable executor can pick the task up.
+			if tk, tkErr := s.fabric.Task(taskID); tkErr == nil &&
+				taskfabric.CapabilityOverlap(tk.Capability, []string{string(agent.Type())}) > 0 {
+				cands = append(cands, taskfabric.Candidate{
+					AgentID:      boundID,
+					Capabilities: []string{string(agent.Type())},
+					Load:         s.tracker.Load(boundID),
+					Confidence:   s.tracker.Confidence(boundID),
+					Priority:     s.tracker.Priority(boundID),
+				})
+			}
 		}
 		if len(cands) == 0 {
 			// The bound executor is gone (already unregistered) — fall through
@@ -714,6 +856,28 @@ func (s *Scheduler) handleStaleWinner(taskID, winner string, epoch uint64) error
 	return nil
 }
 
+// filterBudgetAffordable drops candidates whose governance budget or
+// deadline is exhausted. Filtering happens BEFORE Schedule acquires a lease:
+// the post-acquire budget gate releases the task back to READY, and with a
+// sole exhausted candidate that release loop became a silent acquire/release
+// livelock — every drain re-acquired the lease, hit the gate, released, and
+// repeated, appending two durable events per poll for a task that could not
+// run. Filtering first leaves the task in the throttled "no capable
+// candidate" wait state until the budget resets (ResetResource) or another
+// capable agent appears.
+func (s *Scheduler) filterBudgetAffordable(cands []taskfabric.Candidate) []taskfabric.Candidate {
+	if s.governance == nil {
+		return cands
+	}
+	affordable := make([]taskfabric.Candidate, 0, len(cands))
+	for _, cand := range cands {
+		if s.budgetOK(cand.AgentID) {
+			affordable = append(affordable, cand)
+		}
+	}
+	return affordable
+}
+
 // executeWithCandidates runs the shared Schedule → Acquire → RunQuantum →
 // finalize path for a prebuilt candidate list. The task capability is read
 // for attribution at the outcome boundary.
@@ -725,6 +889,15 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	if len(cands) == 0 {
 		// KernelError carries task attribution while keeping the sentinel on the
 		// chain, so errors.Is(err, taskfabric.ErrNoCapableCandidate) still matches.
+		return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
+	}
+	// Pre-schedule budget filter: drop candidates whose governance budget or
+	// deadline is exhausted BEFORE Schedule acquires a lease for them (see
+	// filterBudgetAffordable — the post-acquire gate below releases the task
+	// back to READY, which with a sole exhausted candidate became a silent
+	// acquire/release livelock).
+	cands = s.filterBudgetAffordable(cands)
+	if len(cands) == 0 {
 		return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
 	}
 	// Capability-specific confidence: the candidate builders only know
@@ -829,64 +1002,30 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		}
 		return nil
 	}
-	// Quantum boundary hooks (observational): before the quantum runs and
-	// after it finalizes. See quantum_hook.go for the contract.
-	s.beforeQuantum(ctx, taskID, winner)
-	// Lease heartbeat: renew the winner's lease while the quantum runs so a
-	// long step (> TTL) is not requeued by lease expiry and executed a second
-	// time concurrently. The heartbeat goroutine is managed by an errgroup
-	// and stops when the quantum ends, the scheduler context
-	// is cancelled, or renewal fails (ownership lost — preemption/expiry).
-	renewStop := make(chan struct{})
-	qg, qgCtx := errgroup.WithContext(ctx)
-	qg.Go(func() error {
-		interval := s.ttl / 3
-		if interval < 5*time.Second {
-			interval = 5 * time.Second
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-renewStop:
-				return nil
-			case <-qgCtx.Done():
-				return nil
-			case <-ticker.C:
-				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
-					log.Error("kernel scheduler: lease renew failed, stopping heartbeat", "task_id", taskID, "winner", winner, "error", rerr)
-					return nil
-				}
-			}
-		}
-	})
-	// stopHeartbeat closes renewStop and waits for the heartbeat goroutine
-	// EXACTLY ONCE. sync.Once removes the double-close hazard: the normal
-	// path and the panic-recovery defer both call it, and a panic occurring
-	// AFTER the normal close (e.g. inside qg.Wait or endQuantumOutcome) must
-	// not close an already-closed channel (that panic would itself unwind,
-	// skip EndNeutral, and leak the load slot — the very bug this guards).
-	var stopOnce sync.Once
-	stopHeartbeat := func() {
-		stopOnce.Do(func() {
-			close(renewStop)
-			_ = qg.Wait()
-		})
-	}
-	// Panic guard: a panic inside the executor unwinds through RunQuantum and
-	// would skip endQuantumOutcome, leaking the winner's LoadTracker slot
-	// forever (load never decrements → Score multiplies by (1-clamp01(load))
-	// = 0 → the agent is permanently unschedulable). The deferred release only
-	// fires on the panic path: the normal path clears the flag right after
-	// endQuantumOutcome, so there is no double-release.
+	// Panic guard: registered IMMEDIATELY after the busy slot is taken, so the
+	// whole span it protects — user hooks (beforeQuantum runs third-party
+	// plugin code), heartbeat setup, the quantum itself — cannot leak the
+	// winner's LoadTracker slot. A panic anywhere in that span would otherwise
+	// unwind past this function with load never decremented: Score multiplies
+	// by (1-clamp01(load)) = 0, so the agent is permanently unschedulable (the
+	// pre-fix gap: the guard used to be registered only after the heartbeat
+	// setup, leaving beforeQuantum panics leaking the slot). The deferred
+	// release only fires on the panic path: the normal path clears the flag
+	// right after endQuantumOutcome, so there is no double-release.
 	slotReleased := false
+	var stopHeartbeat func()
 	defer func() {
 		if r := recover(); r != nil {
-			stopHeartbeat()
+			// stopHeartbeat is assigned before the heartbeat goroutine is
+			// launched (nil before that point, when there is nothing to
+			// stop).
+			if stopHeartbeat != nil {
+				stopHeartbeat()
+			}
 			if !slotReleased {
 				// Log BEFORE releasing: the stack trace is the only forensic
-				// trail for an executor panic, and the load slot is released
-				// so the agent stays schedulable (the fabric's expired-lease
+				// trail for the panic, and the load slot is released so the
+				// agent stays schedulable (the fabric's expired-lease
 				// requeue reclaims the stuck task separately).
 				log.Error("kernel scheduler: panic in executor, releasing load slot", "task_id", taskID, "agent", winner, "panic", r)
 				s.tracker.EndNeutral(winner)
@@ -894,6 +1033,20 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			}
 		}
 	}()
+	// Quantum boundary hooks (observational): before the quantum runs and
+	// after it finalizes. See quantum_hook.go for the contract.
+	s.beforeQuantum(ctx, taskID, winner)
+	// Lease heartbeat: renew the winner's lease while the quantum runs so a
+	// long step (> TTL) is not requeued by lease expiry and executed a
+	// second time concurrently. stopHeartbeat is assigned BEFORE the
+	// goroutine launches (nil before that point, when there is nothing to
+	// stop) so the panic guard above can never observe a half-initialized
+	// heartbeat. sync.Once inside removes the double-close hazard: the
+	// normal path and the panic-recovery defer both call it, and a panic
+	// occurring AFTER the normal close must not close an already-closed
+	// channel (that panic would itself unwind, skip EndNeutral, and leak the
+	// load slot — the very bug this guards).
+	stopHeartbeat = s.startLeaseHeartbeat(ctx, taskID, winner, epoch)
 	// Capture the quantum's wall-clock duration before RunQuantum so
 	// endQuantumOutcome can attribute real latency to the deterministic scorer.
 	// The old Record() path passed 0,0,0, which made the
@@ -928,10 +1081,59 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		s.consumeBudget(winner)
 	}
 	if err == nil {
-		s.Scheduled.Add(1)
+		// Count TASKS, not quanta: a multi-quantum task (yield → resume →
+		// done) must increment exactly once, at its terminal COMPLETED
+		// state. Counting every successful quantum inflated the observability
+		// metric by the task's quantum depth.
+		if tkEnd, tkErr := s.fabric.Task(taskID); tkErr == nil && tkEnd.State == taskfabric.StateCompleted {
+			s.Scheduled.Add(1)
+		}
 	}
 	s.unbindRecoveryExecutorAfterTerminal(taskID)
 	return err
+}
+
+// startLeaseHeartbeat launches the lease-renewal goroutine for one quantum
+// and returns the idempotent stop function. The heartbeat renews the
+// winner's lease at ttl/3 (floor 5s) while the quantum runs so a long step
+// (> TTL) is not requeued by lease expiry and executed a second time
+// concurrently; it stops when stopped, the scheduler context is cancelled,
+// or a renewal fails (ownership lost — preemption/expiry). The stop function
+// closes the stop channel and waits for the goroutine EXACTLY ONCE
+// (sync.Once), so the normal quantum path and the panic-recovery defer can
+// both call it without a double-close panic.
+func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner string, epoch uint64) func() {
+	renewStop := make(chan struct{})
+	qg, qgCtx := errgroup.WithContext(ctx)
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			close(renewStop)
+			_ = qg.Wait()
+		})
+	}
+	qg.Go(func() error {
+		interval := s.ttl / 3
+		if interval < 5*time.Second {
+			interval = 5 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewStop:
+				return nil
+			case <-qgCtx.Done():
+				return nil
+			case <-ticker.C:
+				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
+					log.Error("kernel scheduler: lease renew failed, stopping heartbeat", "task_id", taskID, "winner", winner, "error", rerr)
+					return nil
+				}
+			}
+		}
+	})
+	return stop
 }
 
 // unbindRecoveryExecutorAfterTerminal unregisters the recovery executor bound
@@ -949,6 +1151,7 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 	}
 	if boundID := s.unbindFor(taskID); boundID != "" {
 		s.UnregisterExecutor(boundID)
+		s.tracker.Forget(boundID)
 		log.Info("kernel scheduler: unregistered recovery executor after task reached state", "executor", boundID, "task_id", taskID, "state", tk2.State)
 	}
 }
@@ -957,6 +1160,16 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 // disappeared from the wired Agent Fabric (kill/retire). Recovery-bound
 // executors are skipped — they intentionally live outside the fabric and are
 // cleaned up by the terminal-state unbind. No-op when no fabric is wired.
+//
+// It also forgets the LoadTracker entries of agents that no longer exist in
+// ANY candidate source: the fabric population rotates continuously
+// (spawn/kill), and without the sweep the per-agent stat maps grew without
+// bound — one leaked entry (history, load, overrides) per agent generation.
+// Entries are only forgotten for agents that (a) accumulated execution
+// history or confidence overrides (a bare priority injection from the static
+// peer config survives — that set is fixed, not rotating), and (b) are
+// currently idle (load == 0), so an in-flight quantum's End still finds its
+// slot.
 func (s *Scheduler) reconcileFabricDeaths() {
 	if s.agents == nil {
 		return
@@ -968,7 +1181,32 @@ func (s *Scheduler) reconcileFabricDeaths() {
 		if _, err := s.agents.Get(id); err != nil {
 			log.Info("kernel scheduler: unregistering executor — agent no longer in fabric (killed or retired)", "executor", id)
 			s.UnregisterExecutor(id)
+			s.tracker.Forget(id)
 		}
+	}
+	s.sweepDeadTrackerEntries()
+}
+
+// sweepDeadTrackerEntries removes tracker stats for agents that have neither
+// a registration in the executor registry nor a live entry in the agent
+// fabric, but did accumulate history (a straggler quantum's End recreates an
+// entry after its agent died; the next sweep collects it).
+func (s *Scheduler) sweepDeadTrackerEntries() {
+	for _, a := range s.tracker.Snapshot().Agents {
+		if a.Load != 0 {
+			continue // in-flight quantum
+		}
+		hasHistory := a.Done > 0 || a.Ok > 0 || a.HasConfidenceOverride || len(a.CapabilityOverrides) > 0
+		if !hasHistory {
+			continue // static config entries (priority-only) are not rotating
+		}
+		if _, ok := s.LookupExecutor(a.AgentID); ok {
+			continue
+		}
+		if _, err := s.agents.Get(a.AgentID); err == nil {
+			continue // still live in the fabric
+		}
+		s.tracker.Forget(a.AgentID)
 	}
 }
 
@@ -991,7 +1229,38 @@ func (s *Scheduler) buildQuantumStep(
 	meta taskfabric.DecodedCheckpoint,
 ) taskfabric.QuantumStep {
 	return func() (any, bool, error) {
-		out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
+		// Cancellation + panic boundary around the executor step. The step
+		// runs in its own goroutine so a stuck executor cannot block drain
+		// shutdown forever: when ctx is cancelled (scheduler shutdown), the
+		// quantum returns an error immediately, RunQuantum applies the retry
+		// policy, and the drain goroutine finishes. The abandoned step
+		// goroutine exits whenever the executor returns and its result is
+		// discarded (fencing rejects any late completion anyway). The
+		// goroutine-local recover keeps an executor panic from crashing the
+		// process now that the step no longer runs on the drain goroutine.
+		type stepResult struct {
+			out *sub.StepOutcome
+			err error
+		}
+		done := make(chan stepResult, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					done <- stepResult{err: apperrors.Kernel("run_quantum", "executor_panic",
+						tk.ID, executor.ID(), fmt.Errorf("executor panicked: %v", r))}
+				}
+			}()
+			out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
+			done <- stepResult{out: out, err: stepErr}
+		}()
+		var out *sub.StepOutcome
+		var stepErr error
+		select {
+		case res := <-done:
+			out, stepErr = res.out, res.err
+		case <-ctx.Done():
+			return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown: %w", ctx.Err())
+		}
 		if stepErr != nil {
 			// A step error flows to fabric.Fail, which requeues (retry budget)
 			// or finalizes FAILED — the fabric owns the retry policy.
@@ -1131,6 +1400,20 @@ func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err err
 		log.Debug("kernel scheduler: quantum ended by preemption fencing (benign); outcome not attributed", "task_id", taskID)
 		return
 	}
+	// Fabric start-stage sentinels and scheduler-shutdown cancellation are
+	// not the executor's failure either. ErrIllegalState/ErrTaskNotFound mean
+	// the task was concurrently finalized or removed between acquire and the
+	// quantum — the executor never got to run. context.Canceled means the
+	// scheduler is shutting down mid-quantum: attributing graceful-shutdown
+	// aborts as failures poisoned every in-flight agent's confidence on every
+	// restart. All end neutral (load released, no history recorded).
+	if errors.Is(err, taskfabric.ErrIllegalState) || errors.Is(err, taskfabric.ErrTaskNotFound) ||
+		errors.Is(err, context.Canceled) {
+		s.tracker.EndNeutral(winner)
+		log.Debug("kernel scheduler: quantum ended by a non-executor condition; outcome not attributed",
+			"task_id", taskID, "error", err)
+		return
+	}
 	s.tracker.End(winner, err == nil)
 	// Evolution feedback: record the outcome for the feedback loop. The
 	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
@@ -1167,7 +1450,12 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 		return t
 	}
 	t.UserProfile = reifyUserProfile(dc.UserProfile)
-	t.Payload = dc.Payload
+	// Payload must be a COPY, not an alias of the envelope's map: the
+	// executor (and the "checkpoint" key stamped below) writes into
+	// t.Payload, and an alias would persist those quantum-scoped keys into
+	// the durable checkpoint envelope on the next yield/done re-wrap —
+	// permanently polluting the persisted payload (audit HIGH #1).
+	t.Payload = copyPayloadMap(dc.Payload)
 	t.UsedExperienceID = dc.UsedExperienceID
 	// The submission-time strategy attribution rides to the executor so
 	// the sub-agent's task.completed/failed events carry the same key the
@@ -1186,6 +1474,22 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 		t.Payload["checkpoint"] = dc.StepCheckpoint
 	}
 	return t
+}
+
+// copyPayloadMap returns a shallow copy of the payload map (nil stays nil).
+// A shallow copy is sufficient: the values themselves are treated as
+// immutable by the executor contract; only the map's key set must be
+// protected from quantum-scoped writes ("checkpoint", executing-agent
+// stamps) leaking into the shared envelope.
+func copyPayloadMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]any, len(src)+1)
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // reifyUserProfile converts a decoded envelope UserProfile (typed pointer, or

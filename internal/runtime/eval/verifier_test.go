@@ -135,3 +135,45 @@ func TestProcessVerifier_EvidenceItems(t *testing.T) {
 	assert.Equal(t, "failed", items[0].Status)
 	assert.Equal(t, "passed", items[1].Status)
 }
+
+// TestResultVerifier_UnknownStatusFails is the #56 regression: an
+// unrecognized check status used to fall through the switch and count as a
+// pass, so garbage input masqueraded as a PASS. The bottom verification
+// layer must prove success; an unknown status proves nothing and is treated
+// as a failure (strict). No in-tree producer emits unknown statuses — the
+// only statuses are the Status* constants.
+func TestResultVerifier_UnknownStatusFails(t *testing.T) {
+	verifier := NewResultVerifier()
+	ev := verifier.Verify("task-1", "coder", []ResultCheck{
+		{Name: "build", Status: StatusPassed},
+		{Name: "weird", Status: "definitely-not-a-status"},
+	})
+	if ev.Verdict != VerdictFail {
+		t.Fatalf("unknown status verdict = %v, want %v (must fail, not pass or stay uncertain)", ev.Verdict, VerdictFail)
+	}
+	// The raw status is preserved for auditability.
+	if len(ev.Dimensions) == 0 || len(ev.Dimensions[0].Evidence) != 2 {
+		t.Fatalf("expected 2 evidence items, got %+v", ev.Dimensions)
+	}
+	found := false
+	for _, item := range ev.Dimensions[0].Evidence {
+		if item.Name == "weird" && item.Status == "definitely-not-a-status" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("unknown-status item must keep its raw status in the evidence")
+	}
+}
+
+// TestResultVerifier_UnknownStatusAloneFails: even a single unknown check
+// without any passing sibling must fail (not uncertain).
+func TestResultVerifier_UnknownStatusAloneFails(t *testing.T) {
+	verifier := NewResultVerifier()
+	ev := verifier.Verify("task-2", "coder", []ResultCheck{
+		{Name: "only", Status: "garbage"},
+	})
+	if ev.Verdict != VerdictFail {
+		t.Fatalf("verdict = %v, want %v", ev.Verdict, VerdictFail)
+	}
+}

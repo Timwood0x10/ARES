@@ -45,7 +45,7 @@ func TestNewGraphPatchExecutor(t *testing.T) {
 	g := buildPatcherTestGraph(t)
 	exec := NewGraphPatchExecutor(g)
 	require.NotNil(t, exec)
-	assert.Same(t, g, exec.graph)
+	assert.Same(t, g, exec.currentGraph())
 }
 
 func TestGraphPatchExecutor_Apply_InsertNode(t *testing.T) {
@@ -80,7 +80,9 @@ func TestGraphPatchExecutor_Apply_RemoveNode(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, rollback)
-	assert.Equal(t, patch.PatchInsertNode, rollback.Type)
+	// The rollback is the composite restore (node + its edges), not a bare
+	// insert — see TestRemoveNodeRollbackRestoresEdges.
+	assert.Equal(t, patch.PatchRestoreNode, rollback.Type)
 	assert.Equal(t, "C", rollback.Target)
 
 	// Verify node was removed.

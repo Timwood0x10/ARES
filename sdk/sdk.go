@@ -181,6 +181,13 @@ type Runtime struct {
 	schedOnce   sync.Once
 	schedCtx    context.Context
 	schedCancel context.CancelFunc
+	// taskRunCtxs maps fabric task ID → the Submit caller's wait context.
+	// sdkAgentExecutor merges its execution ctx onto the registered entry so
+	// a Submit timeout/cancellation aborts the in-flight agent run for THAT
+	// task (the scheduler ctx alone never fires on a submitter timeout).
+	// Entries are added/removed by submitThroughScheduler on every exit
+	// path, so the map never outlives an in-flight Submit.
+	taskRunCtxs sync.Map
 	// agentsFabric is the runtime's Agent Fabric, backing spawn_agent syscalls
 	// (the SDK wires the same kernel syscalls as peer mode). Created in
 	// ensureScheduler alongside sdkFabric; nil until the first Submit.
@@ -265,11 +272,19 @@ func New(opts ...Option) (*Runtime, error) {
 	// deferred cancel prevents a context leak (vet lostcancel).
 	bootstrapCtx, bootstrapCancel := context.WithCancel(context.Background())
 	bootstrapCancelTaken := false
-	// mcpClients and bootstrapComp are declared here (before the cleanup defer)
-	// so the deferred cleanup can reference them; variables referenced by a
-	// defer must already be in scope at the defer statement.
+	// mcpClients, bootstrapComp and the mid-construction resources below are
+	// declared here (before the cleanup defer) so the deferred cleanup can
+	// reference them; variables referenced by a defer must already be in
+	// scope at the defer statement.
 	var mcpClients []*mcp.Client
 	var bootstrapComp *ares_bootstrap.Components
+	// memMgr/distillCleanup/pgPool are produced by wiring steps that succeed
+	// MID-construction; a LATER failure (MCP, knowledge, AKF tools,
+	// evolution) must release them too, or the failed New() leaks the memory
+	// manager's goroutines and the evidence PG pool until process exit.
+	var memMgr memory.MemoryManager
+	var distillCleanup func()
+	var pgPool *postgres.Pool
 	defer func() {
 		if !bootstrapCancelTaken {
 			// Error path: release everything created so far. The success path
@@ -284,13 +299,22 @@ func New(opts ...Option) (*Runtime, error) {
 			for _, c := range mcpClients {
 				_ = c.Close()
 			}
+			if distillCleanup != nil {
+				distillCleanup()
+			}
+			if memMgr != nil {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer stopCancel()
+				_ = memMgr.Stop(stopCtx)
+			}
+			if pgPool != nil {
+				_ = pgPool.Close()
+			}
 		}
 	}()
 	bootstrapComp = newBootstrapCore(bootstrapCtx, cfg)
 
 	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
-	var memMgr memory.MemoryManager
-	var distillCleanup func()
 	var embClient apiembed.EmbeddingService
 	var expRepo repositories.ExperienceRepositoryInterface
 	var distillSvc *aresexp.DistillationService
@@ -342,7 +366,8 @@ func New(opts ...Option) (*Runtime, error) {
 	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
 	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
 	// (wireSDKEvolution owns the evidence-persistence gating.)
-	evoComponents, pgPool, err := wireSDKEvolution(cfg, kw, bootstrapComp)
+	var evoComponents *ares_bootstrap.NewEvolutionComponents
+	evoComponents, pgPool, err = wireSDKEvolution(cfg, kw, bootstrapComp)
 	if err != nil {
 		return nil, err
 	}

@@ -116,6 +116,20 @@ func TestSecurityFilter(t *testing.T) {
 			text:     "PASSWORD: mypass",
 			expected: false,
 		},
+		// Locks REVIEW 3.3#6: keywords containing uppercase ASCII ("API密钥")
+		// never matched because the text is lowercased before comparison.
+		// The keyword list must stay all-lowercase; mixed-case input must
+		// still be caught.
+		{
+			name:     "mixed case chinese keyword",
+			text:     "API密钥 is abc123",
+			expected: false,
+		},
+		{
+			name:     "uppercase bearer token",
+			text:     "BEARER TOKEN: xyz",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -145,6 +145,11 @@ type Distiller struct {
 	metrics     atomicMetrics   // Thread-safe atomic counters
 	distillEg   *errgroup.Group // Manages the event-subscription goroutine (lifecycle via ctx)
 
+	// subMu guards subCancel, the cancel of the context SubscribeAndDistill
+	// derives for its subscription loop. Stop uses it to join the loop.
+	subMu     sync.Mutex
+	subCancel context.CancelFunc
+
 	// OnTaskCompleted is called when a task completion event is received.
 	// If set, the distiller invokes it with the task ID from the event payload.
 	// The handler should trigger the full distillation pipeline for the task.
@@ -206,7 +211,10 @@ func (d *Distiller) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
 
 // UpdateConfig atomically replaces the distiller's configuration.
 // This allows runtime reconfiguration of thresholds (MinImportance, MaxMemories, etc.)
-// without recreating the distiller.
+// without recreating the distiller. The thresholds snapshot by the pipeline
+// components (scorer/resolver/noiseFilter) are propagated too — swapping only
+// d.config would leave ShouldKeep / DetectConflict / IsNoise running with the
+// ORIGINAL construction-time values while the top-N phases read the new ones.
 func (d *Distiller) UpdateConfig(config *DistillationConfig) {
 	if config == nil {
 		return
@@ -214,6 +222,14 @@ func (d *Distiller) UpdateConfig(config *DistillationConfig) {
 	d.configMu.Lock()
 	defer d.configMu.Unlock()
 	d.config = config
+	d.scorer.UpdateThresholds(config.MinImportance, config.EnableLengthBonus, config.LengthThreshold, config.LengthBonus)
+	d.resolver.UpdateThresholds(config.ConflictThreshold, config.ConflictSearchLimit)
+	d.noiseFilter.UpdateConfig(&NoiseFilterConfig{
+		EnableCodeFilter:          config.EnableCodeFilter,
+		EnableStacktraceFilter:    config.EnableStacktraceFilter,
+		EnableLogFilter:           config.EnableLogFilter,
+		EnableMarkdownTableFilter: config.EnableMarkdownTableFilter,
+	})
 }
 
 // getConfig returns the current configuration in a thread-safe manner.
@@ -574,6 +590,21 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 
 			switch strategy {
 			case ReplaceOld:
+				// The superseded near-duplicate must actually leave the
+				// repository: ResolveConflict's contract is "exactly one of them
+				// survives". Pre-fix this branch only kept the new memory — the
+				// old row stayed forever, so every re-distillation of the same
+				// problem accumulated another near-duplicate (the conflict
+				// resolution was a write-side no-op). A delete failure is logged
+				// and non-fatal: the new memory still wins this round, and the
+				// next conflict over the same pair retries the delete.
+				if conflict.ID != "" && d.repo != nil {
+					if derr := d.repo.Delete(ctx, conflict.ID); derr != nil {
+						log.WarnContext(ctx, "[Memory Distillation] Failed to delete superseded memory in ReplaceOld",
+							"conversation_id", conversationID, "memory_index", idx,
+							"old_id", conflict.ID, "error", derr)
+					}
+				}
 				finalMemories = append(finalMemories, memory)
 			case KeepOld:
 				// Drop the incoming near-duplicate: the stored memory has

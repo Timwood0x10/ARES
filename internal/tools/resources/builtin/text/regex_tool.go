@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -42,7 +43,7 @@ func NewRegexTool() *RegexTool {
 			},
 			"max_results": {
 				Type:        "integer",
-				Description: "Maximum number of results to return (default: unlimited)",
+				Description: "Maximum number of results to return (default: 1000, hard cap: 10000)",
 			},
 		},
 		Required: []string{"operation", "text", "pattern"},
@@ -61,6 +62,20 @@ const maxRegexInputSize = 10 * 1024 * 1024 // 10MB
 // does not specify max_results. -1 (unlimited) on a broad pattern over large
 // input can produce millions of matches and exhaust memory.
 const defaultMaxRegexResults = 1000
+
+// maxRegexResultsCeiling is the hard cap applied regardless of the caller's
+// max_results (#62): even an explicit -1 (unlimited) or an absurd value from
+// an LLM must not be able to materialize an unbounded match slice.
+const maxRegexResultsCeiling = 10000
+
+// clampMaxResults normalizes the caller-supplied max_results: negative
+// (including -1/unlimited) and over-ceiling values clamp to the ceiling.
+func clampMaxResults(n int) int {
+	if n < 0 || n > maxRegexResultsCeiling {
+		return maxRegexResultsCeiling
+	}
+	return n
+}
 
 // Execute performs the regex operation.
 func (t *RegexTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
@@ -98,10 +113,10 @@ func (t *RegexTool) Execute(ctx context.Context, params map[string]interface{}) 
 
 	switch operation {
 	case "match":
-		maxResults := getInt(params, "max_results", defaultMaxRegexResults)
+		maxResults := clampMaxResults(getInt(params, "max_results", defaultMaxRegexResults))
 		return t.match(ctx, text, re, maxResults)
 	case "extract":
-		maxResults := getInt(params, "max_results", defaultMaxRegexResults)
+		maxResults := clampMaxResults(getInt(params, "max_results", defaultMaxRegexResults))
 		return t.extract(ctx, text, re, maxResults)
 	case "replace":
 		replacement, ok := params["replacement"].(string)
@@ -130,7 +145,10 @@ func (t *RegexTool) compileRegex(pattern string, flags []string) (*regexp.Regexp
 	return regexp.Compile(pattern)
 }
 
-// match checks if the pattern matches the text.
+// match checks if the pattern matches the text. Empty matches are skipped
+// (#62): an empty-matching pattern (e.g. "a*") produces one meaningless
+// entry per position — millions on large input — so only non-empty matches
+// are reported.
 func (t *RegexTool) match(ctx context.Context, text string, re *regexp.Regexp, maxResults int) (core.Result, error) {
 	matches := re.FindAllString(text, maxResults)
 
@@ -139,44 +157,40 @@ func (t *RegexTool) match(ctx context.Context, text string, re *regexp.Regexp, m
 
 	results := make([]map[string]interface{}, 0, len(matches))
 	for i, match := range matches {
-		result := map[string]interface{}{
-			"match": match,
-		}
-
+		var start, end int
 		if i < len(matchPositions) {
-			result["start"] = matchPositions[i][0]
-			result["end"] = matchPositions[i][1]
+			start, end = matchPositions[i][0], matchPositions[i][1]
 		}
-
-		results = append(results, result)
+		if start == end {
+			continue // empty match — carries no information, skip
+		}
+		results = append(results, map[string]interface{}{
+			"match": match,
+			"start": start,
+			"end":   end,
+		})
 	}
 
 	return core.NewResult(true, map[string]interface{}{
 		"operation":   "match",
 		"pattern":     re.String(),
-		"matched":     len(matches) > 0,
+		"matched":     len(results) > 0,
 		"matches":     results,
-		"match_count": len(matches),
+		"match_count": len(results),
 	}), nil
 }
 
-// extract extracts all matches using capturing groups.
+// extract extracts all matches using capturing groups. Entries whose full
+// match is empty are skipped (#62 — see match).
 func (t *RegexTool) extract(ctx context.Context, text string, re *regexp.Regexp, maxResults int) (core.Result, error) {
 	allMatches := re.FindAllStringSubmatch(text, maxResults)
 
-	if len(allMatches) == 0 {
-		return core.NewResult(true, map[string]interface{}{
-			"operation":   "extract",
-			"pattern":     re.String(),
-			"matched":     false,
-			"extracted":   []interface{}{},
-			"match_count": 0,
-		}), nil
-	}
-
-	// Extract capturing groups
+	// Extract capturing groups, skipping empty full matches.
 	extracted := make([]map[string]interface{}, 0, len(allMatches))
 	for _, match := range allMatches {
+		if len(match) == 0 || match[0] == "" {
+			continue // empty full match — skip
+		}
 		groups := make([]string, 0, len(match))
 		for i, group := range match {
 			groups = append(groups, fmt.Sprintf("group_%d: %s", i, group))
@@ -187,6 +201,16 @@ func (t *RegexTool) extract(ctx context.Context, text string, re *regexp.Regexp,
 			"groups":     groups,
 			"count":      len(match),
 		})
+	}
+
+	if len(extracted) == 0 {
+		return core.NewResult(true, map[string]interface{}{
+			"operation":   "extract",
+			"pattern":     re.String(),
+			"matched":     false,
+			"extracted":   []interface{}{},
+			"match_count": 0,
+		}), nil
 	}
 
 	return core.NewResult(true, map[string]interface{}{
@@ -200,8 +224,10 @@ func (t *RegexTool) extract(ctx context.Context, text string, re *regexp.Regexp,
 
 // replace replaces all matches with the replacement string.
 func (t *RegexTool) replace(ctx context.Context, text string, re *regexp.Regexp, replacement string) (core.Result, error) {
-	// Count matches before replacement
-	matchCount := len(re.FindAllString(text, -1))
+	// Count non-empty matches without materializing the full match slice
+	// (#62): FindAllString(text, -1) on an empty-matching pattern builds one
+	// entry per position — a multi-hundred-MB spike on 10MB inputs.
+	matchCount := countNonEmptyMatches(re, text)
 
 	// Perform replacement
 	result := re.ReplaceAllString(text, replacement)
@@ -215,6 +241,34 @@ func (t *RegexTool) replace(ctx context.Context, text string, re *regexp.Regexp,
 		"match_count":  matchCount,
 		"replacements": matchCount,
 	}), nil
+}
+
+// countNonEmptyMatches counts non-empty matches iteratively. An empty match
+// advances by one rune so the scan always makes progress (mirroring the
+// stdlib's FindAll advancement rule) without collecting a slice.
+func countNonEmptyMatches(re *regexp.Regexp, text string) int {
+	count := 0
+	pos := 0
+	for pos <= len(text) {
+		loc := re.FindStringIndex(text[pos:])
+		if loc == nil {
+			break
+		}
+		if loc[1] > loc[0] {
+			count++
+		}
+		adv := loc[1]
+		if adv == loc[0] {
+			// Empty match: advance one rune to avoid re-matching here forever.
+			_, size := utf8.DecodeRuneInString(text[pos+adv:])
+			if size == 0 {
+				break // end of text
+			}
+			adv += size
+		}
+		pos += adv
+	}
+	return count
 }
 
 func (t *RegexTool) IsIdempotent() bool { return true }

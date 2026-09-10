@@ -31,19 +31,52 @@ type AgentSnapshot struct {
 // cleared on Retire (terminal: no revival possible) and are meant to be
 // consumed via ClearSnapshot after a successful in-place revival, keeping
 // long-running processes bounded.
+//
+// Bounded growth: agents rotate continuously (spawn/kill) in peer mode, and
+// a killed agent can never be Retired (Kill already removed it from the
+// registry), so "cleared on Retire" never fires for the rotation path. The
+// store therefore caps itself: when a save would exceed maxDeathSnapshots,
+// the OLDEST entries (by DiedAt) are evicted — recovery wants the freshest
+// cognition anyway.
 type snapshotStore struct {
 	mu   sync.RWMutex
 	byID map[string]AgentSnapshot
 }
 
+// maxDeathSnapshots bounds how many dead-agent revival records the store
+// keeps. Sized generously against the live population: recovery only ever
+// revives a handful of agents, and findByCapability prefers the most recent
+// death, so evicting the oldest tail loses nothing the recovery loop would
+// have used.
+const maxDeathSnapshots = 1024
+
 func newSnapshotStore() *snapshotStore {
 	return &snapshotStore{byID: make(map[string]AgentSnapshot)}
 }
 
-// save stores (or overwrites) the snapshot for agentID.
+// save stores (or overwrites) the snapshot for agentID, evicting the oldest
+// entries when the store would grow past the bound.
 func (s *snapshotStore) save(id string, snap AgentSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Overwriting an existing entry never grows the store.
+	if _, exists := s.byID[id]; !exists && len(s.byID) >= maxDeathSnapshots {
+		// Evict the oldest DiedAt entries until there is room.
+		for len(s.byID) >= maxDeathSnapshots {
+			var oldestID string
+			var oldest time.Time
+			first := true
+			for k, v := range s.byID {
+				if first || v.DiedAt.Before(oldest) {
+					oldestID, oldest, first = k, v.DiedAt, false
+				}
+			}
+			if oldestID == "" {
+				break
+			}
+			delete(s.byID, oldestID)
+		}
+	}
 	s.byID[id] = snap
 }
 
@@ -63,9 +96,10 @@ func (s *snapshotStore) clear(id string) {
 	delete(s.byID, id)
 }
 
-// findByCapability returns the first stored snapshot whose declared
-// capabilities contain capability. Scan cost is bounded by the live-agent
-// population (entries are cleared on consume/Retire), so linear scan is fine.
+// findByCapability returns the most recent stored snapshot whose declared
+// capabilities contain capability. Scan cost is bounded by the store cap
+// (maxDeathSnapshots; entries are also cleared on consume/Retire), so a
+// linear scan is fine.
 func (s *snapshotStore) findByCapability(capability string) (string, AgentSnapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

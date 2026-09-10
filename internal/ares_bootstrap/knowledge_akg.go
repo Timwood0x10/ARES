@@ -58,31 +58,35 @@ const (
 //
 //	knowledge.KnowledgeStore - in-memory store by default, PG store when
 //	                           postgres storage is configured.
+//	func()                   - close func releasing the PG-backed *sql.DB
+//	                           (no-op for the in-memory store); the caller
+//	                           MUST register it in its cleanups so a failed
+//	                           bootstrap does not leak the connections.
 //	error                    - wrapped error if PG init fails (caller falls
 //	                           back to read-only mode, not hard failure).
-func buildBootstrapKnowledgeStore(cfg *ares_config.Config) (knowledge.KnowledgeStore, error) {
+func buildBootstrapKnowledgeStore(cfg *ares_config.Config) (knowledge.KnowledgeStore, func(), error) {
 	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Storage.Host != "" {
 		dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 			cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username,
 			cfg.Storage.Password, cfg.Storage.Database, cfg.Storage.SSLMode)
 		db, err := sql.Open(storageTypePostgres, dsn)
 		if err != nil {
-			return nil, fmt.Errorf("bootstrap: open postgres knowledge store: %w", err)
+			return nil, nil, fmt.Errorf("bootstrap: open postgres knowledge store: %w", err)
 		}
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer pingCancel()
 		if err := db.PingContext(pingCtx); err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("bootstrap: ping postgres knowledge store: %w", err)
+			return nil, nil, fmt.Errorf("bootstrap: ping postgres knowledge store: %w", err)
 		}
 		store, err := postgresstore.New(db)
 		if err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("bootstrap: init postgres knowledge store: %w", err)
+			return nil, nil, fmt.Errorf("bootstrap: init postgres knowledge store: %w", err)
 		}
-		return store, nil
+		return store, func() { _ = db.Close() }, nil
 	}
-	return memstore.New(), nil
+	return memstore.New(), func() {}, nil
 }
 
 // buildAKGDistiller constructs a standalone conversation distiller for the
@@ -162,15 +166,22 @@ func wireAKGLoop(
 	cfg *ares_config.Config,
 	deps *BootstrapDeps,
 	embClient *embedding.EmbeddingClient,
+	cleanups *[]func(),
 ) (knowledge.KnowledgeStore, *adapter.DistillBridge) {
 	if cfg == nil || !cfg.Knowledge.RetrievalEnabled {
 		return nil, nil
 	}
 
-	store, err := buildBootstrapKnowledgeStore(cfg)
+	store, closeStore, err := buildBootstrapKnowledgeStore(cfg)
 	if err != nil {
 		log.Warn("bootstrap: AKG knowledge store init failed; AKG loop skipped", "error", err)
 		return nil, nil
+	}
+	// The PG-backed store owns a dedicated *sql.DB nobody else closes:
+	// register it so a failed bootstrap releases the connections instead of
+	// leaking them across bootstrap retries (success = process lifetime).
+	if cleanups != nil && closeStore != nil {
+		*cleanups = append(*cleanups, closeStore)
 	}
 
 	if embClient == nil || deps == nil || deps.ExpRepo == nil {

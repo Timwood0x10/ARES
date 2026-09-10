@@ -183,30 +183,16 @@ func (a *SecretAdapter) ConvertTo(data []byte, format SecretFormat) ([]byte, err
 	}
 }
 
-// convertToYAML converts JSON to YAML format.
+// convertToYAML converts JSON to YAML format using yaml.Marshal so values
+// containing ':', '#', quotes or newlines are properly quoted. The previous
+// hand-built writer emitted raw key/value pairs, which produced structurally
+// broken YAML for any such value (REVIEW 3.5b).
 func (a *SecretAdapter) convertToYAML(data []byte) ([]byte, error) {
 	var importData ImportData
 	if err := json.Unmarshal(data, &importData); err != nil {
 		return nil, errors.Wrap(err, "unmarshal JSON")
 	}
-
-	var yamlBuilder strings.Builder
-
-	for _, secret := range importData.Secrets {
-		yamlBuilder.WriteString("- key: ")
-		yamlBuilder.WriteString(secret.Key)
-		yamlBuilder.WriteString("\n  value: ")
-		yamlBuilder.WriteString(secret.Value)
-
-		if secret.ExpiresAt != "" {
-			yamlBuilder.WriteString("\n  expires_at: ")
-			yamlBuilder.WriteString(secret.ExpiresAt)
-		}
-
-		yamlBuilder.WriteString("\n\n")
-	}
-
-	return []byte(yamlBuilder.String()), nil
+	return yaml.Marshal(&importData)
 }
 
 // convertToCSV converts JSON to CSV format.

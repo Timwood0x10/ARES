@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
@@ -61,6 +62,12 @@ type EvalGate struct {
 	// before the gate loop), so two concurrent Submits can run Check
 	// concurrently — a plain increment would be a data race.
 	skippedCount atomic.Int64
+	// runMu serializes the scoring section (beforeRun + suite execution).
+	// beforeRun pushes candidate state into the SHARED executor behind the
+	// runner; without serialization two concurrent Checks interleave their
+	// state pushes, and each candidate's suite run would score a MIX of
+	// both candidates' settings (REVIEW 3.4#9).
+	runMu sync.Mutex
 	// logger receives a structured warn on every skip so a
 	// misconfigured eval gate is operator-visible instead of a silent pass.
 	logger *slog.Logger
@@ -157,6 +164,12 @@ func (g *EvalGate) Check(ctx context.Context, cand *mutation.Strategy, _ *mutati
 		}
 		return true, 0, reason
 	}
+
+	// Serialize the scoring section: the beforeRun hook mutates the shared
+	// executor, so the push and the suite run it configures must stay in
+	// one critical section (see runMu).
+	g.runMu.Lock()
+	defer g.runMu.Unlock()
 
 	// Let the executor run the suite through THIS candidate (prompt template
 	// / params), so the score reflects the candidate rather than a fixed

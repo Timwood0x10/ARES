@@ -111,6 +111,11 @@ type EmbeddingFileConfig struct {
 // KnowledgeFileConfig controls retrieval chunking and similarity bounds. When
 // omitted, the sdk uses default retrieval parameters.
 type KnowledgeFileConfig struct {
+	// Enabled turns on the AKF Knowledge Fabric pipeline. Without it there
+	// was no YAML way to enable knowledge — WithKnowledgeConfig only tunes
+	// retrieval knobs and never sets the master switch, so a knowledge block
+	// in ares.yaml was silently inert.
+	Enabled      bool    `yaml:"enabled"`
 	ChunkSize    int     `yaml:"chunk_size"`
 	ChunkOverlap int     `yaml:"chunk_overlap"`
 	TopK         int     `yaml:"top_k"`
@@ -403,6 +408,13 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 		}
 	} else {
 		opts = append(opts, WithoutMemory())
+	}
+
+	// Knowledge master switch (optional). enabled: true is the YAML path to
+	// WithKnowledge — without it a knowledge block could only tune knobs
+	// while the pipeline stayed off.
+	if c.Knowledge.Enabled {
+		opts = append(opts, WithKnowledge())
 	}
 
 	// Knowledge (optional). Without chunk_size, sdk uses default retrieval.

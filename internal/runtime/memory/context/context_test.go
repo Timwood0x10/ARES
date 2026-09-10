@@ -125,42 +125,6 @@ func TestTaskMemoryTTL(t *testing.T) {
 	})
 }
 
-func TestCache(t *testing.T) {
-	t.Run("create cache", func(t *testing.T) {
-		cache := NewCache(100, time.Minute)
-
-		if cache == nil {
-			t.Errorf("cache should not be nil")
-		}
-	})
-
-	t.Run("set and get", func(t *testing.T) {
-		cache := NewCache(100, time.Minute)
-
-		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
-
-		val, exists := cache.Get(context.Background(), "key1")
-		if !exists {
-			t.Errorf("key should exist")
-		}
-		if val != "value1" {
-			t.Errorf("expected value1, got %v", val)
-		}
-	})
-
-	t.Run("delete", func(t *testing.T) {
-		cache := NewCache(100, time.Minute)
-		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
-
-		_ = cache.Delete(context.Background(), "key1") // Test operation, error ignored
-
-		_, exists := cache.Get(context.Background(), "key1")
-		if exists {
-			t.Errorf("key should not exist after delete")
-		}
-	})
-}
-
 // TestSessionMemory_ConcurrentGet tests that concurrent Get calls don't cause data races.
 func TestSessionMemory_ConcurrentGet(t *testing.T) {
 	sm := NewSessionMemory(100, 10*time.Second)

@@ -41,6 +41,12 @@ type PluginBus struct {
 	pluginTimeout time.Duration
 	logger        *slog.Logger
 	droppedEvents atomic.Int64
+	// stopDone is closed exactly once by Stop so every Subscribe cleanup
+	// goroutine can exit even when its caller's ctx is never cancelled
+	// (e.g. context.Background) — previously those goroutines leaked for
+	// the process lifetime after Stop.
+	stopDone chan struct{}
+	stopOnce sync.Once
 }
 
 // NewPluginBus creates a PluginBus with the given options.
@@ -49,6 +55,7 @@ func NewPluginBus(opts ...PluginBusOption) *PluginBus {
 		caps:          make(map[Capability][]RuntimePlugin),
 		pluginTimeout: defaultPluginTimeout,
 		logger:        slog.Default(),
+		stopDone:      make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -117,6 +124,10 @@ func (b *PluginBus) Start(ctx context.Context) error {
 func (b *PluginBus) Stop(ctx context.Context) error {
 	b.mu.Lock()
 	b.started = false
+	// Signal every Subscribe cleanup goroutine: they park on their caller's
+	// ctx OR this channel, so a subscriber whose ctx is never cancelled is
+	// still released at Stop instead of leaking for the process lifetime.
+	b.stopOnce.Do(func() { close(b.stopDone) })
 	// Clean up all subscribers to prevent leaked goroutines.
 	// Close subscriber channels and clear the slice so Emit (which still
 	// holds RLock) can no longer send to stale channels after Stop.
@@ -262,7 +273,13 @@ func (b *PluginBus) Subscribe(ctx context.Context, filter ares_events.EventFilte
 	b.mu.Unlock()
 
 	go func() {
-		<-ctx.Done()
+		// Exit when the caller's ctx dies OR the bus stops: Stop already
+		// removed every subscriber, so the not-found fall-through below is
+		// the normal exit on the stop path (no double close of ch).
+		select {
+		case <-ctx.Done():
+		case <-b.stopDone:
+		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		for i, s := range b.subscribers {

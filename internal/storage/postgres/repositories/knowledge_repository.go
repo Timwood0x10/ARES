@@ -82,7 +82,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -100,7 +100,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -121,7 +121,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -139,7 +139,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -266,34 +266,41 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 			INSERT INTO knowledge_chunks_1024
 			(%s)
 			VALUES %s
-			ON CONFLICT (content_hash) DO UPDATE SET
+			ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 				access_count = knowledge_chunks_1024.access_count + 1,
 				updated_at = NOW()
-			RETURNING id, content_hash`, columns, valuesClause.String())
+			RETURNING id, tenant_id, content_hash`, columns, valuesClause.String())
 
 		rows, qerr := tx.QueryContext(ctx, query, params...)
 		if qerr != nil {
 			return errors.Wrapf(qerr, "batch insert starting at %d", batchStart)
 		}
 
-		// Map returned IDs back to input chunks by content_hash.
-		idByHash := make(map[string]string, len(batch))
+		// Map returned IDs back to input chunks by (tenant_id, content_hash):
+		// with the per-tenant unique constraint two tenants in one batch can
+		// legitimately share a content_hash, and a hash-only map would assign
+		// one tenant's row id to the other's chunk.
+		type tenantHashKey struct {
+			tenantID string
+			hash     string
+		}
+		idByTenantHash := make(map[tenantHashKey]string, len(batch))
 		for rows.Next() {
-			var id, contentHash string
-			if err := rows.Scan(&id, &contentHash); err != nil {
+			var id, tenantID, contentHash string
+			if err := rows.Scan(&id, &tenantID, &contentHash); err != nil {
 				if err := rows.Close(); err != nil {
 					return errors.Wrap(err, "close rows")
 				}
 				return errors.Wrap(err, "scan returned id")
 			}
-			idByHash[contentHash] = id
+			idByTenantHash[tenantHashKey{tenantID: tenantID, hash: contentHash}] = id
 		}
 		if err := rows.Close(); err != nil {
 			return errors.Wrap(err, "close rows")
 		}
 
 		for j := batchStart; j < batchEnd; j++ {
-			if id, ok := idByHash[chunks[j].ContentHash]; ok {
+			if id, ok := idByTenantHash[tenantHashKey{tenantID: chunks[j].TenantID, hash: chunks[j].ContentHash}]; ok {
 				chunks[j].ID = id
 			}
 		}
@@ -555,6 +562,11 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 // tenantID - tenant identifier for isolation.
 // limit - maximum number of results to return.
 // Returns list of matching knowledge chunks ordered by relevance.
+//
+// No embedding_status filter here (unlike the vector path): keyword search
+// runs on the tsvector column and needs no vector, so filtering on
+// 'completed' hid never-embedded or failed-embedding chunks from lexical
+// recall for no reason.
 func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	sqlQuery := `
         SELECT id, tenant_id, content, embedding_model, embedding_version,
@@ -564,7 +576,6 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
         FROM knowledge_chunks_1024
         WHERE tsv @@ plainto_tsquery('simple', $1)
           AND tenant_id = $2
-          AND embedding_status = 'completed'
         ORDER BY ts_rank(tsv, plainto_tsquery('simple', $1)) DESC
         LIMIT $3
     `

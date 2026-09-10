@@ -147,6 +147,18 @@ func (s *PostgresStore) Query(ctx context.Context, filter Filter) ([]Evidence, e
 		args = append(args, filter.Until)
 		argID++
 	}
+	// Payload containment: pushed into SQL (like every other filter) so it
+	// composes with LIMIT — a client-side filter after LIMIT would silently
+	// shrink payload-scoped windows under multi-strategy traffic.
+	if len(filter.PayloadFilter) > 0 {
+		payloadJSON, err := json.Marshal(filter.PayloadFilter)
+		if err != nil {
+			return nil, fmt.Errorf("evidence: marshal payload filter: %w", err)
+		}
+		query += fmt.Sprintf(" AND payload @> $%d::jsonb", argID)
+		args = append(args, string(payloadJSON))
+		argID++
+	}
 	// Honor the TTL retention — a record whose (ts + ttl) has passed is
 	// expired and must not be queryable (zero TTL = no expiry). Filtering in
 	// SQL keeps the ORDER BY ts DESC / LIMIT semantics on the live set.

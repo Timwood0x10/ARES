@@ -52,19 +52,24 @@ const (
 // per-node choice is actually observable by the executor. The node keys
 // (tools/budget/prior) are promoted verbatim from the payload — the executor
 // decides how to interpret each (schema filter / budget gate / prompt hint).
+//
+// The caller's map is NEVER mutated: the merge happens on a fresh map, so a
+// shared active-strategy Params (read by many tasks concurrently) cannot be
+// corrupted by one node's overlay.
 func MergeNodeParams(params map[string]any, payload map[string]any) map[string]any {
-	if params == nil {
-		params = map[string]any{}
+	merged := make(map[string]any, len(params)+3)
+	for k, v := range params {
+		merged[k] = v
 	}
 	if payload == nil {
-		return params
+		return merged
 	}
 	for _, key := range []string{ParamKeyTools, ParamKeyBudget, ParamKeyPrior} {
 		if v, ok := payload[key]; ok {
-			params[key] = v
+			merged[key] = v
 		}
 	}
-	return params
+	return merged
 }
 
 // ToolNamesFromParams is the SINGLE parser for the Params["tools"] whitelist

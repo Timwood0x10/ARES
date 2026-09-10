@@ -155,6 +155,14 @@ type EvolutionGuardrails struct {
 
 	// eventHandler is called on each guardrail event (optional).
 	eventHandler GuardrailEventHandler
+
+	// failClosed makes every check unconditionally block. It is set only by
+	// NewFailClosedGuardrails (construction-failure fallback) and can never be
+	// cleared: the safety net must be immune to Reset() and option wiring.
+	// Without it the "fail-closed" guard was just a normal guardrail with
+	// aggressive thresholds — a healthy first cycle (no stagnation yet, no
+	// baseline regression) sailed through, which is fail-OPEN.
+	failClosed bool
 }
 
 // GuardrailOption configures EvolutionGuardrails.
@@ -233,12 +241,21 @@ func WithGuardrailEventHandler(handler GuardrailEventHandler) GuardrailOption {
 
 // NewEvolutionGuardrails creates a new guardrail checker.
 //
+// Invalid option values return an error instead of being silently treated as
+// "disabled": a mistyped YAML value (e.g. max_lineage_share: -1) previously
+// degraded the guardrail into a no-op with no signal. Callers treat the error
+// as construction failure and fail closed (bootstrap swaps in
+// NewFailClosedGuardrails; the service layer aborts), so this is what makes
+// the err-branch of the fail-closed safety net reachable at all.
+//
 // Args:
-//   - opts: configuration options for the guardrail checker
+//
+//	opts: configuration options for the guardrail checker
 //
 // Returns:
-//   - *EvolutionGuardrails: configured guardrail instance
-//   - error: always nil (reserved for future validation)
+//
+//	*EvolutionGuardrails: configured guardrail instance
+//	error: non-nil when an option value is out of range
 func NewEvolutionGuardrails(opts ...GuardrailOption) (*EvolutionGuardrails, error) {
 	g := &EvolutionGuardrails{
 		BaselineScore:          0,
@@ -250,7 +267,35 @@ func NewEvolutionGuardrails(opts ...GuardrailOption) (*EvolutionGuardrails, erro
 	for _, opt := range opts {
 		opt(g)
 	}
+	if g.MaxStagnantGenerations < 0 {
+		return nil, fmt.Errorf("guardrails: MaxStagnantGenerations must be >= 0 (got %d); 0 disables the check", g.MaxStagnantGenerations)
+	}
+	if g.MaxLineageShare < 0 || g.MaxLineageShare > 1 {
+		return nil, fmt.Errorf("guardrails: MaxLineageShare must be within [0,1] (got %f); 0 disables the check", g.MaxLineageShare)
+	}
+	if g.MaxEvents < 0 {
+		return nil, fmt.Errorf("guardrails: MaxEvents must be >= 0 (got %d); 0 means unlimited", g.MaxEvents)
+	}
+	if g.MaxToolsEnabled < 0 {
+		return nil, fmt.Errorf("guardrails: MaxToolsEnabled must be >= 0 (got %d); 0 disables the bound", g.MaxToolsEnabled)
+	}
 	return g, nil
+}
+
+// failClosedEvent builds the guardrail event emitted when a fail-closed
+// guardrail blocks a check: construction failed, so the reason is the
+// construction error code, not any population signal.
+func failClosedEvent(currentBest float64, generation int) GuardrailEvent {
+	return GuardrailEvent{
+		Level:           GuardrailCritical,
+		Rule:            "construction_failed",
+		ErrorCode:       failClosedCode,
+		Message:         "guardrail construction failed; evolution blocked (fail-closed)",
+		Score:           currentBest,
+		Generation:      generation,
+		Timestamp:       time.Now(),
+		SuggestedAction: "fix the evolution guardrails configuration and restart",
+	}
 }
 
 // PreEvolveCheck runs guardrails BEFORE an evolution cycle.
@@ -269,6 +314,13 @@ func NewEvolutionGuardrails(opts ...GuardrailOption) (*EvolutionGuardrails, erro
 // Returns:
 //   - *GuardrailResult: result containing any triggered guardrails and stop recommendation
 func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest float64, generation int, totalPop, unevaluatedCount int) *GuardrailResult {
+	result := g.preEvolveCheckLocked(ctx, currentBest, generation, totalPop, unevaluatedCount)
+	// Handlers run OUTSIDE the lock (see dispatchEvents).
+	g.dispatchEvents(result.Events)
+	return result
+}
+
+func (g *EvolutionGuardrails) preEvolveCheckLocked(ctx context.Context, currentBest float64, generation int, totalPop, unevaluatedCount int) *GuardrailResult {
 	result := &GuardrailResult{
 		ShouldStop: false,
 		Events:     []GuardrailEvent{},
@@ -276,6 +328,22 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	// Fail-closed mode: construction failed, so no population signal can be
+	// trusted — block unconditionally instead of running the (unconfigured)
+	// checks and passing a healthy-looking first cycle.
+	if g.failClosed {
+		event := failClosedEvent(currentBest, generation)
+		log.Warn("guardrail: fail-closed mode, blocking evolution cycle",
+			"code", failClosedCode,
+			"score", currentBest,
+			"generation", generation,
+		)
+		result.Events = append(result.Events, event)
+		result.ShouldStop = true
+		g.recordEventLocked(event)
+		return result
+	}
 
 	// Check 1: Unevaluated population guardrail
 	if totalPop > 0 {
@@ -359,6 +427,13 @@ func (g *EvolutionGuardrails) PostEvolveCheckForSource(ctx context.Context, sour
 }
 
 func (g *EvolutionGuardrails) postEvolveCheckForSource(ctx context.Context, source string, newBest float64, generation int, lineageShares map[string]int) *GuardrailResult {
+	result := g.postEvolveCheckLocked(ctx, source, newBest, generation, lineageShares)
+	// Handlers run OUTSIDE the lock (see dispatchEvents).
+	g.dispatchEvents(result.Events)
+	return result
+}
+
+func (g *EvolutionGuardrails) postEvolveCheckLocked(ctx context.Context, source string, newBest float64, generation int, lineageShares map[string]int) *GuardrailResult {
 	result := &GuardrailResult{
 		ShouldStop: false,
 		Events:     []GuardrailEvent{},
@@ -366,6 +441,20 @@ func (g *EvolutionGuardrails) postEvolveCheckForSource(ctx context.Context, sour
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	// Fail-closed mode: block every post-cycle check too (see PreEvolveCheck).
+	if g.failClosed {
+		event := failClosedEvent(newBest, generation)
+		log.Warn("guardrail: fail-closed mode, blocking post-evolve check",
+			"code", failClosedCode,
+			"score", newBest,
+			"generation", generation,
+		)
+		result.Events = append(result.Events, event)
+		result.ShouldStop = true
+		g.recordEventLocked(event)
+		return result
+	}
 
 	bestKnown := g.bestBySource[source]
 
@@ -466,8 +555,10 @@ func (g *EvolutionGuardrails) postEvolveCheckForSource(ctx context.Context, sour
 //   - event: the guardrail event to record
 func (g *EvolutionGuardrails) RecordEvent(event GuardrailEvent) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.recordEventLocked(event)
+	g.mu.Unlock()
+	// Handler runs OUTSIDE the lock (see dispatchEvents).
+	g.dispatchEvents([]GuardrailEvent{event})
 }
 
 // ValidateToolSet checks an evolved tool whitelist against the tool-set
@@ -486,10 +577,26 @@ func (g *EvolutionGuardrails) ValidateToolSet(generation int, tools []string) *G
 	result := &GuardrailResult{ShouldStop: false, Events: []GuardrailEvent{}}
 
 	g.mu.RLock()
+	failClosed := g.failClosed
 	maxTools := g.MaxToolsEnabled
 	requireAny := g.requireAnyTool
 	known := g.knownTools
 	g.mu.RUnlock()
+
+	// Fail-closed mode: an unconstructed guardrail cannot validate a tool
+	// set either — rejecting keeps promotion from routing around the net.
+	if failClosed {
+		event := failClosedEvent(0, generation)
+		log.Warn("guardrail: fail-closed mode, rejecting tool set",
+			"code", failClosedCode,
+			"generation", generation,
+			"tool_count", len(tools),
+		)
+		result.Events = append(result.Events, event)
+		result.ShouldStop = true
+		g.RecordEvent(event)
+		return result
+	}
 
 	if maxTools > 0 && len(tools) > maxTools {
 		event := GuardrailEvent{
@@ -570,17 +677,28 @@ func (g *EvolutionGuardrails) ValidateToolSet(generation int, tools []string) *G
 	return result
 }
 
-// recordEventLocked stores an event and invokes the handler if set.
-// Caller must hold lock.
+// recordEventLocked stores an event. Caller must hold the lock; the event
+// handler is NOT invoked here — dispatchEvents runs it outside the lock so
+// a handler that calls back into the guardrails (Events/RecordEvent/...)
+// cannot self-deadlock on the non-reentrant RWMutex (REVIEW 3.4#4).
 func (g *EvolutionGuardrails) recordEventLocked(event GuardrailEvent) {
 	g.events = append(g.events, event)
 	// Enforce MaxEvents limit.
 	if g.MaxEvents > 0 && len(g.events) > g.MaxEvents {
 		g.events = g.events[len(g.events)-g.MaxEvents:]
 	}
-	// Invoke post-action handler if configured.
-	if g.eventHandler != nil {
-		g.eventHandler(event)
+}
+
+// dispatchEvents invokes the configured event handler for each event. It
+// must be called WITHOUT holding g.mu: the handler is wired only at
+// construction (option-based, never mutated afterwards), so reading it
+// unlocked is safe.
+func (g *EvolutionGuardrails) dispatchEvents(events []GuardrailEvent) {
+	if g.eventHandler == nil {
+		return
+	}
+	for _, ev := range events {
+		g.eventHandler(ev)
 	}
 }
 
@@ -634,7 +752,10 @@ func (g *EvolutionGuardrails) ToGuardrailError(event GuardrailEvent) *GuardrailE
 	}
 }
 
-// Reset clears stagnation counters and events.
+// Reset clears stagnation counters and events. It deliberately does NOT
+// clear failClosed: a guardrail that failed to construct must stay blocked
+// until the process is reconfigured and restarted — a Reset call from a
+// watch loop must not open the safety net.
 func (g *EvolutionGuardrails) Reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

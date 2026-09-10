@@ -129,6 +129,15 @@ func isDuplicateColumnError(err error) bool {
 	return strings.Contains(err.Error(), "duplicate column")
 }
 
+// escapeLike escapes LIKE wildcard characters (% and _) and the escape
+// character itself so a tag is matched literally as a delimited token.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 // Save upserts the given knowledge objects.
 func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject) error {
 	for _, obj := range objects {
@@ -231,10 +240,14 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 		conditions = append(conditions, fmt.Sprintf("type IN (%s)", strings.Join(placeholders, ",")))
 	}
 	if len(q.Tags) > 0 {
+		// Exact tag matching against the comma-joined tags column: the old
+		// bare `tags LIKE '%tag%'` substring match made a query for tag "a"
+		// hit rows tagged "ab" or "ac". Wrapping both sides in commas makes
+		// each tag a delimited token; ESCAPE handles tags containing % or _.
 		tagConditions := make([]string, len(q.Tags))
 		for i, tag := range q.Tags {
-			tagConditions[i] = "tags LIKE ?"
-			args = append(args, "%"+tag+"%")
+			tagConditions[i] = "(',' || tags || ',') LIKE ? ESCAPE '\\'"
+			args = append(args, "%,"+escapeLike(tag)+",%")
 		}
 		conditions = append(conditions, "("+strings.Join(tagConditions, " OR ")+")")
 	}

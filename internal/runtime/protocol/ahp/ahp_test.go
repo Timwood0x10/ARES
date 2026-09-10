@@ -590,6 +590,45 @@ func TestQueueMethods(t *testing.T) {
 		}
 	})
 
+	t.Run("peek preserves order", func(t *testing.T) {
+		// Peek must be non-destructive AND order-preserving: the old
+		// write-back-to-channel implementation rotated the queue on every
+		// Peek (head became tail), so the next Dequeue returned the wrong
+		// message (REVIEW 3.9).
+		queue := NewMessageQueue("agent1", &QueueOptions{MaxSize: 10})
+		first := NewMessage(AHPMethodTask, "leader", "sub1", "task1", "session1")
+		second := NewMessage(AHPMethodTask, "leader", "sub1", "task2", "session1")
+		third := NewMessage(AHPMethodTask, "leader", "sub1", "task3", "session1")
+		for _, m := range []*AHPMessage{first, second, third} {
+			if err := queue.Enqueue(context.Background(), m); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+		}
+
+		// Repeated Peek must always surface the head, never rotate.
+		for i := 0; i < 3; i++ {
+			peeked, err := queue.Peek()
+			if err != nil {
+				t.Fatalf("peek %d: %v", i, err)
+			}
+			if peeked.MessageID != first.MessageID {
+				t.Fatalf("peek %d rotated the queue: got %s, want %s",
+					i, peeked.MessageID, first.MessageID)
+			}
+		}
+
+		// Dequeue must deliver in insertion order.
+		for i, want := range []*AHPMessage{first, second, third} {
+			got, err := queue.Dequeue(context.Background())
+			if err != nil {
+				t.Fatalf("dequeue %d: %v", i, err)
+			}
+			if got.MessageID != want.MessageID {
+				t.Fatalf("dequeue %d: got %s, want %s", i, got.MessageID, want.MessageID)
+			}
+		}
+	})
+
 	t.Run("capacity", func(t *testing.T) {
 		queue := NewMessageQueue("agent1", &QueueOptions{MaxSize: 10})
 

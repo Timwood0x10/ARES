@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
 )
@@ -58,6 +59,11 @@ func cloneStepForSnapshot(s *Step) *Step {
 // stable, so the runtime manager, WorkflowGenome and the other executors all
 // observe the restored graph).
 type DAGPatchExecutor struct {
+	// mu guards the dag pointer: SetDAG rebinds the executor to a new live
+	// DAG after registration (bootstrap), possibly while patches from the
+	// evolution loop apply concurrently — an unlocked pointer swap was a
+	// data race with every Apply/Snapshot/Restore read.
+	mu  sync.RWMutex
 	dag *MutableDAG
 }
 
@@ -73,18 +79,32 @@ func (e *DAGPatchExecutor) Name() string { return "workflow.dag" }
 
 // SetDAG rebinds the executor to a (possibly new) live DAG.
 func (e *DAGPatchExecutor) SetDAG(dag *MutableDAG) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.dag = dag
 }
 
 // DAG returns the currently bound DAG.
-func (e *DAGPatchExecutor) DAG() *MutableDAG { return e.dag }
+func (e *DAGPatchExecutor) DAG() *MutableDAG {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dag
+}
+
+// currentDAG returns the bound DAG under the read lock.
+func (e *DAGPatchExecutor) currentDAG() *MutableDAG {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dag
+}
 
 // Snapshot deep-copies the live DAG's steps. Implemented as patch.Restorable.
 func (e *DAGPatchExecutor) Snapshot(_ context.Context) (any, error) {
-	if e.dag == nil {
+	dag := e.currentDAG()
+	if dag == nil {
 		return nil, errors.New("workflow.dag: dag is nil")
 	}
-	steps := e.dag.Steps()
+	steps := dag.Steps()
 	snap := &DAGSnapshot{Steps: make([]*Step, 0, len(steps))}
 	for _, s := range steps {
 		snap.Steps = append(snap.Steps, cloneStepForSnapshot(s))
@@ -94,14 +114,15 @@ func (e *DAGPatchExecutor) Snapshot(_ context.Context) (any, error) {
 
 // Restore reverts the live DAG to a previously captured snapshot.
 func (e *DAGPatchExecutor) Restore(_ context.Context, snap any) error {
-	if e.dag == nil {
+	dag := e.currentDAG()
+	if dag == nil {
 		return errors.New("workflow.dag: dag is nil")
 	}
 	s, ok := snap.(*DAGSnapshot)
 	if !ok {
 		return fmt.Errorf("workflow.dag restore: unsupported snapshot type %T", snap)
 	}
-	return e.dag.ResetFromSteps(s.Steps)
+	return dag.ResetFromSteps(s.Steps)
 }
 
 // CanApply reports which structure patch types this executor accepts.
@@ -117,7 +138,8 @@ func (e *DAGPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) err
 
 // Apply mutates the live DAG and returns an inverse patch for rollback.
 func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
-	if e.dag == nil {
+	dag := e.currentDAG()
+	if dag == nil {
 		return nil, errors.New("workflow.dag: dag is nil")
 	}
 
@@ -128,13 +150,13 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 			return nil, fmt.Errorf("workflow.dag insert %q: %w", p.Target, err)
 		}
 		step.ID = p.Target
-		if err := e.dag.AddNode(ctx, step); err != nil {
+		if err := dag.AddNode(ctx, step); err != nil {
 			return nil, fmt.Errorf("workflow.dag insert %q: %w", p.Target, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchRemoveNode, Target: p.Target}, nil
 
 	case patch.PatchRemoveNode:
-		if err := e.dag.RemoveNode(ctx, p.Target); err != nil {
+		if err := dag.RemoveNode(ctx, p.Target); err != nil {
 			return nil, fmt.Errorf("workflow.dag remove %q: %w", p.Target, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchInsertNode, Target: p.Target}, nil
@@ -145,10 +167,10 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 			return nil, fmt.Errorf("workflow.dag replace %q: %w", p.Target, err)
 		}
 		var oldStep *Step
-		if cur, ok := e.dag.StepIndex()[p.Target]; ok && cur != nil {
+		if cur, ok := dag.StepIndex()[p.Target]; ok && cur != nil {
 			oldStep = cloneStepForSnapshot(cur)
 		}
-		if err := e.dag.ReplaceNode(ctx, p.Target, step); err != nil {
+		if err := dag.ReplaceNode(ctx, p.Target, step); err != nil {
 			return nil, fmt.Errorf("workflow.dag replace %q: %w", p.Target, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchReplaceNode, Target: p.Target, Value: oldStep}, nil
@@ -166,10 +188,10 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 			return nil, fmt.Errorf("workflow.dag set-node-metadata %q: value %T is not a metadata map", p.Target, p.Value)
 		}
 		var old *Step
-		if cur, ok := e.dag.StepIndex()[p.Target]; ok && cur != nil {
+		if cur, ok := dag.StepIndex()[p.Target]; ok && cur != nil {
 			old = cloneStepForSnapshot(cur)
 		}
-		if err := e.dag.SetNodeMetadata(p.Target, md); err != nil {
+		if err := dag.SetNodeMetadata(p.Target, md); err != nil {
 			return nil, fmt.Errorf("workflow.dag set-node-metadata %q: %w", p.Target, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchSetNodeMetadata, Target: p.Target, Value: old}, nil
@@ -179,7 +201,7 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 		if !ok {
 			return nil, fmt.Errorf("workflow.dag add-edge %q: value %v is not a target node ID", p.Target, p.Value)
 		}
-		if err := e.dag.AddEdge(ctx, p.Target, to); err != nil {
+		if err := dag.AddEdge(ctx, p.Target, to); err != nil {
 			return nil, fmt.Errorf("workflow.dag add-edge %q->%q: %w", p.Target, to, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchRemoveEdge, Target: p.Target, Value: to}, nil
@@ -189,7 +211,7 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 		if !ok {
 			return nil, fmt.Errorf("workflow.dag remove-edge %q: value %v is not a target node ID", p.Target, p.Value)
 		}
-		if err := e.dag.RemoveEdge(ctx, p.Target, to); err != nil {
+		if err := dag.RemoveEdge(ctx, p.Target, to); err != nil {
 			return nil, fmt.Errorf("workflow.dag remove-edge %q->%q: %w", p.Target, to, err)
 		}
 		return &patch.RuntimePatch{Type: patch.PatchAddEdge, Target: p.Target, Value: to}, nil

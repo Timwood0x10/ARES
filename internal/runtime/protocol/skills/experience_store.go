@@ -71,11 +71,27 @@ func (s *JSONExperienceStore) Save(ctx context.Context, records []ExperienceReco
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("ares_skills: mkdir experience store: %w", err)
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// A UNIQUE temp file per Save (os.CreateTemp): the previous fixed
+	// "<path>.tmp" name made two concurrent Save calls on the same store
+	// write/truncate/rename ONE shared temp file — the loser's rename
+	// could commit a torn mixture of both record sets.
+	dir, base := filepath.Split(s.path)
+	f, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("ares_skills: create experience store temp: %w", err)
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("ares_skills: write experience store: %w", err)
 	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("ares_skills: close experience store temp: %w", err)
+	}
 	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("ares_skills: commit experience store: %w", err)
 	}
 	return nil

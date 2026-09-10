@@ -245,3 +245,50 @@ func TestConcurrentRequestsAreSafe(t *testing.T) {
 		t.Fatalf("want 10 requests, got %d", len(recv.messages))
 	}
 }
+
+// slowFailingHandler sleeps past the request timeout, then returns an error.
+type slowFailingHandler struct {
+	delay time.Duration
+}
+
+func (h *slowFailingHandler) handle(ctx context.Context, _ *Message) (*Message, error) {
+	select {
+	case <-time.After(h.delay):
+		return nil, errors.New("late failure")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestRequestTimeoutThenLateHandlerErrorNoLeak locks REVIEW 2.7#37: when a
+// request times out and its pending entry is removed, a handler that fails
+// AFTERWARD must not re-insert a pendingErr entry — nothing will ever pop
+// it, so every such interleaving leaked one map slot (plus the error value)
+// for the lifetime of the bus.
+func TestRequestTimeoutThenLateHandlerErrorNoLeak(t *testing.T) {
+	bus := NewBus()
+	if err := bus.Register("slow", (&slowFailingHandler{delay: 150 * time.Millisecond}).handle); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Time out fast; the handler goroutine is still parked in its sleep.
+	_, err := bus.Request(context.Background(), "a", "slow", "t", nil, 30*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("want ErrTimeout, got %v", err)
+	}
+
+	// Wait until the handler has definitely returned its late error.
+	time.Sleep(250 * time.Millisecond)
+
+	bus.mu.RLock()
+	pendingLen := len(bus.pending)
+	pendingErrLen := len(bus.pendingErr)
+	bus.mu.RUnlock()
+
+	if pendingLen != 0 {
+		t.Errorf("pending map leaked %d entry(ies) after timeout", pendingLen)
+	}
+	if pendingErrLen != 0 {
+		t.Errorf("pendingErr map leaked %d entry(ies) after late handler error (want 0)", pendingErrLen)
+	}
+}

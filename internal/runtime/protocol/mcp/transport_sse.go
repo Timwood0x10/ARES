@@ -47,7 +47,11 @@ type SSETransport struct {
 	mu         sync.Mutex
 	started    bool
 	postURL    string
-	respBody   io.Closer // closed by Close() to interrupt blocking read in receiveLoop
+	// ready carries the handshake outcome exactly once (guarded by
+	// readyOnce) so Start can block until the SSE connection is actually
+	// established instead of returning while the dial is still in flight.
+	ready     chan error
+	readyOnce sync.Once
 }
 
 // NewSSETransport creates a new SSE transport with the given config.
@@ -73,24 +77,37 @@ func NewSSETransport(config SSEConfig) *SSETransport {
 		},
 		msgCh:   make(chan *JSONRPCMessage, defaultSSEMessageBuffer),
 		postURL: config.URL, // Set default POST URL; may be overridden by "endpoint" SSE event.
+		ready:   make(chan error, 1),
 	}
 }
 
+// signalHandshake reports the connection outcome to a Start caller exactly
+// once: nil once the SSE stream is live, or the handshake error.
+func (t *SSETransport) signalHandshake(err error) {
+	t.readyOnce.Do(func() { t.ready <- err })
+}
+
 // Start connects to the SSE endpoint and begins listening for messages.
+// It blocks until the SSE connection is established (or the handshake
+// fails) so a caller that immediately Send/Receive after Start does not
+// race the in-flight dial — the old fire-and-forget return made a
+// connection-refused surface as a later, confusing receive error.
 func (t *SSETransport) Start(ctx context.Context) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	if t.started {
+		t.mu.Unlock()
 		return errors.New("transport already started")
 	}
 
 	if t.config.URL == "" {
+		t.mu.Unlock()
 		return errors.New("sse url is required")
 	}
 
 	ctx, t.cancel = context.WithCancel(ctx)
 	t.started = true
+	t.mu.Unlock()
 
 	// Connect to SSE endpoint and start receiving messages.
 	t.eg.Go(func() error {
@@ -99,13 +116,19 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return err
 	})
 
-	return nil
+	select {
+	case err := <-t.ready:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // receiveLoop connects to the SSE endpoint and reads events.
 func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.config.URL, nil)
 	if err != nil {
+		t.signalHandshake(fmt.Errorf("create sse request: %w", err))
 		return fmt.Errorf("create sse request: %w", err)
 	}
 
@@ -117,20 +140,25 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
+		t.signalHandshake(fmt.Errorf("sse connect: %w", err))
 		return fmt.Errorf("sse connect: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		if err := resp.Body.Close(); err != nil {
-			return fmt.Errorf("sse endpoint returned status %d: %w", resp.StatusCode, err)
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.signalHandshake(fmt.Errorf("sse endpoint returned status %d: %w", resp.StatusCode, cerr))
+			return fmt.Errorf("sse endpoint returned status %d: %w", resp.StatusCode, cerr)
 		}
 
+		t.signalHandshake(fmt.Errorf("sse endpoint returned status %d", resp.StatusCode))
 		return fmt.Errorf("sse endpoint returned status %d", resp.StatusCode)
 	}
 
-	t.mu.Lock()
-	t.respBody = resp.Body
-	t.mu.Unlock()
+	// respBody is NOT stored: Close() interrupts the receive loop via ctx
+	// cancellation and the loop's deferred resp.Body.Close() releases the
+	// resource (storing it for Close was dead code — nothing ever read it).
+	// Connection live: release the Start caller.
+	t.signalHandshake(nil)
 
 	// Ensure body is closed exactly once when receiveLoop returns.
 	// Close() now only cancels the context (no direct Body close),

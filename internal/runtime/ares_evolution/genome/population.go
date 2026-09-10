@@ -72,14 +72,16 @@ type Population struct {
 	recoveryActions map[string]int
 
 	// history stores per-generation stats snapshots for trajectory reporting.
-	// When HistoryEnabled is true, each evolution cycle appends a snapshot.
+	// Each evolution cycle appends a snapshot when history recording is
+	// enabled via WithHistoryEnabled (there is no HistoryEnabled bool field —
+	// a positive HistoryMaxSize IS the switch; see population_options.go).
 	history []GenerationHistoryEntry
 
 	// HistoryMaxSize limits the number of historical entries stored.
 	// When set to a positive value, older entries are trimmed when the limit
 	// is exceeded. When set to 0, entries are recorded without limit.
-	// Default: HistoryEnabled = false, so history is not recorded unless
-	// explicitly enabled (see WithHistory).
+	// Default: 0 with no WithHistoryEnabled option, so history is not
+	// recorded unless explicitly enabled.
 	HistoryMaxSize int
 }
 
@@ -855,6 +857,18 @@ func (p *Population) BestEverGeneration() int {
 		return 0
 	}
 	return p.bestEverGeneration
+}
+
+// BestEverID returns the ID of the best-ever strategy, or "" if no strategy
+// has been evaluated. Callers that need the PRE-cycle best-ever must capture
+// it before ScoreAgents/Evolve — those calls can promote a new bestEver.
+func (p *Population) BestEverID() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.bestEver == nil {
+		return ""
+	}
+	return p.bestEver.ID
 }
 
 // Stats returns population statistics for the current generation.

@@ -94,16 +94,11 @@ func (w *skillOutcomeWriter) start(ctx context.Context) error {
 }
 
 // consume reads events and records outcomes until ctx is done or the
-// channel closes. A panic in one record is recovered so a malformed event
-// can never take the consumer down (production background goroutines must
-// not die silently or take the process down on a bug).
+// channel closes. A panic in one record is recovered AT THE EVENT LEVEL
+// (consumeOneRecovered): a malformed event kills only its own record and the
+// consumer keeps serving subsequent events — a loop-level recover would
+// permanently stop outcome recording on the first bad event.
 func (w *skillOutcomeWriter) consume(ctx context.Context, ch <-chan *ares_events.Event) {
-	defer func() {
-		if r := recover(); r != nil {
-			w.logger.Error("skill outcome writer: consumer panicked",
-				"panic", fmt.Sprintf("%v", r))
-		}
-	}()
 	for {
 		select {
 		case ev, ok := <-ch:
@@ -113,11 +108,24 @@ func (w *skillOutcomeWriter) consume(ctx context.Context, ch <-chan *ares_events
 			if ev == nil {
 				continue
 			}
-			w.consumeOne(ev)
+			w.consumeOneRecovered(ev)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// consumeOneRecovered runs consumeOne with a per-event panic boundary,
+// logging and skipping the offending event instead of letting the panic
+// unwind the consumer loop for good.
+func (w *skillOutcomeWriter) consumeOneRecovered(ev *ares_events.Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("skill outcome writer: record panicked; event skipped",
+				"event_id", ev.ID, "panic", fmt.Sprintf("%v", r))
+		}
+	}()
+	w.consumeOne(ev)
 }
 
 // consumeOne records a single terminal outcome. Events without a capability

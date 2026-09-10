@@ -116,10 +116,17 @@ func (g *L2Graph) PlanDepth() int {
 	return depth
 }
 
-// Predecessor returns the direct predecessor node ID of the given node, or
-// "" when the node has no predecessor or is not in the graph. The planner
-// uses this to walk the dependency path when assembling LLM context from
-// predecessor outputs.
+// Predecessor returns the FIRST direct predecessor node ID of the given
+// node, or "" when the node has no predecessor or is not in the graph. The
+// planner uses this to walk the dependency path when assembling LLM context
+// from predecessor outputs.
+//
+// KNOWN LIMITATION: only DependsOn[0] is returned. A node with multiple
+// dependencies contributes ONLY its first one to the planner's context walk
+// (planner_cognition.go), so sibling dependency outputs are silently absent
+// from the LLM's history. Accepted while plans are mostly linear chains.
+// TODO(tech-debt): walk ALL DependsOn edges (BFS, newest-per-level) so a
+// diamond dependency's outputs are not dropped.
 func (g *L2Graph) Predecessor(nodeID string) string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -140,6 +147,31 @@ func (g *L2Graph) HasNode(nodeID string) bool {
 	steps := g.dag.StepIndex()
 	_, ok := steps[nodeID]
 	return ok
+}
+
+// AncestorPlanCount walks the predecessor chain from nodeID to the root and
+// counts PLAN nodes on the way. It is the STABLE derivation of a plan task's
+// own round: unlike PlanDepth (which counts every plan node in the graph),
+// the ancestor count of a given plan node never changes when a LATER round
+// grows — which is what makes re-executed plan quanta (fabric retry, lease
+// expiry after the graph already advanced) derive the SAME growth round as
+// their first execution.
+func (g *L2Graph) AncestorPlanCount(nodeID string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	steps := g.dag.StepIndex()
+	count := 0
+	for id := nodeID; id != "" && id != g.root; {
+		s, ok := steps[id]
+		if !ok || len(s.DependsOn) == 0 {
+			break
+		}
+		id = s.DependsOn[0]
+		if s, ok := steps[id]; ok && s.AgentType == planAgentType {
+			count++
+		}
+	}
+	return count
 }
 
 // CountToolClass counts how many L2 tool-instance nodes of the given tool

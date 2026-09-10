@@ -137,6 +137,17 @@ func (s *AKFService) Tools() []Tool {
 	}
 }
 
+// runtimeOrErr returns the shared KnowledgeRuntime, or an error when the
+// service was constructed without one. NewAKFServiceWithStore documents that
+// rt may be nil (tool-only tests); the handlers that need it must degrade to
+// an error instead of panicking on a nil receiver.
+func (s *AKFService) runtimeOrErr() (*runtime.KnowledgeRuntime, error) {
+	if s == nil || s.Runtime == nil {
+		return nil, errors.New("akf service: runtime is nil")
+	}
+	return s.Runtime, nil
+}
+
 // handleBuildGraph executes the AKF pipeline and returns the raw graph.
 func (s *AKFService) handleBuildGraph(ctx context.Context, input string) (string, error) {
 	var params buildGraphParams
@@ -153,13 +164,18 @@ func (s *AKFService) handleBuildGraph(ctx context.Context, input string) (string
 		params.ForGraph = 1000
 	}
 
+	rt, err := s.runtimeOrErr()
+	if err != nil {
+		return "", err
+	}
+
 	budget := knowledge.TokenBudget{
 		MaxTokens: params.MaxTokens,
 		ForGraph:  params.ForGraph,
 		Reserved:  params.MaxTokens - params.ForGraph,
 	}
 
-	graph, err := s.Runtime.Execute(ctx, params.Goal, budget, nil)
+	graph, err := rt.Execute(ctx, params.Goal, budget, nil)
 	if err != nil {
 		return "", fmt.Errorf("build graph: %w", err)
 	}
@@ -190,13 +206,18 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 		params.ForGraph = 3000
 	}
 
+	rt, err := s.runtimeOrErr()
+	if err != nil {
+		return "", err
+	}
+
 	budget := knowledge.TokenBudget{
 		MaxTokens: params.MaxTokens,
 		ForGraph:  params.ForGraph,
 		Reserved:  params.MaxTokens - params.ForGraph,
 	}
 
-	graph, err := s.Runtime.Execute(ctx, params.Goal, budget, nil)
+	graph, err := rt.Execute(ctx, params.Goal, budget, nil)
 	if err != nil {
 		return "", fmt.Errorf("build graph: %w", err)
 	}
@@ -337,7 +358,12 @@ func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (st
 		goal = "query"
 	}
 
-	graph, err := s.Runtime.Execute(ctx, goal, budget, nil)
+	rt, err := s.runtimeOrErr()
+	if err != nil {
+		return "", err
+	}
+
+	graph, err := rt.Execute(ctx, goal, budget, nil)
 	if err != nil {
 		return "", fmt.Errorf("query: %w", err)
 	}

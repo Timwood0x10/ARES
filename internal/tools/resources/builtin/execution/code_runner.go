@@ -18,19 +18,28 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// CodeRunner provides code execution capabilities with sandbox constraints.
+// CodeRunner provides code execution capabilities with validator gating.
 //
-// SECURITY: This tool executes code on the host system. Python is disabled by
-// default. Operators must explicitly enable it via EnablePython(true) after
-// reviewing the sandbox constraints. The allowlist mode is the primary defense
-// — only the modules listed in allowedImports are permitted.
+// SECURITY MODEL (read before enabling Python):
+//
+// This tool executes code ON THE HOST with NO OS-level isolation — no
+// container, no seccomp, no user separation. It is DISABLED by default;
+// operators must explicitly opt in via EnablePython(true).
+//
+// The import allowlist and the dangerous-pattern denylist are
+// mistake-prevention ("防误不防恶"), NOT a security boundary: they stop a
+// cooperative model from accidentally calling open()/exec, but a determined
+// adversary can bypass any regex-based validator (encoding tricks, attribute
+// chains, C-level escapes). Treat enabled Python as REMOTE CODE EXECUTION by
+// whoever controls the prompt. Real isolation requires OS-level sandboxing
+// (containers/seccomp/VM), which this tool does not provide — until such a
+// runner exists, EnablePython(true) is only acceptable on throwaway hosts.
 //
 // JavaScript execution is intentionally NOT supported: the Python-oriented
-// validator (import allowlist + dangerous-pattern scan) does not understand
-// CommonJS `require`, so enabling node -e would hand the model an unsandboxed
-// shell (require('child_process')). Re-introduce JS only together with a
-// JS-specific validator (e.g. literal-argument require allowlist plus the
-// node --permission model).
+// validator does not understand CommonJS `require`, so enabling node -e
+// would hand the model an unsandboxed shell (require('child_process')).
+// Re-introduce JS only together with a JS-specific validator (e.g.
+// literal-argument require allowlist plus the node --permission model).
 type CodeRunner struct {
 	*base.BaseTool
 	mu                sync.RWMutex
@@ -90,7 +99,7 @@ func NewCodeRunner() *CodeRunner {
 	}
 
 	return &CodeRunner{
-		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
+		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python code behind a validator gate (no OS sandbox; host RCE if enabled)", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
 		enablePython:    false,
 		timeout:         30 * time.Second,
 		maxOutputSize:   10240,
@@ -136,7 +145,7 @@ func NewCodeRunnerWithOptions(enablePython bool, timeout time.Duration, maxOutpu
 	}
 
 	return &CodeRunner{
-		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
+		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python code behind a validator gate (no OS sandbox; host RCE if enabled)", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
 		enablePython:    enablePython,
 		timeout:         timeout,
 		maxOutputSize:   maxOutputSize,

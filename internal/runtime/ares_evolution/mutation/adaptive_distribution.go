@@ -88,12 +88,16 @@ func DefaultAdaptiveDistributionConfig() AdaptiveDistributionConfig {
 	}
 }
 
-// AdaptiveDistribution wraps a Mutator and adjusts mutation type probabilities
+// AdaptiveDistribution wraps a mutator and adjusts mutation type probabilities
 // based on observed outcomes. Repeatedly successful mutation types gain weight
 // within configured bounds; repeated failures reduce weight without dropping
 // below the exploration floor.
+//
+// The wrapped mutator is the AdaptiveMutater seam, so the adaptive layer can
+// drive the raw Mutator OR the ExperienceGuidedMutator — composing adaptive
+// probability tuning with experience guidance instead of either/or.
 type AdaptiveDistribution struct {
-	mutator *Mutator
+	mutator AdaptiveMutater
 	cfg     AdaptiveDistributionConfig
 
 	mu sync.RWMutex
@@ -112,7 +116,9 @@ type AdaptiveDistribution struct {
 //
 // Args:
 //
-//	m - the base mutator to wrap (must not be nil).
+//	m - the base mutator to wrap (must not be nil). Pass the raw *Mutator, or
+//	  the *ExperienceGuidedMutator to compose adaptive tuning WITH experience
+//	  guidance.
 //	cfg - the adaptive distribution configuration (use
 //	  DefaultAdaptiveDistributionConfig() for defaults).
 //
@@ -120,7 +126,7 @@ type AdaptiveDistribution struct {
 //
 //	*AdaptiveDistribution - the configured adaptive distribution instance.
 //	error - non-nil if mutator is nil or configuration is invalid.
-func NewAdaptiveDistribution(m *Mutator, cfg AdaptiveDistributionConfig) (*AdaptiveDistribution, error) {
+func NewAdaptiveDistribution(m AdaptiveMutater, cfg AdaptiveDistributionConfig) (*AdaptiveDistribution, error) {
 	if m == nil {
 		return nil, errors.New("mutator must not be nil")
 	}
@@ -188,22 +194,7 @@ func (ad *AdaptiveDistribution) Mutate(ctx context.Context, parent *Strategy, n 
 
 	paramProb, promptProb, toolProb := ad.CurrentProbabilities()
 
-	children := make([]*Strategy, 0, n)
-	for i := 0; i < n; i++ {
-		select {
-		case <-ctx.Done():
-			return children, ctx.Err()
-		default:
-		}
-
-		child, err := ad.mutator.mutateOneWithProbs(parent, i, paramProb, promptProb, toolProb)
-		if err != nil {
-			return nil, fmt.Errorf("adaptive mutate child %d: %w", i, err)
-		}
-		children = append(children, child)
-	}
-
-	return children, nil
+	return ad.mutator.mutateNWithProbs(ctx, parent, n, paramProb, promptProb, toolProb)
 }
 
 // RecordOutcome feeds back the result of a mutation, updating the adaptive

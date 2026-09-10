@@ -100,7 +100,33 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 		existing[svc.Identity.ID] = svc
 	}
 
+	// Phase 3.5 (#51): manually registered services are passive — no
+	// provider reports them, so the diff below would classify them as
+	// removed on every cycle and delete them. Union their register records
+	// (and tags) into any provider-discovered twin so manual provenance
+	// survives updates, and protect them from the removal pass.
+	for id, reg := range existing {
+		if !hasRegisterRecord(reg) {
+			continue
+		}
+		if ns, ok := newServices[id]; ok {
+			ns.Records = append(ns.Records, registerRecords(reg)...)
+			ns.Identity.Tags = unionStringSlices(ns.Identity.Tags, reg.Identity.Tags)
+		}
+	}
+
 	added, updated, removed := diffServices(existing, newServices)
+
+	// Registered services never leave via discovery — only Unregister (or a
+	// re-register over the same ID) removes them.
+	kept := removed[:0]
+	for _, id := range removed {
+		if reg, ok := existing[id]; ok && hasRegisterRecord(reg) {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	removed = kept
 
 	// Phase 4: Persist changes and emit events.
 	for _, id := range added {
@@ -153,6 +179,56 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 	})
 
 	return nil
+}
+
+// hasRegisterRecord reports whether the service carries a manual
+// registration record (Engine.Register). Such services are passive: they are
+// not re-reported by any provider, so DiscoverNow must not treat the absence
+// of provider records as their disappearance (#51).
+func hasRegisterRecord(svc *DiscoveredService) bool {
+	if svc == nil {
+		return false
+	}
+	if svc.BestSource == OperationRegister {
+		return true
+	}
+	for _, rec := range svc.Records {
+		if rec.Source == OperationRegister {
+			return true
+		}
+	}
+	return false
+}
+
+// registerRecords returns only the manual-registration records of a service.
+func registerRecords(svc *DiscoveredService) []DiscoveryRecord {
+	var out []DiscoveryRecord
+	for _, rec := range svc.Records {
+		if rec.Source == OperationRegister {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// unionStringSlices merges two string slices order-preserving without
+// duplicates.
+func unionStringSlices(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // CheckHealth runs health checks on all known services.

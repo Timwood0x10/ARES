@@ -4,6 +4,7 @@ package distillation
 import (
 	"context"
 	"math"
+	"sync"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -15,6 +16,7 @@ var ErrNoConflict = errors.New("no conflict detected")
 // ConflictResolver detects and resolves memory conflicts.
 type ConflictResolver struct {
 	repo              ExperienceRepository
+	mu                sync.RWMutex
 	conflictThreshold float64
 	searchLimit       int
 }
@@ -34,6 +36,22 @@ func NewConflictResolverWithConfig(repo ExperienceRepository, conflictThreshold 
 		repo:              repo,
 		conflictThreshold: conflictThreshold,
 		searchLimit:       searchLimit,
+	}
+}
+
+// UpdateThresholds replaces the resolver's conflict threshold and search
+// limit at runtime. The fields are guarded because the distiller's
+// UpdateConfig may run concurrently with an in-flight DistillConversation.
+// Non-positive values keep the current setting (a zero search limit would
+// return no candidates and silently disable conflict detection).
+func (r *ConflictResolver) UpdateThresholds(conflictThreshold float64, searchLimit int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if conflictThreshold > 0 {
+		r.conflictThreshold = conflictThreshold
+	}
+	if searchLimit > 0 {
+		r.searchLimit = searchLimit
 	}
 }
 
@@ -95,7 +113,12 @@ func (r *ConflictResolver) DetectConflict(ctx context.Context, vector []float64,
 		return nil, ErrNoConflict
 	}
 
-	similar, err := r.repo.SearchByVector(ctx, vector, tenantID, r.searchLimit)
+	r.mu.RLock()
+	threshold := r.conflictThreshold
+	limit := r.searchLimit
+	r.mu.RUnlock()
+
+	similar, err := r.repo.SearchByVector(ctx, vector, tenantID, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to search for similar memories")
 	}
@@ -109,7 +132,7 @@ func (r *ConflictResolver) DetectConflict(ctx context.Context, vector []float64,
 			continue
 		}
 		similarity := r.cosineSimilarity(vector, similar[i].Vector)
-		if similarity > r.conflictThreshold {
+		if similarity > threshold {
 			return &similar[i], nil
 		}
 	}

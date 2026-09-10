@@ -216,14 +216,31 @@ func experienceToHint(exp *storage_models.Experience) evolution.EvolutionHint {
 	}
 
 	return evolution.EvolutionHint{
-		ID:                  exp.ID,
-		TaskType:            exp.Type,
+		ID: exp.ID,
+		// TaskType carries the real task type, NOT exp.Type ("success"/
+		// "failure" — the storage outcome label). Strategy-outcome rows
+		// store the task type in the input column (see
+		// recordStrategyOutcome), so reading it back here preserves the
+		// Strategy → Experience → Guidance round trip: without it every
+		// hint's TaskType collapsed to the outcome label and the GA could
+		// no longer tell which task type a hint applied to.
+		TaskType:            experienceTaskType(exp),
 		Problem:             exp.Input,
 		Solution:            exp.Output,
 		Constraints:         constraints,
 		Confidence:          confidence,
 		SourceExperienceIDs: []string{exp.ID},
 	}
+}
+
+// experienceTaskType extracts the task-type key from a stored experience.
+// Input (== the 'input' column, where recordStrategyOutcome writes the task
+// type) is authoritative; Problem is the alias fallback.
+func experienceTaskType(exp *storage_models.Experience) string {
+	if exp.Input != "" {
+		return exp.Input
+	}
+	return exp.Problem
 }
 
 // HandleTaskCompletedForDistillation turns a task-completed/failed event into

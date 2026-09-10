@@ -47,8 +47,12 @@ const (
 	EventDiscoveryComplete = internaldiscovery.EventDiscoveryComplete
 )
 
-// Re-export constructors for built-in stores.
-var NewMemoryStore = internaldiscovery.NewMemoryStore
+// NewMemoryStore creates the built-in in-memory discovery store. A plain
+// function (not a `var` alias): a package-level var of func type was
+// assignable, so any code could silently replace the constructor at runtime.
+func NewMemoryStore() *internaldiscovery.MemoryStore {
+	return internaldiscovery.NewMemoryStore()
+}
 
 // EngineConfig configures the discovery engine.
 type EngineConfig = discoveryapi.EngineConfig

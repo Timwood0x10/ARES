@@ -228,7 +228,13 @@ type GenealogyRecorder interface {
 // Implementations load and save strategies across system restarts.
 type StrategyStore interface {
 	// GetActive returns the currently deployed strategy.
-	// Returns nil if no strategy has been stored yet.
+	//
+	// Empty-store contract: a store with no active strategy reports "no
+	// active" — either as (nil, ErrNoActiveStrategy) (the canonical shape,
+	// returned by PGStrategyStore) or as (nil, nil) (legacy shape, returned
+	// by MemoryStrategyStore and the SDK store). Callers must treat BOTH
+	// shapes as "no active strategy" — every in-tree caller does (they
+	// errors.Is the sentinel and nil-check the result).
 	GetActive(ctx context.Context) (*Strategy, error)
 
 	// SetActive persists a strategy as the active deployment.

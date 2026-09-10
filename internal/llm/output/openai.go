@@ -266,8 +266,14 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 				continue
 			}
 
-			// Check for stream termination.
+			// Check for stream termination: emit the terminal Done chunk so
+			// consumers watching for Done (instead of channel close) see a
+			// clean end; the error path below already emits Done:true.
 			if line == streamDataDone {
+				select {
+				case ch <- StreamChunk{Done: true}:
+				case <-ctx.Done():
+				}
 				return
 			}
 
@@ -302,6 +308,13 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 			case ch <- StreamChunk{Done: true, Err: errors.Wrap(err, "read stream")}:
 			case <-ctx.Done():
 			}
+			return
+		}
+		// Server closed the stream without a "data: [DONE]" sentinel:
+		// still a clean end, still emit the terminal Done chunk.
+		select {
+		case ch <- StreamChunk{Done: true}:
+		case <-ctx.Done():
 		}
 	}()
 

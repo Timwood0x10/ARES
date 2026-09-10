@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	"github.com/Timwood0x10/ares/internal/runtime/observability"
 )
 
@@ -52,10 +54,20 @@ func isRateLimitError(err error) bool {
 	if goerrors.As(err, &httpErr) {
 		return httpErr.StatusCode == http.StatusTooManyRequests
 	}
-	// Fallback: check error message for edge cases.
+	// Fallback for edge cases where no typed status survived wrapping.
+	// "429" is matched only as a digit-delimited token — a bare substring
+	// match flagged any message that merely CONTAINED the digits ("port
+	// 4290", "id 1429").
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "rate_limit")
+	if strings.Contains(msg, "too many requests") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "rate_limit") {
+		return true
+	}
+	return reStatus429.MatchString(msg)
 }
+
+// reStatus429 matches the literal 429 bounded by non-digits (or string
+// edges), so "status code: 429" matches but "port 4290" / "id 1429" do not.
+var reStatus429 = regexp.MustCompile(`(?:^|[^0-9])429(?:[^0-9]|$)`)
 
 // ProviderType represents the LLM provider type.
 type ProviderType string
@@ -233,8 +245,10 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// recordLLMCall records an LLM call via the tracer if set.
-func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tokens int, start time.Time, err error) {
+// recordLLMCall records an LLM call via the tracer if set. The usage split
+// (prompt/completion) is carried through so cost attribution uses the real
+// input/output ratio instead of a hardcoded 50/50.
+func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, usage llmcore.TokenUsage, start time.Time, err error) {
 	// Scrub secrets from the recorded copy only — the live request to the
 	// provider is never modified, so functionality is preserved while logs
 	// and traces no longer leak credentials.
@@ -249,21 +263,41 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 	if c.config != nil {
 		model = c.config.Model
 	}
+	// Some providers report only the split; derive the total so consumers
+	// reading TokensUsed alone stay correct.
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.PromptTokens + usage.CompletionTokens
+	}
 	c.tracer.RecordLLMCall(ctx, &observability.LLMCall{
-		TraceID:    c.tracer.GetTraceID(ctx),
-		Model:      model,
-		Prompt:     prompt,
-		Response:   response,
-		TokensUsed: tokens,
-		Duration:   time.Since(start),
-		Error:      err,
+		TraceID:      c.tracer.GetTraceID(ctx),
+		Model:        model,
+		Prompt:       prompt,
+		Response:     response,
+		TokensUsed:   total,
+		InputTokens:  usage.PromptTokens,
+		OutputTokens: usage.CompletionTokens,
+		Duration:     time.Since(start),
+		Error:        err,
 	})
 }
 
 // emitCallback emits a lifecycle event via the callback emitter if set.
+// Input/Output are sanitized first: callbacks flow to external observers
+// (UI, logs, audit) and must not carry secrets embedded in the raw prompt,
+// mirroring the scrubbing recordLLMCall applies to traces. The live request
+// to the provider is never modified.
 func (c *Client) emitCallback(ctx *ares_callbacks.Context) {
 	if c.ares_callbacks == nil {
 		return
+	}
+	if c.sanitizer != nil {
+		if ctx.Input != "" {
+			ctx.Input = c.sanitizer.Sanitize(ctx.Input)
+		}
+		if ctx.Output != "" {
+			ctx.Output = c.sanitizer.Sanitize(ctx.Output)
+		}
 	}
 	c.ares_callbacks.Emit(ctx)
 }
@@ -339,7 +373,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
 			cancelStream()
-			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
+			c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, waitErr)
 			c.emitCallback(&ares_callbacks.Context{
 				Event: ares_callbacks.EventLLMError,
 				Model: model,
@@ -371,7 +405,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	if err != nil {
 		cancelStream()
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, err)
 		c.emitCallback(&ares_callbacks.Context{
 			Event: ares_callbacks.EventLLMError,
 			Model: model,
@@ -438,7 +472,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 		}
 		fullResponse := builder.String()
 		duration := time.Since(start)
-		c.recordLLMCall(ctx, prompt, fullResponse, 0, start, streamErr)
+		c.recordLLMCall(ctx, prompt, fullResponse, llmcore.TokenUsage{}, start, streamErr)
 
 		// Emit LLM end or error event for streaming.
 		if streamErr != nil {

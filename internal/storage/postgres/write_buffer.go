@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	stderrors "errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +30,24 @@ type WriteBuffer struct {
 	closeOnce       sync.Once // Ensure channel is closed only once
 	g               *errgroup.Group
 	gctx            context.Context
+
+	// deadLettered counts items dropped as permanently unwritable (#64):
+	// poison pills such as unsupported tables are logged and discarded
+	// instead of being re-queued forever.
+	deadLettered atomic.Int64
+}
+
+// ErrPermanentWriteItem marks a WriteItem that can never be written (e.g. an
+// unsupported table). Retrying is pointless — the caller must dead-letter
+// the item rather than re-queue it (#64). Contrast with transient failures
+// (connection loss, deadlocks) which are worth retrying.
+var ErrPermanentWriteItem = stderrors.New("permanent write item failure")
+
+// supportedWriteTable reports whether flushBatch can write the table.
+// Shared by the processLoop pre-filter and flushBatch's own guard so the
+// two can never disagree.
+func supportedWriteTable(table string) bool {
+	return table == "knowledge_chunks_1024" || table == "experiences_1024"
 }
 
 // WriteItem represents a single write operation to be batched.
@@ -146,33 +163,75 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 			}
 			batch = append(batch, item)
 			if len(batch) >= b.batchSize {
-				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					// CRITICAL: do not discard the failed batch. Re-queue its
-					// items so they are retried on the next flush instead of
-					// being silently dropped (which caused data loss).
-					log.Error("Failed to flush batch after retries, re-queuing items",
-						"error", err, "batch_size", len(batch))
-					b.requeueItems(batch)
-					batch = batch[:0]
-					continue
-				}
-				batch = batch[:0]
+				batch = b.flushBatchFiltered(ctx, batch, maxRetries)
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
-				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					// Re-queue items rather than dropping them.
-					log.Error("Failed to flush batch on timer after retries, re-queuing items",
-						"error", err, "batch_size", len(batch))
-					b.requeueItems(batch)
-					batch = batch[:0]
-					continue
-				}
-				batch = batch[:0]
+				batch = b.flushBatchFiltered(ctx, batch, maxRetries)
 			}
 		}
 	}
+}
+
+// flushBatchFiltered is the #64 poison-pill guard: before handing a batch to
+// the retrying flush, permanently-unwritable items (unsupported tables) are
+// dead-lettered — logged, counted, and dropped. Without this the poison
+// failed the whole transaction, was re-queued, failed again, and livelocked
+// the loop while blocking every good item sharing its batch. Returns the
+// batch to carry forward (empty on success).
+func (b *WriteBuffer) flushBatchFiltered(ctx context.Context, batch []*WriteItem, maxRetries int) []*WriteItem {
+	valid := make([]*WriteItem, 0, len(batch))
+	for _, item := range batch {
+		if supportedWriteTable(item.Table) {
+			valid = append(valid, item)
+			continue
+		}
+		b.deadLetter(item)
+	}
+	if len(valid) == 0 {
+		return nil
+	}
+	if err := b.flushBatchWithRetry(ctx, valid, maxRetries); err != nil {
+		if stderrors.Is(err, ErrPermanentWriteItem) {
+			// A permanent failure from inside the flush (e.g. a new
+			// validation added to flushBatch later) means no item in the
+			// batch can ever be written — dead-letter them all instead of
+			// re-queuing an unwritable poison batch.
+			for _, item := range valid {
+				b.deadLetter(item)
+			}
+			return nil
+		}
+		// CRITICAL: do not discard the failed batch. Re-queue its
+		// items so they are retried on the next flush instead of
+		// being silently dropped (which caused data loss).
+		log.Error("Failed to flush batch after retries, re-queuing items",
+			"error", err, "batch_size", len(valid))
+		b.requeueItems(valid)
+		return nil
+	}
+	return nil
+}
+
+// deadLetter logs and counts a permanently-unwritable item. The item is
+// dropped: retrying can never succeed, and keeping it would poison every
+// future batch it shares.
+func (b *WriteBuffer) deadLetter(item *WriteItem) {
+	b.deadLettered.Add(1)
+	log.Error("Write buffer dead-lettered permanently unwritable item",
+		"table", item.Table,
+		"tenant_id", item.TenantID,
+		"content_bytes", len(item.Content),
+		"error", ErrPermanentWriteItem,
+	)
+}
+
+// DeadLetteredItems reports how many items were dropped as permanently
+// unwritable since startup (#64 observability: a non-zero counter that
+// keeps growing means a producer is feeding invalid table names).
+func (b *WriteBuffer) DeadLetteredItems() int64 {
+	return b.deadLettered.Load()
 }
 
 // requeueItems re-queues items that failed to flush. It attempts a non-blocking
@@ -221,6 +280,11 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 		}
 
 		if err := b.flushBatch(ctx, batch); err != nil {
+			if stderrors.Is(err, ErrPermanentWriteItem) {
+				// A permanent failure cannot be fixed by retrying — return
+				// immediately so the caller can dead-letter (#64).
+				return err
+			}
 			lastErr = err
 			log.Error("Flush attempt failed", "attempt", attempt, "error", err)
 			continue
@@ -290,6 +354,18 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 		return nil
 	}
 
+	// Pre-validate table names BEFORE opening a transaction (#64): an
+	// unsupported table is a permanent failure that no retry can fix.
+	// Returning the sentinel here (rather than failing inside the tx below)
+	// lets callers dead-letter the poison item without wasting a DB
+	// round-trip per retry.
+	for _, item := range batch {
+		if !supportedWriteTable(item.Table) {
+			return errors.Wrapf(ErrPermanentWriteItem,
+				"unsupported table type: %s (currently only knowledge_chunks_1024 and experiences_1024 are supported)", item.Table)
+		}
+	}
+
 	tx, err := b.db.Begin(ctx)
 	if err != nil {
 		return errors.Wrap(err, "begin transaction")
@@ -326,7 +402,7 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 				(tenant_id, content, content_hash, embedding, embedding_model, embedding_version,
 				 embedding_status, embedding_queued_at, source_type, metadata, created_at, updated_at)
 				VALUES ($1, $2, $3, NULL, $4, $5, 'pending', NOW(), 'memory', $6, NOW(), NOW())
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -372,7 +448,11 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			}
 
 		default:
-			return fmt.Errorf("unsupported table type: %s (currently only knowledge_chunks_1024 and experiences_1024 are supported)", item.Table)
+			// Unreachable after the pre-validation above (same shared
+			// whitelist), kept as a defensive guard: classify as permanent
+			// so the caller dead-letters instead of retrying forever.
+			return errors.Wrapf(ErrPermanentWriteItem,
+				"unsupported table type: %s (currently only knowledge_chunks_1024 and experiences_1024 are supported)", item.Table)
 		}
 	}
 

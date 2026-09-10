@@ -212,3 +212,18 @@ func TestControlServer_LifecycleSnapshot(t *testing.T) {
 		}
 	})
 }
+
+// TestControlServer_InsightsNotImplemented is the #53 burial regression:
+// the insight engine had no generator, so /api/insights was permanently
+// {"count":0}. The endpoint now answers 501 with an explicit error instead
+// of a phantom zero count.
+func TestControlServer_InsightsNotImplemented(t *testing.T) {
+	s := NewControlServer(nil, WithIntel(NewEngine(nil)))
+	rec := doGet(t, s, "/api/insights")
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status %d, want %d", rec.Code, http.StatusNotImplemented)
+	}
+	if !strings.Contains(rec.Body.String(), "not implemented") {
+		t.Fatalf("body must state not-implemented explicitly, got %s", rec.Body.String())
+	}
+}

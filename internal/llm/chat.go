@@ -51,7 +51,7 @@ func (c *Client) Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools
 	// Apply rate limiter before making the API call.
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
-			c.recordLLMCall(ctx, "chat", "", 0, start, waitErr)
+			c.recordLLMCall(ctx, "chat", "", llmcore.TokenUsage{}, start, waitErr)
 			c.emitCallback(&ares_callbacks.Context{
 				Event: ares_callbacks.EventLLMError,
 				Model: model,
@@ -88,12 +88,12 @@ func (c *Client) Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools
 	duration := time.Since(start)
 	promptSummary := summarizeMessages(messages)
 	var responseContent string
-	var tokenCount int
+	var usage llmcore.TokenUsage
 	if result != nil {
 		responseContent = result.Content
-		tokenCount = result.Usage.TotalTokens
+		usage = result.Usage
 	}
-	c.recordLLMCall(ctx, promptSummary, responseContent, tokenCount, start, err)
+	c.recordLLMCall(ctx, promptSummary, responseContent, usage, start, err)
 
 	if err != nil {
 		c.emitCallback(&ares_callbacks.Context{
@@ -197,6 +197,12 @@ func (c *Client) chatOllama(ctx context.Context, messages []*llmcore.LLMMessage,
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"message"`
+		// Ollama's native token accounting: prompt_eval_count (input) and
+		// eval_count (output). Previously never decoded, so every Ollama
+		// run reported zero usage — token budgets and cost dashboards saw
+		// nothing for the whole provider.
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
 		return nil, errors.Wrap(err, "decode ollama chat response")
@@ -204,6 +210,10 @@ func (c *Client) chatOllama(ctx context.Context, messages []*llmcore.LLMMessage,
 
 	respCore := &llmcore.GenerateResponse{
 		Content: ollamaResp.Message.Content,
+		Usage: llmcore.TokenUsage{
+			PromptTokens:     ollamaResp.PromptEvalCount,
+			CompletionTokens: ollamaResp.EvalCount,
+		},
 	}
 	for _, tc := range ollamaResp.Message.ToolCalls {
 		respCore.ToolCalls = append(respCore.ToolCalls, llmcore.ToolCall{
@@ -545,7 +555,8 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 // System-role messages are extracted into a separate system prompt string.
 // Consecutive tool-result messages are batched into a single user message
 // with multiple tool_result content blocks — Anthropic rejects consecutive
-// user messages (HTTP 400), which is exactly what parallel tool calls produce.
+// user messages (HTTP 400), which is exactly what parallel tool calls and
+// user text following tool results would otherwise produce.
 // Returns (messages, systemPrompt).
 func buildAnthropicChatMessages(messages []*llmcore.LLMMessage) ([]map[string]any, string) {
 	var systemParts []string
@@ -602,6 +613,28 @@ func buildAnthropicChatMessages(messages []*llmcore.LLMMessage) ([]map[string]an
 				"content": content,
 			})
 		default:
+			// A plain message right after pending tool results: flushing the
+			// results first and then emitting this message would produce two
+			// CONSECUTIVE user messages when this one is itself user-role —
+			// the exact HTTP 400 shape Anthropic rejects. Merge the user's
+			// text into the tool-result message instead (tool_result blocks
+			// plus a text block are valid in one user message).
+			if msg.Role == "user" && len(pendingToolResults) > 0 {
+				content := make([]map[string]any, 0, len(pendingToolResults)+1)
+				content = append(content, pendingToolResults...)
+				if msg.Content != "" {
+					content = append(content, map[string]any{
+						"type": "text",
+						"text": msg.Content,
+					})
+				}
+				result = append(result, map[string]any{
+					"role":    "user",
+					"content": content,
+				})
+				pendingToolResults = nil
+				continue
+			}
 			flushToolResults()
 			result = append(result, map[string]any{
 				"role":    msg.Role,

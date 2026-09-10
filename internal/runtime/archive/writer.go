@@ -123,19 +123,25 @@ func (w *fileArchiveWriter) writeAtomic(record RoundRecord) error {
 	// fsync before rename (#durability): the archive is an audit trail, so a
 	// crash after rename must not lose a round that was already reported as
 	// written. Cost is one flush per round file (rounds are low-frequency).
+	// An Open failure RETURNS an error instead of silently skipping the
+	// fsync — a skipped sync breaks the durability contract this whole
+	// block exists for.
 	//nolint:gosec // G304: tmp is built from a sanitized stream segment + a
 	// strconv'd round number — no user-controlled path reaches os.Open.
-	if f, err := os.Open(tmp); err == nil {
-		syncErr := f.Sync()
-		closeErr := f.Close()
-		if syncErr != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("sync temp %q: %w", tmp, syncErr)
-		}
-		if closeErr != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("close temp %q: %w", tmp, closeErr)
-		}
+	f, err := os.Open(tmp)
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("open temp %q for fsync: %w", tmp, err)
+	}
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if syncErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync temp %q: %w", tmp, syncErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close temp %q: %w", tmp, closeErr)
 	}
 	if err := os.Rename(tmp, final); err != nil {
 		_ = os.Remove(tmp)

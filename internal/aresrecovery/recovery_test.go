@@ -580,3 +580,69 @@ func TestYieldSuspendResumeFullChain(t *testing.T) {
 		t.Fatal("replacement must carry the checkpoint as cognitive state")
 	}
 }
+
+// TestRestartAgent_ConcurrentBudgetNotBypassed locks REVIEW 2.7#39: the
+// budget check and charge must be atomic (reservation under one lock hold).
+// The old check-then-charge-later scheme let N concurrent RestartAgent calls
+// for the same corpse each pass the gate before any of them charged, so the
+// group collectively exceeded MaxRestarts.
+func TestRestartAgent_ConcurrentBudgetNotBypassed(t *testing.T) {
+	tasks := taskfabric.NewFabric()
+	agents := agentfabric.NewFabric()
+	rec := New(tasks, agents, RestartPolicy{
+		MaxRestarts: 3,
+		Backoff:     time.Millisecond,
+		MaxBackoff:  5 * time.Millisecond,
+	}).
+		WithClock(time.Now).
+		WithSleeper(func(context.Context, time.Duration) error { return nil })
+
+	const callers = 8
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = rec.RestartAgent(context.Background(), "dead-agent",
+				agentfabric.CognitiveState{}, []string{"cap"})
+		}()
+	}
+	wg.Wait()
+
+	if got := rec.RestartCount("dead-agent"); got != 3 {
+		t.Errorf("concurrent restarts bypassed the budget: count=%d, want exactly MaxRestarts=3", got)
+	}
+}
+
+// TestRestartAgent_FailedSpawnDoesNotConsumeBudget verifies the reservation
+// rollback: a spawn error (or recover error / cancelled backoff) must give
+// the reserved slot back, preserving the "only successful restarts count"
+// semantics the late-charge scheme used to provide.
+func TestRestartAgent_FailedSpawnDoesNotConsumeBudget(t *testing.T) {
+	tasks := taskfabric.NewFabric()
+	agents := agentfabric.NewFabric()
+	rec := New(tasks, agents, RestartPolicy{
+		MaxRestarts: 1,
+		Backoff:     time.Millisecond,
+		MaxBackoff:  time.Millisecond,
+	}).
+		WithClock(time.Now).
+		WithSleeper(func(context.Context, time.Duration) error { return nil })
+
+	// A spawner whose policy is disabled fails every SpawnForRecovery with
+	// ErrSpawnDisabled — the deterministic spawn-failure path.
+	rec.WithSpawner(NewEvolutionAwareSpawner(agents, &stubSpawnPolicySource{
+		policy: SpawnPolicy{Enabled: false},
+	}))
+
+	// Budget 1: every attempt fails at spawn → rolled back…
+	for i := 0; i < 3; i++ {
+		if _, err := rec.RestartAgent(context.Background(), "dead-agent",
+			agentfabric.CognitiveState{}, nil); !errors.Is(err, ErrSpawnDisabled) {
+			t.Fatalf("attempt %d: expected ErrSpawnDisabled, got %v", i, err)
+		}
+	}
+	if got := rec.RestartCount("dead-agent"); got != 0 {
+		t.Errorf("failed spawns consumed the budget: count=%d, want 0", got)
+	}
+}

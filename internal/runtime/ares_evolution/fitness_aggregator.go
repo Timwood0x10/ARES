@@ -353,17 +353,38 @@ func (a *RuntimeFitnessAggregator) querySourceMeanAt(ctx context.Context, store 
 // tool_step_id matches is counted — enabling process-level attribution
 // ("this strategy calling the tool THIS way") distinct from the coarse
 // per-strategy bucket.
+//
+// The strategy_id / tool_step_id equality filters are pushed into the store
+// query (Filter.PayloadFilter) rather than applied after the fact: the query
+// is LIMIT-bounded, and a client-side filter would only see the most recent
+// WindowSize records REGARDLESS of strategy — under multi-strategy traffic the
+// window fills with other strategies' records, the scoped strategy's count
+// stays 0, and the rollback judge gate (MinSamplesBeforeJudge on the
+// strategy's OWN samples) never opens, silently disarming the safety net.
 func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID, toolStepID string, since, until time.Time) (float64, int, time.Time) {
 	if store == nil {
 		return 0, 0, time.Time{}
 	}
-	evs, err := store.Query(ctx, evidence.Filter{
+	filter := evidence.Filter{
 		Source: source,
 		Kind:   kind,
 		Since:  since,
 		Until:  until,
 		Limit:  limit,
-	})
+	}
+	if strategyID != "" {
+		if filter.PayloadFilter == nil {
+			filter.PayloadFilter = make(map[string]any, 2)
+		}
+		filter.PayloadFilter["strategy_id"] = strategyID
+	}
+	if toolStepID != "" {
+		if filter.PayloadFilter == nil {
+			filter.PayloadFilter = make(map[string]any, 2)
+		}
+		filter.PayloadFilter["tool_step_id"] = toolStepID
+	}
+	evs, err := store.Query(ctx, filter)
 	if err != nil {
 		return 0, 0, time.Time{}
 	}
@@ -375,9 +396,13 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 			continue
 		}
 		var fe struct {
-			Value      float64 `json:"value"`
-			StrategyID string  `json:"strategy_id"`
-			ToolStepID string  `json:"tool_step_id"`
+			Value float64 `json:"value"`
+			// StrategyID/ToolStepID remain in the unmarshal target so a
+			// store implementation WITHOUT PayloadFilter support (third-party
+			// Store impls) still gets correct results via the client-side
+			// fallback below.
+			StrategyID string `json:"strategy_id"`
+			ToolStepID string `json:"tool_step_id"`
 		}
 		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
 			continue

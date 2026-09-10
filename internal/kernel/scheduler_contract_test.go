@@ -317,13 +317,21 @@ func TestHasCapableExecutorSourcesFabricCandidates(t *testing.T) {
 }
 
 // TestPreemptLowerPriorityHandsBackRunningTask locks the cooperative
-// preemption contract: a higher-priority READY task causes the running
-// lower-priority task to be handed back to READY (checkpoint preserved,
-// fencing enforced), and the scheduler re-executes it afterwards.
+// preemption contract: when the capable pool is saturated (the one executor
+// that can run both tasks is busy on the low-priority task), a
+// higher-priority READY task causes the running lower-priority task to be
+// handed back to READY (checkpoint preserved, fencing enforced), and the
+// scheduler re-executes it afterwards.
 //
 // Bug scenario: preemption silently killing the running quantum, or
 // double-finalizing it — the fencing token must reject the stale holder's
 // late completion.
+//
+// Note on the setup: the scheduler runs a SINGLE executor for both tasks on
+// purpose. With a second capable idle executor registered, the need-based
+// preemption in PreemptLowerPriority would (correctly) do nothing — the
+// high-priority task lands on the free executor without evicting anyone.
+// Saturation is what makes preemption necessary.
 func TestPreemptLowerPriorityHandsBackRunningTask(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -351,20 +359,20 @@ func TestPreemptLowerPriorityHandsBackRunningTask(t *testing.T) {
 	fabric := taskfabric.NewFabric().WithEventStore(store)
 
 	// The low-priority executor blocks on a gate during its FIRST quantum;
-	// later quanta (after preemption) complete immediately.
+	// later quanta (after preemption) complete immediately. It serves BOTH
+	// tasks: the capability pool is exactly this one agent, so the
+	// high-priority task cannot be scheduled without evicting the low one.
 	gate := make(chan struct{})
 	lowStarted := make(chan struct{})
 	var once sync.Once
-	low := &gatedExecutor{id: "low", typ: models.AgentType("batch"),
+	solo := &gatedExecutor{id: "solo", typ: models.AgentType("batch"),
 		onStart: func() {
 			once.Do(func() { close(lowStarted) })
 		},
 		gate: gate,
 	}
-	high := &smokeExecutor{id: "high", typ: models.AgentType("urgent")}
 	sched := New(fabric, map[string]CapabilityExecutor{
-		"low":    low,
-		"urgent": high,
+		"solo": solo,
 	}, NewLoadTracker())
 	sched.PollInterval = 10 * time.Millisecond
 	go sched.Run(ctx)
@@ -386,7 +394,7 @@ func TestPreemptLowerPriorityHandsBackRunningTask(t *testing.T) {
 
 	if err := fabric.Create(&taskfabric.Task{
 		ID:          "high-task",
-		Capability:  "urgent",
+		Capability:  "batch",
 		Priority:    5,
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
 	}); err != nil {
@@ -412,11 +420,8 @@ func TestPreemptLowerPriorityHandsBackRunningTask(t *testing.T) {
 
 	waitForTaskState(t, fabric, "high-task", taskfabric.StateCompleted, 3*time.Second)
 	waitForTaskState(t, fabric, "low-task", taskfabric.StateCompleted, 5*time.Second)
-	if high.executed != 1 {
-		t.Fatalf("high-priority executor must run exactly once, got %d", high.executed)
-	}
-	if low.executed < 2 {
-		t.Fatalf("low task must be re-executed after preemption (got %d runs)", low.executed)
+	if solo.executed < 3 {
+		t.Fatalf("solo executor must run high once and low at least twice (preempted + resumed), got %d runs", solo.executed)
 	}
 }
 

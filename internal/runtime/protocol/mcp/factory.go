@@ -109,14 +109,24 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 
-	// Return the first tool (factory creates one tool per call).
+	// Return the first tool (factory creates one tool per call). The tools
+	// map iterates in random order, so pick by sorted name to make the
+	// selection deterministic — otherwise the same server config yields a
+	// different tool on every process restart.
 	client.mu.RLock()
 	var firstDef *MCPToolDef
-	for _, def := range client.tools {
-		firstDef = def
-		break
+	firstName := ""
+	for name, def := range client.tools {
+		if firstDef == nil || name < firstName {
+			firstDef = def
+			firstName = name
+		}
 	}
 	client.mu.RUnlock()
+
+	// TODO: the returned tool owns the client (and its stdio subprocess);
+	// nothing guarantees Close() when the tool is unregistered — a
+	// registry-level finalizer is needed to reap orphaned subprocesses.
 
 	if firstDef == nil {
 		if cerr := client.Close(); cerr != nil {

@@ -243,12 +243,34 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		deps = &BootstrapDeps{}
 	}
 
+	// bctx scopes every background worker Bootstrap starts (bgGroup
+	// goroutines, event subscribers, tickers). It is a child of the caller's
+	// ctx, so on the SUCCESS path its cancellation semantics are identical:
+	// the caller cancels ctx at shutdown and the workers observe it. The
+	// derived context exists for the FAILURE path — runCleanups cancels it
+	// so workers started before a late wiring error stop immediately instead
+	// of lingering until the caller happens to cancel a ctx it may keep
+	// alive (e.g. a serve loop that retries bootstrap).
+	bctx, bcancel := context.WithCancel(ctx)
+
 	// Track cleanup functions for components created during bootstrap.
 	// On error, they are executed in reverse order of creation.
 	var cleanups []func()
 
-	// runCleanups executes all cleanup functions in reverse order.
+	// runCleanups executes all cleanup functions in reverse order. It is
+	// only ever invoked on bootstrap FAILURE paths (every success return
+	// skips it), so cancelling bctx here cannot kill workers of a healthy
+	// system.
 	runCleanups := func() {
+		// Stop bgGroup workers first: they watch bctx, and without this
+		// cancel they would keep running (event subscribers park on the
+		// store's channel; the evolution scheduler's shutdown watcher parks
+		// on ctx.Done) until the caller's own ctx dies — the "failed
+		// Bootstrap leaves live workers" leak. No Wait() here: workers exit
+		// asynchronously and some join in-flight work with their own
+		// timeouts; blocking the failure return on them would trade a
+		// goroutine leak for a shutdown stall.
+		bcancel()
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
@@ -335,7 +357,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 			// payload shape, pattern key the scheduler never queried);
 			// this writer consumes the production terminal-event stream
 			// at the join key the scheduler provably uses.
-			cleanups = append(cleanups, startSkillOutcomeWriter(ctx, comp.EventStore, catalog.Experience()))
+			cleanups = append(cleanups, startSkillOutcomeWriter(bctx, comp.EventStore, catalog.Experience()))
 		}
 	}
 
@@ -355,7 +377,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// Wired conditionally (PG + embedding); failures are non-fatal.
 	// embClient is reused by wireRetrievers to build the MemoryRetriever, so
 	// the distillation and RAG retrieval paths share one embedding client.
-	guidanceProvider, embClient := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
+	guidanceProvider, embClient := wireDistillation(bctx, cfg, &comp, deps, &cleanups)
 	// Expose the experience repository (deps-provided or distillation-
 	// created) so consumers can query distilled experiences — e.g. the Agent
 	// Fabric spawn path injects the latest experience as the spawn prior.
@@ -368,11 +390,11 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// fully functional (read-only mode keeps the store when write deps
 	// are missing). The store is shared by the knowledge runtime's
 	// StoreProvider (read side) and the leader's KnowledgeRetriever.
-	knowStore, akgBridge := wireAKGLoop(cfg, deps, embClient)
+	knowStore, akgBridge := wireAKGLoop(cfg, deps, embClient, &cleanups)
 	comp.KnowledgeStore = knowStore
 	comp.AKGBridge = akgBridge
 
-	subscribeDistillationEvents(ctx, &comp)
+	subscribeDistillationEvents(bctx, &comp)
 
 	// 6. Dashboard
 	// The observability components (trajectory tracer, feedback
@@ -494,7 +516,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 			EventStore:    comp.EventStore,
 			EvidenceStore: evStore,
 		})
-		if err := comp.FlightRecorder.Start(ctx); err != nil {
+		if err := comp.FlightRecorder.Start(bctx); err != nil {
 			log.WarnContext(ctx, "bootstrap: flight recorder start failed (fitness evidence disabled)",
 				"error", err)
 		}
@@ -507,7 +529,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// constructing a second recorder. Fully gated by cfg.Evolution.Enabled
 	// so the legacy scheduler/dream cycle cannot start behind the
 	// config's back.
-	evol, err := wireLegacyEvolution(ctx, cfg, deps, &comp)
+	evol, err := wireLegacyEvolution(bctx, cfg, deps, &comp)
 	if err != nil {
 		runCleanups()
 		return nil, err
@@ -522,7 +544,10 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	if evol != nil {
 		if sched, ok := evol.Scheduler.(*evolution.EvolutionScheduler); ok && sched != nil {
 			comp.bgGroup.Go(func() error {
-				<-ctx.Done()
+				// bctx: on bootstrap failure runCleanups cancels this
+				// watcher, which shuts the scheduler's subscription down —
+				// the caller's ctx may outlive the failed Bootstrap.
+				<-bctx.Done()
 				sched.Shutdown()
 				return nil
 			})
@@ -596,7 +621,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// evolution ticker (extracted to wireGAEvolution to keep Bootstrap's
 	// cyclomatic complexity within lint limits).
 	if cfg.Evolution.Enabled && comp.NewEvolution != nil {
-		if err := wireGAEvolution(ctx, cfg, &comp, comp.NewEvolution, guidanceProvider); err != nil {
+		if err := wireGAEvolution(bctx, cfg, &comp, comp.NewEvolution, guidanceProvider, &cleanups); err != nil {
 			runCleanups()
 			return nil, err
 		}
@@ -634,7 +659,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// sees every cleaner registered above (sessions, conversations, knowledge,
 	// secrets, and the evidence store). No-op when no cleaners were wired
 	// (e.g. storage disabled).
-	startExpiryCleanupWorker(ctx, &comp)
+	startExpiryCleanupWorker(bctx, &comp)
 
 	return &comp, nil
 }

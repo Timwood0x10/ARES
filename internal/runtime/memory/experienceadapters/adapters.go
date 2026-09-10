@@ -31,6 +31,23 @@ const DefaultTenant = ares_events.DefaultTenantID
 // distiller's in-memory map dedups after retrieval anyway.
 const DefaultListLimit = 1000
 
+// countListLimit is the ListByType bound used when COUNTING via the fallback
+// path (repository without an in-place CountByType). It deliberately exceeds
+// DistillationConfig's default MaxSolutionsPerTenant (5000) so the
+// solution-cap check can actually trigger: the previous behavior listed with
+// DefaultListLimit (1000) and counted the rows, so the count silently
+// plateaued at 1000 and the 5000 cap was unreachable.
+const countListLimit = 10000
+
+// typeCounter is the optional counting fast path for experience
+// repositories: counting rows without materializing them. It is checked by
+// interface assertion so ExperienceRepositoryInterface stays backward
+// compatible — the PostgreSQL implementation provides it; the in-memory
+// implementation (and any other) falls back to the bounded listing.
+type typeCounter interface {
+	CountByType(ctx context.Context, expType, tenantID string) (int, error)
+}
+
 // ExperienceSearcher adapts repositories.ExperienceRepositoryInterface (which
 // returns *storage_models.Experience) to the distillation.Experience contract
 // expected by the memory retriever. The retriever only reads, so the narrow
@@ -176,6 +193,12 @@ func (r *DistillationRepo) GetByMemoryType(
 // CountByMemoryType returns the number of experiences for the given tenant
 // and memory type. Best-effort, mirroring GetByMemoryType's approximate
 // Type→MemoryType mapping.
+//
+// Fast path: repositories implementing typeCounter (the PG one) count in
+// place with a SELECT COUNT — no rows materialized, no limit. Fallback: a
+// ListByType scan bounded by countListLimit, which is above the default
+// MaxSolutionsPerTenant so the distiller's cap check still triggers for
+// repositories without the fast path.
 func (r *DistillationRepo) CountByMemoryType(
 	ctx context.Context,
 	tenantID string,
@@ -184,7 +207,15 @@ func (r *DistillationRepo) CountByMemoryType(
 	if r == nil || r.Repo == nil {
 		return 0, errors.New("distillation repo: repository is nil")
 	}
-	storageExps, err := r.Repo.ListByType(ctx, memoryTypeToStorageType(memoryType), tenantID, DefaultListLimit)
+	storageType := memoryTypeToStorageType(memoryType)
+	if tc, ok := r.Repo.(typeCounter); ok {
+		count, err := tc.CountByType(ctx, storageType, tenantID)
+		if err != nil {
+			return 0, fmt.Errorf("distillation repo count by memory type: %w", err)
+		}
+		return count, nil
+	}
+	storageExps, err := r.Repo.ListByType(ctx, storageType, tenantID, countListLimit)
 	if err != nil {
 		return 0, fmt.Errorf("distillation repo count by memory type: %w", err)
 	}
@@ -215,7 +246,10 @@ func (r *DistillationRepo) Create(ctx context.Context, exp *experience.Experienc
 }
 
 // Update updates an existing experience. Same tenant/ExtractionMethod
-// handling as Create.
+// handling as Create. The original CreatedAt is preserved: an update is not
+// a re-creation, and resetting the timestamp would destroy the age signal
+// that decay/ranking read (ToStorageExperience stamps time.Now() because it
+// is shared with the Create path).
 func (r *DistillationRepo) Update(ctx context.Context, exp *experience.Experience) error {
 	if r == nil || r.Repo == nil {
 		return errors.New("distillation repo: repository is nil")
@@ -224,6 +258,9 @@ func (r *DistillationRepo) Update(ctx context.Context, exp *experience.Experienc
 		return errors.New("distillation repo: experience is nil")
 	}
 	storage := ToStorageExperience(exp, r.DefaultTenant)
+	if existing, err := r.Repo.GetByID(ctx, r.DefaultTenant, exp.ID); err == nil && existing != nil {
+		storage.CreatedAt = existing.CreatedAt
+	}
 	if err := r.Repo.Update(ctx, storage); err != nil {
 		return fmt.Errorf("distillation repo update: %w", err)
 	}

@@ -132,6 +132,21 @@ func decodeSigned(secret []byte, token string) (jwtClaims, error) {
 		return jwtClaims{}, fmt.Errorf("%w: wrong part count", ErrInvalidToken)
 	}
 	enc := base64.RawURLEncoding
+	// JOSE header alg check (defense-in-depth): verification below always
+	// computes HS256 regardless of the header, so a token claiming alg=none
+	// or RS256 cannot actually bypass the HMAC check. Rejecting a
+	// mismatched header anyway makes the pinned algorithm explicit and
+	// fails closed if the verification code is ever made header-driven.
+	header, err := enc.DecodeString(parts[0])
+	if err != nil {
+		return jwtClaims{}, fmt.Errorf("%w: bad header encoding", ErrInvalidToken)
+	}
+	var jose struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(header, &jose); err != nil || jose.Alg != "HS256" {
+		return jwtClaims{}, fmt.Errorf("%w: unsupported alg", ErrInvalidToken)
+	}
 	sig, err := enc.DecodeString(parts[2])
 	if err != nil {
 		return jwtClaims{}, fmt.Errorf("%w: bad signature encoding", ErrInvalidToken)

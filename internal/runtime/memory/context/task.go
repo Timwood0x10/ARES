@@ -144,9 +144,20 @@ func (m *TaskMemory) Get(ctx context.Context, taskID string) (*TaskData, bool) {
 	}
 
 	task.AccessedAt = time.Now()
-	// Return a shallow copy so the caller cannot mutate internal state
-	// through the returned pointer.
+	// Return a copy so the caller cannot mutate internal state through the
+	// returned pointer. The Context map and the Steps/Results slices are
+	// copied as well: a struct-only shallow copy would still alias them,
+	// letting a caller's nested writes race with SetContext/AddStep under
+	// the lock (REVIEW 3.3#5).
 	cp := *task
+	cp.Context = make(map[string]interface{}, len(task.Context))
+	for k, v := range task.Context {
+		cp.Context[k] = v
+	}
+	cp.Steps = make([]StepRecord, len(task.Steps))
+	copy(cp.Steps, task.Steps)
+	cp.Results = make([]ResultRecord, len(task.Results))
+	copy(cp.Results, task.Results)
 	return &cp, true
 }
 
@@ -351,3 +362,9 @@ func (m *TaskMemory) Distill(ctx context.Context, taskID string) (*models.Task, 
 
 	return distilled, nil
 }
+
+// NOTE (buried 2026-09): the context.Cache type (in-memory TTL cache with an
+// auto-started cleanup goroutine) was removed as dead code — zero production
+// callers, only its own tests referenced it, yet every NewCache call leaked a
+// goroutine. TODO(tech-debt) 留痕: if a context cache is ever needed, add it
+// WITH a production consumer and an explicit Stop.

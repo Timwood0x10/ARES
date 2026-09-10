@@ -52,7 +52,11 @@ func (s *RetrievalService) getEmbedding(ctx context.Context, query string) []flo
 // This can reduce 50-75% of embedding computations for repeated queries.
 //
 // Thread-safety: Uses read-write mutex to protect cache access.
-// Implements LRU eviction to prevent unbounded memory growth.
+// Implements LRU eviction to prevent unbounded memory growth: a cache hit
+// refreshes the key's recency (moves it to the back of the access list), so
+// eviction removes the least-recently-used entry. The previous code never
+// touched the access list on hits, making it a FIFO queue that evicted
+// hot entries just as eagerly as cold ones.
 //
 // Args:
 // ctx - operation context.
@@ -63,14 +67,28 @@ func (s *RetrievalService) getEmbeddingCached(ctx context.Context, query string)
 		return nil
 	}
 
-	// 1. Check cache (read lock)
+	// 1. Check cache (read lock). On a hit we must still refresh recency,
+	// which mutates the access list — handled under the write lock below.
 	s.embeddingCacheMu.RLock()
-	if embedding, ok := s.embeddingCache[query]; ok {
-		s.embeddingCacheMu.RUnlock()
-		s.logger.Debug("Embedding cache hit", "query", truncate.WithEllipsis(query, 30))
-		return embedding
-	}
+	_, cached := s.embeddingCache[query]
 	s.embeddingCacheMu.RUnlock()
+	if cached {
+		var embedding []float64
+		s.embeddingCacheMu.Lock()
+		// Re-check: the entry may have been evicted between releasing RLock
+		// and acquiring the write lock.
+		e, still := s.embeddingCache[query]
+		if still {
+			embedding = e
+			s.touchAccessListLocked(query)
+		}
+		s.embeddingCacheMu.Unlock()
+		if still {
+			s.logger.Debug("Embedding cache hit", "query", truncate.WithEllipsis(query, 30))
+			return embedding
+		}
+		// Evicted concurrently: fall through and recompute.
+	}
 
 	// 2. Compute embedding
 	embedding := s.getEmbedding(ctx, query)
@@ -81,6 +99,13 @@ func (s *RetrievalService) getEmbeddingCached(ctx context.Context, query string)
 	// 3. Store in cache with LRU eviction (write lock)
 	s.embeddingCacheMu.Lock()
 	defer s.embeddingCacheMu.Unlock()
+
+	// Another goroutine may have inserted the same key while we computed;
+	// keep its entry and only refresh recency.
+	if _, exists := s.embeddingCache[query]; exists {
+		s.touchAccessListLocked(query)
+		return embedding
+	}
 
 	// Check if eviction is needed
 	if len(s.embeddingCache) >= s.embeddingCacheSizeLimit {
@@ -97,4 +122,20 @@ func (s *RetrievalService) getEmbeddingCached(ctx context.Context, query string)
 	s.logger.Debug("Embedding cache miss, stored in cache", "query", truncate.WithEllipsis(query, 30), "cache_size", len(s.embeddingCache))
 
 	return embedding
+}
+
+// touchAccessListLocked moves key to the back of the access list, marking it
+// as most recently used. Caller must hold embeddingCacheMu (write).
+func (s *RetrievalService) touchAccessListLocked(query string) {
+	for i, k := range s.embeddingCacheAccessList {
+		if k == query {
+			s.embeddingCacheAccessList = append(
+				append(s.embeddingCacheAccessList[:i:i], s.embeddingCacheAccessList[i+1:]...),
+				query)
+			return
+		}
+	}
+	// Not in the list (shouldn't happen for a cached key): append for
+	// consistency so eviction can still find it.
+	s.embeddingCacheAccessList = append(s.embeddingCacheAccessList, query)
 }

@@ -1227,3 +1227,28 @@ func TestBuildSelector_Truncation(t *testing.T) {
 		t.Errorf("expected top 2 sorted by score, got %v", selected)
 	}
 }
+
+// TestAggregateDimensions_MinimizeNeverNegative locks REVIEW 2.4#20: a
+// minimize dimension at its WORST normalized value (1.0) must invert to 0 —
+// not negate — so the aggregate can never go negative and be misread by
+// IsScoreEvaluated as "unevaluated". The pre-fix `val = -val` produced
+// -0.2 for an all-cost-worst population, silently disqualifying it from
+// selection/rollback windows.
+func TestAggregateDimensions_MinimizeNeverNegative(t *testing.T) {
+	t.Parallel()
+
+	// Every dimension minimized at its worst normalized value.
+	dims := map[string]float64{"cost": 1.0, "latency": 1.0}
+	score := AggregateDimensions(dims, nil)
+	if score < 0 {
+		t.Errorf("aggregate of worst-case minimize dims must be >= 0, got %f", score)
+	}
+	if !IsScoreEvaluated(score) {
+		t.Errorf("worst-case aggregate %f misjudged as unevaluated by IsScoreEvaluated", score)
+	}
+
+	// A pure minimize profile must still aggregate to exactly 0 at worst.
+	if score != 0 {
+		t.Errorf("all-worst minimize dims should aggregate to 0, got %f", score)
+	}
+}

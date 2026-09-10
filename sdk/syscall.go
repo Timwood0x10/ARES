@@ -143,7 +143,7 @@ func (r *Runtime) wireSyscalls() {
 		// scheduler-facing Type is the DECLARED capability (not the generated
 		// agent id) so create_task sub-tasks can be matched to the peer.
 		func(agentID, capability string) agentsyscall.Executor {
-			exec := &sdkAgentExecutor{agent: r.NewAgent(agentID, WithTools()), typ: models.AgentType(capability)}
+			exec := &sdkAgentExecutor{agent: r.NewAgent(agentID, WithTools()), typ: models.AgentType(capability), runCtxs: &r.taskRunCtxs}
 			return &sdkSyscallExecutor{inner: exec}
 		},
 		func(agentID string, executor agentsyscall.Executor) {

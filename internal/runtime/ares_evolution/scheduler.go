@@ -141,7 +141,11 @@ func WithEnabled(enabled bool) SchedulerOption {
 //	SchedulerOption - the option function.
 func WithScoreProvider(provider TaskScoreProvider) SchedulerOption {
 	return func(s *EvolutionScheduler) {
-		s.scoreProvider = provider
+		if provider == nil {
+			s.scoreProvider.Store(nil)
+			return
+		}
+		s.scoreProvider.Store(&provider)
 	}
 }
 
@@ -207,7 +211,6 @@ type EvolutionScheduler struct {
 	// (task.completed / task.failed) are emitted to the EventStore,
 	// NOT to the ares_callbacks registry, so the scheduler must listen here.
 	subscriber   EventStoreSubscriber
-	adapter      AdapterRunner
 	minInterval  time.Duration
 	mu           sync.Mutex
 	lastRun      time.Time
@@ -222,16 +225,17 @@ type EvolutionScheduler struct {
 	subCancel context.CancelFunc
 	subEg     *errgroup.Group // stored for Shutdown to wait on
 
-	dreamCycle *DreamCycle
-	scores     []float64
-	scoreMu    sync.Mutex
-	guardrails *EvolutionGuardrails
-
-	// scoreProvider is the zero-LLM score source. When wired, each
-	// task.completed/failed event records the provider's aggregate score
-	// instead of the constant 1.0/0.0. Nil falls back to the constants
-	// (backward compatible).
-	scoreProvider TaskScoreProvider
+	// adapter, dreamCycle and scoreProvider are written by post-construction
+	// setters (bootstrap wiring) and read on every live path (task events,
+	// agent ends, ticks). They are atomic.Pointer so the hot readers stay
+	// lock-free: the subscription loop calls taskScore per task event, and
+	// taking s.mu there would contend with every lastRun/trigger access.
+	adapter       atomic.Pointer[AdapterRunner]
+	dreamCycle    atomic.Pointer[DreamCycle]
+	scores        []float64
+	scoreMu       sync.Mutex
+	guardrails    *EvolutionGuardrails
+	scoreProvider atomic.Pointer[TaskScoreProvider]
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -254,18 +258,37 @@ type EvolutionScheduler struct {
 func NewEvolutionScheduler(subscriber EventStoreSubscriber, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
 	s := &EvolutionScheduler{
 		subscriber:  subscriber,
-		adapter:     adapter,
 		minInterval: 5 * time.Minute,
 		lastRun:     time.Time{},
 		trigger:     TriggerOnIdle,
 	}
 	// enabled defaults to false (atomic.Bool zero value).
+	if adapter != nil {
+		s.adapter.Store(&adapter)
+	}
 
 	for _, opt := range opts {
 		opt(s)
 	}
 
 	return s
+}
+
+// currentAdapter returns the wired adapter (nil when none). Lock-free: the
+// field is an atomic.Pointer written only by the rare setter path.
+func (s *EvolutionScheduler) currentAdapter() AdapterRunner {
+	if p := s.adapter.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// currentScoreProvider returns the wired score provider (nil when none).
+func (s *EvolutionScheduler) currentScoreProvider() TaskScoreProvider {
+	if p := s.scoreProvider.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // RecordScore adds a task score to the sliding window for trend detection.
@@ -307,9 +330,11 @@ func (s *EvolutionScheduler) RecordScore(score float64) {
 //
 //	adapter - the new adapter to use for evolution cycles.
 func (s *EvolutionScheduler) SetAdapter(adapter AdapterRunner) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.adapter = adapter
+	if adapter == nil {
+		s.adapter.Store(nil)
+		return
+	}
+	s.adapter.Store(&adapter)
 }
 
 // OnAgentEnd handles agent completion events as a callback handler.
@@ -324,7 +349,12 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return
 	}
 
-	if s.adapter == nil {
+	// Snapshot the adapter once: the nil check and the Run call below must
+	// observe the SAME value even if SetAdapter swaps it in between (the
+	// field is atomic, but two independent loads could see nil then non-nil
+	// or vice versa).
+	adapter := s.currentAdapter()
+	if adapter == nil {
 		log.WarnContext(ctx, "[Evolution] Adapter is nil, skipping evolution")
 		return
 	}
@@ -345,29 +375,25 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		"agent_id", data.AgentID,
 		"trigger", triggerStr)
 
-	// Cancel any previously running evolution before starting a new one
-	// to prevent concurrent evolution cycles and goroutine leaks.
-	{
-		s.evolveMu.Lock()
-		if s.evolveCancel != nil {
-			s.evolveCancel()
-		}
-		s.evolveMu.Unlock()
-	}
-
-	// Run the adapter asynchronously via errgroup with context for cancellation support.
-	// lastRun is only updated after successful completion so that failures
-	// do not incorrectly trigger the cooldown timer and suppress retries.
+	// Supersede any previously running evolution BEFORE arming the new one,
+	// as ONE critical section. The cancel and the re-arm used to be two
+	// separate evolveMu sections: two concurrent OnAgentEnd calls could both
+	// cancel the old cycle, then both arm their own — leaving the first
+	// cycle running (never cancelled, never waited on by Shutdown) next to
+	// the second, i.e. two concurrent evolution cycles (REVIEW 3.4#8).
 	egCtx, egCancel := context.WithCancel(ctx)
 	eg, _ := errgroup.WithContext(egCtx)
 
 	s.evolveMu.Lock()
+	if s.evolveCancel != nil {
+		s.evolveCancel()
+	}
 	s.evolveCancel = egCancel
 	s.evolveEg = eg
 	s.evolveMu.Unlock()
 
 	eg.Go(func() error {
-		if err := s.adapter.Run(egCtx); err != nil {
+		if err := adapter.Run(egCtx); err != nil {
 			log.ErrorContext(ctx, "[Evolution] Evolution cycle failed",
 				"agent_id", data.AgentID,
 				"error", err)
@@ -624,7 +650,7 @@ func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
 	// unevaluated-majority check reads as "fully evaluated" — the documented
 	// degradation for adapters that cannot introspect their population.
 	totalPop, unevaluated, generation := 0, 0, 0
-	switch a := s.adapter.(type) {
+	switch a := s.currentAdapter().(type) {
 	case populationInspector:
 		totalPop = a.PopulationSize()
 		unevaluated = a.PopulationUnevaluated()
@@ -663,9 +689,11 @@ func (s *EvolutionScheduler) SetEnabled(enabled bool) {
 //
 //	provider - the TaskScoreProvider to use (nil reverts to constants).
 func (s *EvolutionScheduler) SetScoreProvider(provider TaskScoreProvider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.scoreProvider = provider
+	if provider == nil {
+		s.scoreProvider.Store(nil)
+		return
+	}
+	s.scoreProvider.Store(&provider)
 }
 
 // IsEnabled returns whether the scheduler is currently enabled.
@@ -697,7 +725,7 @@ func (s *EvolutionScheduler) LastRunTime() time.Time {
 //
 //	dc - the dream cycle orchestrator (may be nil to detach).
 func (s *EvolutionScheduler) SetDreamCycle(dc *DreamCycle) {
-	s.dreamCycle = dc
+	s.dreamCycle.Store(dc)
 }
 
 // DreamCycle returns the attached dream cycle orchestrator, if any.
@@ -706,7 +734,7 @@ func (s *EvolutionScheduler) SetDreamCycle(dc *DreamCycle) {
 //
 //	*DreamCycle - the dream cycle instance, or nil if not set.
 func (s *EvolutionScheduler) DreamCycle() *DreamCycle {
-	return s.dreamCycle
+	return s.dreamCycle.Load()
 }
 
 // Shutdown gracefully stops the scheduler and cancels all pending evolution goroutines
@@ -751,8 +779,8 @@ func (s *EvolutionScheduler) Shutdown() {
 //
 //	float64 - the score in [0,1].
 func (s *EvolutionScheduler) taskScore(success bool) float64 {
-	if s.scoreProvider != nil {
-		return s.scoreProvider.TaskScore(success)
+	if provider := s.currentScoreProvider(); provider != nil {
+		return provider.TaskScore(success)
 	}
 	if success {
 		return taskScoreSuccess
@@ -800,7 +828,10 @@ func (s *EvolutionScheduler) Tick(ctx context.Context) {
 	if !s.enabled.Load() {
 		return
 	}
-	if s.adapter == nil {
+	// Snapshot once so the nil check and Run observe the same adapter (see
+	// OnAgentEnd).
+	adapter := s.currentAdapter()
+	if adapter == nil {
 		return
 	}
 	// Use the same throttling logic as OnAgentEnd: minInterval protection
@@ -812,7 +843,7 @@ func (s *EvolutionScheduler) Tick(ctx context.Context) {
 	if !s.checkGuardrails(ctx) {
 		return
 	}
-	if err := s.adapter.Run(ctx); err != nil {
+	if err := adapter.Run(ctx); err != nil {
 		log.WarnContext(ctx, "[Evolution] Tick-triggered evolution failed", "error", err)
 		return
 	}

@@ -242,8 +242,12 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 // RestartAgent replaces a crashed agent with a new one that picks up the
 // dead agent's cognitive checkpoint (agent restart). The original
 // agent must be gone (killed). The new agent is spawned with the original's
-// capabilities and cognitive state. The restart budget is checked; if
-// exhausted, ErrRecoveryExhausted is returned. A backoff delay (Backoff
+// capabilities and cognitive state. The restart budget is checked and its
+// slot reserved ATOMICALLY (check+increment under one lock hold); if
+// exhausted, ErrRecoveryExhausted is returned, and concurrent calls for the
+// same corpse cannot collectively exceed the budget. A failed
+// spawn/recover rolls the reservation back, so only successful restarts
+// consume budget. A backoff delay (Backoff
 // doubled per prior attempt, capped at MaxBackoff) is slept before the
 // replacement spawn, so consecutive crash-restart cycles cannot hammer the
 // fabric; a cancelled ctx aborts the wait.
@@ -267,15 +271,33 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 		r.mu.Unlock()
 		return nil, ErrRecoveryExhausted
 	}
+	// Reserve the slot NOW, atomically with the check: the backoff sleep
+	// and spawn below happen outside the lock, so a check-then-charge-later
+	// scheme let N concurrent RestartAgent calls for the same corpse each
+	// pass the gate and collectively blow past MaxRestarts (TOCTOU). If the
+	// spawn or recover below fails, the reservation is rolled back so a
+	// failed attempt still does not consume the budget — the same
+	// "only successful restarts count" semantics as before, just with an
+	// atomic gate.
+	r.restarts[deadAgentID] = attempts + 1
 	r.mu.Unlock()
+	rollbackBudget := func() {
+		r.mu.Lock()
+		// Only undo our own reservation: a concurrent successful restart may
+		// have incremented past it in the meantime.
+		if r.restarts[deadAgentID] == attempts+1 {
+			r.restarts[deadAgentID] = attempts
+		}
+		r.mu.Unlock()
+	}
 	// Crash-restart storm prevention: consecutive crash-restart cycles used
 	// to hammer the fabric instantly (sleep-less restarts, the exact storm
 	// the policy's Backoff was written to prevent). Sleep backoff doubled
 	// per prior attempt, capped at MaxBackoff — the 0-th restart pays the
 	// plain Backoff. The sleeper honors ctx, so a shutdown aborts the wait
 	// instead of spawning a replacement into a dying process. Sleep BEFORE
-	// charging the budget and spawning, and never under r.mu (holding the
-	// lock while sleeping would freeze RestartCount/budget checks).
+	// spawning, and never under r.mu (holding the lock while sleeping would
+	// freeze RestartCount/budget checks).
 	delay := r.policy.Backoff << attempts
 	if delay > r.policy.MaxBackoff || delay <= 0 {
 		// Cap at MaxBackoff; the <=0 guard also catches the (unreachable
@@ -283,6 +305,7 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 		delay = r.policy.MaxBackoff
 	}
 	if err := r.sleep(ctx, delay); err != nil {
+		rollbackBudget()
 		return nil, fmt.Errorf("aresrecovery: restart backoff for %s: %w", deadAgentID, err)
 	}
 	// Arbitration: when a death snapshot exists for THIS
@@ -295,20 +318,16 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	}
 	a, err := r.spawnAgent(ctx, spec)
 	if err != nil {
+		rollbackBudget()
 		return nil, fmt.Errorf("aresrecovery: restart spawn for %s: %w", deadAgentID, err)
 	}
 	// Install the preserved cognitive state.
 	if err := r.agents.Recover(ctx, a.Identity, cognitive); err != nil {
+		rollbackBudget()
 		return nil, fmt.Errorf("aresrecovery: restart recover for %s: %w", deadAgentID, err)
 	}
-	// Only charge the budget after a successful spawn+recover. Re-read the
-	// counter under lock: the value captured before the backoff sleep may be
-	// stale if a concurrent RestartAgent for the same agent also succeeded,
-	// which would let both goroutines write the same attempts+1 and bypass
-	// the budget.
-	r.mu.Lock()
-	r.restarts[deadAgentID]++
-	r.mu.Unlock()
+	// The budget was already charged atomically at the gate above (the
+	// reservation); a successful spawn+recover simply keeps it.
 	// The snapshot is now CONSUMED by this revival; keeping it would let a
 	// much later death of the revived body restore stale cognition.
 	r.agents.ClearSnapshot(deadAgentID)

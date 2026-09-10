@@ -122,8 +122,10 @@ type Kernel struct {
 	register RegisterExecutorFn
 	// askAgent is the collaboration primitive behind ask_agent.
 	// nil means the tool is not wired and ask_agent fails loudly rather than
-	// pretend to collaborate.
-	askAgent AskAgentFn
+	// pretend to collaborate. Held in an atomic.Pointer because serve
+	// replaces it at runtime via SetAskAgent while every LLM tool call reads
+	// it lock-free — a plain field would be a data race.
+	askAgent atomic.Pointer[AskAgentFn]
 	// loopCtx is the lifetime context for plan loops started via the
 	// create_plan loop option. A syscall Kernel is a long-lived managed
 	// object (it backs every agent's tool binder for the whole serve
@@ -171,16 +173,26 @@ func WithMaxPlanLoops(n int) KernelOption {
 // agentipc/aresrecovery. Without it, ask_agent fails loudly at call time
 // (no silent no-op for a deliberately offered action).
 func WithAskAgent(fn AskAgentFn) KernelOption {
-	return func(k *Kernel) { k.askAgent = fn }
+	return func(k *Kernel) { k.SetAskAgent(fn) }
 }
 
 // SetAskAgent replaces the collaboration primitive at runtime. Used at serve
 // time to inject ipc.Send AFTER the Kernel is constructed but the IPC bridge
-// is only built later (setupPeerRegistry). Thread-safe for the one writer /
-// many tool-call readers pattern: askAgent is read on every tool call, and the
-// injection happens once during serve assembly before any task runs.
+// is only built later (setupPeerRegistry). Thread-safe via atomic pointer:
+// askAgent is read on every tool call, and the store here is wait-free for
+// the many-reader path.
 func (k *Kernel) SetAskAgent(fn AskAgentFn) {
-	k.askAgent = fn
+	k.askAgent.Store(&fn)
+}
+
+// askAgentFn returns the injected collaboration primitive, or nil when not
+// wired. (Dereferencing is safe: the pointer is only ever stored non-nil,
+// holding a possibly-nil function value.)
+func (k *Kernel) askAgentFn() AskAgentFn {
+	if p := k.askAgent.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // SeedIDSeq advances the Kernel's shared ID sequence to at least min. Every
@@ -445,12 +457,13 @@ func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult,
 	if a.To == "" {
 		return nil, errors.New("agentsyscall: ask_agent requires a target agent")
 	}
-	if k.askAgent == nil {
+	if fn := k.askAgentFn(); fn == nil {
 		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
-	}
-	from := kctx.CallerID(ctx)
-	if err := k.askAgent(ctx, from, a.To, a.Topic, a.Payload); err != nil {
-		return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
+	} else {
+		from := kctx.CallerID(ctx)
+		if err := fn(ctx, from, a.To, a.Topic, a.Payload); err != nil {
+			return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
+		}
 	}
 	return &AskAgentResult{Accepted: true}, nil
 }

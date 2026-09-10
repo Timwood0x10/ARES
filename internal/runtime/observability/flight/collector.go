@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -17,6 +18,13 @@ import (
 // value in [0, 1] for GA genome evidence (used by the workflow, recovery, and
 // scheduler collectors).
 const keyFitnessValue = "value"
+
+// evidenceQueueSize bounds the buffered evidence emissions between the
+// subscription loop and the background flusher. The enqueue side is
+// non-blocking (drop + count on full): the subscription loop must never wait
+// on evidence-store I/O, or a slow store plus the publisher's drop-on-full
+// semantics would silently lose flight events while the loop was blocked.
+const evidenceQueueSize = 256
 
 // Collector subscribes to the EventStore and populates flight recorder data structures.
 type Collector struct {
@@ -34,9 +42,14 @@ type Collector struct {
 	// agentStartIDs maps agentID → its most recent start event ID so
 	// handleAgentEnd can set ParentID for robust timeline pairing.
 	agentStartIDs map[string]string
-	cancel        context.CancelFunc
-	eg            errgroup.Group
-	mu            sync.RWMutex
+	// evidenceCh carries buffered evidence emissions from the hot
+	// subscription loop to the background flusher (nil when no evidence
+	// store is wired — enqueue is then a no-op).
+	evidenceCh      chan func(context.Context)
+	evidenceDropped atomic.Uint64
+	cancel          context.CancelFunc
+	eg              errgroup.Group
+	mu              sync.RWMutex
 }
 
 // maxPipelines is the ring cap for the pipelines map.
@@ -67,9 +80,15 @@ func NewCollector(cfg CollectorConfig) *Collector {
 		// Recovery fitness evidence is emitted under Source "recovery" so the
 		// GA RecoveryGenome (which filters on that source) consumes it.
 		c.recoveryCollector = evidence.NewCollector(cfg.EvidenceStore, "recovery")
-		// Scheduler fitness evidence is emitted under Source "scheduler" so the
+		// Scheduler fitness evidence: emitted under Source "scheduler" so the
 		// GA SchedulerGenome (which filters on that source) consumes it.
 		c.schedulerCollector = evidence.NewCollector(cfg.EvidenceStore, "scheduler")
+		// Buffered evidence path: the subscription loop enqueues emissions
+		// and a background goroutine performs the store I/O. A synchronous
+		// emit on the hot path (the pre-fix behavior) let a slow evidence
+		// store stall event consumption until the publisher's bounded
+		// channel started dropping flight events.
+		c.evidenceCh = make(chan func(context.Context), evidenceQueueSize)
 	}
 	return c
 }
@@ -91,16 +110,62 @@ func (c *Collector) Start(ctx context.Context) error {
 		c.collectLoop(ctx, ch)
 		return nil
 	})
+	if c.evidenceCh != nil {
+		c.eg.Go(func() error {
+			c.evidenceFlushLoop(ctx)
+			return nil
+		})
+	}
 
 	return nil
 }
 
-// Stop stops the collector.
+// Stop stops the collector. Buffered-but-unflushed evidence at shutdown is
+// dropped (best-effort observability); the flush loop exits on the cancelled
+// context and the enqueue side is non-blocking, so Stop cannot hang on store
+// I/O.
 func (c *Collector) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
 	_ = c.eg.Wait()
+}
+
+// enqueueEvidence buffers one evidence emission for the background flusher.
+// Never blocks: a full queue drops the emission and counts it (the
+// subscription loop's liveness outranks any single evidence record).
+func (c *Collector) enqueueEvidence(fn func(context.Context)) {
+	if c.evidenceCh == nil {
+		return
+	}
+	select {
+	case c.evidenceCh <- fn:
+	default:
+		n := c.evidenceDropped.Add(1)
+		// Log the first drop and then every 100th: visible, not spammy.
+		if n == 1 || n%100 == 0 {
+			log.Warn("flight: evidence queue full; dropping emission", "dropped_total", n)
+		}
+	}
+}
+
+// DroppedEvidence reports how many evidence emissions were dropped because
+// the flush queue was full (the hot-path backpressure signal).
+func (c *Collector) DroppedEvidence() uint64 {
+	return c.evidenceDropped.Load()
+}
+
+// evidenceFlushLoop drains the buffered emissions on a background goroutine,
+// performing the store I/O off the subscription path.
+func (c *Collector) evidenceFlushLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case fn := <-c.evidenceCh:
+			fn(ctx)
+		}
+	}
 }
 
 // Timeline returns the execution timeline.
@@ -155,18 +220,23 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 		return
 	}
 
-	// Emit evidence to the unified Evidence Store.
+	// Emit evidence to the unified Evidence Store — buffered, never on this
+	// hot path (see enqueueEvidence): a slow store must not stall event
+	// consumption behind the publisher's drop-on-full channel.
 	if c.evidenceCollector != nil {
-		if err := c.evidenceCollector.EmitWithMeta(ctx, evidence.KindExecutionTrace,
-			map[string]any{
-				"event_type": evt.Type,
-				"stream_id":  evt.StreamID,
-				"version":    evt.Version,
-			},
-			"event_type", string(evt.Type),
-		); err != nil {
-			log.Warn("flight: emit execution-trace evidence failed", "error", err, "event_type", evt.Type)
-		}
+		ec, evtType, streamID, version := c.evidenceCollector, evt.Type, evt.StreamID, evt.Version
+		c.enqueueEvidence(func(fctx context.Context) {
+			if err := ec.EmitWithMeta(fctx, evidence.KindExecutionTrace,
+				map[string]any{
+					"event_type": evtType,
+					"stream_id":  streamID,
+					"version":    version,
+				},
+				"event_type", string(evtType),
+			); err != nil {
+				log.Warn("flight: emit execution-trace evidence failed", "error", err, "event_type", evtType)
+			}
+		})
 	}
 
 	switch evt.Type {
@@ -187,22 +257,28 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 			successValue = 0.0
 		}
 		if c.workflowCollector != nil {
-			if err := c.workflowCollector.Emit(ctx, evidence.KindFitness,
-				map[string]any{keyFitnessValue: successValue},
-			); err != nil {
-				log.Warn("flight: emit workflow fitness evidence failed", "error", err)
-			}
+			wc, value := c.workflowCollector, successValue
+			c.enqueueEvidence(func(fctx context.Context) {
+				if err := wc.Emit(fctx, evidence.KindFitness,
+					map[string]any{keyFitnessValue: value},
+				); err != nil {
+					log.Warn("flight: emit workflow fitness evidence failed", "error", err)
+				}
+			})
 		}
 		// Scheduler fitness evidence: the GA SchedulerGenome consumes the mean
 		// scheduling-outcome value to score the scheduler policy selected by
 		// evolution. A completed task is a scheduling win (1.0); a failed task
 		// is a loss (0.0).
 		if c.schedulerCollector != nil {
-			if err := c.schedulerCollector.Emit(ctx, evidence.KindFitness,
-				map[string]any{keyFitnessValue: successValue},
-			); err != nil {
-				log.Warn("flight: emit scheduler fitness evidence failed", "error", err)
-			}
+			sc, value := c.schedulerCollector, successValue
+			c.enqueueEvidence(func(fctx context.Context) {
+				if err := sc.Emit(fctx, evidence.KindFitness,
+					map[string]any{keyFitnessValue: value},
+				); err != nil {
+					log.Warn("flight: emit scheduler fitness evidence failed", "error", err)
+				}
+			})
 		}
 	case ares_events.EventFailoverTriggered, ares_events.EventFailoverCompleted:
 		c.handleFailover(evt)
@@ -214,11 +290,14 @@ func (c *Collector) processEvent(ctx context.Context, evt *ares_events.Event) {
 			recoveryValue = 1.0
 		}
 		if c.recoveryCollector != nil {
-			if err := c.recoveryCollector.Emit(ctx, evidence.KindFitness,
-				map[string]any{keyFitnessValue: recoveryValue},
-			); err != nil {
-				log.Warn("flight: emit recovery fitness evidence failed", "error", err)
-			}
+			rc, value := c.recoveryCollector, recoveryValue
+			c.enqueueEvidence(func(fctx context.Context) {
+				if err := rc.Emit(fctx, evidence.KindFitness,
+					map[string]any{keyFitnessValue: value},
+				); err != nil {
+					log.Warn("flight: emit recovery fitness evidence failed", "error", err)
+				}
+			})
 		}
 	case ares_events.EventMemoryDistilled:
 		c.handleMemoryDistilled(evt)

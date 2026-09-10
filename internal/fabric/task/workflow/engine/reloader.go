@@ -137,8 +137,12 @@ func (w *FileWatcher) fsnotifyLoop(dir string) {
 			if !ok {
 				return
 			}
-			// Only handle write and create events
-			if event.Op&fsnotify.Write == 0 && event.Op&fsnotify.Create == 0 {
+			// Handle write/create/remove/rename: removals and renames
+			// change the directory's content too — a deleted workflow file
+			// must leave the loaded map on the next scan, so ignoring
+			// Remove/Rename left a stale workflow registered forever.
+			ops := event.Op & (fsnotify.Write | fsnotify.Create | fsnotify.Remove | fsnotify.Rename)
+			if ops == 0 {
 				continue
 			}
 			// Check if it's a workflow file
@@ -243,6 +247,20 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 		if !exists || le.modTime.After(oldWF.UpdatedAt) {
 			modified = true
 			break
+		}
+	}
+	if !modified {
+		// A workflow present in the map but ABSENT from the loaded set means
+		// its file was deleted (or stopped loading): the directory is the
+		// source of truth, so the map entry must go. Pre-fix the modified
+		// flag only ever considered loaded entries — a deletion alone never
+		// triggered the replace, so deleted workflows stayed registered
+		// forever.
+		for id := range w.workflows {
+			if _, stillThere := loaded[id]; !stillThere {
+				modified = true
+				break
+			}
 		}
 	}
 	if modified {

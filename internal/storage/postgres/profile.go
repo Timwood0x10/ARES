@@ -130,6 +130,77 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*models
 	return &profile, nil
 }
 
+// Upsert atomically inserts the profile or updates the existing row when
+// user_id already exists. SaveProfile used to do exists-then-Create, which
+// lost the race under concurrent writers and surfaced as a duplicate-key
+// error; ON CONFLICT makes the whole decision atomic in the database.
+func (r *ProfileRepository) Upsert(ctx context.Context, profile *models.UserProfile) error {
+	profile.UpdatedAt = time.Now()
+
+	styleJSON, err := json.Marshal(profile.Style)
+	if err != nil {
+		return errors.Wrap(err, "marshal style")
+	}
+
+	budgetJSON, err := json.Marshal(profile.Budget)
+	if err != nil {
+		return errors.Wrap(err, "marshal budget")
+	}
+
+	colorsJSON, err := json.Marshal(profile.Colors)
+	if err != nil {
+		return errors.Wrap(err, "marshal colors")
+	}
+
+	occasionsJSON, err := json.Marshal(profile.Occasions)
+	if err != nil {
+		return errors.Wrap(err, "marshal occasions")
+	}
+
+	preferencesJSON, err := json.Marshal(profile.Preferences)
+	if err != nil {
+		return errors.Wrap(err, "marshal preferences")
+	}
+
+	query := `
+		INSERT INTO user_profiles (user_id, name, gender, age, occupation, style, budget, colors, occasions, body_type, preferences, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (user_id) DO UPDATE SET
+			name = EXCLUDED.name,
+			gender = EXCLUDED.gender,
+			age = EXCLUDED.age,
+			occupation = EXCLUDED.occupation,
+			style = EXCLUDED.style,
+			budget = EXCLUDED.budget,
+			colors = EXCLUDED.colors,
+			occasions = EXCLUDED.occasions,
+			body_type = EXCLUDED.body_type,
+			preferences = EXCLUDED.preferences,
+			updated_at = EXCLUDED.updated_at
+	`
+
+	_, err = r.db.ExecContext(ctx, query,
+		profile.UserID,
+		profile.Name,
+		profile.Gender,
+		profile.Age,
+		profile.Occupation,
+		styleJSON,
+		budgetJSON,
+		colorsJSON,
+		occasionsJSON,
+		profile.BodyType,
+		preferencesJSON,
+		profile.CreatedAt,
+		profile.UpdatedAt,
+	)
+	if err != nil {
+		return errors.Wrap(err, "upsert profile")
+	}
+
+	return nil
+}
+
 // Update updates a user profile.
 func (r *ProfileRepository) Update(ctx context.Context, profile *models.UserProfile) error {
 	profile.UpdatedAt = time.Now()

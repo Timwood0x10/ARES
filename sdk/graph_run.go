@@ -315,7 +315,7 @@ func (r *Runtime) registerGraphAgents(snap graphSnapshot) {
 		if _, ok := r.sched.LookupExecutor(n.agentName); ok {
 			continue // already registered (e.g. via RegisterAgent) — keep it
 		}
-		r.sched.RegisterExecutor(n.agentName, &sdkAgentExecutor{agent: n.agent})
+		r.sched.RegisterExecutor(n.agentName, &sdkAgentExecutor{agent: n.agent, runCtxs: &r.taskRunCtxs})
 	}
 }
 

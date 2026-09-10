@@ -261,21 +261,24 @@ func (t *LogAnalyzer) parseSimpleLog(line string) map[string]interface{} {
 		}
 	}
 
-	// Extract log level
-	levelPatterns := map[string]string{
-		"ERROR":   "ERROR",
-		"ERR":     "ERROR",
-		"FATAL":   "FATAL",
-		"WARN":    "WARNING",
-		"WARNING": "WARNING",
-		"INFO":    "INFO",
-		"DEBUG":   "DEBUG",
-		"TRACE":   "TRACE",
+	// Extract log level. Ordered slice, NOT a map: map iteration made the
+	// classification of a line matching several patterns (e.g. "WARN ...
+	// ERROR") depend on random iteration order, and severity must win
+	// deterministically (FATAL > ERROR > WARNING > INFO > DEBUG > TRACE).
+	levelPatterns := []struct{ pattern, level string }{
+		{"FATAL", "FATAL"},
+		{"ERROR", "ERROR"},
+		{"ERR", "ERROR"},
+		{"WARNING", "WARNING"},
+		{"WARN", "WARNING"},
+		{"INFO", "INFO"},
+		{"DEBUG", "DEBUG"},
+		{"TRACE", "TRACE"},
 	}
 
-	for pattern, lvl := range levelPatterns {
-		if strings.Contains(line, pattern) {
-			level = lvl
+	for _, p := range levelPatterns {
+		if strings.Contains(line, p.pattern) {
+			level = p.level
 			break
 		}
 	}

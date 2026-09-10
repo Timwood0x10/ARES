@@ -30,6 +30,14 @@ func TestIsBlockedIP(t *testing.T) {
 		{name: "ipv4 private rfc1918 10", addr: "10.0.0.1", blocked: true},
 		{name: "ipv4 public cloudflare", addr: "1.1.1.1", blocked: false},
 		{name: "ipv4 link-local", addr: "169.254.1.1", blocked: true},
+		// CGNAT / RFC 6598 100.64.0.0/10 (#61): used by Kubernetes pod CIDRs
+		// and ISP-grade NAT; not covered by IsPrivate (RFC 1918 only).
+		{name: "cgnat range start", addr: "100.64.0.1", blocked: true},
+		{name: "cgnat range end", addr: "100.127.255.254", blocked: true},
+		{name: "cgnat ipv4-mapped", addr: "::ffff:100.64.0.1", blocked: true},
+		{name: "below cgnat range", addr: "100.63.255.255", blocked: false},
+		{name: "above cgnat range", addr: "100.128.0.1", blocked: false},
+		{name: "public 100.x outside cgnat", addr: "100.1.2.3", blocked: false},
 	}
 
 	for _, tt := range tests {

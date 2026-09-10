@@ -3,6 +3,7 @@ package introspect
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -134,3 +135,97 @@ func TestFlightRecorderAdapter_Nil(t *testing.T) {
 		t.Fatalf("nil recorder should yield nil provider, got %+v", got)
 	}
 }
+
+// TestFlightRecorderAdapter_TimelineSummaryFiltersByAgent is the #54
+// regression: flightRecorderAdapter.TimelineSummary discarded its agentID
+// parameter and always returned the global summary, so the per-agent filter
+// on /api/flight/summary never worked. The adapter must route a non-empty
+// agentID to SummaryByAgent.
+func TestFlightRecorderAdapter_TimelineSummaryFiltersByAgent(t *testing.T) {
+	fr := flight.NewFlightRecorder(flight.FlightRecorderConfig{})
+	tl := fr.Timeline()
+
+	base := time.Now()
+	// Agent "slow" has a 2s tool call; agent "fast" a 1ms one.
+	tl.Add(flight.TimelineEvent{
+		ID: "s1", AgentID: "slow", Type: flight.EventToolCall, Name: "tool",
+		StartAt: base,
+	})
+	tl.Add(flight.TimelineEvent{
+		ID: "s1", ParentID: "s1", AgentID: "slow", Type: flight.EventToolResult, Name: "tool",
+		StartAt: base.Add(2 * time.Second),
+	})
+	tl.Add(flight.TimelineEvent{
+		ID: "f1", AgentID: "fast", Type: flight.EventToolCall, Name: "tool",
+		StartAt: base,
+	})
+	tl.Add(flight.TimelineEvent{
+		ID: "f1", ParentID: "f1", AgentID: "fast", Type: flight.EventToolResult, Name: "tool",
+		StartAt: base.Add(time.Millisecond),
+	})
+
+	provider := NewFlightRecorderAdapter(fr)
+
+	all := provider.TimelineSummary("")
+	if all.EventCount != 4 {
+		t.Fatalf("global summary EventCount = %d, want 4", all.EventCount)
+	}
+
+	fast := provider.TimelineSummary("fast")
+	if fast.EventCount != 2 {
+		t.Fatalf("per-agent summary EventCount = %d, want 2 (filter must be applied)", fast.EventCount)
+	}
+	if fast.ToolDuration >= 2*time.Second {
+		t.Fatalf("per-agent summary ToolDuration = %v, must reflect only fast's 1ms call — the agent filter was dropped", fast.ToolDuration)
+	}
+	if fast.ToolDuration < time.Millisecond {
+		t.Fatalf("per-agent summary ToolDuration = %v, want fast's 1ms", fast.ToolDuration)
+	}
+
+	slow := provider.TimelineSummary("slow")
+	if slow.ToolDuration < 2*time.Second {
+		t.Fatalf("slow summary ToolDuration = %v, want ≥2s", slow.ToolDuration)
+	}
+}
+
+// TestFlightSummaryEndpointPassesAgentID verifies the HTTP layer threads the
+// agent_id query parameter into the provider.
+func TestFlightSummaryEndpointPassesAgentID(t *testing.T) {
+	var gotAgentID string
+	ff := &fakeFlight{summary: flight.TimelineSummary{EventCount: 2}}
+	captured := &capturingFlight{inner: ff, onSummary: func(id string) { gotAgentID = id }}
+	s := NewControlServer(nil, WithFlight(captured))
+
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/flight/summary?agent_id=agent-42", nil)
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if gotAgentID != "agent-42" {
+		t.Fatalf("provider received agent_id %q, want agent-42", gotAgentID)
+	}
+}
+
+// capturingFlight wraps a FlightProvider and records the agentID handed to
+// TimelineSummary.
+type capturingFlight struct {
+	inner     *fakeFlight
+	onSummary func(agentID string)
+}
+
+func (c *capturingFlight) TimelineEvents(agentID string) []flight.TimelineEvent {
+	return c.inner.TimelineEvents(agentID)
+}
+func (c *capturingFlight) TimelineSummary(agentID string) flight.TimelineSummary {
+	c.onSummary(agentID)
+	return c.inner.TimelineSummary(agentID)
+}
+func (c *capturingFlight) GraphMermaid() string { return c.inner.GraphMermaid() }
+func (c *capturingFlight) Decisions(agentID string) []flight.Decision {
+	return c.inner.Decisions(agentID)
+}
+func (c *capturingFlight) Diagnostics(agentID string) ([]flight.DiagnosticRecord, flight.CategoryDistribution) {
+	return c.inner.Diagnostics(agentID)
+}
+func (c *capturingFlight) GenealogyMermaid() string { return c.inner.GenealogyMermaid() }

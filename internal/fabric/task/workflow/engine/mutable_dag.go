@@ -37,7 +37,26 @@ type MutableDAG struct {
 	steps         map[string]*Step
 	version       uint64
 	hub           *GraphEventHub
-	SchedulerType string // active scheduler type, set by genome evolution patches
+	schedulerType string // active scheduler type, set by genome evolution patches; guarded by mu
+}
+
+// SetSchedulerType overrides the execution-ordering strategy ("*graph.
+// DefaultScheduler" or "" = FIFO topological order; anything else shuffles
+// ready nodes). Genome evolution patches call this; the field is private so
+// every access is serialized under the DAG lock — the previous public field
+// could be written while GetExecutionOrder read it (data race).
+func (m *MutableDAG) SetSchedulerType(typ string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schedulerType = typ
+}
+
+// SchedulerTypeOf reports the current execution-ordering strategy under the
+// read lock.
+func (m *MutableDAG) SchedulerTypeOf() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.schedulerType
 }
 
 // NewMutableDAG creates a MutableDAG from initial steps.
@@ -367,9 +386,10 @@ func (m *MutableDAG) GetExecutionOrder() ([]string, error) {
 	// When the scheduler type is not the default, shuffle the ready queue
 	// at each step to produce a different execution order. This is how
 	// genome evolution of scheduler config actually affects the agent's
-	// runtime behavior — the PatchChangeScheduler sets SchedulerType on
-	// the live DAG, and GetExecutionOrder reads it here.
-	useRandom := m.SchedulerType != "" && m.SchedulerType != "*graph.DefaultScheduler"
+	// runtime behavior — the PatchChangeScheduler sets the scheduler type
+	// on the live DAG, and GetExecutionOrder reads it here (under the read
+	// lock it already holds).
+	useRandom := m.schedulerType != "" && m.schedulerType != "*graph.DefaultScheduler"
 
 	result := make([]string, 0, len(m.dag.Nodes))
 	for len(queue) > 0 {
@@ -489,28 +509,49 @@ func (m *MutableDAG) Version() uint64 {
 	return m.version
 }
 
-// Steps returns the current step list under read lock.
+// Steps returns a deep copy of the current step list under read lock. The
+// copies are isolated from the live DAG: AddEdge/RemoveEdge/ReplaceNode
+// mutate step.DependsOn and step.Metadata under the write lock, so handing
+// out the live pointers would let an off-lock reader race those mutations.
+// Callers that need identity semantics must use the mutation API instead.
 func (m *MutableDAG) Steps() []*Step {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	result := make([]*Step, 0, len(m.steps))
 	for _, s := range m.steps {
-		result = append(result, s)
+		result = append(result, cloneStepForSnapshot(s))
 	}
 	return result
 }
 
-// StepIndex returns a copy of the step index map under read lock.
+// StepIndex returns a deep copy of the step index map under read lock. Same
+// isolation contract as Steps: every value is an isolated copy, never the
+// live *Step the mutation paths write to.
 func (m *MutableDAG) StepIndex() map[string]*Step {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	idx := make(map[string]*Step, len(m.steps))
 	for id, s := range m.steps {
-		idx[id] = s
+		idx[id] = cloneStepForSnapshot(s)
 	}
 	return idx
+}
+
+// StepSnapshot returns a deep copy of ONE step (nil when the node is gone).
+// It is the single-step form of StepIndex for callers that look up one node
+// per event (the incremental compiler's stepFor): an O(1) copy instead of
+// copying the whole map per graph event.
+func (m *MutableDAG) StepSnapshot(id string) *Step {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	s, ok := m.steps[id]
+	if !ok {
+		return nil
+	}
+	return cloneStepForSnapshot(s)
 }
 
 // NodeMetadata returns a copy of one node's Metadata under read lock.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 )
 
@@ -132,6 +133,22 @@ func (r *Registry) SetStatus(name string, status ComponentStatus) {
 	}
 }
 
+// UpdateStatus mutates one component's status atomically under the registry
+// lock. The orchestrator's status writers previously did a GetStatus →
+// mutate copy → SetStatus round trip: two concurrent writers (e.g. a
+// background loop marking its component Failed while a lifecycle transition
+// stamps StartedAt) each started from their own stale copy, so the later
+// write silently reverted every field the other had set (lost update).
+// UpdateStatus hands each writer the LIVE status pointer under the lock, so
+// field-level updates compose instead of clobbering.
+func (r *Registry) UpdateStatus(name string, fn func(*ComponentStatus)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.entries[name]; ok {
+		fn(&e.status)
+	}
+}
+
 // AllStatuses returns a snapshot of all component statuses.
 func (r *Registry) AllStatuses() []ComponentStatus {
 	r.mu.RLock()
@@ -233,11 +250,14 @@ func (r *Registry) TopologicalOrder() ([]string, error) {
 	return result, nil
 }
 
-// keysOf returns the keys of a string set map for error messages.
+// keysOf returns the SORTED keys of a string set map for error messages:
+// map iteration order is random, so an unsorted list made the cycle-detection
+// error message (and any test asserting on it) nondeterministic.
 func keysOf(m map[string]bool) []string {
 	result := make([]string, 0, len(m))
 	for k := range m {
 		result = append(result, k)
 	}
+	sort.Strings(result)
 	return result
 }

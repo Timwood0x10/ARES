@@ -49,7 +49,7 @@ func (r *Runtime) RegisterAgent(capability string, opts ...AgentOption) *Agent {
 		// sched.RegisterExecutor so the write hits the scheduler's own execMu
 		// (no cross-lock race with the scheduler's reads).
 		r.ensureScheduler()
-		r.sched.RegisterExecutor(capability, &sdkAgentExecutor{agent: a})
+		r.sched.RegisterExecutor(capability, &sdkAgentExecutor{agent: a, runCtxs: &r.taskRunCtxs})
 	}
 	return a
 }

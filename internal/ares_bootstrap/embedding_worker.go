@@ -99,7 +99,11 @@ func startEmbeddingWorker(
 
 	logger := slog.With("component", "embedding_worker")
 
-	comp.bgGroup.Go(func() error {
+	// GoBackground (not a bare bgGroup.Go) so a panic in a poll tick is
+	// contained at the goroutine boundary and logged instead of taking the
+	// process down — the same panic-recover boundary every other bootstrap
+	// background worker runs under.
+	comp.GoBackground(ctx, "embedding_worker", func(ctx context.Context) error {
 		ticker := time.NewTicker(workerCfg.PollInterval)
 		defer ticker.Stop()
 
@@ -137,7 +141,8 @@ func startEmbeddingReconciler(
 
 	logger := slog.With("component", "embedding_reconciler")
 
-	comp.bgGroup.Go(func() error {
+	// GoBackground for the same panic-recover reason as the worker above.
+	comp.GoBackground(ctx, "embedding_reconciler", func(ctx context.Context) error {
 		ticker := time.NewTicker(workerCfg.ReconcileInterval)
 		defer ticker.Stop()
 

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -92,6 +94,15 @@ func (a *ServiceAdapter) Query(_ context.Context, query apiknowledge.Query) ([]*
 // Current implementation: returns a single KnowledgeObject wrapping the
 // raw bytes. A future version will run the full Normalizer →
 // EntityMatcher → Validator → Summarizer pipeline.
+//
+// The object ID is a content hash (sha256 over tenant + raw bytes), NOT the
+// byte length: two different memories of equal length collided on a
+// length-derived ID, so the second one silently overwrote the first wherever
+// IDs are primary keys. Hashing the tenant into the ID also keeps two tenants
+// distilling identical content from sharing one object — the store's ID space
+// is global, not per-namespace. The same content re-distilled reproduces the
+// same ID, preserving the idempotent upsert the length scheme accidentally
+// provided.
 func (a *ServiceAdapter) Distill(_ context.Context, rawMemory []byte, tenantID string) ([]*apiknowledge.KnowledgeObject, error) {
 	if tenantID == "" {
 		return nil, apiknowledge.ErrEmptyTenantID
@@ -99,8 +110,12 @@ func (a *ServiceAdapter) Distill(_ context.Context, rawMemory []byte, tenantID s
 	if len(rawMemory) == 0 {
 		return nil, nil
 	}
+	h := sha256.New()
+	_, _ = h.Write([]byte(tenantID))
+	_, _ = h.Write([]byte{0}) // delimiter: tenant "a" + content "bc" ≠ tenant "ab" + content "c"
+	_, _ = h.Write(rawMemory)
 	obj := &apiknowledge.KnowledgeObject{
-		ID:        fmt.Sprintf("distilled-%d", len(rawMemory)),
+		ID:        "distilled-" + hex.EncodeToString(h.Sum(nil)[:16]),
 		Type:      apiknowledge.ObjectMemory,
 		Namespace: tenantID,
 		Raw:       rawMemory,

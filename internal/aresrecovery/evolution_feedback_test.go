@@ -4,12 +4,31 @@ import (
 	"testing"
 )
 
-// TestCombinedFitness verifies the auto+human blend (0.3 auto / 0.7 human).
+// TestCombinedFitness verifies the auto+human blend (0.3 auto / 0.7 human)
+// with the 1-5 human rating normalized onto the auto score's [0,1] scale.
 func TestCombinedFitness(t *testing.T) {
-	got := CombinedFitness(0.5, 0.8)
-	want := 0.3*0.5 + 0.7*0.8
+	// rating 5 → normalized 1.0 → blend is 0.3*auto + 0.7
+	got := CombinedFitness(0.5, 5)
+	want := 0.3*0.5 + 0.7*1.0
 	if got != want {
-		t.Fatalf("CombinedFitness(0.5, 0.8) = %v, want %v", got, want)
+		t.Fatalf("CombinedFitness(0.5, 5) = %v, want %v", got, want)
+	}
+	// rating 1 → normalized 0.0 → blend is 0.3*auto
+	got = CombinedFitness(0.5, 1)
+	want = 0.3 * 0.5
+	if got != want {
+		t.Fatalf("CombinedFitness(0.5, 1) = %v, want %v", got, want)
+	}
+	// unrated (0) → auto score stands alone, no human contribution
+	if got := CombinedFitness(0.42, 0); got != 0.42 {
+		t.Fatalf("CombinedFitness(0.42, unrated) = %v, want 0.42", got)
+	}
+	// a normalized blend must never exceed 1 or drop below 0 for any inputs
+	if got := CombinedFitness(1.0, 5); got > 1.0 {
+		t.Fatalf("CombinedFitness(1.0, 5) = %v, must stay <= 1", got)
+	}
+	if got := CombinedFitness(0.0, 1); got < 0 {
+		t.Fatalf("CombinedFitness(0.0, 1) = %v, must stay >= 0", got)
 	}
 }
 
@@ -80,5 +99,36 @@ func TestFeedbackStoreMaxEntries(t *testing.T) {
 	// ForCandidate must still resolve the retained entries.
 	if got := store.ForCandidate("d"); got == nil || got.Rating != 3 {
 		t.Fatalf("ForCandidate(d) must resolve after trimming, got %+v", got)
+	}
+}
+
+// TestFeedbackStoreWithMaxEntriesRebuildsIndex verifies that trimming via
+// WithMaxEntries (unlike the Add-path trim) also rebuilds byCandID: stale
+// indices would make ForCandidate mis-resolve or miss retained candidates.
+func TestFeedbackStoreWithMaxEntriesRebuildsIndex(t *testing.T) {
+	store := NewFeedbackStore()
+	store.Add(HumanFeedback{CandidateID: "a", Rating: 1})
+	store.Add(HumanFeedback{CandidateID: "b", Rating: 2})
+	store.Add(HumanFeedback{CandidateID: "c", Rating: 3})
+
+	store.WithMaxEntries(2)
+
+	all := store.All()
+	if len(all) != 2 || all[0].CandidateID != "b" || all[1].CandidateID != "c" {
+		t.Fatalf("trim must keep b,c, got %+v", all)
+	}
+	if got := store.ForCandidate("b"); got == nil || got.Rating != 2 {
+		t.Fatalf("ForCandidate(b) must resolve after WithMaxEntries trim, got %+v", got)
+	}
+	if got := store.ForCandidate("c"); got == nil || got.Rating != 3 {
+		t.Fatalf("ForCandidate(c) must resolve after WithMaxEntries trim, got %+v", got)
+	}
+	if got := store.ForCandidate("a"); got != nil {
+		t.Fatalf("ForCandidate(a) must be gone after trim, got %+v", got)
+	}
+	// The index must still accept new entries after the rebuild.
+	store.Add(HumanFeedback{CandidateID: "d", Rating: 4})
+	if got := store.ForCandidate("d"); got == nil || got.Rating != 4 {
+		t.Fatalf("ForCandidate(d) must resolve after post-trim add, got %+v", got)
 	}
 }

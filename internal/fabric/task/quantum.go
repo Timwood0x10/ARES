@@ -1,6 +1,9 @@
 package taskfabric
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // QuantumStep is one Agent Step executed inside a quantum (design §5 of
 // ares-runtime.md): reasoning → tool call → observation. It returns the
@@ -22,6 +25,13 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 // via re-acquire; the state machine never does RUNNING→RUNNING directly. The
 // fencing token (epoch) is verified on every step so a stale holder cannot
 // drive a task it no longer owns.
+//
+// Panic boundary: a panic inside the step is recovered HERE and converted
+// into a step error so the fabric's own state machine stays consistent —
+// the task is failed/requeued through the normal retry policy instead of
+// being left RUNNING with a live lease until TTL expiry. Pre-fix the panic
+// propagated straight through RunQuantum, skipping the Fail transition
+// entirely; every caller had to install its own recover or crash.
 //
 // The done→COMPLETED path preserves the checkpoint (worker result) so the
 // kernel dispatch can read it back: kernelTaskDispatcher.Dispatch subscribes
@@ -61,7 +71,7 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 	}
 	f.mu.Unlock()
 
-	checkpoint, done, stepErr := step()
+	checkpoint, done, stepErr := runStepRecovered(step)
 	if stepErr != nil {
 		if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
 			return errors.Join(stepErr, failErr)
@@ -78,4 +88,17 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 		return f.Complete(taskID, agentID, epoch)
 	}
 	return f.Yield(taskID, agentID, epoch, checkpoint)
+}
+
+// runStepRecovered executes one step closure with a panic boundary. A panic
+// is reported as an error naming the panicked value — the fabric converts it
+// through the normal Fail path (retry budget or terminal FAILED) instead of
+// unwinding past the state machine.
+func runStepRecovered(step QuantumStep) (checkpoint any, done bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			checkpoint, done, err = nil, false, fmt.Errorf("taskfabric: quantum step panicked: %v", r)
+		}
+	}()
+	return step()
 }

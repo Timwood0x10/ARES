@@ -129,3 +129,80 @@ func newTestPlanner() *Planner {
 	}
 	return planner
 }
+
+// TestToolExecutionBridge_ExecutePlan_HardBlocksDuplicateStepIDs is the #50
+// regression: Execute hard-blocks duplicate_id/empty_id DAG errors, but
+// ExecutePlan (the pre-built-plan path) treated them as advisory warnings.
+// A plan with two steps sharing one StepID silently executed the first step
+// twice and skipped the second (executeMultiStep looks steps up by ID).
+func TestToolExecutionBridge_ExecutePlan_HardBlocksDuplicateStepIDs(t *testing.T) {
+	reg := core.NewRegistry()
+	executed := make([]string, 0, 4)
+	require.NoError(t, reg.Register(&mockTool{name: "stepA", execute: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+		executed = append(executed, "A")
+		return core.Result{Success: true}, nil
+	}}))
+	require.NoError(t, reg.Register(&mockTool{name: "stepB", execute: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+		executed = append(executed, "B")
+		return core.Result{Success: true}, nil
+	}}))
+	planner := newTestPlanner()
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
+	require.NoError(t, err)
+
+	plan := &ExecutionPlan{
+		PlanID: "dup-plan",
+		Steps: []ExecutionStep{
+			{StepID: "s1", ToolName: "stepA"},
+			{StepID: "s1", ToolName: "stepB"}, // duplicate ID — must hard-block
+		},
+	}
+
+	_, err = bridge.ExecutePlan(context.Background(), plan, nil)
+	require.Error(t, err, "duplicate StepID must hard-block ExecutePlan")
+	assert.Contains(t, err.Error(), "duplicate_id")
+	assert.Empty(t, executed, "no step may run for an invalid DAG")
+}
+
+// TestToolExecutionBridge_ExecutePlan_HardBlocksEmptyStepIDs is the #50
+// regression for empty_id: an empty StepID cannot be addressed by
+// dependencies or results and must hard-block, not warn.
+func TestToolExecutionBridge_ExecutePlan_HardBlocksEmptyStepIDs(t *testing.T) {
+	reg := core.NewRegistry()
+	require.NoError(t, reg.Register(&mockTool{name: "stepA"}))
+	planner := newTestPlanner()
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
+	require.NoError(t, err)
+
+	plan := &ExecutionPlan{
+		PlanID: "empty-plan",
+		Steps: []ExecutionStep{
+			{StepID: "", ToolName: "stepA"},
+		},
+	}
+
+	_, err = bridge.ExecutePlan(context.Background(), plan, nil)
+	require.Error(t, err, "empty StepID must hard-block ExecutePlan")
+	assert.Contains(t, err.Error(), "empty_id")
+}
+
+// TestToolExecutionBridge_ExecutePlan_ValidPlanStillRuns guards against
+// over-blocking: a valid single-step plan must execute after the new checks.
+func TestToolExecutionBridge_ExecutePlan_ValidPlanStillRuns(t *testing.T) {
+	reg := core.NewRegistry()
+	require.NoError(t, reg.Register(&mockTool{name: "stepA"}))
+	planner := newTestPlanner()
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
+	require.NoError(t, err)
+
+	plan := &ExecutionPlan{
+		PlanID: "ok-plan",
+		Steps: []ExecutionStep{
+			{StepID: "s1", ToolName: "stepA"},
+			{StepID: "s2", ToolName: "stepA", DependsOn: []string{"s1"}},
+		},
+	}
+	result, err := bridge.ExecutePlan(context.Background(), plan, nil)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+}

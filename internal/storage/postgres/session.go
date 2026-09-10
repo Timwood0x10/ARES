@@ -189,6 +189,9 @@ func (r *SessionRepository) ListByUserID(ctx context.Context, userID string, lim
 	for rows.Next() {
 		var session models.Session
 		var profileJSON, metadataJSON []byte
+		// expired_at is nullable (Create binds NULL for a zero ExpiredAt);
+		// scanning into time.Time fails on NULL and kills the whole listing.
+		var expiredAt sql.NullTime
 
 		if err := rows.Scan(
 			&session.SessionID,
@@ -199,9 +202,12 @@ func (r *SessionRepository) ListByUserID(ctx context.Context, userID string, lim
 			&metadataJSON,
 			&session.CreatedAt,
 			&session.UpdatedAt,
-			&session.ExpiredAt,
+			&expiredAt,
 		); err != nil {
 			return nil, errors.Wrap(err, "scan session")
+		}
+		if expiredAt.Valid {
+			session.ExpiredAt = expiredAt.Time
 		}
 
 		if err := json.Unmarshal(profileJSON, &session.UserProfile); err != nil {

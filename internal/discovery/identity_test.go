@@ -224,3 +224,94 @@ func TestStringMapEqual(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeEndpoint_DistinguishesURLEndpoints is the #52 regression:
+// normalizeEndpoint reduced every endpoint to its last path segment, so
+// http://host-a/mcp and http://host-b/mcp both keyed to "mcp" and merged
+// into ONE identity. URL endpoints (http/https) must key on the full
+// host+path; only local command endpoints use the binary-name form.
+func TestNormalizeEndpoint_DistinguishesURLEndpoints(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		same bool
+	}{
+		{
+			name: "same host different path",
+			a:    "http://host-a/mcp",
+			b:    "http://host-a/other",
+			same: false,
+		},
+		{
+			name: "different host same path",
+			a:    "http://host-a/mcp",
+			b:    "http://host-b/mcp",
+			same: false,
+		},
+		{
+			name: "identical urls",
+			a:    "http://host-a/mcp",
+			b:    "http://host-a/mcp",
+			same: true,
+		},
+		{
+			name: "trailing slash equivalent",
+			a:    "http://host-a/mcp/",
+			b:    "http://host-a/mcp",
+			same: true,
+		},
+		{
+			name: "host case-insensitive",
+			a:    "http://Host-A/mcp",
+			b:    "http://host-a/mcp",
+			same: true,
+		},
+		{
+			name: "https vs http differ",
+			a:    "https://host-a/mcp",
+			b:    "http://host-a/mcp",
+			same: false,
+		},
+		{
+			name: "url vs local command with same last segment",
+			a:    "http://host-a/mcp",
+			b:    "/usr/local/bin/mcp",
+			same: false,
+		},
+		{
+			name: "local binary path forms still merge",
+			a:    "codegraph",
+			b:    "/usr/local/bin/codegraph",
+			same: true,
+		},
+		{
+			name: "launcher still includes argument",
+			a:    "uvx blender-mcp",
+			b:    "uvx other-mcp",
+			same: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ka, kb := normalizeEndpoint(tt.a), normalizeEndpoint(tt.b)
+			if (ka == kb) != tt.same {
+				t.Errorf("normalizeEndpoint(%q)=%q vs normalizeEndpoint(%q)=%q, same=%v want %v",
+					tt.a, ka, tt.b, kb, ka == kb, tt.same)
+			}
+		})
+	}
+}
+
+// TestMergeRecords_DoesNotMergeDistinctURLs locks the identity consequence:
+// two records for different */mcp URLs must produce two services, not one.
+func TestMergeRecords_DoesNotMergeDistinctURLs(t *testing.T) {
+	records := []DiscoveryRecord{
+		{Source: "a", Endpoint: "http://host-a:8080/mcp"},
+		{Source: "b", Endpoint: "http://host-b:9090/mcp"},
+	}
+	services := mergeRecords(records)
+	if len(services) != 2 {
+		t.Fatalf("merged %d distinct URL endpoints into %d services, want 2", 2, len(services))
+	}
+}

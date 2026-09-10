@@ -217,24 +217,37 @@ func (p *RollbackPolicy) Evaluate() *RollbackDecision {
 // across the current window. Caller must hold at least a read lock.
 //
 // Returns:
-//   - bool: true if at least 3 samples show monotonic decline in the recent half.
+//   - bool: true if the recent half of the window declines monotonically,
+//     with at least two observed declines.
+//
+// For windows shorter than 5 entries the recent half holds fewer than two
+// comparisons, so the "at least 2 declines" gate could never fire and
+// gradual-decline detection silently vanished for windowSize 3 and 4
+// (REVIEW 3.4#3). In that case the whole window is inspected instead.
 func (p *RollbackPolicy) isGradualDeclineLocked() bool {
-	if len(p.scoreHistory) < 3 {
+	n := len(p.scoreHistory)
+	if n < 3 {
 		return false
 	}
 
 	// Check the most recent half of the window for monotonic decline.
-	checkStart := len(p.scoreHistory) / 2
+	checkStart := n / 2
+	if n-checkStart-1 < 2 {
+		// Recent half has fewer than two comparisons: fall back to the
+		// whole window so short windows still detect a consistent decline.
+		checkStart = 0
+	}
 
 	declines := 0
-	for i := checkStart; i < len(p.scoreHistory)-1; i++ {
+	for i := checkStart; i < n-1; i++ {
 		if p.scoreHistory[i+1].Score < p.scoreHistory[i].Score {
 			declines++
 		}
 	}
 
-	// At least 2 consecutive declines in the recent half.
-	return declines >= 2 && declines >= (len(p.scoreHistory)-checkStart-1)
+	// Every comparison in the checked range declined, and at least two of
+	// them exist.
+	return declines >= 2 && declines >= n-1-checkStart
 }
 
 // Reset clears all recorded score history.
@@ -277,11 +290,18 @@ func WithASMGuardrails(guardrails *EvolutionGuardrails) ASMOption {
 // ActiveStrategyManager manages strategy deployment and rollback using
 // a StrategyStore for persistence. It tracks the current and previous
 // strategies, and uses a RollbackPolicy to detect degradation.
+//
+// Locking: deployMu serializes the store-I/O operations (Deploy/Rollback)
+// so each persists and applies atomically; mu guards only the in-memory
+// current/previous state. The store I/O deliberately does NOT run under
+// mu — it can block on the database while Current()/Previous() readers
+// need the state lock (REVIEW 3.4#2).
 type ActiveStrategyManager struct {
 	store      StrategyStore // persistent strategy storage
 	current    *mutation.Strategy
 	previous   *mutation.Strategy
 	mu         sync.RWMutex
+	deployMu   sync.Mutex // serializes Deploy/Rollback across their store I/O
 	rollback   *RollbackPolicy
 	guardrails *EvolutionGuardrails
 }
@@ -329,21 +349,23 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 		return errors.New("strategy must not be nil")
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Serialize deploys/rollbacks so the store write and the in-memory
+	// transition apply as one unit (see the struct comment for why this is
+	// a dedicated lock rather than mu).
+	m.deployMu.Lock()
+	defer m.deployMu.Unlock()
 
-	// Save current as previous before overwriting.
-	m.previous = m.current
-	m.current = strategy.Clone()
-
-	// Persist to store using evolution.Strategy type.
+	// Persist BEFORE mutating in-memory state: a store failure then leaves
+	// the in-memory state untouched (no rollback dance needed).
 	evoStrategy := strategyToEvoStrategy(strategy)
 	if err := m.store.SetActive(ctx, evoStrategy); err != nil {
-		// Rollback in-memory state on store failure.
-		m.current = m.previous
-		m.previous = nil
 		return fmt.Errorf("store set active: %w", err)
 	}
+
+	m.mu.Lock()
+	m.previous = m.current
+	m.current = strategy.Clone()
+	m.mu.Unlock()
 
 	log.Info("[ActiveStrategyManager] Strategy deployed",
 		"strategy_id", strategy.ID,
@@ -363,17 +385,29 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 				"events", len(postResult.Events),
 			)
 			// Rollback: restore previous as active.
-			if m.previous != nil {
-				prevEvo := strategyToEvoStrategy(m.previous)
+			m.mu.RLock()
+			previous := m.previous
+			m.mu.RUnlock()
+			if previous != nil {
+				prevEvo := strategyToEvoStrategy(previous)
 				if err := m.store.SetActive(ctx, prevEvo); err != nil {
-					return fmt.Errorf("store set active (rollback): %w", err)
+					// State reality: the deploy itself already persisted and
+					// the in-memory state still points at the NEW strategy,
+					// so the flagged strategy REMAINS active. The error must
+					// say that instead of reading as "deployment reverted"
+					// (REVIEW 3.4#2).
+					return fmt.Errorf(
+						"guardrail critical after deploy: rollback to previous strategy could not be persisted (strategy %s remains active): %w",
+						strategy.ID, err)
 				}
-				m.current = m.previous
+				m.mu.Lock()
+				m.current = previous
 				m.previous = nil
+				m.mu.Unlock()
 				log.Info("[ActiveStrategyManager] Auto-rollback completed",
-					"strategy_id", m.current.ID,
-					"version", m.current.Version,
-					"score", m.current.Score,
+					"strategy_id", previous.ID,
+					"version", previous.Version,
+					"score", previous.Score,
 					"reason", "guardrail critical after deploy",
 					"previous_window_avg", m.rollbackWindowAvg(),
 				)
@@ -403,14 +437,18 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 var ErrNoPreviousStrategy = errors.New("no previous strategy available for rollback")
 
 func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strategy, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Serialize with Deploy so the store write and the in-memory swap apply
+	// as one unit (see the struct comment).
+	m.deployMu.Lock()
+	defer m.deployMu.Unlock()
 
+	m.mu.RLock()
 	if m.previous == nil {
+		m.mu.RUnlock()
 		return nil, ErrNoPreviousStrategy
 	}
-
 	previousClone := m.previous.Clone()
+	m.mu.RUnlock()
 
 	// Persist rollback to store.
 	evoStrategy := strategyToEvoStrategy(previousClone)
@@ -419,8 +457,10 @@ func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strateg
 	}
 
 	// Swap: current becomes previous (for potential re-rollback).
+	m.mu.Lock()
 	m.previous = m.current
 	m.current = previousClone
+	m.mu.Unlock()
 
 	log.Info("[ActiveStrategyManager] Rollback completed",
 		"strategy_id", previousClone.ID,

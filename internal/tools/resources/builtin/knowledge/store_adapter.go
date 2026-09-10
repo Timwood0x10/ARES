@@ -86,6 +86,41 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 	}
 	obj := fromKnowledgeItem(item)
 	obj.Namespace = tenantID
+	// Preserve the fields the round trip through KnowledgeItem cannot
+	// carry (Raw, Representations, EmbeddingModel, Confidence, Version,
+	// Type, Status, Quality, Relations). Overwriting the stored object
+	// with a bare conversion previously dropped the embedding metadata, so
+	// every knowledge_update silently degraded that object's semantic
+	// recall to lexical-only.
+	if existing, err := a.store.Get(ctx, item.ID); err == nil && existing != nil && existing.Namespace == tenantID {
+		if obj.Raw == nil {
+			obj.Raw = existing.Raw
+		}
+		if len(existing.Representations) > 0 {
+			obj.Representations = existing.Representations
+		}
+		if existing.EmbeddingModel != "" {
+			obj.EmbeddingModel = existing.EmbeddingModel
+		}
+		if existing.Type != "" {
+			obj.Type = existing.Type
+		}
+		if existing.Status != "" {
+			obj.Status = existing.Status
+		}
+		if existing.Quality != nil {
+			obj.Quality = existing.Quality
+		}
+		if len(existing.Relations) > 0 {
+			obj.Relations = existing.Relations
+		}
+		if existing.Confidence != 0 {
+			obj.Confidence = existing.Confidence
+		}
+		if existing.Version > obj.Version {
+			obj.Version = existing.Version
+		}
+	}
 	if err := a.store.Save(ctx, obj); err != nil {
 		return nil, err
 	}

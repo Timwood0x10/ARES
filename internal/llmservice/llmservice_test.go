@@ -11,13 +11,14 @@ import (
 
 // mockLLMClient implements LLMClient for testing.
 type mockLLMClient struct {
-	generateFunc       func(ctx context.Context, prompt string) (string, error)
-	generateStreamFunc func(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
-	chatFunc           func(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool) (*llmcore.GenerateResponse, error)
-	isEnabledFunc      func() bool
-	getProviderFunc    func() string
-	getModelFunc       func() string
-	closeFunc          func()
+	generateFunc          func(ctx context.Context, prompt string) (string, error)
+	generateWithParamFunc func(ctx context.Context, prompt string, params map[string]any) (string, error)
+	generateStreamFunc    func(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
+	chatFunc              func(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool) (*llmcore.GenerateResponse, error)
+	isEnabledFunc         func() bool
+	getProviderFunc       func() string
+	getModelFunc          func() string
+	closeFunc             func()
 }
 
 func (m *mockLLMClient) Generate(ctx context.Context, prompt string) (string, error) {
@@ -25,6 +26,13 @@ func (m *mockLLMClient) Generate(ctx context.Context, prompt string) (string, er
 		return m.generateFunc(ctx, prompt)
 	}
 	return "", nil
+}
+
+func (m *mockLLMClient) GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error) {
+	if m.generateWithParamFunc != nil {
+		return m.generateWithParamFunc(ctx, prompt, params)
+	}
+	return m.Generate(ctx, prompt)
 }
 
 func (m *mockLLMClient) GenerateStream(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error) {
@@ -766,5 +774,52 @@ func TestErrorSentinels(t *testing.T) {
 	}
 	if ErrLLMNotAvailable.Error() != "LLM service not available" {
 		t.Errorf("unexpected message: %q", ErrLLMNotAvailable.Error())
+	}
+}
+
+// TestService_Generate_PlainTextForwardsParams locks REVIEW 3.8: the
+// plain-text path used to call Generate with no overrides, silently
+// dropping the request-level Temperature/MaxTokens so provider defaults
+// always won.
+func TestService_Generate_PlainTextForwardsParams(t *testing.T) {
+	var gotParams map[string]any
+	mockClient := &mockLLMClient{
+		generateWithParamFunc: func(ctx context.Context, prompt string, params map[string]any) (string, error) {
+			gotParams = params
+			return "ok", nil
+		},
+	}
+	s := newTestService(mockClient)
+
+	temp := 0.123
+	maxTok := 777
+	_, err := s.Generate(context.Background(), &llmcore.GenerateRequest{
+		Messages:    []*llmcore.LLMMessage{{Role: "user", Content: "hi"}},
+		Temperature: &temp,
+		MaxTokens:   &maxTok,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotParams == nil {
+		t.Fatal("plain-text path must use GenerateWithParams")
+	}
+	if v, ok := gotParams["temperature"].(float64); !ok || v != temp {
+		t.Errorf("temperature not forwarded: %v", gotParams["temperature"])
+	}
+	if v, ok := gotParams["max_tokens"].(int); !ok || v != maxTok {
+		t.Errorf("max_tokens not forwarded: %v", gotParams["max_tokens"])
+	}
+
+	// No overrides → nil params (configured defaults), not an empty map.
+	gotParams = map[string]any{"sentinel": true}
+	_, err = s.Generate(context.Background(), &llmcore.GenerateRequest{
+		Messages: []*llmcore.LLMMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotParams != nil {
+		t.Errorf("expected nil params when request carries no overrides, got %v", gotParams)
 	}
 }

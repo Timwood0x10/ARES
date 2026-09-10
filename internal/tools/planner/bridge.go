@@ -48,6 +48,19 @@ func NewToolExecutionBridge(registry *core.Registry, planner *Planner, evidence 
 	}, nil
 }
 
+// isHardBlockDAGError reports whether a DAG validation error code must abort
+// execution. Structural problems (cycles, missing dependencies, duplicate or
+// empty step IDs) make the plan unexecutable or silently wrong — duplicate
+// IDs make executeMultiStep resolve every lookup to the first step, skipping
+// the others (#50). Everything else (e.g. IO incompatibility) is advisory.
+func isHardBlockDAGError(code string) bool {
+	switch code {
+	case "cycle_detected", "missing_dependency", "incompatible_io", "duplicate_id", "empty_id":
+		return true
+	}
+	return false
+}
+
 // Execute runs a tool by name with fallback to planner resolution.
 //
 // For single-step plans, the tool is executed directly.
@@ -134,8 +147,7 @@ func (b *ToolExecutionBridge) Execute(
 	if errs := validator.Validate(plan); len(errs) > 0 {
 		for _, e := range errs {
 			// Hard-block on structural errors.
-			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" ||
-				e.Code == "duplicate_id" || e.Code == "empty_id" {
+			if isHardBlockDAGError(e.Code) {
 				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %w", e)
 			}
 			// Advisory warnings only (IO incompatibility, etc).
@@ -191,7 +203,7 @@ func (b *ToolExecutionBridge) ExecutePlan(
 	validator := NewDAGValidator()
 	if errs := validator.Validate(plan); len(errs) > 0 {
 		for _, e := range errs {
-			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" {
+			if isHardBlockDAGError(e.Code) {
 				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %w", e)
 			}
 			log.Warn("tool_bridge: plan DAG advisory",

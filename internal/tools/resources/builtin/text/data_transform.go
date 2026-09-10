@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
@@ -169,17 +170,25 @@ func (t *DataTransform) jsonToCSV(ctx context.Context, jsonData, delimiter strin
 		}
 	}
 
-	// Sort keys for consistent output
+	// Sort keys for consistent output (the comment used to say "sort" while
+	// the code kept map order — nondeterministic columns across runs).
 	keys := make([]string, 0, len(keySet))
 	for key := range keySet {
 		keys = append(keys, key)
 	}
+	sort.Strings(keys)
 
 	// Build CSV
 	var csvBuilder strings.Builder
 
-	// Write header
-	csvBuilder.WriteString(strings.Join(keys, delimiter) + "\n")
+	// Write header. Keys go through the SAME quoting rule as values: a key
+	// containing the delimiter (or a quote/newline) previously produced a
+	// header with more columns than every data row — silently corrupted CSV.
+	header := make([]string, len(keys))
+	for i, key := range keys {
+		header[i] = csvField(key, delimiter)
+	}
+	csvBuilder.WriteString(strings.Join(header, delimiter) + "\n")
 
 	// Write data rows
 	for _, record := range records {
@@ -194,11 +203,7 @@ func (t *DataTransform) jsonToCSV(ctx context.Context, jsonData, delimiter strin
 			if val, exists := obj[key]; exists {
 				value = fmt.Sprintf("%v", val)
 			}
-			// Escape delimiter if present
-			if strings.Contains(value, delimiter) || strings.Contains(value, "\"") {
-				value = fmt.Sprintf("\"%s\"", strings.ReplaceAll(value, "\"", "\"\""))
-			}
-			row[i] = value
+			row[i] = csvField(value, delimiter)
 		}
 
 		csvBuilder.WriteString(strings.Join(row, delimiter) + "\n")
@@ -209,6 +214,17 @@ func (t *DataTransform) jsonToCSV(ctx context.Context, jsonData, delimiter strin
 		"data":      csvBuilder.String(),
 		"row_count": len(records),
 	}), nil
+}
+
+// csvField applies RFC 4180 quoting to one CSV field: fields containing the
+// delimiter, a double quote, or a line break are wrapped in double quotes
+// with embedded quotes doubled. (Newlines previously broke the row layout
+// unquoted.)
+func csvField(value, delimiter string) string {
+	if strings.ContainsAny(value, delimiter+"\"\r\n") {
+		return "\"" + strings.ReplaceAll(value, "\"", "\"\"") + "\""
+	}
+	return value
 }
 
 // flattenJSON flattens nested JSON object.

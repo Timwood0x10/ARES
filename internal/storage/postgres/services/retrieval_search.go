@@ -50,8 +50,14 @@ func (s *RetrievalService) searchSingleQuery(ctx context.Context, q WeightedQuer
 					mu.Lock()
 					vectorResults = append(vectorResults, results...)
 					mu.Unlock()
+					s.retrievalGuard.RecordEmbeddingSuccess()
+				} else {
+					// The embedding call failed (getEmbedding returns nil on
+					// any error). Recording it as a success — as the old code
+					// did unconditionally — kept the breaker closed forever,
+					// so a dead embedding service was never isolated.
+					s.retrievalGuard.RecordEmbeddingFailure()
 				}
-				s.retrievalGuard.RecordEmbeddingSuccess()
 			} else {
 				s.retrievalGuard.RecordEmbeddingFailure()
 				s.logger.Warn("Embedding circuit breaker open", "query", q.Query, "error", err)

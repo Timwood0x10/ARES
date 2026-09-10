@@ -3,6 +3,7 @@ package distillation
 
 import (
 	"strings"
+	"sync"
 )
 
 const (
@@ -13,6 +14,7 @@ const (
 
 // NoiseFilter provides filtering capabilities to remove low-value and noisy messages.
 type NoiseFilter struct {
+	mu                        sync.RWMutex
 	enableCodeFilter          bool
 	enableStacktraceFilter    bool
 	enableLogFilter           bool
@@ -47,6 +49,21 @@ func NewNoiseFilterWithConfig(config *NoiseFilterConfig) *NoiseFilter {
 	}
 }
 
+// UpdateConfig replaces the filter toggles at runtime. The fields are
+// guarded because the distiller's UpdateConfig may run concurrently with an
+// in-flight DistillConversation.
+func (f *NoiseFilter) UpdateConfig(config *NoiseFilterConfig) {
+	if config == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enableCodeFilter = config.EnableCodeFilter
+	f.enableStacktraceFilter = config.EnableStacktraceFilter
+	f.enableLogFilter = config.EnableLogFilter
+	f.enableMarkdownTableFilter = config.EnableMarkdownTableFilter
+}
+
 // IsNoise determines if a message is noise and should be filtered out.
 //
 // Args:
@@ -67,6 +84,14 @@ func (f *NoiseFilter) IsNoise(text string) bool {
 	}
 
 	lower := strings.ToLower(text)
+
+	// Snapshot the toggle state: UpdateConfig may swap it concurrently.
+	f.mu.RLock()
+	enableCode := f.enableCodeFilter
+	enableStacktrace := f.enableStacktraceFilter
+	enableLog := f.enableLogFilter
+	enableMarkdownTable := f.enableMarkdownTableFilter
+	f.mu.RUnlock()
 
 	// Filter out casual acknowledgments (English and Chinese)
 	casualAcknowledgments := []string{
@@ -89,22 +114,22 @@ func (f *NoiseFilter) IsNoise(text string) bool {
 	}
 
 	// Filter code blocks if enabled
-	if f.enableCodeFilter && f.CodeBlockFilter(text) {
+	if enableCode && f.CodeBlockFilter(text) {
 		return true
 	}
 
 	// Filter stacktrace if enabled
-	if f.enableStacktraceFilter && f.StacktraceFilter(text) {
+	if enableStacktrace && f.StacktraceFilter(text) {
 		return true
 	}
 
 	// Filter logs if enabled
-	if f.enableLogFilter && f.LogFilter(text) {
+	if enableLog && f.LogFilter(text) {
 		return true
 	}
 
 	// Filter markdown tables if enabled
-	if f.enableMarkdownTableFilter && f.MarkdownTableFilter(text) {
+	if enableMarkdownTable && f.MarkdownTableFilter(text) {
 		return true
 	}
 

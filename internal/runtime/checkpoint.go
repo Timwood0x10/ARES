@@ -199,8 +199,23 @@ func (p *CheckpointPlugin) Start(_ context.Context, bus EventBus) error {
 	return nil
 }
 
-// Stop shuts down the checkpoint plugin.
+// Stop shuts down the checkpoint plugin. It also drops every in-memory
+// snapshot: Cleanup has no production caller today, so a long-lived process
+// accumulated one map entry (and its full checkpoint state) per execution
+// forever. Stopping the plugin is the last point where those entries are
+// unreachable by definition.
+//
+// TODO(tech-debt): wire Cleanup into the execution-terminal path (the
+// loop's final round / workflow finalize) so entries are reclaimed promptly
+// instead of living until plugin Stop.
 func (p *CheckpointPlugin) Stop(_ context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.snapshots) > 0 {
+		log.Debug("checkpoint: dropping in-memory snapshots at Stop", "count", len(p.snapshots))
+	}
+	p.snapshots = make(map[string]*ExperienceCheckpoint)
+	p.stepCount = make(map[string]int)
 	return nil
 }
 
@@ -349,6 +364,11 @@ func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
 	cp.LoopHistory = append([]LoopEntry(nil), ckpt.LoopHistory...)
 	cp.ErrorHistory = append([]ErrorEntry(nil), ckpt.ErrorHistory...)
 	cp.ScoringSignals = append([]ScoringSignal(nil), ckpt.ScoringSignals...)
+	// DAGNodes/DAGEdges were previously NOT deep-copied: the shallow slice
+	// headers let a caller mutate the live checkpoint's DAG topology (and
+	// DAGEdges is a struct slice, so even append-aliasing could corrupt it).
+	cp.DAGNodes = append([]string(nil), ckpt.DAGNodes...)
+	cp.DAGEdges = append([]DAGEdge(nil), ckpt.DAGEdges...)
 	return &cp
 }
 

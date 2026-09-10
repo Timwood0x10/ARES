@@ -46,6 +46,16 @@ var _ aresrecovery.PopulationPolicySource = (*evolutionPopulationPolicySource)(n
 // ActivePopulationPolicy derives the current population delta from the active
 // evolution strategy's params. With no active strategy (or no population params)
 // the policy is empty (no spawn, no retire), preserving prior behavior.
+//
+// Idempotency: the kernel applies this policy on a repeating loop (default
+// every minute), and the population adapter skips spawn specs whose identity
+// already has a live agent. A spec WITHOUT an identity would get a fresh
+// fabric-assigned id on every apply — unbounded agent generation. To close
+// that hole, anonymous specs are stamped with a deterministic identity derived
+// from the active strategy ID and the spec's position in the spawn list, so
+// re-applying the SAME strategy resolves to the SAME identities and the
+// adapter's existing dedup suppresses the respawn. A new strategy (different
+// ID) intentionally produces new identities — it is a new population decision.
 func (s *evolutionPopulationPolicySource) ActivePopulationPolicy(ctx context.Context) (aresrecovery.PopulationPolicy, error) {
 	st, err := s.store.GetActive(ctx)
 	if err != nil {
@@ -62,6 +72,13 @@ func (s *evolutionPopulationPolicySource) ActivePopulationPolicy(ctx context.Con
 		spawn, err := asSpawnSpecs(v)
 		if err != nil {
 			return aresrecovery.PopulationPolicy{}, fmt.Errorf("bootstrap population policy: %s: %w", populationSpawnParam, err)
+		}
+		// Stamp deterministic identities on anonymous specs (see the
+		// idempotency note above).
+		for i := range spawn {
+			if spawn[i].Identity == "" {
+				spawn[i].Identity = fmt.Sprintf("evo-pop-%s-%d", st.ID, i)
+			}
 		}
 		policy.Spawn = spawn
 	}

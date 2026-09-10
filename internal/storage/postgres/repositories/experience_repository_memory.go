@@ -175,7 +175,18 @@ func (r *memoryExperienceRepository) UpdateEmbedding(
 	if !ok || (tenantID != "" && exp.TenantID != tenantID) {
 		return nil
 	}
-	exp.Embedding = embedding
+	// Copy the caller's slice before storing: embedding buffers are
+	// frequently reused by the embedding client, and storing the caller's
+	// backing array would let a later buffer reuse race with every reader
+	// holding a previously returned copy (deepCopyExperience shares the
+	// slice contents, so the copy must happen HERE, at the boundary).
+	if embedding != nil {
+		emb := make([]float64, len(embedding))
+		copy(emb, embedding)
+		exp.Embedding = emb
+	} else {
+		exp.Embedding = nil
+	}
 	exp.EmbeddingModel = model
 	exp.EmbeddingVersion = version
 	return nil
@@ -244,8 +255,11 @@ func (r *memoryExperienceRepository) SearchByKeyword(ctx context.Context, query,
 			continue
 		}
 		if q == "" || strings.Contains(strings.ToLower(exp.Problem), q) || strings.Contains(strings.ToLower(exp.Solution), q) {
-			cp := *exp
-			out = append(out, &cp)
+			// Deep copy: a shallow copy shares the Embedding slice and
+			// Metadata map with the stored row, and UpdateEmbedding /
+			// future in-place mutations would race with callers reading
+			// the returned copy after the RLock is released.
+			out = append(out, deepCopyExperience(exp))
 			if limit > 0 && len(out) >= limit {
 				break
 			}
@@ -278,6 +292,11 @@ func (r *memoryExperienceRepository) IncrementUsageCount(ctx context.Context, te
 
 // DecrementRank decreases the score of an experience as negative feedback.
 //
+// Mirrors the PG semantics (experience_repository.go): a 10% penalty with a
+// floor of 0 — score = GREATEST(score - score*0.1, 0). The previous
+// absolute `exp.Score--` diverged from PG (a -1.0 step on a 0-100 scale is
+// negligible, on a 0-1 scale it is catastrophic).
+//
 // Args:
 //
 //	ctx - unused (kept for interface conformance).
@@ -294,7 +313,10 @@ func (r *memoryExperienceRepository) DecrementRank(ctx context.Context, tenantID
 	if !ok || exp.TenantID != tenantID {
 		return nil
 	}
-	exp.Score--
+	exp.Score -= exp.Score * 0.1
+	if exp.Score < 0 {
+		exp.Score = 0
+	}
 	return nil
 }
 
@@ -322,8 +344,7 @@ func (r *memoryExperienceRepository) ListByType(ctx context.Context, expType, te
 		if expType != "" && exp.Type != expType {
 			continue
 		}
-		cp := *exp
-		out = append(out, &cp)
+		out = append(out, deepCopyExperience(exp))
 		if limit > 0 && len(out) >= limit {
 			break
 		}
@@ -355,8 +376,7 @@ func (r *memoryExperienceRepository) ListByAgent(ctx context.Context, agentID, t
 		if agentID != "" && exp.AgentID != agentID {
 			continue
 		}
-		cp := *exp
-		out = append(out, &cp)
+		out = append(out, deepCopyExperience(exp))
 		if limit > 0 && len(out) >= limit {
 			break
 		}
@@ -365,5 +385,8 @@ func (r *memoryExperienceRepository) ListByAgent(ctx context.Context, agentID, t
 }
 
 func idOf(n int64) string {
-	return fmt.Sprintf("mem-exp-%03d", n)
+	// Plain %d: zero-padding buys nothing (no consumer parses the width)
+	// and only makes the first 999 IDs look sortable-as-strings before the
+	// format silently widens at 1000.
+	return fmt.Sprintf("mem-exp-%d", n)
 }

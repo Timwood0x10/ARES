@@ -340,14 +340,16 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 	}
 
 	// 5. Apply minimum score filter
-	s.logger.Info("Before score filter", "results_count", len(finalResults), "min_score", req.MinScore)
+	s.logger.Debug("Before score filter", "results_count", len(finalResults), "min_score", req.MinScore)
+	// Per-result logging is Debug, not Info: at Info level every search
+	// result's content (even truncated) floods production logs on hot paths.
 	for i, result := range finalResults {
-		s.logger.Info("Result before filter", "index", i, "score", result.Score, "content", truncate.WithEllipsis(result.Content, 50))
+		s.logger.Debug("Result before filter", "index", i, "score", result.Score, "content", truncate.WithEllipsis(result.Content, 50))
 	}
 
 	finalResults = s.filterByScore(finalResults, req.MinScore)
 
-	s.logger.Info("After score filter", "results_count", len(finalResults))
+	s.logger.Debug("After score filter", "results_count", len(finalResults))
 
 	// 6. Generate retrieval trace (if enabled)
 	if req.EnableTrace {

@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,13 @@ type sdkAgentExecutor struct {
 	// falls back to the agent name); spawn_agent sets it to the declared
 	// capability so a spawned peer can match create_task sub-tasks.
 	typ models.AgentType
+	// runCtxs is the Runtime's per-task context registry (task ID →
+	// context.Context). When a Submit caller's wait context is registered
+	// for the executing task, execution is merged onto it so a Submit
+	// timeout/cancel ABORTS the in-flight agent run — the scheduler's own
+	// ctx alone never fires on a submitter timeout. Nil disables the merge
+	// (plain scheduler ctx, pre-existing behavior for foreign executors).
+	runCtxs *sync.Map
 }
 
 var _ kernel.CapabilityExecutor = (*sdkAgentExecutor)(nil)
@@ -48,9 +56,35 @@ func (e *sdkAgentExecutor) Type() models.AgentType {
 	return models.AgentType(e.agent.name)
 }
 
+// runContext merges the scheduler ctx with the per-task Submit ctx (when
+// registered): the merged ctx fires on scheduler shutdown OR on the
+// submitter's timeout/cancel, whichever comes first. The returned cancel
+// MUST be called by the caller (defer) so the merged ctx is released even
+// when the submitter's context outlives the step.
+func (e *sdkAgentExecutor) runContext(ctx context.Context, taskID string) (context.Context, context.CancelFunc) {
+	if e.runCtxs == nil {
+		return ctx, func() {}
+	}
+	v, ok := e.runCtxs.Load(taskID)
+	if !ok {
+		return ctx, func() {}
+	}
+	taskCtx, ok := v.(context.Context)
+	if !ok || taskCtx == nil {
+		return ctx, func() {}
+	}
+	merged, cancel := context.WithCancel(ctx)
+	// AfterFunc cancels the merged ctx as soon as the submitter's context
+	// dies; the caller's deferred cancel releases it when the step returns.
+	context.AfterFunc(taskCtx, cancel)
+	return merged, cancel
+}
+
 func (e *sdkAgentExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
 	input, _ := task.Payload["input"].(string)
-	res, err := e.agent.Run(ctx, input)
+	runCtx, cancelRun := e.runContext(ctx, task.TaskID)
+	defer cancelRun()
+	res, err := e.agent.Run(runCtx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -128,10 +162,13 @@ func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, 
 	}()
 
 	// Wait for a terminal state. A timeout, when set (> 0), bounds the
-	// whole wait (and the execution — the executor receives the same
-	// context). When <=0, no deadline is applied beyond the caller's ctx.
-	// The wait context propagates DeadlineExceeded so a timed-out Submit
-	// surfaces a deadline-exceeded cause, never a generic error.
+	// whole wait AND the execution: the wait context is registered in
+	// taskRunCtxs so the executing sdkAgentExecutor merges onto it — a
+	// Submit timeout aborts the in-flight agent run instead of leaving it
+	// burning LLM calls for an abandoned task. When <=0, no deadline is
+	// applied beyond the caller's ctx. The wait context propagates
+	// DeadlineExceeded so a timed-out Submit surfaces a deadline-exceeded
+	// cause, never a generic error.
 	var waitCtx context.Context
 	if t.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -140,6 +177,11 @@ func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, 
 	} else {
 		waitCtx = ctx
 	}
+	// Register the wait ctx for this task so ExecuteStep runs under it (see
+	// sdkAgentExecutor.runContext). Unregistered on every exit path so the
+	// map never grows with completed submissions.
+	r.taskRunCtxs.Store(taskID, waitCtx)
+	defer r.taskRunCtxs.Delete(taskID)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -215,7 +257,7 @@ func (r *Runtime) ensureExecutor(capability string) kernel.CapabilityExecutor {
 	}
 	// Auto-create on demand: a runtime never refuses a well-formed task.
 	agent := r.NewAgent(capability)
-	ex := &sdkAgentExecutor{agent: agent}
+	ex := &sdkAgentExecutor{agent: agent, runCtxs: &r.taskRunCtxs}
 	// register through sched.RegisterExecutorIfAbsent so the check
 	// (already registered?) and the set happen atomically under the single
 	// execMu write lock. Two concurrent Submits for the same unregistered

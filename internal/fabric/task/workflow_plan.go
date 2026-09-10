@@ -56,6 +56,16 @@ type PlanStep struct {
 //
 // It returns the created task IDs in input order.
 //
+// Atomicity: validation, creation and rollback run inside ONE fabric
+// critical section. Pre-fix, the creates ran one-by-one off-lock, so (a) a
+// concurrent drain could acquire a half-built batch's first task and the
+// rollback Delete then bounced off ErrTaskUndeletable, leaving a half-built
+// DAG in the fabric, and (b) a task the batch validated its dependencies
+// against could be concurrently deleted before the batch's creates landed.
+// Holding f.mu across the batch closes both windows: Acquire and Delete both
+// need the same lock, so neither can interleave. The durable appends are
+// still flushed AFTER the lock is released (the off-lock I/O contract).
+//
 // Args:
 //   - ctx: unused today (Create is synchronous); kept for signature symmetry
 //     with future async compilation.
@@ -81,27 +91,33 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 		}
 		byID[s.ID] = s
 	}
+	// Sample the strategy attribution ONCE for the whole batch so every
+	// task of the batch carries the same strategy even if the active strategy
+	// changes mid-compilation. Create fills the stamp only when the envelope
+	// field is still empty, so this pre-stamp wins. Sampled before f.mu: the
+	// stamp fn is external code and must not run under the fabric lock.
+	strategyID := f.strategyStampID()
+
+	pending := make([]*pendingAppend, 0, len(steps))
+	f.mu.Lock()
 	// Dependency closure: batch first, then tasks already in the fabric
 	// (see resolveDependencies). Cross-batch resolution is what makes
 	// runtime graph growth possible — a node grown at runtime depends on
 	// nodes compiled by an earlier batch, which are typically already
 	// COMPLETED and therefore let the new task go READY immediately.
-	f.mu.Lock()
-	err := resolveDependencies(steps, byID, f.tasks)
-	f.mu.Unlock()
-	if err != nil {
+	// Re-validated INSIDE the same critical section as the creates, so a
+	// dependency resolved here cannot vanish before the batch lands.
+	if err := resolveDependencies(steps, byID, f.tasks); err != nil {
+		f.mu.Unlock()
 		return nil, fmt.Errorf("taskfabric: compile plan: %w", err)
 	}
 	if err := detectPlanCycle(steps, byID); err != nil {
+		f.mu.Unlock()
 		return nil, err
 	}
-	// Sample the strategy attribution ONCE for the whole batch so every
-	// task of the batch carries the same strategy even if the active strategy
-	// changes mid-compilation. Create fills the stamp only when the envelope
-	// field is still empty, so this pre-stamp wins.
-	strategyID := f.strategyStampID()
-	// All-or-nothing creation: roll back on any failure so the ready queue is
-	// never polluted by a half-built DAG.
+	// All-or-nothing creation under the lock: no drain can acquire a
+	// half-built batch (Acquire needs f.mu), so the rollback Delete below
+	// can never bounce off ErrTaskUndeletable.
 	created := make([]string, 0, len(steps))
 	for _, s := range steps {
 		deps := append([]string(nil), s.DependsOn...)
@@ -132,21 +148,26 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			}
 			t.Checkpoint = env
 		}
-		if err := f.Create(t); err != nil {
-			// Roll back EVERY created id even if some Deletes fail: a partial
-			// rollback must not shadow the original error, and the leftovers
-			// must be reported so the operator can clean them up.
+		if err := f.createLocked(t, strategyID, &pending); err != nil {
+			// Roll back EVERY created id under the same lock — each delete
+			// can only fail if the task is somehow non-READY, which the
+			// single critical section makes impossible. Report leftovers
+			// loudly anyway (defense in depth).
 			var delErrs []error
 			for _, id := range created {
-				if delErr := f.Delete(id); delErr != nil {
+				if delErr := f.deleteLocked(id); delErr != nil {
 					delErrs = append(delErrs, fmt.Errorf("rollback %q: %w", id, delErr))
 				}
 			}
 			rollErr := fmt.Errorf("taskfabric: compile plan create %q: %w", s.ID, err)
+			f.mu.Unlock()
+			// The batch's task.created appends must NOT be flushed (their
+			// tasks were rolled back — flushing would publish phantom
+			// events), but their sequence numbers must still be claimed so
+			// the durable-append barrier is not left with a gap no one will
+			// ever complete.
+			f.discardAppends(&pending)
 			if len(delErrs) > 0 {
-				// Join instead of %v-formatting so both the original create
-				// error and every rollback failure stay reachable via
-				// errors.Is/As on the returned error.
 				return nil, errors.Join(rollErr,
 					fmt.Errorf("rollback incomplete: %w", errors.Join(delErrs...)))
 			}
@@ -154,6 +175,8 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 		}
 		created = append(created, s.ID)
 	}
+	f.mu.Unlock()
+	f.flushAppends(&pending)
 	return created, nil
 }
 

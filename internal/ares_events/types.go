@@ -136,6 +136,11 @@ const (
 type ReadOptions struct {
 	// FromVersion specifies the starting version (inclusive).
 	FromVersion int64
+	// ToVersion specifies the inclusive upper version bound. Zero means no
+	// cap. Callers that only need a prefix of a stream (the compactor reads
+	// everything except the keep-recent tail) use this to bound the read
+	// instead of loading the whole stream into memory.
+	ToVersion int64
 	// Limit caps the number of events returned. Zero means no limit.
 	Limit int
 	// Direction controls sort order. Defaults to ReadAscending.

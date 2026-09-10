@@ -199,7 +199,7 @@ func parseTestResult(output string) string {
 	if strings.Contains(lower, "no test files") || strings.Contains(lower, "--skip") {
 		return verdictSkip
 	}
-	if strings.Contains(output, "PASS") || strings.Contains(output, "ok") {
+	if strings.Contains(output, "PASS") || hasGoTestOKLine(output) {
 		return verdictPass
 	}
 	return ""
@@ -211,10 +211,18 @@ func parseExamplesResult(output string) string {
 	if strings.Contains(output, "FAIL") {
 		return verdictFail
 	}
-	if strings.Contains(output, "PASS") || strings.Contains(output, "ok") {
+	if strings.Contains(output, "PASS") || hasGoTestOKLine(output) {
 		return verdictPass
 	}
 	return ""
+}
+
+// hasGoTestOKLine reports whether the output carries a real `go test` "ok"
+// package-result line ("ok  pkg 0.01s" at line start). A bare substring
+// check for "ok" matched any output that HAPPENED to contain "ok" (e.g. an
+// error text like "token not ok"), producing false passes.
+func hasGoTestOKLine(output string) bool {
+	return strings.HasPrefix(output, "ok") || strings.Contains(output, "\nok")
 }
 
 // extractFileChanges scans EventToolCallCompleted events for file_tools

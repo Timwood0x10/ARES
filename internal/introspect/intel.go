@@ -1,10 +1,17 @@
 // Package introspect — intelligence engine (migrated from internal/dashboard).
 //
 // The engine observes agent behavior, computes health scores, detects
-// anomalies, and generates actionable insights (migrated from the old
-// monitoring engine, not rewritten — the algorithm is unchanged). It is fed from the
-// shared event stream via FeedIntel and queried by the serve control plane
-// (/api/health, /api/anomalies, /api/insights).
+// anomalies, and is fed from the shared event stream via FeedIntel and
+// queried by the serve control plane (/api/health, /api/anomalies).
+//
+// The insight subsystem was removed as dead code (#53 burial): the migrated
+// algorithm never generated a single Insight (no addInsight path existed),
+// so Insights()/AcknowledgeInsight()/OnInsight and the InsightCooldown
+// config were unreachable and /api/insights was permanently
+// {"count":0}. The endpoint now reports 501 not-implemented. TODO(tech-debt):
+// if actionable insights are wanted, design a generator first (anomaly
+// correlation across agents) — the retired types lived here with an
+// Insights() reader and an onInsight callback that nothing ever fed.
 package introspect
 
 import (
@@ -59,25 +66,11 @@ type Anomaly struct {
 	Resolved  bool      `json:"resolved"`
 }
 
-// Insight is an actionable observation derived from correlated events.
-type Insight struct {
-	ID              string    `json:"id"`
-	Type            string    `json:"type"`
-	Severity        Severity  `json:"severity"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	AgentIDs        []string  `json:"agent_ids,omitempty"`
-	SuggestedAction string    `json:"suggested_action,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	Acknowledged    bool      `json:"acknowledged"`
-}
-
-// Engine monitors agent behavior, computes health, and surfaces insights.
+// Engine monitors agent behavior, computes health, and surfaces anomalies.
 type Engine struct {
 	mu        sync.RWMutex
 	agents    map[string]*agentState
 	anomalies []*Anomaly
-	insights  []*Insight
 
 	// Configurable thresholds.
 	HealthWindow      time.Duration // sliding window for health computation
@@ -85,9 +78,6 @@ type Engine struct {
 	MaxErrorRate      float64       // errors/min above this → degraded
 	LatencyThreshold  float64       // p99 ms above this → degraded
 	AnomalyCooldown   time.Duration // min time between same-type anomalies
-	InsightCooldown   time.Duration // min time between same-type insights
-
-	onInsight func(*Insight) // optional callback (e.g., WebSocket broadcast)
 }
 
 // agentState tracks per-agent metrics for health computation.
@@ -129,7 +119,6 @@ func DefaultEngineConfig() *EngineConfig {
 		MaxErrorRate:      5.0,
 		LatencyThreshold:  5000, // 5s
 		AnomalyCooldown:   30 * time.Second,
-		InsightCooldown:   1 * time.Minute,
 	}
 }
 
@@ -140,7 +129,6 @@ type EngineConfig struct {
 	MaxErrorRate      float64
 	LatencyThreshold  float64
 	AnomalyCooldown   time.Duration
-	InsightCooldown   time.Duration
 }
 
 // NewEngine creates an intelligence engine with the given config.
@@ -151,19 +139,12 @@ func NewEngine(cfg *EngineConfig) *Engine {
 	return &Engine{
 		agents:            make(map[string]*agentState),
 		anomalies:         make([]*Anomaly, 0),
-		insights:          make([]*Insight, 0),
 		HealthWindow:      cfg.HealthWindow,
 		MaxRestartsPerMin: cfg.MaxRestartsPerMin,
 		MaxErrorRate:      cfg.MaxErrorRate,
 		LatencyThreshold:  cfg.LatencyThreshold,
 		AnomalyCooldown:   cfg.AnomalyCooldown,
-		InsightCooldown:   cfg.InsightCooldown,
 	}
-}
-
-// OnInsight registers a callback fired when a new insight is generated.
-func (e *Engine) OnInsight(fn func(*Insight)) {
-	e.onInsight = fn
 }
 
 // ObserveAgentEvent feeds a raw agent observation into the engine.
@@ -329,32 +310,6 @@ func (e *Engine) ResolveAnomaly(id string) {
 	for _, a := range e.anomalies {
 		if a.ID == id {
 			a.Resolved = true
-			return
-		}
-	}
-}
-
-// Insights returns all unacknowledged insights.
-func (e *Engine) Insights() []*Insight {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	out := make([]*Insight, 0, len(e.insights))
-	for _, in := range e.insights {
-		if !in.Acknowledged {
-			out = append(out, in)
-		}
-	}
-	return out
-}
-
-// AcknowledgeInsight marks an insight as acknowledged.
-func (e *Engine) AcknowledgeInsight(id string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, in := range e.insights {
-		if in.ID == id {
-			in.Acknowledged = true
 			return
 		}
 	}

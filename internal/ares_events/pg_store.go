@@ -125,6 +125,19 @@ func (s *PostgresEventStore) Append(
 		}
 	}()
 
+	// Per-stream serialization: take a transaction-scoped advisory lock on
+	// the stream id BEFORE reading the current max version. Pre-fix, two
+	// concurrent Appends on the same stream both read the same MAX(version)
+	// under READ COMMITTED, both assigned the same next version, and the
+	// loser failed on the unique index — an expectedVersion<=0 ("append
+	// after current, no conflict") caller got a spurious
+	// ErrVersionConflict and its batch was silently dropped unless the
+	// caller retried. The advisory lock is released automatically at
+	// commit/rollback and only serializes appends on the SAME stream.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, streamID); err != nil {
+		return apperrors.Wrap(err, "acquire stream append lock")
+	}
+
 	// Read current max version under the transaction lock.
 	var currentVersion int64
 	err = tx.QueryRowContext(
@@ -364,6 +377,12 @@ func buildStreamReadQuery(streamID string, opts ReadOptions) (string, []any) {
 	if opts.FromVersion > 0 {
 		query += fmt.Sprintf(" AND version >= $%d", argIdx)
 		args = append(args, opts.FromVersion)
+		argIdx++
+	}
+
+	if opts.ToVersion > 0 {
+		query += fmt.Sprintf(" AND version <= $%d", argIdx)
+		args = append(args, opts.ToVersion)
 		argIdx++
 	}
 

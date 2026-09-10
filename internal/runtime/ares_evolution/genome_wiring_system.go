@@ -226,8 +226,17 @@ func buildMutator(cfg SystemConfig) (*mutatorResult, error) {
 
 	var adaptiveDist *mutation.AdaptiveDistribution
 	if cfg.AdaptiveDistConfig.Enabled {
-		var err error
-		adaptiveDist, err = mutation.NewAdaptiveDistribution(rawMutator, cfg.AdaptiveDistConfig)
+		// Compose instead of either/or: when guidance is also enabled, the
+		// adaptive distribution drives the GUIDED mutator (adaptive
+		// probabilities seed the guided type sampling; unguided batches
+		// still use the tuned probabilities via the base). Previously this
+		// branch unconditionally wrapped rawMutator, silently discarding
+		// the guided wrapper (REVIEW 3.4#5).
+		inner := mutation.AdaptiveMutater(rawMutator)
+		if guided, ok := genomeMut.(*mutation.ExperienceGuidedMutator); ok {
+			inner = guided
+		}
+		adaptiveDist, err = mutation.NewAdaptiveDistribution(inner, cfg.AdaptiveDistConfig)
 		if err != nil {
 			return nil, fmt.Errorf("create adaptive distribution: %w", err)
 		}

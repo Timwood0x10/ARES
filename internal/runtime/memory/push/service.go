@@ -299,10 +299,13 @@ func (s *DefaultPushService) Start(ctx context.Context) error {
 		// the loop just keeps the service alive until ctx is cancelled.
 		go s.eventLoop(runCtx)
 	default:
-		// Unknown policy: cancel immediately to release resources.
+		// Unknown policy: no loop was spawned, so release the whole
+		// lifecycle state (doneCh included — a stale non-nil channel with
+		// no closer would make a later Stop block forever).
 		s.runMu.Lock()
 		s.isRunning = false
 		s.cancelFn = nil
+		s.doneCh = nil
 		s.runMu.Unlock()
 		cancel()
 		return fmt.Errorf("push start: unknown policy %q: %w", s.config.Policy, ErrInvalidConfig)
@@ -312,6 +315,14 @@ func (s *DefaultPushService) Start(ctx context.Context) error {
 
 // Stop signals the running loop to stop and waits for it to drain.
 // Safe to call multiple times; no-op if not running.
+//
+// Stop deliberately does NOT reset isRunning/cancelFn/doneCh after the
+// drain: finishLoop already performed that reset (it is the sole closer of
+// doneCh, so it always runs before <-doneCh below returns). Writing the
+// state unconditionally would clobber whatever a Start() that raced in
+// between has armed, orphaning that loop with no cancel handle — and
+// allowing yet another Start() to spawn a second, concurrent loop
+// (REVIEW 3.3#2).
 func (s *DefaultPushService) Stop() {
 	s.runMu.Lock()
 	if !s.isRunning {
@@ -328,12 +339,6 @@ func (s *DefaultPushService) Stop() {
 	if doneCh != nil {
 		<-doneCh
 	}
-
-	s.runMu.Lock()
-	s.isRunning = false
-	s.cancelFn = nil
-	s.doneCh = nil
-	s.runMu.Unlock()
 }
 
 // scheduledLoop runs a periodic push on the configured interval until ctx is cancelled.

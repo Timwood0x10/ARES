@@ -38,7 +38,10 @@ func NewMemoryStrategyStore(maxHistory int) *MemoryStrategyStore {
 }
 
 // GetActive returns the currently deployed strategy.
-// Returns nil (and no error) if no strategy has been stored yet.
+// Empty-store contract: returns the legacy (nil, nil) shape when no
+// strategy has been stored yet. PGStrategyStore returns the canonical
+// (nil, ErrNoActiveStrategy) sentinel instead; callers must handle both
+// (see the StrategyStore interface doc).
 func (s *MemoryStrategyStore) GetActive(_ context.Context) (*Strategy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -113,14 +116,16 @@ func (s *MemoryStrategyStore) GetHistory(_ context.Context, id string, n int) ([
 }
 
 // dupStrategy returns a deep copy of a strategy to prevent external mutation
-// of internally retained state. Returns nil for a nil input.
+// of internally retained state. Nested Params values (maps/slices) are
+// recursively copied — a top-level-only copy would still alias them
+// (REVIEW 3.4#7). Returns nil for a nil input.
 func dupStrategy(s *Strategy) *Strategy {
 	if s == nil {
 		return nil
 	}
 	params := make(map[string]any, len(s.Params))
 	for k, v := range s.Params {
-		params[k] = v
+		params[k] = deepCopyValue(v)
 	}
 	return &Strategy{
 		ID:                   s.ID,

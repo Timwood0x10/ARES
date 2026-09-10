@@ -30,7 +30,8 @@ func (a *Agent) resolveTools(
 	input string,
 ) ([]llmcore.Tool, agentloop.ToolExecutor, agentloop.ToolExpander) {
 	legacy := func() ([]llmcore.Tool, agentloop.ToolExecutor, agentloop.ToolExpander) {
-		llmTools := a.toCoreTools(a.tools)
+		// snapshotTools: Evolve may reassign a.tools concurrently with Run.
+		llmTools := a.toCoreTools(a.snapshotTools())
 		if a.runtime != nil {
 			llmTools = append(llmTools, a.runtime.syscallTools...)
 		}
@@ -48,7 +49,7 @@ func (a *Agent) resolveTools(
 	if err != nil {
 		slog.Warn("sdk: discovery source.Tools failed; falling back to static tools",
 			"error", err)
-		return a.toCoreTools(a.tools), a.runtime.toolReg, nil
+		return a.toCoreTools(a.snapshotTools()), a.runtime.toolReg, nil
 	}
 	selected, err := a.selectTools(ctx, input, available)
 	if err != nil {

@@ -97,9 +97,15 @@ func NewVectorProvider(store storage.VectorStore, cfg Config) (*VectorProvider, 
 		cfg.DefaultScore = 0.5
 	}
 
-	// Attempt to create the collection; most backends return an error if the
-	// collection already exists, which is safe to ignore.
-	_ = store.CreateCollection(context.Background(), cfg.Collection, cfg.VectorDimension)
+	// Create the collection. The single production backend (pgvector) uses
+	// CREATE TABLE IF NOT EXISTS, so an existing collection returns nil —
+	// every non-nil error (invalid name, dimension, DB outage) is a real
+	// failure and must surface: swallowing it hid broken setups until the
+	// first Search failed with an opaque "collection does not exist".
+	if err := store.CreateCollection(context.Background(), cfg.Collection, cfg.VectorDimension); err != nil {
+		return nil, fmt.Errorf("vector provider %s: create collection %q (dim %d): %w",
+			cfg.Name, cfg.Collection, cfg.VectorDimension, err)
+	}
 
 	return &VectorProvider{
 		store:  store,

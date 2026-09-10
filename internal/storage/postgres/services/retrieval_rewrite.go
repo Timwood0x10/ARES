@@ -230,7 +230,17 @@ func loadSynonymRules() map[string][]string {
 		if err != nil {
 			return defaultRules
 		}
-		if !strings.HasPrefix(absPath, absDir) {
+		// Require a path-separator boundary after the allowed dir: a bare
+		// HasPrefix(absPath, absDir) also accepts sibling directories that
+		// merely share the prefix (e.g. /etc/synonyms-evil next to an
+		// allowed /etc/synonyms). Both paths are already Clean'ed by
+		// filepath.Abs, so appending the separator is sufficient (a root
+		// allowed-dir "/" already ends with it and is left as-is).
+		prefix := absDir
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		if !strings.HasPrefix(absPath, prefix) {
 			return defaultRules
 		}
 	}

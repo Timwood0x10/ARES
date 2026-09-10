@@ -49,6 +49,15 @@ const (
 	// to produce ZERO patches for those (WorkflowDiffer only compared node/edge
 	// presence), so a metadata-only gene mutation was invisible to evolution.
 	PatchSetNodeMetadata
+
+	// PatchRestoreNode is the composite inverse of PatchRemoveNode: it
+	// re-inserts a removed node together with every edge that touched it
+	// (and the start pointer, when the removed node was the start). It is
+	// produced by graph executors as the rollback of a node removal — a
+	// plain PatchInsertNode rollback restored the node but silently lost all
+	// of its edges. Appending at the end of the enum keeps every earlier
+	// iota value stable (patches may be persisted).
+	PatchRestoreNode
 )
 
 // String returns a human-readable name for the patch type.
@@ -82,6 +91,8 @@ func (pt PatchType) String() string {
 		return "change_instruction"
 	case PatchSetNodeMetadata:
 		return "set_node_metadata"
+	case PatchRestoreNode:
+		return "restore_node"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(pt))
 	}

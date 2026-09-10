@@ -547,8 +547,9 @@ func parseToolArgs(argsJSON string) map[string]interface{} {
 
 // groupIntoTurns splits messages into turns using three strategies in order:
 //  1. By explicit turn_id field (most reliable).
-//  2. By user-message boundary (current default).
-//  3. By structural linkage via tool_call_id (fallback when neither turn_id nor user boundaries exist).
+//  2. By user-message boundary (when user messages exist to delimit turns).
+//  3. By structural linkage via tool_call_id (fallback when neither turn_id
+//     nor user boundaries exist).
 //
 // Leading system messages are grouped with the first turn.
 func groupIntoTurns(messages []Message) [][]Message {
@@ -561,9 +562,14 @@ func groupIntoTurns(messages []Message) [][]Message {
 		return turns
 	}
 
-	// Strategy 2: Group by user-message boundary.
-	if turns := groupByUserBoundary(messages); len(turns) > 0 {
-		return turns
+	// Strategy 2: Group by user-message boundary. Only meaningful when user
+	// messages exist to delimit turns — otherwise groupByUserBoundary always
+	// collapses the whole conversation into ONE turn and strategy 3 below
+	// was unreachable dead code (REVIEW 3.3#3).
+	if hasUserIn(messages) {
+		if turns := groupByUserBoundary(messages); len(turns) > 0 {
+			return turns
+		}
 	}
 
 	// Strategy 3: Fallback — structural linkage via tool_call_id.
@@ -629,7 +635,9 @@ func groupByUserBoundary(messages []Message) [][]Message {
 
 // groupByStructuralLinkage groups messages using tool_call_id relationships.
 // An assistant message with ToolCalls followed by a tool result referencing
-// those calls forms a structural unit.
+// those calls forms a structural unit. A user message delimits turns the
+// same way as in groupByUserBoundary: it STARTS the new turn (the split
+// happens before the message is appended), not ends the previous one.
 func groupByStructuralLinkage(messages []Message) [][]Message {
 	if len(messages) == 0 {
 		return nil
@@ -640,6 +648,13 @@ func groupByStructuralLinkage(messages []Message) [][]Message {
 	pendingToolCallIDs := make(map[string]bool)
 
 	for _, msg := range messages {
+		// A user message with no pending tool calls ends the previous turn;
+		// the message itself belongs to the NEW turn (consistent with
+		// groupByUserBoundary's boundary semantics — REVIEW 3.3#3).
+		if msg.Role == RoleUser && len(pendingToolCallIDs) == 0 && len(current) > 0 {
+			turns = append(turns, current)
+			current = nil
+		}
 		current = append(current, msg)
 
 		// Track tool call IDs from assistant messages.
@@ -652,13 +667,6 @@ func groupByStructuralLinkage(messages []Message) [][]Message {
 		// Check if this tool result completes a pending tool call.
 		if msg.Role == RoleToolResult {
 			delete(pendingToolCallIDs, msg.ToolCallID)
-		}
-
-		// If no pending tool calls and we have a user message, end the turn.
-		if msg.Role == RoleUser && len(pendingToolCallIDs) == 0 && len(current) > 1 {
-			// Only split if we already have a completed turn before.
-			turns = append(turns, current)
-			current = nil
 		}
 	}
 

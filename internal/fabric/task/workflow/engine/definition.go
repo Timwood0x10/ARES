@@ -119,10 +119,17 @@ func (p *DefinitionParser) ParseFile(ctx context.Context, path string) (*AgentDe
 }
 
 // extractField extracts a field value from markdown.
+//
+// The patterns are anchored to the start of a line (after optional
+// whitespace, list bullets, or blockquote markers): `name` must not match
+// inside `username: alice` — the unanchored pattern did exactly that,
+// silently extracting the wrong field whenever a longer identifier ended
+// with the field name. The (?:\n|$) variant is replaced by (?m) + $ so the
+// capture still stops at the line end.
 func (p *DefinitionParser) extractField(content, field string) (string, error) {
 	patterns := []string{
-		fmt.Sprintf(`(?i)%s\s*::\s*(.+?)(?:\n|$)`, field),
-		fmt.Sprintf(`(?i)%s\s*:\s*(.+?)(?:\n|$)`, field),
+		fmt.Sprintf(`(?im)^[ \t>*-]*%s\s*::\s*(.+)$`, field),
+		fmt.Sprintf(`(?im)^[ \t>*-]*%s\s*:\s*(.+)$`, field),
 	}
 
 	for _, pattern := range patterns {

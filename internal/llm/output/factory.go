@@ -3,6 +3,8 @@ package output
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"sync"
 )
 
 // Provider types.
@@ -14,6 +16,7 @@ const (
 
 // Factory creates LLM adapters.
 type Factory struct {
+	mu       sync.RWMutex
 	adapters map[string]func(*Config) LLMAdapter
 }
 
@@ -40,12 +43,19 @@ func NewFactory() *Factory {
 
 // register registers an adapter factory.
 func (f *Factory) register(provider string, factory func(*Config) LLMAdapter) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.adapters[provider] = factory
 }
 
 // Create creates an LLM adapter by provider name.
 func (f *Factory) Create(provider string, config *Config) (LLMAdapter, error) {
+	// RWMutex: RegisterProvider is exported, so a runtime registration can
+	// race a concurrent Create on the shared defaultFactory — a plain map
+	// read/write pair there was a data race.
+	f.mu.RLock()
 	factory, exists := f.adapters[provider]
+	f.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProvider, provider)
 	}
@@ -59,10 +69,13 @@ func (f *Factory) Create(provider string, config *Config) (LLMAdapter, error) {
 
 // ListProviders returns list of supported providers.
 func (f *Factory) ListProviders() []string {
+	f.mu.RLock()
 	providers := make([]string, 0, len(f.adapters))
 	for p := range f.adapters {
 		providers = append(providers, p)
 	}
+	f.mu.RUnlock()
+	sort.Strings(providers)
 	return providers
 }
 

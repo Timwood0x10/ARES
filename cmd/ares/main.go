@@ -150,7 +150,12 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		fmt.Println(" ⚠  Go 1.25+ recommended")
 	}
 
-	// LLM key check
+	// LLM key check. Hosted keys are OPTIONAL when a local Ollama is
+	// available: an Ollama-only environment is a legitimate setup, so a
+	// missing hosted key must not fail doctor on its own. Key material is
+	// never echoed (not even a prefix — terminal scrollback and logs are
+	// not a safe channel for credentials).
+	hostedKeySet := false
 	providers := []struct {
 		name string
 		env  string
@@ -161,18 +166,25 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	}
 	for _, p := range providers {
 		if v := os.Getenv(p.env); v != "" {
-			fmt.Printf("  %-10s ✅ (%s...)\n", p.name, v[:min(8, len(v))]+"...")
+			hostedKeySet = true
+			fmt.Printf("  %-10s ✅ (set)\n", p.name)
 		} else {
 			fmt.Printf("  %-10s ❌ set %s\n", p.name, p.env)
-			ok = false
 		}
 	}
 
 	// Ollama check
+	ollamaAvailable := false
 	if err := exec.Command("ollama", "--version").Run(); err == nil {
 		fmt.Println("  Ollama    ✅")
+		ollamaAvailable = true
 	} else {
 		fmt.Println("  Ollama    ❌ not found (optional, install for local LLM)")
+	}
+	// No LLM backend at all (no hosted key AND no Ollama) is the only
+	// hard failure — nothing could serve an inference request.
+	if !hostedKeySet && !ollamaAvailable {
+		ok = false
 	}
 
 	// Git check

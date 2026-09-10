@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -361,12 +362,43 @@ func (s *Store) GetRepresentation(ctx context.Context, objectID string, model st
 	return rep, nil
 }
 
+// hybridRecallCap bounds the candidate rows HybridSearch loads for scoring.
+// The previous query had no LIMIT: it materialized EVERY matching row
+// including the raw BYTEA column, so a large table OOM'd the process. The
+// cap is a recall window over the most recently updated objects (there is no
+// relevance index — vector columns are plain real[] arrays, and lexical
+// scoring is Go-side Jaccard), sized generously relative to the default
+// TopK=20/FinalK=5 so bounded recall is not noticeable at normal request
+// sizes. An explicit larger TopK/FinalK raises the window accordingly.
+const hybridRecallCap = 512
+
+// hybridRecallLimit returns the SQL-side candidate LIMIT for a hybrid search
+// request: at least the recall cap, but never smaller than the caller's own
+// recall caps (TopK/FinalK) so an explicit wide request is honored.
+func hybridRecallLimit(req knowledge.HybridSearchRequest) int {
+	limit := hybridRecallCap
+	if req.TopK > limit {
+		limit = req.TopK
+	}
+	if req.FinalK > limit {
+		limit = req.FinalK
+	}
+	return limit
+}
+
 // HybridSearch performs vector + lexical scoring over PostgreSQL-stored objects.
+//
+// Memory bounding: the candidate pass selects every column EXCEPT raw (the
+// BYTEA payload is the dominant per-row cost and scoring never reads it), and
+// applies a SQL-side LIMIT (see hybridRecallCap). Only the final FinalK
+// survivors get their raw payload hydrated in a second bounded query, so the
+// returned objects keep the same shape callers got before the bound.
 func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
 	conditions, args := hybridConditions(req)
-	//nolint:gosec // conditions are static WHERE fragments; values use $N placeholders.
-	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects` + conditions
+	args = append(args, hybridRecallLimit(req))
+	//nolint:gosec // conditions are static WHERE fragments; the LIMIT value is a parameterized placeholder.
+	query := `SELECT id, type, namespace, NULL AS raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		FROM akf_objects` + conditions + ` ORDER BY updated_at DESC LIMIT $` + strconv.Itoa(len(args))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search query: %w", err)
@@ -446,6 +478,38 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	}
 	if len(scored) > finalK {
 		scored = scored[:finalK]
+	}
+	// Hydrate the raw payload for the (bounded, ≤ FinalK) survivors: the
+	// candidate pass above deliberately selected NULL AS raw to keep the
+	// BYTEA column out of the bounded scan. One query, keyed by the
+	// surviving ids, preserves the returned objects' pre-bound shape.
+	if len(scored) > 0 {
+		ids := make(pqStringArray, 0, len(scored))
+		for i := range scored {
+			ids = append(ids, scored[i].Object.ID)
+		}
+		rawRows, err := s.db.QueryContext(ctx,
+			`SELECT id, raw FROM akf_objects WHERE id = ANY($1)`, ids)
+		if err != nil {
+			return nil, fmt.Errorf("hybrid search raw hydrate: %w", err)
+		}
+		rawByID := make(map[string][]byte, len(scored))
+		for rawRows.Next() {
+			var id string
+			var raw []byte
+			if err := rawRows.Scan(&id, &raw); err != nil {
+				_ = rawRows.Close()
+				return nil, fmt.Errorf("hybrid search raw hydrate scan: %w", err)
+			}
+			rawByID[id] = raw
+		}
+		_ = rawRows.Close()
+		if err := rawRows.Err(); err != nil {
+			return nil, fmt.Errorf("hybrid search raw hydrate rows: %w", err)
+		}
+		for i := range scored {
+			scored[i].Object.Raw = rawByID[scored[i].Object.ID]
+		}
 	}
 	return scored, nil
 }

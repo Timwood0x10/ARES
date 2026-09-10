@@ -73,12 +73,20 @@ func (r *ProviderRegistry) List() []string {
 // descending. Only providers with a score above the threshold (default 0.1)
 // are returned. An empty list means no provider matches the intent.
 func (r *ProviderRegistry) Select(intent knowledge.Intent, threshold float64) []GraphProvider {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	if threshold <= 0 {
 		threshold = 0.1
 	}
+
+	// Snapshot the providers under the read lock, then run IntentMatch
+	// OUTSIDE it: a composite provider whose IntentMatch calls back into the
+	// registry (Register/Unregister take the write lock) would deadlock
+	// against the RLock held here.
+	r.mu.RLock()
+	providers := make([]GraphProvider, 0, len(r.providers))
+	for _, p := range r.providers {
+		providers = append(providers, p)
+	}
+	r.mu.RUnlock()
 
 	type scored struct {
 		p     GraphProvider
@@ -86,7 +94,7 @@ func (r *ProviderRegistry) Select(intent knowledge.Intent, threshold float64) []
 	}
 	var scoredProviders []scored
 
-	for _, p := range r.providers {
+	for _, p := range providers {
 		s := p.IntentMatch(intent)
 		if s >= threshold {
 			scoredProviders = append(scoredProviders, scored{p, s})

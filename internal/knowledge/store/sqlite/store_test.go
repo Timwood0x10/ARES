@@ -250,3 +250,91 @@ func TestDelete(t *testing.T) {
 		t.Error("expected nil after delete")
 	}
 }
+
+// TestQueryByTagExactTokenMatch locks REVIEW 3.5: the tag filter must match
+// whole comma-delimited tags, not substrings. The old `tags LIKE '%tag%'`
+// made a query for tag "go" return rows tagged "golang", and a query for
+// "a" matched "ab,ac".
+func TestQueryByTagExactTokenMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	objects := []*knowledge.KnowledgeObject{
+		{ID: "tag-exact", Type: knowledge.ObjectDecision, Summary: "go only", Tags: []string{"go"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ID: "tag-super", Type: knowledge.ObjectDecision, Summary: "golang", Tags: []string{"golang"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ID: "tag-multi", Type: knowledge.ObjectDecision, Summary: "ab and ac", Tags: []string{"ab", "ac"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ID: "tag-wild", Type: knowledge.ObjectDecision, Summary: "literal percent", Tags: []string{"100%_done"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	for _, o := range objects {
+		if err := s.Save(ctx, o); err != nil {
+			t.Fatalf("Save %s: %v", o.ID, err)
+		}
+		t.Cleanup(func(id string) func() { return func() { _ = s.Delete(ctx, id) } }(o.ID))
+	}
+
+	cases := []struct {
+		tag  string
+		want []string // object IDs expected, in created_at DESC order
+	}{
+		{"go", []string{"tag-exact"}},
+		{"golang", []string{"tag-super"}},
+		{"a", nil},
+		{"ab", []string{"tag-multi"}},
+		{"ac", []string{"tag-multi"}},
+		{"100%_done", []string{"tag-wild"}},
+		{"100", nil},
+		{"done", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			got, err := s.Query(ctx, knowledge.Query{Tags: []string{tc.tag}})
+			if err != nil {
+				t.Fatalf("Query tag %q: %v", tc.tag, err)
+			}
+			var ids []string
+			for _, o := range got {
+				ids = append(ids, o.ID)
+			}
+			if len(ids) != len(tc.want) {
+				t.Fatalf("Query tag %q = %v, want %v", tc.tag, ids, tc.want)
+			}
+			for i := range ids {
+				if ids[i] != tc.want[i] {
+					t.Fatalf("Query tag %q = %v, want %v", tc.tag, ids, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestDeleteCascadesRepresentations proves the `PRAGMA foreign_keys = ON`
+// fix (REVIEW 3.5): deleting an object must cascade to its representations.
+// Without the pragma, ON DELETE CASCADE is decorative and the child rows
+// are orphaned forever.
+func TestDeleteCascadesRepresentations(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	obj := &knowledge.KnowledgeObject{
+		ID: "cascade-obj", Type: knowledge.ObjectDecision, Summary: "cascade me",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := s.Save(ctx, obj); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	rep := &knowledge.Representation{
+		ID: "cascade-rep", ObjectID: "cascade-obj", Model: "test-model",
+		Dimension: 2, Vector: []float32{0.1, 0.2}, CreatedAt: time.Now(),
+	}
+	if err := s.SaveRepresentation(ctx, rep); err != nil {
+		t.Fatalf("SaveRepresentation: %v", err)
+	}
+
+	if err := s.Delete(ctx, "cascade-obj"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := s.GetRepresentation(ctx, "cascade-obj", "test-model"); err != ErrObjectNotFound {
+		t.Fatalf("representation must be cascade-deleted with its object, got err=%v", err)
+	}
+}

@@ -85,11 +85,13 @@ func (c *CompileCoordinator) SetGeneration(gen int) {
 // DAG version, compile ID, and plan IDs for introspection.
 //
 // This is the FULL compile path: it reclaims every task of the previous
-// compile before rebuilding the batch. Use it for cold start and for
-// ResetFromSteps (where the whole topology may have changed at once).
-// Runtime graph mutations go through ApplyChange instead — a full rebuild
-// cannot reclaim a RUNNING task, so it fails the whole batch with
-// ErrTaskExists and the graph change is lost.
+// compile before rebuilding the batch. When the rebuild FAILS, the reclaimed
+// snapshots are restored verbatim (see the rollback below), so a failed
+// recompile leaves the previous compile's tasks in place instead of silently
+// losing them. Use it for cold start and for ResetFromSteps (where the whole
+// topology may have changed at once). Runtime graph mutations go through
+// ApplyChange instead — a full rebuild cannot reclaim a RUNNING task, so it
+// fails the whole batch with ErrTaskExists and the graph change is lost.
 func (c *CompileCoordinator) CompileDAG(ctx context.Context, dag *engine.MutableDAG) (CompileRecord, error) {
 	if dag == nil {
 		return CompileRecord{}, fmt.Errorf("planprojection: compile DAG: nil dag")
@@ -115,11 +117,26 @@ func (c *CompileCoordinator) CompileDAG(ctx context.Context, dag *engine.Mutable
 	// the ids are collected and folded into the error the rebuild then
 	// produces, so "why did the recompile fail" is answerable from the error
 	// instead of from a guess.
+	//
+	// Failure rollback: every task about to be deleted is snapshotted first
+	// (Task returns a fabric-owned copy). When the rebuild FAILS, the
+	// snapshots are restored verbatim — deleting first and compiling second
+	// must never leave the graph with neither the old tasks nor the new ones
+	// (a failed recompile used to permanently lose the reclaimed work).
 	var undeletable []string
+	deleted := make([]*taskfabric.Task, 0, len(oldIDs))
 	for _, id := range oldIDs {
+		tk, terr := c.fabric.Task(id)
+		if terr != nil {
+			// Unknown here means concurrently finalized AND reaped, or
+			// already deleted by a competing compile: nothing to reclaim.
+			continue
+		}
 		if err := c.fabric.Delete(id); err != nil {
 			undeletable = append(undeletable, fmt.Sprintf("%s (%v)", id, err))
+			continue
 		}
+		deleted = append(deleted, tk)
 	}
 
 	planIDs, err := c.fabric.CompilePlan(ctx, planSteps)
@@ -130,8 +147,22 @@ func (c *CompileCoordinator) CompileDAG(ctx context.Context, dag *engine.Mutable
 		PlanIDs:    planIDs,
 		StepCount:  len(planSteps),
 	}
-
 	if err != nil {
+		// Roll back: re-install every snapshot whose task was actually
+		// deleted (CompilePlan rolls its own partial batch back, so the
+		// reclaimed ids are available again). Best-effort with loud
+		// reporting — a restore failure means durable work was lost and the
+		// operator must see it.
+		var unrestored []string
+		for _, tk := range deleted {
+			if rerr := c.fabric.RestoreTask(tk); rerr != nil {
+				unrestored = append(unrestored, fmt.Sprintf("%s (%v)", tk.ID, rerr))
+			}
+		}
+		if len(unrestored) > 0 {
+			return record, fmt.Errorf("planprojection: compile DAG: %w (tasks that could not be reclaimed: %s; restore after failed compile also failed: %s)",
+				err, strings.Join(undeletable, ", "), strings.Join(unrestored, ", "))
+		}
 		if len(undeletable) > 0 {
 			return record, fmt.Errorf("planprojection: compile DAG: %w (tasks that could not be reclaimed: %s)",
 				err, strings.Join(undeletable, ", "))
@@ -754,12 +785,15 @@ func (c *CompileCoordinator) reconcileNow(ctx context.Context, dag *engine.Mutab
 		"updated", len(res.Updated), "skipped", len(res.Skipped))
 }
 
-// stepFor returns the DAG's current step for id, or nil when the node is
-// gone. The event handler runs asynchronously, so by the time a change is
-// projected the graph may have moved on; nil means "nothing to project",
-// never "project an empty step".
+// stepFor returns an isolated copy of the DAG's current step for id, or nil
+// when the node is gone. The event handler runs asynchronously, so by the time
+// a change is projected the graph may have moved on; nil means "nothing to
+// project", never "project an empty step". The copy (not the live pointer)
+// keeps the projection from racing concurrent AddEdge/RemoveEdge mutations of
+// the same step, and the single-step form avoids copying the whole step map
+// on every graph event.
 func stepFor(dag *engine.MutableDAG, id string) *engine.Step {
-	return dag.StepIndex()[id]
+	return dag.StepSnapshot(id)
 }
 
 // addTracked records a task id as compiled from the DAG.

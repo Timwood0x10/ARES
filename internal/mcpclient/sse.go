@@ -49,8 +49,13 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	tr.sseBody = sseResp.Body
 	tr.sseCtx, tr.sseCancel = context.WithCancel(ctx)
 
+	// One scanner for the connection lifetime: readEndpointEvent stops at
+	// the endpoint event but may have buffered later events in its read-ahead;
+	// reusing this scanner in the drain goroutine preserves them (#48).
+	sc := bufio.NewScanner(tr.sseBody)
+
 	// Read SSE events until we get the endpoint event.
-	endpoint, err := tr.readEndpointEvent()
+	endpoint, err := tr.readEndpointEvent(sc)
 	if err != nil {
 		tr.sseCancel()
 		if err := sseResp.Body.Close(); err != nil {
@@ -59,6 +64,13 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 		return nil, fmt.Errorf("read endpoint: %w", err)
 	}
 	tr.messageURL = endpoint
+
+	// Keep draining the SSE stream for the lifetime of the connection (#48):
+	// responses arrive via the message endpoint, but the server keeps pushing
+	// events (keepalives, notifications) on this body. If nobody reads it, the
+	// TCP receive window fills and the whole connection stalls. close()
+	// cancels sseCancel and closes sseBody, which unblocks this goroutine.
+	go tr.drainSSE(sc)
 
 	c := &Client{
 		name:      name,
@@ -104,13 +116,15 @@ func (tr *sseTransport) notify(ctx context.Context, notif jsonrpcNotification) e
 }
 
 // readEndpointEvent reads SSE events until an "endpoint" event is received.
-func (tr *sseTransport) readEndpointEvent() (string, error) {
-	scanner := bufio.NewScanner(tr.sseBody)
+// The scanner is owned by the caller (the connection-lifetime scanner) so the
+// drain goroutine continues exactly where this left off — a fresh scanner
+// would discard whatever the old one had buffered past the endpoint event.
+func (tr *sseTransport) readEndpointEvent(sc *bufio.Scanner) (string, error) {
 	var eventType string
 	var dataBuf strings.Builder
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for sc.Scan() {
+		line := sc.Text()
 		if line == "" {
 			// Empty line = end of event.
 			if eventType == "endpoint" {
@@ -126,10 +140,20 @@ func (tr *sseTransport) readEndpointEvent() (string, error) {
 			dataBuf.WriteString(strings.TrimPrefix(line, "data: "))
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := sc.Err(); err != nil {
 		return "", fmt.Errorf("sse scan: %w", err)
 	}
 	return "", fmt.Errorf("sse stream ended without endpoint event")
+}
+
+// drainSSE consumes the SSE body until the stream ends or the transport is
+// closed. Server-initiated events are discarded: responses to client requests
+// arrive on the message endpoint (roundTrip), so this loop exists purely to
+// keep the receive window open (#48).
+func (tr *sseTransport) drainSSE(sc *bufio.Scanner) {
+	for sc.Scan() {
+		// Discard.
+	}
 }
 
 func (tr *sseTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {

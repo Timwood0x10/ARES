@@ -41,7 +41,7 @@ type ProductionMemoryManager struct {
 	pipeline memembed.EmbeddingPipeline
 
 	// Repositories
-	conversationRepository *repositories.ConversationRepository
+	conversationRepository conversationStore
 	taskResultRepository   *repositories.TaskResultRepository
 
 	// Configuration
@@ -57,7 +57,6 @@ type ProductionMemoryManager struct {
 
 	// Optional: keep in-memory cache for hot data
 	sessionCache map[string]*SessionData
-	maxCacheSize int
 
 	// Context cleaner: intelligently strips tool noise and compresses verbose content.
 	ctxCleaner *memctx.ContextCleaner
@@ -98,6 +97,22 @@ func generateSessionID() string {
 	return "sess_" + hex.EncodeToString(b)
 }
 
+// defaultMaxSessions is the session-cache cap applied when the config
+// leaves MaxSessions unset. Without this normalization a zero cap evicted
+// every freshly created session immediately (len(cache) 1 > 0), so every
+// message was attributed to the "anonymous" user (REVIEW 3.3#10).
+const defaultMaxSessions = 100
+
+// conversationStore is the persistence surface the manager needs from the
+// conversation repository. Declared as an interface (instead of the
+// concrete *repositories.ConversationRepository) so the cache-miss user
+// attribution fallback is testable without a live PostgreSQL pool.
+type conversationStore interface {
+	Create(ctx context.Context, conv *storage_models.Conversation) error
+	GetBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]*storage_models.Conversation, error)
+	DeleteBySession(ctx context.Context, sessionID, tenantID string) (int64, error)
+}
+
 // NewProductionMemoryManager creates a new production-grade MemoryManager.
 // Args:
 // dbPool - PostgreSQL connection pool
@@ -116,6 +131,11 @@ func NewProductionMemoryManager(
 	// back to the default so partial configs keep the prior 24h behavior.
 	if config.SessionTTL <= 0 {
 		config.SessionTTL = 24 * time.Hour
+	}
+	// A zero MaxSessions would evict every session immediately (see
+	// defaultMaxSessions); normalize partial configs the same way.
+	if config.MaxSessions <= 0 {
+		config.MaxSessions = defaultMaxSessions
 	}
 
 	if dbPool == nil {
@@ -202,7 +222,6 @@ func NewProductionMemoryManager(
 		config:                 config,
 		ctxCleaner:             memctx.NewContextCleaner(),
 		sessionCache:           make(map[string]*SessionData),
-		maxCacheSize:           config.MaxSessions,
 	}, nil
 }
 
@@ -273,9 +292,14 @@ func (m *ProductionMemoryManager) SetEvidenceCollector(ec EvidenceCollector) {
 }
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
+// The store/stream snapshot is taken under the same lock SetEventStore
+// writes with, so a runtime re-wiring cannot race the read.
 func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if !ares_events.Emit(ctx, m.eventStore, m.streamID, eventType, "memory", payload) {
-		log.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
+	m.mu.RLock()
+	store, sid := m.eventStore, m.streamID
+	m.mu.RUnlock()
+	if !ares_events.Emit(ctx, store, sid, eventType, "memory", payload) {
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", sid)
 	}
 }
 
@@ -356,16 +380,34 @@ func (m *ProductionMemoryManager) Stop(ctx context.Context) error {
 
 // CreateSession creates a new session and returns the session ID.
 // Args:
-// ctx - database operation context.
-// userID - user identifier.
+//
+//	ctx - database operation context.
+//	userID - user identifier.
+//
 // Returns session ID or error if creation fails.
 func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID string) (string, error) {
 	sessionID := generateSessionID()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.addSessionToCacheLocked(sessionID, userID)
+	m.mu.Unlock()
 
-	// Add to cache
+	// Emit session created event.
+	m.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
+		"session_id": sessionID,
+		"user_id":    userID,
+	})
+
+	log.Debug("Session created", "session_id", sessionID, "user_id", userID)
+	return sessionID, nil
+}
+
+// addSessionToCacheLocked inserts a session entry and enforces the cache
+// cap. Caller must hold m.mu. The cap is read from the live config (not a
+// constructor-frozen copy) so runtime MaxSessions patches take effect; the
+// constructor normalizes non-positive values to defaultMaxSessions, so an
+// entry can never evict itself here (REVIEW 3.3#10).
+func (m *ProductionMemoryManager) addSessionToCacheLocked(sessionID, userID string) {
 	m.sessionCache[sessionID] = &SessionData{
 		SessionID:    sessionID,
 		UserID:       userID,
@@ -374,8 +416,11 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 		MessageCount: 0,
 	}
 
-	// Manage cache size
-	if len(m.sessionCache) > m.maxCacheSize {
+	maxCacheSize := m.config.MaxSessions
+	if maxCacheSize <= 0 {
+		maxCacheSize = defaultMaxSessions
+	}
+	if len(m.sessionCache) > maxCacheSize {
 		// Remove least recently used entry (by UpdatedAt).
 		var oldestKey string
 		var oldestTime time.Time
@@ -389,15 +434,50 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 			delete(m.sessionCache, oldestKey)
 		}
 	}
+}
 
-	// Emit session created event.
-	m.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
-		"session_id": sessionID,
-		"user_id":    userID,
-	})
+// resolveSessionUserID returns the user a message in the given session must
+// be attributed to. The session cache is authoritative when it hits; on a
+// miss (manager restart, eviction) the userID is recovered from the
+// persisted conversation history instead of silently reassigning the
+// message to "anonymous" (REVIEW 3.3#11). A successful recovery re-heals
+// the cache so subsequent messages do not repeat the lookup.
+//
+// Caller must NOT hold m.mu.
+func (m *ProductionMemoryManager) resolveSessionUserID(ctx context.Context, sessionID string) string {
+	m.mu.RLock()
+	if sessionData, exists := m.sessionCache[sessionID]; exists {
+		userID := sessionData.UserID
+		m.mu.RUnlock()
+		return userID
+	}
+	m.mu.RUnlock()
 
-	log.Debug("Session created", "session_id", sessionID, "user_id", userID)
-	return sessionID, nil
+	if m.conversationRepository != nil {
+		tenantID := m.getCurrentTenantID()
+		// Any conversation row for the session carries the session's user;
+		// limit 1 keeps the recovery read minimal.
+		conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, 1)
+		if err == nil && len(conversations) > 0 && conversations[0] != nil && conversations[0].UserID != "" {
+			userID := conversations[0].UserID
+			m.mu.Lock()
+			// Re-check: a concurrent CreateSession/AddMessage may have
+			// repopulated the entry while the lock was released.
+			if _, exists := m.sessionCache[sessionID]; !exists {
+				m.addSessionToCacheLocked(sessionID, userID)
+			}
+			m.mu.Unlock()
+			return userID
+		}
+		if err != nil {
+			log.Warn("failed to recover session user from conversation history",
+				"session_id", sessionID, "error", err)
+		}
+	}
+
+	log.Warn("session not found in cache or history, message assigned to anonymous user",
+		"session_id", sessionID)
+	return "anonymous"
 }
 
 // AddMessage adds a message to the session.
@@ -429,21 +509,10 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 	// Create conversation record (NO vector embedding per design standard)
 	// conversations table: NO vector + expires_at + tenant_id
 
-	// Get user ID from session cache
-	userID := ""
-	m.mu.RLock()
-	if sessionData, exists := m.sessionCache[sessionID]; exists {
-		userID = sessionData.UserID
-	}
-	m.mu.RUnlock()
-
-	// If user ID not found in cache, use a default value
-	// In production, you might want to extract this from context or other sources
-	if userID == "" {
-		log.Warn("session not found in cache, message assigned to anonymous user",
-			"session_id", sessionID)
-		userID = "anonymous"
-	}
+	// Resolve the user this message belongs to. Cache hit is fast; a miss
+	// (restart/eviction) recovers the attribution from persisted history
+	// instead of defaulting to "anonymous" (REVIEW 3.3#11).
+	userID := m.resolveSessionUserID(ctx, sessionID)
 
 	sessionTTL, _ := m.snapshotTuning()
 	conv := &storage_models.Conversation{
@@ -551,17 +620,9 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		metadata["tool_calls"] = msg.ToolCalls
 	}
 
-	// Get user ID from session cache
-	userID := ""
-	m.mu.RLock()
-	if sessionData, exists := m.sessionCache[sessionID]; exists {
-		userID = sessionData.UserID
-	}
-	m.mu.RUnlock()
-
-	if userID == "" {
-		userID = "anonymous"
-	}
+	// Resolve the user this message belongs to (cache hit, or recovery from
+	// persisted history — see resolveSessionUserID).
+	userID := m.resolveSessionUserID(ctx, sessionID)
 
 	// Set time if not set
 	msgTime := msg.Time

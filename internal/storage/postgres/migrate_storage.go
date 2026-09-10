@@ -27,13 +27,19 @@ var storageMigrations = []string{
 			source_type VARCHAR(50),
 			source TEXT,
 			metadata JSONB DEFAULT '{}'::jsonb,
-			document_id UUID,
-			chunk_index INTEGER,
-			content_hash TEXT UNIQUE,
-			access_count INTEGER DEFAULT 0,
-			created_at TIMESTAMP DEFAULT NOW(),
-			updated_at TIMESTAMP DEFAULT NOW()
-		)`,
+		document_id UUID,
+		chunk_index INTEGER,
+		-- content_hash uniqueness is per-tenant, enforced by
+		-- uq_knowledge_1024_tenant_content_hash below. It was previously a
+		-- column-level GLOBAL UNIQUE: a second tenant ingesting the same
+		-- content hit the conflict target, bumped the FIRST tenant's
+		-- access_count and returned that row's id — cross-tenant integrity
+		-- corruption plus silent data loss for the second tenant.
+		content_hash TEXT,
+		access_count INTEGER DEFAULT 0,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	)`,
 
 	// Enable RLS for knowledge_chunks_1024
 	`ALTER TABLE knowledge_chunks_1024 ENABLE ROW LEVEL SECURITY`,
@@ -77,8 +83,50 @@ var storageMigrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tenant 
 		ON knowledge_chunks_1024(tenant_id)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_content_hash 
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_content_hash
 		ON knowledge_chunks_1024(content_hash)`,
+
+	// content_hash dedup scope repair (REVIEW 2.6#31): existing databases
+	// created before the per-tenant switch carry the global column UNIQUE.
+	// Drop ANY single-column unique constraint on content_hash (the
+	// auto-generated name varies), then add the tenant-scoped one. Guarded
+	// so repeated migrations are inert: the drop loop matches nothing once
+	// removed, and the add is skipped when the constraint exists. The add
+	// itself cannot fail on legacy data — the global unique guaranteed at
+	// most one row per hash, so per-tenant uniqueness already holds.
+	`DO $$
+		DECLARE
+			cname text;
+		BEGIN
+			FOR cname IN
+				SELECT conname FROM pg_constraint
+				WHERE conrelid = 'knowledge_chunks_1024'::regclass
+				  AND contype = 'u'
+				  AND (
+					SELECT array_agg(a.attname ORDER BY a.attnum)
+					FROM unnest(conkey) k
+					JOIN pg_attribute a ON a.attrelid = conrelid AND a.attnum = k
+				  ) = ARRAY['content_hash']
+			LOOP
+				EXECUTE format('ALTER TABLE knowledge_chunks_1024 DROP CONSTRAINT %I', cname);
+			END LOOP;
+		END
+		$$`,
+
+	`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conrelid = 'knowledge_chunks_1024'::regclass
+				  AND contype = 'u'
+				  AND conname = 'uq_knowledge_1024_tenant_content_hash'
+			) THEN
+				ALTER TABLE knowledge_chunks_1024
+					ADD CONSTRAINT uq_knowledge_1024_tenant_content_hash
+					UNIQUE (tenant_id, content_hash);
+			END IF;
+		END
+		$$`,
 
 	// 2. experiences_1024 table - Agent experiences with decay mechanism
 	`CREATE TABLE IF NOT EXISTS experiences_1024 (

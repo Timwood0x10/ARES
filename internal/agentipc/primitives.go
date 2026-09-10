@@ -27,6 +27,19 @@ const defaultRequestTimeout = 30 * time.Second
 // caller's stack, so containment has to happen where the goroutine runs.
 var ErrHandlerPanic = errors.New("agentipc: handler panicked")
 
+// SECURITY BOUNDARY (single-tenant v1): every primitive below takes `from`
+// as a CALLER-PROVIDED plain string. The bus performs no authentication and
+// no ACL check — any code holding a *Bus can address messages as ANY agent
+// id, including spoofing another agent's identity in Send/Request/Handoff
+// and thereby poisoning evolution/collaboration feedback attribution. This
+// is a known, accepted boundary of the single-tenant, single-process v1
+// deployment (all bus holders are in-process, trusted wiring), NOT a
+// property to rely on once agents come from separate trust domains.
+//
+// TODO(tech-debt): authenticate `from` (capability token per agent or a
+// bus-held id→handler registry that stamps the sender server-side) before
+// exposing the bus across any process or tenant boundary.
+
 // Send is the fire-and-forget primitive: deliver a message to a target agent
 // without waiting for a reply. The target's handler is invoked synchronously
 // in the caller's goroutine; a failed handler returns the error but does not
@@ -376,10 +389,19 @@ func (b *Bus) removePending(corrID string) {
 
 // stashError stores a handler error so the caller can surface it after the
 // nil-reply sentinel wakes the select.
+//
+// It only stashes while the request is still pending: after a timeout the
+// request's deferred removePending has already deleted the entry, and nothing
+// will ever pop the error — re-inserting it here would leak the pendingErr
+// slot (and its error value) for the lifetime of the bus every time a slow
+// handler outlived its request's timeout.
 func (b *Bus) stashError(corrID string, err error) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.pending[corrID]; !ok {
+		return // request already completed (timeout/cancel): nothing to wake
+	}
 	b.pendingErr[corrID] = err
-	b.mu.Unlock()
 }
 
 // popError returns and clears a stashed handler error.

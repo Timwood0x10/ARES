@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,4 +149,71 @@ func TestCommandTool_ExecuteOversizedOutput(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Contains(t, result.Error, "output exceeds")
+}
+
+// TestLimitedBuffer_CapsDuringRun is the #49 regression: the output cap must
+// be enforced WHILE the command runs (the writer discards past the limit),
+// not after cmd.Run returns. A chatty command (e.g. `yes`) would otherwise
+// exhaust memory before a post-run size check ever fires.
+func TestLimitedBuffer_CapsDuringRun(t *testing.T) {
+	var kills int32
+	lb := &limitedBuffer{limit: 1024, onExceed: func() { atomic.AddInt32(&kills, 1) }}
+	chunk := make([]byte, 512)
+	for i := range chunk {
+		chunk[i] = 'x'
+	}
+	// Write 512 KiB in 512-byte chunks — far past the 1 KiB limit.
+	for i := 0; i < 1024; i++ {
+		n, err := lb.Write(chunk)
+		require.NoError(t, err, "write %d", i)
+		require.Equal(t, len(chunk), n, "Write must report full acceptance (it discards silently)")
+	}
+	assert.True(t, lb.exceeded.Load(), "exceeded flag must be set once the cap is hit")
+	assert.LessOrEqual(t, lb.buf.Len(), 1024, "buffered bytes must never exceed the limit")
+	assert.Equal(t, 1024, lb.buf.Len(), "first limit bytes are retained")
+
+	// Writes after the cap are discarded without growing the buffer, and the
+	// kill hook fired exactly once.
+	more := make([]byte, 4096)
+	n, err := lb.Write(more)
+	require.NoError(t, err)
+	assert.Equal(t, len(more), n)
+	assert.Equal(t, 1024, lb.buf.Len())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&kills), "onExceed must fire exactly once")
+}
+
+// TestLimitedBuffer_ExactLimitHitNotExceeded: writing exactly up to (but not
+// past) the limit must not set exceeded.
+func TestLimitedBuffer_ExactLimitHitNotExceeded(t *testing.T) {
+	lb := &limitedBuffer{limit: 100}
+	n, err := lb.Write(make([]byte, 60))
+	require.NoError(t, err)
+	assert.Equal(t, 60, n)
+	n, err = lb.Write(make([]byte, 40))
+	require.NoError(t, err)
+	assert.Equal(t, 40, n)
+	assert.False(t, lb.exceeded.Load(), "exactly reaching the limit is not an overflow")
+	assert.Equal(t, 100, lb.buf.Len())
+}
+
+// TestDiscoverer_ExecClosureRejectsOverCapOutput runs the REAL exec closure
+// (not a mock) against an infinite producer — the `yes` scenario — and
+// verifies it terminates promptly with the exceeds error instead of hanging
+// until the context deadline or ballooning memory.
+func TestDiscoverer_ExecClosureRejectsOverCapOutput(t *testing.T) {
+	d := NewDiscoverer([]string{"yes"})
+	// Find the yes binary; skip if absent (CI minimal images).
+	if _, err := d.lookup("yes"); err != nil {
+		t.Skip("yes(1) not available on this host")
+	}
+
+	// The cap-kill must terminate `yes` far before this deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	out, err := d.exec(ctx, "yes", nil)
+	elapsed := time.Since(start)
+	require.Error(t, err, "infinite output must be rejected, got %q", out)
+	assert.Contains(t, err.Error(), "output exceeds")
+	assert.Less(t, elapsed, 20*time.Second, "cap-kill must terminate the producer promptly (got %v)", elapsed)
 }

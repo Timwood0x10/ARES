@@ -148,10 +148,14 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"prompt":      prompt,
-		"stream":      true,
-		"temperature": a.config.Temperature,
+		"model":  a.config.Model,
+		"prompt": prompt,
+		"stream": true,
+		// Ollama expects sampling parameters inside an "options" object;
+		// top-level "temperature" is silently ignored (same as Generate).
+		"options": map[string]interface{}{
+			keyOllamaTemperature: a.config.Temperature,
+		},
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -200,11 +204,25 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 					case ch <- StreamChunk{Done: true, Err: gerr.Wrap(err, "decode stream chunk")}:
 					case <-ctx.Done():
 					}
+					return
+				}
+				// EOF without a final done:true object — still a clean end,
+				// still emit the terminal Done chunk.
+				select {
+				case ch <- StreamChunk{Done: true}:
+				case <-ctx.Done():
 				}
 				return
 			}
 
 			if chunk.Done {
+				// Emit the terminal Done chunk so consumers watching for
+				// Done (instead of channel close) see a clean end; the
+				// decode-error path above already emits Done:true.
+				select {
+				case ch <- StreamChunk{Done: true}:
+				case <-ctx.Done():
+				}
 				return
 			}
 

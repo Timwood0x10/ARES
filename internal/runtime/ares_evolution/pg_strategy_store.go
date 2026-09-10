@@ -93,7 +93,10 @@ func (s *PGStrategyStore) createTable(ctx context.Context) error {
 }
 
 // GetActive returns the currently deployed strategy.
-// Returns nil (and no error) if no strategy has been stored yet.
+// Empty-store contract: returns (nil, ErrNoActiveStrategy) when no strategy
+// has been stored yet — NOT (nil, nil); callers distinguish "no active"
+// via errors.Is(err, ErrNoActiveStrategy). (MemoryStrategyStore returns the
+// legacy (nil, nil) shape; see the StrategyStore interface doc.)
 func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 	//nolint:gosec // G201: tableName is application-controlled, not user input
 	query := fmt.Sprintf(`

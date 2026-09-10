@@ -110,6 +110,44 @@ func (m *Mutator) Mutate(ctx context.Context, parent *Strategy, n int) ([]*Strat
 	return children, nil
 }
 
+// mutateNWithProbs generates n children with the given type probabilities
+// (the batch seam the AdaptiveDistribution drives). It is the loop body the
+// adaptive distribution previously owned inline; exporting the seam (via
+// the AdaptiveMutater interface) lets the adaptive layer drive OTHER
+// mutators — most importantly the experience-guided one, so enabling the
+// adaptive distribution no longer silently discards guided mutation.
+func (m *Mutator) mutateNWithProbs(ctx context.Context, parent *Strategy, n int, paramProb, promptProb, toolProb float64) ([]*Strategy, error) {
+	children := make([]*Strategy, 0, n)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return children, ctx.Err()
+		default:
+		}
+		child, err := m.mutateOneWithProbs(parent, i, paramProb, promptProb, toolProb)
+		if err != nil {
+			return nil, fmt.Errorf("adaptive mutate child %d: %w", i, err)
+		}
+		children = append(children, child)
+	}
+	return children, nil
+}
+
+// AdaptiveMutater is the mutation seam the AdaptiveDistribution drives: a
+// batch of n children generated with caller-tuned type probabilities. The
+// method is unexported on purpose — the seam is closed to implementations
+// outside this package (*Mutator and *ExperienceGuidedMutator), so the
+// composition stays well-defined.
+type AdaptiveMutater interface {
+	mutateNWithProbs(ctx context.Context, parent *Strategy, n int, paramProb, promptProb, toolProb float64) ([]*Strategy, error)
+}
+
+// ensure the concrete mutators satisfy the seam.
+var (
+	_ AdaptiveMutater = (*Mutator)(nil)
+	_ AdaptiveMutater = (*ExperienceGuidedMutator)(nil)
+)
+
 // mutateOne performs a single mutation on the parent strategy using default
 // hard-coded probabilities.
 // It delegates to mutateOneWithProbs with the standard distribution:

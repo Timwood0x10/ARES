@@ -2,7 +2,6 @@ package ahp
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"sync/atomic"
@@ -222,12 +221,6 @@ func generateMessageID() string {
 	return fmt.Sprintf("%s.%d.%s", time.Now().Format("20060102150405.000000"), id, randSuffix)
 }
 
-// MarshalJSON implements custom JSON marshaling.
-func (m *AHPMessage) MarshalJSON() ([]byte, error) {
-	type Alias AHPMessage
-	return json.Marshal(&struct {
-		*Alias
-	}{
-		Alias: (*Alias)(m),
-	})
-}
+// NOTE: the previous MarshalJSON alias-pattern method was removed as a no-op
+// (it produced byte-identical output to the default marshaling). If custom
+// marshaling is ever needed, add it HERE with a test asserting the delta.

@@ -535,3 +535,51 @@ func TestWithRetry_HalfOpenProbeNonRetryableReopens(t *testing.T) {
 		t.Errorf("follow-up attempts = %d, want 0", attempts)
 	}
 }
+
+// TestWithRetry_HalfOpenProbeReleasedOnContextCancel locks the REVIEW 3.8
+// probe-slot fix: when the caller's context is cancelled during the retry
+// backoff, the half-open probe admitted by Allow() must be released. The
+// old code returned without any Record*, holding the slot until the Allow
+// leak guard fired after the full openTimeout — up to 30s of hard downtime
+// per cancelled probe.
+func TestWithRetry_HalfOpenProbeReleasedOnContextCancel(t *testing.T) {
+	cb := NewCircuitBreaker(1, time.Hour)
+	c := &Client{
+		retryPolicy: RetryPolicy{
+			MaxAttempts:    3,
+			InitialBackoff: 100 * time.Millisecond,
+			MaxBackoff:     100 * time.Millisecond,
+			Factor:         2,
+		},
+		circuit: cb,
+	}
+
+	// Open the circuit (threshold 1), then pretend the open timeout
+	// elapsed so the next Allow() transitions to half-open and admits a
+	// probe. The hour-long timeout is what makes a leaked slot observable:
+	// it rejects for a full hour instead of being reclaimed quickly.
+	cb.RecordFailure()
+	cb.mu.Lock()
+	cb.lastFailureTime = time.Now().Add(-2 * time.Hour)
+	cb.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond) // cancel mid-backoff
+		cancel()
+	}()
+
+	_, err := withRetry(c, ctx, func() (string, error) {
+		// Retryable so the loop reaches the backoff where ctx cancels.
+		return "", &HTTPError{StatusCode: http.StatusServiceUnavailable, Message: "down"}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("withRetry error = %v, want context.Canceled", err)
+	}
+
+	// The probe slot must be released: the very next Allow() must admit a
+	// new probe instead of rejecting with ErrCircuitBreakerOpen.
+	if err := cb.Allow(); err != nil {
+		t.Fatalf("probe slot leaked after ctx cancellation: %v", err)
+	}
+}

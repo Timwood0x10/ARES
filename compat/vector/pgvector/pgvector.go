@@ -56,10 +56,48 @@ func New(config map[string]any) (*Adapter, error) {
 	return &Adapter{pool: pool, repo: repo, table: table}, nil
 }
 
+// ErrClosed is returned by every operation after Close. The adapter drops
+// its pool/repo references on Close, so a later (or concurrent) call must
+// fail cleanly instead of dereferencing a nil backend (#45).
+var ErrClosed = fmt.Errorf("compat/vector/pgvector: adapter is closed")
+
+// currentRepo returns the live repository, or ErrClosed once Close ran.
+// The repo is snapshotted under the mutex so a Close racing an in-flight
+// Search cannot nil it out mid-call.
+func (a *Adapter) currentRepo() (*repositories.KnowledgeRepository, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.repo == nil {
+		return nil, ErrClosed
+	}
+	return a.repo, nil
+}
+
+// currentPool returns the live pool, or ErrClosed once Close ran.
+func (a *Adapter) currentPool() (*postgres.Pool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pool == nil {
+		return nil, ErrClosed
+	}
+	return a.pool, nil
+}
+
 // Search returns the top-k nearest neighbors for the given query vector,
 // filtered to tenantID. Each result carries the stored ID, its raw content,
 // a similarity score in [0,1], and metadata forwarded as string-keyed tags.
 func (a *Adapter) Search(ctx context.Context, query []float64, tenantID string, topK int) ([]vector.Result, error) {
+	if tenantID == "" {
+		// Upsert rejects an empty tenant; Search must too, or the pair is
+		// asymmetric — a reader with no tenant could see rows from every
+		// tenant that ever wrote (the repository treats "" as its own
+		// scope, not as "all").
+		return nil, fmt.Errorf("compat/vector/pgvector: tenantID must not be empty")
+	}
+	repo, err := a.currentRepo()
+	if err != nil {
+		return nil, err
+	}
 	if len(query) == 0 {
 		return nil, fmt.Errorf("compat/vector/pgvector: query vector must not be empty")
 	}
@@ -67,7 +105,7 @@ func (a *Adapter) Search(ctx context.Context, query []float64, tenantID string, 
 		topK = 10
 	}
 
-	chunks, err := a.repo.SearchByVector(ctx, query, tenantID, topK)
+	chunks, err := repo.SearchByVector(ctx, query, tenantID, topK)
 	if err != nil {
 		return nil, fmt.Errorf("compat/vector/pgvector: search: %w", err)
 	}
@@ -93,6 +131,10 @@ func (a *Adapter) Search(ctx context.Context, query []float64, tenantID string, 
 // The whole batch is committed atomically via the repository's transactional
 // CreateBatch so a mid-batch failure cannot leave partial writes behind.
 func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.Item) error {
+	repo, err := a.currentRepo()
+	if err != nil {
+		return err
+	}
 	if tenantID == "" {
 		return fmt.Errorf("compat/vector/pgvector: tenantID must not be empty")
 	}
@@ -114,7 +156,7 @@ func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.It
 			Metadata:         inflateMetadata(it.Metadata),
 		})
 	}
-	if err := a.repo.CreateBatch(ctx, chunks); err != nil {
+	if err := repo.CreateBatch(ctx, chunks); err != nil {
 		return fmt.Errorf("compat/vector/pgvector: upsert batch: %w", err)
 	}
 	return nil
@@ -122,7 +164,11 @@ func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.It
 
 // HealthCheck reports whether the backend is reachable and usable.
 func (a *Adapter) HealthCheck(ctx context.Context) error {
-	db := a.pool.GetDB()
+	pool, err := a.currentPool()
+	if err != nil {
+		return err
+	}
+	db := pool.GetDB()
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	row := db.QueryRowContext(checkCtx, "SELECT 1")
@@ -135,8 +181,9 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 
 // Close releases backend-specific resources. The underlying Pool is owned by
 // the caller; this adapter only drops its references and does NOT close the pool.
-// Uses atomic pointer swap so concurrent readers see either a live adapter or
-// a clean nil — never a half-torn-down struct.
+// The mutex synchronizes with the readers' snapshots (currentRepo/currentPool),
+// so a concurrent operation sees either a live adapter or a clean ErrClosed —
+// never a nil dereference.
 func (a *Adapter) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

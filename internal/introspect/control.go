@@ -33,8 +33,9 @@ func WithRuntimeConfig(getConfig func() (cfg any, history []map[string]any)) Con
 	}
 }
 
-// WithIntel attaches the intelligence engine backing /api/health,
-// /api/anomalies and /api/insights.
+// WithIntel attaches the intelligence engine backing /api/health and
+// /api/anomalies. (/api/insights is a permanent 501: the insight generator
+// never existed — see the #53 burial note in intel.go.)
 func WithIntel(intel *Engine) ControlServerOption {
 	return func(s *ControlServer) {
 		s.intel = intel
@@ -341,11 +342,14 @@ func (s *ControlServer) handleAnomalies(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(s.intel.Anomalies())})
 }
 
-func (s *ControlServer) handleInsights(w http.ResponseWriter, r *http.Request) {
+// handleInsights reports that insight generation is not implemented (#53
+// burial): the insight engine was migrated as a reader with no generator, so
+// this endpoint was permanently {"count":0}. The route is kept (not 404) so
+// dashboards get an explicit, greppable answer instead of a phantom count.
+func (s *ControlServer) handleInsights(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if s.intel == nil {
-		_ = json.NewEncoder(w).Encode([]any{})
-		return
-	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(s.intel.Insights())})
+	w.WriteHeader(http.StatusNotImplemented)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		keyError: "insight generation is not implemented; /api/anomalies is the active signal surface",
+	})
 }

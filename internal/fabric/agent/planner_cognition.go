@@ -598,8 +598,18 @@ func (c *plannerCognition) readNodeOutput(nodeID string) (string, error) {
 // of this ToolClass can exist in the L2 graph per session. A nil L1 graph
 // means no constraints (permissive default).
 //
-// Returns the number of tool nodes actually grown (0 when all calls were
-// skipped by L1 constraints, in which case the caller forces an answer node).
+// Idempotency across quantum re-execution: the growth round is derived from
+// the TASK (its ancestor plan count), not from the global PlanDepth — a
+// re-executed plan quantum (fabric Fail-requeue after a partial growth, or
+// a lease-expiry requeue after the step's side effects landed) computes the
+// SAME round and therefore the SAME deterministic node IDs as its first
+// execution. Nodes that already exist are skipped (and chained through)
+// instead of erroring on the duplicate ID, and a round whose plan node
+// already exists is a successful no-op.
+//
+// Returns the number of tool nodes the round carries (grown or already
+// present), 0 when the round is genuinely empty — in which case the caller
+// forces an answer node.
 func (c *plannerCognition) growToolNodes(
 	ctx context.Context,
 	g *L2Graph,
@@ -607,7 +617,15 @@ func (c *plannerCognition) growToolNodes(
 	toolCalls []llmcore.ToolCall,
 	sessionID string,
 ) (int, error) {
-	depth := g.PlanDepth()
+	// Stable round derivation. The admission-submitted plan task (not a
+	// graph node) is the round-0 trigger and grows round 1; a grown plan
+	// node sess/<sid>/d<N>/plan#0 has N-1 plan ancestors and grows round
+	// N+1. In the normal flow this equals the old PlanDepth()+1 — it only
+	// diverges on re-execution, which is exactly the point.
+	round := 1
+	if g.HasNode(task.TaskID) {
+		round = g.AncestorPlanCount(task.TaskID) + 2
+	}
 	grown := 0
 
 	// Determine the predecessor for the first tool node: the current plan
@@ -632,7 +650,17 @@ func (c *plannerCognition) growToolNodes(
 			continue
 		}
 
-		nodeID := SessionNodeID(sessionID, depth+1, toolName, seq)
+		nodeID := SessionNodeID(sessionID, round, toolName, seq)
+
+		// Skip nodes an earlier execution of this quantum already grew
+		// (partial-growth retry): the node exists, chains onward, and the
+		// duplicate-ID error that used to fail the quantum permanently
+		// never fires.
+		if g.HasNode(nodeID) {
+			prev = nodeID
+			grown++
+			continue
+		}
 
 		// Parse the tool arguments.
 		args := map[string]any{}
@@ -658,20 +686,25 @@ func (c *plannerCognition) growToolNodes(
 		grown++
 	}
 
-	// When every tool call was skipped by L1 constraints, do NOT grow a new
-	// plan node — the caller forces an answer node instead. Growing a
-	// plan node here would inflate PlanDepth and shift the answer node's
-	// ID, breaking the "no tools grown → answer at this depth" contract.
-	if grown == 0 {
-		return grown, nil
-	}
-
-	// Grow a new plan node depending on the last tool node. The next plan
-	// quantum reads the tool outputs and decides the next round.
-	newPlanID := SessionNodeID(sessionID, depth+1, "plan", 0)
-	planArgs := map[string]any{planMetadataKey: sessionID}
-	if err := g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev); err != nil {
-		return grown, fmt.Errorf("add plan node %s: %w", newPlanID, err)
+	// The round's plan node. When every tool call was skipped by L1
+	// constraints, do NOT grow a new plan node — the caller forces an answer
+	// node instead (growing one here would inflate PlanDepth and shift the
+	// answer node's ID, breaking the "no tools grown → answer at this
+	// depth" contract). An earlier execution of this quantum may already
+	// have grown the plan node (full-growth retry): skip it — the round is
+	// complete, and re-adding it used to fail the retried quantum on the
+	// duplicate ID.
+	newPlanID := SessionNodeID(sessionID, round, "plan", 0)
+	if planExists := g.HasNode(newPlanID); !planExists && grown > 0 {
+		planArgs := map[string]any{planMetadataKey: sessionID}
+		if err := g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev); err != nil {
+			return grown, fmt.Errorf("add plan node %s: %w", newPlanID, err)
+		}
+	} else if planExists && grown == 0 {
+		// Full-growth retry whose LLM response matched nothing: the round
+		// still completed on the earlier execution — report it as grown so
+		// the caller does not force a spurious answer.
+		grown = 1
 	}
 	return grown, nil
 }
@@ -778,18 +811,25 @@ func (c *plannerCognition) growAnswerNode(
 	depth := g.PlanDepth()
 	answerID := SessionNodeID(task.SessionID, depth+1, "answer", 0)
 
-	// Determine predecessor: the current plan node when in graph, else root.
-	pred := task.TaskID
-	if !g.HasNode(pred) {
-		pred = g.Root()
-	}
+	// Idempotency across quantum re-execution: answer growth does not
+	// advance PlanDepth, so a re-executed quantum derives the SAME answer
+	// node ID. Growing it again used to fail on the duplicate ID and burn
+	// the whole retry budget; a quantum whose answer already exists just
+	// completes successfully.
+	if !g.HasNode(answerID) {
+		// Determine predecessor: the current plan node when in graph, else root.
+		pred := task.TaskID
+		if !g.HasNode(pred) {
+			pred = g.Root()
+		}
 
-	args := map[string]any{
-		"content":       content,
-		planMetadataKey: task.SessionID,
-	}
-	if err := g.AddToolNode(ctx, answerID, "answer", args, pred); err != nil {
-		return nil, fmt.Errorf("agentfabric: planner cognition: add answer node: %w", err)
+		args := map[string]any{
+			"content":       content,
+			planMetadataKey: task.SessionID,
+		}
+		if err := g.AddToolNode(ctx, answerID, "answer", args, pred); err != nil {
+			return nil, fmt.Errorf("agentfabric: planner cognition: add answer node: %w", err)
+		}
 	}
 
 	result := models.NewTaskResult(task.TaskID, task.AgentType)

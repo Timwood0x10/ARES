@@ -43,7 +43,7 @@ func NewResultVerifier() *ResultVerifier {
 //
 // Verdict derivation:
 //   - all checks passed                 -> VerdictPass
-//   - at least one check explicitly failed -> VerdictFail
+//   - at least one check explicitly failed (or carried an unknown status) -> VerdictFail
 //   - no failure but missing/skipped    -> VerdictUncertain (cannot prove success)
 //   - empty checks                      -> VerdictUncertain
 //
@@ -87,9 +87,12 @@ func (v *ResultVerifier) Verify(taskID, role string, checks []ResultCheck) *Evid
 		case StatusPassed:
 			// explicit pass — no counter bump
 		default:
-			// Unknown status: treat as indeterminate rather than silently
-			// passing, so garbage input cannot masquerade as a PASS.
-			indeterminateCount++
+			// Unknown status: no legal unknown values exist in-tree (the
+			// only statuses are the Status* constants), so this is garbage
+			// input. The bottom layer must prove success — an unrecognized
+			// status proves nothing and counts as a failure (#56), stricter
+			// than missing/skipped (uncertain).
+			failedCount++
 		}
 	}
 

@@ -112,33 +112,42 @@ func (c *Catalog) SetHTTPSources(srcs []HTTPSource) {
 // fetched). Safe to call again after sources change. It is safe for concurrent
 // use with Search/Load/Refresh (an internal RWMutex guards index swaps).
 //
+// Remote manifests are fetched OUTSIDE the write lock: a slow or unreachable
+// manifest host must not block read-locked operations (Search/Load) for the
+// full fetch timeout.
+//
 // Returns:
 //   - error: wrapped index error, or nil.
 func (c *Catalog) Build() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.buildLocked()
-}
-
-// buildLocked performs the actual indexing; caller must hold the write lock.
-//
-// Returns:
-//   - error: wrapped index error, or nil.
-func (c *Catalog) buildLocked() error {
 	sources := c.sm.Sources()
+	httpSrcs := append([]HTTPSource(nil), c.httpSrcs...)
 	entries, err := c.indexer.Index(sources, c.sm)
+	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	for _, src := range c.httpSrcs {
+	entries = append(entries, fetchRemoteEntries(httpSrcs)...)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.swapIndex(entries)
+	return nil
+}
+
+// fetchRemoteEntries fetches all http/oci manifest entries. It must be
+// called WITHOUT holding c.mu: each fetch is network I/O whose latency (or
+// timeout) must not block read-locked operations like Search.
+func fetchRemoteEntries(srcs []HTTPSource) []SkillIndexEntry {
+	var entries []SkillIndexEntry
+	for _, src := range srcs {
 		remote, fetchErr := FetchHTTPManifest(context.Background(), src)
 		if fetchErr != nil {
 			continue // remote source unreachable: index local declarations only
 		}
 		entries = append(entries, remote...)
 	}
-	c.swapIndex(entries)
-	return nil
+	return entries
 }
 
 // swapIndex atomically installs a new index generation: it closes the previous
@@ -325,24 +334,23 @@ func (c *Catalog) Refresh() (IndexChange, error) {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	var prev []SkillIndexEntry
 	if c.discovery != nil {
 		prev = c.discovery.All()
 	}
 	sources := c.sm.Sources()
+	httpSrcs := append([]HTTPSource(nil), c.httpSrcs...)
 	next, err := c.indexer.Index(sources, c.sm)
+	c.mu.Unlock()
 	if err != nil {
 		return IndexChange{}, err
 	}
-	for _, src := range c.httpSrcs {
-		remote, fetchErr := FetchHTTPManifest(context.Background(), src)
-		if fetchErr != nil {
-			continue // remote source unreachable: index local declarations only
-		}
-		next = append(next, remote...)
-	}
+	// Fetched outside the write lock so Search/Load stay responsive while
+	// remote manifests are being retrieved.
+	next = append(next, fetchRemoteEntries(httpSrcs)...)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	change := DetectIndexChanges(prev, next)
 	c.swapIndex(next)
 	return change, nil

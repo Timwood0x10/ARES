@@ -142,9 +142,19 @@ func wireKnowledge(
 		return &knowledgeWiring{}, nil
 	}
 
-	reg := provider.NewProviderRegistry()
+	// ONE strategy store for the whole SDK path: it is both registered as
+	// the AKF "evolution" provider (read side) and returned in the wiring
+	// (Runtime.evolutionStore, write side). Previously two independent
+	// stores were created — the provider's store never saw anything the
+	// runtime side wrote, so evolution decisions could never surface as
+	// KnowledgeObjects.
+	var evoStore *memStrategyStore
+	if cfg.evoCfg.Enabled {
+		evoStore = newMemStrategyStore()
+	}
 
-	if err := registerKnowledgeProviders(reg, cfg, memMgr); err != nil {
+	reg := provider.NewProviderRegistry()
+	if err := registerKnowledgeProviders(reg, cfg, memMgr, evoStore); err != nil {
 		return nil, err
 	}
 
@@ -161,11 +171,6 @@ func wireKnowledge(
 		if err := reg.Register(sp); err != nil {
 			return nil, fmt.Errorf("knowledge: register store provider: %w", err)
 		}
-	}
-
-	var evoStore *memStrategyStore
-	if cfg.evoCfg.Enabled {
-		evoStore = newMemStrategyStore()
 	}
 
 	rt := khruntime.New(
@@ -188,8 +193,11 @@ func wireKnowledge(
 
 // registerKnowledgeProviders registers the memory, evolution, and
 // user-configured extra providers into the registry. Extracted to keep
-// wireKnowledge under 100 lines.
-func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, memMgr memory.MemoryManager) error {
+// wireKnowledge under 100 lines. evoStore is the SHARED strategy store from
+// wireKnowledge (nil when evolution is disabled) — registering the caller's
+// instance, not a fresh one, is what keeps the AKG provider's view coherent
+// with runtime-side writes.
+func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, memMgr memory.MemoryManager, evoStore *memStrategyStore) error {
 	if memMgr != nil {
 		searcher := &memSearcher{svc: memMgr}
 		if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
@@ -197,8 +205,7 @@ func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, mem
 		}
 	}
 
-	if cfg.evoCfg.Enabled {
-		evoStore := newMemStrategyStore()
+	if evoStore != nil {
 		if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
 			return fmt.Errorf("knowledge: register evolution provider: %w", err)
 		}

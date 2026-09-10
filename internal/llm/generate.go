@@ -13,6 +13,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 // validatePrompt checks prompt constraints and records errors on failure.
@@ -20,20 +21,20 @@ import (
 func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.Time) error {
 	if prompt == "" {
 		err := errors.ErrInvalidArgument
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, err)
 		return err
 	}
 	trimmed := bytes.TrimSpace([]byte(prompt))
 	if len(trimmed) == 0 {
 		err := errors.ErrInvalidArgument
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, err)
 		return err
 	}
 	// Count runes, not bytes: CJK and other multi-byte characters would
 	// otherwise be wrongly rejected against a character-based limit.
 	if utf8.RuneCountInString(prompt) > c.promptMaxLength() {
 		err := fmt.Errorf("prompt exceeds maximum length of %d characters", c.promptMaxLength())
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, err)
 		return err
 	}
 	return nil
@@ -110,7 +111,7 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 	// Apply rate limiter before making the API call.
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
-			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
+			c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, waitErr)
 			c.emitCallback(&ares_callbacks.Context{
 				Event: ares_callbacks.EventLLMError,
 				Model: model,
@@ -138,7 +139,7 @@ func (c *Client) generateWithParams(ctx context.Context, prompt string, o reques
 	})
 
 	duration := time.Since(start)
-	c.recordLLMCall(ctx, prompt, result, 0, start, err)
+	c.recordLLMCall(ctx, prompt, result, llmcore.TokenUsage{}, start, err)
 
 	if err != nil {
 		c.emitCallback(&ares_callbacks.Context{

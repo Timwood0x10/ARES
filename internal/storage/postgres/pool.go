@@ -251,7 +251,23 @@ func (p *Pool) QueryWithTenant(ctx context.Context, tenantID string, query strin
 		_ = conn.Close()
 		return nil, queryErr
 	}
-	return &ManagedRows{Rows: rows, conn: conn, pool: p, tenant: true}, nil
+	mr := &ManagedRows{Rows: rows, conn: conn, pool: p, tenant: true}
+	// Finalizer for a caller that forgets Close(): the connection must not
+	// only be released — the tenant context must be CLEARED first, or the
+	// tenant GUC leaks into every other tenant that reuses the pooled
+	// connection. Query and QueryRow already install equivalent finalizers.
+	runtime.SetFinalizer(mr, func(m *ManagedRows) {
+		if m.conn != nil {
+			log.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
+			if m.tenant {
+				clearTenantContext(m.conn)
+				m.tenant = false
+			}
+			m.pool.Release(m.conn)
+			m.conn = nil
+		}
+	})
+	return mr, nil
 }
 
 // Query executes a query and returns rows.

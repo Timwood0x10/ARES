@@ -28,13 +28,19 @@ type Tracer interface {
 
 // LLMCall represents an LLM invocation.
 type LLMCall struct {
-	TraceID    string
-	Model      string
-	Prompt     string
-	Response   string
-	TokensUsed int
-	Duration   time.Duration
-	Error      error
+	TraceID  string
+	Model    string
+	Prompt   string
+	Response string
+	// TokensUsed is the total token count. When the provider reports the
+	// input/output split, InputTokens/OutputTokens carry it and TokensUsed
+	// is their sum; callers that only know a total leave the split zero and
+	// consumers fall back to splitting the total.
+	TokensUsed   int
+	InputTokens  int
+	OutputTokens int
+	Duration     time.Duration
+	Error        error
 }
 
 // ToolCall represents a tool execution.

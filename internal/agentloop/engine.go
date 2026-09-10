@@ -241,10 +241,14 @@ type iterState struct {
 //
 //  1. Call the LLM with the current messages and tool definitions.
 //  2. Append the assistant message; persist it to memory when enabled.
-//  3. If no tool calls, emit TaskCompleted and return the final answer.
-//  4. Otherwise execute each tool call (with human-in-the-loop approval),
+//  3. If no tool calls, emit TaskCompleted and return the final answer
+//     (checked BEFORE the budget gates — a budget crossing on the response
+//     that carries the answer never discards it).
+//  4. Otherwise, when the token or wall-clock budget is exhausted, stop with
+//     the corresponding budget notice.
+//  5. Otherwise execute each tool call (with human-in-the-loop approval),
 //     append tool results, emit tool-call events, and continue.
-//  5. After MaxIter iterations without a final answer, return "max iterations
+//  6. After MaxIter iterations without a final answer, return "max iterations
 //     reached".
 func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 	start := time.Now()
@@ -300,36 +304,6 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 		st.inputTok += resp.Usage.PromptTokens
 		st.outputTok += resp.Usage.CompletionTokens
 
-		// Token budget: stop the loop as soon as cumulative usage reaches the
-		// cap so a runaway agent cannot burn unbounded tokens before hitting
-		// the iteration cap (primitive 4: bounded autonomous execution).
-		if req.MaxTokens > 0 && st.inputTok+st.outputTok >= req.MaxTokens {
-			e.trace("[ares:trace] %s ⚠ %s (%d total)", req.AgentName, maxTokensReachedMsg, st.inputTok+st.outputTok)
-			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, maxTokensReachedMsg)
-			return &Result{
-				Output:       maxTokensReachedMsg,
-				ToolCalls:    st.toolCount,
-				MemoryUsed:   e.MemEnabled,
-				InputTokens:  st.inputTok,
-				OutputTokens: st.outputTok,
-				Duration:     time.Since(start),
-			}, nil
-		}
-
-		// Wall-clock budget: stop between LLM calls once the deadline passes.
-		if req.Timeout > 0 && time.Since(start) > req.Timeout {
-			e.trace("[ares:trace] %s ⚠ %s (%v)", req.AgentName, timeoutReachedMsg, time.Since(start).Round(time.Millisecond))
-			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, timeoutReachedMsg)
-			return &Result{
-				Output:       timeoutReachedMsg,
-				ToolCalls:    st.toolCount,
-				MemoryUsed:   e.MemEnabled,
-				InputTokens:  st.inputTok,
-				OutputTokens: st.outputTok,
-				Duration:     time.Since(start),
-			}, nil
-		}
-
 		// Append the assistant message.
 		st.messages = append(st.messages, &llmcore.LLMMessage{
 			Role:      roleAssistant,
@@ -364,7 +338,11 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 			}
 		}
 
-		// Final answer: no tool calls.
+		// Final answer: no tool calls. Checked BEFORE the budget gates: the
+		// answer is already complete — a token/wall-clock budget crossing on
+		// the very response that carries the answer must not discard it and
+		// replace it with a budget notice. Budgets decide whether the loop
+		// may CONTINUE, not whether a finished answer is kept.
 		if len(resp.ToolCalls) == 0 {
 			e.trace("[ares:trace] %s ✓ done (%d tools, %d total tokens, %v)",
 				req.AgentName, st.toolCount, st.inputTok+st.outputTok,
@@ -372,6 +350,36 @@ func (e *Engine) Run(ctx context.Context, req *Request) (*Result, error) {
 			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, resp.Content)
 			return &Result{
 				Output:       resp.Content,
+				ToolCalls:    st.toolCount,
+				MemoryUsed:   e.MemEnabled,
+				InputTokens:  st.inputTok,
+				OutputTokens: st.outputTok,
+				Duration:     time.Since(start),
+			}, nil
+		}
+
+		// Token budget: stop the loop as soon as cumulative usage reaches the
+		// cap so a runaway agent cannot burn unbounded tokens before hitting
+		// the iteration cap (primitive 4: bounded autonomous execution).
+		if req.MaxTokens > 0 && st.inputTok+st.outputTok >= req.MaxTokens {
+			e.trace("[ares:trace] %s ⚠ %s (%d total)", req.AgentName, maxTokensReachedMsg, st.inputTok+st.outputTok)
+			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, maxTokensReachedMsg)
+			return &Result{
+				Output:       maxTokensReachedMsg,
+				ToolCalls:    st.toolCount,
+				MemoryUsed:   e.MemEnabled,
+				InputTokens:  st.inputTok,
+				OutputTokens: st.outputTok,
+				Duration:     time.Since(start),
+			}, nil
+		}
+
+		// Wall-clock budget: stop between LLM calls once the deadline passes.
+		if req.Timeout > 0 && time.Since(start) > req.Timeout {
+			e.trace("[ares:trace] %s ⚠ %s (%v)", req.AgentName, timeoutReachedMsg, time.Since(start).Round(time.Millisecond))
+			e.emitTaskCompleted(ctx, req.SessionID, req.Input, req.AgentName, timeoutReachedMsg)
+			return &Result{
+				Output:       timeoutReachedMsg,
 				ToolCalls:    st.toolCount,
 				MemoryUsed:   e.MemEnabled,
 				InputTokens:  st.inputTok,
@@ -671,8 +679,7 @@ func parseArgs(raw string) map[string]any {
 
 // FriendlyErr wraps an LLM error with an actionable hint based on the provider.
 // Exported so the sdk can reuse the same hint table (single source of truth)
-// for both New() and engine-driven runs. The message format matches the
-// original sdk.friendlyErr exactly.
+// for both New() and engine-driven runs.
 func FriendlyErr(scope string, provider llmcore.LLMProvider, origErr error) error {
 	hints := map[llmcore.LLMProvider]string{
 		llmcore.LLMProviderOpenAI:     "→ Set OPENAI_API_KEY or check https://platform.openai.com/account/api-keys",
@@ -680,10 +687,12 @@ func FriendlyErr(scope string, provider llmcore.LLMProvider, origErr error) erro
 		llmcore.LLMProviderOpenRouter: "→ Set OPENROUTER_API_KEY or check https://openrouter.ai/keys",
 		llmcore.LLMProviderOllama:     "→ Run: ollama run llama3.2  (Ollama may not be running)",
 	}
-	msg := fmt.Sprintf("%s: %v", scope, origErr)
+	// The underlying error rides ONCE, via %w (B10: errors.Is/As must be
+	// able to match the cause). The previous format embedded the error text
+	// in the prefix with %v AND again with %w, so every wrapped error read
+	// "llm generate: <err>: <err>".
 	if hint, ok := hints[provider]; ok {
-		msg += "\n  " + hint
+		return fmt.Errorf("%s: %w\n  %s", scope, origErr, hint)
 	}
-	// B10: wrap with %w so errors.Is/As can match the underlying cause.
-	return fmt.Errorf("%s: %w", msg, origErr)
+	return fmt.Errorf("%s: %w", scope, origErr)
 }

@@ -7,10 +7,12 @@ const failClosedCode GuardrailErrorCode = "G1_CONSTRUCTION_FAILED"
 // when the real guardrail construction fails so the system fails
 // closed instead of silently allowing all candidates.
 //
-// Returns a guardrail configured with MaxStagnantGenerations=1 so it
-// blocks after the first generation (stagnation triggers on gen 1 with
-// no improvement). This is a reasonable fail-closed behavior:
-// construction failed → the guardrail is configured to block quickly.
+// The returned guardrail carries failClosed=true, which makes every
+// PreEvolveCheck / PostEvolveCheck / ValidateToolSet return
+// ShouldStop=true with the G1_CONSTRUCTION_FAILED event — immediately, with
+// no dependence on population signals. Configuring aggressive thresholds
+// (the previous approach) only blocked AFTER stagnation accumulated, so a
+// healthy-looking first cycle passed: fail-open, not fail-closed.
 func NewFailClosedGuardrails() *EvolutionGuardrails {
 	g := &EvolutionGuardrails{
 		BaselineScore:          0,
@@ -18,6 +20,7 @@ func NewFailClosedGuardrails() *EvolutionGuardrails {
 		MaxLineageShare:        0.8,
 		MaxEvents:              1000,
 		bestBySource:           make(map[string]float64),
+		failClosed:             true,
 	}
 	return g
 }

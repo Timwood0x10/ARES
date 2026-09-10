@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -381,5 +382,57 @@ func TestDistillMemoryInvalidJSON(t *testing.T) {
 	_, err := svc.handleDistillMemory(context.Background(), `not json`)
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+}
+
+// TestAKFServiceNilRuntimeHandlersReturnError locks REVIEW 3.5:
+// NewAKFServiceWithStore documents that the runtime may be nil, but
+// build_graph / compile_context / query_knowledge used to dereference it
+// directly and panicked. Each handler must return an error instead.
+func TestAKFServiceNilRuntimeHandlersReturnError(t *testing.T) {
+	svc := NewAKFService(nil, compiler.NewDefaultCompiler())
+	tools := map[string]func(ctx context.Context, input string) (string, error){}
+	for _, tool := range svc.Tools() {
+		tools[tool.Name] = tool.Execute
+	}
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
+	}
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"build_graph", `{"goal":"test"}`},
+		{"compile_context", `{"goal":"test"}`},
+		{"query_knowledge", `{"text":"test"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, ok := tools[tc.name]
+			if !ok {
+				t.Fatalf("tool %s not registered", tc.name)
+			}
+			// A panic fails the test outright; the assertion is that the
+			// handler degrades to a descriptive error.
+			out, err := exec(context.Background(), tc.input)
+			if err == nil {
+				t.Fatalf("%s with nil runtime must return an error, got output %q", tc.name, out)
+			}
+			if !strings.Contains(err.Error(), "runtime is nil") {
+				t.Errorf("%s error should mention nil runtime, got: %v", tc.name, err)
+			}
+		})
+	}
+
+	// distill_memory does not need the runtime: with a nil store it must
+	// still succeed (score-only mode), proving the guard did not
+	// over-restrict the one tool that works without a runtime.
+	out, err := tools["distill_memory"](context.Background(), `{"content":"remember this"}`)
+	if err != nil {
+		t.Fatalf("distill_memory must not require a runtime: %v", err)
+	}
+	if !strings.Contains(out, "mem_") {
+		t.Errorf("distill_memory output missing object id: %s", out)
 	}
 }

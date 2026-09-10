@@ -144,4 +144,15 @@ func TestRefreshToolsFailureRestoresPreviousTools(t *testing.T) {
 	if _, ok := m.registry.Get("mcp.mock.mock_tool"); !ok {
 		t.Fatalf("previous tools must be restored after failed refresh; have %v", m.registry.List())
 	}
+
+	// mc.tools must track the restored registration: DisconnectServer
+	// unregisters by mc.tools, so leaving it nil (as the old code did)
+	// strands the restored tools in the registry, bound to a client that
+	// is about to be closed.
+	m.mu.RLock()
+	mc := m.clients["mock"]
+	m.mu.RUnlock()
+	if mc == nil || len(mc.tools) == 0 {
+		t.Fatal("mc.tools must be repopulated after the failed refresh")
+	}
 }

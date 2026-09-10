@@ -285,7 +285,14 @@ func (m *MCPManager) RefreshTools(ctx context.Context, serverName string) error 
 		// Restore the previous registration from the client's (still valid)
 		// cached tool definitions so the registry keeps serving the old set.
 		m.mu.Lock()
-		if _, rerr := m.registerTools(mc); rerr != nil {
+		toolNames, rerr := m.registerTools(mc)
+		// mc.tools must track what is actually registered:
+		// unregisterTools nils it above, and DisconnectServer unregisters
+		// by mc.tools — leaving it nil would strand the restored tools in
+		// the registry, bound to a client that is about to be closed
+		// (REVIEW 3.9).
+		mc.tools = toolNames
+		if rerr != nil {
 			log.Warn("mcp: failed to restore previous tools after failed refresh",
 				"server", serverName, "refresh_error", err, "restore_error", rerr)
 		}
@@ -298,10 +305,12 @@ func (m *MCPManager) RefreshTools(ctx context.Context, serverName string) error 
 	defer m.mu.Unlock()
 
 	toolNames, err := m.registerTools(mc)
+	// Assign before the error check: even on partial failure mc.tools must
+	// mirror what the registry actually holds (see registerTools).
+	mc.tools = toolNames
 	if err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
-	mc.tools = toolNames
 
 	return nil
 }
@@ -399,7 +408,10 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 	for _, def := range defs {
 		mcpTool, err := NewMCPTool(mc.client, def)
 		if err != nil {
-			return nil, fmt.Errorf("create mcp tool %s: %w", def.Name, err)
+			// Return the names registered so far: callers track mc.tools
+			// from this value so the registry and mc.tools never diverge
+			// on a partial failure.
+			return names, fmt.Errorf("create mcp tool %s: %w", def.Name, err)
 		}
 
 		fullName := mcpTool.Name()

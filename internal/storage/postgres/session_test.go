@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -401,3 +403,50 @@ func (m *mockDBTX) QueryRowContext(ctx context.Context, query string, args ...in
 }
 
 // nolint: errcheck // Test code may ignore return values
+
+// TestSessionRepository_ListByUserIDNullExpiredAt locks REVIEW 3.5b/3.7:
+// Create binds NULL for a zero ExpiredAt, but ListByUserID scanned
+// expired_at into a bare time.Time — every row with a NULL expiry failed
+// the scan and killed the whole listing ("scan session" error).
+func TestSessionRepository_ListByUserIDNullExpiredAt(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE TABLE sessions (
+		session_id TEXT PRIMARY KEY, user_id TEXT, input TEXT, status TEXT,
+		user_profile TEXT, metadata TEXT, created_at TIMESTAMP, updated_at TIMESTAMP, expired_at TIMESTAMP)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	now := time.Now()
+	// One row with a NULL expired_at (what Create writes for a zero
+	// ExpiredAt) and one with a set expiry, for the same user.
+	if _, err := db.Exec(`INSERT INTO sessions (session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
+		VALUES ('s-null', 'u1', 'in', 'pending', '{}', '{}', ?, ?, NULL)`, now, now); err != nil {
+		t.Fatalf("insert null-expiry row: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions (session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
+		VALUES ('s-set', 'u1', 'in', 'pending', '{}', '{}', ?, ?, ?)`, now, now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("insert set-expiry row: %v", err)
+	}
+
+	repo := NewSessionRepositoryWithDB(db)
+	sessions, err := repo.ListByUserID(context.Background(), "u1", 10, 0)
+	if err != nil {
+		t.Fatalf("ListByUserID must tolerate NULL expired_at, got: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	byID := map[string]*models.Session{}
+	for _, s := range sessions {
+		byID[s.SessionID] = s
+	}
+	if _, ok := byID["s-null"]; !ok {
+		t.Fatal("session with NULL expired_at missing from listing")
+	}
+	if got := byID["s-set"]; !got.ExpiredAt.Equal(now.Add(time.Hour)) {
+		t.Errorf("set expiry did not round-trip: got %v", got.ExpiredAt)
+	}
+}

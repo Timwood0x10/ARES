@@ -21,7 +21,8 @@ type spatialIndex struct {
 	nDim      int // effective dimensions used for grid
 	maxDim    int // total float param dimensions
 	floatKeys []string
-	cellMap   map[string][]int // cell key → agent indices (into scored slice)
+	ranges    map[string]float64 // per-dim population range (max-min), same normalization paramDistance uses
+	cellMap   map[string][]int   // cell key → agent indices (into scored slice)
 	scored    []*mutation.Strategy
 	scoredIdx []int
 }
@@ -47,7 +48,7 @@ func newSpatialIndex(scoredIdx []int, scored []*mutation.Strategy, keys []string
 	// For high-dimensional spaces, select the top-N highest-variance dimensions.
 	nFloat := len(floatKeys)
 	if nFloat > maxSpatialDims {
-		floatKeys = selectTopVarDims(scored, floatKeys, maxSpatialDims)
+		floatKeys = selectTopVarDims(scored, floatKeys, ranges, maxSpatialDims)
 	}
 
 	nDim := len(floatKeys)
@@ -56,6 +57,7 @@ func newSpatialIndex(scoredIdx []int, scored []*mutation.Strategy, keys []string
 		nDim:      nDim,
 		maxDim:    nFloat,
 		floatKeys: floatKeys,
+		ranges:    ranges,
 		cellMap:   make(map[string][]int),
 		scored:    scored,
 		scoredIdx: scoredIdx,
@@ -74,16 +76,29 @@ func (idx *spatialIndex) cellKey(si int) string {
 	cell := make([]byte, idx.nDim)
 	for di, k := range idx.floatKeys {
 		val, _ := idx.scored[si].Params[k].(float64)
-		coord := idx.quantize(val)
+		// Normalize by the population range BEFORE quantizing: cellSize
+		// (the niche radius) lives in the same normalized space paramDistance
+		// measures (per-dim |a-b|/range), so quantizing raw values would put
+		// a wide-range dim (e.g. max_tokens 0..4096) thousands of cells away
+		// from a normalized-close neighbor, and the adjacent-cell neighbor
+		// scan would silently miss it.
+		r := idx.ranges[k]
+		if r < 1e-10 {
+			r = 1.0
+		}
+		coord := idx.quantize(val / r)
 		cell[di] = coord
 	}
 	return string(cell)
 }
 
-// quantize normalizes a float64 value to a byte cell coordinate.
-// The range is estimated from the full scored population.
+// quantize maps a normalized value to a byte cell coordinate. Each cell spans
+// cellSize in normalized units (round-to-nearest via the +0.5 shift), so two
+// values less than cellSize apart always land in the same or adjacent cells.
+// Values are clamped at the 0/255 boundaries; clamping can only MERGE distant
+// values into a boundary cell (a false candidate the exact distance re-check
+// filters out), never separate close ones.
 func (idx *spatialIndex) quantize(val float64) byte {
-	// Simple linear quantization. Values outside [-0.5, 0.5) are clamped.
 	normalized := val/idx.cellSize + 0.5
 	if normalized <= 0 {
 		return 0
@@ -95,8 +110,14 @@ func (idx *spatialIndex) quantize(val float64) byte {
 }
 
 // neighborsWithin returns indices (into the scored slice) that are in the same
-// or immediately adjacent cells as the given agent. This includes all agents
-// within nicheRadius in the projected grid dimensions.
+// or immediately adjacent cells as the given agent. Cell coordinates are
+// computed in the SAME range-normalized space paramDistance measures, so any
+// candidate the adjacent-cell scan returns is verified with the exact distance
+// check by the caller; paramDistance averages per-dim normalized diffs (and
+// adds categorical terms), so a pair within nicheRadius can occasionally be
+// more than one cell apart in a single grid dim — the grid is a recall
+// pre-filter, not an exact neighbor oracle, matching the sampled mode's
+// bounded-neighbor approximation.
 func (idx *spatialIndex) neighborsWithin(si int) []int {
 	center := idx.cellKey(si)
 	visited := make(map[int]bool)
@@ -189,8 +210,11 @@ func (idx *spatialIndex) collectAdjacentCellsSparse(center string, visited map[i
 }
 
 // selectTopVarDims picks the `n` float parameters with the highest variance
-// across the scored population.
-func selectTopVarDims(scored []*mutation.Strategy, floatKeys []string, n int) []string {
+// across the scored population. Variance is measured on range-normalized
+// values: raw variance is dimensionally inconsistent (a dim spanning 0..4096
+// always out-varies one spanning 0..1 regardless of actual spread), so the
+// grid would be projected onto whatever dims merely have the largest units.
+func selectTopVarDims(scored []*mutation.Strategy, floatKeys []string, ranges map[string]float64, n int) []string {
 	type dimVar struct {
 		key      string
 		variance float64
@@ -198,12 +222,17 @@ func selectTopVarDims(scored []*mutation.Strategy, floatKeys []string, n int) []
 
 	dims := make([]dimVar, len(floatKeys))
 	for di, k := range floatKeys {
+		r := ranges[k]
+		if r < 1e-10 {
+			r = 1.0
+		}
 		var sum, sumSq float64
 		count := 0
 		for _, s := range scored {
 			if v, ok := s.Params[k].(float64); ok {
-				sum += v
-				sumSq += v * v
+				norm := v / r
+				sum += norm
+				sumSq += norm * norm
 				count++
 			}
 		}

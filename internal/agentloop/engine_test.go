@@ -689,6 +689,40 @@ func TestEngine_TokenBudgetExactEqual(t *testing.T) {
 	}
 }
 
+// TestEngine_TokenBudgetDoesNotDiscardFinalAnswer verifies that a budget
+// crossing on the response that CARRIES the final answer does not discard
+// it: the final-answer branch runs before the budget gates, so the complete
+// answer is returned instead of a budget notice. Previously the budget
+// check came first and a run whose final LLM response pushed cumulative
+// usage past MaxTokens replaced real output with maxTokensReachedMsg.
+func TestEngine_TokenBudgetDoesNotDiscardFinalAnswer(t *testing.T) {
+	llm := &mockLLM{responses: []*llmcore.GenerateResponse{
+		{Content: "", ToolCalls: []llmcore.ToolCall{toolCall("tc1", "calc", `{}`)},
+			Usage: llmcore.TokenUsage{PromptTokens: 10, CompletionTokens: 2}}, // 12 used
+		{Content: "the complete answer", Usage: llmcore.TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, // 27 >= 20 cap
+	}}
+	eng := &Engine{
+		LLM:            llm,
+		Tools:          &mockToolExecutor{results: map[string]tools.Result{"calc": {Success: true, Data: "x"}}},
+		DistillEnabled: true,
+	}
+	req := &Request{
+		Messages:  []*llmcore.LLMMessage{{Role: "user", Content: "hi"}},
+		MaxIter:   5,
+		MaxTokens: 20, // crossed BY the final answer itself
+	}
+	res, err := eng.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Engine.Run error: %v", err)
+	}
+	if res.Output != "the complete answer" {
+		t.Fatalf("Output = %q, want the final answer (a budget crossing on the final response must not discard it)", res.Output)
+	}
+	if res.ToolCalls != 1 {
+		t.Errorf("ToolCalls = %d, want 1", res.ToolCalls)
+	}
+}
+
 // TestEngine_TimeoutBudgetExceeded verifies that Request.Timeout stops the loop
 // once the wall-clock deadline passes.
 func TestEngine_TimeoutBudgetExceeded(t *testing.T) {

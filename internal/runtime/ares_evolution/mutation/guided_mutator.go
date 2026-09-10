@@ -229,7 +229,8 @@ func NewExperienceGuidedMutator(
 // Returns:
 //
 //	[]*Strategy - the generated child strategies.
-//	error - ErrNilParent if parent is nil, ErrInvalidCount if n <= 0.
+//	error - ErrNilParent if parent is nil, ErrInvalidCount if n <= 0,
+//	or a delegation error from the underlying mutator.
 func (m *ExperienceGuidedMutator) Mutate(
 	ctx context.Context,
 	parent *Strategy,
@@ -266,9 +267,58 @@ func (m *ExperienceGuidedMutator) Mutate(
 		default:
 		}
 
-		child, err := m.mutateOneGuided(parent, i, guidance)
+		child, err := m.mutateOneGuided(parent, i, guidance, 0.70, 0.15, 0.15)
 		if err != nil {
 			return nil, fmt.Errorf("guided mutate child %d: %w", i, err)
+		}
+		children = append(children, child)
+	}
+
+	return children, nil
+}
+
+// mutateNWithProbs is the AdaptiveMutater seam: the adaptive distribution
+// drives a batch through this mutator with ITS tuned type probabilities.
+// Hints are fetched ONCE per batch (the provider may be an LLM-backed
+// implementation — per-child fetching would multiply its cost by n). When
+// no hints are available the batch delegates to the base mutator with the
+// caller's probabilities, so adaptive tuning applies to unguided children
+// too. This seam is what lets adaptive distribution and experience guidance
+// compose instead of either/or (REVIEW 3.4#5).
+func (m *ExperienceGuidedMutator) mutateNWithProbs(
+	ctx context.Context,
+	parent *Strategy,
+	n int,
+	paramProb, promptProb, toolProb float64,
+) ([]*Strategy, error) {
+	if parent == nil {
+		return nil, ErrNilParent
+	}
+	if n <= 0 {
+		return nil, ErrInvalidCount
+	}
+
+	hints, err := m.provider.HintsForTask(ctx, parentTaskType(parent), n)
+	if err != nil || len(hints) == 0 {
+		return m.base.mutateNWithProbs(ctx, parent, n, paramProb, promptProb, toolProb)
+	}
+	hints = filterHintsByConfidence(hints, m.confidence)
+	if len(hints) == 0 {
+		return m.base.mutateNWithProbs(ctx, parent, n, paramProb, promptProb, toolProb)
+	}
+	guidance := mergeHints(hints)
+
+	children := make([]*Strategy, 0, n)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return children, ctx.Err()
+		default:
+		}
+
+		child, err := m.mutateOneGuided(parent, i, guidance, paramProb, promptProb, toolProb)
+		if err != nil {
+			return nil, fmt.Errorf("guided adaptive mutate child %d: %w", i, err)
 		}
 		children = append(children, child)
 	}
@@ -361,16 +411,17 @@ func sortedKeys(m map[string]int) []string {
 	return keys
 }
 
-// mutateOneGuided generates a single guided mutation.
-// The mutation type is chosen based on guidance, then the selected mutation
-// is biased by hint data.
+// mutateOneGuided generates a single guided mutation. The mutation type is
+// chosen from the seed probability distribution (biased by hints), then the
+// selected mutation is biased by hint data.
 func (m *ExperienceGuidedMutator) mutateOneGuided(
 	parent *Strategy,
 	index int,
 	guidance guidedSignal,
+	paramProb, promptProb, toolProb float64,
 ) (*Strategy, error) {
 	// Determine mutation type with bias from hints.
-	mt := m.chooseGuidedMutationType(guidance)
+	mt := m.chooseGuidedMutationType(guidance, paramProb, promptProb, toolProb)
 
 	var child *Strategy
 	var err error
@@ -398,11 +449,16 @@ func (m *ExperienceGuidedMutator) mutateOneGuided(
 	return child, nil
 }
 
-// chooseGuidedMutationType selects a mutation type, biased by available guidance.
-// When prompt or tool hints exist, the probability of those types is boosted.
-// When failed patterns exist, the corresponding mutation types are penalized.
+// chooseGuidedMutationType selects a mutation type, biased by available
+// guidance. The seed distribution is caller-supplied: the plain Mutate path
+// passes the standard 70/15/15 split, while the adaptive-distribution seam
+// passes its tuned probabilities — so adaptive tuning and guidance boosts
+// compose on the same sampling. When a pool is unavailable the historical
+// fixed 80/20 split applies (regardless of the seed), and when prompt or
+// tool hints exist the corresponding probability is boosted.
 func (m *ExperienceGuidedMutator) chooseGuidedMutationType(
 	guidance guidedSignal,
+	paramProb, promptProb, toolProb float64,
 ) MutationType {
 	hasPrompt := len(m.base.promptPool) > 0 || guidance.hasPromptHints
 	hasTool := len(m.base.toolPool) > 0 || guidance.hasToolHints
@@ -410,11 +466,6 @@ func (m *ExperienceGuidedMutator) chooseGuidedMutationType(
 	if !hasPrompt && !hasTool {
 		return MutationParameter
 	}
-
-	// Base probabilities (mirrors Mutator.mutateOne distribution).
-	paramProb := 0.70
-	promptProb := 0.15
-	toolProb := 0.15
 
 	// Adjust for unavailable pools.
 	if !hasPrompt {

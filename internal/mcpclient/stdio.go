@@ -62,6 +62,19 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	return c, nil
 }
 
+// frameID extracts the JSON-RPC id of a raw frame. Notifications carry no id
+// (nil); requests/responses carry one. The id is compared as raw JSON so
+// string-typed server ids cannot be confused with our integer ids.
+func frameID(raw []byte) (json.RawMessage, bool) {
+	var env struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, false
+	}
+	return env.ID, len(env.ID) > 0
+}
+
 func (tr *stdioTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -78,16 +91,30 @@ func (tr *stdioTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*j
 	}
 	ch := make(chan result, 1)
 	go func() {
-		if tr.stdout.Scan() {
+		// Keep scanning until a frame answers THIS request (#47): servers
+		// may push notifications (no id) or server-initiated requests
+		// (foreign ids) at any time, and the first frame on stdout is not
+		// necessarily the response. RoundTrips are serialized by the
+		// client mutex, so only one scan goroutine touches the scanner.
+		for tr.stdout.Scan() {
+			raw := tr.stdout.Bytes()
+			id, hasID := frameID(raw)
+			if !hasID {
+				continue // notification — not a response
+			}
+			var frameIDVal int
+			if err := json.Unmarshal(id, &frameIDVal); err != nil || frameIDVal != req.ID {
+				continue // response/request for another id — not ours
+			}
 			var resp jsonrpcResponse
-			if err := json.Unmarshal(tr.stdout.Bytes(), &resp); err != nil {
+			if err := json.Unmarshal(raw, &resp); err != nil {
 				ch <- result{nil, err}
 				return
 			}
 			ch <- result{&resp, nil}
-		} else {
-			ch <- result{nil, fmt.Errorf("connection closed")}
+			return
 		}
+		ch <- result{nil, fmt.Errorf("connection closed")}
 	}()
 
 	select {

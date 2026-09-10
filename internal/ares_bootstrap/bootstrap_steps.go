@@ -182,18 +182,27 @@ const maxShadowReplayHorizon = 24 * time.Hour
 // to keep its cyclomatic complexity within lint limits.
 //
 //nolint:gocyclo // it is a complex wiring hub with many config fields.
-func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Components, newEvol *NewEvolutionComponents, guidanceProvider evolution.GuidanceProvider) error {
+func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Components, newEvol *NewEvolutionComponents, guidanceProvider evolution.GuidanceProvider, cleanups *[]func()) error {
 	// Create a persistent strategy store when PostgreSQL is configured,
 	// falling back to the in-memory store when no database is available.
 	// The PG store ensures evolution results survive process restarts.
 	var memStore evolution.StrategyStore
 	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Storage.Host != "" {
-		pgStore, err := newPGStrategyStore(cfg)
+		pgStore, closePG, err := newPGStrategyStore(cfg)
 		if err != nil {
 			log.WarnContext(ctx, "bootstrap: PG strategy store init failed, falling back to in-memory", "error", err)
 			memStore = evolution.NewMemoryStrategyStore(0)
 		} else {
 			memStore = pgStore
+			// The PG store owns a dedicated *sql.DB that nothing else
+			// closes: register it in the bootstrap cleanups so a FAILED
+			// bootstrap (or a later wiring error in this function) releases
+			// the connections instead of leaking them across bootstrap
+			// retries. On success the handle lives for the process
+			// lifetime, like every other bootstrap-owned store.
+			if cleanups != nil {
+				*cleanups = append(*cleanups, closePG)
+			}
 			log.InfoContext(ctx, "bootstrap: PG strategy store wired (persistent)")
 		}
 	} else {
@@ -938,14 +947,17 @@ func attachEvolutionKnowledgeProvider(
 
 // newPGStrategyStore creates a PostgreSQL-backed strategy store from config.
 // Returns nil when the database connection cannot be established, so callers
-// can fall back to the in-memory store gracefully.
-func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error) {
+// can fall back to the in-memory store gracefully. The returned close func
+// releases the dedicated *sql.DB and MUST be registered by the caller in its
+// cleanups (it is a no-op only on the error paths, where the db is already
+// closed here).
+func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, func(), error) {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username,
 		cfg.Storage.Password, cfg.Storage.Database, cfg.Storage.SSLMode)
 	db, err := sql.Open(storageTypePostgres, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("pg strategy store: open db: %w", err)
+		return nil, nil, fmt.Errorf("pg strategy store: open db: %w", err)
 	}
 	// Verify the connection is alive.
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -954,7 +966,7 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 		if closeErr := db.Close(); closeErr != nil {
 			log.Warn("pg strategy store: close db after ping failure", "error", closeErr)
 		}
-		return nil, fmt.Errorf("pg strategy store: ping: %w", err)
+		return nil, nil, fmt.Errorf("pg strategy store: ping: %w", err)
 	}
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
@@ -965,9 +977,13 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 		if closeErr := db.Close(); closeErr != nil {
 			log.Warn("pg strategy store: close db after init failure", "error", closeErr)
 		}
-		return nil, fmt.Errorf("pg strategy store: init: %w", err)
+		return nil, nil, fmt.Errorf("pg strategy store: init: %w", err)
 	}
-	return store, nil
+	return store, func() {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Warn("pg strategy store: close db", "error", closeErr)
+		}
+	}, nil
 }
 
 // fitnessSourceKnowledge is the AKG genome source name used in fitness

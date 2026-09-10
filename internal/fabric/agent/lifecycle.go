@@ -33,8 +33,10 @@ type SpawnSpec struct {
 	// CognitionFactory produces the agent's execution body (Cognition) from
 	// its declared capabilities. When nil, the spawned agent has no execution
 	// capability and cannot run a quantum (it can still be managed by
-	// lifecycle operations). The factory is called once at spawn time, under
-	// the fabric lock, and the result is stored in Agent.cognition.
+	// lifecycle operations). The factory is called once at spawn time,
+	// BEFORE the fabric lock is taken (arbitrary caller code must never run
+	// under the fabric mutex), and the result is stored in Agent.cognition.
+	// A non-nil factory returning nil is rejected.
 	CognitionFactory CognitionFactory
 	// ExperiencePrior is the distilled prior experience loaded as the
 	// agent's initial cognitive context at spawn time. It is written into
@@ -68,6 +70,21 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 	if err := validateSpawnSpec(spec); err != nil {
 		return nil, err
 	}
+	// Build the execution body BEFORE taking the fabric lock. The factory
+	// is arbitrary caller code (it constructs LLM clients, tool bundles,
+	// …): under f.mu it blocked every fabric operation for its duration,
+	// deadlocked on any re-entrant fabric call (Agents/Get/…), and a panic
+	// left the fabric mutex locked forever. The result is stored in the new
+	// agent after the lock is taken; a nil product is a programming error
+	// rejected before any fabric state is mutated.
+	var cognition Cognition
+	if spec.CognitionFactory != nil {
+		cognition = spec.CognitionFactory(spec.Capabilities)
+		if cognition == nil {
+			return nil, fmt.Errorf("%w: CognitionFactory returned nil for agent %q",
+				ErrInvalidSpawnSpec, spec.Identity)
+		}
+	}
 	claim := parseResourceClaim(spec.Resources)
 	f.mu.Lock()
 	id := spec.Identity
@@ -96,19 +113,9 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		taskContext:    cloneMap(spec.TaskContext),
 		privateContext: make(map[string]any),
 	}
-	// Inject the execution body from the declared capabilities. The
-	// factory is called under the fabric lock; a nil factory leaves the agent
-	// without execution capability (managed but not schedulable). A NON-nil
-	// factory that produces nil is a programming error: it would silently
-	// spawn a permanently non-executable agent, so it is rejected before any
-	// fabric state is mutated (a nil cognition must not be swallowed).
-	if spec.CognitionFactory != nil {
-		a.cognition = spec.CognitionFactory(spec.Capabilities)
-		if a.cognition == nil {
-			f.mu.Unlock()
-			return nil, fmt.Errorf("%w: CognitionFactory returned nil for agent %q", ErrInvalidSpawnSpec, id)
-		}
-	}
+	// Inject the pre-built execution body. A nil factory leaves the agent
+	// without execution capability (managed but not schedulable).
+	a.cognition = cognition
 	// Load the distilled prior experience as the agent's initial cognitive
 	// context so a spawned agent starts with reusable experience instead of a
 	// blank slate. Nil (zero value) leaves the agent with an empty cognitive

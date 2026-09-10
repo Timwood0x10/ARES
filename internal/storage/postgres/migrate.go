@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -68,13 +69,18 @@ var coreMigrationStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_recommendations_user_id ON recommendations(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_recommendations_created_at ON recommendations(created_at)`,
 
-	`CREATE TABLE IF NOT EXISTS embeddings (
+	// The embeddings table carries no dedicated repository (VectorSearcher
+	// owns per-collection tables), but its vector column MUST declare the
+	// same dimension as everything else in this package
+	// (defaultVectorDimension): a hardcoded 1536 here made any writer using
+	// the codebase-standard 1024-dim embeddings fail the insert.
+	fmt.Sprintf(`CREATE TABLE IF NOT EXISTS embeddings (
 			id VARCHAR(255) PRIMARY KEY,
 			table_name VARCHAR(100) NOT NULL,
-			embedding VECTOR(1536),
+			embedding VECTOR(%d),
 			metadata JSONB,
 			created_at TIMESTAMP DEFAULT NOW()
-		)`,
+		)`, defaultVectorDimension),
 
 	`CREATE INDEX IF NOT EXISTS idx_embeddings_table_name ON embeddings(table_name)`,
 

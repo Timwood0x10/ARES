@@ -63,6 +63,14 @@ func New(module string) *Logger {
 }
 
 func (l *Logger) attrs(method string, extras []any) []any {
+	// An empty method (the *Context drop-in variants) omits the pair
+	// entirely — "method":"" carried no information and polluted every
+	// structured log line from those call sites.
+	if method == "" {
+		r := make([]any, 0, len(extras)+2)
+		r = append(r, "module", l.module)
+		return append(r, extras...)
+	}
 	r := make([]any, 0, len(extras)+4)
 	r = append(r, "module", l.module, "method", method)
 	r = append(r, extras...)

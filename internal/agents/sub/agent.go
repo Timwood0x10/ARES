@@ -119,6 +119,13 @@ type subAgent struct {
 	// Lifecycle management
 	stopCh   chan struct{}  // Signals goroutines to stop.
 	streamWg sync.WaitGroup // Tracks active ProcessStream goroutines.
+
+	// stopped marks an agent that was explicitly Stop()ped (guarded by mu).
+	// Status Offline alone cannot distinguish "never started" from
+	// "stopped", but the distinction matters: Process/ProcessStream
+	// auto-Start an Offline agent (lazy start), which would silently
+	// resurrect a stopped one (#58). Only an explicit Start clears it.
+	stopped bool
 }
 
 // SubAgentConfig holds configuration for SubAgent.
@@ -204,6 +211,7 @@ func (a *subAgent) Start(ctx context.Context) error {
 		return errors.ErrAgentAlreadyStarted
 	}
 	a.status = models.AgentStatusStarting
+	a.stopped = false // explicit Start clears a previous Stop (#58)
 	a.stopCh = make(chan struct{})
 	a.mu.Unlock()
 
@@ -241,6 +249,7 @@ func (a *subAgent) Stop(ctx context.Context) error {
 		return nil
 	}
 	a.status = models.AgentStatusStopping
+	a.stopped = true // Process/ProcessStream must not resurrect after Stop (#58)
 	// Detach the channel under the lock so exactly one Stop closes it;
 	// a second closer would panic ("close of closed channel") and take
 	// the process down with it.
@@ -278,6 +287,13 @@ func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
 	a.mu.Lock()
 	status := a.status
 	if status == models.AgentStatusOffline {
+		if a.stopped {
+			// Explicitly stopped: do NOT auto-Start — that would resurrect
+			// the agent behind an explicit Stop (#58). Restart requires an
+			// explicit Start call.
+			a.mu.Unlock()
+			return nil, errors.ErrAgentNotRunning
+		}
 		// Temporarily release lock for Start (which acquires its own lock).
 		// If Start fails or another goroutine already started us, handle gracefully.
 		a.mu.Unlock()
@@ -307,7 +323,33 @@ func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
 		return nil, errors.ErrInvalidState
 	}
 
-	return a.executor.Execute(ctx, task)
+	// Honour the stop signal (#58): a Stop that races this call must abort
+	// the task instead of letting it run to completion after Stop returned.
+	a.mu.RLock()
+	stopCh := a.stopCh
+	a.mu.RUnlock()
+	if stopCh == nil {
+		return nil, errors.ErrAgentNotRunning
+	}
+	select {
+	case <-stopCh:
+		// Stop was signaled between admission and execution — abort.
+		return nil, errors.ErrAgentNotRunning
+	default:
+	}
+	// Also cancel the executor if Stop fires mid-execution: a ctx-honoring
+	// executor (LLM call, tool call) aborts promptly instead of running on.
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-execCtx.Done():
+		}
+	}()
+
+	return a.executor.Execute(execCtx, task)
 }
 
 // Heartbeat is the base.Heartbeater surface. It is a no-op since the
@@ -445,6 +487,11 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 	a.mu.Lock()
 	status := a.status
 	if status == models.AgentStatusOffline {
+		if a.stopped {
+			// Explicitly stopped: no silent resurrection (#58) — see Process.
+			a.mu.Unlock()
+			return nil, errors.ErrAgentNotRunning
+		}
 		a.mu.Unlock()
 		if err := a.Start(ctx); err != nil && err != errors.ErrAgentAlreadyStarted {
 			return nil, err

@@ -216,6 +216,21 @@ func (cb *CircuitBreaker) RecordFailure() {
 	}
 }
 
+// ReleaseProbe releases a half-open probe slot without recording a terminal
+// outcome. It is used when a probe is abandoned for reasons unrelated to
+// provider health (e.g. the caller's context was cancelled after Allow
+// admitted the probe): the circuit stays half-open so the very next call can
+// probe again immediately, instead of holding the slot until the Allow leak
+// guard fires (up to openTimeout of hard downtime) or punishing the provider
+// with RecordFailure.
+func (cb *CircuitBreaker) ReleaseProbe() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.state == circuitHalfOpen && cb.halfOpenInflight > 0 {
+		cb.halfOpenInflight = 0
+	}
+}
+
 // IsOpen reports whether the circuit currently rejects requests.
 func (cb *CircuitBreaker) IsOpen() bool {
 	cb.mu.Lock()
@@ -247,10 +262,26 @@ func withRetry[T any](c *Client, ctx context.Context, fn func() (T, error)) (T, 
 	}
 
 	var lastErr error
+	// probeAdmitted is true when one of our attempts was admitted as the
+	// half-open probe and no terminal RecordSuccess/RecordFailure has
+	// happened for it yet. Early returns below (ctx cancelled during
+	// backoff, or the next attempt's Allow() rejecting on our own held
+	// slot) skip both records and would leak the probe slot until the
+	// Allow leak guard fires after openTimeout — up to 30s of hard
+	// downtime. The deferred release closes that hole.
+	var probeAdmitted bool
+	defer func() {
+		if probeAdmitted && c.circuit != nil {
+			c.circuit.ReleaseProbe()
+		}
+	}()
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if c.circuit != nil {
 			if err := c.circuit.Allow(); err != nil {
 				return zero, err
+			}
+			if c.circuit.IsHalfOpen() {
+				probeAdmitted = true
 			}
 		}
 		result, err := fn()
@@ -258,6 +289,7 @@ func withRetry[T any](c *Client, ctx context.Context, fn func() (T, error)) (T, 
 			if c.circuit != nil {
 				c.circuit.RecordSuccess()
 			}
+			probeAdmitted = false
 			return result, nil
 		}
 		lastErr = err
@@ -272,6 +304,7 @@ func withRetry[T any](c *Client, ctx context.Context, fn func() (T, error)) (T, 
 			if c.circuit != nil {
 				if c.circuit.IsHalfOpen() || (isRetryableError(err) && ctx.Err() == nil) {
 					c.circuit.RecordFailure()
+					probeAdmitted = false
 				}
 			}
 			return zero, lastErr

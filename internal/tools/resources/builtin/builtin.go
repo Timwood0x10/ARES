@@ -33,17 +33,19 @@ import (
 const fileToolsAllowedDirEnv = "ARES_FILE_TOOLS_ALLOWED_DIR"
 
 // resolveFileToolsAllowedDir returns the directory that FileTools may operate
-// within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment variable,
-// falling back to the current working directory if unset.
+// within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment variable.
+// When unset it falls back to the OS temp dir — NOT the working directory:
+// the CWD is typically the deployment's source tree, and silently granting
+// the agent read/write there was an unintended privilege escalation. A loud
+// warning marks the fallback so the operator sees the reduced scope.
 func resolveFileToolsAllowedDir() string {
 	if dir := os.Getenv(fileToolsAllowedDirEnv); dir != "" {
 		return dir
 	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "/tmp"
-	}
-	return dir
+	fallback := os.TempDir()
+	log.Warn("builtin: ARES_FILE_TOOLS_ALLOWED_DIR not set; file tools fall back to the temp dir (not the working directory)",
+		"fallback_dir", fallback, "env", fileToolsAllowedDirEnv)
+	return fallback
 }
 
 // GeneralToolsDeps carries the optional runtime dependencies for the
@@ -77,8 +79,10 @@ type GeneralToolsDeps struct {
 //
 // SECURITY: FileTools is registered with WithAllowedDir so that path traversal
 // is blocked by default. CodeRunner is registered with Python DISABLED by
-// default — operators must opt in via EnablePython(true). HTTPRequest and
-// WebScraper enforce SSRF filtering at the HTTP client layer.
+// default — operators must opt in via EnablePython(true), and the opt-in is
+// host RCE: the validator gate is mistake-prevention, not isolation (see the
+// CodeRunner security model). HTTPRequest and WebScraper enforce SSRF
+// filtering at the HTTP client layer.
 func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	if reg == nil {
 		return errors.New("register general tools: registry cannot be nil")

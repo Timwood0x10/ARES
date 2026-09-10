@@ -123,6 +123,29 @@ func (t *LoadTracker) EndNeutral(agentID string) {
 	}
 }
 
+// Forget drops every stat an agent has accumulated (load, history, priority,
+// confidence overrides). The scheduler's fabric-death reconciliation calls it
+// when an agent disappears from every candidate source: agents rotate
+// (spawn/kill) continuously in peer mode, and without this the per-agent
+// maps grew without bound — one leak per retired generation. In-flight
+// agents (load > 0) must not be forgotten by callers; a straggler quantum's
+// End/EndNeutral recreates the entry, which the next reconciliation removes.
+func (t *LoadTracker) Forget(agentID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.done, agentID)
+	delete(t.ok, agentID)
+	delete(t.priority, agentID)
+	delete(t.load, agentID)
+	delete(t.agentConfidenceOverride, agentID)
+	prefix := agentID + "|"
+	for key := range t.capabilityConfidenceOverride {
+		if _, found := strings.CutPrefix(key, prefix); found {
+			delete(t.capabilityConfidenceOverride, key)
+		}
+	}
+}
+
 func (t *LoadTracker) Load(agentID string) float64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()

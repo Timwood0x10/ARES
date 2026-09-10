@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,28 @@ type Agent struct {
 	// selector narrows the available pool before each run; nil means
 	// AllSelector. Only consulted when discovery is true.
 	selector toolsource.ToolSelector
+	// evolveMu guards the Evolve-mutable fields (tools, maxIter):
+	// applyEvolvedParams may run concurrently with another goroutine's
+	// Agent.Run reading them, so both sides go through the lock.
+	evolveMu sync.Mutex
+}
+
+// snapshotTools returns the agent's current tool slice under evolveMu.
+// The slice is never mutated in place (applyToolSelector builds new
+// slices; applyEvolvedParams reassigns), so the header snapshot is a
+// stable read.
+func (a *Agent) snapshotTools() []tools.Tool {
+	a.evolveMu.Lock()
+	defer a.evolveMu.Unlock()
+	return a.tools
+}
+
+// currentMaxIter returns the agent's current iteration budget under
+// evolveMu (Evolve may replace it concurrently with Run).
+func (a *Agent) currentMaxIter() int {
+	a.evolveMu.Lock()
+	defer a.evolveMu.Unlock()
+	return a.maxIter
 }
 
 // HumanInputFunc is called when the agent needs human approval before executing
@@ -65,7 +88,16 @@ type StreamChunk struct {
 
 // Stream runs the agent against the given input and streams results via a
 // channel. The caller must read from the channel until Done is true or Err
-// is non-nil.
+// is non-nil — an abandoned channel does not leak the goroutine as long as
+// the caller's ctx is eventually cancelled (every send also selects on
+// ctx.Done).
+//
+// NOTE: this is NOT token-level streaming. The full agent loop runs to
+// completion first and the final output is replayed in small chunks; the
+// first chunk arrives only after the entire run finishes.
+//
+// TODO(tech-debt): plumb the LLM service's stream mode through
+// agentloop.Engine so Stream emits tokens as they are generated.
 //
 // Usage:
 //
@@ -84,7 +116,7 @@ func (a *Agent) Stream(ctx context.Context, input string) (<-chan StreamChunk, e
 		// Run the full agent logic.
 		result, err := a.Run(ctx, input)
 		if err != nil {
-			ch <- StreamChunk{Err: err, Done: true}
+			a.sendChunk(ctx, ch, StreamChunk{Err: err, Done: true})
 			return
 		}
 
@@ -96,18 +128,34 @@ func (a *Agent) Stream(ctx context.Context, input string) (<-chan StreamChunk, e
 			if end > len(runes) {
 				end = len(runes)
 			}
-			select {
-			case ch <- StreamChunk{Content: string(runes[i:end])}:
-			case <-ctx.Done():
-				ch <- StreamChunk{Err: ctx.Err(), Done: true}
+			if !a.sendChunk(ctx, ch, StreamChunk{Content: string(runes[i:end])}) {
 				return
 			}
 		}
 
-		ch <- StreamChunk{Done: true, Result: result}
+		a.sendChunk(ctx, ch, StreamChunk{Done: true, Result: result})
 	}()
 
 	return ch, nil
+}
+
+// sendChunk delivers one chunk, abandoning the stream when the caller's ctx
+// is cancelled (a caller that stopped reading is released by cancelling its
+// ctx — the goroutine exits instead of blocking forever on a full channel).
+// Returns false when the stream was abandoned.
+func (a *Agent) sendChunk(ctx context.Context, ch chan<- StreamChunk, chunk StreamChunk) bool {
+	select {
+	case ch <- chunk:
+		return true
+	case <-ctx.Done():
+		// Best-effort final error: the channel may be abandoned too, so a
+		// further block is avoided by dropping the error chunk.
+		select {
+		case ch <- StreamChunk{Err: ctx.Err(), Done: true}:
+		default:
+		}
+		return false
+	}
 }
 
 // Result holds the outcome of a single agent Run.
@@ -166,7 +214,7 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	res, err := eng.Run(ctx, &agentloop.Request{
 		Messages:     messages,
 		Tools:        llmTools,
-		MaxIter:      a.maxIter,
+		MaxIter:      a.currentMaxIter(),
 		MaxTokens:    a.maxTokens,
 		Timeout:      a.timeout,
 		AgentName:    a.name,

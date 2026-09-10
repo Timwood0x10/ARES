@@ -60,3 +60,21 @@ func TestCapPatternLength(t *testing.T) {
 		t.Fatalf("short must be unchanged, got %q", got)
 	}
 }
+
+// TestExperienceBestMatchEmptyPatternMatchesNothing locks the REVIEW 3.9
+// fix: strings.Contains(x, "") is always true, so an empty pattern used to
+// score 1.0 against EVERY record and return an arbitrary "best" prior.
+func TestExperienceBestMatchEmptyPatternMatchesNothing(t *testing.T) {
+	cat := buildTestCatalog(t)
+	exp := cat.Experience()
+
+	if err := exp.Record("audit", "some pattern", 1.0); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	for _, empty := range []string{"", "   ", "\t\n"} {
+		if _, ok := exp.BestMatch(empty); ok {
+			t.Fatalf("BestMatch(%q) must not match any record", empty)
+		}
+	}
+}

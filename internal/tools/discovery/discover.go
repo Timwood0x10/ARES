@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -26,21 +27,31 @@ import (
 // limitedBuffer is an io.Writer that caps total bytes written and sets
 // the exceeded flag when the limit is hit. It replaces bytes.Buffer so a
 // chatty command cannot exhaust memory before the post-run size check.
+// When the cap is hit the optional onExceed hook fires — the exec closure
+// uses it to kill the command, so an infinite producer (`yes`) is terminated
+// at the cap instead of running until the context deadline.
 type limitedBuffer struct {
 	buf      bytes.Buffer
 	limit    int
-	exceeded bool
+	exceeded atomic.Bool
+	onExceed func()
 }
 
 func (lb *limitedBuffer) Write(p []byte) (int, error) {
-	if lb.exceeded {
-		return len(p), nil // discard silently; caller checks the flag
-	}
 	remaining := lb.limit - lb.buf.Len()
-	if len(p) >= remaining {
-		lb.buf.Write(p[:remaining])
-		lb.exceeded = true
-		return len(p), nil
+	if remaining < 0 {
+		remaining = 0
+	}
+	if len(p) > remaining {
+		if !lb.exceeded.Swap(true) {
+			if lb.onExceed != nil {
+				lb.onExceed()
+			}
+		}
+		if remaining > 0 {
+			lb.buf.Write(p[:remaining])
+		}
+		return len(p), nil // report full acceptance; caller checks the flag
 	}
 	return lb.buf.Write(p)
 }
@@ -94,12 +105,20 @@ func NewDiscoverer(allowlist []string, opts ...Option) *Discoverer {
 			// Use a limited writer so the buffer cannot grow unbounded while
 			// the command is still running — a chatty command (e.g. `yes`)
 			// would otherwise exhaust memory before the post-run size check.
-			outBuf := &limitedBuffer{limit: maxCommandOutputBytes}
-			errBuf := &limitedBuffer{limit: maxCommandOutputBytes}
+			// Hitting the cap also kills the command: without the kill an
+			// infinite producer keeps writing (discarded) output until the
+			// context deadline, burning CPU for nothing.
+			killCmd := func() {
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill() //nolint:errcheck // best-effort early termination
+				}
+			}
+			outBuf := &limitedBuffer{limit: maxCommandOutputBytes, onExceed: killCmd}
+			errBuf := &limitedBuffer{limit: maxCommandOutputBytes, onExceed: killCmd}
 			cmd.Stdout = outBuf
 			cmd.Stderr = errBuf
 			if err := cmd.Run(); err != nil {
-				if outBuf.exceeded || errBuf.exceeded {
+				if outBuf.exceeded.Load() || errBuf.exceeded.Load() {
 					return nil, fmt.Errorf("command %q output exceeds %d bytes", name, maxCommandOutputBytes)
 				}
 				if stderr := strings.TrimSpace(errBuf.String()); stderr != "" {
@@ -107,7 +126,7 @@ func NewDiscoverer(allowlist []string, opts ...Option) *Discoverer {
 				}
 				return nil, err
 			}
-			if outBuf.exceeded {
+			if outBuf.exceeded.Load() {
 				return nil, fmt.Errorf("command %q output exceeds %d bytes; refusing to return partial output", name, maxCommandOutputBytes)
 			}
 			return outBuf.Bytes(), nil
