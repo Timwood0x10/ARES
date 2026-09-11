@@ -1287,3 +1287,50 @@ introspect:
 		}
 	})
 }
+
+// TestValidateKernelAgentBudget covers the agent-budget gate's config
+// contract: zero = unlimited (legal), negatives and an unparsable deadline
+// are rejected, and a well-formed budget passes.
+func TestValidateKernelAgentBudget(t *testing.T) {
+	t.Run("zero is legal (unlimited)", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with unset agent_budget error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative tokens rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget.Tokens = -1
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "agent_budget.tokens") {
+			t.Fatalf("negative tokens: err = %v, want agent_budget.tokens error", err)
+		}
+	})
+
+	t.Run("negative tools rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget.Tools = -3
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "agent_budget.tools") {
+			t.Fatalf("negative tools: err = %v, want agent_budget.tools error", err)
+		}
+	})
+
+	t.Run("invalid deadline rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget.Deadline = "half an hour"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "agent_budget.deadline") {
+			t.Fatalf("invalid deadline: err = %v, want agent_budget.deadline error", err)
+		}
+	})
+
+	t.Run("well-formed budget passes", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget = AgentBudgetConfig{Tokens: 200000, Tools: 500, Deadline: "2h"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("well-formed agent_budget error = %v, want nil", err)
+		}
+	})
+}

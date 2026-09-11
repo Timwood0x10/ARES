@@ -6,9 +6,10 @@ package runtime
 // this gate was written for: LoopPlugin was fully implemented, never wired,
 // and nobody noticed for multiple releases because nothing failed.
 //
-// Detection: constructor = exported FuncDecl named "New*Plugin" in this
-// package. A constructor is "wired" if some non-test .go file in the module
-// mentions `Name(` on a line that is not its own `func Name(` declaration.
+// Detection: constructor = exported FuncDecl named "New*Plugin" OR "New*Router"
+// in this package. A constructor is "wired" if some non-test .go file in the
+// module mentions `Name(` on a line that is not its own `func Name(`
+// declaration.
 //
 // Allowlist policy ("start from an allowlist and work through it"): known-dead constructors are
 // allowlisted with an explicit reason and a tracking pointer. Two failure
@@ -20,8 +21,12 @@ package runtime
 //     grow silently).
 //
 // Known limitations (accepted, documented): plugins instantiated via a bare
-// `&SomePlugin{}` composite literal instead of a constructor are invisible;
-// constructor names not matching New*Plugin are invisible.
+// `&SomePlugin{}` composite literal instead of a constructor are invisible.
+//
+// (The Router family — RouterPlugin/ExpressionRouter/FallbackRouter — was
+// removed 2026-09-11: zero production registrations, RouteState.Collector
+// never assigned. The gate pattern below now covers New*Router so a future
+// router subsystem cannot hide behind the Plugin-only suffix again.)
 
 import (
 	"go/ast"
@@ -83,7 +88,7 @@ func TestPluginsMustBeWiredInProduction(t *testing.T) {
 }
 
 // discoverPluginConstructors AST-parses the non-test files of pkgDir and
-// returns every exported FuncDecl named "New*Plugin".
+// returns every exported FuncDecl named "New*Plugin" or "New*Router".
 func discoverPluginConstructors(t *testing.T, pkgDir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(pkgDir)
@@ -107,7 +112,10 @@ func discoverPluginConstructors(t *testing.T, pkgDir string) []string {
 				continue
 			}
 			n := fd.Name.Name
-			if fd.Name.IsExported() && strings.HasPrefix(n, "New") && strings.HasSuffix(n, "Plugin") && len(n) > len("NewPlugin") {
+			if !fd.Name.IsExported() || !strings.HasPrefix(n, "New") {
+				continue
+			}
+			if strings.HasSuffix(n, "Plugin") || strings.HasSuffix(n, "Router") {
 				names = append(names, n)
 			}
 		}

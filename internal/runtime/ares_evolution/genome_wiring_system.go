@@ -549,6 +549,11 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	if err != nil {
 		return nil, fmt.Errorf("create population adapter: %w", err)
 	}
+	// Lineage write side: the adapter's Run is the production evolution
+	// path, so it must record lineage into the system's genealogy recorder
+	// (RunIdleEvolution — the only previous caller — has no production
+	// driver).
+	popAdapter.genealogy = system.Genealogy
 	system.PopAdapter = popAdapter
 
 	needDreamCycle := cfg.EnableDreamCycle || cfg.EnableScheduler

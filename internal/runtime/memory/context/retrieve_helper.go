@@ -139,8 +139,7 @@ func SnippetsToSystemMessages(snippets []ContextSnippet) []Message {
 // RunRetrieval is the shared entry point used by memory managers to execute
 // RAG retrieval with config-driven defaults. It centralizes the default
 // normalization (topK<=0 ⇒ DefaultTopK, minScore<=0 ⇒ DefaultMinScore) so the
-// two ProductionMemoryManager / memoryManager implementations do not each
-// re-declare the same magic numbers.
+// memory manager implementation does not re-declare the same magic numbers.
 //
 // Unlike RetrieveAll (which treats minScore<=0 as "no filter" / 0), this
 // helper applies the DefaultMinScore threshold when the caller does not

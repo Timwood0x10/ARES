@@ -16,7 +16,7 @@ import (
 // EvidenceEmitter is the minimal interface the retriever uses to report
 // retrieval outcomes to the unified Evidence Store. It is kept minimal to
 // avoid a direct import of internal/evidence from this package (mirrors the
-// pattern used by ProductionMemoryManager). The GA MemoryGenome consumes the
+// EvidenceCollector seam). The GA MemoryGenome consumes the
 // mean retrieval-hit value (1.0 hit / 0.0 miss) under Source "memory".
 type EvidenceEmitter interface {
 	Emit(ctx context.Context, kind evidence.EvidenceKind, payload any, opts ...evidence.EvidenceOption) error

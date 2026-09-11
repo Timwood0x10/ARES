@@ -2020,7 +2020,8 @@ func TestNormalizeQueryForCache(t *testing.T) {
 }
 
 // TestRetrievalService_ExperienceRankingWired is a contract test for the
-// wiring seam that ProductionMemoryManager relies on: after SetExperienceServices
+// SetExperienceServices wiring seam (historically consumed by the removed
+// ProductionMemoryManager PG path): after SetExperienceServices
 // is called with a ranking service and a conflict resolver, applyExperienceRanking
 // must actually rank and conflict-resolve the experiences instead of falling back
 // to plain conversion. Previously nothing called SetExperienceServices in

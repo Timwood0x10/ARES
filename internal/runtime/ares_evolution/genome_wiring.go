@@ -80,6 +80,13 @@ type GenomePopulationAdapter struct {
 	// records outcome feedback after each evolution cycle.
 	feedbackRecorder *FeedbackRecorder
 
+	// genealogy records strategy lineage entries after each evolution cycle
+	// (optional). Wired from the evolution system's PopulationGenealogyRecorder
+	// so the PRODUCTION Run path records lineage — previously only the
+	// test-only RunIdleEvolution loop called RecordPopulationLineage, leaving
+	// the recorder write-side dead in production.
+	genealogy GenealogyRecorder
+
 	// ActiveStrategyManager deploys the best-evolved strategy to the
 	// runtime so the live agent can consume it. When set, Run() deploys
 	// the current best strategy after each evolution cycle. Optional.
@@ -251,9 +258,36 @@ func WithAdapterAdaptiveDistribution(ad *mutation.AdaptiveDistribution) GenomeAd
 // Returns:
 //
 //	GenomeAdapterOption - the configuration function.
+//
+// WithAdapterFeedbackRecorder sets the feedback recorder for outcome recording.
+//
+// Args:
+//
+//	fr - the FeedbackRecorder instance (may be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
 func WithAdapterFeedbackRecorder(fr *FeedbackRecorder) GenomeAdapterOption {
 	return func(a *GenomePopulationAdapter) {
 		a.feedbackRecorder = fr
+	}
+}
+
+// WithAdapterGenealogy sets the lineage recorder so every Run cycle records
+// parent-child strategy relationships (the production-side lineage write
+// path; without it the genealogy recorder stays write-side dead).
+//
+// Args:
+//
+//	rec - the GenealogyRecorder (may be nil to disable lineage recording).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterGenealogy(rec GenealogyRecorder) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.genealogy = rec
 	}
 }
 

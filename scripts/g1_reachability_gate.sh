@@ -20,11 +20,11 @@ WHITELIST=(
   # services. Whitelisting follows the same examples-only precedent as
   # knowledge/service above. Residual naming debt: the "api" suffix no
   # longer means "public API surface".
-  "internal/discoveryapi"              # examples-only (custom-store, external-tools, mcp-registry, discovery)
-  "internal/evoapi"                    # examples-only (10-ga-full-evolution, 22-evolution-blocks)
-  "internal/evoapi/genome"             # examples-only (pulled in by evoapi)
-  "internal/evoapi/mutation"           # examples-only (pulled in by evoapi + 10-ga-full-evolution)
-  "internal/knowledgeapi"              # examples-only via knowledge/service (which is itself whitelisted)
+  "internal/discoveryapi"              # consumed only by examples/_internal (custom-store, external-tools, mcp-registry, discovery)
+  "internal/evoapi"                    # consumed only by examples/_internal (10-ga-full-evolution, 22-evolution-blocks)
+  "internal/evoapi/genome"             # consumed only by examples/_internal (pulled in by evoapi)
+  "internal/evoapi/mutation"           # consumed only by examples/_internal (pulled in by evoapi + 10-ga-full-evolution)
+  "internal/knowledgeapi"              # consumed only by examples/_internal via knowledge/service (itself whitelisted)
 )
 
 cd "$(dirname "$0")/.."

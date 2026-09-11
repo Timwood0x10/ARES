@@ -496,6 +496,21 @@ func createPeerAgents(
 	// is the single registration point: a future kill/retire immediately
 	// removes the candidate, and the recovery/chaos loops manage the SAME
 	// population they recover.
+	// Agent cognitive-execution budget (kernel.agent_budget): the long-task
+	// safety gate. Zero values mean unlimited; a configured budget bounds
+	// every peer's cumulative tokens/tools and wall-clock lifetime. Computed
+	// once and applied to both configured peers (below) and syscall-spawned
+	// peers (via WithAgentGovernance on the syscall Kernel).
+	agentGovernance := agentfabric.Governance{
+		TokenBudget: cfg.Kernel.AgentBudget.Tokens,
+		ToolBudget:  cfg.Kernel.AgentBudget.Tools,
+	}
+	if cfg.Kernel.AgentBudget.Deadline != "" {
+		if d, dErr := time.ParseDuration(cfg.Kernel.AgentBudget.Deadline); dErr == nil {
+			agentGovernance.Deadline = d
+		}
+	}
+
 	for _, sa := range subAgents {
 		if sa == nil {
 			continue
@@ -512,6 +527,7 @@ func createPeerAgents(
 				return peerRouter
 			},
 			ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),
+			Governance:      agentGovernance,
 		}); err != nil {
 			return nil, nil, fmt.Errorf("peer mode: spawn agent %q into fabric: %w", sa.ID(), err)
 		}
@@ -549,6 +565,9 @@ func createPeerAgents(
 		// Plan loops started via the create_plan loop option must be
 		// bounded by the serve lifetime, not the individual tool call.
 		agentsyscall.WithLoopLifetime(ctx),
+		// Same cognitive-execution budget as configured peers: a
+		// syscall-spawned agent is bounded from birth (zero = unlimited).
+		agentsyscall.WithAgentGovernance(agentGovernance),
 	)
 	// Same collision guard as seedPeerTaskSeq, for the Kernel's own ID
 	// families (task-<capability>-N / spawned-<capability>-N /

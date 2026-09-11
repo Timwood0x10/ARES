@@ -61,9 +61,12 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	// components are wired. This lets us compare offspring scores with
 	// their parent scores after evolution.
 	var agentsBefore []*mutation.Strategy
-	if a.adaptiveDist != nil || a.feedbackRecorder != nil {
+	if a.adaptiveDist != nil || a.feedbackRecorder != nil || a.genealogy != nil {
 		agentsBefore, _ = a.pop.Snapshot()
 	}
+	// prevGeneration feeds lineage ScoreImprovement (the generation number
+	// the parents belonged to, read BEFORE EvolveAfterScoring bumps it).
+	prevGeneration := a.pop.Stats().Generation
 
 	if err := a.runPreGuardrails(ctx); err != nil {
 		return err
@@ -71,6 +74,15 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("adapter.Run: genome evolve on idle: %w", err)
+	}
+
+	// Record lineage for the generation that just ran. Best-effort: a
+	// lineage failure must not fail the evolution cycle — the population
+	// itself is already evolved.
+	if a.genealogy != nil {
+		if _, err := RecordPopulationLineage(ctx, a.pop, a.genealogy, agentsBefore, prevGeneration); err != nil {
+			log.WarnContext(ctx, "failed to record lineage", "method", "Run", "generation", prevGeneration, "error", err)
+		}
 	}
 
 	// Record outcomes for adaptive distribution and feedback service.

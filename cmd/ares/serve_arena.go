@@ -22,11 +22,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	arena "github.com/Timwood0x10/ares/internal/runtime/arena"
+	flight "github.com/Timwood0x10/ares/internal/runtime/observability/flight"
 )
 
 var arenaCmd = &cobra.Command{
@@ -232,6 +234,22 @@ var arenaServeCmd = &cobra.Command{
 		}
 
 		handler := arena.NewHandler(svc)
+		// /arena/flight/* wiring: the startup banner advertises these
+		// endpoints, so they must not 503. A process-local flight recorder
+		// (in-memory event ring + the shared evidence store, when present)
+		// backs the timeline/diagnostics/genealogy surfaces for this arena
+		// process. The bridge also feeds every executed chaos action into
+		// the recorder so the timeline reflects this server's own activity.
+		flightRec := flight.NewFlightRecorder(flight.FlightRecorderConfig{
+			EventStore:    ares_events.NewMemoryEventStore(),
+			EvidenceStore: evStore,
+		})
+		if err := flightRec.Start(cmd.Context()); err != nil {
+			return fmt.Errorf("start arena flight recorder: %w", err)
+		}
+		defer flightRec.Stop()
+		handler.SetFlightRecorder(flightRec)
+		svc.SetFlightBridge(arena.NewFlightBridge(flightRec))
 		// Enable API key auth when configured via env or flag. Without a key,
 		// the middleware denies every request unless anonymous access was
 		// explicitly requested (local development only).

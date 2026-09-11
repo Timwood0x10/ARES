@@ -18,8 +18,9 @@ import (
 )
 
 // skillsRegistrySetter is the minimal interface for injecting a skills registry
-// into a MemoryManager. Both *memoryManager and *ProductionMemoryManager
-// satisfy it, but the public MemoryManager interface does not expose
+// into a MemoryManager. Only *memoryManager satisfies it — the config-only
+// ProductionMemoryManager fallback exposes no skills registry — but the
+// public MemoryManager interface does not expose
 // SetSkillsRegistry (progressive disclosure is an optional capability), so we
 // type-assert at wiring time instead of widening the interface — the same
 // pattern used by retrieverSetter.

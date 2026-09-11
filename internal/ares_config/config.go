@@ -147,6 +147,29 @@ type KernelConfig struct {
 	// it selected are gone; old files carrying `enabled:` still parse and the
 	// key is ignored.
 	DAGExecution DAGExecutionConfig `yaml:"dag_execution"`
+	// AgentBudget is the cognitive-execution budget applied to every agent
+	// the production kernel spawns (cumulative tokens/tools and wall-clock
+	// deadline). Zero values mean unlimited for that dimension, so a
+	// zero-value section preserves the pre-budget behavior. This is the
+	// long-task safety gate: without it a runaway agent has no cost or
+	// lifetime ceiling. Validated by Validate (negatives and an unparsable
+	// deadline are config errors).
+	AgentBudget AgentBudgetConfig `yaml:"agent_budget"`
+}
+
+// AgentBudgetConfig is the per-agent cognitive-execution budget. All zero
+// means unlimited (no gate). The token/tool budgets are consumed per quantum
+// through the scheduler's governance provider; the deadline is armed at spawn.
+type AgentBudgetConfig struct {
+	// Tokens caps the cumulative prompt+completion tokens an agent may spend
+	// across its lifetime (0 = unlimited).
+	Tokens int `yaml:"tokens"`
+	// Tools caps the cumulative tool rounds an agent may execute across its
+	// lifetime (0 = unlimited).
+	Tools int `yaml:"tools"`
+	// Deadline caps the agent's wall-clock lifetime ("" or "0" = none).
+	// Parsed with time.ParseDuration; an invalid value fails Validate.
+	Deadline string `yaml:"deadline"`
 }
 
 // DAGExecutionConfig configures the L2 session-graph execution path.

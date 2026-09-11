@@ -53,15 +53,10 @@ func ProvideDiscovery(ctx context.Context, cfg *ares_config.DiscoveryConfig, eve
 		return nil, ErrDiscoveryDisabled
 	}
 
-	eng := discovery.NewEngine(discovery.NewMemoryStore(), nil)
-	// Provider constructors vary in signature: ARES, Cursor, and the binary
-	// probe take no args (they derive paths from $HOME or $PATH), while Claude
-	// and VSCode take a project directory to scan for project-local config.
-	eng.AddProvider(providers.NewARESProvider())
-	eng.AddProvider(providers.NewClaudeProvider(cfg.ProjectDir))
-	eng.AddProvider(providers.NewCursorProvider())
-	eng.AddProvider(providers.NewVSCodeProvider(cfg.ProjectDir))
-	eng.AddProvider(providers.NewBinaryProbeProvider())
+	// NewDefaultEngine assembles the standard provider set (ARES, Claude,
+	// Cursor, VSCode config scans + PATH binary probe) over an in-memory
+	// store — the same assembly the discovery fixtures use.
+	eng := providers.NewDefaultEngine(cfg.ProjectDir, nil, nil)
 
 	if eventStore != nil {
 		eng.AddHandler(discovery.EventHandlerFunc(func(evt discovery.Event) {

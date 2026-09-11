@@ -9,14 +9,14 @@
 //	which is the key property of any durable store.
 //
 // Learning objectives:
-//   - How to implement the discoveryapi.ServiceStore interface (Save / Get /
+//   - How to implement the discovery.ServiceStore interface (Save / Get /
 //     List / Delete).
-//   - How to inject a custom store into discoveryapi.NewEngine via EngineConfig.
+//   - How to inject a custom store into discovery.NewEngine via EngineConfig.
 //   - How to verify persistence across engine restarts.
 //
 // Core APIs (with package paths):
-//   - discoveryapi.NewEngine / discoveryapi.EngineConfig (internal/discoveryapi)
-//   - discoveryapi.RegisterRequest (internal/discoveryapi)
+//   - providers.NewDefaultEngine (internal/discovery/providers)
+//   - discovery.RegisterRequest (internal/discovery)
 //   - (*Engine).Register / (*Engine).List
 //
 // Run:
@@ -39,7 +39,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Timwood0x10/ares/internal/discoveryapi"
+	"github.com/Timwood0x10/ares/internal/discovery"
+	"github.com/Timwood0x10/ares/internal/discovery/providers"
 )
 
 func main() {
@@ -63,15 +64,13 @@ func main() {
 	// below; passing it in EngineConfig.Store overrides the default in-memory
 	// store, so every Save/Delete is persisted to services.json.
 	store := NewJSONFileStore(filepath.Join(dir, "services.json"))
-	engine := discoveryapi.NewEngine(discoveryapi.EngineConfig{
-		Store: store,
-	})
+	engine := providers.NewDefaultEngine("", store, nil)
 
 	// ── Step 3: Register a service ──
 	// RegisterRequest carries the identity (name/endpoint/tags/metadata) of a
 	// discovered MCP server. The engine assigns an ID and calls store.Save,
 	// which in our custom store writes the JSON file.
-	_ = engine.Register(ctx, discoveryapi.RegisterRequest{
+	_ = engine.Register(ctx, discovery.RegisterRequest{
 		Name:     "my-mcp",
 		Endpoint: "/usr/bin/my-mcp",
 		Tags:     []string{"capability:search"},
@@ -89,9 +88,7 @@ func main() {
 	// A new engine with the same file-backed store must see the previously
 	// registered service: this is the durability guarantee a persistent
 	// ServiceStore provides over the in-memory default.
-	engine2 := discoveryapi.NewEngine(discoveryapi.EngineConfig{
-		Store: store,
-	})
+	engine2 := providers.NewDefaultEngine("", store, nil)
 	services, _ := engine2.List(ctx)
 	fmt.Printf("\n=== After 'restart': %d services ===\n", len(services))
 	for _, svc := range services {
@@ -117,7 +114,7 @@ func NewJSONFileStore(path string) *JSONFileStore {
 
 // Save implements ServiceStore: it updates the service with the same ID or
 // appends it, then writes the whole list back to the file.
-func (s *JSONFileStore) Save(_ context.Context, svc *discoveryapi.DiscoveredService) error {
+func (s *JSONFileStore) Save(_ context.Context, svc *discovery.DiscoveredService) error {
 	services := s.load()
 	// Update or insert.
 	found := false
@@ -136,7 +133,7 @@ func (s *JSONFileStore) Save(_ context.Context, svc *discoveryapi.DiscoveredServ
 
 // Get implements ServiceStore: it returns the service with the given ID or
 // ErrServiceNotFound.
-func (s *JSONFileStore) Get(_ context.Context, id string) (*discoveryapi.DiscoveredService, error) {
+func (s *JSONFileStore) Get(_ context.Context, id string) (*discovery.DiscoveredService, error) {
 	for _, svc := range s.load() {
 		if svc.Identity.ID == id {
 			return svc, nil
@@ -146,7 +143,7 @@ func (s *JSONFileStore) Get(_ context.Context, id string) (*discoveryapi.Discove
 }
 
 // List implements ServiceStore: it returns all persisted services.
-func (s *JSONFileStore) List(_ context.Context) ([]*discoveryapi.DiscoveredService, error) {
+func (s *JSONFileStore) List(_ context.Context) ([]*discovery.DiscoveredService, error) {
 	return s.load(), nil
 }
 
@@ -154,7 +151,7 @@ func (s *JSONFileStore) List(_ context.Context) ([]*discoveryapi.DiscoveredServi
 // rewrites the file. Deleting an unknown ID is a no-op (no error).
 func (s *JSONFileStore) Delete(_ context.Context, id string) error {
 	services := s.load()
-	filtered := make([]*discoveryapi.DiscoveredService, 0, len(services))
+	filtered := make([]*discovery.DiscoveredService, 0, len(services))
 	for _, svc := range services {
 		if svc.Identity.ID != id {
 			filtered = append(filtered, svc)
@@ -165,18 +162,18 @@ func (s *JSONFileStore) Delete(_ context.Context, id string) error {
 
 // load reads and decodes the JSON file; a missing/unreadable file yields an
 // empty list (a fresh store).
-func (s *JSONFileStore) load() []*discoveryapi.DiscoveredService {
+func (s *JSONFileStore) load() []*discovery.DiscoveredService {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return nil
 	}
-	var services []*discoveryapi.DiscoveredService
+	var services []*discovery.DiscoveredService
 	_ = json.Unmarshal(data, &services)
 	return services
 }
 
 // save encodes the service list and writes it to the JSON file.
-func (s *JSONFileStore) save(services []*discoveryapi.DiscoveredService) error {
+func (s *JSONFileStore) save(services []*discovery.DiscoveredService) error {
 	data, err := json.MarshalIndent(services, "", "  ")
 	if err != nil {
 		return err

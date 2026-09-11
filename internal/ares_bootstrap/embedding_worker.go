@@ -18,6 +18,8 @@ import (
 const tableKnowledgeChunks = storage_models.KnowledgeChunksTable
 
 // EmbeddingWorkerConfig controls the embedding worker polling intervals.
+// EmbeddingWorkerConfig carries the tuning knobs for the embedding worker
+// and its housekeeping loops.
 type EmbeddingWorkerConfig struct {
 	// PollInterval is how often the worker polls for pending tasks.
 	// Default 5s.
@@ -28,14 +30,19 @@ type EmbeddingWorkerConfig struct {
 	// ReconcileThreshold is the age threshold for considering an embedding
 	// task orphaned. Default 30min.
 	ReconcileThreshold time.Duration
+	// DeadLetterRetention is how long dead-letter entries are kept before
+	// the reconciler purges them. Default 30d — the operator's window to
+	// inspect or RequeueDeadLetter before automatic cleanup.
+	DeadLetterRetention time.Duration
 }
 
 // defaultEmbeddingWorkerConfig returns sensible defaults.
 func defaultEmbeddingWorkerConfig() EmbeddingWorkerConfig {
 	return EmbeddingWorkerConfig{
-		PollInterval:       5 * time.Second,
-		ReconcileInterval:  10 * time.Minute,
-		ReconcileThreshold: 30 * time.Minute,
+		PollInterval:        5 * time.Second,
+		ReconcileInterval:   10 * time.Minute,
+		ReconcileThreshold:  30 * time.Minute,
+		DeadLetterRetention: 30 * 24 * time.Hour,
 	}
 }
 
@@ -53,6 +60,7 @@ type embeddingQueueClient interface {
 	MarkCompleted(ctx context.Context, taskID string) error
 	MarkFailed(ctx context.Context, taskID string, errMessage string) error
 	Reconcile(ctx context.Context, threshold time.Duration) error
+	PurgeDeadLetters(ctx context.Context, age time.Duration) (int64, error)
 }
 
 // embeddingWriter resolves the correct repo.UpdateEmbedding call based on
@@ -148,7 +156,8 @@ func startEmbeddingReconciler(
 
 		logger.InfoContext(ctx, "embedding reconciler started",
 			"interval", workerCfg.ReconcileInterval.String(),
-			"threshold", workerCfg.ReconcileThreshold.String())
+			"threshold", workerCfg.ReconcileThreshold.String(),
+			"dead_letter_retention", workerCfg.DeadLetterRetention.String())
 
 		for {
 			select {
@@ -158,6 +167,18 @@ func startEmbeddingReconciler(
 			case <-ticker.C:
 				if err := queue.Reconcile(ctx, workerCfg.ReconcileThreshold); err != nil {
 					logger.WarnContext(ctx, "embedding reconcile failed", "error", err)
+				}
+				// Dead-letter housekeeping rides the same tick: without a
+				// purge the embedding_dead_letter table grows unbounded and
+				// Reconcile's NOT EXISTS probes scan an ever-larger set on
+				// every tick. Retention gives operators the inspect/requeue
+				// window before entries are dropped.
+				purged, err := queue.PurgeDeadLetters(ctx, workerCfg.DeadLetterRetention)
+				if err != nil {
+					logger.WarnContext(ctx, "embedding dead-letter purge failed", "error", err)
+				} else if purged > 0 {
+					logger.InfoContext(ctx, "embedding dead letters purged",
+						"count", purged, "retention", workerCfg.DeadLetterRetention.String())
 				}
 			}
 		}

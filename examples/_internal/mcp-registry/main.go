@@ -16,11 +16,11 @@
 //     and are mutated with UpdateTags.
 //
 // Core APIs (with package paths):
-//   - discoveryapi.NewEngine / discoveryapi.EngineConfig (internal/discoveryapi)
+//   - providers.NewDefaultEngine (internal/discovery/providers)
 //   - (*Engine).OnEvent / DiscoverNow / Register / List / UpdateTags /
 //     Unregister
-//   - discoveryapi.NewMemoryStore / discoveryapi.RegisterRequest /
-//     discoveryapi.UpdateTagsRequest
+//   - discovery.NewMemoryStore / discovery.RegisterRequest /
+//     discovery.UpdateTagsRequest
 //
 // Run:
 //
@@ -40,7 +40,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Timwood0x10/ares/internal/discoveryapi"
+	"github.com/Timwood0x10/ares/internal/discovery"
+	"github.com/Timwood0x10/ares/internal/discovery/providers"
 )
 
 func main() {
@@ -49,18 +50,15 @@ func main() {
 	// ── Step 1: Create the engine over an in-memory store ──
 	// NewMemoryStore is the default store; passing it explicitly mirrors the
 	// production pattern where a durable store would be injected instead.
-	store := discoveryapi.NewMemoryStore()
-	engine := discoveryapi.NewEngine(discoveryapi.EngineConfig{
-		ProjectDir: ".",
-		Store:      store,
-	})
+	store := discovery.NewMemoryStore()
+	engine := providers.NewDefaultEngine(".", store, nil)
 
 	// ── Step 2: Subscribe to lifecycle events ──
 	// Every Register/Unregister/UpdateTags fires an event; printing them
 	// shows the engine's lifecycle in action.
-	engine.OnEvent(func(evt discoveryapi.Event) {
+	engine.AddHandler(discovery.EventHandlerFunc(func(evt discovery.Event) {
 		fmt.Printf("  [event] %-25s %s\n", evt.Type, evt.ServiceID)
-	})
+	}))
 
 	// ── Step 3: Active discovery ──
 	// DiscoverNow scans configured providers for MCP servers; List then
@@ -82,7 +80,7 @@ func main() {
 	// Register manually adds known MCP servers (not auto-discovered). Tags
 	// declare capabilities so a later query can match by capability.
 	fmt.Println("\n=== Phase 2: Registration ===")
-	mockServices := []discoveryapi.RegisterRequest{
+	mockServices := []discovery.RegisterRequest{
 		{
 			Name:     "codegraph",
 			Endpoint: "codegraph serve --mcp",
@@ -132,7 +130,7 @@ func main() {
 	// UpdateTags adds/removes tags on an existing service — reclassifying a
 	// capability without re-registering.
 	fmt.Println("\n=== Phase 4: Tag Management ===")
-	if err := engine.UpdateTags(ctx, "codegraph", discoveryapi.UpdateTagsRequest{
+	if err := engine.UpdateTags(ctx, "codegraph", discovery.UpdateTagsRequest{
 		Add: []string{"domain:source-code"},
 	}); err != nil {
 		fmt.Printf("  ✗ update tags: %v\n", err)

@@ -20,10 +20,11 @@ import (
 )
 
 // retrieverSetter is the minimal interface for injecting ContextRetrievers
-// into a MemoryManager. Both *memoryManager and *ProductionMemoryManager
-// satisfy it, but the public MemoryManager interface does not expose
-// SetRetrievers (retrieval is an optional capability), so we type-assert at
-// wiring time instead of widening the interface.
+// into a MemoryManager. Only *memoryManager satisfies it — the config-only
+// ProductionMemoryManager fallback exposes no retrieval, and the wiring below
+// logs and skips when the assertion fails — but the public MemoryManager
+// interface does not expose SetRetrievers (an optional capability), so we
+// type-assert at wiring time instead of widening the interface.
 type retrieverSetter interface {
 	SetRetrievers(retrievers []memctx.ContextRetriever)
 }

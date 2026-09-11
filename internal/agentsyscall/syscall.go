@@ -144,6 +144,11 @@ type Kernel struct {
 	// planLoops tracks live plan loops by plan ID so their errors have a
 	// reader, they can be stopped individually, and the cap is enforceable.
 	planLoops map[string]*taskfabric.PlanLoop
+	// governance is the cognitive-execution budget applied to every agent
+	// spawned through the spawn_agent syscall. Zero value = unlimited (the
+	// pre-budget behavior). Injected at assembly via WithAgentGovernance so a
+	// syscall-spawned peer is bounded exactly like a configured one.
+	governance agentfabric.Governance
 }
 
 // KernelOption configures a syscall Kernel at construction time.
@@ -166,6 +171,13 @@ func WithMaxPlanLoops(n int) KernelOption {
 			k.maxPlanLoops = n
 		}
 	}
+}
+
+// WithAgentGovernance sets the cognitive-execution budget applied to every
+// agent spawned through spawn_agent. Zero value = unlimited. Injected at
+// assembly so a syscall-spawned peer is bounded like a configured one.
+func WithAgentGovernance(g agentfabric.Governance) KernelOption {
+	return func(k *Kernel) { k.governance = g }
 }
 
 // WithAskAgent injects the collaboration primitive behind ask_agent.
@@ -324,6 +336,10 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 		ParentID:     parentID,
 		TaskContext:  args.TaskContext,
 		Resources:    args.Resources,
+		// Budget from birth: syscall-spawned peers inherit the Kernel's
+		// configured governance so they are bounded like configured agents.
+		// Zero value = unlimited (pre-budget behavior).
+		Governance: k.governance,
 	}
 	if executor != nil {
 		spec.CognitionFactory = func([]string) agentfabric.Cognition {

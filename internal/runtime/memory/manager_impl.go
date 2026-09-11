@@ -814,8 +814,9 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 // Per rule 0.2 we do not fake an implementation. Instead we return
 // ErrAgentCheckpointNotSupported so the caller (ares_runtime cognitive
 // recovery) can distinguish "no session" from "backend cannot answer" and log
-// accordingly. The production path uses ProductionMemoryManager, which queries
-// the agent_checkpoints table.
+// accordingly. The former checkpoint-backed implementation
+// (ProductionMemoryManager querying agent_checkpoints) had zero production
+// constructors and was removed; no in-tree manager answers this query today.
 func (m *memoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
 	return "", ErrAgentCheckpointNotSupported
 }

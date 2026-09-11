@@ -5,6 +5,7 @@ package ares_config
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Validate validates the configuration values.
@@ -331,6 +332,21 @@ func (c *Config) validateKernel() error {
 	if c.Kernel.DAGExecution.SessionIdleTTL < 0 {
 		return fmt.Errorf("kernel: dag_execution.session_idle_ttl must be non-negative (0 = default 30m), got %s",
 			c.Kernel.DAGExecution.SessionIdleTTL)
+	}
+	if c.Kernel.AgentBudget.Tokens < 0 {
+		return fmt.Errorf("kernel: agent_budget.tokens must be non-negative (0 = unlimited), got %d",
+			c.Kernel.AgentBudget.Tokens)
+	}
+	if c.Kernel.AgentBudget.Tools < 0 {
+		return fmt.Errorf("kernel: agent_budget.tools must be non-negative (0 = unlimited), got %d",
+			c.Kernel.AgentBudget.Tools)
+	}
+	if c.Kernel.AgentBudget.Deadline != "" {
+		if d, err := time.ParseDuration(c.Kernel.AgentBudget.Deadline); err != nil {
+			return fmt.Errorf("kernel: agent_budget.deadline is not a valid duration: %w", err)
+		} else if d < 0 {
+			return fmt.Errorf("kernel: agent_budget.deadline must be non-negative, got %s", c.Kernel.AgentBudget.Deadline)
+		}
 	}
 	return nil
 }

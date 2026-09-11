@@ -48,9 +48,9 @@ var ErrDistillDepsMissing = errors.New("distillation dependencies unavailable")
 const defaultEmbeddingTimeout = 30 * time.Second
 
 // retrieverSetter is the minimal interface for injecting ContextRetrievers
-// into a MemoryManager. Both *memory.memoryManager and
-// *memory.ProductionMemoryManager satisfy it, but the public MemoryManager
-// interface does not expose SetRetrievers (retrieval is an optional
+// into a MemoryManager. Only *memory.memoryManager satisfies it — the
+// config-only ProductionMemoryManager fallback exposes no retrieval surface —
+// but the public MemoryManager interface does not expose SetRetrievers (retrieval is an optional
 // capability), so we type-assert at wiring time instead of widening the
 // interface. Mirrors internal/ares_bootstrap.retrieverSetter.
 type retrieverSetter interface {

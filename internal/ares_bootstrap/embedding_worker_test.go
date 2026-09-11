@@ -20,6 +20,7 @@ type fakeQueue struct {
 	completed  []string
 	failed     []map[string]string // taskID -> errMsg
 	reconciled int
+	purged     int
 
 	// fetchErr, if non-nil, is returned by FetchPendingTasks.
 	fetchErr error
@@ -27,6 +28,9 @@ type fakeQueue struct {
 	markErr error
 	// reconcileErr, if non-nil, is returned by Reconcile.
 	reconcileErr error
+	// purgeErr/purgedRows drive the PurgeDeadLetters test surface.
+	purgeErr   error
+	purgedRows int64
 }
 
 func (q *fakeQueue) FetchPendingTasks(_ context.Context, limit int) ([]*postgres.EmbeddingTask, error) {
@@ -68,6 +72,13 @@ func (q *fakeQueue) Reconcile(_ context.Context, _ time.Duration) error {
 	defer q.mu.Unlock()
 	q.reconciled++
 	return q.reconcileErr
+}
+
+func (q *fakeQueue) PurgeDeadLetters(_ context.Context, _ time.Duration) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.purged++
+	return q.purgedRows, q.purgeErr
 }
 
 // fakeEmbedder implements embeddingEmbedder for testing.
@@ -228,6 +239,42 @@ func TestStartEmbeddingReconciler_ContextCancellation(t *testing.T) {
 
 	if queue.reconciled == 0 {
 		t.Error("expected at least one reconcile call")
+	}
+}
+
+// TestStartEmbeddingReconciler_PurgesDeadLetters pins the dead-letter
+// housekeeping wiring: every reconciler tick must also purge dead letters
+// past the retention window — without it the embedding_dead_letter table
+// grows unbounded and Reconcile's NOT EXISTS probes scan an ever-larger set.
+func TestStartEmbeddingReconciler_PurgesDeadLetters(t *testing.T) {
+	var comp Components
+	comp.bgGroup = errgroup.Group{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queue := &fakeQueue{purgedRows: 3}
+
+	startEmbeddingReconciler(ctx, &comp, queue, EmbeddingWorkerConfig{
+		ReconcileInterval:   50 * time.Millisecond,
+		ReconcileThreshold:  10 * time.Minute,
+		DeadLetterRetention: 30 * 24 * time.Hour,
+	})
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	done := make(chan struct{})
+	go func() { comp.WaitBackground(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconciler did not stop after context cancellation")
+	}
+
+	queue.mu.Lock()
+	purged := queue.purged
+	queue.mu.Unlock()
+	if purged == 0 {
+		t.Error("expected at least one dead-letter purge call riding the reconcile tick")
 	}
 }
 

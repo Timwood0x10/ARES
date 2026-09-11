@@ -501,32 +501,9 @@ func TestObserverPlugin_EmptyNameDefaults(t *testing.T) {
 // CheckpointEnvelope.)
 // ---------------------------------------------------------------------------
 
-func TestExpressionRouter_RegisteredAsPlugin(t *testing.T) {
-	bus := NewPluginBus()
-	router := NewExpressionRouter("test-router", []RouteRule{
-		{
-			FromStepID: "s1",
-			ToStepID:   "s2",
-			Condition:  func(output string, vars map[string]any) bool { return true },
-			Reason:     "always",
-		},
-	})
-
-	require.NoError(t, bus.Register(router))
-	require.NoError(t, bus.Start(context.Background()))
-
-	plugins := bus.PluginsByCap(CapRouter)
-	if assert.Len(t, plugins, 1) {
-		r, ok := plugins[0].(RouterPlugin)
-		require.True(t, ok)
-		decision, err := r.Route(context.Background(), RouteState{
-			CurrentStepID: "s1",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, decision)
-		assert.Equal(t, "s2", decision.NextStepID)
-	}
-}
+// (TestExpressionRouter_RegisteredAsPlugin was removed with the Router
+// family — RouterPlugin/ExpressionRouter/FallbackRouter had zero production
+// registrations and RouteState.Collector was never assigned.)
 
 // ---------------------------------------------------------------------------
 // InterruptPlugin tests

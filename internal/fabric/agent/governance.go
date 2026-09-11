@@ -75,8 +75,13 @@ func (f *Fabric) CheckResource(agentID string, token, tool int) (ok bool, err er
 
 // ConsumeResource records token/tool consumption. It returns
 // ErrResourceExceeded when a budget is exhausted — the cooperative yield
-// signal. Consumption is only recorded on success; a
-// failed quantum does not burn budget.
+// signal. When that happens the over-budget dimension is CLAMPED to its
+// budget rather than left unrecorded: the quantum already spent those tokens,
+// and the scheduler's pre-quantum gate (CheckResource) keys on
+// `used >= budget` to stop further work. Refusing to record (the old
+// behavior) left `used` below the budget forever, so the gate never fired and
+// a runaway agent could not be stopped. Dimensions with a zero budget are
+// unlimited and never rejected.
 func (f *Fabric) ConsumeResource(agentID string, token, tool int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -90,15 +95,19 @@ func (f *Fabric) ConsumeResource(agentID string, token, tool int) error {
 	}
 	if token > 0 {
 		if g.cfg.TokenBudget > 0 && g.tokenUsed+token > g.cfg.TokenBudget {
+			used := g.tokenUsed
+			g.tokenUsed = g.cfg.TokenBudget
 			return fmt.Errorf("%w: token budget %d (used %d + want %d)",
-				ErrResourceExceeded, g.cfg.TokenBudget, g.tokenUsed, token)
+				ErrResourceExceeded, g.cfg.TokenBudget, used, token)
 		}
 		g.tokenUsed += token
 	}
 	if tool > 0 {
 		if g.cfg.ToolBudget > 0 && g.toolUsed+tool > g.cfg.ToolBudget {
+			used := g.toolUsed
+			g.toolUsed = g.cfg.ToolBudget
 			return fmt.Errorf("%w: tool budget %d (used %d + want %d)",
-				ErrResourceExceeded, g.cfg.ToolBudget, g.toolUsed, tool)
+				ErrResourceExceeded, g.cfg.ToolBudget, used, tool)
 		}
 		g.toolUsed += tool
 	}

@@ -8,10 +8,12 @@
 #   巡查脚本：scripts/check_convergence_freeze.sh（Makefile ci-freeze + ci.yml 接入）。
 
 [examples]
-# Phase 4: all example code moved to examples/_fixtures/ (2026-09-07).
-# Top-level examples/ now only holds _fixtures/, arena/ (yaml scenarios),
-# and README.md. No new top-level example dirs allowed (R1 still enforced).
+# Phase 4 (2026-09-07): all example code moved to examples/_fixtures/.
+# 2026-09-11 split: _fixtures/ = external users (pure sdk/, no internal/
+# imports); _internal/ = contributor deep-dives driving internal/ APIs.
+# No new top-level example dirs allowed (R1 still enforced).
 _fixtures
+_internal
 arena
 README.md
 
@@ -37,7 +39,6 @@ aresrecovery
 core
 detector
 discovery
-discoveryapi
 embedding
 errors
 evidence

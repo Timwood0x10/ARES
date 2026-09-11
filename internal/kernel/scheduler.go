@@ -194,9 +194,16 @@ func (s *Scheduler) WithGovernance(g *agentfabric.Fabric) *Scheduler {
 
 // budgetOK reports whether the winning agent may start a new quantum. It is
 // the pre-quantum gate: deadline first (a deadline-expired agent is dead
-// weight), then the tool budget for this quantum's expected 1 tool round. A
-// denial is a cooperative yield — the scheduler returns the task to READY
-// instead of burning a quantum the agent cannot afford.
+// weight), then the budgets for this quantum. A denial is a cooperative
+// yield — the scheduler returns the task to READY instead of burning a
+// quantum the agent cannot afford.
+//
+// The token request is 1, not 0: CheckResource's contract is
+// `used + request <= budget`, so a 0-token probe can never observe an
+// exhausted token budget. Asking for 1 nominal token makes an agent whose
+// tokenUsed has reached TokenBudget fail the gate (its next quantum can only
+// spend more), which is what stops a long task from running forever. The tool
+// request stays 1 (the quantum's expected one tool round).
 func (s *Scheduler) budgetOK(winner string) bool {
 	if s.governance == nil {
 		return true
@@ -204,22 +211,28 @@ func (s *Scheduler) budgetOK(winner string) bool {
 	if over, err := s.governance.DeadlineExceeded(winner); err == nil && over {
 		return false
 	}
-	ok, err := s.governance.CheckResource(winner, 0, 1)
+	ok, err := s.governance.CheckResource(winner, 1, 1)
 	if err != nil {
 		return true // unknown agent (not spawned via fabric) → don't block
 	}
 	return ok
 }
 
-// consumeBudget records the winning agent's quantum consumption (1 tool round)
-// after a completed quantum. Errors (budget exceeded mid-quantum) are logged,
-// not fatal — the task already ran; the next quantum's gate stops further work.
-func (s *Scheduler) consumeBudget(winner string) {
+// consumeBudget records the winning agent's quantum consumption — the
+// quantum's LLM tokens plus 1 tool round — after a completed quantum. Errors
+// (budget exceeded mid-quantum) are logged, not fatal: the task already ran;
+// the next quantum's gate stops further work.
+//
+// tokens is the per-quantum LLM spend read from the step result metadata
+// (tokenUsageFromResult), NOT the cumulative session total: the governance
+// counter accumulates across quanta itself, so feeding it the cumulative
+// value would square the growth.
+func (s *Scheduler) consumeBudget(winner string, tokens int) {
 	if s.governance == nil {
 		return
 	}
-	if err := s.governance.ConsumeResource(winner, 0, 1); err != nil {
-		log.Warn("kernel scheduler: agent budget consumption", "agent", winner, "error", err)
+	if err := s.governance.ConsumeResource(winner, tokens, 1); err != nil {
+		log.Warn("kernel scheduler: agent budget consumption", "agent", winner, "tokens", tokens, "error", err)
 	}
 }
 
@@ -1051,7 +1064,8 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// would over-attribute) and never re-read from the task (races another
 	// drain). See quantumRetries for the full rationale.
 	quantumStart := time.Now()
-	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta))
+	var usage quantumUsage
+	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta, &usage))
 	quantumLatency := time.Since(quantumStart)
 	retries := quantumRetries(err)
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
@@ -1059,11 +1073,13 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	s.afterQuantum(ctx, taskID, winner, err)
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
 	slotReleased = true
-	// Post-quantum bookkeeping: record the quantum's consumption (1 tool
-	// round) so the next gate sees the new balance. Runs even on step errors —
-	// the quantum did execute (or partially execute) and spent budget.
+	// Post-quantum bookkeeping: record the quantum's consumption (its LLM
+	// tokens + 1 tool round) so the next gate sees the new balance. Runs even
+	// on step errors — the quantum did execute (or partially execute) and
+	// spent budget. usage.tokens is 0 when the step produced no measurable
+	// result.
 	if s.governance != nil {
-		s.consumeBudget(winner)
+		s.consumeBudget(winner, usage.tokens)
 	}
 	if err == nil {
 		// Count TASKS, not quanta: a multi-quantum task (yield → resume →
@@ -1204,6 +1220,15 @@ func (s *Scheduler) sweepDeadTrackerEntries() {
 	}
 }
 
+// quantumUsage is the side-channel ledger for one quantum: the LLM tokens it
+// spent, read from the step result metadata by buildQuantumStep's closure and
+// consumed by the caller after RunQuantum returns. The closure runs under
+// RunQuantum, which blocks on the step result — that channel handoff is the
+// happens-before edge that makes the plain field race-free.
+type quantumUsage struct {
+	tokens int
+}
+
 // buildQuantumStep constructs the QuantumStep closure RunQuantum executes:
 // it runs the executor's step and translates the outcome into fabric state
 // transitions (error → Fail, !Done → Yield with checkpoint, Done → Complete
@@ -1221,6 +1246,7 @@ func (s *Scheduler) buildQuantumStep(
 	executor CapabilityExecutor,
 	tk *taskfabric.Task,
 	meta taskfabric.DecodedCheckpoint,
+	usage *quantumUsage,
 ) taskfabric.QuantumStep {
 	return func() (any, bool, error) {
 		// Cancellation + panic boundary around the executor step. The step
@@ -1265,6 +1291,13 @@ func (s *Scheduler) buildQuantumStep(
 		}
 		if out.Result != nil && out.Result.Error != "" {
 			return nil, false, apperrors.Kernel("run_quantum", "step_error", tk.ID, executor.ID(), errors.New(out.Result.Error))
+		}
+		// Capture THIS quantum's token spend for the post-quantum governance
+		// accounting (consumed by the caller after RunQuantum returns). Read
+		// once here so the yield/done branches below stay the checkpoint's
+		// concern. A failed/nil step contributed nothing measurable → 0.
+		if usage != nil && out.Result != nil {
+			usage.tokens = tokenUsageFromResult(out.Result, "input") + tokenUsageFromResult(out.Result, "output")
 		}
 		if !out.Done {
 			// Yield (Execution Quantum): the quantum made progress but the

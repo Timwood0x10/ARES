@@ -274,7 +274,7 @@ test-eval:  ## Run evaluation tests
 # Usage: make demo-mcp
 demo-mcp:
 	@echo "Building MCP registry demo..."
-	@go build -o /tmp/mcp-registry-demo ./examples/_fixtures/mcp-registry/
+	@go build -o /tmp/mcp-registry-demo ./examples/_internal/mcp-registry/
 	@echo "Starting in background..."
 	@/tmp/mcp-registry-demo > /tmp/mcp-registry-demo.log 2>&1 & \
 		PID=$$!; \

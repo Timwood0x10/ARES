@@ -617,10 +617,10 @@ func BuildKnowledgeRuntime(
 	)
 }
 
-// buildMemoryManager creates a lightweight ProductionMemoryManager for the
-// evolution system that works without a database pool. The MemoryPatchExecutor
-// only needs the config field — it reads/writes memory configuration values
-// (max_history, max_tasks, session_ttl, etc.) without touching the database.
+// buildMemoryManager creates the config-only ProductionMemoryManager fallback
+// for the evolution system. The MemoryPatchExecutor only needs the config
+// field — it reads/writes memory configuration values (max_history, max_tasks,
+// session_ttl, etc.) without touching any database.
 func buildMemoryManager() *aresmemory.ProductionMemoryManager {
 	return aresmemory.NewMinimalMemoryManager()
 }
