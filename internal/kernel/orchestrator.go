@@ -633,6 +633,12 @@ func (o *Orchestrator) Cancel() {
 // stale-copy overwrite.
 func (o *Orchestrator) setStatus(name string, state State, reason string) {
 	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		// Never clobber a terminal Stopped: a Shutdown landing between the
+		// caller's rootCtx recheck and this write must win — otherwise a
+		// torn-down component is resurrected as Degraded/Failed.
+		if st.State == StateStopped {
+			return
+		}
 		st.State = state
 		st.Reason = reason
 	})
@@ -641,6 +647,13 @@ func (o *Orchestrator) setStatus(name string, state State, reason string) {
 // setStatusStarted updates status with a timestamp when a component starts.
 func (o *Orchestrator) setStatusStarted(name string, state State) {
 	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		// Same Stopped guard as setStatus/markBackgroundFailed: the recheck
+		// in Adopt and this write are not atomic, so a Shutdown in between
+		// must not be overwritten back to Started (the final UpdateStatus
+		// switch would then stamp Ready on a stopped component).
+		if st.State == StateStopped {
+			return
+		}
 		st.State = state
 		st.StartedAt = time.Now()
 		st.InstanceID = fmt.Sprintf("%s-%d", name, st.StartedAt.UnixNano())

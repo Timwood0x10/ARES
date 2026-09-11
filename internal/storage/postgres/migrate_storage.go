@@ -103,10 +103,10 @@ var storageMigrations = []string{
 				WHERE conrelid = 'knowledge_chunks_1024'::regclass
 				  AND contype = 'u'
 				  AND (
-					SELECT array_agg(a.attname ORDER BY a.attnum)
+					SELECT array_agg(a.attname::text ORDER BY a.attnum)
 					FROM unnest(conkey) k
 					JOIN pg_attribute a ON a.attrelid = conrelid AND a.attnum = k
-				  ) = ARRAY['content_hash']
+				  ) = ARRAY['content_hash']::text[]
 			LOOP
 				EXECUTE format('ALTER TABLE knowledge_chunks_1024 DROP CONSTRAINT %I', cname);
 			END LOOP;

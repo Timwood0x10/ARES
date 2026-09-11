@@ -53,6 +53,11 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	// the endpoint event but may have buffered later events in its read-ahead;
 	// reusing this scanner in the drain goroutine preserves them (#48).
 	sc := bufio.NewScanner(tr.sseBody)
+	// Raise the scanner cap: the 64KB default silently kills the drain on
+	// any oversized SSE line (large server notification), reintroducing the
+	// receive-window stall #48 fixed — the stdio transport already guards
+	// this class with a 64MB buffer.
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
 
 	// Read SSE events until we get the endpoint event.
 	endpoint, err := tr.readEndpointEvent(sc)
@@ -153,6 +158,11 @@ func (tr *sseTransport) readEndpointEvent(sc *bufio.Scanner) (string, error) {
 func (tr *sseTransport) drainSSE(sc *bufio.Scanner) {
 	for sc.Scan() {
 		// Discard.
+	}
+	if err := sc.Err(); err != nil {
+		// A scanner error ends the drain permanently (no reconnect) — log it
+		// so a stall is diagnosable instead of silent.
+		log.Warn("mcp: sse drain stopped", "error", err)
 	}
 }
 

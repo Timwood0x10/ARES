@@ -129,7 +129,11 @@ func wireRetrievers(
 			if embClient != nil {
 				modelName = akgModelName(embClient)
 			}
-			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, modelName, minScore)
+			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, modelName, minScore,
+				// Scope the store-backed hybrid search to the AKG namespace
+				// the write path stamps (store_adapter passes tenantID as
+				// Namespace) — empty meant a cross-namespace scan.
+				adapter.WithNamespace(defaultDistillTenant))
 			if err == nil {
 				log.Info("bootstrap: knowledge retriever wired (AKG store → RAG)",
 					"min_score", minScore, "backend", akgStoreBackend(cfg))

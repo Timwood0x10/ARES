@@ -37,6 +37,10 @@ type FileWatcher struct {
 	stopCtx      context.Context
 	stopCancel   context.CancelFunc
 	g            *errgroup.Group
+	// fileIDs remembers which workflow ID each source file last produced, so
+	// a workflow whose file is present but transiently unloadable (parse/stat
+	// failure) can be distinguished from one whose file was deleted.
+	fileIDs map[string]string
 }
 
 // NewFileWatcher creates a new FileWatcher.
@@ -61,6 +65,7 @@ func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) (*Fil
 		pollInterval: 5 * time.Second,
 		stopCtx:      stopCtx,
 		stopCancel:   stopCancel,
+		fileIDs:      make(map[string]string),
 	}, nil
 }
 
@@ -214,6 +219,13 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 		modTime  time.Time
 	}
 	loaded := make(map[string]loadedEntry)
+	// seenPaths records every workflow file the scan touched, whether or not
+	// it loaded. A file present but unloadable (parse/stat failure) is NOT a
+	// deletion — its last-good entry is kept.
+	seenPaths := make(map[string]bool)
+	// freshIDs maps filename → the ID it produced this pass, applied to
+	// w.fileIDs at the CAS so future scans can attribute unloadable files.
+	freshIDs := make(map[string]string)
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -226,21 +238,51 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 		}
 
 		path := filepath.Join(dir, entry.Name())
+		seenPaths[entry.Name()] = true
 		stat, err := os.Stat(path)
 		if err != nil {
-			continue
+			continue // transient stat failure: keep last-good
 		}
 
 		workflow, err := w.loader.Load(ctx, path)
 		if err != nil {
+			// Transient parse failure (fsnotify Write fires mid-save on a
+			// non-atomic editor write). NOT a deletion — seenPaths keeps the
+			// last-good entry alive below.
 			continue
 		}
 
 		loaded[workflow.ID] = loadedEntry{workflow: workflow, modTime: stat.ModTime()}
+		freshIDs[entry.Name()] = workflow.ID
 	}
 
 	// Hold Lock for the entire compare-and-swap to prevent interleaving.
 	w.mu.Lock()
+	if w.fileIDs == nil {
+		w.fileIDs = make(map[string]string, len(freshIDs))
+	}
+	for name, id := range freshIDs {
+		w.fileIDs[name] = id
+	}
+	// forget file→ID bindings for files no longer on disk
+	for name := range w.fileIDs {
+		if !seenPaths[name] {
+			delete(w.fileIDs, name)
+		}
+	}
+
+	// keepIDs: freshly loaded entries + last-good entries whose source file
+	// is still present but failed to load this pass.
+	keepIDs := make(map[string]bool, len(loaded)+len(w.fileIDs))
+	for id := range loaded {
+		keepIDs[id] = true
+	}
+	for name, id := range w.fileIDs {
+		if seenPaths[name] {
+			keepIDs[id] = true
+		}
+	}
+
 	modified := false
 	for id, le := range loaded {
 		oldWF, exists := w.workflows[id]
@@ -250,23 +292,31 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 		}
 	}
 	if !modified {
-		// A workflow present in the map but ABSENT from the loaded set means
-		// its file was deleted (or stopped loading): the directory is the
-		// source of truth, so the map entry must go. Pre-fix the modified
-		// flag only ever considered loaded entries — a deletion alone never
-		// triggered the replace, so deleted workflows stayed registered
-		// forever.
+		// A registered workflow absent from keepIDs has no source file on
+		// disk any more — the directory is the source of truth, so the entry
+		// must go. A transiently unloadable file stays in keepIDs via
+		// fileIDs and is never treated as deleted.
 		for id := range w.workflows {
-			if _, stillThere := loaded[id]; !stillThere {
+			if !keepIDs[id] {
 				modified = true
 				break
 			}
 		}
 	}
 	if modified {
-		newWorkflows := make(map[string]*Workflow, len(loaded))
+		newWorkflows := make(map[string]*Workflow, len(keepIDs))
 		for id, le := range loaded {
 			newWorkflows[id] = le.workflow
+		}
+		// Re-add last-good entries for files still on disk but unloadable
+		// this pass, so a transient parse failure never unregisters them.
+		for id, wf := range w.workflows {
+			if _, ok := newWorkflows[id]; ok {
+				continue
+			}
+			if keepIDs[id] && wf != nil {
+				newWorkflows[id] = wf
+			}
 		}
 		w.workflows = newWorkflows
 	}
@@ -275,7 +325,6 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 	if modified {
 		w.notifyCallbacks()
 	}
-
 	return nil
 }
 

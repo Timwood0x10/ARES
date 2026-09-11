@@ -236,6 +236,14 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 // inserts are O(1) amortized — the snapshot is appended to in place and only
 // rebuilt when stale (evicted/superseded) entries exceed half the cap.
 func (p *KnowledgePipeline) recordResolved(obj *KnowledgeObject) {
+	// Store a shallow copy: the pool publishes this pointer to concurrent
+	// matchers, and the caller keeps the object Process returned — Distill-
+	// Bridge-style post-processing writes Relations/Quality/Confidence on
+	// the returned object, which would otherwise race the published
+	// snapshot. Slice/map fields are shared by design (stages and consumers
+	// treat them as read-only; the input-side copy above protects writes).
+	cp := *obj
+	obj = &cp
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

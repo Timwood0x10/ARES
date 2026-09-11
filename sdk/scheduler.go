@@ -75,9 +75,13 @@ func (e *sdkAgentExecutor) runContext(ctx context.Context, taskID string) (conte
 	}
 	merged, cancel := context.WithCancel(ctx)
 	// AfterFunc cancels the merged ctx as soon as the submitter's context
-	// dies; the caller's deferred cancel releases it when the step returns.
-	context.AfterFunc(taskCtx, cancel)
-	return merged, cancel
+	// dies. The stop func MUST be captured and invoked by the combined
+	// cancel below: cancelling the merged child does NOT unregister the
+	// AfterFunc on taskCtx, so discarding stop left one afterFuncCtx child
+	// linked into a long-lived submitter context per step — unbounded
+	// growth across a batch loop's shared context.
+	stop := context.AfterFunc(taskCtx, cancel)
+	return merged, func() { stop(); cancel() }
 }
 
 func (e *sdkAgentExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {

@@ -1,7 +1,8 @@
 # ARES AgentOS — 终极架构图（Mermaid 版）
 
-> 锚定：dev@25ece828（VERSION 0.3.1，2026-09-10）。反映 C1.3（PluginBus 仅剩 LoopPlugin）、M-G（G3 默认强度 + Arena 回归门 tri-state 默认 AUTO-ARMED）、M4/M5 收敛后的最新形态。
+> 锚定：dev@2aeaf942（VERSION 0.3.1，2026-09-10）。反映 C1.3（PluginBus 仅剩 LoopPlugin）、M-G（G3 默认强度 + Arena 回归门 tri-state 默认 AUTO-ARMED）、M4/M5 收敛后的最新形态。
 > 分工：本文档 = **全架构一页看穿**（图为主）；ARCHITECTURE.md = 设计依据与路线图；RUNTIME.md = 运行时实况（全部带 file:line 锚点，漂移以其为准）。
+> 事实核查：ARCHITECTURE_DIAGRAM_REVIEW.md（2026-09-11，逐条源码取证；本版已按核查结论修正）。
 
 ## 0. 一句话架构
 
@@ -27,7 +28,7 @@ flowchart TB
     %% ============ L0 入口层 ============
     subgraph L0["L0 入口层"]
         direction LR
-        CLI["cmd/ares — 唯一 CLI 入口<br/>serve·status·tools·db·dashboard·evolution…"]
+        CLI["cmd/ares — 唯一用户 CLI 入口<br/>serve·status·tools·db·dashboard·evolution…<br/>（cmd/ 下另有 mock-db 测试工具）"]
         SDK["sdk/ — 极简 SDK（与 CLI 共用引擎）<br/>Agent.Run = agentloop 同步 ReAct（by-design）"]
         APIF["api/ — 纯转发层（DEPRECATED）"]
         COMPAT["compat/ — 零生产引用<br/>（0.4.x 整删决策）"]
@@ -54,7 +55,7 @@ flowchart TB
                 LIFE["lifecycle Spawn/Kill/Retire<br/>认知快照 + 5 次复活"]
             end
             subgraph TFAB["task/ — Task Fabric"]
-                TSTATE["状态机 + lease/epoch fencing<br/>ownerLocked 三重校验（Owner+Epoch+状态）"]
+                TSTATE["状态机 + lease/epoch fencing<br/>ownerLocked 校验（Owner + 持租 + Epoch）"]
                 QUANT["RunQuantum 执行量子<br/>checkpoint envelope（schema v4 · token 累计）"]
                 RSTR["RestoreFromStore 跨重启重建<br/>epoch 单调 · 租约不恢复全回 READY"]
             end
@@ -81,8 +82,8 @@ flowchart TB
         TOOLP["tools·apitools<br/>web_search·calculator·regex·json·file<br/>+ mcp.* 动态发现"]
         KNW["knowledge·knowledgeapi<br/>AKG 三层对象 · 混合检索"]
         STGP["storage 迁移 · WriteBuffer"]
-        EMBP["embedding 异步回填<br/>queue + dead_letter + reconciler"]
-        IPCP["agentipc 协作主题<br/>delegate·pipeline·orchestrate"]
+        EMBP["embedding 异步回填<br/>queue + dead_letter + reconciler<br/>（实现住 storage/postgres，embedding/ 仅接口）"]
+        IPCP["agentipc 总线承载协作主题<br/>delegate-task·pipeline-stage·orchestrate-worker<br/>（topic 常量在 cmd/ares 桥接层）"]
         SYSP["agentsyscall<br/>身份来自 kernelctx，不信 LLM 参数"]
         RECP["aresrecovery 恢复 + 混沌"]
         MISC["ares_security·ares_ratelimit·ares_config<br/>ares_shutdown·introspect·evidence<br/>feedback·discovery·detector…"]
@@ -159,7 +160,7 @@ sequenceDiagram
     H->>H: submitPeerTask（capability 归一 ares/plan）
     H->>SR: ensureSessionAdmission<br/>InitSession 建 L2Graph + 订阅增量编译
     SR->>TF: root CompileNode（零工作量子）
-    TF->>TF: Create → READY（盖章 strategy_id）
+    TF->>TF: Create → READY（strategy_id 由投影在 CompileNode 时盖章）
 
     loop drain 循环（500ms ticker · 事件加速 · 抢占 watcher）
         K->>TF: ResumableTasks（READY+SUSPENDED）
@@ -211,7 +212,7 @@ stateDiagram-v2
     [*] --> READY: Create（前驱全 COMPLETED 放行）
     READY --> LEASED: Acquire（CAS + epoch++）
     LEASED --> RUNNING: Start（RunQuantum）
-    RUNNING --> COMPLETED: CompleteWithCheckpoint
+    RUNNING --> COMPLETED: Complete / CompleteWithCheckpoint
     RUNNING --> SUSPENDED: Yield（checkpoint 入信封）
     RUNNING --> FAILED: Fail（重试预算耗尽）
     RUNNING --> READY: Fail（预算内重试，清 owner）
@@ -223,7 +224,7 @@ stateDiagram-v2
     FAILED --> [*]
 ```
 
-所有持权操作过 `ownerLocked` 三重校验；过期持有者的 complete/release 被 `ErrEpochMismatch` 拒绝；DAG 成环在提交时 Kahn 检测拒绝。
+所有持权操作过 `ownerLocked` 校验（Owner + 持租 Lease 非 nil + Epoch 三者匹配）；过期持有者的 complete/release 被 `ErrEpochMismatch` 拒绝；DAG 成环在提交时以 BFS 可达性检测拒绝（`workflow/engine/mutable_dag.go` `wouldCreateCycle`；Kahn 只用于拓扑排序）。
 
 ### 3.2 Agent Fabric（`fabric/agent/lifecycle.go`）
 
@@ -240,21 +241,27 @@ stateDiagram-v2
 
 生产 agent 一生 IDLE（RUNNING 无人驱动）；**Agent 可弃，Task 持久**。
 
-### 3.3 Strategy（进化策略生命周期）
+### 3.3 Strategy（进化策略生命周期，`runtime/ares_evolution/lifecycle.go`）
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CANDIDATE: Submit（GA 产出 / 人工）
-    CANDIDATE --> ACTIVE: promote（G1→G2→G3→Arena 全过，节流 MinActiveDuration）
-    CANDIDATE --> [*]: 拒绝（护栏 fail-closed / 显著回退）
-    ACTIVE --> [*]: 30s watch 检测降级 → 自动回滚 + 黑名单 3 代
+    [*] --> ACTIVE: 启动（无待评候选）
+    ACTIVE --> CANDIDATE: Submit（GA 产出 / 人工）
+    CANDIDATE --> ACTIVE: 门链全过 → promote（G1→G2→G3→Arena，节流 MinActiveDuration）
+    CANDIDATE --> ACTIVE: 任一门拒绝（护栏 fail-closed / 显著回退）
+    CANDIDATE --> SHADOW: RequireManualApproval → 挂起待人工批准
+    SHADOW --> ACTIVE: Approve() → promote
+    SHADOW --> CANDIDATE: 被后续 Submit 替换（重走门链）
+    ACTIVE --> ACTIVE: 30s watch 判降级 → Rollback 回上一版 + 黑名单 3 代
 ```
+
+**`ACTIVE` 是驻留/已部署态**（既是初态也是回归态），**`CANDIDATE` 是门链评估中的瞬时态**——门被拒不是终态，而是带 `currentCandidate=nil` 回到 `ACTIVE`（`lifecycle.go:747`）。`SHADOW` 仅在 `RequireManualApproval` 时进入（`:767`）。枚举里另有 `DEGRADED`，但**生产路径从不赋值**：回滚直接置 `ACTIVE`（`:1046`），降级是 `RollbackPolicy` 的判定结果而非一个驻留状态。
 
 ---
 
 ## 4. 三大反馈闭环
 
-### 4.1 进化环（GA 自我改进，5min ticker）
+### 4.1 进化环（GA 自我改进：事件触发 + 5min 限流）
 
 ```mermaid
 flowchart LR
@@ -304,7 +311,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph STORES["存储"]
-        PGS[("PostgreSQL<br/>events · event_summaries<br/>evolution_strategies · rollback_events<br/>agent_checkpoints · evidence_records<br/>experiences（向量+异步 embedding）<br/>knowledge_chunks · secrets · tools")]
+        PGS[("PostgreSQL<br/>events · event_summaries · eval_results<br/>evolution_strategies · evolution_rollback_events · evolution_lineages<br/>agent_checkpoints · evidence_records<br/>experiences_1024 · knowledge_chunks_1024 · task_results_1024（向量）<br/>embedding_queue · embedding_dead_letter（异步回填）<br/>sessions · conversations · user_profiles · recommendations<br/>secrets · tools · embeddings")]
         SQS[("SQLite<br/>akf_objects · akf_representations<br/>skills FTS5")]
         MEMS[("内存（无 PG 时）<br/>compactableStore（归档+压缩）<br/>默认 evidence store")]
         FSS[("文件<br/>round_N.json 原子写轮转<br/>~/.ares/experience.json")]
@@ -322,6 +329,8 @@ flowchart LR
 | `storage.enabled=true` | PostgresEventStore | 表即持久历史；跨重启可 RestoreFromStore 重建 |
 | 内存模式 | compactableStore | round 文件归档 + 压缩；重启丢事件流与 fitness 证据 |
 
+> 表名为 `internal/storage/postgres/**` 与 `internal/evidence/postgres_store.go` 中真实 `CREATE TABLE` 的**全量**。`*_1024` 后缀是 1024 维向量表命名的一部分；`evidence_records` 由 evidence 包自建（不在 storage migrations 内）。SQLite 侧为 `akf_objects` / `akf_representations`（AKG）+ skills FTS5 索引。
+
 ---
 
 ## 6. 架构不变量（重构不得违反）
@@ -330,7 +339,7 @@ flowchart LR
 |---|---|
 | 一个内核：所有调度决策经过 internal/kernel | kernel 不 import runtime（architecture_test 锁定） |
 | 一张图：MutableDAG 是全仓唯一任务图载体 | fabric/task/workflow/engine/mutable_dag.go |
-| 一条主线：cmd/ares 唯一 CLI；L2 router 唯一生产执行路径 | fabric/agent/l2graph.go |
+| 一条主线：cmd/ares 唯一用户 CLI；L2 router 唯一生产执行路径 | fabric/agent/l2graph.go |
 | 无领导者调度：就绪由织物状态机推导 | fabric/task/dag.go |
 | 执行量子可恢复：yield 即 checkpoint | fabric/task/quantum.go |
 | Epoch fencing：过期持有者不能驱动已易主任务 | fabric/task/fabric.go Acquire / ownerLocked |

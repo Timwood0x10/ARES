@@ -954,7 +954,12 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			appendErr = p.store.Append(ctx, p.taskID, []*ares_events.Event{p.event}, 0)
 			cancel()
 		}
-		f.flushedSeq++
+		// Advance the high-water mark monotonically: discardAppends and the
+		// timeout-skip path may have already claimed past p.seq, so a bare
+		// ++ would regress flushedSeq and re-open the causal barrier.
+		if p.seq > f.flushedSeq {
+			f.flushedSeq = p.seq
+		}
 		f.flushCond.L.Unlock()
 		f.flushCond.Broadcast()
 		if appendErr != nil {

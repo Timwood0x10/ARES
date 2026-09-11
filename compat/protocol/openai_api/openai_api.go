@@ -149,7 +149,20 @@ func detectEndpoint(raw []byte) string {
 			}
 			return responsesEndpoint
 		}
-		// Array input: same model-prefix disambiguation.
+		// Array input: discriminate by ELEMENT SHAPE first — an array of
+		// strings is the Embeddings batch form; an array of objects (with
+		// role/content) is the Responses multi-turn form. Model-name
+		// prefixes are only a secondary signal: self-hosted embedding
+		// models (Ollama/vLLM/bge) rarely carry the text-embedding- prefix,
+		// and prefix-only routing sent their batch requests to Responses.
+		var inputObjs []map[string]any
+		if json.Unmarshal(env.Input, &inputObjs) == nil && len(inputObjs) > 0 {
+			return responsesEndpoint
+		}
+		var inputArr []string
+		if json.Unmarshal(env.Input, &inputArr) == nil && len(inputArr) > 0 {
+			return embeddingsEndpoint
+		}
 		if strings.HasPrefix(env.Model, "text-embedding-") {
 			return embeddingsEndpoint
 		}

@@ -61,10 +61,12 @@ func TestCandidatePipelineNotInProductionImportGraph(t *testing.T) {
 	}
 
 	// The v2 pipeline's production entry points. A comment or a doc
-	// reference does not count; a constructor call does.
+	// reference does not count; a constructor call does. The needle starts
+	// with "." (not "evolution.") so an aliased import — the repo itself
+	// imports this package as "evoparent" — cannot evade the gate.
 	needles := []string{
-		"evolution.NewCandidatePipeline",
-		"evolution.NewCandidatePipelineWithOptions",
+		".NewCandidatePipeline",
+		".NewCandidatePipelineWithOptions",
 	}
 
 	hits := []string{}

@@ -539,6 +539,43 @@ func (m *MutableDAG) StepIndex() map[string]*Step {
 	return idx
 }
 
+// HasNode reports whether a node exists — O(1), no deep copy. Use instead
+// of StepIndex()[id] for existence checks on hot paths (StepIndex clones
+// every step in the graph).
+func (m *MutableDAG) HasNode(stepID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.steps[stepID]
+	return ok
+}
+
+// AgentTypeOf returns the agent type of one node ("" when absent) — O(1),
+// no deep copy, for chain walks that only need the type discriminator.
+func (m *MutableDAG) AgentTypeOf(stepID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.steps[stepID]; ok {
+		return s.AgentType
+	}
+	return ""
+}
+
+// CountByAgentType returns how many steps carry the given agent type — a
+// single RLocked pass with no per-step allocation. The planner's depth and
+// tool-budget checks call this per tool call; routing them through
+// StepIndex made every check an O(N) deep copy of the whole graph.
+func (m *MutableDAG) CountByAgentType(agentType string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, s := range m.steps {
+		if s.AgentType == agentType {
+			n++
+		}
+	}
+	return n
+}
+
 // StepSnapshot returns a deep copy of ONE step (nil when the node is gone).
 // It is the single-step form of StepIndex for callers that look up one node
 // per event (the incremental compiler's stepFor): an O(1) copy instead of

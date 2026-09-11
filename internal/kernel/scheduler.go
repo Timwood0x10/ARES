@@ -1181,7 +1181,16 @@ func (s *Scheduler) reconcileFabricDeaths() {
 		if _, err := s.agents.Get(id); err != nil {
 			log.Info("kernel scheduler: unregistering executor — agent no longer in fabric (killed or retired)", "executor", id)
 			s.UnregisterExecutor(id)
-			s.tracker.Forget(id)
+			// Forget only when the tracker shows no in-flight quantum
+			// (Forget's contract: load > 0 must not be forgotten). A
+			// killed-mid-quantum agent whose ID is then reused would
+			// otherwise have its load slot cleared while the stale quantum
+			// still runs — the late End decrements a fresh entry and opens
+			// admission for a third concurrent quantum. sweepDeadTrackerEntries
+			// collects the entry once the straggler's End lands.
+			if s.tracker.Load(id) == 0 {
+				s.tracker.Forget(id)
+			}
 		}
 	}
 	s.sweepDeadTrackerEntries()

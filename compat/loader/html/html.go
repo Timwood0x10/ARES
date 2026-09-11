@@ -27,7 +27,11 @@ var (
 )
 
 // blockClosers become newlines so adjacent paragraphs/lines do not fuse.
-var blockClosers = regexp.MustCompile(`(?i)</(p|div|section|article|header|footer|li|tr|h[1-6]|br|pre|blockquote)\s*/?>`)
+var blockClosers = regexp.MustCompile(`(?i)</(p|div|section|article|header|footer|li|tr|h[1-6]|pre|blockquote)\s*/?>`)
+
+// voidElements are self-closing line breaks with no end tag — they must
+// also become newlines (a closing-tag-only pattern can never match them).
+var voidElements = regexp.MustCompile(`(?i)<(br|hr)\s*/?>`)
 
 // anyTag matches any remaining element; its text content survives.
 var anyTag = regexp.MustCompile(`(?s)<[^>]*>`)
@@ -58,6 +62,7 @@ func Strip(doc string) string {
 	s := scriptBlocks.ReplaceAllString(doc, " ")
 	s = styleBlocks.ReplaceAllString(s, " ")
 	s = blockClosers.ReplaceAllString(s, "\n")
+	s = voidElements.ReplaceAllString(s, "\n")
 	s = anyTag.ReplaceAllString(s, "")
 	s = html.UnescapeString(s)
 	// Collapse whitespace runs per line and drop repeated blank lines.

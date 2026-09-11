@@ -324,17 +324,24 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	// Pre-compaction archive flush (safety net). Drains ALL pending rounds
 	// so the compaction core cannot trim raw events belonging to an
 	// un-archived round (which would permanently lose its RoundRecord). Must
-	// run BEFORE CheckAndCompact. Best-effort: a transient drain failure
-	// never fails compaction.
+	// run BEFORE CheckAndCompact. This is a hard precondition, not
+	// best-effort: if the drain cannot complete (I/O error, or the round cap
+	// hit before a terminal), trimming would destroy raw events whose
+	// RoundRecord was never written — compaction is deferred to a later
+	// window instead.
 	if s.archiveSink != nil {
 		if archiveErr := s.drainPendingRounds(ctx, streamID); archiveErr != nil {
-			log.Warn("compaction: pre-compaction archive drain failed", "stream_id", streamID, "error", archiveErr)
+			log.Warn("compaction: pre-compaction archive drain failed; deferring compaction",
+				"stream_id", streamID, "error", archiveErr)
+			return
 		}
-		// Refuse to compact while another archive pass holds the claim for
-		// this stream: the drain above was a no-op in that case (claim
-		// refused), and trimming now would delete raw events whose rounds
-		// the in-flight pass has not scanned yet — permanently losing their
-		// RoundRecords. The next debounce window retries.
+		// Defuse the drain-vs-trim TOCTOU: a concurrent archive pass can
+		// acquire the claim after our drain returned (claim refused to us)
+		// and start paging while we trim. The claim is a flag, not a lock
+		// held across compaction, so re-check it immediately before the
+		// trim decision. (A full fix needs the claim held across the
+		// compaction critical section; this closes the documented window to
+		// the smallest observable one.)
 		s.archiveMu.Lock()
 		inflight := s.archiveInflight[streamID]
 		s.archiveMu.Unlock()
@@ -527,9 +534,16 @@ func (s *CompactableEventStore) archivePendingRoundsOnce(ctx context.Context, st
 			return false, fmt.Errorf("archive: context: %w", err)
 		}
 		if len(roundEvents) >= maxArchiveRoundEvents {
-			log.Warn("archive: round event cap reached before a terminal; deferring to next drain",
+			// A round larger than the cap cannot be archived this pass.
+			// Return an ERROR (not a quiet defer): the boundary never
+			// advances, so "retry next drain" makes no progress against the
+			// same oversized round — and a (false, nil) would let the
+			// pre-compaction drain report success and the compaction core
+			// trim the un-archived window. Callers must treat this as a
+			// hard "do not trim this stream" signal.
+			log.Warn("archive: round exceeds event cap before a terminal; blocking compaction",
 				"stream_id", streamID, "cap", maxArchiveRoundEvents)
-			return false, nil
+			return false, fmt.Errorf("archive: round on stream %q exceeds %d events without a terminal", streamID, maxArchiveRoundEvents)
 		}
 		page, err := s.EventStore.Read(ctx, streamID, ReadOptions{
 			FromVersion: lastSeen,

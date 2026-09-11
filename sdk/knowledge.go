@@ -169,6 +169,11 @@ func wireKnowledge(
 	if store != nil {
 		sp := storeprovider.New("akg_store", store, embClient, embModel, akgNamespace)
 		if err := reg.Register(sp); err != nil {
+			// Release the just-built store before bailing: it holds an open
+			// sqlite handle or postgres *sql.DB that nothing else owns yet.
+			if closer, ok := store.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
 			return nil, fmt.Errorf("knowledge: register store provider: %w", err)
 		}
 	}

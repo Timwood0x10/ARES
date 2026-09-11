@@ -32,6 +32,11 @@ const DefaultLLMSummaryLanguage = LanguageChinese
 // context (token cost) and gives an attacker a larger injection surface.
 const MaxPromptContentRunes = 20000
 
+// fenceDelimiter marks the untrusted-data region in summarization prompts.
+// Any occurrence inside the source is neutralized before embedding, so the
+// boundary cannot be forged from within the data.
+const fenceDelimiter = "--------------------------------------------------"
+
 // LLMSummarizerOption configures an LLMSummarizer.
 type LLMSummarizerOption func(*LLMSummarizer)
 
@@ -152,10 +157,16 @@ func (s *LLMSummarizer) buildPrompt(source string, objType knowledge.ObjectType,
 	if runes := []rune(source); len(runes) > MaxPromptContentRunes {
 		source = string(runes[:MaxPromptContentRunes]) + "\n[...content truncated...]"
 	}
+	// Neutralize the fence delimiter inside untrusted content: a source that
+	// contains the delimiter line (adversarial, or a markdown horizontal
+	// rule) would otherwise close the fence early and land its trailing text
+	// in the trusted zone next to the real instructions — the exact indirect
+	// prompt-injection surface the SECURITY paragraph claims to close.
+	source = strings.ReplaceAll(source, fenceDelimiter, "-")
 	b.WriteString("Content to summarize (untrusted data):\n")
-	b.WriteString("--------------------------------------------------\n")
+	b.WriteString(fenceDelimiter + "\n")
 	b.WriteString(source)
-	b.WriteString("\n--------------------------------------------------\n\n")
+	b.WriteString("\n" + fenceDelimiter + "\n\n")
 	fmt.Fprintf(&b, "Write a concise summary in %s within %d characters. ", s.language, maxLen)
 	b.WriteString("Focus on preserving technical accuracy over brevity.")
 	return b.String()

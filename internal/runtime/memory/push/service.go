@@ -300,12 +300,17 @@ func (s *DefaultPushService) Start(ctx context.Context) error {
 		go s.eventLoop(runCtx)
 	default:
 		// Unknown policy: no loop was spawned, so release the whole
-		// lifecycle state (doneCh included — a stale non-nil channel with
-		// no closer would make a later Stop block forever).
+		// lifecycle state. doneCh must be CLOSED before nil-ing: a Stop
+		// that snapshotted isRunning=true (and captured the channel) in the
+		// window between the first unlock and this lock would otherwise
+		// block forever on a channel no one will ever close.
 		s.runMu.Lock()
 		s.isRunning = false
 		s.cancelFn = nil
-		s.doneCh = nil
+		if s.doneCh != nil {
+			close(s.doneCh)
+			s.doneCh = nil
+		}
 		s.runMu.Unlock()
 		cancel()
 		return fmt.Errorf("push start: unknown policy %q: %w", s.config.Policy, ErrInvalidConfig)

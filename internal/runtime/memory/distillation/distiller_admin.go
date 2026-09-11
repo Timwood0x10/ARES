@@ -70,6 +70,13 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 	}
 
 	d.subMu.Lock()
+	// Cancel any previous subscription before replacing its cancel func:
+	// overwriting subCancel orphaned the first loop's context, and Stop
+	// (which only cancels the latest) then blocked forever on the orphaned
+	// goroutine in distillEg.Wait.
+	if d.subCancel != nil {
+		d.subCancel()
+	}
 	d.subCancel = cancel
 	d.subMu.Unlock()
 

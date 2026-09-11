@@ -130,8 +130,14 @@ func (a testerAdapter) Run(ctx context.Context, cfg evolve.RegressionConfig) (*e
 		TaskSampleSize:    cfg.TaskSampleSize,
 		AdaptiveBatchSize: cfg.AdaptiveBatchSize,
 	})
-	if err != nil || res == nil {
+	if err != nil {
 		return nil, err
+	}
+	if res == nil {
+		// A (nil, nil) return is legal Go for the public Tester but every
+		// internal consumer dereferences the result unguarded — convert to
+		// an explicit error rather than panicking the process.
+		return nil, fmt.Errorf("evoapi: tester %T returned nil result without error", a.t)
 	}
 	return &evolve.RegressionResult{
 		CandidateScore: res.CandidateScore,

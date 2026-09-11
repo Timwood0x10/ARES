@@ -150,24 +150,17 @@ func (t *RegexTool) compileRegex(pattern string, flags []string) (*regexp.Regexp
 // entry per position — millions on large input — so only non-empty matches
 // are reported.
 func (t *RegexTool) match(ctx context.Context, text string, re *regexp.Regexp, maxResults int) (core.Result, error) {
-	matches := re.FindAllString(text, maxResults)
+	// Non-empty matches only, and empty matches must not consume the
+	// maxResults budget (FindAllString counts them against n, starving real
+	// matches behind a run of empties).
+	indexes := findAllNonEmptyIndexes(re, text, maxResults)
 
-	// Get all match positions
-	matchPositions := re.FindAllStringIndex(text, maxResults)
-
-	results := make([]map[string]interface{}, 0, len(matches))
-	for i, match := range matches {
-		var start, end int
-		if i < len(matchPositions) {
-			start, end = matchPositions[i][0], matchPositions[i][1]
-		}
-		if start == end {
-			continue // empty match — carries no information, skip
-		}
+	results := make([]map[string]interface{}, 0, len(indexes))
+	for _, idx := range indexes {
 		results = append(results, map[string]interface{}{
-			"match": match,
-			"start": start,
-			"end":   end,
+			"match": text[idx[0]:idx[1]],
+			"start": idx[0],
+			"end":   idx[1],
 		})
 	}
 
@@ -183,24 +176,39 @@ func (t *RegexTool) match(ctx context.Context, text string, re *regexp.Regexp, m
 // extract extracts all matches using capturing groups. Entries whose full
 // match is empty are skipped (#62 — see match).
 func (t *RegexTool) extract(ctx context.Context, text string, re *regexp.Regexp, maxResults int) (core.Result, error) {
-	allMatches := re.FindAllStringSubmatch(text, maxResults)
-
-	// Extract capturing groups, skipping empty full matches.
-	extracted := make([]map[string]interface{}, 0, len(allMatches))
-	for _, match := range allMatches {
-		if len(match) == 0 || match[0] == "" {
-			continue // empty full match — skip
+	// Iterate like findAllNonEmptyIndexes but with submatch support: empty
+	// full matches are skipped WITHOUT consuming the maxResults budget.
+	var extracted []map[string]interface{}
+	pos := 0
+	for pos <= len(text) && (maxResults <= 0 || len(extracted) < maxResults) {
+		match := re.FindStringSubmatchIndex(text[pos:])
+		if match == nil {
+			break
 		}
-		groups := make([]string, 0, len(match))
-		for i, group := range match {
-			groups = append(groups, fmt.Sprintf("group_%d: %s", i, group))
+		start, end := match[0], match[1]
+		adv := end
+		if end > start {
+			groups := make([]string, 0, len(match)/2)
+			for i := 0; i < len(match); i += 2 {
+				if match[i] < 0 {
+					groups = append(groups, fmt.Sprintf("group_%d: ", i/2))
+					continue
+				}
+				groups = append(groups, fmt.Sprintf("group_%d: %s", i/2, text[pos+match[i]:pos+match[i+1]]))
+			}
+			extracted = append(extracted, map[string]interface{}{
+				"full_match": text[pos+start : pos+end],
+				"groups":     groups,
+				"count":      len(match) / 2,
+			})
+		} else {
+			_, size := utf8.DecodeRuneInString(text[pos+adv:])
+			if size == 0 {
+				break
+			}
+			adv += size
 		}
-
-		extracted = append(extracted, map[string]interface{}{
-			"full_match": match[0],
-			"groups":     groups,
-			"count":      len(match),
-		})
+		pos += adv
 	}
 
 	if len(extracted) == 0 {
@@ -269,6 +277,34 @@ func countNonEmptyMatches(re *regexp.Regexp, text string) int {
 		pos += adv
 	}
 	return count
+}
+
+// findAllNonEmptyIndexes iterates like countNonEmptyMatches but returns the
+// [start,end) indexes of the first maxResults NON-EMPTY matches. Empty
+// matches never consume the budget, so an empty-able pattern (a?, x*) whose
+// real matches sit behind a run of empties is not starved by FindAllString's
+// limit — which counts empties against n.
+func findAllNonEmptyIndexes(re *regexp.Regexp, text string, maxResults int) [][]int {
+	var out [][]int
+	pos := 0
+	for pos <= len(text) && (maxResults <= 0 || len(out) < maxResults) {
+		loc := re.FindStringIndex(text[pos:])
+		if loc == nil {
+			break
+		}
+		adv := loc[1]
+		if loc[1] > loc[0] {
+			out = append(out, []int{pos + loc[0], pos + loc[1]})
+		} else {
+			_, size := utf8.DecodeRuneInString(text[pos+adv:])
+			if size == 0 {
+				break
+			}
+			adv += size
+		}
+		pos += adv
+	}
+	return out
 }
 
 func (t *RegexTool) IsIdempotent() bool { return true }

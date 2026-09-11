@@ -106,14 +106,9 @@ func IsL2Capability(capability string) bool {
 func (g *L2Graph) PlanDepth() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	steps := g.dag.StepIndex()
-	depth := 0
-	for _, s := range steps {
-		if s.AgentType == planAgentType {
-			depth++
-		}
-	}
-	return depth
+	// CountByAgentType is a single RLocked pass — StepIndex deep-copies the
+	// whole graph, which the planner cannot afford per quantum.
+	return g.dag.CountByAgentType(planAgentType)
 }
 
 // Ancestors returns every ancestor of nodeID reachable through DependsOn
@@ -125,7 +120,8 @@ func (g *L2Graph) PlanDepth() int {
 func (g *L2Graph) Ancestors(nodeID string) []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	steps := g.dag.StepIndex()
+	// ReadDeps copies only the walked nodes' dependency lists; StepIndex
+	// would deep-copy the entire graph for what is a sparse chain walk.
 	seen := map[string]struct{}{nodeID: {}}
 	var out []string
 	queue := []string{nodeID}
@@ -133,11 +129,7 @@ func (g *L2Graph) Ancestors(nodeID string) []string {
 		current := queue
 		queue = nil
 		for _, id := range current {
-			s, ok := steps[id]
-			if !ok {
-				continue
-			}
-			for _, dep := range s.DependsOn {
+			for _, dep := range g.dag.ReadDeps(id) {
 				if _, dup := seen[dep]; dup {
 					continue
 				}
@@ -156,9 +148,7 @@ func (g *L2Graph) Ancestors(nodeID string) []string {
 func (g *L2Graph) HasNode(nodeID string) bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	steps := g.dag.StepIndex()
-	_, ok := steps[nodeID]
-	return ok
+	return g.dag.HasNode(nodeID)
 }
 
 // AncestorPlanCount walks the predecessor chain from nodeID to the root and
@@ -171,15 +161,14 @@ func (g *L2Graph) HasNode(nodeID string) bool {
 func (g *L2Graph) AncestorPlanCount(nodeID string) int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	steps := g.dag.StepIndex()
 	count := 0
 	for id := nodeID; id != "" && id != g.root; {
-		s, ok := steps[id]
-		if !ok || len(s.DependsOn) == 0 {
+		deps := g.dag.ReadDeps(id)
+		if len(deps) == 0 {
 			break
 		}
-		id = s.DependsOn[0]
-		if s, ok := steps[id]; ok && s.AgentType == planAgentType {
+		id = deps[0]
+		if g.dag.AgentTypeOf(id) == planAgentType {
 			count++
 		}
 	}
@@ -197,13 +186,7 @@ func (g *L2Graph) AncestorPlanCount(nodeID string) int {
 func (g *L2Graph) CountToolClass(toolName string) int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	count := 0
-	for _, s := range g.dag.StepIndex() {
-		if s.AgentType == "tool/"+toolName {
-			count++
-		}
-	}
-	return count
+	return g.dag.CountByAgentType("tool/" + toolName)
 }
 
 // DAG returns the underlying execution graph. Callers must treat it as

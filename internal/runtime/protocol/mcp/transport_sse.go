@@ -116,11 +116,25 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return err
 	})
 
+	// The handshake wait is bounded by the transport timeout even though the
+	// ctx here is the CONNECTION-LIFETIME context (production passes
+	// context.Background() as lifetime — ctx.Done() never fires). A server
+	// that accepts TCP but never sends response headers would otherwise hang
+	// receiveLoop in httpClient.Do and block Start/Connect indefinitely.
+	handshakeTimeout := t.config.Timeout
+	if handshakeTimeout == 0 {
+		handshakeTimeout = defaultSSETimeout
+	}
+	handshakeDeadline := time.After(handshakeTimeout)
 	select {
 	case err := <-t.ready:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-handshakeDeadline:
+		err := fmt.Errorf("sse handshake timed out after %s (no response headers from %s)", handshakeTimeout, t.config.URL)
+		t.signalHandshake(err)
+		return err
 	}
 }
 

@@ -285,6 +285,7 @@ func New(opts ...Option) (*Runtime, error) {
 	var memMgr memory.MemoryManager
 	var distillCleanup func()
 	var pgPool *postgres.Pool
+	var knowStoreClose func()
 	defer func() {
 		if !bootstrapCancelTaken {
 			// Error path: release everything created so far. The success path
@@ -306,6 +307,9 @@ func New(opts ...Option) (*Runtime, error) {
 				stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer stopCancel()
 				_ = memMgr.Stop(stopCtx)
+			}
+			if knowStoreClose != nil {
+				knowStoreClose()
 			}
 			if pgPool != nil {
 				_ = pgPool.Close()
@@ -343,6 +347,11 @@ func New(opts ...Option) (*Runtime, error) {
 	kw, err := wireKnowledge(cfg, memMgr, embClient, embModelForAKG)
 	if err != nil {
 		return nil, err
+	}
+	if kw != nil && kw.store != nil {
+		if closer, ok := kw.store.(interface{ Close() error }); ok {
+			knowStoreClose = func() { _ = closer.Close() }
+		}
 	}
 
 	// ---- Stage 9 (SDK unification): keep the SDK's own KnowledgeRuntime

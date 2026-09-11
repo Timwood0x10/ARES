@@ -73,6 +73,16 @@ func WithMinRelevance(v float64) Option {
 	}
 }
 
+// WithNamespace scopes the store-backed HybridSearch to one namespace. Wire
+// the same value the write path stamps (store_adapter passes tenantID as
+// Namespace) — an empty namespace made every store-backed Retrieve a
+// cross-namespace scan.
+func WithNamespace(ns string) Option {
+	return func(r *KnowledgeRetriever) {
+		r.namespace = ns
+	}
+}
+
 // Shared metadata keys and source identifiers used by both the store path and
 // the runtime path (and their tests). Centralised so the literals are not
 // repeated across the package (goconst).
@@ -118,6 +128,12 @@ type KnowledgeRetriever struct {
 	store    knowledge.KnowledgeStore // optional; nil = fall back to runtime.Execute
 	model    string                   // embedding model name for HybridSearch
 	minScore float64
+	// namespace scopes HybridSearch to one namespace when the store path is
+	// used. akf_objects is namespace-scoped (no tenant column); leaving this
+	// empty made every store-backed Retrieve a cross-namespace scan — only
+	// safe for single-namespace deployments. Wire the same value the write
+	// path stamps (store_adapter passes tenantID as Namespace).
+	namespace string
 	// minRelevance is the runtime-path Relevance filter: collectSnippets
 	// drops objects with Relevance < minRelevance. Defaults to
 	// DefaultMinRelevance (0.3). The store path uses minScore (forwarded to
@@ -267,6 +283,7 @@ func (r *KnowledgeRetriever) Retrieve(
 	if r.store != nil {
 		req := knowledge.HybridSearchRequest{
 			Query:        input,
+			Namespace:    r.namespace,
 			TopK:         topK * 3,
 			FinalK:       topK,
 			MinScore:     r.minScore,

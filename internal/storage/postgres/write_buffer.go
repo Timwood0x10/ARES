@@ -132,28 +132,33 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Flush remaining items on shutdown with a fresh context.
+			// Flush remaining items on shutdown with a fresh context. The
+			// filtered path dead-letters poison items first so one bad row
+			// cannot abort the whole final flush (the raw path returned
+			// ErrPermanentWriteItem immediately, dropping every valid item
+			// sharing the batch — and never counting the poison).
 			if len(batch) > 0 {
 				flushCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				err := b.flushBatchWithRetry(flushCtx, batch, maxRetries)
+				leftover := b.flushBatchFiltered(flushCtx, batch, maxRetries)
 				cancel()
-				if err != nil {
-					log.Error("Failed to flush final batch", "error", err)
-					return errors.Wrap(err, "flush final batch")
+				if len(leftover) > 0 {
+					log.Error("Failed to flush final batch", "items", len(leftover))
+					return errors.New("flush final batch: incomplete")
 				}
 			}
 			return nil
 
 		case item, ok := <-b.buffer:
 			if !ok {
-				// Channel closed, flush any remaining batch before exiting.
+				// Channel closed, flush any remaining batch before exiting
+				// (same poison-safe filtered path as the ctx.Done case).
 				if len(batch) > 0 {
 					flushCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					err := b.flushBatchWithRetry(flushCtx, batch, maxRetries)
+					leftover := b.flushBatchFiltered(flushCtx, batch, maxRetries)
 					cancel()
-					if err != nil {
-						log.Error("Failed to flush remaining batch on channel close", "error", err)
-						return errors.Wrap(err, "flush remaining batch on close")
+					if len(leftover) > 0 {
+						log.Error("Failed to flush remaining batch on channel close", "items", len(leftover))
+						return errors.New("flush remaining batch on close: incomplete")
 					}
 				}
 				return nil
