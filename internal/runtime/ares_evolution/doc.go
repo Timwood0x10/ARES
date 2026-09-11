@@ -16,5 +16,5 @@
 // production assembly — it is examples/fixtures-only today; the
 // trust-root-boundary test in evolutiontest (TestCandidatePipelineNotInProductionImportGraph)
 // keeps it that way, and any future production promotion through v2 MUST
-// route through this package's gates (see ARCHITECTURE.md 高风险 #3).
+// route through this package's gates (see ARCHITECTURE.md high-risk #3).
 package evolution

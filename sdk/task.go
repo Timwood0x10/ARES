@@ -6,8 +6,8 @@ import (
 )
 
 // Task is the minimal unit of work a caller submits to a Runtime
-// (极简 SDK — NewRuntime → RegisterAgent → Submit →
-// 结果). It is deliberately field-light: the Runtime resolves the executor by
+// (minimal SDK — NewRuntime → RegisterAgent → Submit →
+// result). It is deliberately field-light: the Runtime resolves the executor by
 // capability, so callers never construct agents or reference any internal
 // scheduling/leadership concept.
 type Task struct {
@@ -25,7 +25,7 @@ type Task struct {
 }
 
 // RegisterAgent creates an agent and registers it as the handler for its
-// capability (极简 SDK — 不暴露 leader/sub/kernel 概念). The agent is
+// capability (minimal SDK — no leader/sub/kernel concepts are exposed). The agent is
 // named after the capability; opts configure it (WithInstruction/WithTools/
 // ...). The first agent registered for a capability wins; a later
 // RegisterAgent for the same capability does not replace it.
@@ -55,10 +55,10 @@ func (r *Runtime) RegisterAgent(capability string, opts ...AgentOption) *Agent {
 }
 
 // Submit dispatches a task to the agent registered for its capability and
-// returns the execution result (极简 SDK 闭环). The task goes through the
+// returns the execution result (minimal SDK closed loop). The task goes through the
 // SAME scheduling path as the kernel: fabric.Create → kernelscheduler
 // (Schedule → Acquire → RunQuantum via the registered agent) → COMPLETED →
-// result (合并 SDK 和 kernel 两条路径 — the SDK and the kernel share
+// result (merging the SDK and kernel paths — the SDK and the kernel share
 // one scheduler; no divergent direct-run path). When no agent is registered
 // for the task's capability, a capability-named agent is created on demand —
 // a runtime never refuses a well-formed task just because it was not

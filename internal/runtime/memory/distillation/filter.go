@@ -264,7 +264,7 @@ func SecurityFilter(text string) bool {
 
 	// Sensitive keywords that should never be stored (English and Chinese).
 	// All keywords MUST be lowercase — the text is lowercased before
-	// comparison, so mixed-case keywords like "API密钥" would never match.
+	// comparison, so mixed-case keywords would never match.
 	sensitiveKeywords := []string{
 		// English sensitive keywords
 		"password", "api key", "apikey", "secret", "token",

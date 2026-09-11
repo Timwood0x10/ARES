@@ -1,6 +1,6 @@
 package evolution_test
 
-// Trust-root disambiguation (M-C1, ARCHITECTURE.md 高风险 #3): the promote
+// Trust-root disambiguation (M-C1, ARCHITECTURE.md high-risk #3): the promote
 // trust root is v1 ares_evolution's StrategyLifecycle gate chain. The v2
 // engine's CandidatePipeline carries its own SetStable promote path; it is
 // examples/fixtures-only and must NOT silently enter the production import

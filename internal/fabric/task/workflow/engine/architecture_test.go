@@ -12,7 +12,7 @@ package engine
 // declaration inside another dead type is exactly the "declared but never
 // executed" trap this gate exists for.
 //
-// Allowlist policy ("白名单起步逐个消化"): known-dead types are allowlisted
+// Allowlist policy ("start from an allowlist and work through it"): known-dead types are allowlisted
 // with an explicit reason. Two failure modes:
 //   - a type with ZERO outside references that is NOT allowlisted → new dead
 //     declaration: wire it or delete it, then update this file;

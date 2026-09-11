@@ -27,17 +27,24 @@ type RelationExtractor struct {
 // whitespace. English
 // verbs require whitespace after the verb and a leading word boundary so that
 // "fix" does not match inside words like "prefix" or "fixing".
-// entityBound terminates a captured entity at a conjunction or sentence
-// punctuation so "修复了 A，B" / "fixes A and B" / "fixes the auth bug. See
-// also..." yield the first entity only, instead of the greedy (.+) swallowing
-// the whole remainder (§四: "贪婪正则匹配到输入末尾"). A '.' is deliberately
-// kept OUT of the capture class so dotted identifiers/versions
-// ("auth.service", "v1.2.3") survive; a '.' ends the capture only when
-// followed by whitespace (a real sentence boundary). Full-width 。，；！？ and
-// ASCII , ; : ! ? terminate directly. Targets are canonicalized against the
-// entity dict downstream, so a clean short entity matches far more often than
-// the overlong remainder.
-const entityBound = `([^，。；！？,;!?：:]+?)(?:\.\s|,|，|;|；|:|：|\s+and\s+|\s+和\s+|\s+与\s+|$)`
+// entityBound captures one entity and stops it at a conjunction or at sentence
+// punctuation, so a multi-clause sentence yields the first clean entity instead
+// of the greedy (.+) swallowing the whole remainder (spec section 4: greedy
+// regex matched to end of input).
+//
+// A '.' is deliberately kept OUT of the capture class so dotted identifiers and
+// versions ("auth.service", "v1.2.3") survive; it ends the capture only when
+// followed by whitespace, i.e. a real sentence boundary.
+//
+// Every character the capture class excludes MUST also appear in the terminator
+// alternation, otherwise the lazy +? has no valid stop position at that
+// character and the whole pattern fails to match — "fixes the auth bug!" used
+// to extract nothing because '!' sat in the exclusion class but not in the
+// terminator. Full-width CJK period/comma/semicolon/colon/exclamation/question
+// and their ASCII equivalents therefore all terminate directly. Targets are
+// canonicalized against the entity dict downstream, so a clean short entity
+// matches far more often than the overlong remainder.
+const entityBound = `([^，。；！？,;!?：:]+?)(?:\.\s|[,;:!?]|[，；：！？。]|\s+and\s+|\s+和\s+|\s+与\s+|$)`
 
 func NewRelationExtractor() *RelationExtractor {
 	return &RelationExtractor{

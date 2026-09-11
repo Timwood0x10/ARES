@@ -31,8 +31,8 @@ func (s *Scheduler) fabricExecutor(agentID string) CapabilityExecutor {
 }
 
 // fabricAgentExecutor adapts a live agentfabric.Agent to the scheduler's
-// CapabilityExecutor contract (scheduler 候选来自
-// agentfabric 动态群体). Execution delegates to the agent's injected
+// CapabilityExecutor contract (scheduler candidates come from the
+// agentfabric dynamic group). Execution delegates to the agent's injected
 // Cognition, so a spawned fabric agent is a REAL executor — not a
 // phantom. StepOutcome semantics match sub's by construction (both carry
 // Done/Checkpoint/Result).

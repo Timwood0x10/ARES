@@ -23,7 +23,7 @@ import (
 )
 
 // CapabilityExecutor is the minimal contract the Kernel scheduler needs from an
-// agent executor (调度以 capability 为核心). It decouples the scheduler
+// agent executor (scheduling is capability-centric). It decouples the scheduler
 // from the full sub.Agent interface — the scheduler only cares about identity,
 // declared capability (via Type()), and single-quantum execution. Any type that
 // implements these three methods is a schedulable executor, regardless of whether

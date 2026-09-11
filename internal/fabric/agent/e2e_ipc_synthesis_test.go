@@ -11,8 +11,8 @@ import (
 
 // ipcAnalystCognition is the child agent's execution body: it serves analysis
 // requests on the IPC bus. Its output is configurable so the test can prove
-// the synthesised result tracks the child's REAL output (改子 Agent 输出会改变
-// 最终结果).
+// the synthesised result tracks the child's REAL output (changing the child
+// agent's output changes the final result).
 type ipcAnalystCognition struct {
 	output string
 }
@@ -95,7 +95,7 @@ func TestE2E_PeerIPCSynthesis(t *testing.T) {
 		t.Fatalf("synthesis must contain the child's real output, got %q", out.Result.Reason)
 	}
 
-	// 改子 Agent 输出会改变最终结果：the child now returns v2, the parent's
+	// Changing the child agent's output changes the final result: the child now returns v2,
 	// synthesis must track it (not a hardcoded v1).
 	child.output = "analysis-v2"
 	out2, err := a.ExecuteStep(ctx, models.NewTask("t-ipc", models.AgentType("coordinator"), nil))

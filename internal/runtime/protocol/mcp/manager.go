@@ -229,6 +229,25 @@ func (m *MCPManager) connectWithTransport(ctx context.Context, name string, sc *
 	toolNames, err := m.registerTools(mc)
 	if err != nil {
 		_ = client.Close()
+		// Roll back the unregister above: the stale client is still the live
+		// m.clients entry (the swap below never ran), so its tools must go
+		// back into the registry. Without this a transient schema or
+		// ListTools failure during reconnect left the server Connected with
+		// zero tools — the old set was already unregistered and the new one
+		// never landed, and no later path could re-register it. Mirrors
+		// RefreshTools' restore-on-failure contract.
+		if stale != nil {
+			m.mu.Lock()
+			restoreNames, rerr := m.registerTools(stale)
+			// mc.tools must track what is actually registered: unregisterTools
+			// nils it above, and DisconnectServer unregisters by mc.tools.
+			stale.tools = restoreNames
+			m.mu.Unlock()
+			if rerr != nil {
+				log.Warn("mcp: failed to restore previous tools after failed reconnect",
+					"server", name, "register_error", err, "restore_error", rerr)
+			}
+		}
 		return fmt.Errorf("register tools: %w", err)
 	}
 	mc.tools = toolNames

@@ -10,7 +10,7 @@ package runtime
 // package. A constructor is "wired" if some non-test .go file in the module
 // mentions `Name(` on a line that is not its own `func Name(` declaration.
 //
-// Allowlist policy ("白名单起步逐个消化"): known-dead constructors are
+// Allowlist policy ("start from an allowlist and work through it"): known-dead constructors are
 // allowlisted with an explicit reason and a tracking pointer. Two failure
 // modes:
 //   - a constructor with ZERO production references that is NOT allowlisted

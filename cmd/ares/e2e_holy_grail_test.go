@@ -413,7 +413,7 @@ func assertSynthesis(t *testing.T, f *holyGrailFixture, wantB, wantC string) str
 // ─── The holy-grail E2E test ───
 
 // TestE2E_HolyGrail is the single continuous end-to-end test that proves the
-// full Agent-OS thesis ("圣杯测试"):
+// full Agent-OS thesis ("the holy-grail test"):
 //
 //	User → Submit(root task) → Scheduler → Agent A (quantum 1: spawn B,C)
 //	  → B,C scheduled → B,C run → IPC results back to A

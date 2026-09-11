@@ -27,7 +27,7 @@ import (
 // operators must explicitly opt in via EnablePython(true).
 //
 // The import allowlist and the dangerous-pattern denylist are
-// mistake-prevention ("防误不防恶"), NOT a security boundary: they stop a
+// mistake-prevention ("guard against mistakes, not malice"), NOT a security boundary: they stop a
 // cooperative model from accidentally calling open()/exec, but a determined
 // adversary can bypass any regex-based validator (encoding tricks, attribute
 // chains, C-level escapes). Treat enabled Python as REMOTE CODE EXECUTION by

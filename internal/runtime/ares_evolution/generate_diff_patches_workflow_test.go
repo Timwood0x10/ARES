@@ -121,7 +121,7 @@ func liveNodeIDSet(dag *engine.MutableDAG) map[string]bool {
 }
 
 // TestGenerateDiffPatches_SameGraphNodeRefsResolveInLiveDAG is the literal 7.2.1
-// same-graph (同图性) assertion. It runs generateDiffPatches over a REAL
+// same-graph assertion. It runs generateDiffPatches over a REAL
 // WorkflowGenome + WorkflowDiffer whose genome has been repointed at the live
 // DAG — the sole thing UpdateLiveDAG is supposed to guarantee.
 //

@@ -56,14 +56,20 @@ func (h *SignalHandler) Start(ctx context.Context) error {
 
 // Stop stops listening for signals.
 func (h *SignalHandler) Stop() error {
-	h.mu.RLock()
+	h.mu.Lock()
 	if !h.mu.started {
-		h.mu.RUnlock()
+		h.mu.Unlock()
 		return nil
 	}
+	h.mu.started = false
+	// Snapshot under the same write lock that cleared started: the captured
+	// pair (cancel, sigChan) is exactly what the running loop was created
+	// with, so a concurrent re-Start cannot hand this Stop the new loop's
+	// primitives.
 	cancel := h.mu.cancel
+	h.mu.cancel = nil
 	sigChan := h.sigChan
-	h.mu.RUnlock()
+	h.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
@@ -74,24 +80,18 @@ func (h *SignalHandler) Stop() error {
 		signal.Stop(sigChan)
 	}
 
-	h.mu.Lock()
-	h.mu.started = false
-	h.mu.cancel = nil
-	h.mu.Unlock()
-
 	return nil
 }
 
 // handleSignals handles incoming signals. The context is captured at Start
 // time and passed here: storing it on the handler and reading h.ctx in this
 // goroutine raced a concurrent Start/SetContext write.
+//
+// The exit defer does NOT touch mu.started: a stopped-then-restarted handler
+// would have the OLD goroutine's defer clobber the NEW Start's started=true,
+// making a second Stop return early while the new loop leaks. The old loop's
+// lifetime is owned entirely by its captured ctx (cancelled by Stop).
 func (h *SignalHandler) handleSignals(ctx context.Context, sigChan <-chan os.Signal) {
-	defer func() {
-		h.mu.Lock()
-		h.mu.started = false
-		h.mu.Unlock()
-	}()
-
 	for {
 		select {
 		case <-ctx.Done():

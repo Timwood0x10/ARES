@@ -12,7 +12,7 @@ import (
 )
 
 // evolutionSpawnBody is the execution body a GA/evolution policy would
-// inject into its spawned agents (GA spawn 真实执行体). It completes every
+// inject into its spawned agents (GA-spawned agents are real executors). It completes every
 // task in one quantum.
 type evolutionSpawnBody struct{}
 
@@ -23,8 +23,8 @@ func (evolutionSpawnBody) ExecuteStep(_ context.Context, task *models.Task) (*ag
 }
 
 // TestEvolutionSpawnedAgentIsExecutableAndSchedulable verifies the F1
-// acceptance (GA spawn 的 agent 能被真实调度执行，
-// 非 phantom): an evolution policy that spawns agents WITH their execution body
+// acceptance (GA-spawned agents can actually be scheduled and executed,
+// not phantoms): an evolution policy that spawns agents WITH their execution body
 // (CognitionFactory) produces REAL cognitive processes that
 // the kernel scheduler selects and executes, not empty shells. The chain is
 // exactly the production one: AdaptPopulation → agents.Spawn → scheduler

@@ -8,7 +8,7 @@ import (
 )
 
 // TestSpawnLoadsExperiencePrior verifies the contract
-// (Memory Distill 挂到 agent 生命周期): a spawned
+// (Memory Distill hooked into the agent lifecycle): a spawned
 // agent loads the distilled prior experience as its initial cognitive context.
 // The prior is readable via the standard CognitiveState path, so a fresh agent
 // of the same capability starts with reusable experience instead of a blank

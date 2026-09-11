@@ -9,7 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentipc"
 )
 
-// TestE2E_GrandLoop_CompleteAgentOS is the "大闭环":
+// TestE2E_GrandLoop_CompleteAgentOS is the "grand loop":
 // one continuous story that proves the Agent-OS thesis end to end.
 //
 //	User → Agent A gets a large task

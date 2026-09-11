@@ -417,7 +417,7 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 }
 
 // Fail marks a RUNNING task FAILED, or requeues it to READY when the retry
-// policy allows another attempt (Agent 死亡 ≠ Task 死亡).
+// policy allows another attempt (Agent death ≠ Task death).
 func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
@@ -518,7 +518,7 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		// LEASED/RUNNING/SUSPENDED tasks with an expired lease are requeued
 		// to READY. SUSPENDED is included: a dead agent's suspended task
 		// (checkpoint preserved) must return to READY so another agent can
-		// acquire and resume it (Agent 死亡 ≠ Task 死亡).
+		// acquire and resume it (Agent death ≠ Task death).
 		if t.State != StateLeased && t.State != StateRunning && t.State != StateSuspended {
 			continue
 		}
@@ -1357,7 +1357,7 @@ type TaskView struct {
 
 // TaskSnapshot returns a point-in-time copy of EVERY task, including terminal
 // ones, ordered by TaskID. It powers the Tasks page board + DAG (dashboard.md
-// §5: "看真正的任务依赖关系"). Terminal tasks are included so the Done column
+// §5: "see the real task dependency graph"). Terminal tasks are included so the Done column
 // and the dependency closure render correctly. Purely read-only: everything
 // is copied under f.mu, no write path fires.
 func (f *Fabric) TaskSnapshot() []TaskView {

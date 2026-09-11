@@ -35,6 +35,19 @@ type WriteBuffer struct {
 	// poison pills such as unsupported tables are logged and discarded
 	// instead of being re-queued forever.
 	deadLettered atomic.Int64
+
+	// maxCarriedForward bounds the batch that survives a FAILED flush and is
+	// kept for the next attempt. Without a cap the leftover grows by up to a
+	// full channel's worth per retry cycle, so a sustained database outage
+	// accumulated every item ever written into one in-memory batch and
+	// OOMed the writer. Set to the channel capacity at construction.
+	maxCarriedForward int
+
+	// droppedOverflow counts valid items discarded because the carried-forward
+	// batch was already at maxCarriedForward. Separate from deadLettered on
+	// purpose: these items were writable, they were lost to memory pressure,
+	// not to a poison pill.
+	droppedOverflow atomic.Int64
 }
 
 // ErrPermanentWriteItem marks a WriteItem that can never be written (e.g. an
@@ -77,12 +90,13 @@ func NewWriteBuffer(pool *Pool, queue *EmbeddingQueue, batchSize int, flushInter
 		embeddingConfig = DefaultEmbeddingConfig()
 	}
 	return &WriteBuffer{
-		db:              pool,
-		buffer:          make(chan *WriteItem, batchSize*2), // Double size to avoid blocking
-		batchSize:       batchSize,
-		flushInterval:   flushInterval,
-		queue:           queue,
-		embeddingConfig: embeddingConfig,
+		db:                pool,
+		buffer:            make(chan *WriteItem, batchSize*2), // Double size to avoid blocking
+		batchSize:         batchSize,
+		flushInterval:     flushInterval,
+		queue:             queue,
+		embeddingConfig:   embeddingConfig,
+		maxCarriedForward: batchSize * 2,
 	}
 }
 
@@ -170,15 +184,37 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 			}
 			batch = append(batch, item)
 			if len(batch) >= b.batchSize {
-				batch = b.flushBatchFiltered(ctx, batch, maxRetries)
+				batch = b.capCarriedForward(b.flushBatchFiltered(ctx, batch, maxRetries))
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
-				batch = b.flushBatchFiltered(ctx, batch, maxRetries)
+				batch = b.capCarriedForward(b.flushBatchFiltered(ctx, batch, maxRetries))
 			}
 		}
 	}
+}
+
+// capCarriedForward bounds the batch carried across a failed flush so a
+// sustained database outage cannot grow it without limit: each retry cycle
+// appends up to a channel's worth of new items to a batch that never shrinks,
+// which used to OOM the writer. The oldest items are kept (they have waited
+// longest and drain first once the database recovers); the newest overflow is
+// dropped and counted so the loss is observable rather than silent. A
+// successful flush returns nil and the cap never applies.
+func (b *WriteBuffer) capCarriedForward(leftover []*WriteItem) []*WriteItem {
+	if len(leftover) <= b.maxCarriedForward {
+		return leftover
+	}
+	kept := leftover[:b.maxCarriedForward]
+	dropped := len(leftover) - len(kept)
+	b.droppedOverflow.Add(int64(dropped))
+	log.Error("Write buffer dropped items: carried-forward batch at capacity during flush failure",
+		"dropped", dropped,
+		"kept", len(kept),
+		"capacity", b.maxCarriedForward,
+	)
+	return kept
 }
 
 // shutdownDrainGrace bounds the ctx.Done() drain loop: Stop() normally
@@ -265,6 +301,15 @@ func (b *WriteBuffer) deadLetter(item *WriteItem) {
 // keeps growing means a producer is feeding invalid table names).
 func (b *WriteBuffer) DeadLetteredItems() int64 {
 	return b.deadLettered.Load()
+}
+
+// DroppedOverflowItems reports how many writable items were discarded because
+// the carried-forward batch was already at capacity during a flush outage.
+// Distinct from DeadLetteredItems: these were valid rows lost to memory
+// pressure, not poison pills. A growing counter means the database has been
+// failing longer than the buffer can absorb.
+func (b *WriteBuffer) DroppedOverflowItems() int64 {
+	return b.droppedOverflow.Load()
 }
 
 // flushBatchWithRetry attempts to flush a batch with exponential backoff retries.

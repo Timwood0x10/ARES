@@ -16,7 +16,7 @@ func contains(s, substr string) bool {
 }
 
 // TestSubmit_RegisteredAgent verifies the closed loop
-// (NewRuntime → RegisterAgent → Submit → 结果): a task
+// (NewRuntime → RegisterAgent → Submit → result): a task
 // submitted with a registered capability is executed by the agent registered
 // for it, and the result flows back unchanged.
 func TestSubmit_RegisteredAgent(t *testing.T) {

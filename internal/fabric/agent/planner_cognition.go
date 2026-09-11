@@ -19,7 +19,7 @@ import (
 )
 
 // DefaultMaxPlanDepth is the default growth-depth upper bound for an L2
-// session graph (生长深度上界护栏). It caps how many plan-tool rounds a
+// session graph (the growth-depth upper-bound guard). It caps how many plan-tool rounds a
 // session can run before the planner is forced to answer — preventing
 // unbounded graph growth from a runaway LLM that keeps requesting tools.
 const DefaultMaxPlanDepth = 10
@@ -89,8 +89,8 @@ type FabricReader interface {
 //  5. If the LLM returns no tool calls: grow an answer node carrying the
 //     final response. Done:true — the session terminates.
 //
-// The planner NEVER executes tools ("plannerCognition 自己不执行工具，
-// 只生长图"). Execution is the scheduler's job — tool nodes are dispatched
+// The planner NEVER executes tools ("plannerCognition never executes tools,
+// it only grows the graph"). Execution is the scheduler's job — tool nodes are dispatched
 // to toolCognition through the same fabric → scheduler → routerCognition
 // path as every other node.
 type plannerCognition struct {
@@ -248,7 +248,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	}
 
 	// Determine the current plan-tool growth depth and check the guard
-	// (生长深度上界护栏). PlanDepth counts plan nodes grown by
+	// (the growth-depth upper-bound guard). PlanDepth counts plan nodes grown by
 	// growToolNodes — the initial plan quantum has depth 0.
 	depth := g.PlanDepth()
 	if depth >= c.maxDepth {
@@ -591,7 +591,7 @@ func (c *plannerCognition) readNodeOutput(nodeID string) (string, error) {
 //
 // Before growing each tool node, the planner checks the L1 ToolClass
 // graph's enabled/budget metadata. enabled=false skips the node
-// (constraint point: "节点长不长出来"). budget=N caps how many instances
+// (constraint point: "does the node get grown"). budget=N caps how many instances
 // of this ToolClass can exist in the L2 graph per session. A nil L1 graph
 // means no constraints (permissive default).
 //
@@ -771,7 +771,7 @@ func (c *plannerCognition) l1ToolPrior(toolName string) string {
 
 // l1Priors collects the non-empty prior hints for every known tool schema,
 // sorted by tool name for determinism. Used to inject evolution guidance
-// into the planner prompt (prior只进提示词).
+// into the planner prompt (the prior goes into the prompt only).
 func (c *plannerCognition) l1Priors() []string {
 	if c.l1 == nil || c.binder == nil {
 		return nil

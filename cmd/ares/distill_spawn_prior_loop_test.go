@@ -9,8 +9,8 @@ import (
 )
 
 // TestFullLoopDistillToSpawnPrior verifies the acceptance
-// (Memory Distill 挂到 agent 生命周期 — 蒸馏异步产出 →
-// 经验仓库查询 → spawn 注入) end to end at the wiring layer: once distillation
+// (Memory Distill hooked into the agent lifecycle — async distillation output →
+// experience-repo query → spawn injection) end to end at the wiring layer: once distillation
 // has asynchronously produced an experience for an agent (here: a repo query
 // result, the same source the production loadExperiencePrior reads), a fresh
 // spawn of the SAME capability agent loads that experience as its initial
@@ -32,8 +32,8 @@ func TestFullLoopDistillToSpawnPrior(t *testing.T) {
 		},
 	}}
 
-	// A fresh spawn of the same capability agent loads the prior (新 spawn
-	// 的同 capability agent 能读到该经验先验).
+	// A fresh spawn of the same capability agent loads the prior (a newly spawned
+	// agent of the same capability can read that experience prior).
 	fab := agentfabric.NewFabric()
 	if _, err := fab.Spawn(ctx, agentfabric.SpawnSpec{
 		Identity:        "ffi-expert-2",

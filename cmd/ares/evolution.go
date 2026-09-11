@@ -557,6 +557,12 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 	sessPayload["input"] = prompt
 	planTaskID, err := submitPeerTask(ctx, k, planCapability, sessPayload)
 	if err != nil {
+		// Admission runs on context.WithoutCancel and registers the session
+		// BEFORE the fabric Create that can still fail (ID collision, compile
+		// races); release it here so the idle-TTL reaper is not the only thing
+		// that reclaims it. Releasing a session that was never admitted is a
+		// swallowed ErrSessionNotFound no-op.
+		releaseSessionQuietly(k, sessionID)
 		return "", err
 	}
 

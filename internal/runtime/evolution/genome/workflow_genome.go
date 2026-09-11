@@ -284,7 +284,7 @@ func (g *WorkflowGenome) mutateReplaceNode() {
 }
 
 // mutateSetMetadata mutates a random node's Metadata in place (the metadata
-// 作动面).
+// action surface).
 // It twiddles a budget/prior/enabled-style attribute to produce a metadata-only
 // diff that WorkflowDiffer now surfaces as a PatchSetNodeMetadata. Without this
 // operator, evolution could never explore the metadata dimension — the genome

@@ -476,7 +476,7 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 // capability catalog, not an execution plan.
 //
 // The L1 graph is stored for the plannerCognition to read at growth time
-// (the "要不要长出这个节点" constraint point). Evolution structure patches
+// (the "should this node be grown at all" constraint point). Evolution structure patches
 // (SetNodeMetadata) mutate L1 metadata; the planner reads the mutated values
 // before growing each tool node. A nil dag clears the L1 graph (constraints
 // default to permissive).
@@ -490,7 +490,7 @@ func (c *NewEvolutionComponents) SetToolClassDAG(dag *engine.MutableDAG) {
 
 // ToolClassDAG returns the L1 capability graph, or nil when no L1 graph was
 // injected. The plannerCognition reads this to check enabled/budget/prior
-// before growing tool nodes (the "要不要长出这个节点" constraint point).
+// before growing tool nodes (the "should this node be grown at all" constraint point).
 func (c *NewEvolutionComponents) ToolClassDAG() *engine.MutableDAG {
 	return c.toolClassDAG
 }

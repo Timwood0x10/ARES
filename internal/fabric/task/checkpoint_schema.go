@@ -71,7 +71,7 @@ type CheckpointEnvelope struct {
 	// strategy per quantum would split one task's samples across strategies).
 	StrategyID string `json:"strategy_id,omitempty"`
 	// SessionID scopes this task to a conversational session (SessionID
-	// 贯通). It is stamped once at Create time and rides the envelope through
+	// carried end to end). It is stamped once at Create time and rides the envelope through
 	// yield→resume cycles so the executor (plannerCognition) can read it to
 	// look up the per-session L2 graph registry. Empty means "session-less"
 	// (pre-v3 envelope or a non-session task): consumers treat the task as
@@ -118,7 +118,7 @@ type DecodedCheckpoint struct {
 }
 
 // DecodeCheckpoint decodes a Task.Checkpoint value through the single shared
-// path (统一解码). It handles three forms:
+// path (single shared decode). It handles three forms:
 //
 //   - *CheckpointEnvelope (v1+): the versioned schema. Fields are extracted
 //     directly. A future version (> CurrentCheckpointSchemaVersion) returns
@@ -276,7 +276,7 @@ func tokenUsageFromCheckpoint(cp any) (input, output int) {
 // *CheckpointEnvelope, it marshals directly. When it is any other type, it
 // wraps it in an envelope first (StepCheckpoint = the raw value) so the
 // serialized form always carries the schema version. This is the single
-// serialization path for persistence (固化协议).
+// serialization path for persistence (the frozen protocol).
 //
 // Args:
 //   - cp: the checkpoint value (may be nil).

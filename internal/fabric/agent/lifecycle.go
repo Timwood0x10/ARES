@@ -271,8 +271,8 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 
 // Kill forcefully terminates an agent (non-graceful; e.g. crash). Unlike
 // Retire, Kill works on any state and is the crash path. The agent entry is
-// removed from the registry, but its children survive (§13: Parent 死 ≠
-// Child 死). Children's Parent field is NOT cleared — it stays as
+// removed from the registry, but its children survive (§13: Parent death ≠
+// Child death). Children's Parent field is NOT cleared — it stays as
 // provenance. Task reclaim is the recovery subsystem's job. The agent's resource claim is
 // released back to the quota.
 //

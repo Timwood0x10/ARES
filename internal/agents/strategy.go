@@ -146,8 +146,8 @@ func ToolBudgetFromParams(params map[string]any) int {
 // ToolAllowedByBudget reports whether a tool may still be advertised to the LLM
 // given how many times it has already run this session and the node budget.
 //
-// This is the read side of the budget gate ("budget 用尽后 schema
-// 过滤"): the gate is applied where the tool SCHEMAS are assembled, not at
+// This is the read side of the budget gate ("schema filtering once the budget
+// is exhausted"): the gate is applied where the tool SCHEMAS are assembled, not at
 // CallTool time, for the same reason the whitelist is — letting the model see an
 // exhausted tool and then rejecting the call wastes a round and pollutes the
 // not_found metric.

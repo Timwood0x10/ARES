@@ -80,7 +80,7 @@ type StepOutcome struct {
 }
 
 // cognitionFunc adapts an Executor to the agentfabric.Cognition contract
-// (spawn 的 agent 带执行体). It converts the syscall
+// (a spawned agent carries its execution body). It converts the syscall
 // StepOutcome shape to the fabric one — the underlying quantum is the same
 // executor, so semantics are preserved by construction.
 func cognitionFunc(executor Executor) agentfabric.Cognition {

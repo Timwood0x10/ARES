@@ -366,5 +366,5 @@ func (m *TaskMemory) Distill(ctx context.Context, taskID string) (*models.Task, 
 // NOTE (buried 2026-09): the context.Cache type (in-memory TTL cache with an
 // auto-started cleanup goroutine) was removed as dead code — zero production
 // callers, only its own tests referenced it, yet every NewCache call leaked a
-// goroutine. TODO(tech-debt) 留痕: if a context cache is ever needed, add it
+// goroutine. TODO(tech-debt) trace left behind: if a context cache is ever needed, add it
 // WITH a production consumer and an explicit Stop.

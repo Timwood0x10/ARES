@@ -10,7 +10,7 @@
 //
 // Purpose:
 //
-//	This is aresos-plan.md 附件 E (「唯一大闭环」) as a runnable, deterministic
+//	This is aresos-plan.md appendix E ("the single grand loop") as a runnable, deterministic
 //	program. Unlike the LLM-backed examples, it runs with ZERO external
 //	dependencies (no LLM, no config): the agent fabric and IPC bus are pure
 //	in-memory, so `go run` prints the whole Agent-OS story on any machine.
@@ -21,13 +21,13 @@
 //	cognition" here is demo-level logic standing in for a real LLM loop.
 //
 // Learning objectives:
-//   - Agent OS 核心：Agent 无等级（peer network），Spawn 建立 provenance 而非
-//     hierarchy（aresos-plan.md 核心模型修正 §1/§3）。
-//   - Kernel 管 lifecycle/恢复，Agent 管「要不要拆、找谁协作」（§2/§4/§7）。
-//   - Agent death ≠ Task death：A 死后 B/C/D 继续，替代者从 checkpoint 接续（P5）。
-//   - 协作关系运行时动态形成：B 反驳 A、C 验证 B，A ≡ B ≡ C ≡ D（P4）。
-//   - P3 resource governance：预算（token/tool/deadline）超限是协作式 yield，
-//     不是硬抢占（「Agent Runtime resource governance, not cgroups」）。
+//   - Agent OS core: agents are rankless peers; Spawn builds provenance, not
+//     hierarchy (aresos-plan.md core model revision, section 1/3).
+//   - Kernel owns lifecycle/recovery; Agent owns "split? and with whom?"
+//     (section 2/4/7).
+//   - Agent death ≠ Task death: A dies, B/C/D continue; the replacement
+//     resumes from the checkpoint (P5). Collaboration forms at runtime: B rebuts
+//     A, C verifies B, A ≡ B ≡ C ≡ D (P4). P3: budget overrun is cooperative yield.
 //
 // Core APIs used (with package paths):
 //   - agentfabric.NewFabric              — github.com/Timwood0x10/ares/internal/fabric/agent

@@ -37,7 +37,7 @@ type Task struct {
 	// run across ALL lease holders (accumulated across yield→resume cycles,
 	// preemptions and chaos-recovery replacements). It is the "semantic step"
 	// number the observability UI shows as Quantum #N (dashboard.md §4:
-	// "Agent 正在执行第 18 个 semantic quantum"). Guarded by f.mu like every
+	// "Agent is executing semantic quantum #18"). Guarded by f.mu like every
 	// other Task field.
 	Quantum int
 	// CreatedAt is when the task entered the fabric; UpdatedAt is the last

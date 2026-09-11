@@ -565,7 +565,7 @@ func (a *checkpointStubAgent) getCheckpoint() any {
 	return a.checkpoint
 }
 
-// TestRecoveryClosureE2E verifies the production-grade recovery闭环:
+// TestRecoveryClosureE2E verifies the production-grade recovery closed loop:
 //
 //	Task → executor A executes quantum#1 (writes checkpoint) → A crashes
 //	(lease expiry) → recovery loop → replacement executor A' registered →

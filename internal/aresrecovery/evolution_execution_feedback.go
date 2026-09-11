@@ -271,7 +271,7 @@ func splitAttributionKey(key string) (string, string) {
 }
 
 // ExecutionResultSource is the interface the Evolution system uses to read
-// execution attribution (采集真实执行结果). The scheduler's
+// execution attribution (collecting real execution results). The scheduler's
 // ExecutionAttribution implements this; the Evolution system reads the
 // snapshot and updates its strategy based on the results.
 type ExecutionResultSource interface {

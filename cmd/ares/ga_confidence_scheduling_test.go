@@ -32,8 +32,8 @@ func (e *countingExecutor) ExecuteStep(_ context.Context, task *models.Task) (*s
 }
 
 // TestGAConfidenceChangesNextSchedule is the acceptance
-// (证明 GA 进化结果确实改变了下一轮的调度选择 — 目前
-// 只有 spawn 可执行体的测试，没有调度行为变化的测试). Two executors with the
+// (proves the GA evolution outcome really changes the next round's scheduling
+// choice — previously only spawn-executable tests existed, none covering this). Two executors with the
 // SAME capability differ only in their scheduler-visible confidence (the
 // feedback write path: EvolutionFeedbackAdapter → SetAgentConfidence). A task that
 // matches the capability must be scheduled to the HIGH-confidence executor,
@@ -75,8 +75,8 @@ func TestGAConfidenceChangesNextSchedule(t *testing.T) {
 		t.Fatalf("exactly one executor must run per task, got A=%d B=%d", a.executed.Load(), b.executed.Load())
 	}
 
-	// GA 反馈回写：agent-A 的成功率评估为 0（常失败），agent-B 为 1。
-	// SetAgentConfidence 是 EvolutionFeedbackAdapter 调用的同一接口。
+	// GA feedback write-back: agent-A's success rate is scored 0 (often fails), agent-B's is 1.
+	// SetAgentConfidence is the same interface that EvolutionFeedbackAdapter calls.
 	tracker.SetAgentConfidence("agent-A", 0.0)
 	tracker.SetAgentConfidence("agent-B", 1.0)
 

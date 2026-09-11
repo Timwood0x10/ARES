@@ -139,7 +139,7 @@ func (f *Fabric) Agents() []string {
 // IsIdle reports whether agentID is currently IDLE (schedulable). It is the
 // thread-safe scheduling view of Agent.State: the scheduler reads it from
 // drain goroutines without holding the agent's internal lock. Unknown or
-// non-IDLE agents report false (候选 = StateIdle 且 capability 匹配).
+// non-IDLE agents report false (a candidate must be StateIdle and capability-matched).
 func (f *Fabric) IsIdle(agentID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

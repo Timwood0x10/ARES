@@ -40,8 +40,8 @@ func TestFabricCASCompetition(t *testing.T) {
 }
 
 // TestFabricLeaseExpiryRequeues verifies acceptance #2: an expired lease
-// returns the task to READY, and another agent can acquire it (Agent 死亡 ≠
-// Task 死亡).
+// returns the task to READY, and another agent can acquire it (Agent death ≠
+// Task death).
 func TestFabricLeaseExpiryRequeues(t *testing.T) {
 	f := NewFabric()
 	now := time.Now()

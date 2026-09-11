@@ -50,7 +50,7 @@ func (s *stubExpRepo) ListByAgent(ctx context.Context, agentID, tenantID string,
 }
 
 // TestLoadExperiencePrior_ReturnsDistilledExperience verifies the wiring
-// (蒸馏异步产出 → 经验仓库查询 → spawn 注入): the
+// (async distillation output → experience-repo query → spawn injection): the
 // agent's most recent distilled experience is returned as a structured prior
 // (type/problem/solution/constraints) and the query scopes the default tenant.
 func TestLoadExperiencePrior_ReturnsDistilledExperience(t *testing.T) {

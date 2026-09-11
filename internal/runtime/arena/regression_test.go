@@ -771,9 +771,10 @@ func mathAbs(x float64) float64 {
 }
 
 // TestRegressionTester_FingerprintCache_SameEnvReusesResult verifies the
-// environment-fingerprint cache (原语4: 环境未变则不重跑): running the same
-// config twice with a fingerprint function must return the memoized result on
-// the second call without invoking the scorer again.
+// environment-fingerprint cache (primitive 4: same environment means no
+// re-run): running the same config twice with a fingerprint function must
+// return the memoized result on the second call without invoking the scorer
+// again.
 func TestRegressionTester_FingerprintCache_SameEnvReusesResult(t *testing.T) {
 	scorer := newMockScorer(map[int]float64{
 		0: 60.0, 1: 70.0, 2: 65.0, // old strategy: 3 runs

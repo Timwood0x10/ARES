@@ -28,8 +28,8 @@ type Recovery struct {
 	// keeps the plain fabric spawn.
 	spawner *EvolutionAwareSpawner
 	// cogFactory is the A1 execution-body factory injected into every
-	// replacement spawn (replacement 走 A1 factory，
-	// 可执行 — 消除 phantom). When set, spawnAgent fills
+	// replacement spawn (the replacement goes through the A1 factory,
+	// is executable — no phantom). When set, spawnAgent fills
 	// spec.CognitionFactory before spawning so the replacement agent is a
 	// REAL cognitive process that the scheduler can execute, not an empty
 	// shell. Nil keeps the caller's spec untouched (the production peer path
@@ -316,7 +316,7 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	}
 	// Arbitration: when a death snapshot exists for THIS
 	// identity, revive IN PLACE under the same id — provenance and the audit
-	// trail stay continuous ("有状态认知复活"). Without a snapshot, fall back
+	// trail stay continuous ("stateful cognition revival"). Without a snapshot, fall back
 	// to a freshly generated identity (plain replacement).
 	spec := agentfabric.SpawnSpec{Capabilities: capabilities}
 	if _, ok := r.agents.LastSnapshot(deadAgentID); ok {

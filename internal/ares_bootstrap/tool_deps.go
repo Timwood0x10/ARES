@@ -26,7 +26,7 @@ import (
 // ghost: the repository had zero production constructors, so the table and
 // its tools saw zero reads/writes. user_profile runs on the memory manager
 // (the path that actually executed); distilled_memory_search was deleted
-// with the repository (TODO(tech-debt) 留痕 in RUNTIME.md #9).
+// with the repository (TODO(tech-debt) trace left in RUNTIME.md #9).
 func ToolDepsFromComponents(comp *Components) builtintools.GeneralToolsDeps {
 	deps := builtintools.GeneralToolsDeps{
 		MemoryMgr: comp.Memory,

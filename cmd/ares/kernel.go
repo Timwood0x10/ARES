@@ -805,7 +805,7 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 // sweep complements the event channel because TTL-based lease expiry is only
 // observable by sweeping.
 //
-// Recovery闭环: when a factory + registerExecutor + hasCapableExecutor are
+// Recovery closed loop: when a factory + registerExecutor + hasCapableExecutor are
 // wired (peer mode), the sweep goes beyond requeue-only. For each task that
 // actually expired this sweep, if no registered executor can resume it, a
 // replacement executor is created and bound to exactly that task
@@ -953,7 +953,7 @@ func runKernelRecoveryLoop(
 				return
 			default:
 			}
-			// Recovery闭环: requeue the tasks whose lease expired THIS
+			// Recovery closed loop: requeue the tasks whose lease expired THIS
 			// sweep (not all READY tasks — a brand-new task is never a
 			// recovery candidate), then give each one an execution body.
 			requeued := recovery.RequeueExpiredLeases()
@@ -1047,8 +1047,8 @@ func parseKernelPollInterval(raw string) time.Duration {
 }
 
 // This file is the cmd/ares compatibility layer over the shared
-// internal/kernel package (合并 SDK 和
-// kernel 两条路径 — the scheduler logic lives in one importable package, both
+// internal/kernel package (merging the SDK and
+// kernel paths — the scheduler logic lives in one importable package, both
 // cmd/ares and sdk drive the same engine). cmd/ares keeps its historical
 // names so no caller (kernel wiring, peer mode, tests) changes.
 

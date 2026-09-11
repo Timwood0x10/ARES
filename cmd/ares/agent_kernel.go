@@ -264,7 +264,7 @@ func createPeerAgents(
 
 	// Strategy-shadow runs replay-only. The real-execution A/B runner
 	// (chat tool-loop quanta) died with ReAct; strategy judgment is
-	// runtime fitness回灌 + canary metrics. The sampler's replay fallback needs
+	// runtime fitness feedback plus canary metrics. The sampler's replay fallback needs
 	// no feeder and no scheduler hook, so there is nothing to wire here.
 
 	// Evolution feedback loop: record execution outcomes per agent +

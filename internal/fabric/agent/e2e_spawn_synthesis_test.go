@@ -298,8 +298,8 @@ func TestContextThreeLayerSeparation(t *testing.T) {
 }
 
 // TestParentDeathChildrenContinueTasks verifies the acceptance:
-// "A 死亡，B/C/D 不死亡" and "Task 不因 A 死亡而消失" and
-// "B/C/D 可以继续执行".
+// "A dies but B/C/D do not" and "the Task does not disappear when A dies" and
+// "B/C/D can keep executing".
 func TestParentDeathChildrenContinueTasks(t *testing.T) {
 	ctx := context.Background()
 	fabric := NewFabric()

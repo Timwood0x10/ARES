@@ -1,7 +1,7 @@
 // Package discovery provides runtime discovery of native host commands and
 // adapts them into core.Tool instances for the tool registry.
 //
-// This is the "本机工具发现" primitive (ares-vs-prime-agent 5.8): probe
+// This is the "local tool discovery" primitive (ares-vs-prime-agent 5.8): probe
 // `command -v` + `--help` for each allowlisted command and expose the ones
 // that exist as executable tools, so agents can call host utilities without
 // every tool description being baked into the context up front.

@@ -6,7 +6,7 @@ import (
 
 // RegisterExecutor dynamically registers an executor under agentID so the
 // scheduler can execute tasks assigned to it (production-grade recovery
-// 闭环). The recovery loop calls this after spawning a replacement agent so
+// closed loop). The recovery loop calls this after spawning a replacement agent so
 // the new agent is a real executor, not a phantom. Safe for concurrent use
 // with drain goroutines: execMu guards the map.
 //

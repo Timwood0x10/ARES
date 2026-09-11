@@ -17,7 +17,7 @@ import (
 // recompilation via the GraphEvent subscription, so the next
 // scheduler drain sees the updated task set — without restart.
 //
-// This is the "补丁落 live DAG" acceptance: the patch executor
+// This is the "patch lands on the live DAG" acceptance: the patch executor
 // mutates the SAME DAG the compile coordinator subscribes to, so
 // the projection path is closed (no "two graphs").
 func TestStructuralPatchTriggersRecompile(t *testing.T) {

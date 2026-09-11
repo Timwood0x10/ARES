@@ -33,7 +33,7 @@ func newRecoveryHarness(t *testing.T) (*taskfabric.Fabric, *agentfabric.Fabric, 
 
 // TestRequeueExpiredLeases verifies the first recovery path: a dead agent's
 // lease expires, the task is requeued to READY, and another agent can
-// acquire it (Agent 死亡 ≠ Task 死亡).
+// acquire it (Agent death ≠ Task death).
 func TestRequeueExpiredLeases(t *testing.T) {
 	tasks, agents, rec, _, now := newRecoveryHarness(t)
 	ctx := context.Background()

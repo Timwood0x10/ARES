@@ -2,6 +2,7 @@ package ares_mcp
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -59,5 +60,63 @@ func TestConnectTwiceRebindsToolsToNewClient(t *testing.T) {
 	content, _ := data["content"].(string)
 	if content != "from-second" {
 		t.Fatalf("tool result = %q, want %q (registry kept the stale client's tool)", content, "from-second")
+	}
+}
+
+// TestConnectTwice_RestoresStaleToolsWhenRegisterFails pins the reconnect
+// rollback contract: the stale client's tools are unregistered BEFORE the new
+// client's set is registered (see TestConnectTwiceRebindsToolsToNewClient), so
+// a failure inside registerTools must put them back. The stale client is still
+// the live m.clients entry at that point — without a restore the server stayed
+// Connected with zero tools and no path could re-register them.
+func TestConnectTwice_RestoresStaleToolsWhenRegisterFails(t *testing.T) {
+	first := newTestServer(lifecycleTestTools, &ToolCallResult{
+		Content: []ContentBlock{{Type: "text", Text: "from-first"}},
+	})
+	// A JSON array is valid JSON (so it survives the mock wire) but cannot be
+	// unmarshalled into the jsonSchema struct, which makes NewMCPTool — and
+	// therefore registerTools — fail.
+	badSchema := []MCPToolDef{{
+		Name:        "mock_tool",
+		Description: "a tool with a schema that cannot convert",
+		InputSchema: json.RawMessage(`[1,2,3]`),
+	}}
+	second := newTestServer(badSchema, nil)
+
+	m := newTestManager(t, &MCPManagerConfig{}, core.NewRegistry())
+	sc := &MCPServerConfig{Name: "mock", Enabled: true, Timeout: 2 * time.Second}
+	ctx := context.Background()
+
+	if err := m.connectWithTransport(ctx, "mock", sc, first); err != nil {
+		t.Fatalf("first connect: %v", err)
+	}
+	if _, ok := m.registry.Get("mcp.mock.mock_tool"); !ok {
+		t.Fatalf("tool must be registered after first connect; have %v", m.registry.List())
+	}
+
+	if err := m.connectWithTransport(ctx, "mock", sc, second); err == nil {
+		t.Fatal("second connect must fail: its tool schema cannot be converted")
+	}
+
+	// The tool must still be registered — the unregister that preceded the
+	// failed registerTools has to be rolled back.
+	tool, ok := m.registry.Get("mcp.mock.mock_tool")
+	if !ok {
+		t.Fatalf("tool must survive a failed reconnect; have %v", m.registry.List())
+	}
+
+	// And it must still execute against the FIRST, still-live client. Under
+	// the bug the registry entry was gone; had it survived without a restore
+	// it would be bound to nothing.
+	callCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := tool.Execute(callCtx, map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("tool execute after failed reconnect: %v", err)
+	}
+	data, _ := res.Data.(map[string]interface{})
+	content, _ := data["content"].(string)
+	if content != "from-first" {
+		t.Fatalf("tool result = %q, want %q (stale client was not restored)", content, "from-first")
 	}
 }

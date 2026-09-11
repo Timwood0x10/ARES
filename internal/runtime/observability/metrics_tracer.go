@@ -5,7 +5,7 @@ import "context"
 // MetricsTracer is a Tracer adapter that feeds real LLM/tool calls into the
 // Prometheus registry and the cost dashboard. Before it existed, the
 // default NoopTracer left every ARES_* counter at
-// zero — the /metrics endpoint was wired but永远 empty.
+// zero — the /metrics endpoint was wired but permanently empty.
 //
 // Structure: embeds the Noop tracer for the firehose methods the metrics
 // registry does not model (agent steps, errors, trace-id plumbing), and

@@ -57,7 +57,7 @@ type CognitionFactory func(capabilities []string) Cognition
 // CognitionFunc adapts a plain function to the Cognition interface so any
 // executor with the right signature (e.g. an agentsyscall.Executor, or a
 // bound sub.Agent) can be injected as an agent's execution body without a
-// new concrete type (spawn 的 agent 带执行体).
+// new concrete type (a spawned agent carries its execution body).
 // The adapter lives in the owner package (agentfabric).
 type CognitionFunc func(ctx context.Context, task *models.Task) (*StepOutcome, error)
 
@@ -88,7 +88,7 @@ type ToolBinder interface {
 }
 
 // ExecuteStep runs one quantum of cognitive work through the agent's injected
-// execution body (spawn → ExecuteStep 直接可执行). It delegates to the
+// execution body (spawn → ExecuteStep is directly executable). It delegates to the
 // Cognition produced by SpawnSpec.CognitionFactory, first stamping the task
 // payload with the agent's identity (executingAgentKey) so a Cognition shared
 // across agents can join the task back to its executor. An agent spawned

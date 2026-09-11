@@ -1569,7 +1569,7 @@ func (s *Scheduler) DecisionsSnapshot() []ScheduleDecision {
 // Snapshot returns the read-only view. It acquires only reader locks
 // (execMu.RLock, tracker/fabric internal locks), never the drain write path,
 // and is safe to call concurrently with Run (monitoring.md:
-// "纯只读、持读锁拷贝、返回不可变副本").
+// "pure read-only, copy under a read lock, return an immutable copy").
 func (s *Scheduler) Snapshot() SchedulerSnapshot {
 	s.execMu.RLock()
 	execN := len(s.executors)

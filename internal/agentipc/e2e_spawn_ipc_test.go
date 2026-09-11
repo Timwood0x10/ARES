@@ -223,7 +223,7 @@ func TestChildCanCommunicateWithNonParent(t *testing.T) {
 }
 
 // TestNoLeaderPermissionBypass verifies the peer model invariant:
-// "不存在 Leader 权限绕过" — there is no special "leader" agent that
+// "no Leader privilege bypass exists" — there is no special "leader" agent that
 // can bypass the IPC layer. All agents use the same Send/Request/Reply
 // primitives. A leader, if it exists, is just another peer on the bus.
 func TestNoLeaderPermissionBypass(t *testing.T) {

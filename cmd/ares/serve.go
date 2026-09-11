@@ -1383,8 +1383,38 @@ func setupPeerRegistry(
 		// existing components unless none exists).
 		if kernel != nil && kernel.syscalls != nil {
 			ipc := bridge.ipc
-			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
-				return ipc.Send(ctx, from, to, topic, payload)
+			// dispatchCtx is the serve-lifetime context: the detached ask_agent
+			// work is parented to it (and bounded by collabTimeout) so shutdown
+			// aborts in-flight collaboration instead of leaking it to exit.
+			dispatchCtx := ctx
+			kernel.syscalls.SetAskAgent(func(_ context.Context, from, to, topic string, payload any) error {
+				// Fire-and-forget per the syscall contract ("acceptance is not
+				// an answer"): ipc.Send runs the collaboration handler
+				// SYNCHRONOUSLY, and that handler drives a full L2 session
+				// (executeAskViaSession, up to collabTimeout) whose reply the
+				// syscall discards. Blocking the caller's quantum on a result
+				// nobody reads would stall scheduling, so run the send on a
+				// detached context and return acceptance immediately. The
+				// session releases itself on completion/timeout; any left by a
+				// cancelled serve ctx are swept by the existing reaper/idle-TTL
+				// loops.
+				//
+				// runBackground (not a bare goroutine, per code rules 4.1):
+				// the managed path adds a panic boundary around Send itself —
+				// safeInvokeHandler only recovers HANDLER panics — and joins
+				// the work at shutdown.
+				runBackground(dispatchCtx, comp, "ask-agent-dispatch", func(bgCtx context.Context) error {
+					asyncCtx, cancel := context.WithTimeout(bgCtx, collabTimeout)
+					defer cancel()
+					if err := ipc.Send(asyncCtx, from, to, topic, payload); err != nil {
+						log.Warn("serve: ask_agent detached delivery failed",
+							"from", from, "to", to, "topic", topic, "error", err)
+					}
+					// Never propagate: one failed collaboration must not
+					// cancel the shared background group.
+					return nil
+				})
+				return nil
 			})
 			log.Info("serve: ask_agent syscall wired to evolution-aware IPC (collaboration path)", "count", len(reg.IDs()))
 		}
@@ -1399,6 +1429,10 @@ func setupPeerRegistry(
 		// disarmed until the evolution branch is taken).
 		if kernel != nil && kernel.syscalls != nil {
 			plainReg := reg
+			// Left synchronous on purpose: this registry has no registered
+			// sender (no production agent exposes SendMessage), so Send fails
+			// immediately with "not registered" — a fast, useful diagnostic
+			// the LLM should see, not a blocking wait to detach.
 			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
 				body := map[string]any{"topic": topic}
 				if m, ok := payload.(map[string]any); ok {

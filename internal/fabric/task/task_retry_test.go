@@ -67,7 +67,7 @@ func TestFailRetryBudgetContract(t *testing.T) {
 					t.Fatalf("state after fail %d = %s, want %s", i+1, got.State, want)
 				}
 				// A requeued task must come back unowned so the next
-				// Acquire can win it (Agent 死亡 ≠ Task 死亡).
+				// Acquire can win it (Agent death ≠ Task death).
 				if want == StateReady && got.Owner != "" {
 					t.Fatalf("requeued task must be unowned, got %q", got.Owner)
 				}

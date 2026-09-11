@@ -75,8 +75,8 @@ func defaultRules() []intentRule {
 		},
 		{
 			// NOTE: matchAnyKeyword uses strings.Contains, which treats
-			// keywords literally — a regex like "到.*和" never matches. Keep
-			// only literal keywords ("到的和" covers "1到100的和" and friends).
+			// keywords literally — a wildcard or regex form never matches. Keep
+			// only literal substrings; the two entries below also cover longer phrasings.
 			keywords:     []string{"到的和", "的和"},
 			goal:         "mathematical computation",
 			operation:    "summation",

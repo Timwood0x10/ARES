@@ -38,13 +38,13 @@ var keyFacts = map[string][]string{
 		"Path4", "MCP", "确定性引擎兜底",
 	},
 	"dag-conditional": {
-		// 0.3.1 真相口径：条件跳过/动态路由由 Graph System（条件边 +
-		// SetRouter）承担；受控循环由 Kernel 侧 LoopPlugin 轮次节拍承担；
-		// 引擎侧的 ConditionFunc/NodeRouter/LoopConfig 已删除。关键词与
-		// 文案同步收敛，禁止再引用已删除的引擎符号。
+		// 0.3.1 source of truth: conditional skip and dynamic routing are owned by
+		// the Graph System (conditional edges + SetRouter); controlled looping is
+		// owned by the Kernel-side LoopPlugin round cadence. Engine-side
+		// ConditionFunc/NodeRouter/LoopConfig are gone — do not reference them again.
 		//
-		// 子图嵌套（Step.SubWorkflow）同样已删除：该字段从未有执行器消费，
-		// graph 侧也没有任何子图实现，属于与 LoopConfig 同性质的死声明。
+		// Sub-graph nesting (Step.SubWorkflow) is gone too: no executor ever read it
+		// and the graph side has no sub-graph implementation.
 		"条件跳过", "动态路由", "条件边",
 		"受控循环", "LoopPlugin",
 	},

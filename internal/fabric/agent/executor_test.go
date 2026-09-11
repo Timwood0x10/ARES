@@ -27,7 +27,7 @@ func (c *stubCognition) ExecuteStep(_ context.Context, task *models.Task) (*Step
 // TestSpawnedAgentExecutesQuantum is the acceptance contract test: an
 // agent spawned with a CognitionFactory is directly executable — one
 // ExecuteStep call runs one quantum and produces an outcome (the plan's
-// "spawn → 喂 task → 跑一个 quantum → 有结果/checkpoint").
+// "spawn → feed a task → run one quantum → get a result/checkpoint").
 func TestSpawnedAgentExecutesQuantum(t *testing.T) {
 	f := NewFabric()
 	out := &StepOutcome{Done: true, Result: models.NewTaskResult("t1", "code")}
@@ -52,7 +52,7 @@ func TestSpawnedAgentExecutesQuantum(t *testing.T) {
 	if !res.Done || res.Result == nil || res.Result.TaskID != "t1" {
 		t.Fatalf("quantum outcome must be Done with result, got Done=%v Result=%+v", res.Done, res.Result)
 	}
-	// The factory received the declared capabilities (spawn 时的能力传入).
+	// The factory received the declared capabilities (capabilities passed in at spawn time).
 	if a.cognition == nil {
 		t.Fatal("Agent must hold the injected Cognition")
 	}
@@ -125,4 +125,4 @@ func TestSpawnedAgentWithoutCognitionNotExecutable(t *testing.T) {
 
 // SubAgentCognition and its parity test were removed with the migration
 // adapter's retirement (production zero callers — peer execution lives in
-// the L2 router; TODO(tech-debt) 留痕 in sub_cognition.go's removal).
+// the L2 router; TODO(tech-debt) trace left in sub_cognition.go's removal).

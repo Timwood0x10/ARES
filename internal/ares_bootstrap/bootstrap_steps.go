@@ -445,7 +445,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 			log.WarnContext(ctx, "bootstrap: no eval_suite configured — promote gate chain degrades to G1+G2 (set evolution.gates.eval_suite to arm G3; evolution.gates.eval_strict makes absence fatal)")
 		}
 
-		// Arena regression gate (M4 接线; M-G2 起默认 AUTO-ARMED): the
+		// Arena regression gate (M4 wiring; AUTO-ARMED by default from M-G2): the
 		// RELATIVE complement to the G3 absolute-score gate — candidate vs
 		// active strategy A/B over the same preserved-case suite, rejecting
 		// only a statistically significant drop. Defaults to armed whenever

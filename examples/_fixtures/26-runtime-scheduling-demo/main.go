@@ -118,9 +118,9 @@ func main() {
 		"explain each one's responsibility, and describe how the scheduler " +
 		"picks a capable agent for a task."
 
-	// ── 阶段记录 (Phase log) ──
-	// 每一步都打印，完整还原"任务提交 → runtime 调度 → agent 执行（含工具
-	// 调用）→ 完成"的全过程。
+	// ── Phase log ──
+	// Every step is printed, fully replaying "task submission → runtime
+	// scheduling → agent execution (including tool calls) → completion".
 	logPhase("1/3 提交任务 (submit)", task)
 	fmt.Printf("📋 Task: %s\n\n", task)
 
@@ -147,7 +147,7 @@ reference file paths.`),
 	}
 
 	// ── Step 5: Print the trace — dispatch, execution, result ──
-	// runtime 调度（Phase 2）：Runtime 按 capability 匹配注册的 agent。
+	// Runtime scheduling (Phase 2): the Runtime matches a registered agent by capability.
 	logPhase("2/3 runtime 调度 (dispatch → code_reader)", "")
 	logPhase("3/3 agent 执行 (execute)", "")
 	fmt.Printf("✅ Result:\n%s\n\n", result.Output)
@@ -156,7 +156,7 @@ reference file paths.`),
 }
 
 // logPhase prints a phase banner so the demo's stdout is a complete, greppable
-// record of the whole task lifecycle (提交→规划→拆分→执行→汇总).
+// record of the whole task lifecycle (submit → plan → split → execute → summarize).
 func logPhase(title, detail string) {
 	if detail != "" {
 		fmt.Printf("── %s: %s ──\n", title, detail)

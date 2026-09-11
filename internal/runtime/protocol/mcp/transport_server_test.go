@@ -330,3 +330,55 @@ func TestStdioServerTransportAcceptContextCanceled(t *testing.T) {
 
 	_ = transport.Close()
 }
+
+// TestSafeRequestHost pins the Host-header gate on the SSE endpoint event.
+// The header is attacker-controlled and was previously written into the frame
+// verbatim: a value carrying CR/LF forged extra SSE frames, and markup
+// reached any consumer that renders the stream (gosec G705). Anything that is
+// not a plain host[:port] must fall back to the bound listen address rather
+// than being echoed.
+func TestSafeRequestHost(t *testing.T) {
+	const bound = "127.0.0.1:8080"
+
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"empty falls back", "", bound},
+		{"hostname", "example.com", "example.com"},
+		{"host and port", "example.com:9443", "example.com:9443"},
+		{"ipv4", "127.0.0.1", "127.0.0.1"},
+		{"ipv4 and port", "10.0.0.4:8080", "10.0.0.4:8080"},
+		{"ipv6 in brackets", "[::1]:8080", "[::1]:8080"},
+		{"localhost", "localhost:8080", "localhost:8080"},
+
+		// Frame breakers: the reason the gate exists.
+		{"crlf injection", "h\r\nX-Evil: 1", bound},
+		{"bare cr", "h\rX", bound},
+		{"bare lf", "h\nX", bound},
+		{"space", "h o", bound},
+
+		// URL / markup delimiters: never legal in a host.
+		{"slash", "h/mcp", bound},
+		{"question", "h?x=1", bound},
+		{"hash", "h#frag", bound},
+		{"at sign", "u@h", bound},
+		{"quote", `h"x`, bound},
+		{"angle brackets", "<script>", bound},
+		{"backtick", "h`x", bound},
+		{"pipe", "h|x", bound},
+
+		// Non-host characters.
+		{"unicode", "héllo", bound},
+		{"comma", "a,b", bound},
+		{"colon only", ":", bound},
+		{"brackets empty", "[]", bound},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, safeRequestHost(tc.host, bound))
+		})
+	}
+}

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ── ResultVerifier（底层真值） ───────────────
+// ── ResultVerifier (ground truth) ───────────────
 
 func TestResultVerifier_AllPassed(t *testing.T) {
 	verifier := NewResultVerifier()
@@ -80,7 +80,7 @@ func TestResultVerifier_SkippedIsUncertain(t *testing.T) {
 	assert.Equal(t, VerdictUncertain, ev.Verdict)
 }
 
-// ── ProcessVerifier（中层规则） ───────────────
+// ── ProcessVerifier (mid-level rules) ───────────────
 
 func TestProcessVerifier_AllAllowed(t *testing.T) {
 	verifier := NewProcessVerifier()

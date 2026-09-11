@@ -109,11 +109,11 @@ type llmService interface {
 //	ares := sdk.NewRuntime(opts...)       // ares = new ARES runtime
 //	defer ares.Close()
 //
-//	// 极简闭环 — 注册平等 capability agent，按 capability 提交任务。
+//	// Minimal closed loop — register peer capability agents, submit tasks by capability.
 //	ares.RegisterAgent("coder", sdk.WithInstruction("You fix code."))
 //	result, _ := ares.Submit(ctx, sdk.Task{Capability: "coder", Input: "hello"})
 //
-//	// 或直接用 agent 运行（Agent.Run 保留为细粒度入口）。
+//	// Or run an agent directly (Agent.Run stays as the fine-grained entry point).
 //	agent := ares.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
 //	result, _ = agent.Run(ctx, "hello")
 type Runtime struct {
@@ -164,7 +164,7 @@ type Runtime struct {
 	// AKG distiller or knowledge store is unavailable.
 	akgBridge *adapter.DistillBridge
 	// agentByCapability maps a capability to the agent registered to handle it
-	// (极简 SDK 调度面 — RegisterAgent/Submit). Guarded by agentMu.
+	// (minimal SDK scheduling surface — RegisterAgent/Submit). Guarded by agentMu.
 	agentByCapability map[string]*Agent
 	agentMu           sync.Mutex
 	// ---- shared scheduler (SDK/kernel merge) ----

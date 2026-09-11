@@ -39,7 +39,7 @@ type PlanStep struct {
 	// never supplied by the LLM (same contract as CreateTask). json:"-"
 	// keeps it out of every LLM-facing schema.
 	Origin string `json:"-"`
-	// SessionID scopes this step's task to a session (SessionID 贯通).
+	// SessionID scopes this step's task to a session (SessionID carried end to end).
 	// Stamped onto the checkpoint envelope so the executor can look up the
 	// per-session L2 graph registry. Empty = session-less (legacy behavior).
 	SessionID string `json:"-"`

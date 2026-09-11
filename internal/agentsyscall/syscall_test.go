@@ -89,7 +89,7 @@ func TestSpawnAgentCreatesAgentInFabric(t *testing.T) {
 }
 
 // TestSpawnAgentInjectsExecutableCognition verifies the upgrade
-// (spawn 的 agent 带执行体): when an executor factory
+// (a spawned agent carries its execution body): when an executor factory
 // is wired, the agent spawned by the syscall carries a real Cognition from
 // birth — Agent.Executable() reports true and a quantum can be executed
 // through the fabric — not just a provenance record. The same executor

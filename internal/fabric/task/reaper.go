@@ -7,7 +7,7 @@ import (
 
 // Reaper periodically harvests terminal fabric tasks so the in-memory task
 // map does not grow monotonically across a server lifetime
-// ("fabric 不自动回收终态任务"). The reaper is a housekeeping loop, NOT a
+// ("fabric does not auto-reap terminal tasks"). The reaper is a housekeeping loop, NOT a
 // correctness mechanism — terminal tasks are garbage once their results have
 // been read by the caller.
 //

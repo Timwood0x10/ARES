@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestWrapfDoesNotMutateArgs 验证 Wrapf 不污染调用方 args 切片的底层数组。
+// TestWrapfDoesNotMutateArgs verifies Wrapf never mutates the caller's args backing array.
 func TestWrapfDoesNotMutateArgs(t *testing.T) {
 	inner := stderrors.New("sentinel")
 	args := []any{"a", "b"}
@@ -13,8 +13,8 @@ func TestWrapfDoesNotMutateArgs(t *testing.T) {
 	err1 := Wrapf(inner, "op %s %s", args...)
 	err2 := Wrapf(inner, "op2 %s %s", args...)
 
-	// 若 Wrapf 用 append(args, err) 且 args 容量足够，第二次调用会读到
-	// 第一次 append 写入的 err，导致 err2 消息错乱。
+	// If Wrapf used append(args, err) and args had spare capacity, a second
+	// call would read the err written by the first append, corrupting err2's message.
 	if err1.Error() != "op a b: sentinel" {
 		t.Fatalf("err1 消息异常: %s", err1.Error())
 	}
@@ -26,7 +26,7 @@ func TestWrapfDoesNotMutateArgs(t *testing.T) {
 	}
 }
 
-// TestWrapfNilErr 验证 Wrapf(nil, ...) 返回 nil。
+// TestWrapfNilErr verifies Wrapf(nil, ...) returns nil.
 func TestWrapfNilErr(t *testing.T) {
 	if err := Wrapf(nil, "op %s", "x"); err != nil {
 		t.Fatalf("Wrapf(nil) 应返回 nil, got %v", err)

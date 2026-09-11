@@ -11,7 +11,7 @@ import (
 
 // assertDAGEdgeConsistency verifies the invariant the mutation operators must
 // preserve: every step's DependsOn equals the authoritative edge map
-// (m.dag.Edges via ReadDeps). This guards the "变异绕过 m.dag.Edges" bug class
+// (m.dag.Edges via ReadDeps). This guards the "mutation bypasses m.dag.Edges" bug class
 // where an operator rewrites DependsOn directly and the change is silently
 // lost in evolution snapshots.
 func assertDAGEdgeConsistency(t *testing.T, g *WorkflowGenome) {

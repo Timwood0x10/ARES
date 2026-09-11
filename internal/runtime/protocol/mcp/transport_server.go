@@ -352,6 +352,48 @@ func isLoopbackAddr(addr string) bool {
 	return host == "localhost"
 }
 
+// safeRequestHost returns the request Host header when it is a syntactically
+// valid host[:port] that cannot break out of an SSE data frame, and the bound
+// listen address otherwise.
+//
+// The Host header is attacker-controlled. Writing it straight into the
+// endpoint event let a crafted value inject CR/LF and forge extra SSE frames,
+// or smuggle markup into a client that renders the stream (gosec G705). The
+// fallback keeps the bare-":port" bind working: an empty or rejected header
+// degrades to the address the transport actually bound, never to a forged one.
+func safeRequestHost(hostHeader, fallback string) string {
+	if hostHeader == "" {
+		return fallback
+	}
+	// Frame-breakers and URL/markup delimiters are rejected wholesale rather
+	// than escaped: none of them belong in a host, so escaping would only
+	// preserve a value the client could never use anyway. Brackets are left
+	// out of this set on purpose — an IPv6 literal needs them — and are
+	// handled by the hostname check below instead.
+	if strings.ContainsAny(hostHeader, " \t\r\n/\\?#@'\"<>`|{}^") {
+		return fallback
+	}
+	hostname := hostHeader
+	if h, _, err := net.SplitHostPort(hostHeader); err == nil {
+		hostname = h
+	}
+	hostname = strings.Trim(hostname, "[]")
+	if hostname == "" {
+		return fallback
+	}
+	if net.ParseIP(hostname) != nil {
+		return hostHeader
+	}
+	for _, r := range hostname {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '.' || r == '_' {
+			continue
+		}
+		return fallback
+	}
+	return hostHeader
+}
+
 // handleSSEConnect handles a new SSE client connection via GET.
 func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Request) {
 	if t.closing.Load() {
@@ -385,16 +427,19 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 
 	// Send endpoint event with session-scoped POST URL. Derive the scheme and
 	// host from the request: hardcoding "http://<addr>" advertised http even
-	// behind TLS and, for a bare ":port" bind, a URL with no host at all.
+	// behind TLS and, for a bare ":port" bind, a URL with no host at all. The
+	// Host header is untrusted, so it is validated before it reaches the
+	// frame (see safeRequestHost).
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	host := r.Host
-	if host == "" {
-		host = t.addr
-	}
+	host := safeRequestHost(r.Host, t.addr)
 	postURL := fmt.Sprintf("%s://%s/mcp?session_id=%s", scheme, host, sessionID)
+	// #nosec G705 — gosec's taint analysis cannot see that safeRequestHost
+	// already rejected every frame-breaker and non-host character above. Only
+	// a validated host[:port] plus a server-generated session id reaches the
+	// frame, and SSE consumers parse this field as a URL, not as markup.
 	if _, err := fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL); err != nil {
 		log.Warn("mcp-server: sse write endpoint error", "error", err)
 		return

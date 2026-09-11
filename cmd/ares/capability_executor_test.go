@@ -35,7 +35,7 @@ var _ CapabilityExecutor = (*minimalCapabilityExecutor)(nil)
 
 // TestCapabilityExecutorDecoupling verifies the scheduler accepts an
 // executor that is NOT a sub.Agent — only a CapabilityExecutor. This is the
-// decoupling acceptance test: "移除 scheduler 对 sub.Agent 类型/角色的强绑定".
+// decoupling acceptance test: "remove the scheduler's hard binding to sub.Agent type/role".
 // The minimalCapabilityExecutor implements only ID/Type/ExecuteStep; it has
 // no Execute, Start, Stop, Process, or ProcessStream methods. If the scheduler
 // still depended on sub.Agent, this would not compile.

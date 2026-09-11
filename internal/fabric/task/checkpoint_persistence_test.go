@@ -85,8 +85,8 @@ func stopLogCapture() {
 // operator.
 //
 // The test does NOT verify the in-memory state machine rolls back — by design
-// the in-memory state stays authoritative within a process ("禁止
-// 静默吞错", but the transition is not rolled back). The gap is made visible
+// the in-memory state stays authoritative within a process ("never swallow
+// errors silently", but the transition is not rolled back). The gap is made visible
 // via the log.
 func TestMustPersistEventFailureIsLogged(t *testing.T) {
 	store := newFailingEventStore()
@@ -200,7 +200,7 @@ func TestMustPersistEventClassification(t *testing.T) {
 }
 
 // TestCheckpointEnvelopeRoundTrip verifies the versioned checkpoint schema
-// (固化 checkpoint schema): a CheckpointEnvelope can be marshaled
+// (the frozen checkpoint schema): a CheckpointEnvelope can be marshaled
 // to JSON and unmarshaled back, and DecodeCheckpoint extracts the fields
 // correctly from the round-tripped form. This is the cross-restart protocol
 // stability test.
@@ -338,7 +338,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 
 // TestMarshalCheckpointWrapsRawValue verifies that MarshalCheckpoint wraps a
 // non-envelope value in a versioned envelope before serializing — the
-// serialized form always carries the schema version (固化协议).
+// serialized form always carries the schema version (the frozen protocol).
 func TestMarshalCheckpointWrapsRawValue(t *testing.T) {
 	raw, err := MarshalCheckpoint(map[string]any{"step": 5})
 	if err != nil {

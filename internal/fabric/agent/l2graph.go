@@ -101,9 +101,9 @@ func IsL2Capability(capability string) bool {
 }
 
 // PlanDepth returns the current plan-tool growth depth of the L2 graph
-// (生长深度上界护栏). Depth is the number of plan nodes in the graph
-// minus the root (which is an admission node, not a plan node). The planner
-// reads this to enforce the growth-depth upper bound.
+// (the growth-depth upper-bound guard). Depth is the number of plan nodes in
+// the graph minus the root (which is an admission node, not a plan node). The
+// planner reads this to enforce the growth-depth upper bound.
 func (g *L2Graph) PlanDepth() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

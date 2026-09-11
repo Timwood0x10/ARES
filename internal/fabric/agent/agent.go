@@ -61,7 +61,7 @@ type Agent struct {
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
-	// cognition is the agent's execution body (执行能力注入统一 Agent).
+	// cognition is the agent's execution body (execution capability injected into the unified Agent).
 	// Nil means the agent has no execution capability yet — it can be managed
 	// (spawn/kill/recover) but cannot run a quantum until injected via
 	// SpawnSpec.CognitionFactory. Guarded by mu.
@@ -73,7 +73,7 @@ type Agent struct {
 
 // CognitiveStateSchemaVersion is the current CognitiveState schema version.
 // Bump when CognitiveState fields change; DecodeCognitiveState handles
-// migration from prior versions. (带版本的结构.)
+// migration from prior versions. (A versioned structure.)
 const CognitiveStateSchemaVersion = 1
 
 // CognitiveState is the agent's independent cognitive content (design §13:
@@ -123,11 +123,11 @@ var ErrAgentNotSuspended = errors.New("agentfabric: agent not suspended")
 var ErrAgentRunning = errors.New("agentfabric: agent running")
 
 // ErrAgentNotExecutable is returned when ExecuteStep is called on an agent
-// that was spawned without a CognitionFactory (执行能力未注入).
+// that was spawned without a CognitionFactory (execution capability not injected).
 var ErrAgentNotExecutable = errors.New("agentfabric: agent not executable")
 
 // Executable reports whether the agent has an execution body injected
-// (执行能力已注入). An agent spawned without a CognitionFactory is managed
+// (execution capability injected). An agent spawned without a CognitionFactory is managed
 // (spawn/kill/recover) but NOT schedulable — the scheduler must not offer it
 // as a candidate. Thread-safe; reads the cognition under the agent lock.
 func (a *Agent) Executable() bool {

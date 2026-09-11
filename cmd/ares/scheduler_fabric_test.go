@@ -12,7 +12,7 @@ import (
 )
 
 // recordingCognition is an agentfabric.Cognition that completes every task in
-// one quantum and records the executed task ids (真实执行体).
+// one quantum and records the executed task ids (a real executor).
 type recordingCognition struct {
 	mu       sync.Mutex
 	executed []string
@@ -124,7 +124,7 @@ func TestKernelSchedulerSchedulesFabricAgents(t *testing.T) {
 }
 
 // TestKernelSchedulerFabricKillBeatsStaticRegistration verifies the single-
-// source rule (scheduler 只认 fabric 动态群体): when
+// source rule (the scheduler only recognizes the fabric dynamic group): when
 // the fabric is wired, killing the fabric agent removes it from the candidate
 // pool EVEN IF the same id is still statically registered — the static copy is
 // managed through the fabric, so a killed agent is never resurrected via the

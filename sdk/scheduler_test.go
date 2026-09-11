@@ -31,8 +31,8 @@ func (c *countingExecutor) ExecuteStep(ctx context.Context, task *models.Task) (
 }
 
 // TestSubmitGoesThroughFabricScheduler is the merged-path acceptance
-// (sdk.Runtime.Submit 经过 Task Fabric →
-// kernelScheduler 调度，而不是直接找 agent 跑): the shared scheduler drives
+// (sdk.Runtime.Submit goes through the Task Fabric →
+// kernelScheduler rather than running the agent directly): the shared scheduler drives
 // the executor once per submitted task — a task is created in the runtime's
 // Task Fabric and reaches COMPLETED through the scheduler's
 // Schedule→Acquire→RunQuantum path, and the returned result carries the
