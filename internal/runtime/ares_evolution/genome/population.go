@@ -679,29 +679,70 @@ func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
 
 // ScoreAgentsMulti scores all agents using a multi-objective scorer.
 // Sets both DimensionScores and Score (aggregate) on each agent.
+//
+// The scorer runs OUTSIDE the lock, mirroring ScoreAgents: a multi-objective
+// scorer may be an LLM/network call that blocks for seconds, and running it
+// under p.mu.Lock() starved every reader — a scorer that called back into
+// Stats() deadlocked on the held write lock.
 func (p *Population) ScoreAgentsMulti(scorer MultiObjectiveScorerFunc) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for i, agent := range p.Agents {
+	// Copy agent pointers under read lock; scoring does not write through
+	// them (the scorer contract is read-only — see ScorerFunc).
+	p.mu.RLock()
+	agents := make([]*mutation.Strategy, len(p.Agents))
+	copy(agents, p.Agents)
+	gen := p.Generation
+	p.mu.RUnlock()
+
+	type multiScore struct {
+		dims     map[string]float64
+		agg      float64
+		panicked bool
+	}
+	scores := make([]multiScore, len(agents))
+	for i, agent := range agents {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					el.WarnContext(context.Background(), "multi-objective scorer panicked for agent, marking as unevaluated",
-						"generation", p.Generation,
+						"generation", gen,
 						"agent_index", i,
 						"agent_id", agent.ID,
 						"panic_value", r,
 					)
-					agent.Score = ScoreUnevaluated
-					agent.DimensionScores = nil
-					agent.SelectionScore = 0
+					scores[i] = multiScore{panicked: true}
 				}
 			}()
 			dims, agg := scorer(agent)
-			agent.DimensionScores = dims
-			agent.Score = agg
-			agent.SelectionScore = 0
+			scores[i] = multiScore{dims: dims, agg: agg}
 		}()
+	}
+
+	// Write results back under write lock, matched by ID so a concurrent
+	// evolve that replaced p.Agents cannot receive a stale slot's score.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, agent := range p.Agents {
+		if i >= len(scores) || agent.ID != agents[i].ID {
+			// Population changed during the scoring window: the score is
+			// stale for this slot and is silently dropped (same contract as
+			// ScoreAgents — ID matching prevents writing onto the WRONG agent).
+			if i < len(agents) && i < len(scores) {
+				el.WarnContext(context.Background(), "multi score dropped: population changed during scoring",
+					"generation", gen,
+					"scored_agent_id", agents[i].ID,
+					"current_agent_id", agent.ID)
+			}
+			continue
+		}
+		if scores[i].panicked {
+			agent.Score = ScoreUnevaluated
+			agent.DimensionScores = nil
+			agent.SelectionScore = 0
+			continue
+		}
+		agent.DimensionScores = scores[i].dims
+		agent.Score = scores[i].agg
+		agent.SelectionScore = 0
 	}
 	p.updateBestEverLocked()
 }

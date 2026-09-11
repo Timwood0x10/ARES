@@ -174,9 +174,14 @@ func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 
 	m.hub.Publish(GraphEvent{
 		Change: GraphChange{
-			Type:      ChangeAddNode,
-			NodeID:    id,
-			Step:      step,
+			Type:   ChangeAddNode,
+			NodeID: id,
+			// Publish an isolated CLONE, never the live *Step: subscribers
+			// (the planprojection coordinator) read the event off-lock, while
+			// AddEdge/SetNodeMetadata/ReplaceNode mutate the stored step
+			// in place under the DAG lock — a live pointer here is a -race
+			// and a torn dependency list (same contract as Steps()).
+			Step:      cloneStepForSnapshot(step),
 			Timestamp: time.Now(),
 		},
 		Success: true,
@@ -491,9 +496,11 @@ func (m *MutableDAG) SetNodeMetadata(nodeID string, md map[string]string) error 
 	m.version++
 	m.hub.Publish(GraphEvent{
 		Change: GraphChange{
-			Type:      ChangeSetNodeMetadata,
-			NodeID:    nodeID,
-			Step:      m.steps[nodeID],
+			Type:   ChangeSetNodeMetadata,
+			NodeID: nodeID,
+			// Clone: the event's step is read off-lock by subscribers while
+			// later mutations rewrite the stored step in place (see AddNode).
+			Step:      cloneStepForSnapshot(m.steps[nodeID]),
 			Timestamp: time.Now(),
 		},
 		Success: true,
@@ -976,7 +983,9 @@ func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Ste
 			Type:      ChangeReplaceNode,
 			NodeID:    newStep.ID,
 			OldNodeID: oldID,
-			Step:      newStep,
+			// Clone: the event's step is read off-lock by subscribers while
+			// later mutations rewrite the stored step in place (see AddNode).
+			Step:      cloneStepForSnapshot(newStep),
 			Timestamp: time.Now(),
 		},
 		Success: true,

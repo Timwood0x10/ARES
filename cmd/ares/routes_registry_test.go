@@ -127,16 +127,24 @@ func TestIntrospectTokenDoesNotWeakenConfiguredAuth(t *testing.T) {
 	}
 }
 
-// TestIntrospectReadSideOpenWithNoCredentials pins the loopback-default
-// posture: with no token, no JWT, and no API key, the read side is open —
-// the 127.0.0.1 default bind is the boundary. The startup Warn documents
-// exactly this state.
+// TestIntrospectReadSideLoopbackOnlyWithoutCredentials pins the fail-closed
+// posture (#P0-9): with no token, no JWT, and no API key, the read side is
+// open ONLY to loopback clients. A non-loopback client gets 401 — the old
+// unconditional allow exposed the raw event stream under `--host 0.0.0.0`
+// with only a startup warning as the guard.
 func TestIntrospectReadSideOpenWithNoCredentials(t *testing.T) {
 	h := newTokenTestHandler("")
+	// Loopback: still open (local-dev contract).
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, remoteAddr(httptest.NewRequest(http.MethodGet, "/api/v1/introspect/snapshot", nil), "192.0.2.1:4242"))
+	h.ServeHTTP(rec, remoteAddr(httptest.NewRequest(http.MethodGet, "/api/v1/introspect/snapshot", nil), "127.0.0.1:4242"))
 	if rec.Code == http.StatusUnauthorized {
-		t.Fatal("with no credentials configured the read side stays open (loopback default bind is the boundary)")
+		t.Fatal("loopback with no credentials configured must stay open (local-dev contract)")
+	}
+	// Non-loopback: denied.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, remoteAddr(httptest.NewRequest(http.MethodGet, "/api/v1/introspect/snapshot", nil), "192.0.2.1:4242"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatal("non-loopback with no credentials configured must be denied (fail-closed read side)")
 	}
 }
 

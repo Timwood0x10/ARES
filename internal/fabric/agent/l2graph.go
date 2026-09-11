@@ -10,6 +10,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
@@ -401,6 +402,15 @@ var _ Cognition = (*toolCognition)(nil)
 // Envelope plumbing ("input", scheduler-restore keys) never reaches CallTool,
 // so strict-schema tools (additionalProperties:false) accept the call.
 func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	// Stamp the executing agent's identity so the Kernel syscalls
+	// (agentsyscall) enforce provenance — spawn parentage and Task.Origin —
+	// from the context, never from LLM-supplied arguments. This is the same
+	// contract the SDK ReAct engine upholds (agentloop/engine.go); without it
+	// the production serve path let spawn_agent fall back to the LLM's
+	// parent_id and create_task stamp an empty Origin. One shared Cognition
+	// serves every agent, so the id rides the quantum-scoped executingAgentKey
+	// on the task payload (executor.go withExecutingAgent).
+	ctx = kctx.WithCallerID(ctx, executingAgentID(task.Payload))
 	res, err := c.binder.CallTool(ctx, c.tool, argsFromPayload(task.Payload))
 	if err != nil {
 		return nil, fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err)
@@ -408,6 +418,15 @@ func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*St
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: stringify(res)}}, "tool "+c.tool+" completed")
 	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// executingAgentID reads the quantum-scoped executing-agent stamp the
+// scheduler's executor writes into the model task payload (executor.go
+// withExecutingAgent). Empty when no caller identity is available (tests,
+// direct/recovery paths) — kctx.WithCallerID then treats it as a root call.
+func executingAgentID(payload map[string]any) string {
+	id, _ := payload[executingAgentKey].(string)
+	return id
 }
 
 // answerContentKey is the arg a terminal answer node reads its body from,

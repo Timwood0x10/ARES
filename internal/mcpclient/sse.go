@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -68,7 +69,20 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 		}
 		return nil, fmt.Errorf("read endpoint: %w", err)
 	}
-	tr.messageURL = endpoint
+	// Resolve the advertised message endpoint against the request URL: MCP
+	// SSE servers commonly send a RELATIVE endpoint ("/messages?sessionId=…"),
+	// and storing it verbatim makes every later POST fail with "unsupported
+	// protocol scheme" — the connection is up but unusable. sseResp.Request
+	// is the final request after redirects, so it is the correct base.
+	messageURL, err := resolveSSEEndpoint(sseResp.Request, endpoint)
+	if err != nil {
+		tr.sseCancel()
+		if err := sseResp.Body.Close(); err != nil {
+			log.Warn("mcp: close sse body on endpoint resolve error", "error", err)
+		}
+		return nil, fmt.Errorf("resolve endpoint %q: %w", endpoint, err)
+	}
+	tr.messageURL = messageURL
 
 	// Keep draining the SSE stream for the lifetime of the connection (#48):
 	// responses arrive via the message endpoint, but the server keeps pushing
@@ -149,6 +163,28 @@ func (tr *sseTransport) readEndpointEvent(sc *bufio.Scanner) (string, error) {
 		return "", fmt.Errorf("sse scan: %w", err)
 	}
 	return "", fmt.Errorf("sse stream ended without endpoint event")
+}
+
+// resolveSSEEndpoint resolves the endpoint advertised by the server's
+// "endpoint" event into an absolute URL. Absolute endpoints pass through;
+// relative ones are resolved against the (post-redirect) request URL. An
+// empty endpoint or a relative endpoint without a base URL is an error —
+// both left the transport unusable with a confusing later POST failure.
+func resolveSSEEndpoint(req *http.Request, endpoint string) (string, error) {
+	if endpoint == "" {
+		return "", fmt.Errorf("empty endpoint event")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	if u.IsAbs() {
+		return u.String(), nil
+	}
+	if req == nil || req.URL == nil {
+		return "", fmt.Errorf("relative endpoint %q without a base request URL", endpoint)
+	}
+	return req.URL.ResolveReference(u).String(), nil
 }
 
 // drainSSE consumes the SSE body until the stream ends or the transport is

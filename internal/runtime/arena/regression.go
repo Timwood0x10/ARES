@@ -591,7 +591,11 @@ func computeVariance(scores []float64) float64 {
 	return sumSqDiff / float64(len(scores)-1)
 }
 
-// computeWinRate calculates fraction where new score >= old score in pairwise comparison.
+// computeWinRate calculates the fraction of strictly-improved pairings:
+// a run counts as a win only when the new score EXCEEDS the old one. Ties
+// are not wins — counting them made an identical strategy score
+// WinRate=1.0 ≥ MinWinRate, so "exactly the same strategy" was judged as
+// an improvement (NewBetter=true).
 func computeWinRate(oldScores, newScores []float64) float64 {
 	if len(oldScores) == 0 || len(newScores) == 0 {
 		return 0
@@ -602,7 +606,7 @@ func computeWinRate(oldScores, newScores []float64) float64 {
 	}
 	wins := 0
 	for i := 0; i < minLen; i++ {
-		if newScores[i] >= oldScores[i] {
+		if newScores[i] > oldScores[i] {
 			wins++
 		}
 	}

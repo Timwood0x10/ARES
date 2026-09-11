@@ -2098,3 +2098,27 @@ func TestRetrievalService_ExperienceRankingConflictResolve(t *testing.T) {
 	require.Len(t, results, 1, "duplicate experiences must collapse to one resolved entry")
 	assert.Equal(t, "exp-0", results[0].ID, "best-ranked experience should win the conflict group")
 }
+
+// TestToAPIExperience_MapsProblemSolution is the #P1-17 regression: the
+// ranking path built API experiences with Problem/Solution left empty (the
+// storage scan only fills Input/Output), so every ranked experience surfaced
+// an empty Content (convertAPIExperiencesToResults reads Solution). The
+// mapping must mirror the bootstrap distillation adapter.
+func TestToAPIExperience_MapsProblemSolution(t *testing.T) {
+	src := &storage_models.Experience{
+		ID:     "exp-1",
+		Type:   storage_models.ExperienceTypeSolution,
+		Input:  "how to retry on 429",
+		Output: "exponential backoff with jitter",
+	}
+	api := toAPIExperience(src)
+	if api.Problem != src.Input {
+		t.Errorf("Problem = %q, want Input %q", api.Problem, src.Input)
+	}
+	if api.Solution != src.Output {
+		t.Errorf("Solution = %q, want Output %q", api.Solution, src.Output)
+	}
+	if api.ID != src.ID || api.Type != src.Type {
+		t.Errorf("identity fields not carried: %+v", api)
+	}
+}

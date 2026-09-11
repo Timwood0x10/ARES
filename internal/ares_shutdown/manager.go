@@ -50,7 +50,6 @@ type Manager struct {
 	currentPhase Phase
 	mu           sync.RWMutex
 	timeout      time.Duration
-	wg           sync.WaitGroup
 	// shutdownStarted is a CAS guard ensuring StartShutdown runs exactly
 	// once (P1-3: the old currentPhase != 0 guard was bypassed during
 	// PhasePreShutdown because PhasePreShutdown == 0 is iota's first
@@ -171,10 +170,17 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 	errChan := make(chan error, len(callbacks))
 	panicChan := make(chan interface{}, len(callbacks))
 
+	// A per-phase WaitGroup: a hung callback in an earlier phase must not
+	// leak this phase's waiter (and permanently block Manager.Wait) — the
+	// shared m.wg design never reset after a timeout, so one stuck callback
+	// accumulated a leaked waiter goroutine per phase for the process's
+	// remaining lifetime.
+	var phaseWg sync.WaitGroup
+
 	for _, callback := range callbacks {
-		m.wg.Add(1)
+		phaseWg.Add(1)
 		go func(cb Callback) {
-			defer m.wg.Done()
+			defer phaseWg.Done()
 
 			defer func() {
 				if r := recover(); r != nil {
@@ -199,7 +205,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 
 	done := make(chan struct{})
 	go func() {
-		m.wg.Wait()
+		phaseWg.Wait()
 		close(done)
 	}()
 
@@ -317,11 +323,6 @@ func (m *Manager) CurrentPhase() Phase {
 	defer m.mu.RUnlock()
 
 	return m.currentPhase
-}
-
-// Wait blocks until all in-progress shutdown operations complete.
-func (m *Manager) Wait() {
-	m.wg.Wait()
 }
 
 // IsShutdown returns true if shutdown has started (past PhasePreShutdown phase).

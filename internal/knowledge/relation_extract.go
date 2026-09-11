@@ -27,16 +27,17 @@ type RelationExtractor struct {
 // whitespace. English
 // verbs require whitespace after the verb and a leading word boundary so that
 // "fix" does not match inside words like "prefix" or "fixing".
-// entityBound terminates a captured entity at punctuation or a conjunction
-// so "修复了 A，B" / "fixes A and B" / "fixes the auth bug. See also..." yield
-// the first entity only, instead of the greedy (.+) swallowing the whole
-// remainder (§四: "贪婪正则匹配到输入末尾"). Both full-width (，。；) and
-// ASCII (,.!?:) terminators are covered — a capture class alone cannot stop
-// at ASCII "." (abbreviations keep the dot), so the sentence terminators
-// live in the lookahead-style alternation. Targets are canonicalized against
-// the entity dict downstream, so a clean short entity matches far more often
-// than the overlong remainder.
-const entityBound = `([^，。；,;.!?：:]+?)(?:[,.!?]|,|，|;|；|:|：|\s+and\s+|\s+和\s+|\s+与\s+|$)`
+// entityBound terminates a captured entity at a conjunction or sentence
+// punctuation so "修复了 A，B" / "fixes A and B" / "fixes the auth bug. See
+// also..." yield the first entity only, instead of the greedy (.+) swallowing
+// the whole remainder (§四: "贪婪正则匹配到输入末尾"). A '.' is deliberately
+// kept OUT of the capture class so dotted identifiers/versions
+// ("auth.service", "v1.2.3") survive; a '.' ends the capture only when
+// followed by whitespace (a real sentence boundary). Full-width 。，；！？ and
+// ASCII , ; : ! ? terminate directly. Targets are canonicalized against the
+// entity dict downstream, so a clean short entity matches far more often than
+// the overlong remainder.
+const entityBound = `([^，。；！？,;!?：:]+?)(?:\.\s|,|，|;|；|:|：|\s+and\s+|\s+和\s+|\s+与\s+|$)`
 
 func NewRelationExtractor() *RelationExtractor {
 	return &RelationExtractor{

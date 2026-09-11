@@ -31,7 +31,12 @@ func TestActionHandlerCostRoutesWired(t *testing.T) {
 	}
 	for _, tc := range tests {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		// Loopback RemoteAddr: with no credentials configured the read side
+		// is loopback-only (fail-closed for remote clients), and this test
+		// locks the local-dev construction path, not the auth gate.
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.RemoteAddr = "127.0.0.1:55555"
+		h.ServeHTTP(rec, req)
 		if rec.Code != tc.want {
 			t.Fatalf("GET %s: status = %d, want %d (body: %s)", tc.path, rec.Code, tc.want, rec.Body.String())
 		}

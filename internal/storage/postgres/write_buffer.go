@@ -132,39 +132,41 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Flush remaining items on shutdown with a fresh context. The
-			// filtered path dead-letters poison items first so one bad row
-			// cannot abort the whole final flush (the raw path returned
-			// ErrPermanentWriteItem immediately, dropping every valid item
-			// sharing the batch — and never counting the poison).
-			if len(batch) > 0 {
-				flushCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				leftover := b.flushBatchFiltered(flushCtx, batch, maxRetries)
-				cancel()
-				if len(leftover) > 0 {
-					log.Error("Failed to flush final batch", "items", len(leftover))
-					return errors.New("flush final batch: incomplete")
+			// Graceful shutdown must not drop items still queued in the
+			// channel: the production stop sequence (e.g.
+			// ProductionMemoryManager.Stop) cancels this context BEFORE
+			// calling WriteBuffer.Stop, so exiting here would abandon
+			// everything still buffered. Keep draining until Stop()
+			// closes the channel; a grace deadline guards callers that
+			// cancel the context without ever calling Stop (otherwise
+			// this loop would block on a channel that is never closed).
+			drainDeadline := time.NewTimer(shutdownDrainGrace)
+			defer drainDeadline.Stop()
+		drain:
+			for {
+				select {
+				case item, ok := <-b.buffer:
+					if !ok {
+						break drain
+					}
+					if item == nil {
+						break drain
+					}
+					batch = append(batch, item)
+				case <-drainDeadline.C:
+					break drain
 				}
 			}
-			return nil
+			return b.flushFinalBatch(batch, maxRetries, "context cancelled")
 
 		case item, ok := <-b.buffer:
 			if !ok {
 				// Channel closed, flush any remaining batch before exiting
 				// (same poison-safe filtered path as the ctx.Done case).
-				if len(batch) > 0 {
-					flushCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					leftover := b.flushBatchFiltered(flushCtx, batch, maxRetries)
-					cancel()
-					if len(leftover) > 0 {
-						log.Error("Failed to flush remaining batch on channel close", "items", len(leftover))
-						return errors.New("flush remaining batch on close: incomplete")
-					}
-				}
-				return nil
+				return b.flushFinalBatch(batch, maxRetries, "channel closed")
 			}
 			if item == nil {
-				return nil
+				return b.flushFinalBatch(batch, maxRetries, "nil sentinel")
 			}
 			batch = append(batch, item)
 			if len(batch) >= b.batchSize {
@@ -179,12 +181,39 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 	}
 }
 
+// shutdownDrainGrace bounds the ctx.Done() drain loop: Stop() normally
+// closes the channel microseconds after the cancel, but a caller that
+// cancels the parent context without ever calling Stop() must not hang
+// the loop on a channel that is never closed.
+const shutdownDrainGrace = 5 * time.Second
+
+// flushFinalBatch performs the shutdown flush with a fresh background
+// context (the loop's own context is already cancelled at every call
+// site) and reports unwritable leftovers as an error so a data-loss
+// shutdown is observable instead of silently "successful".
+func (b *WriteBuffer) flushFinalBatch(batch []*WriteItem, maxRetries int, reason string) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	flushCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	leftover := b.flushBatchFiltered(flushCtx, batch, maxRetries)
+	if len(leftover) > 0 {
+		log.Error("Failed to flush final batch", "reason", reason, "items", len(leftover))
+		return errors.New("flush final batch (" + reason + "): incomplete")
+	}
+	return nil
+}
+
 // flushBatchFiltered is the #64 poison-pill guard: before handing a batch to
 // the retrying flush, permanently-unwritable items (unsupported tables) are
 // dead-lettered — logged, counted, and dropped. Without this the poison
 // failed the whole transaction, was re-queued, failed again, and livelocked
 // the loop while blocking every good item sharing its batch. Returns the
-// batch to carry forward (empty on success).
+// unwritten items to carry forward: empty on success, the valid items
+// themselves on transient failure (the caller retries them — mid-loop in the
+// next batch, or as an "incomplete" report at shutdown — never via a channel
+// send, which races Stop()'s close).
 func (b *WriteBuffer) flushBatchFiltered(ctx context.Context, batch []*WriteItem, maxRetries int) []*WriteItem {
 	valid := make([]*WriteItem, 0, len(batch))
 	for _, item := range batch {
@@ -208,13 +237,12 @@ func (b *WriteBuffer) flushBatchFiltered(ctx context.Context, batch []*WriteItem
 			}
 			return nil
 		}
-		// CRITICAL: do not discard the failed batch. Re-queue its
-		// items so they are retried on the next flush instead of
-		// being silently dropped (which caused data loss).
-		log.Error("Failed to flush batch after retries, re-queuing items",
+		// CRITICAL: do not discard the failed batch. Return its items so
+		// the caller carries them forward for the next flush instead of
+		// silently dropping them (which caused data loss).
+		log.Error("Failed to flush batch after retries, carrying items forward",
 			"error", err, "batch_size", len(valid))
-		b.requeueItems(valid)
-		return nil
+		return valid
 	}
 	return nil
 }
@@ -237,33 +265,6 @@ func (b *WriteBuffer) deadLetter(item *WriteItem) {
 // keeps growing means a producer is feeding invalid table names).
 func (b *WriteBuffer) DeadLetteredItems() int64 {
 	return b.deadLettered.Load()
-}
-
-// requeueItems re-queues items that failed to flush. It attempts a non-blocking
-// send back into the buffer channel; if the channel is full or closed, the
-// items are logged and dropped as a last resort to avoid blocking the
-// processing loop. The stopped flag is checked first so we don't accidentally
-// send on a closed channel.
-func (b *WriteBuffer) requeueItems(items []*WriteItem) {
-	if b.stopped.Load() {
-		log.Warn("Write buffer stopped, cannot re-queue items", "count", len(items))
-		return
-	}
-	var dropped int
-	for _, item := range items {
-		select {
-		case b.buffer <- item:
-		default:
-			// Channel is full; drop the item to avoid blocking. This is a
-			// last resort and should be rare because the channel is sized to
-			// batchSize*2.
-			dropped++
-		}
-	}
-	if dropped > 0 {
-		log.Warn("Re-queue dropped items because buffer is full",
-			"dropped", dropped, "total", len(items))
-	}
 }
 
 // flushBatchWithRetry attempts to flush a batch with exponential backoff retries.

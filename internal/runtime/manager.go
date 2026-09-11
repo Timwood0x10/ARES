@@ -479,18 +479,26 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 func (m *Manager) stopOldRestoredAgent(ctx context.Context, agentID string) (*managedAgent, bool) {
 	m.mu.Lock()
 	oldMA, oldExists := m.agents[agentID]
+	var oldCancel context.CancelFunc
+	var oldAgent base.Agent
 	if oldExists && oldMA != nil {
 		oldMA.stopped = true
+		// Capture the cancel func and agent handle UNDER the lock: ma.cancel /
+		// ma.agent are written by ResumeAgent under m.mu (see RestartAgent for
+		// the same contract), so reading them after Unlock would race a
+		// concurrent lifecycle transition.
+		oldCancel = oldMA.cancel
+		oldAgent = oldMA.agent
 	}
 	m.mu.Unlock()
 
-	if oldExists && oldMA != nil {
-		if oldMA.cancel != nil {
-			oldMA.cancel()
+	if oldAgent != nil {
+		if oldCancel != nil {
+			oldCancel()
 		}
 		stopCtx, stopCancel := context.WithTimeout(ctx, m.config.AgentStopTimeout)
 		defer stopCancel()
-		if err := oldMA.agent.Stop(stopCtx); err != nil {
+		if err := oldAgent.Stop(stopCtx); err != nil {
 			log.Warn("runtime: restore stop old agent failed",
 				"agent_id", agentID, "error", err,
 			)

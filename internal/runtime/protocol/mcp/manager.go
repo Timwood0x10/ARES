@@ -212,6 +212,19 @@ func (m *MCPManager) connectWithTransport(ctx context.Context, name string, sc *
 		connAt: time.Now(),
 	}
 
+	// Unregister the stale client's tools BEFORE registering the new
+	// client's set: registerTools skips name conflicts (existing entry
+	// wins), so without this the old client's tools would shadow the new
+	// ones — and after stale.Close() below they would point at a dead
+	// connection forever, with no way to unregister them (the new mc.tools
+	// never contained those names).
+	m.mu.Lock()
+	stale := m.clients[name]
+	if stale != nil {
+		m.unregisterTools(stale)
+	}
+	m.mu.Unlock()
+
 	// Register tools from this server.
 	toolNames, err := m.registerTools(mc)
 	if err != nil {
@@ -221,7 +234,7 @@ func (m *MCPManager) connectWithTransport(ctx context.Context, name string, sc *
 	mc.tools = toolNames
 
 	m.mu.Lock()
-	stale := m.clients[name]
+	stale = m.clients[name]
 	m.clients[name] = mc
 	m.mu.Unlock()
 

@@ -27,6 +27,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llm "github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
@@ -779,6 +780,13 @@ func (a *peerExecutorAdapter) ID() string { return a.id }
 // Type returns the agent's type.
 func (a *peerExecutorAdapter) Type() models.AgentType { return a.typ }
 func (a *peerExecutorAdapter) ExecuteStep(ctx context.Context, task *models.Task) (*agentsyscall.StepOutcome, error) {
+	// Stamp the executing agent's identity before delegating to the
+	// cognition: tool nodes call the binder with this context, and the
+	// Kernel syscalls (spawn_agent/create_task) enforce provenance
+	// (Task.Origin/ParentID) from kctx.CallerID — without the stamp, the
+	// serve path fell back to the LLM-supplied ParentID, which is
+	// forgeable. Mirrors agentloop engine's WithCallerID before Execute.
+	ctx = kctx.WithCallerID(ctx, a.id)
 	out, err := a.cog.ExecuteStep(ctx, task)
 	if err != nil {
 		return nil, err
@@ -882,11 +890,13 @@ func (e *cognitionExecutor) ID() string { return e.id }
 func (e *cognitionExecutor) Type() models.AgentType { return e.typ }
 
 // Execute implements sub.TaskExecutor: a single quantum through the wrapped
-// cognition.
+// cognition. The caller identity is stamped for the same reason as
+// ExecuteStep below (Kernel provenance for tool nodes).
 func (e *cognitionExecutor) Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 	if e.cog == nil {
 		return nil, fmt.Errorf("peer mode: executor %q has no execution body (identity-only agent must not be driven)", e.id)
 	}
+	ctx = kctx.WithCallerID(ctx, e.id)
 	out, err := e.cog.ExecuteStep(ctx, task)
 	if err != nil {
 		return nil, err
@@ -906,11 +916,14 @@ func (e *cognitionExecutor) RegisterFallback(models.AgentType, sub.FallbackHandl
 }
 
 // ExecuteStep implements the quantum path shared by subAgent's structural
-// stepExecutor check and kernel.CapabilityExecutor.
+// stepExecutor check and kernel.CapabilityExecutor. The caller identity is
+// stamped before delegating so tool-node calls carry Kernel-enforced
+// provenance (see peerExecutorAdapter.ExecuteStep).
 func (e *cognitionExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
 	if e.cog == nil {
 		return nil, fmt.Errorf("peer mode: executor %q has no execution body (identity-only agent must not be driven)", e.id)
 	}
+	ctx = kctx.WithCallerID(ctx, e.id)
 	out, err := e.cog.ExecuteStep(ctx, task)
 	if err != nil {
 		return nil, err

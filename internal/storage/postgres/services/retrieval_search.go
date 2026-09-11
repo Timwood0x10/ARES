@@ -234,6 +234,32 @@ func (s *RetrievalService) searchExperienceVector(ctx context.Context, embedding
 	return s.convertExperiencesToResults(experiences)
 }
 
+// toAPIExperience converts one storage-model experience to the API model.
+// Problem/Solution map from the raw Input/Output columns — the vector-search
+// scan only populates the raw pair, and leaving the API fields empty made
+// every ranked experience carry an empty Solution
+// (convertAPIExperiencesToResults reads it as Content). Same mapping as the
+// bootstrap distillation adapter (provide_distillation.go).
+func toAPIExperience(exp *storage_models.Experience) *experience.Experience {
+	return &experience.Experience{
+		ID:               exp.ID,
+		TenantID:         exp.TenantID,
+		Type:             exp.Type,
+		Problem:          exp.Input,
+		Solution:         exp.Output,
+		Constraints:      exp.Constraints,
+		Embedding:        exp.Embedding,
+		EmbeddingModel:   exp.EmbeddingModel,
+		EmbeddingVersion: exp.EmbeddingVersion,
+		Score:            exp.Score,
+		Success:          exp.Success,
+		AgentID:          exp.AgentID,
+		UsageCount:       exp.GetUsageCount(), // metadata["usage_count"] is authoritative for backward compatibility
+		DecayAt:          exp.DecayAt,
+		CreatedAt:        exp.CreatedAt,
+	}
+}
+
 // applyExperienceRanking applies ranking and conflict resolution to experiences.
 // Args:
 // ctx - operation context.
@@ -258,25 +284,7 @@ func (s *RetrievalService) applyExperienceRanking(ctx context.Context, experienc
 			}
 		}
 		baseScores[i] = semanticScore
-
-		// Convert to API model
-		apiExperiences[i] = &experience.Experience{
-			ID:               exp.ID,
-			TenantID:         exp.TenantID,
-			Type:             exp.Type,
-			Problem:          exp.Problem,
-			Solution:         exp.Solution,
-			Constraints:      exp.Constraints,
-			Embedding:        exp.Embedding,
-			EmbeddingModel:   exp.EmbeddingModel,
-			EmbeddingVersion: exp.EmbeddingVersion,
-			Score:            exp.Score,
-			Success:          exp.Success,
-			AgentID:          exp.AgentID,
-			UsageCount:       exp.GetUsageCount(), // metadata["usage_count"] is authoritative for backward compatibility
-			DecayAt:          exp.DecayAt,
-			CreatedAt:        exp.CreatedAt,
-		}
+		apiExperiences[i] = toAPIExperience(exp)
 	}
 
 	// Apply ranking

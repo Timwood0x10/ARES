@@ -31,7 +31,7 @@ var blockClosers = regexp.MustCompile(`(?i)</(p|div|section|article|header|foote
 
 // voidElements are self-closing line breaks with no end tag — they must
 // also become newlines (a closing-tag-only pattern can never match them).
-var voidElements = regexp.MustCompile(`(?i)<(br|hr)\s*/?>`)
+var voidElements = regexp.MustCompile(`(?i)<(br|hr)(?:\s[^>]*)?/?>`)
 
 // anyTag matches any remaining element; its text content survives.
 var anyTag = regexp.MustCompile(`(?s)<[^>]*>`)

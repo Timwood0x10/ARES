@@ -319,37 +319,6 @@ func TestManager_UnregisteredPhase(t *testing.T) {
 	}
 }
 
-func TestManager_Wait(t *testing.T) {
-	manager := NewManager(10 * time.Second)
-	manager.RegisterPhase(PhaseGraceful, 2*time.Second)
-
-	var executed atomic.Int64
-	if err := manager.AddCallback(PhaseGraceful, func(ctx context.Context) error {
-		time.Sleep(500 * time.Millisecond)
-		executed.Store(1)
-		return nil
-	}); err != nil {
-		t.Fatalf("Failed to add callback: %v", err)
-	}
-
-	ctx := context.Background()
-	go func() {
-		if err := manager.StartShutdown(ctx); err != nil {
-			t.Logf("StartShutdown failed: %v", err)
-		}
-	}()
-
-	// Wait for shutdown to complete
-	manager.Wait()
-
-	// Give a small buffer for the callback to complete
-	time.Sleep(600 * time.Millisecond)
-
-	if executed.Load() == 0 {
-		t.Errorf("expected callback to be executed")
-	}
-}
-
 func TestManager_IsShutdown(t *testing.T) {
 	manager := NewManager(10 * time.Second)
 	manager.RegisterPhase(PhasePreShutdown, 1*time.Second)

@@ -105,7 +105,8 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return errors.New("sse url is required")
 	}
 
-	ctx, t.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	t.cancel = cancel
 	t.started = true
 	t.mu.Unlock()
 
@@ -125,13 +126,19 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	if handshakeTimeout == 0 {
 		handshakeTimeout = defaultSSETimeout
 	}
-	handshakeDeadline := time.After(handshakeTimeout)
+	handshakeTimer := time.NewTimer(handshakeTimeout)
+	defer handshakeTimer.Stop()
 	select {
 	case err := <-t.ready:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-handshakeDeadline:
+	case <-handshakeTimer.C:
+		// Abort the in-flight dial before returning: without the cancel the
+		// receiveLoop goroutine (and its TCP connection) keeps blocking in
+		// httpClient.Do until the lifetime context ends — and production
+		// passes context.Background() as the lifetime, so that never happens.
+		cancel()
 		err := fmt.Errorf("sse handshake timed out after %s (no response headers from %s)", handshakeTimeout, t.config.URL)
 		t.signalHandshake(err)
 		return err

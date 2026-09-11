@@ -156,10 +156,7 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s St
 		return errors.Wrap(err, "deactivate strategies")
 	}
 
-	insertQ := `INSERT INTO evolution_strategies
-		(id, is_active, name, version, params, parent_id, prompt_template,
-		 strategy_mutation_type, mutation_desc, score, created_at, updated_at)
-		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`
+	insertQ := r.activeInsertQuery()
 
 	now := time.Now()
 	createdAt := s.CreatedAt
@@ -180,16 +177,36 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s St
 	return errors.Wrap(tx.Commit(), "commit tx")
 }
 
+// activeInsertQuery builds the strategy upsert used by SetActive. The
+// ON CONFLICT (id) upsert matters for re-activation and rollback: the row
+// for a previously deployed strategy already exists, and a plain INSERT hit
+// the primary key and rolled back the whole transaction — deactivation
+// included — so rolling back to a KNOWN strategy always failed.
+func (r *StrategyRepository) activeInsertQuery() string {
+	return `INSERT INTO evolution_strategies
+		(id, is_active, name, version, params, parent_id, prompt_template,
+		 strategy_mutation_type, mutation_desc, score, created_at, updated_at)
+		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			is_active = true,
+			name = EXCLUDED.name,
+			version = EXCLUDED.version,
+			params = EXCLUDED.params,
+			parent_id = EXCLUDED.parent_id,
+			prompt_template = EXCLUDED.prompt_template,
+			strategy_mutation_type = EXCLUDED.strategy_mutation_type,
+			mutation_desc = EXCLUDED.mutation_desc,
+			score = EXCLUDED.score,
+			updated_at = NOW()`
+}
+
 func (r *StrategyRepository) setActiveNoTx(ctx context.Context, s StrategyRow, paramsJSON []byte) error {
 	deactivateQ := `UPDATE evolution_strategies SET is_active = false WHERE is_active = true`
 	if _, err := r.db.ExecContext(ctx, deactivateQ); err != nil {
 		return errors.Wrap(err, "deactivate strategies")
 	}
 
-	insertQ := `INSERT INTO evolution_strategies
-		(id, is_active, name, version, params, parent_id, prompt_template,
-		 strategy_mutation_type, mutation_desc, score, created_at, updated_at)
-		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`
+	insertQ := r.activeInsertQuery()
 
 	now := time.Now()
 	createdAt := s.CreatedAt

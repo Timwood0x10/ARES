@@ -5,12 +5,15 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -218,6 +221,11 @@ type SSEServerTransport struct {
 	srvCtx     context.Context
 	closing    atomic.Bool
 
+	// authToken, when non-empty, is required as "Authorization: Bearer <token>"
+	// on every /mcp request (Guarded by mu). Empty leaves the endpoint open,
+	// which is only safe behind a loopback bind or an authenticating proxy.
+	authToken string
+
 	// currentSession is set by Accept and used by Send to route the response
 	// to the correct SSE client.
 	currentSession string
@@ -236,6 +244,17 @@ func NewSSEServerTransport(addr string) *SSEServerTransport {
 		requestCh: make(chan *sessionRequest, 64),
 		sessions:  make(map[string]*clientSession),
 	}
+}
+
+// SetAuthToken enables bearer-token auth for the SSE server: when non-empty,
+// every /mcp request must present "Authorization: Bearer <token>". Empty (the
+// default) keeps the endpoint unauthenticated, which is only safe behind a
+// loopback bind or an authenticating reverse proxy — Start logs a warning when
+// a non-loopback address is bound without a token.
+func (t *SSEServerTransport) SetAuthToken(token string) {
+	t.mu.Lock()
+	t.authToken = token
+	t.mu.Unlock()
 }
 
 // Start begins listening for HTTP connections.
@@ -273,12 +292,21 @@ func (t *SSEServerTransport) Start(ctx context.Context) error {
 	})
 
 	t.started = true
+	if t.authToken == "" && !isLoopbackAddr(t.addr) {
+		log.Warn("mcp-server: sse transport bound to a non-loopback address without an auth token; /mcp is unauthenticated (call SetAuthToken)",
+			"addr", t.addr)
+	}
 	log.Info("mcp-server: sse transport started", "addr", t.addr)
 	return nil
 }
 
 // handleMCP handles both GET (SSE) and POST (requests) at /mcp.
 func (t *SSEServerTransport) handleMCP(w http.ResponseWriter, r *http.Request) {
+	if !t.authorized(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		t.handleSSEConnect(w, r)
@@ -287,6 +315,41 @@ func (t *SSEServerTransport) handleMCP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// authorized enforces the optional bearer token set by SetAuthToken. With no
+// token configured the endpoint stays open; with one, a constant-time compare
+// guards both the GET (SSE connect) and POST (request) paths.
+func (t *SSEServerTransport) authorized(r *http.Request) bool {
+	t.mu.Lock()
+	token := t.authToken
+	t.mu.Unlock()
+	if token == "" {
+		return true
+	}
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, prefix)), []byte(token)) == 1
+}
+
+// isLoopbackAddr reports whether addr binds only the loopback interface. An
+// empty host (":port") or a wildcard address ("0.0.0.0"/"::") binds all
+// interfaces and returns false — the case the Start warning keys on.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return host == "localhost"
 }
 
 // handleSSEConnect handles a new SSE client connection via GET.
@@ -320,8 +383,18 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 		t.sessionsMu.Unlock()
 	}()
 
-	// Send endpoint event with session-scoped POST URL.
-	postURL := fmt.Sprintf("http://%s/mcp?session_id=%s", t.addr, sessionID)
+	// Send endpoint event with session-scoped POST URL. Derive the scheme and
+	// host from the request: hardcoding "http://<addr>" advertised http even
+	// behind TLS and, for a bare ":port" bind, a URL with no host at all.
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if host == "" {
+		host = t.addr
+	}
+	postURL := fmt.Sprintf("%s://%s/mcp?session_id=%s", scheme, host, sessionID)
 	if _, err := fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL); err != nil {
 		log.Warn("mcp-server: sse write endpoint error", "error", err)
 		return

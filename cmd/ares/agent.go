@@ -201,9 +201,18 @@ func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bo
 		writeJSON(w, map[string]any{"error": "introspect read side requires a bearer token (introspect.token)"})
 		return false
 	}
-	// Auth not configured at all: unauthenticated read access, loopback by default.
+	// Auth not configured at all: loopback requests only. The previous
+	// unconditional allow was fail-open — `--host 0.0.0.0` with no
+	// credentials exposed the raw event stream (task inputs, checkpoints)
+	// to the network while serve.go only logged a warning. Non-loopback
+	// clients must configure one of the credential layers above.
 	if h.readAuth == nil && h.apiKey == "" {
-		return true
+		if isLoopbackRequest(r) {
+			return true
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		writeJSON(w, map[string]any{"error": "read API requires a credential for non-loopback clients (configure auth, api key, or introspect.token)"})
+		return false
 	}
 	w.WriteHeader(http.StatusUnauthorized)
 	writeJSON(w, map[string]any{"error": "invalid credentials"})

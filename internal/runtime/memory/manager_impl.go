@@ -489,9 +489,15 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	// Skills (progressive disclosure): prepend a resident block listing only
 	// each skill's name + one-line description when a registry is attached.
 	// Full skill details are loaded on demand by ID via the registry, not
-	// injected here — keeping the resident context small.
-	if m.skillsRegistry != nil {
-		skills := m.skillsRegistry.List()
+	// injected here — keeping the resident context small. The registry is
+	// snapshotted under RLock: SetSkillsRegistry writes it under the full
+	// lock, and an unlocked read here is a -race (the same contract the
+	// neighboring config snapshots above follow).
+	m.mu.RLock()
+	skillsReg := m.skillsRegistry
+	m.mu.RUnlock()
+	if skillsReg != nil {
+		skills := skillsReg.List()
 		if len(skills) > 0 {
 			contextBuilder.WriteString("Available skills:\n")
 			for _, sk := range skills {

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // Compactor is responsible for monitoring event streams and compacting
@@ -320,8 +322,12 @@ func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary
 			if uid, ok := evt.Payload["user_id"].(string); ok {
 				summary.UserID = uid
 			}
+			// Rune-safe truncation: a byte slice cut mid-rune produces
+			// invalid UTF-8, which PG text columns reject — one multi-byte
+			// character in the first 200 bytes permanently failed compaction
+			// while the stream kept growing.
 			if input, ok := evt.Payload["input"].(string); ok && len(input) > 200 {
-				summary.RequestSummary = input[:200] + "..."
+				summary.RequestSummary = truncate.WithEllipsis(input, 200)
 			} else if input, ok := evt.Payload["input"].(string); ok {
 				summary.RequestSummary = input
 			}
@@ -332,7 +338,7 @@ func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary
 			if summary.RequestSummary == "" {
 				if content, ok := evt.Payload["content"].(string); ok && content != "" {
 					if len(content) > 200 {
-						summary.RequestSummary = content[:200] + "..."
+						summary.RequestSummary = truncate.WithEllipsis(content, 200)
 					} else {
 						summary.RequestSummary = content
 					}
@@ -519,10 +525,8 @@ func DefaultSummarizer(events []*Event) string {
 	parts = append(parts, fmt.Sprintf("duration %s", duration))
 
 	if request != "" {
-		snippet := request
-		if len(snippet) > 120 {
-			snippet = snippet[:120] + "..."
-		}
+		// Rune-safe truncation (see the RequestSummary sites above).
+		snippet := truncate.WithEllipsis(request, 120)
 		parts = append(parts, fmt.Sprintf("bound to user request: %q", snippet))
 	}
 

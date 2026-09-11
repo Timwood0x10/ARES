@@ -312,6 +312,12 @@ func parsePrimary(tokens []string, pos int) (float64, int, error) {
 // prevent denial-of-service via pathological patterns or very large inputs.
 const regexInputLimit = 1 << 20 // 1 MiB
 
+// regexMaxMatches caps the number of matches returned by the regex tool.
+// An empty-match pattern (e.g. "a*") on a 1 MiB input produces millions of
+// zero-length matches — unbounded FindAllString materializes them all before
+// any limit can apply. Mirrors the internal text tool's default cap (#62).
+const regexMaxMatches = 1000
+
 type regexTool struct{}
 
 func (t *regexTool) Name() string               { return "regex" }
@@ -344,16 +350,18 @@ func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, e
 
 	switch operation {
 	case "match", "":
-		matches := re.FindAllString(text, -1)
+		matches := re.FindAllString(text, regexMaxMatches)
 		return Result{Success: true, Data: map[string]any{
 			"matched": len(matches) > 0, "match_count": len(matches), "matches": matches,
-			"pattern": pattern, "operation": "match",
+			"truncated": len(matches) == regexMaxMatches,
+			"pattern":   pattern, "operation": "match",
 		}}, nil
 	case "extract":
-		matches := re.FindAllStringSubmatch(text, -1)
+		matches := re.FindAllStringSubmatch(text, regexMaxMatches)
 		return Result{Success: true, Data: map[string]any{
 			"matched": len(matches) > 0, "match_count": len(matches), "groups": matches,
-			"pattern": pattern, "operation": "extract",
+			"truncated": len(matches) == regexMaxMatches,
+			"pattern":   pattern, "operation": "extract",
 		}}, nil
 	case "replace":
 		replacement, _ := params["replacement"].(string)
@@ -717,7 +725,13 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 		}
 		files := make([]map[string]any, 0, len(entries))
 		for _, e := range entries {
-			info, _ := e.Info()
+			info, err := e.Info()
+			if err != nil || info == nil {
+				// The entry vanished (or its stat failed) between ReadDir
+				// and Info — skip it instead of nil-dereferencing below.
+				// Same contract as the core file tool.
+				continue
+			}
 			files = append(files, map[string]any{"name": e.Name(), "is_dir": e.IsDir(), "size": info.Size()})
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "count": len(files), "files": files}}, nil

@@ -49,7 +49,11 @@ func (a *Agent) resolveTools(
 	if err != nil {
 		slog.Warn("sdk: discovery source.Tools failed; falling back to static tools",
 			"error", err)
-		return a.toCoreTools(a.snapshotTools()), a.runtime.toolReg, nil
+		// Same fallback as discovery-off: the syscall tools (spawn_agent/
+		// create_task/…) must survive every fallback path — a bare
+		// toCoreTools snapshot here dropped them, contradicting the
+		// contract above and leaving the agent unable to decompose work.
+		return legacy()
 	}
 	selected, err := a.selectTools(ctx, input, available)
 	if err != nil {

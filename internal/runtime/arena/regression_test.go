@@ -392,9 +392,14 @@ func TestRun_EqualStrategies(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Win rate should be exactly 1.0 since all scores are equal (new >= old).
-	if result.WinRate < 0.9 {
-		t.Errorf("expected WinRate >= 0.9 for identical strategies, got %f", result.WinRate)
+	// Identical strategies produce only ties, and ties are not wins
+	// (#P1-19): WinRate must be 0, never 1.0.
+	if result.WinRate != 0 {
+		t.Errorf("expected WinRate 0 for identical strategies (ties are not wins), got %f", result.WinRate)
+	}
+	// Identical strategies must not be flagged as an improvement.
+	if result.NewBetter {
+		t.Error("expected NewBetter false for identical strategies")
 	}
 	// Should NOT be confident since there's no real difference.
 	if result.Confident {
@@ -684,7 +689,10 @@ func TestComputeWinRate(t *testing.T) {
 		{"new wins all", []float64{1, 2, 3}, []float64{4, 5, 6}, 1.0},
 		{"old wins all", []float64{4, 5, 6}, []float64{1, 2, 3}, 0.0},
 		{"mixed results", []float64{5, 3, 7}, []float64{4, 6, 2}, 1.0 / 3.0},
-		{"equal scores", []float64{5, 5, 5}, []float64{5, 5, 5}, 1.0},
+		// Ties are NOT wins (#P1-19): counting them made an identical
+		// strategy reach WinRate=1.0 and be judged as an improvement.
+		{"equal scores are not wins", []float64{5, 5, 5}, []float64{5, 5, 5}, 0.0},
+		{"tie plus strict win", []float64{5, 3}, []float64{5, 4}, 0.5},
 		{"empty slices", []float64{}, []float64{}, 0},
 	}
 

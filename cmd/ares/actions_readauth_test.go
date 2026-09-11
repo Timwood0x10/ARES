@@ -145,19 +145,21 @@ func TestNonAPIPathsStayUngated(t *testing.T) {
 }
 
 // TestReadEndpointsOpenWhenAuthUnconfigured verifies the local-dev contract:
-// with no auth configured at all, the read surfaces stay open (protected only
-// by the loopback default bind). Destructive endpoints remain
-// deny-by-default regardless.
+// with no auth configured at all, the read surfaces stay open for LOOPBACK
+// clients only — the fail-open posture (allow every remote when no credential
+// exists) exposed the raw event stream under `--host 0.0.0.0`. Destructive
+// endpoints remain deny-by-default regardless.
 func TestReadEndpointsOpenWhenAuthUnconfigured(t *testing.T) {
 	// No apiKey, no auth middleware; a real intro + inner so the JSON feed
 	// route reaches the handler rather than a nil inner.
 	h := &actionHandler{inner: http.NotFoundHandler(), intro: introspect.NewHandler(&introspect.Store{})}
 	for _, ep := range []string{"/api/tools", "/api/mcp/tools", "/api/v1/introspect/snapshot"} {
 		req := httptest.NewRequest(http.MethodGet, ep, nil)
+		req.RemoteAddr = "127.0.0.1:55555"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code == http.StatusUnauthorized {
-			t.Fatalf("GET %s with auth unconfigured = 401, local-dev access must stay open", ep)
+			t.Fatalf("GET %s loopback with auth unconfigured = 401, local-dev access must stay open", ep)
 		}
 	}
 }
