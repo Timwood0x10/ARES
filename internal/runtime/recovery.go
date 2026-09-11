@@ -3,8 +3,6 @@ package runtime
 import (
 	"context"
 	"sync"
-
-	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
 // BasicRecoveryPlugin implements RecoveryPlugin with a simple allowlist-based
@@ -71,16 +69,6 @@ func (p *BasicRecoveryPlugin) ShouldRecover(_ context.Context, failure StepFailu
 
 var _ RecoveryPlugin = (*BasicRecoveryPlugin)(nil)
 
-// RecoverSnapshotOrEvents attempts snapshot-first recovery for agent state.
-func RecoverSnapshotOrEvents(ctx context.Context, store base.SnapshotStore, agentID string, eventFn func() map[string]any) map[string]any {
-	if store != nil {
-		snap, err := store.Load(ctx, agentID)
-		if err != nil {
-			return eventFn()
-		}
-		if snap != nil {
-			return snap
-		}
-	}
-	return eventFn()
-}
+// (RecoverSnapshotOrEvents was removed: it had zero callers — Manager
+// inlines the same snapshot-first/event-fallback logic at its restore
+// site.)

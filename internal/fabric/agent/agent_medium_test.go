@@ -112,7 +112,8 @@ func (noopSink) Emit(_ context.Context, _ AgentEvent) error { return nil }
 // TestRecordReadsAgentStateUnderLock pins record's locking: it runs after
 // the fabric lock is released, so reading a.State must take the agent's own
 // lock. Under -race, the pre-fix unlocked read failed against concurrent
-// SetIdle/SetRunning transitions.
+// state transitions. (The writer side uses Suspend/Resume — the remaining
+// in-place State writers after SetRunning/SetIdle were removed as dead code.)
 func TestRecordReadsAgentStateUnderLock(t *testing.T) {
 	ctx := context.Background()
 	f := NewFabric().WithEventSink(noopSink{})
@@ -142,8 +143,8 @@ func TestRecordReadsAgentStateUnderLock(t *testing.T) {
 				return
 			default:
 			}
-			_ = f.SetRunning("racy")
-			_ = f.SetIdle("racy")
+			_ = f.Suspend(ctx, "racy")
+			_ = f.Resume(ctx, "racy")
 		}
 	}()
 

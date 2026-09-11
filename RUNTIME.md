@@ -160,7 +160,7 @@ SUSPENDED─(下轮 drain re-acquire)→LEASED；过期租约→CheckExpiredLeas
 - runtime.Manager（leader 运行时）：注册表+HTTP 操作面，"agents are scheduled, not orchestrated"（serve.go:382）。
 - PluginBus 能力插件：能力面已下葬（C1.3，2026-09-10）——CapCheckpoint/CapMemory/CapEvolution 及其插件契约（CheckpointPlugin/Flusher/CheckpointStore/ExperienceCheckpoint、MemoryPlugin/RouteAdvice、EvolutionPlugin/ExecutionState/RuntimeRecommendation/ExecutionOutcome、MemoryRouter/EvolutionRouter、OutcomeExperienceRecorder、StateSnapshot、collector.MergeInto）全删（零生产注册者，OnRoundEnd 能力分发是唯一消费者）；只注册 LoopPlugin（轮次时钟：ShouldExecuteRound/round budget/Iteration），继任路径 fabric/task CheckpointEnvelope、retriever_wiring memory、ares_evolution 直接消费。
 - legacy evolution scheduler / dream cycle：config gate 关闭。
-- compat/（内部引用已清零，目录留待 0.4.x release-note 决策）、api/（纯转发层，examples 在用）、arena、dashboard 遗留面。
+- arena、dashboard 遗留面。（compat/、api/ 已整删，2026-09-11）
 
 ## 8. 架构收敛遗留（2026-09-09 架构评审台账；同日全收敛——7/7 处置完毕）
 
@@ -170,9 +170,9 @@ SUSPENDED─(下轮 drain re-acquire)→LEASED；过期租约→CheckExpiredLeas
 | **A2** | fabric→runtime 反向依赖无测试保护 | ✅ 已修（2026-09-09）：新增 `internal/fabric/task/architecture_test.go` `TestFabricCoreMustNotImportRuntime`——锁 task 顶层 + agent + planprojection 三包禁 import internal/runtime（测试跳过；workflow/ 子树的 evolution-patch 应用面为既定评审过的 seam，gate 注释明示边界）。 |
 | **A3** | `CostUSD` 恒 0，缺模型价目表 | ✅ 已决策移除（2026-09-09）：USD 货币化不做——token 维度即成本信号（costPenalty 1/(1+tokens/100k)），StrategySample.CostUSD 占位字段与 cost_usd payload 键已删。observability 的 `ARES_cost_usd_total` 是独立既有指标面，另行评估。 |
 | **A4** | `distilled_memories` 幽灵 DB 表 | ✅ 已修（2026-09-09）：migrate_storage.go 的整族 DDL（表+RLS+7 索引+content_hash+去重索引+updated_at，即原语句 9-12）删除——新部署不再建废表；存量库不受影响（语句本就 IF NOT EXISTS，删除对其惰性）。删表数据属操作员决策，不进 schema migration。 |
-| **A5** | `compat/` 整删待决策 | 保持（既定边界）：patch 线（v0.3.x）删导出包是 breaking change，整删属 0.4.x release-note 决策（compat/doc.go 书面政策）。内部引用已清零（2026-09-09）。 |
+| **A5** | `compat/` 整删待决策 | ✅ 已整删（2026-09-11）：内部引用清零后目录整体删除（26 文件）；0.3.x 边界由维护者拍板突破。 |
 | **A6** | AKG BETA、新老 `arena` 并存 | ✅ 已修（2026-09-09）：实况修正——`internal/runtime/arena.go`（ArenaPlugin，plugin-bus 时代的故障注入 demo）零生产消费，已下葬（architecture_test 符号清单同步）；`internal/runtime/arena/`（RegressionTester 家族）是活包（5 生产消费者），无双实现残留。AKG BETA 状态见 knowledgeapi doc（稳定性计划属产品线）。 |
-| **A7** | `api/evolution`、`api/discovery` 未内部化 | ✅ 已修（2026-09-09）：M5 三步完成——api/evolution（含 genome/mutation 子包）→ `internal/evoapi`，api/discovery → `internal/discoveryapi`；api/ 侧转发层 + test/apifwd 编译锁扩展（含方法集断言）；go doc 前后符号 IDENTICAL；examples 6 目录经转发层继续编译。api/ 目录现为纯转发层，整删只差 examples 迁移 + 0.4.x 决策。 |
+| **A7** | `api/evolution`、`api/discovery` 未内部化 | ✅ 已修（2026-09-09）：M5 三步完成——api/evolution（含 genome/mutation 子包）→ `internal/evoapi`，api/discovery → `internal/discoveryapi`；api/ 侧转发层 + test/apifwd 编译锁扩展（含方法集断言）；go doc 前后符号 IDENTICAL；examples 6 目录经转发层继续编译。api/ 转发层已随 examples 迁移 internal 真身包后整删（2026-09-11，11 个 examples 改 import，test/apifwd 编译锁同批下葬）。 |
 
 ### 台账说明
-本节 2026-09-09 全收敛：A1 定性、A2 锁、A3 决策移除、A4/A6 下葬、A7 内部化；A5 保持既定 0.4.x 边界。无开放项。
+本节 2026-09-09 全收敛：A1 定性、A2 锁、A3 决策移除、A4/A6 下葬、A7 内部化；A5 于 2026-09-11 整删（api/ 同批）。无开放项。

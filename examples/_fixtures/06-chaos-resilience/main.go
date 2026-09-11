@@ -9,7 +9,7 @@
 //	handle the resulting error gracefully.
 //
 // Learning objectives (what this example teaches you):
-//   - How to build custom tools with tools.ToolFunc and register them on the
+//   - How to build custom tools with sdk.ToolFunc and register them on the
 //     Runtime's tool registry.
 //   - How different failure modes (timeout, not-found, connection reset,
 //     corrupted data) surface through tool errors.
@@ -23,9 +23,9 @@
 //   - github.com/Timwood0x10/ares/sdk.WithOllama              // pick Ollama provider + model
 //   - github.com/Timwood0x10/ares/sdk.WithTrace               // enable per-step trace logging
 //   - github.com/Timwood0x10/ares/sdk.(*Runtime).ToolRegistry // access tool registry
-//   - github.com/Timwood0x10/ares/api/tools.Tool              // tool interface
-//   - github.com/Timwood0x10/ares/api/tools.ToolFunc          // struct-based tool implementation
-//   - github.com/Timwood0x10/ares/api/tools.(*Registry).Register
+//   - github.com/Timwood0x10/ares/sdk.Tool              // tool interface
+//   - github.com/Timwood0x10/ares/sdk.ToolFunc          // struct-based tool implementation
+//   - github.com/Timwood0x10/ares/sdk.(*Registry).Register
 //   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
 //   - github.com/Timwood0x10/ares/sdk.WithInstruction         // set system prompt
 //   - github.com/Timwood0x10/ares/sdk.(*Agent).Run            // run a single task
@@ -65,7 +65,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
@@ -85,7 +84,7 @@ func main() {
 	// on the Runtime's tool registry so the agent can discover and call them.
 	// readFileTool points at the example's data directory for file-system tests.
 	dataDir := filepath.Join("examples", "06-chaos-resilience", "data")
-	chaosTools := []tools.Tool{
+	chaosTools := []sdk.Tool{
 		readFileTool(dataDir),
 		slowTool,
 		unreliableTool,
@@ -187,8 +186,8 @@ func main() {
 
 // readFileTool returns a tool that reads and pretty-prints a JSON file from the
 // given data directory. It exercises file-not-found and invalid-JSON error paths.
-func readFileTool(dataDir string) tools.Tool {
-	return tools.ToolFunc{
+func readFileTool(dataDir string) sdk.Tool {
+	return sdk.ToolFunc{
 		ToolName: "read_file",
 		ToolDesc: "Read a JSON data file from the data directory",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -219,7 +218,7 @@ func readFileTool(dataDir string) tools.Tool {
 
 // slowTool is a deliberately slow tool that sleeps for 5 seconds before
 // returning, exercising the tool-timeout code path.
-var slowTool = tools.ToolFunc{
+var slowTool = sdk.ToolFunc{
 	ToolName: "slow_tool",
 	ToolDesc: "A deliberately slow tool that takes 5 seconds",
 	Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -235,7 +234,7 @@ var slowTool = tools.ToolFunc{
 
 // unreliableTool simulates a service that fails 80% of the time. Used together
 // with echoTool to demonstrate graceful degradation and fallback.
-var unreliableTool = tools.ToolFunc{
+var unreliableTool = sdk.ToolFunc{
 	ToolName: "unreliable_tool",
 	ToolDesc: "A tool that fails 80% of the time",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -247,7 +246,7 @@ var unreliableTool = tools.ToolFunc{
 }
 
 // echoTool is a simple fallback tool that echoes its input string.
-var echoTool = tools.ToolFunc{
+var echoTool = sdk.ToolFunc{
 	ToolName: "echo_tool",
 	ToolDesc: "Fallback tool that echoes input",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -258,7 +257,7 @@ var echoTool = tools.ToolFunc{
 
 // flakyNetworkTool simulates a flaky network API that times out after 3 seconds,
 // exercising the network-failure and cancellation code paths.
-var flakyNetworkTool = tools.ToolFunc{
+var flakyNetworkTool = sdk.ToolFunc{
 	ToolName: "flaky_network_api",
 	ToolDesc: "Simulates a flaky network API that sometimes times out",
 	Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -277,7 +276,7 @@ var flakyNetworkTool = tools.ToolFunc{
 
 // mcpDisconnectTool simulates an MCP server disconnection, returning a transport-
 // closed error that the agent should explain to the user.
-var mcpDisconnectTool = tools.ToolFunc{
+var mcpDisconnectTool = sdk.ToolFunc{
 	ToolName: "mcp_disconnect_tool",
 	ToolDesc: "Simulates an MCP server disconnection",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -289,7 +288,7 @@ var mcpDisconnectTool = tools.ToolFunc{
 
 // llmFailureTool simulates an LLM service failure (HTTP 503, rate-limit
 // exceeded), exercising the LLM-provider-error recovery path.
-var llmFailureTool = tools.ToolFunc{
+var llmFailureTool = sdk.ToolFunc{
 	ToolName: "llm_failure_tool",
 	ToolDesc: "Simulates an LLM service failure",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -301,7 +300,7 @@ var llmFailureTool = tools.ToolFunc{
 
 // memoryCorruptTool simulates corrupted memory/data retrieval, returning a
 // checksum-mismatch error for the given key.
-var memoryCorruptTool = tools.ToolFunc{
+var memoryCorruptTool = sdk.ToolFunc{
 	ToolName: "memory_corrupt_tool",
 	ToolDesc: "Simulates corrupted memory/data retrieval",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {

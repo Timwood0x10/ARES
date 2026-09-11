@@ -88,41 +88,9 @@ func TestGovernance_DeadlineExceeded(t *testing.T) {
 	}
 }
 
-// TestGovernance_ResetResource verifies Reset clears counters and re-arms the
-// deadline — the post-checkpoint "new quantum" hook.
-func TestGovernance_ResetResource(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	f := NewFabric().WithClock(func() time.Time { return now })
-	if _, err := f.Spawn(ctx, SpawnSpec{
-		Identity: "A",
-		Governance: Governance{
-			TokenBudget: 100,
-			Deadline:    time.Minute,
-		},
-	}); err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	if err := f.ConsumeResource("A", 60, 0); err != nil {
-		t.Fatalf("consume: %v", err)
-	}
-
-	// Advance past deadline, then reset.
-	now = now.Add(2 * time.Minute)
-	if err := f.ResetResource("A"); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
-	if over, _ := f.DeadlineExceeded("A"); over {
-		t.Fatal("deadline must be re-armed by ResetResource")
-	}
-	tok, tool, err := f.BudgetUsage("A")
-	if err != nil || tok != 0 || tool != 0 {
-		t.Fatalf("usage after reset = %d/%d, %v; want 0/0", tok, tool, err)
-	}
-	if err := f.ConsumeResource("A", 100, 0); err != nil {
-		t.Fatalf("consume full budget after reset: %v", err)
-	}
-}
+// (TestGovernance_ResetResource was removed with Fabric.ResetResource: the
+// "new quantum start" hook had zero production callers, so its re-arm
+// behavior was unreachable outside this test.)
 
 // TestGovernance_UnknownAndUngovernedAgents verifies error paths: unknown id
 // and agents spawned without budgets.

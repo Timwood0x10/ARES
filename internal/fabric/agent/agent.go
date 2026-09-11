@@ -13,8 +13,6 @@ type AgentState string
 const (
 	// StateIdle: the agent is alive and available for assignment.
 	StateIdle AgentState = "IDLE"
-	// StateRunning: the agent is executing a task.
-	StateRunning AgentState = "RUNNING"
 	// StateSuspended: the agent is paused (Lifecycle, not Task); its state
 	// is preserved and it can be resumed.
 	StateSuspended AgentState = "SUSPENDED"
@@ -117,10 +115,6 @@ var ErrAgentRetired = errors.New("agentfabric: agent retired")
 // ErrAgentNotSuspended is returned when an operation (e.g. resume) targets an
 // agent that is not in the SUSPENDED state.
 var ErrAgentNotSuspended = errors.New("agentfabric: agent not suspended")
-
-// ErrAgentRunning is returned when an operation cannot proceed because the
-// agent is RUNNING (e.g. retire a running agent without suspend first).
-var ErrAgentRunning = errors.New("agentfabric: agent running")
 
 // ErrAgentNotExecutable is returned when ExecuteStep is called on an agent
 // that was spawned without a CognitionFactory (execution capability not injected).

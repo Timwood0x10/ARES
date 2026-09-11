@@ -1,8 +1,7 @@
-// deepcopy.go provides the recursive copy used by the strategy/task
-// defensive-copy paths (memory_strategy_store.dupStrategy,
-// shadow_executor.cloneTask). A struct-level shallow copy still aliases
-// nested maps/slices, so a caller or A/B arm mutating a nested value would
-// corrupt the stored/shared copy (REVIEW 3.4#7, 3.4#10).
+// deepcopy.go provides the recursive copy used by the strategy
+// defensive-copy path (memory_strategy_store.dupStrategy). A struct-level
+// shallow copy still aliases nested maps/slices, so a caller mutating a
+// nested value would corrupt the stored copy (REVIEW 3.4#7).
 package evolution
 
 // deepCopyValue returns a recursive copy of JSON-shaped values

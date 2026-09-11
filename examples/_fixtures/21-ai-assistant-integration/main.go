@@ -21,7 +21,7 @@
 //   - Learn the guard errors: ErrNilIntent, ErrNilGraph, ErrEmptyTenantID.
 //
 // Core APIs used:
-//   - github.com/Timwood0x10/ares/api/knowledge
+//   - github.com/Timwood0x10/ares/internal/knowledgeapi
 //     Intent, TokenBudget, WorkingGraph, KnowledgeObject, ObjectType
 //   - github.com/Timwood0x10/ares/internal/knowledge/runtime
 //     runtime.New() — constructs a KnowledgeRuntime (planner, discovery,
@@ -59,9 +59,9 @@ import (
 	"os"
 	"time"
 
-	apiknowledge "github.com/Timwood0x10/ares/api/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/knowledge/service"
+	apiknowledge "github.com/Timwood0x10/ares/internal/knowledgeapi"
 )
 
 // exitf logs a formatted message and exits with code 1, canceling the

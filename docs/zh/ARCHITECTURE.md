@@ -324,7 +324,6 @@ graph TB
 | `internal/api_impl` | 实现 | API 实现层（适配器、服务） |
 | `internal/cmdutil` | 工具 | CLI 工具函数 |
 | `evaluation/` | 评估 | 评估框架：RunScenario/Report/Metrics |
-| `compat/` | 兼容 | OpenAI/Ollama 协议适配、向量兼容 |
 | `services/embedding` | 服务 | Python 嵌入服务 |
 
 ## 六层架构说明

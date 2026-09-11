@@ -69,7 +69,7 @@ ci-test-race-short:
 # CI security scan
 ci-security:
 	@echo "Running gosec security scan..."
-	@go run github.com/securego/gosec/v2/cmd/gosec@latest ./internal/... ./api/...
+	@go run github.com/securego/gosec/v2/cmd/gosec@latest ./internal/...
 	@echo "Security scan: OK"
 
 # Convergence freeze patrol (ARCHITECTURE.md Phase 0). Fails on new
@@ -230,9 +230,6 @@ benchmark:
 	@echo "=== Evaluation Framework Benchmarks ==="
 	@go test -bench=. -benchmem ./internal/eval/...
 	@echo ""
-	@echo "=== Streaming Handler Benchmarks ==="
-	@go test -bench=. -benchmem ./api/handler/...
-	@echo ""
 	@echo "=== Plugin System Benchmarks ==="
 	@go test -bench=. -benchmem ./internal/tools/resources/core/...
 	@echo ""
@@ -243,7 +240,7 @@ benchmark:
 
 benchmark-quick:
 	@echo "Running quick benchmarks (1s each)..."
-	@go test -bench=. -benchtime=1s ./internal/eval/... ./api/handler/... ./internal/tools/resources/core/...
+	@go test -bench=. -benchtime=1s ./internal/eval/... ./internal/tools/resources/core/...
 
 benchmark-profile:
 	@echo "Running benchmarks with CPU profile..."
@@ -262,9 +259,6 @@ benchmark-save:
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "## Evaluation Framework Benchmarks" >> benchmarks/benchmark_report.md
 	@go test -bench=. -benchmem ./internal/eval/... >> benchmarks/benchmark_report.md 2>&1
-	@echo "" >> benchmarks/benchmark_report.md
-	@echo "## Streaming Handler Benchmarks" >> benchmarks/benchmark_report.md
-	@go test -bench=. -benchmem ./api/handler/... >> benchmarks/benchmark_report.md 2>&1
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
 

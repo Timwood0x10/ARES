@@ -42,7 +42,7 @@ func TestSmokeServePanel(t *testing.T) {
 		},
 		Agents: []agentfabric.AgentView{
 			{Identity: "leader", State: agentfabric.StateIdle, Capabilities: []string{"orchestrate"}, Confidence: 1},
-			{Identity: "coder-1", State: agentfabric.StateRunning, Capabilities: []string{"code", "refactor"}, Load: 0.75, Confidence: 0.95, Parent: "leader"},
+			{Identity: "coder-1", State: agentfabric.StateIdle, Capabilities: []string{"code", "refactor"}, Load: 0.75, Confidence: 0.95, Parent: "leader"},
 			{Identity: "reviewer-1", State: agentfabric.StateSuspended, Capabilities: []string{"review"}, Load: 0.25, Confidence: 0.8},
 		},
 	})

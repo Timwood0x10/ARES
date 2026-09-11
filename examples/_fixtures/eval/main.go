@@ -37,7 +37,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/examples/_fixtures/evaluation"
 	"github.com/Timwood0x10/ares/sdk"
 )
@@ -302,16 +301,16 @@ func (t *simpleTool) Name() string               { return t.name }
 func (t *simpleTool) Description() string        { return t.desc }
 func (t *simpleTool) Parameters() map[string]any { return nil }
 func (t *simpleTool) Capabilities() []string     { return nil }
-func (t *simpleTool) Execute(_ context.Context, params map[string]any) (tools.Result, error) {
+func (t *simpleTool) Execute(_ context.Context, params map[string]any) (sdk.ToolResult, error) {
 	input, _ := params["input"].(string)
 	if t.name == "unreliable_tool" {
-		return tools.Result{Success: false, Data: "service unavailable"}, nil
+		return sdk.ToolResult{Success: false, Data: "service unavailable"}, nil
 	}
 	result := t.fn(input)
 	if result == "" {
-		return tools.Result{Success: false, Data: "empty result"}, nil
+		return sdk.ToolResult{Success: false, Data: "empty result"}, nil
 	}
-	return tools.Result{Success: true, Data: result}, nil
+	return sdk.ToolResult{Success: true, Data: result}, nil
 }
 
 func toolFunc(name, desc string, fn func(string) string) *simpleTool {

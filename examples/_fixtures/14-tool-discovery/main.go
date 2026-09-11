@@ -51,7 +51,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/tools"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
 	rescore "github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 	"github.com/Timwood0x10/ares/sdk"

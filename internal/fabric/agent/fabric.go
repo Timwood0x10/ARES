@@ -174,7 +174,7 @@ func (f *Fabric) nextIDLocked() string {
 // record emits a lifecycle event to the sink (best-effort; a failed emit
 // never breaks the state machine — the in-memory registry is authoritative).
 // a.State is read under the agent's own lock: state transitions run under
-// a.mu (see Suspend/Resume/Retire/SetRunning), and record is called AFTER
+// a.mu (see Suspend/Resume/Retire), and record is called AFTER
 // the fabric lock is released — an unlocked read raced every concurrent
 // transition of the same agent.
 func (f *Fabric) record(ctx context.Context, a *Agent, typ AgentEventType, payload map[string]any) {

@@ -125,26 +125,6 @@ func (f *Fabric) DeadlineExceeded(agentID string) (exceeded bool, err error) {
 	return !f.now().Before(g.deadline), nil
 }
 
-// ResetResource clears the agent's consumption counters (and re-arms its
-// deadline) — the "new quantum start" hook after a
-// checkpoint/resume boundary.
-func (f *Fabric) ResetResource(agentID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	a, found := f.agents[agentID]
-	if !found {
-		return ErrAgentNotFound
-	}
-	a.mu.Lock()
-	a.governance.tokenUsed = 0
-	a.governance.toolUsed = 0
-	if a.governance.cfg.Deadline > 0 {
-		a.governance.deadline = f.now().Add(a.governance.cfg.Deadline)
-	}
-	a.mu.Unlock()
-	return nil
-}
-
 // governanceLocked reads the agent's governance state under Agent.mu. Callers
 // must hold Fabric.mu (registry lock). Every agent has a governance state from
 // birth (zero-value = unlimited), so this never fails.

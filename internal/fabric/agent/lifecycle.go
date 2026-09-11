@@ -240,7 +240,7 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 //   - agentID: the agent to retire.
 //
 // Returns:
-//   - error: ErrAgentNotFound / ErrAgentRunning / ErrAgentRetired.
+//   - error: ErrAgentNotFound / ErrAgentRetired.
 func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	f.mu.Lock()
 	a, ok := f.agents[agentID]
@@ -252,10 +252,8 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 		f.mu.Unlock()
 		return nil // idempotent
 	}
-	if a.State == StateRunning {
-		f.mu.Unlock()
-		return ErrAgentRunning
-	}
+	// (A RUNNING guard was removed with SetRunning/SetIdle: those transitions
+	// had zero production callers, so no agent could ever be RUNNING here.)
 	f.releaseLocked(a.resources)
 	a.resources = nil
 	a.mu.Lock()
@@ -347,38 +345,7 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 	return nil
 }
 
-// SetRunning marks an agent as RUNNING (called by the Scheduler when it
-// binds a Task to the agent). Internal: not a public lifecycle primitive.
-func (f *Fabric) SetRunning(agentID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	a, ok := f.agents[agentID]
-	if !ok {
-		return ErrAgentNotFound
-	}
-	if a.State == StateRetired {
-		return ErrAgentRetired
-	}
-	a.mu.Lock()
-	a.State = StateRunning
-	a.mu.Unlock()
-	return nil
-}
-
-// SetIdle marks an agent as IDLE (called by the Scheduler when a Task yields
-// or completes). Internal: not a public lifecycle primitive.
-func (f *Fabric) SetIdle(agentID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	a, ok := f.agents[agentID]
-	if !ok {
-		return ErrAgentNotFound
-	}
-	if a.State == StateRetired {
-		return ErrAgentRetired
-	}
-	a.mu.Lock()
-	a.State = StateIdle
-	a.mu.Unlock()
-	return nil
-}
+// (SetRunning/SetIdle were removed: the RUNNING/IDLE quantum transitions had
+// zero production callers — the scheduler admits candidates via IsIdle and
+// the LoadTracker, never via a state flip — so the pair only ever ran in
+// tests, and StateRunning/ErrAgentRunning were unreachable from production.)

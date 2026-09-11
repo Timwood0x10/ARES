@@ -38,7 +38,10 @@ type memoryManager struct {
 	stopped       bool
 
 	// Distillation components (nil when using NewMemoryManager without distiller).
-	distiller *distillation.Distiller
+	// distiller is the consumer-defined interface (pipeline.Distiller) so the
+	// manager and the Pipeline share one seam; the constructor injects the
+	// concrete *distillation.Distiller.
+	distiller Distiller
 	embedder  apiembed.EmbeddingService
 	expRepo   distillation.ExperienceRepository
 
@@ -656,7 +659,14 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		tenantID = ""
 	}
 	if tenantID == "" {
-		tenantID = "default"
+		// Fall back to the CONFIGURED default tenant, not the literal
+		// "default": SearchSimilarTasks reads m.defaultTenantID, so a literal
+		// here wrote under "default" while a SetDefaultTenantID override made
+		// every read look in another tenant — self-written experiences became
+		// unfindable (write/read tenant mismatch).
+		m.mu.RLock()
+		tenantID = m.defaultTenantID
+		m.mu.RUnlock()
 	}
 
 	memories, err := m.distiller.DistillConversation(ctx, taskID, distMessages, tenantID, userID)
@@ -756,7 +766,13 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		return nil, errors.Wrap(err, "generate query embedding")
 	}
 
-	experiences, err := m.expRepo.SearchByVector(ctx, queryVector, m.defaultTenantID, limit)
+	// Snapshot the tenant under RLock: SetDefaultTenantID writes it under the
+	// full lock, and an unlocked read here is a -race (same contract as the
+	// config snapshots in BuildContext).
+	m.mu.RLock()
+	tenant := m.defaultTenantID
+	m.mu.RUnlock()
+	experiences, err := m.expRepo.SearchByVector(ctx, queryVector, tenant, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "search experiences")
 	}
@@ -804,8 +820,19 @@ func (m *memoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (s
 	return "", ErrAgentCheckpointNotSupported
 }
 
-// SetDefaultTenantID overrides the default tenant ID used for search operations.
-// Must match the tenant used during write (StoreDistilledTask) for correct multi-tenant isolation.
+// SetDefaultTenantID overrides the default tenant ID used for search
+// operations and for the write fallback in StoreDistilledTask (a task whose
+// payload carries no tenant_id is distilled under this tenant).
+//
+// LIMITATION (write tenant pinning): the DB write tenant for experiences is
+// fixed at adapter construction (experienceadapters.NewDistillationRepo is
+// built with DefaultTenant — the llmexp Experience DTO carries no TenantID
+// field), so an override here re-scopes READS while distillation writes keep
+// landing in the construction-time tenant.
+//
+// TODO(tech-debt): thread the tenant through the write chain (DTO field or
+// context seam) before any real multi-tenant deployment; tracked with the
+// lease/tenant unfired-wiring ledger item.
 func (m *memoryManager) SetDefaultTenantID(tenantID string) {
 	if tenantID == "" {
 		return

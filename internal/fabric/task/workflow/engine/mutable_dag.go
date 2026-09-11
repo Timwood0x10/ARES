@@ -32,31 +32,11 @@ var (
 
 // MutableDAG extends DAG with thread-safe mutation operations.
 type MutableDAG struct {
-	mu            sync.RWMutex
-	dag           *DAG
-	steps         map[string]*Step
-	version       uint64
-	hub           *GraphEventHub
-	schedulerType string // active scheduler type, set by genome evolution patches; guarded by mu
-}
-
-// SetSchedulerType overrides the execution-ordering strategy ("*graph.
-// DefaultScheduler" or "" = FIFO topological order; anything else shuffles
-// ready nodes). Genome evolution patches call this; the field is private so
-// every access is serialized under the DAG lock — the previous public field
-// could be written while GetExecutionOrder read it (data race).
-func (m *MutableDAG) SetSchedulerType(typ string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.schedulerType = typ
-}
-
-// SchedulerTypeOf reports the current execution-ordering strategy under the
-// read lock.
-func (m *MutableDAG) SchedulerTypeOf() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.schedulerType
+	mu      sync.RWMutex
+	dag     *DAG
+	steps   map[string]*Step
+	version uint64
+	hub     *GraphEventHub
 }
 
 // NewMutableDAG creates a MutableDAG from initial steps.
@@ -388,29 +368,14 @@ func (m *MutableDAG) GetExecutionOrder() ([]string, error) {
 		}
 	}
 
-	// When the scheduler type is not the default, shuffle the ready queue
-	// at each step to produce a different execution order. This is how
-	// genome evolution of scheduler config actually affects the agent's
-	// runtime behavior — the PatchChangeScheduler sets the scheduler type
-	// on the live DAG, and GetExecutionOrder reads it here (under the read
-	// lock it already holds).
-	useRandom := m.schedulerType != "" && m.schedulerType != "*graph.DefaultScheduler"
-
 	result := make([]string, 0, len(m.dag.Nodes))
 	for len(queue) > 0 {
-		var node string
-		if useRandom && len(queue) > 1 {
-			// Non-default scheduler: randomize selection order.
-			idx := int(time.Now().UnixNano()) % len(queue)
-			if idx < 0 {
-				idx = -idx
-			}
-			node = queue[idx]
-			queue = append(queue[:idx], queue[idx+1:]...)
-		} else {
-			node = queue[0]
-			queue = queue[1:]
-		}
+		// FIFO topological order. (A scheduler-override shuffle branch was
+		// removed with SetSchedulerType: it had zero production setters —
+		// the live graph patch path is graph.GraphPatchExecutor, a different
+		// type — so the random branch was unreachable.)
+		node := queue[0]
+		queue = queue[1:]
 		result = append(result, node)
 
 		for _, neighbor := range m.dag.Edges[node] {

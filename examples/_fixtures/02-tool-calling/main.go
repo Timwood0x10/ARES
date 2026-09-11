@@ -7,7 +7,7 @@
 //	weather, string_tools) are registered and exercised across two tasks.
 //
 // Learning objectives (what this example teaches you):
-//   - How to define several custom tools using tools.ToolFunc.
+//   - How to define several custom tools using sdk.ToolFunc.
 //   - How to register a slice of tools through the Runtime's ToolRegistry.
 //   - How to run multiple conversational turns against the same Agent and
 //     observe per-turn statistics (tool calls, tokens, duration).
@@ -22,8 +22,8 @@
 //   - rt.NewAgent                    — github.com/Timwood0x10/ares/sdk
 //   - sdk.WithInstruction            — github.com/Timwood0x10/ares/sdk
 //   - agent.Run                      — github.com/Timwood0x10/ares/sdk
-//   - tools.ToolFunc                 — github.com/Timwood0x10/ares/api/tools
-//   - tools.Tool (interface)         — github.com/Timwood0x10/ares/api/tools
+//   - sdk.ToolFunc                 — github.com/Timwood0x10/ares/sdk
+//   - sdk.Tool (interface)         — github.com/Timwood0x10/ares/sdk
 //
 // Run:
 //
@@ -52,7 +52,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
@@ -118,14 +117,14 @@ Use the calculator for math, weather for forecasts, and string_tools for text op
 
 // ── Custom Tools ─────────────────────────────────────────────
 // customTools is the slice of tools registered with the Runtime.
-var customTools = []tools.Tool{
+var customTools = []sdk.Tool{
 	calculatorTool,
 	weatherTool,
 	stringTool,
 }
 
 // calculatorTool evaluates a basic arithmetic expression using simpleEval.
-var calculatorTool = tools.ToolFunc{
+var calculatorTool = sdk.ToolFunc{
 	ToolName: "calculator",
 	ToolDesc: "Evaluate a mathematical expression",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -140,7 +139,7 @@ var calculatorTool = tools.ToolFunc{
 }
 
 // weatherTool returns a mock weather forecast for a given city.
-var weatherTool = tools.ToolFunc{
+var weatherTool = sdk.ToolFunc{
 	ToolName: "get_weather",
 	ToolDesc: "Get the current weather for a city",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -150,7 +149,7 @@ var weatherTool = tools.ToolFunc{
 }
 
 // stringTool performs string operations: reverse, uppercase, lowercase, word_count.
-var stringTool = tools.ToolFunc{
+var stringTool = sdk.ToolFunc{
 	ToolName: "string_tools",
 	ToolDesc: "String operations: reverse, uppercase, lowercase, word_count",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {

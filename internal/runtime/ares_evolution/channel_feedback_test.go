@@ -276,16 +276,14 @@ func TestNewChannelFeedbackRecorder_RejectsDeadWiring(t *testing.T) {
 
 // TestChannelFeedback_SourcesAreIsolatedFromStrategyVerdicts is the N-1
 // isolation contract extended to the new channels: neither channel may write to
-// "strategy" (the rollback window and deployment staging read it) or to
-// "strategy_shadow" (the A/B pair reads it). A shared source would corrupt
-// verdicts that measure a different thing.
+// "strategy" (the rollback window and deployment staging read it). A shared
+// source would corrupt verdicts that measure a different thing. (The
+// "strategy_shadow" A/B source was removed with the unwired shadow executor.)
 func TestChannelFeedback_SourcesAreIsolatedFromStrategyVerdicts(t *testing.T) {
-	if collaborationEvidenceSource == observerEvidenceSource ||
-		collaborationEvidenceSource == shadowEvidenceSource {
+	if collaborationEvidenceSource == observerEvidenceSource {
 		t.Errorf("collaboration source %q collides with a strategy verdict source", collaborationEvidenceSource)
 	}
-	if toolCallEvidenceSource == observerEvidenceSource ||
-		toolCallEvidenceSource == shadowEvidenceSource {
+	if toolCallEvidenceSource == observerEvidenceSource {
 		t.Errorf("tool_call source %q collides with a strategy verdict source", toolCallEvidenceSource)
 	}
 
@@ -302,7 +300,7 @@ func TestChannelFeedback_SourcesAreIsolatedFromStrategyVerdicts(t *testing.T) {
 	rec.OnToolCall(feedback.ToolCallOutcome{Tool: "x", Outcome: feedback.OutcomeFailure})
 	rec.Stop()
 
-	for _, src := range []string{observerEvidenceSource, shadowEvidenceSource} {
+	for _, src := range []string{observerEvidenceSource} {
 		evs, err := store.Query(context.Background(), evidence.Filter{Source: src, Limit: 10})
 		if err != nil {
 			t.Fatalf("query %s: %v", src, err)

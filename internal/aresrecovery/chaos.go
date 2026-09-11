@@ -56,7 +56,7 @@ func NewChaos(agents *agentfabric.Fabric, recovery *Recovery) *Chaos {
 //   - failure: the failure type to inject.
 //
 // Returns:
-//   - error: agentfabric.ErrAgentNotFound / agentfabric.ErrAgentRunning.
+//   - error: agentfabric.ErrAgentNotFound (or the wrapped kill/suspend error).
 func (c *Chaos) InjectFailure(ctx context.Context, agentID string, failure FailureType) error {
 	switch failure {
 	case FailureKill:

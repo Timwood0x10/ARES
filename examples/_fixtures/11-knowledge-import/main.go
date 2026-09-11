@@ -20,7 +20,7 @@
 //   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
 //   - github.com/Timwood0x10/ares/sdk.Runtime.Evolve
 //   - github.com/Timwood0x10/ares/sdk.Agent.Run
-//   - github.com/Timwood0x10/ares/api/tools.ToolFunc
+//   - github.com/Timwood0x10/ares/internal/apitools.ToolFunc
 //
 // Usage:
 //
@@ -50,8 +50,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Timwood0x10/ares/api/core"
-	"github.com/Timwood0x10/ares/api/tools"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
+	core "github.com/Timwood0x10/ares/internal/llmcore"
 	ares_memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/models"

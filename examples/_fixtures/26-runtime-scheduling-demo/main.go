@@ -29,7 +29,7 @@
 //   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/sdk
 //   - sdk.NewRuntime                 — github.com/Timwood0x10/ares/sdk
 //   - (*Runtime).ToolRegistry()      — github.com/Timwood0x10/ares/sdk
-//   - api/tools.ToolFunc             — github.com/Timwood0x10/ares/api/tools
+//   - apitools.ToolFunc             — github.com/Timwood0x10/ares/internal/apitools
 //   - rt.NewAgent / sdk.WithInstruction — github.com/Timwood0x10/ares/sdk
 //   - rt.RegisterAgent / rt.Submit   — github.com/Timwood0x10/ares/sdk
 //   - sdk.Task / sdk.Result          — github.com/Timwood0x10/ares/sdk
@@ -58,7 +58,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/tools"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 

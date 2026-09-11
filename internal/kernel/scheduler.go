@@ -105,13 +105,6 @@ type Scheduler struct {
 	// Guarded by execMu alongside the executor registry so runtime
 	// registration races with the drain loop stay safe.
 	quantumHook QuantumHook
-	// shadowHook is the optional real-execution shadow A/B capture point
-	// When wired, every successfully finalized
-	// task is handed to the hook so the evolution layer can buffer it and
-	// later execute a candidate strategy on it in isolation. The hook fires
-	// on the drain path and MUST NOT block (see shadow.go). Nil = no shadow
-	// capture (backward compatible).
-	shadowHook ShadowExecutionHook
 	// running reports whether the drain loop is actually running (the
 	// System Runtime readiness gate must mean "drain loop alive", not
 	// "object exists"). Set at Run entry, cleared on exit.
@@ -863,8 +856,8 @@ func (s *Scheduler) handleStaleWinner(taskID, winner string, epoch uint64) error
 // livelock — every drain re-acquired the lease, hit the gate, released, and
 // repeated, appending two durable events per poll for a task that could not
 // run. Filtering first leaves the task in the throttled "no capable
-// candidate" wait state until the budget resets (ResetResource) or another
-// capable agent appears.
+// candidate" wait state until another capable agent appears or the
+// exhausted one is replaced (budget counters reset only on respawn).
 func (s *Scheduler) filterBudgetAffordable(cands []taskfabric.Candidate) []taskfabric.Candidate {
 	if s.governance == nil {
 		return cands
@@ -980,7 +973,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	}
 	// Pre-quantum gate: if the winner's budget/deadline is exhausted, yield
 	// the task back (release the lease) so another capable agent (or a later
-	// quantum after ResetResource) can pick it up. This closes the loop at
+	// quantum under a replacement agent) can pick it up. This closes the loop at
 	// the scheduler boundary — the fabric's state machine (Release→READY)
 	// drives the requeue ("budget.exceeded → yield()").
 	if !s.budgetOK(winner) {
@@ -1066,14 +1059,6 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	s.afterQuantum(ctx, taskID, winner, err)
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
 	slotReleased = true
-	// Hand the finalized task to the shadow A/B
-	// executor so a candidate strategy can be executed on it in isolation.
-	// Contract: the hook buffers and returns — it never blocks the drain
-	// path. Only successful finalizations are sampled; a failed quantum says
-	// nothing about how a candidate would have run the task.
-	if s.shadowHook != nil && err == nil {
-		s.shadowHook.OnTaskFinalized(s.ToModelTask(tk))
-	}
 	// Post-quantum bookkeeping: record the quantum's consumption (1 tool
 	// round) so the next gate sees the new balance. Runs even on step errors —
 	// the quantum did execute (or partially execute) and spent budget.

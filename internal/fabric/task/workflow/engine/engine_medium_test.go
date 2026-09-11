@@ -97,35 +97,17 @@ func TestResetFromStepsPublishesGraphEvent(t *testing.T) {
 	}
 }
 
-// TestSchedulerTypeConcurrentSetAndRead pins the serialization of the
-// scheduler-type override: SetSchedulerType (genome evolution patch) must
-// not race GetExecutionOrder's read. Under -race, the previous public
-// unlocked field failed this test.
-func TestSchedulerTypeConcurrentSetAndRead(t *testing.T) {
+// TestGetExecutionOrderConcurrentRead pins that concurrent GetExecutionOrder
+// calls are race-free. (The scheduler-type override that this test originally
+// exercised was removed: SetSchedulerType had zero production setters — the
+// live graph patch path is graph.GraphPatchExecutor, a different type — so
+// the override and its random-order branch were unreachable dead code.)
+func TestGetExecutionOrderConcurrentRead(t *testing.T) {
 	dag, err := NewMutableDAG([]*Step{{ID: "a"}, {ID: "b"}, {ID: "c"}})
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		flip := false
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			flip = !flip
-			if flip {
-				dag.SetSchedulerType("*graph.RandomScheduler")
-			} else {
-				dag.SetSchedulerType("")
-			}
-		}
-	}()
 
 	for range 2 {
 		wg.Add(1)
@@ -138,7 +120,6 @@ func TestSchedulerTypeConcurrentSetAndRead(t *testing.T) {
 				default:
 				}
 				_, _ = dag.GetExecutionOrder()
-				_ = dag.SchedulerTypeOf()
 			}
 		}()
 	}

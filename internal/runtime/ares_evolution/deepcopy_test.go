@@ -1,8 +1,8 @@
 // deepcopy_test.go locks the nested-value isolation of dupStrategy
-// (REVIEW 3.4#7) and ShadowExecutor.cloneTask (REVIEW 3.4#10): both
-// previously shallow-copied their Params/Payload maps, so nested
-// maps/slices stayed shared between the stored copy and every caller (and,
-// for the shadow executor, between the A/B arms and the buffered original).
+// (REVIEW 3.4#7): it previously shallow-copied its Params map, so nested
+// maps/slices stayed shared between the stored copy and every caller.
+// (The ShadowExecutor.cloneTask half of the original test was removed with
+// the unwired shadow executor.)
 package evolution
 
 import (
@@ -11,10 +11,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/evidence"
-	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
 )
 
 func TestDupStrategyDeepCopiesNestedParams(t *testing.T) {
@@ -47,44 +43,23 @@ func TestDupStrategyDeepCopiesNestedParams(t *testing.T) {
 	assert.Equal(t, []any{"search", "calculator"}, again.Params["tools"], "nested slice must not alias")
 }
 
-// mutatingNestedRunner mutates nested payload state in every run, mirroring
-// a yield checkpoint envelope riding inside a nested map.
-type mutatingNestedRunner struct{}
-
-func (r *mutatingNestedRunner) RunShadow(_ context.Context, task *models.Task, _ *mutation.Strategy) (bool, error) {
-	env, ok := task.Payload["envelope"].(map[string]any)
-	if !ok {
-		return false, nil
+// TestDeepCopyValueShapes unit-locks the primitive copier itself: nested
+// containers are isolated, scalars pass through, and opaque non-JSON values
+// are shared by contract.
+func TestDeepCopyValueShapes(t *testing.T) {
+	src := map[string]any{
+		"list":   []any{"a", map[string]any{"k": "v"}},
+		"strs":   []string{"x", "y"},
+		"scalar": 42,
 	}
-	env["payload"].(map[string]any)["progress"] = "hijacked"
-	env["tokens"] = 999999
-	return true, nil
-}
+	cp := deepCopyValue(src).(map[string]any)
 
-func TestCloneTaskDeepCopiesNestedPayload(t *testing.T) {
-	runner := &mutatingNestedRunner{}
-	exec, err := NewShadowExecutor(evidence.NewMemoryStore(), runner, 3)
-	require.NoError(t, err)
+	cp["list"].([]any)[1].(map[string]any)["k"] = "hijacked"
+	cp["strs"].([]string)[0] = "hijacked"
 
-	task := models.NewTask("task-nested", "code", nil)
-	task.Payload = map[string]any{
-		"envelope": map[string]any{
-			"payload": map[string]any{"progress": "half"},
-			"tokens":  100,
-		},
-	}
-	exec.OnTaskFinalized(task)
-
-	pairs := exec.Feed(context.Background(),
-		&mutation.Strategy{ID: "cand"}, &mutation.Strategy{ID: "active"})
-	require.Len(t, pairs, 1, "both arms must have run")
-
-	// The buffered original must be untouched by the arms' nested writes.
-	tasks := exec.snapshotTasks(1)
-	require.Len(t, tasks, 1)
-	env := tasks[0].Payload["envelope"].(map[string]any)
-	assert.Equal(t, "half", env["payload"].(map[string]any)["progress"],
-		"nested payload values must not leak between an arm's clone and the buffered original")
-	assert.Equal(t, 100, env["tokens"],
-		"nested payload values must not leak between an arm's clone and the buffered original")
+	assert.Equal(t, "v", src["list"].([]any)[1].(map[string]any)["k"],
+		"nested map inside slice must be isolated")
+	assert.Equal(t, "x", src["strs"].([]string)[0],
+		"string slice must be isolated")
+	assert.Equal(t, 42, src["scalar"])
 }

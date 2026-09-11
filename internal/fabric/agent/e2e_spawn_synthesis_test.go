@@ -161,8 +161,8 @@ func TestEndToEndSpawnSynthesis(t *testing.T) {
 	// agent — this is the core ARES philosophy. Here we verify the agent
 	// fabric side: B/C/D are still alive and can continue executing.)
 	for _, child := range children {
-		if err := fabric.SetRunning(child.Identity); err != nil {
-			t.Fatalf("child %s cannot continue after A dies: %v", child.Identity, err)
+		if !fabric.IsIdle(child.Identity) {
+			t.Fatalf("child %s is not an available candidate after A dies", child.Identity)
 		}
 	}
 
@@ -344,11 +344,11 @@ func TestParentDeathChildrenContinueTasks(t *testing.T) {
 	}
 
 	// B and C survive and can continue.
-	if err := fabric.SetRunning("B-child"); err != nil {
-		t.Fatalf("B cannot continue after A dies: %v", err)
+	if !fabric.IsIdle("B-child") {
+		t.Fatal("B is not an available candidate after A dies")
 	}
-	if err := fabric.SetRunning("C-child"); err != nil {
-		t.Fatalf("C cannot continue after A dies: %v", err)
+	if !fabric.IsIdle("C-child") {
+		t.Fatal("C is not an available candidate after A dies")
 	}
 
 	// B and C's checkpoints are preserved.

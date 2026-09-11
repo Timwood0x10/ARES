@@ -20,14 +20,14 @@
 //   - github.com/Timwood0x10/ares/sdk.WithOllama              // pick Ollama provider + model
 //   - github.com/Timwood0x10/ares/sdk.WithTrace               // enable per-step trace logging
 //   - github.com/Timwood0x10/ares/sdk.(*Runtime).ToolRegistry // access tool registry
-//   - github.com/Timwood0x10/ares/api/tools.(*Registry).Register
+//   - github.com/Timwood0x10/ares/sdk.(*Registry).Register
 //   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
 //   - github.com/Timwood0x10/ares/sdk.WithInstruction         // set system prompt
 //   - github.com/Timwood0x10/ares/sdk.WithHumanInput          // attach approval callback
 //   - github.com/Timwood0x10/ares/sdk.HumanInputFunc          // func type for the callback
 //   - github.com/Timwood0x10/ares/sdk.(*Agent).Run            // run a single task
 //   - github.com/Timwood0x10/ares/sdk.Result                  // Output, ToolCalls, TokenUsage…
-//   - github.com/Timwood0x10/ares/api/tools.ToolFunc          // struct-based tool implementation
+//   - github.com/Timwood0x10/ares/sdk.ToolFunc          // struct-based tool implementation
 //
 // Run:
 //
@@ -61,7 +61,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
@@ -157,7 +156,7 @@ var tasks = []string{
 }
 
 // allTools is the full set of tools registered on the Runtime for this demo.
-var allTools = []tools.Tool{
+var allTools = []sdk.Tool{
 	listDirTool,
 	readFileTool,
 	deleteFileTool,
@@ -166,7 +165,7 @@ var allTools = []tools.Tool{
 
 // listDirTool lists the files in a directory (defaults to "." when no path is
 // given).
-var listDirTool = tools.ToolFunc{
+var listDirTool = sdk.ToolFunc{
 	ToolName: "list_dir",
 	ToolDesc: "List files in a directory",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -188,7 +187,7 @@ var listDirTool = tools.ToolFunc{
 
 // readFileTool reads a text file, resolving the path safely relative to the
 // working directory.
-var readFileTool = tools.ToolFunc{
+var readFileTool = sdk.ToolFunc{
 	ToolName: "read_file",
 	ToolDesc: "Read a text file",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -206,7 +205,7 @@ var readFileTool = tools.ToolFunc{
 }
 
 // deleteFileTool permanently deletes a file after resolving its path safely.
-var deleteFileTool = tools.ToolFunc{
+var deleteFileTool = sdk.ToolFunc{
 	ToolName: "delete_file",
 	ToolDesc: "Delete a file permanently",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -251,7 +250,7 @@ func safeFilePath(path string) (string, error) {
 }
 
 // sendPaymentTool simulates sending a payment to a user.
-var sendPaymentTool = tools.ToolFunc{
+var sendPaymentTool = sdk.ToolFunc{
 	ToolName: "send_payment",
 	ToolDesc: "Send a payment to a user",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {

@@ -80,15 +80,16 @@ func TestCompileContext_NonNilGraphProducesMarkdown(t *testing.T) {
 	assert.Contains(t, out, "test summary")
 }
 
-// TestQuery_ReturnsEmpty verifies the stateless query path returns
-// an empty slice (not nil, not an error).
-func TestQuery_ReturnsEmpty(t *testing.T) {
+// TestQuery_UnsupportedFailsLoud locks the no-fake-implementation rule: the
+// stateless adapter cannot answer queries, so Query must fail with
+// ErrQueryUnsupported — an empty slice would read as "no results" and let a
+// caller silently degrade instead of learning the capability is absent.
+func TestQuery_UnsupportedFailsLoud(t *testing.T) {
 	adapter, err := NewServiceAdapter(runtime.New(nil, nil, nil, nil, nil, nil))
 	require.NoError(t, err)
 
-	objs, err := adapter.Query(context.Background(), apiknowledge.Query{Limit: 10})
-	require.NoError(t, err)
-	assert.Empty(t, objs)
+	_, err = adapter.Query(context.Background(), apiknowledge.Query{Limit: 10})
+	require.ErrorIs(t, err, apiknowledge.ErrQueryUnsupported)
 }
 
 // TestServiceAdapter_DistillStableContentID locks REVIEW 2.5#30: the

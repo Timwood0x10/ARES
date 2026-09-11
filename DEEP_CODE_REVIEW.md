@@ -177,8 +177,7 @@ HTTP response body 未关闭的抑制——潜在连接/文件描述符泄漏，
 
 ## 4. 架构级设计缺陷
 
-- **`api/` 与 `sdk/` 并存且 api 仍深度接线** → 迁移未真正完成（M5 名存实亡）。
-- **`compat/` 仅 1 个外部引用**（`internal/ares_bootstrap/provide_llm.go`）→ 标准日落目标。
+- **`api/`、`compat/` 已整删**（2026-09-11）：examples 迁移 internal 真身包后，两目录物理删除（M5 迁移真正完成）。
 - **事件非持久**：`serve.go` 用 `compactableStore`（内存 + archive），`PostgresEventStore` 未接线 → 重启丢事件。
 - **无 answer 合成器**：`l2graph.go:374` `TODO(tech-debt): no summarizer is wired`——终态直接透传，无摘要聚合。
 - **进化 fitness 不含成本/延迟**、**回归门跳过**（见 §2 runtime）。
@@ -198,8 +197,8 @@ HTTP response body 未关闭的抑制——潜在连接/文件描述符泄漏，
    - ④ arena 弃用调用者清理（§3.5）
    - ⑤ 删 `DualTrack.Dispatch` 死方法（§2 fabric）
 3. **需核实后修**：`llm/client.go` bodyclose（§3.4）、`ReAct` 残留是否活、`go func` ctx 取消（§4）。
-4. **中风险结构清理**：`compat/` 日落、`DreamCycle`/legacy scheduler 拆除、事件持久化接线。
-5. **架构级决策（需拍板）**：api/→sdk 真正迁移、`distilled` 可选特性去留、answer 合成器、agentipc 重试/死信。
+4. **中风险结构清理**：`DreamCycle`/legacy scheduler 拆除、事件持久化接线。
+5. **架构级决策（需拍板）**：`distilled` 可选特性去留、answer 合成器、agentipc 重试/死信。
 
 ---
 

@@ -20,7 +20,7 @@
 //   - rt.NewAgent                    — github.com/Timwood0x10/ares/sdk
 //   - sdk.WithInstruction            — github.com/Timwood0x10/ares/sdk
 //   - agent.Run                      — github.com/Timwood0x10/ares/sdk
-//   - tools.ToolFunc                 — github.com/Timwood0x10/ares/api/tools
+//   - sdk.ToolFunc                 — github.com/Timwood0x10/ares/sdk
 //
 // Run:
 //
@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
@@ -84,7 +83,7 @@ func run() error {
 	// ── Step 2: Register a custom tool (optional customisation point) ──
 	// Most projects only need to register custom tools in Go; everything else
 	// is driven by YAML.
-	// ToolRegistry() returns the global tool registry; Register adds a tools.Tool.
+	// ToolRegistry() returns the global tool registry; Register adds a sdk.Tool.
 	if err := rt.ToolRegistry().Register(calculatorTool); err != nil {
 		return fmt.Errorf("register tool: %w", err)
 	}
@@ -113,14 +112,14 @@ func run() error {
 }
 
 // ── Custom Tool ──────────────────────────────────────────────
-// calculatorTool is a demo "calculator" tool. It implements tools.Tool via
-// the tools.ToolFunc convenience struct:
+// calculatorTool is a demo "calculator" tool. It implements sdk.Tool via
+// the sdk.ToolFunc convenience struct:
 //   - ToolName: the tool name the LLM sees to decide when to call it.
 //   - ToolDesc: a description helping the LLM understand the tool's purpose.
 //   - Fn:       the actual function, receiving context and params (map[string]any).
 //
 // For simplicity Fn returns a hard-coded result string and does no real math.
-var calculatorTool = tools.ToolFunc{
+var calculatorTool = sdk.ToolFunc{
 	ToolName: "calculator",
 	ToolDesc: "Evaluate a mathematical expression",
 	Fn: func(ctx context.Context, params map[string]any) (any, error) {

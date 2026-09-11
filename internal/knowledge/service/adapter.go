@@ -79,14 +79,13 @@ func (a *ServiceAdapter) CompileContext(_ context.Context, graph *apiknowledge.W
 
 // Query searches the knowledge store for objects matching the query.
 //
-// This adapter is stateless: it returns an empty slice when no graph
-// is available. A future version will hold a reference to the
-// last-built graph or delegate to a KnowledgeStore.
-func (a *ServiceAdapter) Query(_ context.Context, query apiknowledge.Query) ([]*apiknowledge.KnowledgeObject, error) {
-	if query.Limit <= 0 {
-		query.Limit = 100
-	}
-	return nil, nil
+// NOT IMPLEMENTED: this adapter is stateless (it wraps a WorkingGraph, not a
+// store), so it cannot answer queries. Per the no-fake-implementation rule
+// it fails loud with ErrQueryUnsupported instead of returning an empty slice
+// that looks like "no results" — a caller filtering on an empty result
+// silently degrades instead of learning the capability is absent.
+func (a *ServiceAdapter) Query(_ context.Context, _ apiknowledge.Query) ([]*apiknowledge.KnowledgeObject, error) {
+	return nil, apiknowledge.ErrQueryUnsupported
 }
 
 // Distill converts raw memory into structured KnowledgeObjects.

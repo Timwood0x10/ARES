@@ -24,7 +24,8 @@ type KnowledgeService interface {
 
 // Sentinel errors for the knowledge service.
 var (
-	ErrNilIntent     = errors.New("knowledge: intent goal is empty")
-	ErrEmptyTenantID = errors.New("knowledge: tenant ID is empty")
-	ErrNilGraph      = errors.New("knowledge: graph is nil")
+	ErrNilIntent        = errors.New("knowledge: intent goal is empty")
+	ErrEmptyTenantID    = errors.New("knowledge: tenant ID is empty")
+	ErrNilGraph         = errors.New("knowledge: graph is nil")
+	ErrQueryUnsupported = errors.New("knowledge: this service implementation does not support query")
 )

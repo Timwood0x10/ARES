@@ -238,17 +238,8 @@ func TestLifecycleSuspendResumeRetireKill(t *testing.T) {
 	if err := f.Suspend(context.Background(), "a"); err != nil {
 		t.Fatalf("Suspend idempotent: %v", err)
 	}
-	// Retire requires non-RUNNING.
-	if err := f.SetRunning("a"); err != nil {
-		t.Fatalf("SetRunning: %v", err)
-	}
-	if err := f.Retire(context.Background(), "a"); !errors.Is(err, ErrAgentRunning) {
-		t.Fatalf("retire RUNNING must be rejected, got %v", err)
-	}
-	// Suspend then retire.
-	if err := f.Suspend(context.Background(), "a"); err != nil {
-		t.Fatalf("Suspend: %v", err)
-	}
+	// Retire from IDLE directly (the RUNNING guard was removed with
+	// SetRunning/SetIdle — the transitions had zero production callers).
 	if err := f.Retire(context.Background(), "a"); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}

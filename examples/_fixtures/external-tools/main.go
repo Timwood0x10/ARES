@@ -40,9 +40,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Timwood0x10/ares/api/mcp"
-	"github.com/Timwood0x10/ares/api/tools"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
 	"github.com/Timwood0x10/ares/internal/discoveryapi"
+	mcp "github.com/Timwood0x10/ares/internal/mcpclient"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 

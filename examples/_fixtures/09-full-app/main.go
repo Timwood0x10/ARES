@@ -18,7 +18,7 @@
 //   - github.com/Timwood0x10/ares/sdk.NewRuntime
 //   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
 //   - github.com/Timwood0x10/ares/sdk.Agent.Run
-//   - github.com/Timwood0x10/ares/api/tools.ToolFunc
+//   - github.com/Timwood0x10/ares/sdk.ToolFunc
 //
 // Run:
 //
@@ -52,7 +52,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
@@ -208,8 +207,8 @@ func (app *appState) handleStats(w http.ResponseWriter, r *http.Request) {
 // ---- tools ----
 
 // appTools is the set of custom tools registered with the runtime.
-var appTools = []tools.Tool{
-	tools.ToolFunc{
+var appTools = []sdk.Tool{
+	sdk.ToolFunc{
 		ToolName: "calculator",
 		ToolDesc: "Evaluate a mathematical expression",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -217,7 +216,7 @@ var appTools = []tools.Tool{
 			return fmt.Sprintf("result: %s = (demo) 42", expr), nil // demo returns a fixed value
 		},
 	},
-	tools.ToolFunc{
+	sdk.ToolFunc{
 		ToolName: "get_weather",
 		ToolDesc: "Get current weather for a city",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {

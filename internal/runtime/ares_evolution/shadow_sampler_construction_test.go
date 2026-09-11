@@ -59,15 +59,6 @@ func TestShadowSampler_PrimeFailClosedWithoutScorer(t *testing.T) {
 	}
 }
 
-// TestShadowSampler_SetExecutionFeeder locks the Step 4 feeder wiring:
-// SetExecutionFeeder is nil-safe and clears with nil.
-func TestShadowSampler_SetExecutionFeeder(t *testing.T) {
-	var s *ShadowSampler
-	s.SetExecutionFeeder(nil) // must not panic
-
-	s = NewShadowSampler(NewShadowEvaluator(ShadowEvaluationConfig{}), 3)
-	s.SetExecutionFeeder(nil)
-	if s.execFeeder != nil {
-		t.Fatal("nil feeder must clear the field")
-	}
-}
+// (TestShadowSampler_SetExecutionFeeder was removed with the
+// ShadowExecutionFeeder seam: the real-execution A/B path had zero
+// production wiring, so the setter only ever ran in tests.)

@@ -79,10 +79,19 @@ func TestBudgetExhaustedSoleCandidateDoesNotChurnLeases(t *testing.T) {
 		}
 	}
 
-	// After a budget reset the same task must become schedulable again —
-	// the filter is a wait state, not a black hole.
-	if err := agents.ResetResource(a.Identity); err != nil {
-		t.Fatalf("reset budget: %v", err)
+	// After fresh capacity exists the same task must become schedulable
+	// again — the filter is a wait state, not a black hole. (ResetResource
+	// was removed as dead code; a fresh governed peer provides the same
+	// "budget available again" condition.)
+	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
+		Identity:     "fresh",
+		Capabilities: []string{"code"},
+		CognitionFactory: func([]string) agentfabric.Cognition {
+			return &countingCognition{}
+		},
+		Governance: agentfabric.Governance{ToolBudget: 1},
+	}); err != nil {
+		t.Fatalf("spawn fresh candidate: %v", err)
 	}
 	runCtx, runCancel := context.WithCancel(ctx)
 	go sched.Run(runCtx)

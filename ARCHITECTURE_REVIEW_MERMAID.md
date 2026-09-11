@@ -12,7 +12,7 @@
 3. **最主要的风险**（详见 §6）：
    - **P1** 默认配置下进化门链实质只剩 shadow 一门（EvalGate `StrictMode` 默认 false 放行、ArenaRegressionGate 需显式 opt-in）。
    - **P1** introspect HTTP 面板无鉴权，误暴露公网可读全部 agent/任务/事件数据。
-   - **P2** `runServe` 400+ 行 + `agent.go` 2804 行手写路由 switch；两个同名 `package evolution` 并存两条 promote 路径；`compat/` 零读者死代码；文档漂移若干。
+   - **P2** `runServe` 400+ 行 + `agent.go` 2804 行手写路由 switch；两个同名 `package evolution` 并存两条 promote 路径；文档漂移若干。
 
 ---
 
@@ -23,8 +23,6 @@ flowchart TB
     subgraph L0["入口层"]
         CLI["cmd/ares（唯一 CLI 入口）<br/>serve·agent·kernel·evolution·db·dashboard·status·tools"]
         SDK["sdk/（极简 SDK，共用引擎）"]
-        API["api/（DEPRECATED 纯转发层，examples 在用）"]
-        COMPAT["compat/（日落：零生产读者）"]
     end
 
     subgraph L1["组装层"]
@@ -76,7 +74,6 @@ flowchart TB
     CLI --> BOOT
     SDK --> BOOT
     API -. 转发 .-> L3
-    COMPAT -. 零引用 .-> L3
     BOOT --> KERNEL
     BOOT --> RTCORE
     KERNEL <-->|"fabric_executor.go 桥接"| FABRIC
@@ -115,7 +112,7 @@ flowchart TB
 | 模块 | 层级 | 职责 | 一句话评审 |
 |---|---|---|---|
 | cmd/ares | 入口 | CLI+serve 全系统组装+HTTP 控制面 | 唯一生产入口；serve.go/agent.go 巨型文件待拆 |
-| sdk/、api/、compat/ | 边缘 | SDK / 转发层 / 日落门 | api 纯别名转发属实；compat 零读者宜删 |
+| sdk/ | 边缘 | 极简 SDK（与 CLI 共用引擎） | api/、compat/ 已整删（2026-09-11） |
 | ares_bootstrap | 组装 | 唯一装配根，逆序回滚 | 纪律好，nil-interface-trap 防御有注释 |
 | kernel | 核心 | 唯一调度点：drain/选人/租约/panic 隔离 | 三层 panic 防线+EndNeutral 防置信污染，质量高 |
 | fabric/task | 核心 | 任务状态机+lease+epoch+评分+MutableDAG | 系统最承重的正确性代码，fencing 完整 |
@@ -428,7 +425,7 @@ sequenceDiagram
    - RUNTIME.md 称"kernel.go:93 依赖边"等处行号有小幅漂移，属文档维护问题非代码问题。
 
 ### P3（清理项）
-7. **compat/ 零生产读者**：最后注册点已切（provide_llm.go），整个目录是死代码，留待 0.4.x release-note 决策属实，但建议尽快下葬。
+7. **compat/ 零生产读者**：✅ 已整删（2026-09-11，api/ 同批物理删除）。
 8. **遗留常量**：`DEFAULT_EMBEDDING_DIMENSION=768` 与表名 `*_1024` 不一致；`StrategySample.CostUSD` 恒 0（价目表缺失，惩罚不可达）；fitness 的 Collaboration/ToolCall 权重默认 0 需运维显式开启。
 9. **小粗糙面**：planner forcedAnswers 进程级计数（多会话归因丢失）；answer 合成失败降级 gap body 可观测性弱；drain 尾部 wg.Wait 使一轮 drain 等最慢量子。
 

@@ -30,8 +30,6 @@ flowchart TB
         direction LR
         CLI["cmd/ares — 唯一用户 CLI 入口<br/>serve·status·tools·db·dashboard·evolution…<br/>（cmd/ 下另有 mock-db 测试工具）"]
         SDK["sdk/ — 极简 SDK（与 CLI 共用引擎）<br/>Agent.Run = agentloop 同步 ReAct（by-design）"]
-        APIF["api/ — 纯转发层（DEPRECATED）"]
-        COMPAT["compat/ — 零生产引用<br/>（0.4.x 整删决策）"]
     end
 
     %% ============ L1 组装层 ============
@@ -93,7 +91,6 @@ flowchart TB
     CLIENT -->|"POST /api/tasks（JWT）"| CLI
     CLI --> BOOT
     SDK --> BOOT
-    APIF -.->|"examples 经转发层编译"| L3
 
     BOOT --> KERN
     BOOT --> CORE
