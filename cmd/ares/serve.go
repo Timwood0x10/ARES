@@ -1134,9 +1134,15 @@ func createAndServeAgents(
 			// so structural patches (Insert/Remove/AddEdge) trigger
 			// recompilation without restart.
 			if peerKernel != nil && peerKernel.fabric != nil {
-				peerKernel.compileCoord = planprojection.NewCompileCoordinator(
-					peerKernel.fabric, comp.EventStore,
-				)
+				// Reuse the coordinator the shared L2 execution core already
+				// built (agentruntime.NewExecution). Constructing a second one
+				// here would split per-session graph subscriptions onto a
+				// different coordinator than the one Sessions holds.
+				if peerKernel.compileCoord == nil {
+					peerKernel.compileCoord = planprojection.NewCompileCoordinator(
+						peerKernel.fabric, comp.EventStore,
+					)
+				}
 				if _, err := peerKernel.compileCoord.CompileDAG(ctx, liveDAG); err != nil {
 					log.Warn("serve: initial DAG compile failed", "err", err)
 				} else {

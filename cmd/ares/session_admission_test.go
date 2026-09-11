@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
@@ -32,7 +33,7 @@ func TestSessionKeepSet(t *testing.T) {
 	if _, err := reg.InitSession(ctx, "keep-1", "p", nil, nil); err != nil {
 		t.Fatalf("InitSession: %v", err)
 	}
-	keep := sessionKeepSet(reg)
+	keep := agentruntime.KeepSet(reg)
 
 	if !keep("sess/keep-1/d0/alpha#1") {
 		t.Error("live session task must be kept")
@@ -123,7 +124,7 @@ func TestReleaseSessionOnAnswerFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			releaseSessionOnAnswerFailure(ctx, reg, tt.event)
+			agentruntime.ReleaseOnAnswerFailure(ctx, reg, tt.event)
 			_, err := reg.GetSession(tt.session)
 			gone := err != nil
 			if tt.wantGone != gone {
@@ -134,7 +135,7 @@ func TestReleaseSessionOnAnswerFailure(t *testing.T) {
 
 	// The answer-failure release must converge with the keep-set: after the
 	// release the session's tasks are no longer pinned.
-	keep := sessionKeepSet(reg)
+	keep := agentruntime.KeepSet(reg)
 	if keep("sess/fail-1/d1/answer#1") {
 		t.Error("tasks of the answer-failed session must be harvestable")
 	}

@@ -17,6 +17,20 @@ const errPrefix = "memory: "
 // constant so goconst stays quiet and the value is grep-able.
 const rollbackReasonMemoryConfig = "rollback: restore previous memory config"
 
+// patchInt extracts a positive int from a patch value. Patches arrive via
+// JSON, where every number decodes to float64 — a bare `.(int)` assertion
+// silently no-ops on them, so a JSON-sourced patch never applies. Coerce both.
+func patchInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 // MemoryConfigStore is the contract MemoryPatchExecutor depends on.
 // Any memory manager that exposes a mutable, lockable MemoryConfig
 // can implement this interface, decoupling the patch executor from a
@@ -124,15 +138,15 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 			return nil, errors.New(errPrefix + "PatchChangePlanner value must be map[string]any")
 		}
 		rollback := map[string]any{}
-		if h, ok := vals["max_history"].(int); ok && h > 0 {
+		if h, ok := patchInt(vals["max_history"]); ok && h > 0 {
 			rollback["max_history"] = prev.MaxHistory
 			cfg.MaxHistory = h
 		}
-		if t, ok := vals["max_tasks"].(int); ok && t > 0 {
+		if t, ok := patchInt(vals["max_tasks"]); ok && t > 0 {
 			rollback["max_tasks"] = prev.MaxTasks
 			cfg.MaxTasks = t
 		}
-		if s, ok := vals["max_sessions"].(int); ok && s > 0 {
+		if s, ok := patchInt(vals["max_sessions"]); ok && s > 0 {
 			rollback["max_sessions"] = prev.MaxSessions
 			cfg.MaxSessions = s
 		}
@@ -153,7 +167,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 		rollback := map[string]any{}
 		var newDistilled int
 		distilledSet := false
-		if d, ok := vals["max_distilled_tasks"].(int); ok && d > 0 {
+		if d, ok := patchInt(vals["max_distilled_tasks"]); ok && d > 0 {
 			newDistilled = d
 			distilledSet = true
 		}

@@ -48,7 +48,7 @@ func (p *procKillTransport) Receive(_ context.Context) (*JSONRPCMessage, error) 
 }
 
 // TestConnectWithTransportSurvivesCallerCancel pins the skill_activate fix
-// (DEEP_CODE_REVIEW 1.6): the managed client's LIFETIME must not be bound to
+// (docs/reviews/DEEP_CODE_REVIEW.md 1.6): the managed client's LIFETIME must not be bound to
 // the caller's context. connectWithTransport used client.Connect(ctx, ...),
 // which bound both the handshake AND the subprocess to the caller ctx — when
 // skill_activate returned and the dispatcher cancelled the request context,

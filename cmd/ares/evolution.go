@@ -562,7 +562,7 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 		// races); release it here so the idle-TTL reaper is not the only thing
 		// that reclaims it. Releasing a session that was never admitted is a
 		// swallowed ErrSessionNotFound no-op.
-		releaseSessionQuietly(k, sessionID)
+		k.sessions().ReleaseQuietly(sessionID)
 		return "", err
 	}
 
@@ -577,11 +577,11 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 	for {
 		// Fast failure: a failed plan means the session can never answer.
 		if tk, err := k.fabric.Task(planTaskID); err == nil && tk.State == taskfabric.StateFailed {
-			releaseSessionQuietly(k, sessionID)
+			k.sessions().ReleaseQuietly(sessionID)
 			return "", fmt.Errorf("agentipc: ask session %s plan task failed", sessionID)
 		}
 		if answer, ok := completedSessionAnswer(k, sessionID); ok {
-			releaseSessionQuietly(k, sessionID)
+			k.sessions().ReleaseQuietly(sessionID)
 			if answer == "" {
 				return "", fmt.Errorf("agentipc: ask session %s answered empty", sessionID)
 			}
@@ -589,7 +589,7 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 		}
 		select {
 		case <-waitCtx.Done():
-			releaseSessionQuietly(k, sessionID)
+			k.sessions().ReleaseQuietly(sessionID)
 			if err := waitCtx.Err(); err != nil {
 				return "", fmt.Errorf("agentipc: ask session %s: %w", sessionID, err)
 			}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
@@ -102,6 +103,11 @@ func NewService(config *Config) (*Service, error) {
 				llm.WithCallbacks(config.CallbackRegistry)(c)
 			}
 		}
+		// Mask secrets in every fallback client's recorded prompts/responses,
+		// matching the bootstrap path (provide_llm.go).
+		for _, c := range fc.Clients() {
+			llm.WithSanitizer(ares_security.NewSanitizer())(c)
+		}
 		client = fc
 	} else {
 		c, err := llm.NewClient(internalConfig)
@@ -114,6 +120,7 @@ func NewService(config *Config) (*Service, error) {
 		if config.CallbackRegistry != nil {
 			llm.WithCallbacks(config.CallbackRegistry)(c)
 		}
+		llm.WithSanitizer(ares_security.NewSanitizer())(c)
 		client = c
 	}
 

@@ -46,7 +46,7 @@ ARES 是 **"Agent 操作系统"**：Agent 不是被编排的工作流节点，�
 ### M1 — 文档与事实对齐 ✅（2026-09-08）
 - RUNTIME.md 落盘（运行时全景 + 断线台账 15 项，全带锚点）；本文档重写为设计+路线图，过时附录（chatCognition 路径描述、已修缺陷的开放状态等）折并删除。
 - 旧缺陷台账状态重标：P0-1a（会话 idle TTL）✅已修；P0-1b（session_id 斜杠校验，agent.go:2214）✅已修；P0-1c（answer 后同 ID 重提交 harvest，agent.go:2265）✅已修；P1-4（ReAct 双实现）✅已随 M4-D 删除。其余未修项折入 M2-M4。
-- 全仓深审报告（DEEP_CODE_REVIEW.md）已完成对账收编：其台账纠错（api/ 91 引用活着、事件存储措辞、#13/#14 状态）已合入本文档与 RUNTIME.md §6；其修缮清单落地为 M2-b（见下）。根目录 DEEP_CODE_REVIEW.md 保留为审查证据存档。
+- 全仓深审报告（DEEP_CODE_REVIEW.md）已完成对账收编：其台账纠错（api/ 91 引用活着、事件存储措辞、#13/#14 状态）已合入本文档与 RUNTIME.md §6；其修缮清单落地为 M2-b（见下）。docs/reviews/DEEP_CODE_REVIEW.md 保留为审查证据存档。
 
 ### M2 — 代码修缮批 ✅（2026-09-08 落地，经深度 review 对账）
 | # | 项 | 结果 |

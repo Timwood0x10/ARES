@@ -94,3 +94,10 @@ examples/*/ares.yaml
 cover.out
 *.out
 coverage.html
+
+# Build artifacts at repo root (never commit)
+/ares
+/eval
+/discovery
+/external-tools
+/custom-store

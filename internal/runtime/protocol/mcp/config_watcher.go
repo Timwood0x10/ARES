@@ -23,7 +23,6 @@ type MCPConfigWatcher struct {
 	manager *MCPManager
 	path    string
 	watcher *fsnotify.Watcher
-	done    chan struct{}
 }
 
 // MCPConfigFile holds the YAML structure for the MCP config file.
@@ -96,7 +95,6 @@ func NewMCPConfigWatcher(manager *MCPManager, configPath string) (*MCPConfigWatc
 		manager: manager,
 		path:    absPath,
 		watcher: w,
-		done:    make(chan struct{}),
 	}, nil
 }
 
@@ -105,6 +103,13 @@ func NewMCPConfigWatcher(manager *MCPManager, configPath string) (*MCPConfigWatc
 func (cw *MCPConfigWatcher) Start(ctx context.Context) error {
 	// Debounce timer: coalesce rapid file events into a single reload.
 	var debounce *time.Timer
+	// Stop the timer on every return path: the ctx.Done branches below return
+	// while debounce may still be armed, leaking it past shutdown.
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}()
 
 	for {
 		select {

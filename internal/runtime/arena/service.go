@@ -71,6 +71,14 @@ func (s *Service) SetEvolutionBridge(b *EvolutionBridge) {
 func (s *Service) Execute(ctx context.Context, action Action) Result {
 	start := time.Now()
 
+	if s.injector == nil {
+		log.Warn("arena: execute with nil injector", "action", action.Type)
+		return Result{
+			Success: false,
+			Error:   "arena: no injector wired",
+		}
+	}
+
 	var err error
 	switch action.Type {
 	case ActionKillLeader:

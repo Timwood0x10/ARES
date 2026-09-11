@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestLLMTuningFieldsBridged pins the ToOptions fix (DEEP_CODE_REVIEW 1.8):
+// TestLLMTuningFieldsBridged pins the ToOptions fix (docs/reviews/DEEP_CODE_REVIEW.md 1.8):
 // llm.temperature and llm.max_tokens were validated and then silently
 // dropped, so users got the hardcoded defaults 0.7/2048 regardless of
 // ares.yaml. Non-zero values must reach llmCfg; zero values must leave the

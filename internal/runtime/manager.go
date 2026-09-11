@@ -417,6 +417,12 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 	if factory == nil {
 		return ErrNilFactory
 	}
+	m.mu.Lock()
+	if m.isStopped {
+		m.mu.Unlock()
+		return ErrRuntimeStopped
+	}
+	m.mu.Unlock()
 
 	m.emitEvent(ctx, agentID, ares_events.EventFailoverTriggered, map[string]any{
 		FieldAgentID: agentID,

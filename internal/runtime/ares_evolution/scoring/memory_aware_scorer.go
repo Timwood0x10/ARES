@@ -385,8 +385,14 @@ func (ms *MemoryAwareScorer) scoreWithEvidence(ctx context.Context, s *mutation.
 	regressionPenalty := regression * ms.cfg.RegressionWeight
 	detail.RegressionPenalty = regressionPenalty
 
-	// Apply adjustments.
+	// Apply adjustments. Clamp at 0: a negative aggregate is read back by
+	// IsScoreEvaluated (>= 0) as "unevaluated", silently dropping a real (bad)
+	// strategy from best-ever tracking — same non-negative invariant
+	// multi_objective.AggregateDimensions maintains.
 	finalScore := qualityScore + bonus - costPenalty - latencyPenalty - regressionPenalty
+	if finalScore < 0 {
+		finalScore = 0
+	}
 	detail.FinalScore = finalScore
 
 	// Track aggregate stats.
@@ -462,8 +468,14 @@ func (ms *MemoryAwareScorer) scoreWithLegacyExperience(ctx context.Context, s *m
 	regressionPenalty := regression * ms.cfg.RegressionWeight
 	detail.RegressionPenalty = regressionPenalty
 
-	// Apply adjustments.
+	// Apply adjustments. Clamp at 0: a negative aggregate is read back by
+	// IsScoreEvaluated (>= 0) as "unevaluated", silently dropping a real (bad)
+	// strategy from best-ever tracking — same non-negative invariant
+	// multi_objective.AggregateDimensions maintains.
 	finalScore := qualityScore + bonus - costPenalty - latencyPenalty - regressionPenalty
+	if finalScore < 0 {
+		finalScore = 0
+	}
 	detail.FinalScore = finalScore
 
 	// Track aggregate stats.

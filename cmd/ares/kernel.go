@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentipc"
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -87,6 +88,16 @@ type kernelHandle struct {
 	recoveryStop context.CancelFunc
 	recoveryDone chan struct{}
 	flipped      bool
+}
+
+// sessions builds the shared per-session L2 lifecycle helper over this
+// kernel's registry/fabric/compiler. Sessions is a read-only view (no state
+// of its own), so allocating it per use is fine.
+func (k *kernelHandle) sessions() *agentruntime.Sessions {
+	if k == nil {
+		return &agentruntime.Sessions{}
+	}
+	return &agentruntime.Sessions{Reg: k.sessionReg, Fabric: k.fabric, Compile: k.compileCoord}
 }
 
 // System Runtime registry names of the six kernel pillars. The

@@ -54,6 +54,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if c.Storage.EventsRetentionDays < 0 {
+		return fmt.Errorf("invalid events retention days: %d, must be >= 0 (0 = keep forever)", c.Storage.EventsRetentionDays)
+	}
+
 	return nil
 }
 

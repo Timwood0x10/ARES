@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -574,7 +575,10 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 			Engine  string `json:"engine"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&searxResp); err != nil {
+	// Cap the decode size: a hostile or misbehaving SearXNG endpoint must not
+	// be able to stream an unbounded body into memory.
+	const maxSearchResponseBytes = 8 << 20 // 8 MiB
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSearchResponseBytes)).Decode(&searxResp); err != nil {
 		return Result{Success: false, Data: fmt.Sprintf("decode response: %v", err)}, nil
 	}
 

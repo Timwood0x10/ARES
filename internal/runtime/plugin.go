@@ -21,7 +21,7 @@ const (
 	CapInterrupt Capability = "interrupt"
 )
 
-// C1.3 (runtime plugin half-closed-loop burial, review-followup-hardening
+// C1.3 (runtime plugin half-closed-loop burial, plan/review-followup-hardening
 // plan): CapCheckpoint/CapMemory/CapEvolution and their plugin contracts
 // (CheckpointPlugin+Flusher+CheckpointStore+ExperienceCheckpoint,
 // MemoryPlugin+RouteAdvice, EvolutionPlugin+ExecutionState+

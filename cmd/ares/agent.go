@@ -313,7 +313,7 @@ type routeSpec struct {
 	// handler bodies are the pre-registry functions, untouched.
 	Handler func(*actionHandler, http.ResponseWriter, *http.Request, *ares_security.Principal)
 	// Desc documents the route (one line, for the registry audit in
-	// ARCHITECTURE_REVIEW_MERMAID.md §6 / M-S3).
+	// docs/reviews/ARCHITECTURE_REVIEW_MERMAID.md §6 / M-S3).
 	Desc string
 }
 

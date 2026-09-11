@@ -83,6 +83,17 @@ const answerAgentType = "ares/answer"
 // rootAgentType is the L2 capability for session admission roots.
 const rootAgentType = "ares/root"
 
+// L2 capability vocabulary, exported for the shared runtime assembly
+// (internal/agentruntime) and cmd/ares, so the strings have a single source.
+const (
+	// PlanCapability is the L2 capability of plan/tool-growing nodes.
+	PlanCapability = planAgentType
+	// AnswerCapability is the L2 capability of terminal answer nodes.
+	AnswerCapability = answerAgentType
+	// RootCapability is the L2 capability of session admission roots.
+	RootCapability = rootAgentType
+)
+
 // IsL2Capability reports whether a capability is dispatched by the L2
 // session router (tool/<name> instances and the ares/root,
 // ares/plan, ares/answer session nodes. Everything else is legacy ReAct

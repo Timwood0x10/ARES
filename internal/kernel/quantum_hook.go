@@ -44,25 +44,37 @@ type QuantumHook interface {
 // Nil clears the hook (backward compatible default: no hook).
 // Returns the scheduler for chaining.
 func (s *Scheduler) WithQuantumHook(h QuantumHook) *Scheduler {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
 	s.quantumHook = h
 	return s
+}
+
+// quantumHookOf snapshots the currently wired hook under execMu so a runtime
+// WithQuantumHook call cannot race with the drain loop reading the field.
+func (s *Scheduler) quantumHookOf() QuantumHook {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	return s.quantumHook
 }
 
 // beforeQuantum invokes the hook if wired. Never blocks scheduling: hook
 // errors are logged and swallowed (observational contract above).
 func (s *Scheduler) beforeQuantum(ctx context.Context, taskID, agentID string) {
-	if s.quantumHook == nil {
+	h := s.quantumHookOf()
+	if h == nil {
 		return
 	}
-	if err := s.quantumHook.BeforeQuantum(ctx, taskID, agentID); err != nil {
+	if err := h.BeforeQuantum(ctx, taskID, agentID); err != nil {
 		log.Error("kernel scheduler: beforeQuantum hook error (continuing)", "task_id", taskID, "agent", agentID, "error", err)
 	}
 }
 
 // afterQuantum invokes the hook if wired. Never blocks scheduling.
 func (s *Scheduler) afterQuantum(ctx context.Context, taskID, agentID string, err error) {
-	if s.quantumHook == nil {
+	h := s.quantumHookOf()
+	if h == nil {
 		return
 	}
-	s.quantumHook.AfterQuantum(ctx, taskID, agentID, err)
+	h.AfterQuantum(ctx, taskID, agentID, err)
 }

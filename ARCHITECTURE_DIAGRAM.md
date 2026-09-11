@@ -2,7 +2,7 @@
 
 > 锚定：dev@2aeaf942（VERSION 0.3.1，2026-09-10）。反映 C1.3（PluginBus 仅剩 LoopPlugin）、M-G（G3 默认强度 + Arena 回归门 tri-state 默认 AUTO-ARMED）、M4/M5 收敛后的最新形态。
 > 分工：本文档 = **全架构一页看穿**（图为主）；ARCHITECTURE.md = 设计依据与路线图；RUNTIME.md = 运行时实况（全部带 file:line 锚点，漂移以其为准）。
-> 事实核查：ARCHITECTURE_DIAGRAM_REVIEW.md（2026-09-11，逐条源码取证；本版已按核查结论修正）。
+> 事实核查：docs/reviews/ARCHITECTURE_DIAGRAM_REVIEW.md（2026-09-11，逐条源码取证；本版已按核查结论修正）。
 
 ## 0. 一句话架构
 

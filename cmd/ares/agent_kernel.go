@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
@@ -24,7 +25,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
-	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
@@ -364,58 +364,50 @@ func createPeerAgents(
 	// Zero/absent config = legacy ReAct behavior (chat cognition for every
 	// peer, L2 machinery test-only).
 	//
-	// Single execution path — the router body is always built.
-	// The planner needs session-scoped dependencies (registry, fabric reader)
-	// that are constructed here.
-	var peerRouter agentfabric.Cognition
-	sessionReg := agentfabric.NewSessionRegistry()
-
-	// Read the L1 ToolClass DAG from the evolution components so
-	// the planner can check enabled/budget/prior before growing L2
-	// tool nodes. Nil when no tools are registered (permissive).
+	// Shared L2 execution core (internal/agentruntime): session registry +
+	// incremental compile coordinator + planner/router cognition + session
+	// reaper. The serve and SDK entry points both build this, so "how an agent
+	// runs" has a single implementation. Recovery/chaos/evolution/transport
+	// stay in this package as upper layers.
+	//
+	// Read the L1 ToolClass DAG from the evolution components so the planner
+	// can check enabled/budget/prior before growing L2 tool nodes. Nil when no
+	// tools are registered (permissive).
 	var l1DAG *engine.MutableDAG
 	if comp.NewEvolution != nil {
 		l1DAG = comp.NewEvolution.ToolClassDAG()
 	}
 
-	planner, err := agentfabric.NewPlannerCognition(agentfabric.PlannerDeps{
-		ChatClient: chatClient, // sub.ChatClient satisfies agentfabric.ChatClient
-		ToolBinder: toolBinder, // sub.ToolBinder satisfies agentfabric.ToolBinder
-		Sessions:   sessionReg,
-		Fabric:     kernel.fabric,
-		L1DAG:      l1DAG,
-		// The planner is the evolution strategy actuator after
-		// ReAct — deployed prompt/params steer plan growth.
+	exec, err := agentruntime.NewExecution(agentruntime.ExecutionConfig{
+		Fabric:         kernel.fabric,
+		Agents:         agents,
+		ChatClient:     chatClient,
+		ToolBinder:     toolBinder,
 		StrategySource: strategySrc,
-		// M4.3 experience-loop read side: the planner reads the EXECUTING
-		// agent's cognitive Context (the spawn-time ExperiencePrior stamped
-		// by loadExperiencePrior) from the agent fabric and injects it as
-		// the leading context message. Same value the spawn wrote — no
-		// second experience-store query, and a Recover-restored state is
-		// honored mid-flight.
-		AgentFabric: agents,
-		// Operator-tunable growth-depth guard (0/absent = default).
-		MaxDepth: resolveMaxPlanDepth(cfg.Kernel.DAGExecution),
-		Logger:   slog.Default(),
+		L1DAG:          l1DAG,
+		MaxPlanDepth:   resolveMaxPlanDepth(cfg.Kernel.DAGExecution),
+		ReaperGrace:    resolveReaperGrace(cfg.Kernel.DAGExecution),
+		SessionIdleTTL: resolveSessionIdleTTL(cfg.Kernel.DAGExecution),
+		CompileStore:   store,
+		Logger:         slog.Default(),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("peer mode: create planner cognition: %w", err)
+		return nil, nil, fmt.Errorf("peer mode: %w", err)
 	}
-	peerRouter = agentfabric.NewRouterCognitionWithPlanner(toolBinder, planner, sessionReg, slog.Default())
-
-	// The registry is always wired, so the submission path always
-	// admits sessions. There is no gate-off legacy mode anymore.
+	peerRouter := exec.Router
+	sessionReg := exec.Sessions.Reg
+	sessionReaper := exec.Reaper
+	// The registry + compile coordinator are always wired, so the submission
+	// path always admits sessions (there is no gate-off legacy mode).
 	kernel.sessionReg = sessionReg
+	kernel.compileCoord = exec.Compile
 
-	// Terminal-task reaper for L2 session tasks. Every grown node is
-	// a fabric task and the fabric never self-harvests, so without this
-	// loop the in-memory task map grows monotonically across a long-lived
-	// serve (a known named cost). The registry is the keep-set authority: a
-	// live session's tasks are its readable history (decision C) and are
-	// never harvested; only tasks of released sessions die, after the
-	// configured grace window.
-	sessionReaper := taskfabric.NewReaperWithKeep(kernel.fabric, "sess/",
-		resolveReaperGrace(cfg.Kernel.DAGExecution), sessionKeepSet(sessionReg))
+	// Terminal-task reaper for L2 session tasks. Every grown node is a fabric
+	// task and the fabric never self-harvests, so without this loop the
+	// in-memory task map grows monotonically across a long-lived serve. The
+	// registry is the keep-set authority: a live session's tasks are its
+	// readable history and are never harvested; only tasks of released
+	// sessions die, after the configured grace window.
 	runBackground(ctx, comp, "l2-reaper", func(loopCtx context.Context) error {
 		sessionReaper.Run(loopCtx.Done(), time.Minute)
 		return nil
@@ -479,7 +471,7 @@ func createPeerAgents(
 					if !ok {
 						return nil
 					}
-					releaseSessionOnAnswerFailure(loopCtx, sessionReg, ev)
+					agentruntime.ReleaseOnAnswerFailure(loopCtx, sessionReg, ev)
 				}
 			}
 		})
@@ -754,7 +746,7 @@ func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string
 			"from", capability, "to", planCapability, "session_id", sessionID)
 		capability = planCapability
 	}
-	if err := ensureSessionAdmission(ctx, kernel, sessionID, prompt); err != nil {
+	if err := kernel.sessions().Admit(ctx, sessionID, prompt); err != nil {
 		return "", err
 	}
 	taskID := fmt.Sprintf("peer-plan-%d", peerTaskSeq.Add(1))
@@ -1094,179 +1086,4 @@ func selectRecoveryBody(router agentfabric.Cognition, capability string) agentfa
 		return nil
 	}
 	return router
-}
-
-// ensureSessionAdmission admits one L2 session before its first task is
-// created: register the session graph, subscribe it to the shared
-// incremental compiler, and compile the root task the planner's first
-// quantum falls back to.
-//
-// The caller is submitPeerTask, and only when the request carries a
-// session_id AND the gate wired a registry (nil registry = gate off =
-// legacy path, session payloads stay envelope-only). Admission is idempotent:
-// resubmitting into a live session is a multi-turn continuation, not an
-// error — the existing session is reused and no duplicate root is compiled.
-//
-// Failures are fail-fast (nothing half-created): a session the caller asked
-// for but we cannot admit must not silently degrade into an unrunnable
-// task. Anything InitSession registered before the failure is released
-// again, so a retry starts clean.
-func ensureSessionAdmission(ctx context.Context, kernel *kernelHandle, sessionID, prompt string) error {
-	if kernel == nil || sessionID == "" {
-		return nil
-	}
-	// Single execution path. A session that cannot be admitted must
-	// fail fast — a session-scoped task without a live graph is unrunnable.
-	// (The old gate-off silent skip is gone with the gate.)
-	if kernel.sessionReg == nil {
-		return fmt.Errorf("peer mode: cannot admit session %q without a session registry", sessionID)
-	}
-	// A session ID containing "/" breaks the reaper keep-set —
-	// SessionIDFromNode reverse-parses at the first slash, so "a/b" maps
-	// its tasks back to a session "a" that is not live, and the reaper
-	// harvests a LIVE session's readable history once the grace window
-	// passes (the exact decision-C accident, triggered by pure client
-	// input). Reject at the admission boundary, same level as the empty
-	// ID; the registry enforces the same contract as a backstop.
-	if strings.Contains(sessionID, "/") {
-		return fmt.Errorf("peer mode: session id %q must not contain a slash", sessionID)
-	}
-	if _, err := kernel.sessionReg.GetSession(sessionID); err == nil {
-		return nil
-	} else if !errors.Is(err, agentfabric.ErrSessionNotFound) {
-		return fmt.Errorf("peer mode: look up session %q: %w", sessionID, err)
-	}
-	if kernel.compileCoord == nil || kernel.fabric == nil {
-		return fmt.Errorf("peer mode: cannot admit session %q without compile coordinator and fabric", sessionID)
-	}
-
-	// The compile subscription must outlive the submission request: tying it
-	// to the request context would kill the projection the moment the HTTP
-	// handler returns, while the session lives on.
-	liveCtx := context.WithoutCancel(ctx)
-	g, err := kernel.sessionReg.InitSession(liveCtx, sessionID, prompt, nil,
-		func(subCtx context.Context, dag *engine.MutableDAG) (stop func()) {
-			return kernel.compileCoord.SubscribeGraphEvents(subCtx, dag)
-		})
-	if err != nil {
-		// A concurrent admitter may have won the race between our
-		// GetSession and InitSession — re-check before failing.
-		if errors.Is(err, agentfabric.ErrSessionAlreadyExists) {
-			if _, err2 := kernel.sessionReg.GetSession(sessionID); err2 == nil {
-				return nil
-			}
-		}
-		return fmt.Errorf("peer mode: init session %q: %w", sessionID, err)
-	}
-
-	// Compile the root task the planner's first quantum reads (or falls
-	// back to the payload input when still pending). An already-compiled
-	// root means a retried admission after a partial failure — adopt it,
-	// but ONLY while that root is still live (see below).
-	rootStep := g.DAG().StepIndex()[g.Root()]
-	if _, err := kernel.fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
-		if !errors.Is(err, taskfabric.ErrTaskExists) {
-			releaseSessionQuietly(kernel, sessionID)
-			return fmt.Errorf("peer mode: compile session %q root: %w", sessionID, err)
-		}
-		// An existing TERMINAL root does not belong to a retry — it
-		// belongs to a previous session that already released under this
-		// same ID (the natural client "continue the chat" behavior after
-		// an answer). Adopting it would hand the new turn the old prompt
-		// (rootCognition wrote its input into the envelope output) and let
-		// same-named node tasks resolve to old tool outputs read as fresh
-		// results — silently, with the keep-set then protecting the stale
-		// tasks forever. The registry just told us this session is NOT
-		// live, so no planner is reading those envelopes: harvest them
-		// (the reaper's job, done early) and recompile clean.
-		if stale, terr := kernel.fabric.Task(g.Root()); terr == nil &&
-			(stale.State == taskfabric.StateCompleted || stale.State == taskfabric.StateFailed) {
-			n := harvestReleasedSession(kernel.fabric, sessionID)
-			slog.InfoContext(liveCtx, "peer mode: session re-admitted after release, harvested stale tasks before recompiling root",
-				"session_id", sessionID, "harvested", n)
-			if _, err := kernel.fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
-				releaseSessionQuietly(kernel, sessionID)
-				return fmt.Errorf("peer mode: recompile session %q root: %w", sessionID, err)
-			}
-		}
-	}
-	slog.InfoContext(liveCtx, "peer mode: admitted L2 session",
-		"session_id", sessionID, "root", g.Root())
-	return nil
-}
-
-// harvestReleasedSession deletes every harvestable task under a released
-// session's ID prefix: terminal (COMPLETED/FAILED) and READY tasks
-// go; in-flight ones (LEASED/RUNNING/SUSPENDED) are refused by Delete and
-// left for the reaper — they belong to work genuinely still running.
-// Returns the number of tasks removed.
-func harvestReleasedSession(fabric *taskfabric.Fabric, sessionID string) int {
-	prefix := agentfabric.SessionTaskPrefix(sessionID)
-	removed := 0
-	for _, id := range fabric.IDs() {
-		if !strings.HasPrefix(id, prefix) {
-			continue
-		}
-		if fabric.Delete(id) == nil {
-			removed++
-		}
-	}
-	return removed
-}
-
-// releaseSessionQuietly drops a half-admitted session during failure
-// cleanup. The release itself is best-effort: the admission already failed,
-// and a release miss only leaves a normal session behind for the reaper.
-func releaseSessionQuietly(kernel *kernelHandle, sessionID string) {
-	_ = kernel.sessionReg.ReleaseSession(sessionID)
-}
-
-// sessionKeepSet builds the reaper's keep predicate from the session
-// registry: a task is kept while its owning session is still live.
-// The registry is the single authority — an ID that parses as a session
-// task but has no live session (released, or never admitted by this
-// process) is harvestable once the grace window passes.
-func sessionKeepSet(reg *agentfabric.SessionRegistry) func(taskID string) bool {
-	return func(taskID string) bool {
-		sid, ok := agentfabric.SessionIDFromNode(taskID)
-		if !ok {
-			return false
-		}
-		_, err := reg.GetSession(sid)
-		return err == nil
-	}
-}
-
-// releaseSessionOnAnswerFailure releases a session whose terminal answer
-// task FAILED. The event payload carries the capability and the session id
-// (taskfabric stamps both on must-persist events; task.failed is one), so
-// the check is pure payload reading. Only the FAILED state releases: the
-// requeue branch of fabric.Fail also records task.failed (state READY) while
-// the retry budget still stands, and an answer that succeeds on retry must
-// not lose its session. Only the answer node releases here: it is the
-// session's sole terminal exit, so its terminal failure leaves the graph
-// unreachable from any successor. A release miss (session already gone —
-// released earlier, or reaped by the idle TTL) is logged, not an error: the
-// postcondition — no live session — already holds.
-func releaseSessionOnAnswerFailure(ctx context.Context, reg *agentfabric.SessionRegistry, ev *ares_events.Event) {
-	if ev == nil || reg == nil {
-		return
-	}
-	if c, _ := ev.Payload["capability"].(string); c != answerCapability {
-		return
-	}
-	if s, _ := ev.Payload["state"].(string); taskfabric.TaskState(s) != taskfabric.StateFailed {
-		return
-	}
-	sid, _ := ev.Payload["session_id"].(string)
-	if strings.TrimSpace(sid) == "" {
-		return
-	}
-	if err := reg.ReleaseSession(sid); err != nil {
-		slog.WarnContext(ctx, "peer mode: answer-failure release found no live session",
-			"session", sid, "error", err)
-		return
-	}
-	slog.InfoContext(ctx, "peer mode: released session after terminal answer failure",
-		"session", sid, "task_id", ev.StreamID)
 }
