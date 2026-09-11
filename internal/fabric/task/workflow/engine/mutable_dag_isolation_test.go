@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regression #6: Steps()/StepIndex() must
+// The HIGH regression #6: Steps()/StepIndex() must
 // return isolated copies, never the live *Step pointers that AddEdge /
 // RemoveEdge / ReplaceNode mutate under the write lock.
 

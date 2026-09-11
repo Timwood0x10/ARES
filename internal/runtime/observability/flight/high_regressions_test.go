@@ -14,7 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regressions for the flight recorder:
+// The HIGH regressions for the flight recorder:
 // evidence I/O off the hot path (#15), per-agent roots (#16), and the
 // bounded genealogy (#17).
 

@@ -199,7 +199,7 @@ func (s *SimpleRetrievalService) isPrecisionMode(query string) bool {
 // The exact→keyword→vector chain degrades gracefully per stage, but a total
 // failure (every stage errored AND the vector fallback produced nothing) is
 // propagated as an error: an outage must not be indistinguishable from empty
-// knowledge (DEEP_CODE_REVIEW_2026 3.7#8).
+// knowledge (3.7#8).
 func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	log.Debug("Executing precision search pipeline", "query", query)
 

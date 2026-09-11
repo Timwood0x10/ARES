@@ -24,66 +24,63 @@ func TestNextPollCursor(t *testing.T) {
 
 	tests := []struct {
 		name string
-		// events is the raw query page (ASC by created_at, ≤ LIMIT rows).
+		// events is the raw query page (ASC by (created_at, id), ≤ LIMIT rows).
 		events []*Event
-		// cursor is the current subscription cursor.
-		cursor time.Time
 		// wantAdvance reports whether the cursor must move this poll.
 		wantAdvance bool
-		// wantCursor is the expected cursor after the poll (when advancing).
-		wantCursor time.Time
+		// wantCursor/wantCursorID are the expected cursor after the poll.
+		wantCursor   time.Time
+		wantCursorID string
 	}{
 		{
 			name:        "empty page keeps cursor",
 			events:      nil,
-			cursor:      ts(10),
 			wantAdvance: false,
 		},
 		{
-			name:        "full page advances to page tail",
-			events:      []*Event{evt("e1", 11), evt("e2", 12), evt("e3", 13)},
-			cursor:      ts(10),
-			wantAdvance: true,
-			wantCursor:  ts(13),
+			name:         "full page advances to page tail",
+			events:       []*Event{evt("e1", 11), evt("e2", 12), evt("e3", 13)},
+			wantAdvance:  true,
+			wantCursor:   ts(13),
+			wantCursorID: "e3",
 		},
 		{
 			// The 1.4 wedge: a page whose rows are ALL already delivered
 			// (batch empty) left the cursor frozen, so the window never
 			// drained — the same full page was re-read forever.
-			name:        "delivered-only page still advances",
-			events:      []*Event{evt("e1", 11), evt("e2", 12)},
-			cursor:      ts(10),
-			wantAdvance: true,
-			wantCursor:  ts(12),
+			name:         "delivered-only page still advances",
+			events:       []*Event{evt("e1", 11), evt("e2", 12)},
+			wantAdvance:  true,
+			wantCursor:   ts(12),
+			wantCursorID: "e2",
 		},
 		{
-			name:        "partial page advances to page tail",
-			events:      []*Event{evt("e1", 11), evt("e2", 12), evt("e3", 12)},
-			cursor:      ts(10),
-			wantAdvance: true,
-			wantCursor:  ts(12),
+			name:         "partial page advances to page tail",
+			events:       []*Event{evt("e1", 11), evt("e2", 12), evt("e3", 12)},
+			wantAdvance:  true,
+			wantCursor:   ts(12),
+			wantCursorID: "e3",
 		},
 		{
 			// Ties inside the page: the cursor lands on the page-tail
-			// timestamp; same-timestamp events are still observable next poll
-			// via the inclusive >= window and deduped by delivered ids.
-			name:        "tie at page boundary advances to shared timestamp",
-			events:      []*Event{evt("e1", 12), evt("e2", 12), evt("e3", 12)},
-			cursor:      ts(10),
-			wantAdvance: true,
-			wantCursor:  ts(12),
+			// (timestamp, id); same-timestamp events with a later id remain
+			// observable next poll via the inclusive composite window and
+			// are deduped by delivered ids.
+			name:         "tie at page boundary advances to shared timestamp and tail id",
+			events:       []*Event{evt("e1", 12), evt("e2", 12), evt("e3", 12)},
+			wantAdvance:  true,
+			wantCursor:   ts(12),
+			wantCursorID: "e3",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := nextPollCursor(tt.events, tt.cursor)
+			gotTS, gotID, ok := nextPollCursor(tt.events)
 			assert.Equal(t, tt.wantAdvance, ok, "advance decision mismatch")
 			if tt.wantAdvance {
-				require.True(t, ok)
-				assert.Equal(t, tt.wantCursor, got)
-			} else {
-				assert.Equal(t, tt.cursor, got, "non-advancing poll must return the cursor unchanged")
+				assert.Equal(t, tt.wantCursor, gotTS)
+				assert.Equal(t, tt.wantCursorID, gotID)
 			}
 		})
 	}
@@ -92,7 +89,7 @@ func TestNextPollCursor(t *testing.T) {
 // scriptedPageQuery returns events per call in order, ignoring filter args.
 func scriptedPageQuery(pages ...[]*Event) eventPageQuery {
 	call := 0
-	return func(context.Context, EventFilter, time.Time) ([]*Event, error) {
+	return func(context.Context, EventFilter, time.Time, string) ([]*Event, error) {
 		if call >= len(pages) {
 			return nil, nil
 		}
@@ -163,10 +160,13 @@ func TestPollOnce_TieWindowNoLoss(t *testing.T) {
 		table = append(table, &Event{ID: newTestEventID(i), Timestamp: time.Unix(sec, 0).UTC()})
 	}
 
-	query := func(_ context.Context, _ EventFilter, cursor time.Time) ([]*Event, error) {
+	// Mirrors the production keyset window: (created_at, id) >= (cursorTS,
+	// cursorID), ordered by (created_at, id). The id component is what makes
+	// a full page of tied timestamps make progress.
+	query := func(_ context.Context, _ EventFilter, cursor time.Time, cursorID string) ([]*Event, error) {
 		var page []*Event
-		for _, e := range table { // table is already ASC
-			if !e.Timestamp.Before(cursor) {
+		for _, e := range table { // table is already (created_at, id) ASC
+			if e.Timestamp.After(cursor) || (e.Timestamp.Equal(cursor) && e.ID >= cursorID) {
 				page = append(page, e)
 				if len(page) == defaultEventReadLimit {
 					break

@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regression #10: the ReplaceOld conflict
+// The HIGH regression #10: the ReplaceOld conflict
 // strategy must actually delete the superseded old experience from the
 // repository. Pre-fix the branch only kept the new memory — the old
 // near-duplicate row stayed forever, so conflict resolution was a write-side

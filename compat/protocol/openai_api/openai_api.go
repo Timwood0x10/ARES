@@ -499,7 +499,7 @@ func (a *Adapter) handleChatCompletions(ctx context.Context, raw []byte) ([]byte
 		Messages:       messages,
 		Model:          req.Model,
 		Temperature:    req.Temperature,
-		MaxTokens:      req.MaxTokens,
+		MaxTokens:      maxTokensOrCompletion(req.MaxTokens, req.MaxCompletionTokens),
 		Stream:         req.Stream,
 		Tools:          mapToolDefs(req.Tools),
 		TopP:           req.TopP,
@@ -577,6 +577,19 @@ func extractContent(raw json.RawMessage) string {
 		return b.String()
 	}
 	return string(raw)
+}
+
+// maxTokensOrCompletion resolves the generation cap from either OpenAI
+// field: max_tokens (legacy) wins when set; max_completion_tokens (current)
+// is the fallback — previously it was parsed and silently discarded.
+func maxTokensOrCompletion(maxTokens, maxCompletionTokens *int) *int {
+	if maxTokens != nil && *maxTokens > 0 {
+		return maxTokens
+	}
+	if maxCompletionTokens != nil && *maxCompletionTokens > 0 {
+		return maxCompletionTokens
+	}
+	return nil
 }
 
 func mapToolDefs(tools []toolDef) []llmcore.Tool {
@@ -979,9 +992,9 @@ func (a *Adapter) handleEmbeddings(ctx context.Context, raw []byte) ([]byte, err
 	}
 
 	var text string
+	var texts []string
 	if err := json.Unmarshal(req.Input, &text); err != nil {
-		var texts []string
-		if err := json.Unmarshal(req.Input, &texts); err == nil && len(texts) > 0 {
+		if uerr := json.Unmarshal(req.Input, &texts); uerr == nil && len(texts) > 0 {
 			text = texts[0]
 		}
 	}
@@ -994,27 +1007,34 @@ func (a *Adapter) handleEmbeddings(ctx context.Context, raw []byte) ([]byte, err
 		model = a.svc.GetModel()
 	}
 
-	embReq := &llmcore.EmbeddingRequest{Input: text, Model: model}
-	embResp, err := a.svc.GenerateEmbedding(ctx, embReq)
-	if err != nil {
-		return newError(fmt.Sprintf("embedding: %v", err), "server_error", "internal_error"), nil
+	// One embedding per input element (OpenAI contract). The single-string
+	// and raw-JSON fallbacks degrade to a one-element input.
+	inputs := []string{text}
+	if len(texts) > 0 {
+		inputs = texts
 	}
 
-	vec := make([]float64, len(embResp.Embedding))
-	for i, v := range embResp.Embedding {
-		vec[i] = float64(v)
+	data := make([]embeddingData, 0, len(inputs))
+	usage := embeddingUsage{}
+	for i, in := range inputs {
+		embResp, err := a.svc.GenerateEmbedding(ctx, &llmcore.EmbeddingRequest{Input: in, Model: model})
+		if err != nil {
+			return newError(fmt.Sprintf("embedding[%d]: %v", i, err), "server_error", "internal_error"), nil
+		}
+		vec := make([]float64, len(embResp.Embedding))
+		for j, v := range embResp.Embedding {
+			vec[j] = float64(v)
+		}
+		data = append(data, embeddingData{Object: "embedding", Index: i, Embedding: vec})
+		usage.PromptTokens += embResp.Usage.PromptTokens
+		usage.TotalTokens += embResp.Usage.TotalTokens
 	}
 
 	resp := embeddingResponse{
 		Object: "list",
-		Data: []embeddingData{
-			{Object: "embedding", Index: 0, Embedding: vec},
-		},
-		Model: model,
-		Usage: embeddingUsage{
-			PromptTokens: embResp.Usage.PromptTokens,
-			TotalTokens:  embResp.Usage.TotalTokens,
-		},
+		Data:   data,
+		Model:  model,
+		Usage:  usage,
 	}
 	out, err := json.Marshal(resp)
 	if err != nil {

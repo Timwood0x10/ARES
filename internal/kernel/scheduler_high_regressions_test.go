@@ -9,7 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regressions for the kernel scheduler:
+// The HIGH regressions for the kernel scheduler:
 // need-based preemption quantity (#2) and the panic-guard registration gap
 // between TryBegin and the quantum (#3).
 

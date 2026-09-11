@@ -11,7 +11,9 @@ package pgvector
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -147,6 +149,7 @@ func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.It
 			ID:               it.ID,
 			TenantID:         tenantID,
 			Content:          it.Content,
+			ContentHash:      contentHash(it.Content),
 			Embedding:        it.Vector,
 			EmbeddingModel:   "compat-pgvector",
 			EmbeddingVersion: 1,
@@ -160,6 +163,17 @@ func (a *Adapter) Upsert(ctx context.Context, tenantID string, items []vector.It
 		return fmt.Errorf("compat/vector/pgvector: upsert batch: %w", err)
 	}
 	return nil
+}
+
+// contentHash is the dedup key the knowledge repository's
+// UNIQUE (tenant_id, content_hash) constraint expects: SHA-256 over the
+// content bytes, hex-encoded — the same convention as
+// storage/postgres.WriteBuffer.computeContentHash. Without it every row
+// collides on an empty hash and CreateBatch either errors (multi-row) or
+// silently bumps access_count instead of storing (single-row).
+func contentHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
 }
 
 // HealthCheck reports whether the backend is reachable and usable.

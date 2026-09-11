@@ -54,7 +54,7 @@ func ModuleWith(name string, attrs ...any) *slog.Logger {
 //
 // The base slog.Logger is resolved lazily (slog.Default() at call time) so a
 // later slog.SetDefault is picked up; tests inject a fixed base via
-// NewWithBase (DEEP_CODE_REVIEW_2026 3.13#9: the Logger was previously
+// NewWithBase (3.13#9: the Logger was previously
 // untestable because every method resolved the package-level default with no
 // injection seam).
 type Logger struct {

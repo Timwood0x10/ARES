@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReplaceNode_DifferentID_NewDepsBecomeEdges pins DEEP_CODE_REVIEW_2026
+// TestReplaceNode_DifferentID_NewDepsBecomeEdges pins 
 // CRITICAL 1.1: a different-ID ReplaceNode whose replacement step DECLARES
 // dependencies the old step did not have must grow those edges. The
 // regression: the different-ID branch only migrated existing edges, so the

@@ -1,6 +1,6 @@
 package kernel
 
-// DEEP_CODE_REVIEW_2026 §3.1 (MEDIUM) regressions for the orchestrator and
+// §3.1 (MEDIUM) regressions for the orchestrator and
 // registry: the Adopt/Shutdown registration race, the post-registration
 // shutdown guard, and atomic status updates.
 

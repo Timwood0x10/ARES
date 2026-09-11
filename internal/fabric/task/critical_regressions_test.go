@@ -11,7 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
-// The DEEP_CODE_REVIEW_2026 CRITICAL regressions, pinned: empty-capability
+// The CRITICAL regressions, pinned: empty-capability
 // restore survival (1.3) and nil-Yield checkpoint preservation (1.2).
 
 // TestRestoreEmptyCapabilityTaskSurvives pins 1.3: an unconstrained task

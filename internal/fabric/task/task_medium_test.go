@@ -1,6 +1,6 @@
 package taskfabric
 
-// DEEP_CODE_REVIEW_2026 §3.2 (MEDIUM) regressions for the task fabric core:
+// §3.2 (MEDIUM) regressions for the task fabric core:
 // CompilePlan's all-or-nothing atomicity under a concurrent drain,
 // CompleteWithCheckpoint's transition-before-mutation ordering, and
 // RunQuantum's panic boundary.

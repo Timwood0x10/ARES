@@ -115,13 +115,17 @@ func (t *GlobalTracer) TraceMessage(correlationID, event string, parentID string
 	t.mu.Lock()
 	span, ok := t.spans[correlationID]
 	if !ok {
-		span = &TraceSpan{Kind: SpanMessage, ID: correlationID, StartedAt: t.now(), ParentID: parentID}
+		span = &TraceSpan{Kind: SpanMessage, ID: correlationID, StartedAt: t.now()}
 		t.putLocked(correlationID, span)
-	} else if span.ParentID == "" && parentID != "" {
-		span.ParentID = parentID
 	}
 	t.mu.Unlock()
+	// ParentID is mutated under span.mu, not t.mu: Span() clones under
+	// span.mu after releasing t.mu, so writing ParentID under t.mu alone
+	// raced the clone (two different locks guarding one field).
 	span.mu.Lock()
+	if span.ParentID == "" && parentID != "" {
+		span.ParentID = parentID
+	}
 	span.Events = append(span.Events, SpanEvent{At: t.now(), Name: event, Detail: detail})
 	span.mu.Unlock()
 	return span

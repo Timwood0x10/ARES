@@ -1,6 +1,6 @@
 package ares_events
 
-// DEEP_CODE_REVIEW_2026 §3.6 (MEDIUM) regressions for the events package:
+// §3.6 (MEDIUM) regressions for the events package:
 // bounded compaction reads, TTL=0 cleanup semantics, the per-stream summary
 // cap, the compacted-Read fallback honoring ReadOptions, exclusive archive
 // claims, the memory store's ToVersion window, and (integration-gated)

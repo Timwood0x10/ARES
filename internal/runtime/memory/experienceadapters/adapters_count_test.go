@@ -11,7 +11,7 @@ import (
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regression #11: CountByMemoryType must be
+// The HIGH regression #11: CountByMemoryType must be
 // able to report counts beyond the old ListByType(1000) plateau so
 // DistillationConfig.MaxSolutionsPerTenant (default 5000) can actually
 // trigger. The fix adds an in-place CountByType fast path (used by the PG

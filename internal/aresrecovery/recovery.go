@@ -281,12 +281,18 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	// atomic gate.
 	r.restarts[deadAgentID] = attempts + 1
 	r.mu.Unlock()
+	// rollbackBudget releases THIS caller's reservation. Each caller owns
+	// exactly one increment, so the decrement is unconditional: a
+	// value-match guard (only undo when the counter still equals attempts+1)
+	// leaked under concurrent failures — with two failing callers the first
+	// rollback saw the second's increment and skipped, leaving a phantom
+	// count and burning budget with zero successful restarts.
 	rollbackBudget := func() {
 		r.mu.Lock()
-		// Only undo our own reservation: a concurrent successful restart may
-		// have incremented past it in the meantime.
-		if r.restarts[deadAgentID] == attempts+1 {
-			r.restarts[deadAgentID] = attempts
+		if prev := r.restarts[deadAgentID]; prev <= 1 {
+			delete(r.restarts, deadAgentID)
+		} else {
+			r.restarts[deadAgentID] = prev - 1
 		}
 		r.mu.Unlock()
 	}

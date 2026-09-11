@@ -324,10 +324,23 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	// Pre-compaction archive flush (safety net). Drains ALL pending rounds
 	// so the compaction core cannot trim raw events belonging to an
 	// un-archived round (which would permanently lose its RoundRecord). Must
-	// run BEFORE CheckAndCompact. Best-effort: never fails compaction.
+	// run BEFORE CheckAndCompact. Best-effort: a transient drain failure
+	// never fails compaction.
 	if s.archiveSink != nil {
 		if archiveErr := s.drainPendingRounds(ctx, streamID); archiveErr != nil {
 			log.Warn("compaction: pre-compaction archive drain failed", "stream_id", streamID, "error", archiveErr)
+		}
+		// Refuse to compact while another archive pass holds the claim for
+		// this stream: the drain above was a no-op in that case (claim
+		// refused), and trimming now would delete raw events whose rounds
+		// the in-flight pass has not scanned yet — permanently losing their
+		// RoundRecords. The next debounce window retries.
+		s.archiveMu.Lock()
+		inflight := s.archiveInflight[streamID]
+		s.archiveMu.Unlock()
+		if inflight {
+			log.Debug("compaction: deferring — archive pass in flight", "stream_id", streamID)
+			return
 		}
 	}
 
@@ -405,6 +418,14 @@ func (s *CompactableEventStore) WithArchiveSink(sink ArchiveSink) *CompactableEv
 // streams. Rounds that span more than this many events are handled by paging:
 // the scan accumulates events across pages until it reaches the terminal.
 const archiveReadLimit = 500
+
+// maxArchiveRoundEvents caps the events one archive pass accumulates before
+// invoking the sink. archiveReadLimit bounds a single page and
+// maxArchiveDrainRounds bounds the passes per drain, but neither bounded the
+// TOTAL held per round — a terminal-less long stream materialized fully on
+// every first compaction. Exceeding the cap defers the round to the next
+// drain (boundary unchanged, nothing lost); it never truncates a round.
+const maxArchiveRoundEvents = 50000
 
 // maxArchiveDrainRounds caps the number of rounds a single drain may archive,
 // bounding work when a stream accumulates many terminals before compaction.
@@ -496,12 +517,19 @@ func (s *CompactableEventStore) archivePendingRoundsOnce(ctx context.Context, st
 	// the next terminal event or the end of the stream. lastSeen is both the
 	// read cursor (ReadOptions.FromVersion is inclusive) and the dedup filter,
 	// so the inclusive overlap event from the previous page is skipped.
+	// accumulation is capped at maxArchiveRoundEvents so a terminal-less or
+	// extremely long round cannot materialize the whole stream in memory.
 	var roundEvents []*Event
 	var terminal *Event
 	lastSeen := roundStart
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, fmt.Errorf("archive: context: %w", err)
+		}
+		if len(roundEvents) >= maxArchiveRoundEvents {
+			log.Warn("archive: round event cap reached before a terminal; deferring to next drain",
+				"stream_id", streamID, "cap", maxArchiveRoundEvents)
+			return false, nil
 		}
 		page, err := s.EventStore.Read(ctx, streamID, ReadOptions{
 			FromVersion: lastSeen,

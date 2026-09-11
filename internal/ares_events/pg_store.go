@@ -437,14 +437,19 @@ func buildAllReadQuery(opts ReadOptions) (string, []any) {
 }
 
 // pgSubscription carries the per-subscriber poll state. The cursor advances
-// by keyset pagination: every poll with a non-empty query page moves the
-// cursor to the page's last (max) created_at, and the `>= cursor` window
-// plus delivered-id dedup absorb ties at the boundary.
+// by composite keyset pagination on (created_at, id): every poll with a
+// non-empty query page moves the cursor to the page's last row, and the
+// `(created_at, id) >= cursor` window plus delivered-id dedup absorb ties at
+// the boundary. The id component is what lets a full page of
+// timestamp-tied rows make progress — a pure created_at cursor would fill
+// every LIMIT with the tied rows and never reach anything written after the
+// tie block.
 type pgSubscription struct {
 	filter EventFilter
 	ch     chan<- *Event
 
 	cursor    time.Time
+	cursorID  string
 	delivered map[string]bool // event ids already sent on ch (bounded)
 }
 
@@ -466,15 +471,16 @@ func (p *pgSubscription) markDelivered(events []*Event) {
 // eventPageQuery abstracts the store's page fetch so pollOnce is unit-testable
 // without a live pool (the keyset-cursor decision is pure logic; only the
 // fetch needs a database).
-type eventPageQuery func(ctx context.Context, filter EventFilter, cursor time.Time) ([]*Event, error)
+type eventPageQuery func(ctx context.Context, filter EventFilter, cursor time.Time, cursorID string) ([]*Event, error)
 
 // queryEventPage is the production eventPageQuery over the pool.
 func (s *PostgresEventStore) queryEventPage(
 	ctx context.Context,
 	filter EventFilter,
 	cursor time.Time,
+	cursorID string,
 ) ([]*Event, error) {
-	query, args := buildSubscribeQuery(filter, cursor)
+	query, args := buildSubscribeQuery(filter, cursor, cursorID)
 	return s.queryEvents(ctx, query, args...)
 }
 
@@ -520,7 +526,7 @@ func pollOnce(
 	sub *pgSubscription,
 	query eventPageQuery,
 ) error {
-	events, err := query(ctx, sub.filter, sub.cursor)
+	events, err := query(ctx, sub.filter, sub.cursor, sub.cursorID)
 	if err != nil {
 		return err
 	}
@@ -540,42 +546,44 @@ func pollOnce(
 
 	sub.markDelivered(batch)
 
-	if next, ok := nextPollCursor(events, sub.cursor); ok {
-		sub.cursor = next
+	if nextTS, nextID, ok := nextPollCursor(events); ok {
+		sub.cursor = nextTS
+		sub.cursorID = nextID
 	}
 	return nil
 }
 
 // nextPollCursor decides the subscription cursor after a poll. Keyset
-// pagination: ANY non-empty page advances the cursor to the page's last
-// timestamp — even when every row was already delivered (batch empty). A
-// delivered-only page proves nothing new exists below the page tail; keeping
-// the old cursor would wedge the subscriber: the next poll re-reads the same
-// rows, the batch is empty again, and the cursor never passes the window.
+// pagination on (created_at, id): ANY non-empty page advances the cursor to
+// the page's last row — even when every row was already delivered (batch
+// empty). A delivered-only page proves nothing new exists below the page
+// tail; keeping the old cursor would wedge the subscriber.
 //
-// Tie semantics: `>= cursor` (inclusive) re-reads rows sharing the page-tail
-// timestamp next poll; those are deduped by the delivered set — that is its
-// job. The invariant that matters is losslessness: events written later with
-// the SAME timestamp still satisfy `>= cursor` and cannot be skipped. Only a
-// single timestamp carrying more than maxDeliveredIDs events risks
-// re-delivery (documented burst behavior: at worst re-deliver, never lose).
-func nextPollCursor(events []*Event, cursor time.Time) (time.Time, bool) {
+// Tie semantics: the window is `(created_at, id) >= (cursorTS, cursorID)`
+// (inclusive), so rows sharing the page-tail timestamp but with a LATER id
+// are still returned next poll and deduped by the delivered set — that is
+// its job. A full page of tied timestamps advances cursorID to the page's
+// last id, so the next poll reaches rows past the tie block instead of
+// re-reading the same 100 forever.
+func nextPollCursor(events []*Event) (time.Time, string, bool) {
 	if len(events) == 0 {
-		return cursor, false
+		return time.Time{}, "", false
 	}
-	return events[len(events)-1].Timestamp, true
+	tail := events[len(events)-1]
+	return tail.Timestamp, tail.ID, true
 }
 
 // buildSubscribeQuery constructs a parameterized query for the subscription
-// poll. The window is `>= cursor` (inclusive): combined with the delivered-id
-// dedup in pollOnce this makes ties at the cursor timestamp observable instead
-// of silently skipped.
-func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
+// poll. The window is `(created_at, id) >= (cursor, cursorID)` (inclusive):
+// combined with the delivered-id dedup in pollOnce this makes ties at the
+// cursor boundary observable instead of silently skipped, and lets a full
+// tied page make forward progress via the id component.
+func buildSubscribeQuery(filter EventFilter, cursor time.Time, cursorID string) (string, []any) {
 	query := `SELECT id, stream_id, type, payload, metadata, version, created_at
-		FROM events WHERE created_at >= $1`
+		FROM events WHERE (created_at, id) >= ($1, $2)`
 
-	args := []any{cursor}
-	argIdx := 2
+	args := []any{cursor, cursorID}
+	argIdx := 3
 
 	if len(filter.StreamIDs) > 0 {
 		query += fmt.Sprintf(" AND stream_id = ANY($%d)", argIdx)
@@ -592,7 +600,7 @@ func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
 		args = append(args, typeStrs)
 	}
 
-	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT %d", defaultEventReadLimit)
+	query += fmt.Sprintf(" ORDER BY created_at ASC, id ASC LIMIT %d", defaultEventReadLimit)
 
 	return query, args
 }

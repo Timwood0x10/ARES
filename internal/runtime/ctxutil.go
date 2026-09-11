@@ -5,7 +5,6 @@ package runtime
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -43,7 +42,6 @@ func WithDetachedTimeout(label string, timeout time.Duration) (context.Context, 
 var bgTracker struct {
 	mu   sync.Mutex
 	jobs map[string]int64
-	seq  atomic.Int64
 }
 
 func trackBackground(label string) {

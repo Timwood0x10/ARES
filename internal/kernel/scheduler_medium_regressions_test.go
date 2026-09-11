@@ -1,6 +1,6 @@
 package kernel
 
-// DEEP_CODE_REVIEW_2026 §3.1 (MEDIUM) regressions for the scheduler:
+// §3.1 (MEDIUM) regressions for the scheduler:
 // budget-exhaustion livelock, neutral outcome attribution, Scheduled task
 // counting, recovery-binding capability mismatch, quantum shutdown boundary,
 // and the drain semaphore's ctx-aware send.

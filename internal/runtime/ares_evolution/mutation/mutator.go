@@ -27,6 +27,28 @@ type Mutator struct {
 	rng              *rand.Rand            // Deterministic randomness source.
 	deterministicIDs bool                  // When true, use counter-based IDs instead of UUID.
 	idCounter        atomic.Int64          // Monotonic counter for deterministic ID generation (thread-safe).
+	// probsSet marks an explicit mutation-type probability override
+	// (WithMutationProbs); when false, mutateOne derives the distribution
+	// from the available pools as before.
+	probsSet   bool
+	paramProb  float64
+	promptProb float64
+	toolProb   float64
+}
+
+// WithMutationProbs overrides the mutation-type probability distribution
+// used by Mutate. Zero-value probabilities are allowed (they simply never
+// select that type); the values are normalized against available pools by
+// mutateOneWithProbs. Without this option Mutate keeps the pool-based
+// defaults (70/15/15 and friends).
+func WithMutationProbs(paramProb, promptProb, toolProb float64) MutatorOption {
+	return func(m *Mutator) error {
+		m.probsSet = true
+		m.paramProb = paramProb
+		m.promptProb = promptProb
+		m.toolProb = toolProb
+		return nil
+	}
 }
 
 // NewMutator creates a new strategy mutator with default configuration.
@@ -156,6 +178,9 @@ var (
 //   - Only tool available: 80% parameter, 20% tool
 //   - No pools available: 100% parameter
 func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
+	if m.probsSet {
+		return m.mutateOneWithProbs(parent, index, m.paramProb, m.promptProb, m.toolProb)
+	}
 	hasPrompt := len(m.promptPool) > 0
 	hasTool := len(m.toolPool) > 0
 

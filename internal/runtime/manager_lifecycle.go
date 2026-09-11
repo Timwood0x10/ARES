@@ -76,19 +76,28 @@ func (m *Manager) Start(ctx context.Context) error {
 		})
 	}
 
-	// Background health check loop.
-	m.getG().Go(func() error {
-		ticker := time.NewTicker(m.config.HealthCheckInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-m.getGctx().Done():
-				return nil
-			case <-ticker.C:
-				m.healthCheck()
+	// Background health check loop. Registered under m.mu with the same
+	// isStopped re-check as launchAgentGoroutine: Stop sets isStopped under
+	// this lock before it waits on the group, so a registration that
+	// observes !isStopped is always visible to that Wait. An unguarded Go
+	// here could land while Stop's Wait is in flight and panic on WaitGroup
+	// reuse — the exact failure the launch-path fix closes.
+	m.mu.Lock()
+	if !m.isStopped {
+		m.getG().Go(func() error {
+			ticker := time.NewTicker(m.config.HealthCheckInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-m.getGctx().Done():
+					return nil
+				case <-ticker.C:
+					m.healthCheck()
+				}
 			}
-		}
-	})
+		})
+	}
+	m.mu.Unlock()
 
 	log.Info("runtime: started", "agents", len(launches))
 	return nil

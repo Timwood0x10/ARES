@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regressions #13 and #14: MetricsTracer must
+// The HIGH regressions #13 and #14: MetricsTracer must
 // attribute cost even when no trace id was ever injected (WithTrace is not
 // called anywhere in the production wiring — the pre-fix `call.TraceID != ""`
 // guard left the cost dashboard permanently empty), and the input/output

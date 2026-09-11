@@ -126,6 +126,10 @@ type MutatorConfig struct {
 	// PromptMutationProb is the probability of mutating the prompt template (0.0-1.0).
 	// Default: 0.3
 	PromptMutationProb float64
+
+	// ToolMutationProb is the probability of mutating the tool config (0.0-1.0).
+	// Default: 0.4
+	ToolMutationProb float64
 }
 
 // NewMutator creates a new public Mutator wrapping the internal mutation engine.
@@ -151,11 +155,6 @@ func NewMutator(cfg MutatorConfig) (*Mutator, error) {
 		opts = append(opts, internalmutation.WithToolPool(cfg.ToolPool))
 	}
 
-	inner, err := internalmutation.NewMutator(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("new mutator: %w", err)
-	}
-
 	paramProb := cfg.ParamMutationProb
 	if paramProb <= 0 {
 		paramProb = 0.3
@@ -163,6 +162,19 @@ func NewMutator(cfg MutatorConfig) (*Mutator, error) {
 	promptProb := cfg.PromptMutationProb
 	if promptProb <= 0 {
 		promptProb = 0.3
+	}
+	toolProb := cfg.ToolMutationProb
+	if toolProb <= 0 {
+		toolProb = 0.4
+	}
+	// Forward the type-probability mix to the engine (WithMutationProbs).
+	// Without this the public probabilities were stored but never read —
+	// Mutate always ran the engine's pool-based defaults.
+	opts = append(opts, internalmutation.WithMutationProbs(paramProb, promptProb, toolProb))
+
+	inner, err := internalmutation.NewMutator(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("new mutator: %w", err)
 	}
 
 	return &Mutator{

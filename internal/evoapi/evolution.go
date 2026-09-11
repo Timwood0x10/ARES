@@ -96,6 +96,72 @@ func (d *dreamCycleAdapter) TaskCount() int64 {
 	return d.inner.TaskCount()
 }
 
+// RegressionConfig is the public mirror of the regression-test input a
+// Tester receives.
+type RegressionConfig struct {
+	Candidate         Strategy
+	Baseline          Strategy
+	TaskSampleSize    int
+	AdaptiveBatchSize int
+}
+
+// RegressionResult is the public mirror of a Tester's outcome.
+type RegressionResult struct {
+	CandidateScore float64
+	BaselineScore  float64
+	WinRate        float64
+	TotalTasks     int
+}
+
+// Tester is the regression-tester contract DreamCycle requires. Without a
+// tester every DreamCycle.Run is a silent no-op (the internal guard skips
+// the cycle), so NewDreamCycle callers MUST attach one via WithTester.
+type Tester interface {
+	Run(ctx context.Context, cfg RegressionConfig) (*RegressionResult, error)
+}
+
+// testerAdapter bridges the public Tester to evolve.TesterInterface.
+type testerAdapter struct{ t Tester }
+
+func (a testerAdapter) Run(ctx context.Context, cfg evolve.RegressionConfig) (*evolve.RegressionResult, error) {
+	res, err := a.t.Run(ctx, RegressionConfig{
+		Candidate:         publicStrategy(cfg.Candidate),
+		Baseline:          publicStrategy(cfg.Baseline),
+		TaskSampleSize:    cfg.TaskSampleSize,
+		AdaptiveBatchSize: cfg.AdaptiveBatchSize,
+	})
+	if err != nil || res == nil {
+		return nil, err
+	}
+	return &evolve.RegressionResult{
+		CandidateScore: res.CandidateScore,
+		BaselineScore:  res.BaselineScore,
+		WinRate:        res.WinRate,
+		TotalTasks:     res.TotalTasks,
+	}, nil
+}
+
+func publicStrategy(s evolve.Strategy) Strategy {
+	return Strategy{
+		ID:             s.ID,
+		Version:        s.Version,
+		Score:          s.Score,
+		ParentID:       s.ParentID,
+		PromptTemplate: s.PromptTemplate,
+		Params:         s.Params,
+	}
+}
+
+// WithTester returns a NewDreamCycle option that attaches the regression
+// tester — the missing public seam that previously left every façade-built
+// DreamCycle permanently skipping its cycles.
+func WithTester(t Tester) any {
+	return evolve.WithDreamCycleTester(testerAdapter{t: t})
+}
+
+// NewDreamCycle builds a DreamCycle over wired internal components.
+// A tester MUST be attached via WithTester (forwarded as an internal
+// DreamCycleOption); without one every Run silently skips its cycle.
 func NewDreamCycle(scheduler, mutator any, opts ...any) (DreamCycle, error) {
 	// Caller provides wired internal components.
 	sched, ok := scheduler.(*evolve.EvolutionScheduler)
@@ -233,10 +299,15 @@ func (p *populationAdapter) Evolve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create mutator: %w", err)
 	}
-	// Create a crossover using the configured crossover type.
-	crossType := parseCrossoverType(p.cfg.CrossoverType)
+	// Create a crossover using the configured crossover type. No fixed seed:
+	// WithSeed(42) here made the per-generation RNG sequence identical every
+	// Evolve call (sorted key order is deterministic), collapsing crossover
+	// diversity across generations. The internal engine time-seeds by default.
+	crossType, err := parseCrossoverType(p.cfg.CrossoverType)
+	if err != nil {
+		return fmt.Errorf("evolve: %w", err)
+	}
 	crosser, err := genome.NewCrossover(
-		genome.WithSeed(42),
 		genome.WithCrossoverType(crossType),
 	)
 	if err != nil {
@@ -245,15 +316,24 @@ func (p *populationAdapter) Evolve(ctx context.Context) error {
 	return p.inner.Evolve(ctx, mut, crosser)
 }
 
-// parseCrossoverType converts a string to the corresponding genome.CrossoverType.
-func parseCrossoverType(s string) genome.CrossoverType {
+// parseCrossoverType converts a PopulationConfig.CrossoverType string to the
+// internal engine's strategy. Unknown values and single_point ERROR instead
+// of silently degrading to uniform: the internal engine implements
+// uniform/two_point/segment only, and a config asking for something else
+// must not quietly evolve with a different algorithm. single_point remains
+// available per-pair via genome.Crosser.
+func parseCrossoverType(s string) (genome.CrossoverType, error) {
 	switch s {
+	case "", "uniform", "scattered":
+		return genome.CrossoverUniform, nil
 	case "two_point":
-		return genome.CrossoverTwoPoint
+		return genome.CrossoverTwoPoint, nil
 	case "segment":
-		return genome.CrossoverSegment
+		return genome.CrossoverSegment, nil
+	case "single_point":
+		return 0, fmt.Errorf("population crossover %q is not supported by the internal engine; use genome.Crosser with CrossoverSinglePoint for per-pair recombination", s)
 	default:
-		return genome.CrossoverUniform
+		return 0, fmt.Errorf("unknown population crossover type %q (supported: uniform, scattered, two_point, segment)", s)
 	}
 }
 

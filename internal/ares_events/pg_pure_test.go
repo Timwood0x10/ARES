@@ -51,22 +51,24 @@ func TestBuildAllReadQuery(t *testing.T) {
 
 func TestBuildSubscribeQuery(t *testing.T) {
 	cursor := time.Now()
-	q, args := buildSubscribeQuery(EventFilter{}, cursor)
-	assert.Contains(t, q, "created_at >= $1")
-	assert.Equal(t, []any{cursor}, args)
+	q, args := buildSubscribeQuery(EventFilter{}, cursor, "")
+	assert.Contains(t, q, "(created_at, id) >= ($1, $2)")
+	assert.Contains(t, q, "ORDER BY created_at ASC, id ASC")
+	assert.Equal(t, []any{cursor, ""}, args)
 
 	// Multiple streams + types.
 	q, args = buildSubscribeQuery(EventFilter{
 		StreamIDs: []string{"a", "b"},
 		Types:     []EventType{"t1", "t2"},
 		Since:     cursor,
-	}, cursor)
-	assert.Contains(t, q, "stream_id = ANY($2)")
-	assert.Contains(t, q, "AND type = ANY($3)")
+	}, cursor, "id-cursor")
+	assert.Contains(t, q, "stream_id = ANY($3)")
+	assert.Contains(t, q, "AND type = ANY($4)")
 	assert.Contains(t, q, "LIMIT 100")
-	require.Len(t, args, 3)
-	assert.Equal(t, []string{"a", "b"}, args[1])
-	assert.Equal(t, []string{"t1", "t2"}, args[2])
+	require.Len(t, args, 4)
+	assert.Equal(t, []any{cursor, "id-cursor"}, args[:2])
+	assert.Equal(t, []string{"a", "b"}, args[2])
+	assert.Equal(t, []string{"t1", "t2"}, args[3])
 }
 
 func TestPgSubscriptionMarkDelivered(t *testing.T) {

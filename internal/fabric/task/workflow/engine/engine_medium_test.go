@@ -1,6 +1,6 @@
 package engine
 
-// DEEP_CODE_REVIEW_2026 §3.2 (MEDIUM) regressions for the workflow engine:
+// §3.2 (MEDIUM) regressions for the workflow engine:
 // reloader deletion handling, ResetFromSteps graph events, SchedulerType
 // access serialization, OutputStore Close safety, and definition field
 // extraction anchoring.

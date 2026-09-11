@@ -10,7 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
-// The DEEP_CODE_REVIEW_2026 HIGH regressions for the task fabric: the
+// The HIGH regressions for the task fabric: the
 // durable-append ordering barrier recovering after a timeout skip (#5) and
 // the reaper's dangling-dependency guard (#7).
 

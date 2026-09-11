@@ -52,7 +52,7 @@ type Config struct {
 
 	// TenantID scopes the vector search to one tenant. REQUIRED: the
 	// production table is tenant-scoped (tenant_id NOT NULL) and an unscoped
-	// search would leak rows across tenants (DEEP_CODE_REVIEW_2026 2.13#66).
+	// search would leak rows across tenants (2.13#66).
 	TenantID string
 
 	// IntentTags are keywords used by IntentMatch to score relevance.

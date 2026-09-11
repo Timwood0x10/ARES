@@ -29,7 +29,7 @@ type RelationExtractor struct {
 // "fix" does not match inside words like "prefix" or "fixing".
 // entityBound terminates a captured entity at punctuation or a conjunction
 // so "修复了 A，B" / "fixes A and B" yield the first entity only, instead of
-// the greedy (.+) swallowing the whole remainder (DEEP_CODE_REVIEW_2026 §四:
+// the greedy (.+) swallowing the whole remainder (§四:
 // "贪婪正则匹配到输入末尾"). Targets are canonicalized against the entity
 // dict downstream, so a clean short entity matches far more often than the
 // overlong remainder.

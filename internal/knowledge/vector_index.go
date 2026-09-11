@@ -47,7 +47,7 @@ type VectorHit struct {
 
 // defaultMaxVectorsPerModel bounds each model's slice of the in-memory
 // index so a long-lived single-node deployment cannot grow the map without
-// limit (DEEP_CODE_REVIEW_2026 §四 knowledge: "InMemoryVectorIndex 无驱逐/
+// limit (§四 knowledge: "InMemoryVectorIndex 无驱逐/
 // 上限"). Eviction is FIFO over insertion order. Declared as a var so tests
 // can shrink it.
 var defaultMaxVectorsPerModel = 10000

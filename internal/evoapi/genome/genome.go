@@ -33,6 +33,9 @@ const (
 // Crosser wraps the internal genome crossover engine for public use.
 type Crosser struct {
 	inner *internalgenome.Crossover
+	// defaultType is the Crossover() dispatch target set by CrosserConfig.
+	// Empty means the inner engine's default (uniform).
+	defaultType CrossoverType
 }
 
 // CrosserConfig holds configuration for creating a Crosser.
@@ -53,17 +56,32 @@ func NewCrosser(cfg CrosserConfig) (*Crosser, error) {
 	default:
 		opts = append(opts, internalgenome.WithPromptMode(internalgenome.PromptInherit))
 	}
+	// Forward the construction-default type the inner engine natively
+	// supports; the public-only algorithms (single_point) dispatch through
+	// CrossWithType from Crossover below.
+	switch cfg.CrossoverType {
+	case CrossoverTwoPoint:
+		opts = append(opts, internalgenome.WithCrossoverType(internalgenome.CrossoverTwoPoint))
+	case CrossoverUniform, CrossoverScattered, "":
+		opts = append(opts, internalgenome.WithCrossoverType(internalgenome.CrossoverUniform))
+	}
 
 	inner, err := internalgenome.NewCrossover(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("new crosser: %w", err)
 	}
 
-	return &Crosser{inner: inner}, nil
+	return &Crosser{inner: inner, defaultType: cfg.CrossoverType}, nil
 }
 
 // Crossover performs crossover on two parent strategies and returns a child strategy.
+// It dispatches to the construction default from CrosserConfig when one was
+// set (previously CrossoverType was silently dropped and every call ran the
+// inner engine's uniform default).
 func (c *Crosser) Crossover(ctx context.Context, parentA, parentB *mutation.Strategy) (*mutation.Strategy, error) {
+	if c.defaultType != "" && c.defaultType != CrossoverUniform && c.defaultType != CrossoverScattered {
+		return c.CrossWithType(ctx, parentA, parentB, c.defaultType)
+	}
 	if parentA == nil || parentB == nil {
 		return nil, fmt.Errorf("both parents must be non-nil")
 	}
