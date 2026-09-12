@@ -144,6 +144,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compile-locked by `sdk/arch_test.go` (zero `internal/agentloop` imports;
   exactly two `agentruntime.NewExecution` construction points).
 
+- **`ares serve` submissions now carry conversation memory**: the serve
+  admission path was the one place a user prompt entered the shared L2 core
+  *unenriched* — the SDK folds memory into the prompt inside
+  `Agent.composePrompt`, but `submitPeerTask` submitted the raw input, so
+  serve sessions had no cross-turn history. The shared `agentruntime.Submitter`
+  now accepts an optional `PromptEnricher` (nil = pass-through, the SDK path —
+  it must never install a second hook, that would enrich twice), applied
+  after session-ID resolution and before admission so the enriched text
+  reaches both prompt reads downstream (session root + payload fallback).
+  `cmd/ares` wires the bootstrap `comp.Memory` component into that hook
+  (`resolveServePromptEnricher`, nil when memory is disabled/unbuilt);
+  the enricher keys one memory session per L2 session and fails open to the
+  raw prompt on any memory error — enrichment is additive context and never
+  blocks a submission.
+
 - **Experience distillation now defaults to ON** (P0-3): `memory.enable_distillation`
   became a tri-state (`*bool`) in both `internal/ares_config` and the SDK
   `ConfigFile`. Unset (the common case — the key absent from yaml) now resolves

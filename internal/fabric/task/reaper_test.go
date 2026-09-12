@@ -92,6 +92,50 @@ func TestReaper_NilKeepKeepsGraceOnlySemantics(t *testing.T) {
 	}
 }
 
+// TestReaper_AdditionalPrefixHarvestsSubmissionRoots pins the multi-prefix
+// contract (P1): submission roots (peer-plan-N) are NOT session-scoped, so a
+// reaper whose only prefix is "sess/" never reclaims them — every Submit in a
+// long-lived process left one permanent entry behind. WithAdditionalPrefix
+// puts them under the same harvesting loop, each prefix keeping its own grace
+// (the plan task must outlive the wait that reads its token usage).
+func TestReaper_AdditionalPrefixHarvestsSubmissionRoots(t *testing.T) {
+	f := NewFabric()
+	seedCompletedTask(t, f, "sess/s1/d0/alpha#1")
+	seedCompletedTask(t, f, "peer-plan-1")
+	seedCompletedTask(t, f, "peer-plan-2")
+
+	// Session grace of 1ns expires immediately; the submission roots keep a
+	// long grace, so only the session task is eligible on this sweep.
+	r := NewReaper(f, "sess/", time.Nanosecond).
+		WithAdditionalPrefix("peer-plan-", time.Hour)
+	time.Sleep(2 * time.Millisecond)
+
+	if n := r.Sweep(); n != 1 {
+		t.Fatalf("sweep harvested %d, want 1 (only the released session's task; peer-plan grace not elapsed)", n)
+	}
+	if _, err := f.Task("sess/s1/d0/alpha#1"); err == nil {
+		t.Fatal("past-grace session task must be harvested")
+	}
+	for _, id := range []string{"peer-plan-1", "peer-plan-2"} {
+		if _, err := f.Task(id); err != nil {
+			t.Fatalf("peer-plan task %s inside its grace window was harvested: %v", id, err)
+		}
+	}
+
+	// Past the peer-plan grace: the submission roots are reclaimed too.
+	f2 := NewFabric()
+	seedCompletedTask(t, f2, "peer-plan-9")
+	r2 := NewReaper(f2, "sess/", time.Nanosecond).
+		WithAdditionalPrefix("peer-plan-", time.Nanosecond)
+	time.Sleep(2 * time.Millisecond)
+	if n := r2.Sweep(); n != 1 {
+		t.Fatalf("past-grace sweep harvested %d, want 1 (the submission root)", n)
+	}
+	if _, err := f2.Task("peer-plan-9"); err == nil {
+		t.Fatal("past-grace submission root survived the sweep")
+	}
+}
+
 // TestReaper_GracePeriodDefault pins the construction default (0 → 30s)
 // exposed for startup logging.
 func TestReaper_GracePeriodDefault(t *testing.T) {

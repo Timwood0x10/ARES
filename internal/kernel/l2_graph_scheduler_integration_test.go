@@ -375,7 +375,14 @@ func TestL2Graph_BurstGrowthConvergesThroughEvents(t *testing.T) {
 		prev = id
 	}
 
-	waitForAllCompleted(t, fabric, ids, 20*time.Second)
+	// The deadline scales with the node count: the graph is a SERIAL
+	// dependency chain (each node depends on the previous one) and
+	// maxConcurrentPerAgent is 1 by architectural definition, so all n+1
+	// tasks drain strictly one per scheduler poll. A flat 20s was fine on an
+	// idle machine but blew past it under full-suite parallel load —
+	// waitForAllCompleted returns the moment everything completes, so the
+	// larger budget costs nothing in the passing case.
+	waitForAllCompleted(t, fabric, ids, time.Duration(len(ids))*750*time.Millisecond)
 	requireItemContent(t, fabric, "b0", "echo(echo,q0)")
 	requireItemContent(t, fabric, fmt.Sprintf("b%d", n-1), fmt.Sprintf("echo(echo,q%d)", n-1))
 }

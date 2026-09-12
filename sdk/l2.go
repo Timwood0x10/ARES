@@ -194,6 +194,27 @@ func (r *Runtime) ensureL2() *agentruntime.Execution {
 				execCore.Reaper.Run(r.ctx.Done(), time.Minute)
 				return nil
 			})
+			// Session idle-TTL sweeper (serve parity): a caller-supplied
+			// session is no longer released by the submit path (it may be
+			// shared with an in-flight turn), so an abandoned one must still
+			// be reclaimed here — otherwise its registry entry, graph and
+			// compile subscription live until process exit. Every planner
+			// quantum refreshes lastAccess via GetSession, so an actively
+			// running session can never age into the sweep.
+			reg := execCore.Sessions.Reg
+			ttl := execCore.SessionIdleTTL
+			r.eg.Go(func() error {
+				ticker := time.NewTicker(time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-r.ctx.Done():
+						return nil
+					case <-ticker.C:
+						reg.SweepExpired(ttl)
+					}
+				}
+			})
 		}
 	})
 	return r.l2Exec

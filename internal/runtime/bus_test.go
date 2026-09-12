@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -785,4 +786,67 @@ func TestPluginBus_MultiplePlugins(t *testing.T) {
 	require.Len(t, interrupts, 1)
 	assert.Equal(t, "s1", interrupts[0].StepID)
 	assert.Equal(t, "reject", interrupts[0].Action)
+}
+
+// gatedPlugin blocks inside Start until released, so a test can interleave
+// Unregister with an in-flight hot-plug start deterministically. It records
+// whether Stop ever ran while Start was still executing.
+type gatedPlugin struct {
+	name      string
+	entered   chan struct{}
+	release   chan struct{}
+	startDone atomic.Bool
+	stopCount atomic.Int32
+	stopEarly atomic.Bool
+	enterOnce sync.Once
+}
+
+func (p *gatedPlugin) Name() string               { return p.name }
+func (p *gatedPlugin) Capabilities() []Capability { return nil }
+
+func (p *gatedPlugin) Start(_ context.Context, _ EventBus) error {
+	p.enterOnce.Do(func() { close(p.entered) })
+	<-p.release
+	p.startDone.Store(true)
+	return nil
+}
+
+func (p *gatedPlugin) Stop(_ context.Context) error {
+	if !p.startDone.Load() {
+		p.stopEarly.Store(true)
+	}
+	p.stopCount.Add(1)
+	return nil
+}
+
+// TestPluginBus_UnregisterDuringHotPlugStart_NeverStopsUnstartedPlugin pins
+// the hot-plug window contract (P1): Unregister arriving while Register's
+// Start is still in flight must NOT Stop a plugin that has not started —
+// pre-fix Unregister stopped whatever removeLocked returned, and Register's
+// post-start untracked re-check then stopped it AGAIN (double Stop; for
+// ObserverPlugin a real data race, since Start writes p.cancel unlocked
+// while Stop reads it). A plugin removed mid-start is dropped unstarted and
+// stopped at most once, only after its Start returned.
+func TestPluginBus_UnregisterDuringHotPlugStart_NeverStopsUnstartedPlugin(t *testing.T) {
+	bus := NewPluginBus()
+	require.NoError(t, bus.Start(context.Background()))
+
+	p := &gatedPlugin{name: "gated", entered: make(chan struct{}), release: make(chan struct{})}
+	regErr := make(chan error, 1)
+	go func() { regErr <- bus.Register(p) }()
+	<-p.entered // Start is now in flight, blocked
+
+	unregErr := make(chan error, 1)
+	go func() { unregErr <- bus.Unregister(context.Background(), "gated") }()
+	// Give Unregister time to run its remove+stop while Start is blocked.
+	time.Sleep(20 * time.Millisecond)
+	close(p.release)
+
+	errReg := <-regErr
+	<-unregErr
+	require.Error(t, errReg, "register must report the concurrent unregistration")
+	assert.False(t, p.stopEarly.Load(),
+		"Stop must never run before Start returned (unstarted plugin teardown)")
+	assert.LessOrEqual(t, p.stopCount.Load(), int32(1),
+		"the plugin must be stopped at most once, not by both Unregister and Register's rollback")
 }

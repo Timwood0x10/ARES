@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentruntime"
@@ -19,15 +18,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
-	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llm "github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
@@ -66,6 +62,11 @@ func normalizedPeers(cfg *ares_config.Config) []ares_config.PeerAgentConfig {
 // so every agent can autonomously decide to decompose work and spawn peers.
 // The Kernel enforces quota/capability validation on every spawn.
 //
+// createPeerAgents assembles the peer-mode Kernel (Task Fabric + Agent Fabric
+// + scheduler + L2 execution) from the configured peer population. The heavy
+// lifting lives in the peerAssembly methods (peer_assembly.go); this function
+// only orders the phases and maps phase errors to the caller.
+//
 //nolint:gocyclo // createPeerAgents is a wiring hub (like runServe): it assembles the peer-mode kernel from Task Fabric, Agent Fabric, scheduler, evolution feedback, syscalls, recovery and the lifecycle in one function. Each branch is a distinct wiring step; splitting it would spread one assembly across helpers without reducing the decisions.
 func createPeerAgents(
 	ctx context.Context,
@@ -78,522 +79,47 @@ func createPeerAgents(
 	strategySrc agents.StrategySource,
 	expRepo repositories.ExperienceRepositoryInterface,
 ) ([]sub.Agent, *kernelHandle, error) {
-	kernel := &kernelHandle{}
-
-	// The flat Peers structure is the DEFAULT agent source; the legacy
-	// Sub structure remains as the fallback so older configs keep working.
-	peers := normalizedPeers(cfg)
-
-	// Build sub-agent identities from the flat peer population.
-	subAgents := createPeerSubAgents(peers, store)
-
-	// Roles have no consumer anymore (the executor role-pinning and
-	// the chat body that read them are both deleted) — peers run roleless.
-	if len(subAgents) == 0 {
+	a := &peerAssembly{
+		ctx:         ctx,
+		cfg:         cfg,
+		comp:        comp,
+		chatClient:  chatClient,
+		toolBinder:  toolBinder,
+		store:       store,
+		strategySrc: strategySrc,
+		expRepo:     expRepo,
+		kernel:      &kernelHandle{},
+		peers:       normalizedPeers(cfg),
+	}
+	// Build sub-agent identities from the flat peer population. Roles have no
+	// consumer anymore (executor role-pinning and the chat body that read them
+	// are deleted) — peers run roleless.
+	a.subAgents = createPeerSubAgents(a.peers, store)
+	if len(a.subAgents) == 0 {
 		return nil, nil, errors.New("peer mode: no peer agents configured (agents.peers or agents.sub)")
 	}
 
-	// Assemble the Kernel: Task Fabric + Agent Fabric + scheduler. This
-	// mirrors flipKernelToTaskFabric but runs directly at startup (no
-	// legacy path to flip from).
-	kernel.fabric = taskfabric.NewFabric()
-	// Stamp every submitted task with the strategy that was active at
-	// submission time (evolution loop closure), so runtime fitness samples
-	// stay attributed to the strategy that produced them across promotes.
-	// Cheap + non-blocking: one store read per Create on the submission path.
-	if strategySrc != nil {
-		kernel.fabric = kernel.fabric.WithStrategyStamp(func() string {
-			stampCtx, stampCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer stampCancel()
-			st, err := strategySrc.GetActiveStrategy(stampCtx)
-			if err != nil || st == nil {
-				return ""
-			}
-			return st.ID
-		})
+	if err := a.assembleFabric(); err != nil {
+		return nil, nil, err
 	}
-	// The restored max counter value (0 on a fresh/empty store); feeds the
-	// ID-collision seeds below. Declared here so both the restore site and
-	// the syscall Kernel construction (later in this assembly) can consume it.
-	var restoredSeq int64
-	if store != nil {
-		kernel.fabric = kernel.fabric.WithEventStore(store)
-		// Rebuild in-memory tasks from the durable task.* log BEFORE the
-		// scheduler starts draining: restoring after the first Acquire would
-		// reset tasks created in this process lifetime. Fail-loud — silently
-		// continuing would drop tasks the log says exist.
-		if err := kernel.fabric.RestoreFromStore(ctx); err != nil {
-			return nil, nil, fmt.Errorf("peer mode: restore task fabric from event store: %w", err)
-		}
-		// Cross-restart ID collision guard: the process-local counters reset
-		// to 1 on every boot, but with a durable store the restored fabric
-		// still holds the previous boot's peer-plan-N / sess-auto-N IDs. Seed
-		// the sequence past the max embedded N so the next mint cannot
-		// collide (grow-only: a no-op for a fresh in-memory store).
-		restoredSeq = agentruntime.MaxRestoredSeq(kernel.fabric.IDs())
+	a.wireDispatchAndScheduler()
+	a.wireEvolutionFeedback()
+	a.startCollabGC()
+	a.assembleAgentFabric()
+	if err := a.assembleExecution(); err != nil {
+		return nil, nil, err
 	}
-	// Experience-derived confidence prior — recorded skill/task outcomes
-	// sharpen scheduling when the same pattern recurs. Nil (skills disabled)
-	// keeps declared confidences.
-	if expSrc := resolveExperienceConfidence(comp); expSrc != nil {
-		kernel.fabric = kernel.fabric.WithConfidenceSource(expSrc)
+	a.wireSessionCleanup()
+	a.computeGovernance()
+	if err := a.spawnPeers(); err != nil {
+		return nil, nil, err
 	}
+	a.wireSyscalls()
+	a.injectPriorities()
+	a.startLoops()
 
-	// The static sub.Agent executor pool is gone. Its entries were
-	// dead in peer mode — the scheduler skips static registrations whenever
-	// the agent fabric is wired (the fabric's live population is the single
-	// candidate source) and recovery-bound tasks resolve through
-	// RegisterExecutorForTask instead. The map stays non-nil because the
-	// scheduler copies it at construction; an empty pool simply means
-	// "fabric only", which the drain path was designed for.
-	kernel.executors = make(map[string]CapabilityExecutor, len(subAgents))
-
-	// Build the candidate list for the fabric dispatcher. The full declared
-	// capability set (Caps) is offered to the scorer so a task matching ANY
-	// capability is schedulable to the peer.
-	subCaps := make([]subAgentCapability, 0, len(peers))
-	for _, p := range peers {
-		typ := ""
-		if len(p.Capabilities) > 0 {
-			typ = p.Capabilities[0]
-		}
-		subCaps = append(subCaps, subAgentCapability{ID: p.ID, Type: typ, Caps: append([]string(nil), p.Capabilities...)})
-	}
-
-	// Assemble the kernel dispatcher with the Task Fabric path as the active
-	// path (no legacy leader track: the flag starts at PolicyTaskFabric).
-	kernelDispatcher, kernelFlag := wireKernelDispatcher(subCaps)
-	kernel.dual = kernelDispatcher
-	kernel.flag = kernelFlag
-
-	// One shared load tracker for the scheduler.
-	tracker := newLoadTracker()
-	kernel.tracker = tracker
-
-	// Enable real Task Fabric execution (not scoring mode).
-	enableKernelExecution(kernel.dual, kernel.fabric)
-
-	// Start the scheduler.
-	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
-	if store != nil {
-		sched.WithEventStore(store)
-	}
-	// Honor the YAML kernel.max_concurrent (0/unset = auto). The old literal
-	// WithMaxConcurrent(0) relied on the auto fallback, which stopped at
-	// ExecutorCount() — empty by design in peer mode — and collapsed to 1,
-	// so every drain ran ONE quantum at a time despite fabric candidates
-	// existing. With the fixed fallback chain, 0 now means "parallelism =
-	// live fabric candidates"; a positive value caps it explicitly.
-	if cfg.Kernel.MaxConcurrent > 0 {
-		sched.WithMaxConcurrent(cfg.Kernel.MaxConcurrent)
-	}
-	// Honor the YAML kernel.poll_interval. Previously the config field was
-	// never injected — the scheduler always drained on the 500ms default.
-	if d := parseKernelPollInterval(cfg.Kernel.PollInterval); d > 0 {
-		sched.PollInterval = d
-	}
-	// Optional snappier leases for chaos/recovery demos (#panel): a dead
-	// agent's tasks requeue after lease_ttl instead of the 5-minute default.
-	if ttl := parseKernelLoopConfig(cfg).LeaseTTL; ttl > 0 {
-		sched.WithTTL(ttl)
-	}
-	kernel.scheduler = sched
-	kernel.flipped = true
-
-	// Strategy-shadow runs replay-only. The real-execution A/B runner
-	// (chat tool-loop quanta) died with ReAct; strategy judgment is
-	// runtime fitness feedback plus canary metrics. The sampler's replay fallback needs
-	// no feeder and no scheduler hook, so there is nothing to wire here.
-
-	// Evolution feedback loop: record execution outcomes per agent +
-	// capability, and periodically push the derived confidence back into the
-	// tracker so the next Schedule prefers historically-successful executors.
-	// The loop now also writes the zero-LLM deterministic score back
-	// to the active strategy's Score field via the StrategyStore, so the
-	// GA's fitness signal tracks real execution outcomes without any LLM
-	// call.
-	attribution := aresrecovery.NewExecutionAttribution()
-	sched.WithAttribution(attribution)
-	feedback := aresrecovery.NewEvolutionFeedbackAdapter(attribution, tracker)
-
-	// Wire the zero-LLM score provider into the EvolutionScheduler so
-	// task.completed/failed events feed the deterministic aggregate score
-	// (from attribution) instead of the constant 1.0/0.0. The provider reads
-	// the same attribution that the feedback loop writes to, so the score
-	// window reflects real execution quality (latency, retries, recovery).
-	if comp.Evolution != nil {
-		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok && sched != nil {
-			sched.SetScoreProvider(
-				aresrecovery.NewAttributionScoreProvider(attribution),
-			)
-		}
-	}
-
-	// Loop closure: make the "independent scorer wired" shadow gate real.
-	// bootstrap_steps.go set DeterministicScorerEnabled=true so hasScorer passed
-	// and the shadow gate was registered as "independent scorer wired" — but
-	// buildShadowEvaluator only sets a shadow scorer when an LLM scorer exists.
-	// With llmScorer==nil the evaluator's scorer stayed nil, the ShadowSampler
-	// no-op'd, and the gate rejected every candidate fail-closed forever (a gate
-	// that claims evidence but never gathers it).
-	//
-	// The scorer must DISCRIMINATE per strategy, otherwise the defect only
-	// moves: one global attribution score returns the same number for the
-	// candidate and the active strategy, every comparison is an exact tie
-	// (ShadowWon requires shadow > active), the win rate is 0.0 and the gate
-	// still rejects everything. So the evidence source is the ReplayScorer: each
-	// strategy is scored by the mean of ITS OWN KindFitness records that the
-	// RuntimeObserver already writes per finished task, read over a distinct
-	// time window per comparison — real per-strategy evidence, zero LLM calls.
-	// The attribution-derived deterministic score supplies the
-	// cold-start prior for a strategy with no history in a window, so the same
-	// execution quality the GA rewards also anchors the shadow comparison.
-	if comp.NewEvolution != nil && comp.NewEvolution.ShadowEvaluator != nil {
-		det := aresrecovery.NewDeterministicScorer()
-		// The replay query limit is configurable (evolution.shadow.
-		// replay_query_limit). Zero keeps the default (200) — a config that
-		// never mentions it behaves exactly as before.
-		replay := evolution.NewReplayScorer(comp.EvidenceStore, func() float64 {
-			return det.ScoreAttribution(attribution)
-		}, evolution.WithReplayQueryLimit(cfg.Evolution.Shadow.ReplayQueryLimit))
-		// Without an evidence store replay degrades to prior-vs-prior, i.e.
-		// the tie deadlock above. Leave the scorer unset in that case so the
-		// shadow gate stays honestly fail-closed instead of judging on ties.
-		if replay.HasStore() {
-			comp.NewEvolution.ShadowEvaluator.SetShadowScorer(replay.Score)
-		}
-	}
-
-	// Wrap the confidence-injection adapter with score write-back.
-	// The strategyScoreAdapter bridges to evolution.StrategyStore without
-	// creating a circular import (aresrecovery cannot import evolution).
-	var scoreWriter aresrecovery.StrategyScoreWriter
-	if comp.NewEvolution != nil {
-		scoreWriter = newStrategyScoreAdapter(comp.NewEvolution.StrategyStore)
-	}
-	scoredFeedback := aresrecovery.NewScoredFeedbackAdapter(feedback, nil, scoreWriter)
-	runBackground(ctx, comp, "evolution-feedback", func(loopCtx context.Context) error {
-		aresrecovery.RunScoredFeedbackLoop(loopCtx, scoredFeedback, 10*time.Second)
-		return nil
-	})
-
-	// Collaboration-graph janitor: reclaim terminal residue left by fail-fast
-	// / timeout submissions off the hot path (per-submission cleanup handles
-	// the common case; this catches siblings that were in-flight then).
-	runBackground(ctx, comp, "collab-gc", func(loopCtx context.Context) error {
-		runCollabGCLoop(loopCtx, kernel.fabric, 60*time.Second)
-		return nil
-	})
-
-	// Assemble the Lifecycle pillar (agentfabric + aresrecovery).
-	// Wire the agent-fabric lifecycle sink into the shared event bus (#panel
-	// feedback): deaths/spawns/suspensions must reach the introspection feed
-	// the moment they happen, not only via lease-expiry downstream. Mapping to
-	// existing bus types keeps consumers uniform (spawned/resumed → started;
-	// killed/suspended/retired → stopped with reason).
-	agentBus := &fabricEventSink{store: store}
-	agents := agentfabric.NewFabric().WithEventSink(agentBus)
-	if len(cfg.Kernel.Resources) > 0 {
-		agents = agents.WithResourceBudget(cfg.Kernel.Resources)
-	}
-	kernel.agents = agents
-
-	// The DAG execution gate (kernel.dag_execution in config).
-	// Zero/absent config = legacy ReAct behavior (chat cognition for every
-	// peer, L2 machinery test-only).
-	//
-	// Shared L2 execution core (internal/agentruntime): session registry +
-	// incremental compile coordinator + planner/router cognition + session
-	// reaper. The serve and SDK entry points both build this, so "how an agent
-	// runs" has a single implementation. Recovery/chaos/evolution/transport
-	// stay in this package as upper layers.
-	//
-	// Read the L1 ToolClass DAG from the evolution components so the planner
-	// can check enabled/budget/prior before growing L2 tool nodes. Nil when no
-	// tools are registered (permissive).
-	var l1DAG *engine.MutableDAG
-	if comp.NewEvolution != nil {
-		l1DAG = comp.NewEvolution.ToolClassDAG()
-	}
-
-	exec, err := agentruntime.NewExecution(agentruntime.ExecutionConfig{
-		Fabric:         kernel.fabric,
-		Agents:         agents,
-		ChatClient:     chatClient,
-		ToolBinder:     toolBinder,
-		StrategySource: strategySrc,
-		L1DAG:          l1DAG,
-		MaxPlanDepth:   resolveMaxPlanDepth(cfg.Kernel.DAGExecution),
-		ReaperGrace:    resolveReaperGrace(cfg.Kernel.DAGExecution),
-		SessionIdleTTL: resolveSessionIdleTTL(cfg.Kernel.DAGExecution),
-		CompileStore:   store,
-		Logger:         slog.Default(),
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("peer mode: %w", err)
-	}
-	peerRouter := exec.Router
-	sessionReg := exec.Sessions.Reg
-	sessionReaper := exec.Reaper
-	// The registry + compile coordinator are always wired, so the submission
-	// path always admits sessions (there is no gate-off legacy mode).
-	kernel.sessionReg = sessionReg
-	kernel.compileCoord = exec.Compile
-	kernel.submitter = exec.Submitter
-	// Cross-restart ID collision guard for the submission sequence
-	// (peer-plan-N / sess-auto-N): grow-only seed past the restored max (a
-	// no-op for a fresh in-memory store).
-	kernel.submitter.Seed(restoredSeq)
-
-	// Terminal-task reaper for L2 session tasks. Every grown node is a fabric
-	// task and the fabric never self-harvests, so without this loop the
-	// in-memory task map grows monotonically across a long-lived serve. The
-	// registry is the keep-set authority: a live session's tasks are its
-	// readable history and are never harvested; only tasks of released
-	// sessions die, after the configured grace window.
-	runBackground(ctx, comp, "l2-reaper", func(loopCtx context.Context) error {
-		sessionReaper.Run(loopCtx.Done(), time.Minute)
-		return nil
-	})
-	slog.InfoContext(ctx, "peer mode: L2 session task reaper wired",
-		"grace", sessionReaper.GracePeriod())
-
-	// Session idle-TTL sweeper. The keep-set only lets a session's
-	// tasks die when the session itself dies, and the only death signals
-	// were "answer completed" / "admission rolled back" — an abandoned
-	// session (client gone, planner loop stuck, answer quantum dying
-	// before its release) pinned its terminal tasks forever. Releasing on
-	// idle turns the leak bound into TTL + reaper grace; active sessions
-	// are untouchable because every quantum refreshes their last-access
-	// through GetSession.
-	idleTTL := resolveSessionIdleTTL(cfg.Kernel.DAGExecution)
-	effectiveTTL := idleTTL
-	if effectiveTTL <= 0 {
-		effectiveTTL = agentfabric.DefaultSessionIdleTTL
-	}
-	runBackground(ctx, comp, "session-idle-ttl", func(loopCtx context.Context) error {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-loopCtx.Done():
-				return nil
-			case <-ticker.C:
-				if ids := sessionReg.SweepExpired(idleTTL); len(ids) > 0 {
-					slog.InfoContext(loopCtx, "peer mode: released idle sessions past TTL",
-						"count", len(ids), "ttl", effectiveTTL, "sessions", ids)
-				}
-			}
-		}
-	})
-	slog.InfoContext(ctx, "peer mode: session idle-TTL sweeper wired", "ttl", effectiveTTL)
-
-	// answer-failure session release. The answer node is the session's
-	// ONLY terminal exit: when the answer task itself dies terminally
-	// (retry budget exhausted by a failing executor), no successor can
-	// reference the session graph again, yet nothing on that path called
-	// ReleaseSession — the idle TTL (above) was the sole cleanup, pinning
-	// every terminal task of the dead session for the full 30min. This
-	// subscription closes the loop: a terminal task.failed whose capability
-	// is ares/answer releases the session immediately, so the reaper
-	// harvests after the normal grace window instead of after the TTL.
-	if store != nil {
-		runBackground(ctx, comp, "answer-fail-release", func(loopCtx context.Context) error {
-			ch, err := store.Subscribe(loopCtx, ares_events.EventFilter{
-				Types: []ares_events.EventType{ares_events.EventTaskFailed},
-			})
-			if err != nil {
-				slog.WarnContext(loopCtx, "peer mode: answer-fail release subscription failed, idle TTL remains the backstop", "error", err)
-				return nil
-			}
-			for {
-				select {
-				case <-loopCtx.Done():
-					return nil
-				case ev, ok := <-ch:
-					if !ok {
-						return nil
-					}
-					agentruntime.ReleaseOnAnswerFailure(loopCtx, sessionReg, ev)
-				}
-			}
-		})
-	}
-
-	// Every peer advertises the single L2 capability set via
-	// peerCapabilities below. There is no legacy partition anymore.
-
-	// Configured sub-agents ARE the fabric's dynamic population — each is
-	// spawned WITH its execution body (the shared L2 router cognition) and
-	// its distilled experience prior, instead of living only in the
-	// static executor
-	// registry. The scheduler queries the fabric on every drain, so this
-	// is the single registration point: a future kill/retire immediately
-	// removes the candidate, and the recovery/chaos loops manage the SAME
-	// population they recover.
-	// Agent cognitive-execution budget (kernel.agent_budget): the long-task
-	// safety gate. Zero values mean unlimited; a configured budget bounds
-	// every peer's cumulative tokens/tools and wall-clock lifetime. Computed
-	// once and applied to both configured peers (below) and syscall-spawned
-	// peers (via WithAgentGovernance on the syscall Kernel).
-	agentGovernance := agentfabric.Governance{
-		TokenBudget: cfg.Kernel.AgentBudget.Tokens,
-		ToolBudget:  cfg.Kernel.AgentBudget.Tools,
-	}
-	if cfg.Kernel.AgentBudget.Deadline != "" {
-		if d, dErr := time.ParseDuration(cfg.Kernel.AgentBudget.Deadline); dErr == nil {
-			agentGovernance.Deadline = d
-		}
-	}
-
-	for _, sa := range subAgents {
-		if sa == nil {
-			continue
-		}
-		sa := sa // capture for the closure (spawn is synchronous, but keep the
-		// loop-scoped binding local for the CognitionFactory below)
-		if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
-			Identity:     sa.ID(),
-			Capabilities: peerCapabilities(toolBinder.ListTools()),
-			// The execution body is always the L2 router — a fabric
-			// agent is fully self-contained (LLM + tools), no sub.Agent
-			// wrapper, no ReAct loop.
-			CognitionFactory: func([]string) agentfabric.Cognition {
-				return peerRouter
-			},
-			ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),
-			Governance:      agentGovernance,
-		}); err != nil {
-			return nil, nil, fmt.Errorf("peer mode: spawn agent %q into fabric: %w", sa.ID(), err)
-		}
-	}
-
-	policy := aresrecovery.DefaultRestartPolicy()
-	if cfg.Kernel.MaxRestarts > 0 {
-		policy.MaxRestarts = cfg.Kernel.MaxRestarts
-	}
-	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
-	sched.WithGovernance(agents)
-	// The scheduler's candidate pool includes every live, IDLE, executable
-	// fabric agent — the configured peers spawned above, plus any spawned via
-	// the spawn_agent syscall. Static registered executors (recovery-bound)
-	// still win by skip logic in appendFabricCandidates.
-	sched.WithAgentFabric(agents)
-
-	// Wire the spawn_agent / create_task syscalls into the shared ToolBinder.
-	// Every agent's LLM executor sees these tools alongside the built-in
-	// tools, so it can autonomously decide to spawn peers and create tasks.
-	kernelSyscall := agentsyscall.NewKernel(
-		agents,
-		kernel.fabric,
-		func(agentID, capability string) agentsyscall.Executor {
-			// Syscall-spawned peers execute through the L2 router —
-			// the same body as configured peers. No ReAct executor.
-			return &peerExecutorAdapter{id: agentID, typ: models.AgentType(capability), cog: peerRouter}
-		},
-		// No scheduler registration here. The static pool is
-		// skipped whenever the agent fabric is wired, so registering
-		// syscall-spawned agents was a no-op for normal drains — and the
-		// agentsyscall.Executor half (the factory return above, which
-		// powers spawn_agent/create_task/ask_agent) is untouched.
-		func(string, agentsyscall.Executor) {},
-		// Plan loops started via the create_plan loop option must be
-		// bounded by the serve lifetime, not the individual tool call.
-		agentsyscall.WithLoopLifetime(ctx),
-		// Same cognitive-execution budget as configured peers: a
-		// syscall-spawned agent is bounded from birth (zero = unlimited).
-		agentsyscall.WithAgentGovernance(agentGovernance),
-	)
-	// Same collision guard as seedPeerTaskSeq, for the Kernel's own ID
-	// families (task-<capability>-N / spawned-<capability>-N /
-	// plan-<origin>-N): after a durable restore the fresh counter must start
-	// past the max N the previous boot already wrote into the fabric.
-	kernelSyscall.SeedIDSeq(restoredSeq)
-	agentsyscall.BindTools(toolBinder, kernelSyscall)
-	// Retain the syscall Kernel on the kernel handle so the collaboration IPC
-	// bridge (built later in setupPeerRegistry) can inject ipc.Send into
-	// ask_agent (Step Y.2-ACT).
-	kernel.syscalls = kernelSyscall
-	log.Info("peer mode: spawn_agent / create_task / ask_agent syscalls wired into tool binder")
-
-	// Inject agent priorities into the tracker (thread priority).
-	for _, p := range peers {
-		if p.Priority > 0 {
-			tracker.SetPriority(p.ID, p.Priority)
-		}
-	}
-
-	// Start the scheduler and recovery loop. The recovery loop wires a REAL
-	// executor factory (newPeerExecutor — full sub.Agent with LLM + tools) and
-	// binds each replacement to exactly the task it was spawned for
-	// (RegisterExecutorForTask), so a dead agent's task is resumed by a real
-	// cognitive process — not a canned-success stub, and never at the expense
-	// of a brand-new task.
-	// Runtime plugin ecosystem closure: the PluginBus hooks the scheduler's
-	// quantum boundary (observer/checkpoint/tool plugins observe every
-	// Schedule→Acquire→RunQuantum). The adapter lives in runtime_bridge.go —
-	// the kernel stays free of any runtime import (§0.3 dependency rule).
-	// The loop knobs are parsed ONCE here and shared with the recovery loop
-	// below (a second parse would waste work and risk drift).
-	kernelLoopCfg := parseKernelLoopConfig(cfg)
-	kernel.pluginBus = startPluginBus(ctx, store, sched, kernelLoopCfg)
-
-	// The scheduler drain loop and the recovery loop run as managed
-	// background loops and hand their lifecycle to the System Runtime
-	// adapter (stop = cancel, wait = join the goroutine). The loop context
-	// is pre-derived from the serve ctx — NOT from the context runBackground
-	// passes — so the adopt-time Stop hook owns a cancel that works
-	// independently of which managed pool ended up running the goroutine.
-	schedCtx, schedCancel := context.WithCancel(ctx)
-	schedDone := make(chan struct{})
-	runBackground(ctx, comp, sysCompScheduler, func(context.Context) error {
-		defer close(schedDone)
-		sched.Run(schedCtx)
-		return nil
-	})
-	kernel.schedulerStop = schedCancel
-	kernel.schedulerDone = schedDone
-
-	recCtx, recCancel := context.WithCancel(ctx)
-	recDone := make(chan struct{})
-	// Bind the scheduler's stale-winner hint to this recovery loop. When a
-	// leased task's winner dies with no capable replacement, the scheduler
-	// releases the task and kicks a sweep here, so the replacement execution
-	// body is bound within one drain instead of one full lease TTL.
-	recoveryKick, recoveryHint := newRecoveryKick()
-	recoveryLoopCfg := kernelLoopCfg
-	recoveryLoopCfg.RecoveryKick = recoveryKick
-	sched.WithRecoveryHint(recoveryHint)
-	runBackground(ctx, comp, sysCompRecovery, func(context.Context) error {
-		defer close(recDone)
-		runKernelRecoveryLoop(recCtx, store, kernel.recovery, recoveryLoopCfg,
-			func(taskID, agentID string, executor CapabilityExecutor) {
-				sched.RegisterExecutorForTask(taskID, agentID, executor)
-			},
-			func(agentID, capability string) CapabilityExecutor {
-				// Recovery-bound tasks bypass the candidate pool,
-				// so dispatch per task. Every task is L2 now — the router
-				// serves all of them; the newPeerExecutor fallback below
-				// is wiring-error insurance only (also cognition-backed,
-				// never ReAct).
-				if body := selectRecoveryBody(peerRouter, capability); body != nil {
-					exec, err := newCognitionExecutor(agentID, models.AgentType(capability), body)
-					if err == nil {
-						return exec
-					}
-					slog.WarnContext(ctx, "peer mode: recovery executor L2 dispatch failed, falling back",
-						"agent_id", agentID, "capability", capability, "error", err)
-				}
-				return newPeerExecutor(agentID, models.AgentType(capability), peerRouter)
-			},
-			sched.HasCapableExecutor,
-		)
-		return nil
-	})
-	kernel.recoveryStop = recCancel
-	kernel.recoveryDone = recDone
-	log.Info("peer mode: peer agents registered, Kernel scheduler started (no leader)", "count", len(subAgents))
-	return subAgents, kernel, nil
+	log.Info("peer mode: peer agents registered, Kernel scheduler started (no leader)", "count", len(a.subAgents))
+	return a.subAgents, a.kernel, nil
 }
 
 // newPeerExecutor creates the sub.Agent identity for a dynamically spawned

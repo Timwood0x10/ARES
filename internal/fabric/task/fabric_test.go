@@ -358,3 +358,48 @@ func TestFabricEventLogBounded(t *testing.T) {
 		t.Fatalf("newest event must be retained, got %q", events[len(events)-1].TaskID)
 	}
 }
+
+// TestRenew_RefusesExpiredLease pins the heartbeat contract (P1): once a
+// lease has expired, Renew must fail instead of silently extending it. A
+// holder that paused past its TTL and then heartbeated resurrected a lease
+// the crash-recovery sweep was about to requeue — with the same epoch, so
+// the fencing token could not reveal the resurrection.
+func TestRenew_RefusesExpiredLease(t *testing.T) {
+	now := time.Now()
+	f := NewFabric()
+	withClock(f, &now)
+
+	if err := f.Create(newTask("t1")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := f.Acquire("t1", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// Holder goes silent past the TTL; the lease is now expired but not yet
+	// requeued (CheckExpiredLeases has not run).
+	now = now.Add(2 * time.Minute)
+
+	err = f.Renew("t1", "agent-a", epoch, time.Minute)
+	if err != ErrLeaseExpired {
+		t.Fatalf("renewing an expired lease must fail with ErrLeaseExpired, got %v", err)
+	}
+
+	// The lease was NOT extended: the recovery sweep still sees it expired
+	// and requeues the task.
+	requeued := f.CheckExpiredLeases()
+	if len(requeued) != 1 || requeued[0] != "t1" {
+		t.Fatalf("the expired lease must still be requeued, got %v", requeued)
+	}
+
+	// A renewal while the lease is LIVE still works (the normal heartbeat).
+	now = now.Add(time.Hour)
+	epoch2, err := f.Acquire("t1", "agent-a", time.Minute)
+	if err != nil {
+		t.Fatalf("re-acquire: %v", err)
+	}
+	if err := f.Renew("t1", "agent-a", epoch2, time.Minute); err != nil {
+		t.Fatalf("renewing a live lease must succeed, got %v", err)
+	}
+}

@@ -878,8 +878,38 @@ func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Ste
 				}
 			}
 		}
+		// Capture the old step's DependsOn BEFORE the map delete below.
+		var inherited []string
+		if oldStep, ok := m.steps[oldID]; ok && len(oldStep.DependsOn) > 0 {
+			inherited = append([]string(nil), oldStep.DependsOn...)
+		}
 		delete(m.dag.Nodes, oldID)
 		delete(m.steps, oldID)
+		// Merge the OLD step's DependsOn into the replacement's. The edge
+		// migration above rewired every incoming edge onto the new ID, so
+		// storing newStep wholesale left Edges ⊋ DependsOn whenever the
+		// replacement did not re-declare the old prerequisites: ReadDeps
+		// (which feeds fabric.SetDependencies) then compiled a task with no
+		// prerequisites that went READY before its dependencies ran. The
+		// union is the semantics the rewired edges already imply; a
+		// replacement can only ADD dependencies here, never drop inherited
+		// ones (the same-ID branch is where the new spec is authoritative).
+		if len(inherited) > 0 {
+			merged := append([]string(nil), newStep.DependsOn...)
+			seen := make(map[string]bool, len(merged))
+			for _, dep := range merged {
+				seen[dep] = true
+			}
+			for _, dep := range inherited {
+				if dep == newStep.ID || seen[dep] {
+					continue
+				}
+				seen[dep] = true
+				merged = append(merged, dep)
+			}
+			newStep = cloneStepForSnapshot(newStep)
+			newStep.DependsOn = merged
+		}
 		m.steps[newStep.ID] = newStep
 		// Add new DependsOn edges contributed by the replacement step.
 		// The migration loop above only rewires EXISTING edges; DependsOn

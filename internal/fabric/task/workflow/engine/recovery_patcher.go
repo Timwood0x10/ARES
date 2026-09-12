@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
@@ -14,6 +15,12 @@ import (
 // It wraps a MutableDAG and applies ChangeRecoveryStrategy/ChangeMaxRetries/
 // ChangeBackoff. Implements patch.RuntimeComponent for unified runtime evolution.
 type RecoveryPatchExecutor struct {
+	// mu guards the dag pointer: SetDAG rebinds the executor to the agent's
+	// live DAG after bootstrap, possibly while the evolution loop applies
+	// patches concurrently — an unlocked pointer swap was a data race with
+	// every Apply/CanApply/Snapshot read (the sibling DAGPatchExecutor fixed
+	// the same bug the same way).
+	mu  sync.RWMutex
 	dag *MutableDAG
 }
 
@@ -29,7 +36,16 @@ func (e *RecoveryPatchExecutor) SetDAG(dag *MutableDAG) {
 	if dag == nil {
 		return
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.dag = dag
+}
+
+// currentDAG returns the bound DAG under the read lock.
+func (e *RecoveryPatchExecutor) currentDAG() *MutableDAG {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dag
 }
 
 // Name returns "recovery" as the component identifier for patch routing.
@@ -41,10 +57,11 @@ func (e *RecoveryPatchExecutor) Name() string { return "recovery" }
 // (assert.Same(liveDAG, snapshot)). The live reference is only handed to the
 // recovery patch executor, never to arbitrary observers.
 func (e *RecoveryPatchExecutor) Snapshot(_ context.Context) (any, error) {
-	if e.dag == nil {
+	dag := e.currentDAG()
+	if dag == nil {
 		return nil, patch.ErrNoSnapshot
 	}
-	return e.dag, nil
+	return dag, nil
 }
 
 // Ensure RecoveryPatchExecutor implements patch.RuntimeComponent.
@@ -52,13 +69,17 @@ var _ patch.RuntimeComponent = (*RecoveryPatchExecutor)(nil)
 
 // Apply applies a runtime patch to the DAG's recovery configuration.
 func (e *RecoveryPatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	dag := e.currentDAG()
+	if dag == nil {
+		return nil, errors.New("recovery executor: dag is nil")
+	}
 	switch p.Type {
 	case patch.PatchChangeRecoveryStrategy:
-		return e.applyChangeStrategy(p)
+		return applyChangeStrategy(dag, p)
 	case patch.PatchChangeMaxRetries:
-		return e.applyChangeMaxRetries(p)
+		return applyChangeMaxRetries(dag, p)
 	case patch.PatchChangeBackoff:
-		return e.applyChangeBackoff(p)
+		return applyChangeBackoff(dag, p)
 	default:
 		return nil, fmt.Errorf("recovery executor: unsupported patch type %s", p.Type)
 	}
@@ -66,7 +87,7 @@ func (e *RecoveryPatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) (
 
 // CanApply checks whether a patch can be applied.
 func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
-	if e.dag == nil {
+	if e.currentDAG() == nil {
 		return errors.New("recovery executor: dag is nil")
 	}
 	switch p.Type {
@@ -123,8 +144,8 @@ func (e *RecoveryPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 // between restoring the field value and clearing the policy entirely so
 // steps that gained a policy are returned to nil.
 //
-// Guarding lock: e.dag.mu (write) must be held while reading or applying a
-// snapshot, since it covers e.dag.steps and each step's RecoveryPolicy field.
+// Guarding lock: dag.mu (write) must be held while reading or applying a
+// snapshot, since it covers dag.steps and each step's RecoveryPolicy field.
 type recoveryStrategySnapshot struct {
 	strategies map[string]RecoveryStrategy
 	hadPolicy  map[string]bool
@@ -134,7 +155,7 @@ type recoveryStrategySnapshot struct {
 // mirroring recoveryStrategySnapshot. Steps that had no RecoveryPolicy before
 // the patch have hadPolicy=false so rollback removes the policy it created.
 //
-// Guarding lock: e.dag.mu (write).
+// Guarding lock: dag.mu (write).
 type recoveryMaxAttemptsSnapshot struct {
 	maxAttempts map[string]int
 	hadPolicy   map[string]bool
@@ -145,7 +166,7 @@ type recoveryMaxAttemptsSnapshot struct {
 // had no RecoveryPolicy before the patch have hadPolicy=false so rollback
 // removes the policy it created.
 //
-// Guarding lock: e.dag.mu (write).
+// Guarding lock: dag.mu (write).
 type recoveryBackoffSnapshot struct {
 	backoff   map[string]time.Duration
 	hadPolicy map[string]bool
@@ -154,13 +175,13 @@ type recoveryBackoffSnapshot struct {
 // applyChangeStrategy applies a ChangeRecoveryStrategy patch. A forward patch
 // carries a string strategy applied to every step; a rollback patch carries a
 // *recoveryStrategySnapshot that restores each step to its individual prior
-// value. The whole read-modify-write runs under e.dag.mu (write) so concurrent
+// value. The whole read-modify-write runs under dag.mu (write) so concurrent
 // DAG reads/mutations cannot observe a half-applied strategy or race on the
 // live *Step pointers.
-func (e *RecoveryPatchExecutor) applyChangeStrategy(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func applyChangeStrategy(dag *MutableDAG, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Rollback path: restore each step from the per-step snapshot.
 	if snap, ok := p.Value.(*recoveryStrategySnapshot); ok {
-		return e.restoreStrategySnapshot(snap)
+		return restoreStrategySnapshot(dag, snap)
 	}
 
 	strategy, ok := p.Value.(string)
@@ -169,18 +190,18 @@ func (e *RecoveryPatchExecutor) applyChangeStrategy(p patch.RuntimePatch) (*patc
 	}
 	newStrategy := RecoveryStrategy(strategy)
 
-	e.dag.mu.Lock()
-	defer e.dag.mu.Unlock()
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
 
-	if len(e.dag.steps) == 0 {
+	if len(dag.steps) == 0 {
 		return nil, errors.New("recovery executor: no steps in DAG to apply strategy")
 	}
 
 	snap := &recoveryStrategySnapshot{
-		strategies: make(map[string]RecoveryStrategy, len(e.dag.steps)),
-		hadPolicy:  make(map[string]bool, len(e.dag.steps)),
+		strategies: make(map[string]RecoveryStrategy, len(dag.steps)),
+		hadPolicy:  make(map[string]bool, len(dag.steps)),
 	}
-	for id, step := range e.dag.steps {
+	for id, step := range dag.steps {
 		snap.hadPolicy[id] = step.RecoveryPolicy != nil
 		if step.RecoveryPolicy != nil {
 			snap.strategies[id] = step.RecoveryPolicy.Strategy
@@ -203,16 +224,16 @@ func (e *RecoveryPatchExecutor) applyChangeStrategy(p patch.RuntimePatch) (*patc
 // restoreStrategySnapshot restores per-step strategy state from a snapshot
 // under the write lock. It returns a fresh snapshot of the pre-restoration
 // state so the rollback is itself reversible.
-func (e *RecoveryPatchExecutor) restoreStrategySnapshot(snap *recoveryStrategySnapshot) (*patch.RuntimePatch, error) {
-	e.dag.mu.Lock()
-	defer e.dag.mu.Unlock()
+func restoreStrategySnapshot(dag *MutableDAG, snap *recoveryStrategySnapshot) (*patch.RuntimePatch, error) {
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
 
 	current := &recoveryStrategySnapshot{
 		strategies: make(map[string]RecoveryStrategy, len(snap.hadPolicy)),
 		hadPolicy:  make(map[string]bool, len(snap.hadPolicy)),
 	}
 	for id, hadPolicy := range snap.hadPolicy {
-		step, ok := e.dag.steps[id]
+		step, ok := dag.steps[id]
 		if !ok {
 			// Step was removed between patch and rollback; skip it.
 			continue
@@ -243,13 +264,13 @@ func (e *RecoveryPatchExecutor) restoreStrategySnapshot(snap *recoveryStrategySn
 // applyChangeMaxRetries applies a ChangeMaxRetries patch. A forward patch
 // carries an int applied to every step; a rollback patch carries a
 // *recoveryMaxAttemptsSnapshot that restores each step individually. The whole
-// read-modify-write runs under e.dag.mu (write) for the same reasons as
+// read-modify-write runs under dag.mu (write) for the same reasons as
 // applyChangeStrategy. Policy creation for previously-policyless steps is
 // consistent with applyChangeStrategy so rollback stays symmetric.
-func (e *RecoveryPatchExecutor) applyChangeMaxRetries(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func applyChangeMaxRetries(dag *MutableDAG, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Rollback path: restore each step from the per-step snapshot.
 	if snap, ok := p.Value.(*recoveryMaxAttemptsSnapshot); ok {
-		return e.restoreMaxAttemptsSnapshot(snap)
+		return restoreMaxAttemptsSnapshot(dag, snap)
 	}
 
 	newMax, ok := p.Value.(int)
@@ -257,18 +278,18 @@ func (e *RecoveryPatchExecutor) applyChangeMaxRetries(p patch.RuntimePatch) (*pa
 		return nil, errors.New("recovery executor: ChangeMaxRetries value must be int")
 	}
 
-	e.dag.mu.Lock()
-	defer e.dag.mu.Unlock()
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
 
-	if len(e.dag.steps) == 0 {
+	if len(dag.steps) == 0 {
 		return nil, errors.New("recovery executor: no steps in DAG to apply max retries")
 	}
 
 	snap := &recoveryMaxAttemptsSnapshot{
-		maxAttempts: make(map[string]int, len(e.dag.steps)),
-		hadPolicy:   make(map[string]bool, len(e.dag.steps)),
+		maxAttempts: make(map[string]int, len(dag.steps)),
+		hadPolicy:   make(map[string]bool, len(dag.steps)),
 	}
-	for id, step := range e.dag.steps {
+	for id, step := range dag.steps {
 		snap.hadPolicy[id] = step.RecoveryPolicy != nil
 		if step.RecoveryPolicy != nil {
 			snap.maxAttempts[id] = step.RecoveryPolicy.MaxAttempts
@@ -292,18 +313,19 @@ func (e *RecoveryPatchExecutor) applyChangeMaxRetries(p patch.RuntimePatch) (*pa
 // restoreMaxAttemptsSnapshot restores per-step MaxAttempts state from a
 // snapshot under the write lock. It returns a fresh snapshot of the
 // pre-restoration state so the rollback is itself reversible.
-func (e *RecoveryPatchExecutor) restoreMaxAttemptsSnapshot(
+func restoreMaxAttemptsSnapshot(
+	dag *MutableDAG,
 	snap *recoveryMaxAttemptsSnapshot,
 ) (*patch.RuntimePatch, error) {
-	e.dag.mu.Lock()
-	defer e.dag.mu.Unlock()
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
 
 	current := &recoveryMaxAttemptsSnapshot{
 		maxAttempts: make(map[string]int, len(snap.hadPolicy)),
 		hadPolicy:   make(map[string]bool, len(snap.hadPolicy)),
 	}
 	for id, hadPolicy := range snap.hadPolicy {
-		step, ok := e.dag.steps[id]
+		step, ok := dag.steps[id]
 		if !ok {
 			continue
 		}
@@ -331,15 +353,15 @@ func (e *RecoveryPatchExecutor) restoreMaxAttemptsSnapshot(
 // applyChangeBackoff applies a ChangeBackoff patch. A forward patch carries a
 // time.Duration applied to every step; a rollback patch carries a
 // *recoveryBackoffSnapshot that restores each step individually. The whole
-// read-modify-write runs under e.dag.mu (write) for the same reasons as
+// read-modify-write runs under dag.mu (write) for the same reasons as
 // applyChangeStrategy/applyChangeMaxRetries. Policy creation for
 // previously-policyless steps is consistent with the sibling apply functions so
 // rollback stays symmetric: a step that gained a policy here is returned to nil
 // on rollback rather than keeping a zero-backoff policy.
-func (e *RecoveryPatchExecutor) applyChangeBackoff(p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+func applyChangeBackoff(dag *MutableDAG, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	// Rollback path: restore each step from the per-step snapshot.
 	if snap, ok := p.Value.(*recoveryBackoffSnapshot); ok {
-		return e.restoreBackoffSnapshot(snap)
+		return restoreBackoffSnapshot(dag, snap)
 	}
 
 	newBackoff, ok := p.Value.(time.Duration)
@@ -347,18 +369,18 @@ func (e *RecoveryPatchExecutor) applyChangeBackoff(p patch.RuntimePatch) (*patch
 		return nil, errors.New("recovery executor: ChangeBackoff value must be time.Duration")
 	}
 
-	e.dag.mu.Lock()
-	defer e.dag.mu.Unlock()
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
 
-	if len(e.dag.steps) == 0 {
+	if len(dag.steps) == 0 {
 		return nil, errors.New("recovery executor: no steps in DAG to apply backoff")
 	}
 
 	snap := &recoveryBackoffSnapshot{
-		backoff:   make(map[string]time.Duration, len(e.dag.steps)),
-		hadPolicy: make(map[string]bool, len(e.dag.steps)),
+		backoff:   make(map[string]time.Duration, len(dag.steps)),
+		hadPolicy: make(map[string]bool, len(dag.steps)),
 	}
-	for id, step := range e.dag.steps {
+	for id, step := range dag.steps {
 		snap.hadPolicy[id] = step.RecoveryPolicy != nil
 		if step.RecoveryPolicy != nil {
 			snap.backoff[id] = step.RecoveryPolicy.Backoff
@@ -382,18 +404,19 @@ func (e *RecoveryPatchExecutor) applyChangeBackoff(p patch.RuntimePatch) (*patch
 // restoreBackoffSnapshot restores per-step Backoff state from a snapshot under
 // the write lock. It returns a fresh snapshot of the pre-restoration state so
 // the rollback is itself reversible.
-func (e *RecoveryPatchExecutor) restoreBackoffSnapshot(
+func restoreBackoffSnapshot(
+	dag *MutableDAG,
 	snap *recoveryBackoffSnapshot,
 ) (*patch.RuntimePatch, error) {
-	e.dag.mu.Lock()
-	defer e.dag.mu.Unlock()
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
 
 	current := &recoveryBackoffSnapshot{
 		backoff:   make(map[string]time.Duration, len(snap.hadPolicy)),
 		hadPolicy: make(map[string]bool, len(snap.hadPolicy)),
 	}
 	for id, hadPolicy := range snap.hadPolicy {
-		step, ok := e.dag.steps[id]
+		step, ok := dag.steps[id]
 		if !ok {
 			continue
 		}

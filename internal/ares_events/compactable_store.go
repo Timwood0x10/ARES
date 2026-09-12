@@ -31,7 +31,16 @@ type CompactableEventStore struct {
 
 	// Track which streams have been recently checked to avoid redundant checks.
 	// Key: streamID, value: last version at which compaction was checked.
+	// Bounded by the TTL sweep in maybeCompact — serve mints a new stream per
+	// conversation, so without it these maps grew one permanent entry each
+	// per conversation ever seen.
 	lastChecked map[string]int64
+	// lastTouched records when a stream's bookkeeping was last used, and
+	// lastBookkeepingSweep when the TTL sweep last ran. Both under mu.
+	lastTouched           map[string]time.Time
+	lastBookkeepingSweep  time.Time
+	bookkeepingTTL        time.Duration
+	bookkeepingSweepEvery time.Duration
 
 	// archiveSink archives round records at task-terminal boundaries and before
 	// compaction. nil = no archiving. Set via WithArchiveSink.
@@ -92,12 +101,16 @@ func NewCompactableEventStore(
 	}
 
 	c := &CompactableEventStore{
-		EventStore:          store,
-		trimStore:           trimStore,
-		lastChecked:         make(map[string]int64),
-		roundCounter:        make(map[string]int),
-		lastArchivedVersion: make(map[string]int64),
-		archiveInflight:     make(map[string]bool),
+		EventStore:            store,
+		trimStore:             trimStore,
+		lastChecked:           make(map[string]int64),
+		lastTouched:           make(map[string]time.Time),
+		lastBookkeepingSweep:  time.Now(),
+		bookkeepingTTL:        streamBookkeepingTTL,
+		bookkeepingSweepEvery: streamBookkeepingSweepInterval,
+		roundCounter:          make(map[string]int),
+		lastArchivedVersion:   make(map[string]int64),
+		archiveInflight:       make(map[string]bool),
 	}
 	// Background compaction outlives any single request, so derive its lifecycle
 	// context from Background (cancelled by Close) rather than a caller ctx.
@@ -115,6 +128,21 @@ func NewCompactableEventStore(
 
 // compactionTimeout is the maximum duration allowed for a single compaction check.
 const compactionTimeout = 30 * time.Second
+
+// streamBookkeepingTTL bounds how long a stream's bookkeeping entries
+// (debounce cursor, touch time, archive round counter and boundary) survive
+// without traffic. serve mints one event stream per conversation, so without
+// a bound these maps kept three permanent entries per conversation ever seen
+// in a long-lived process. A reset after the TTL is safe: lastChecked is a
+// pure debounce cache, and the archive round counter already restarts at 1
+// after every process restart (it is in-memory only), so an idle-stream reset
+// is no worse than the tolerated restart behavior.
+const streamBookkeepingTTL = 24 * time.Hour
+
+// streamBookkeepingSweepInterval is the minimum gap between TTL sweeps of the
+// per-stream bookkeeping maps (they are swept opportunistically from
+// maybeCompact, not by a dedicated goroutine).
+const streamBookkeepingSweepInterval = time.Minute
 
 // Close cancels the store's lifecycle context and waits for in-flight
 // background compaction workers to finish (bounded by compactionTimeout),
@@ -211,13 +239,17 @@ func (s *CompactableEventStore) Append(
 	return nil
 }
 
-// Read returns events for a stream. When the underlying store returns empty
-// but summaries exist for the stream, it falls back to returning the summaries
-// as synthetic events. This prevents ReplaySession from breaking after compaction
-// has trimmed old raw events.
+// Read returns events for a stream. After compaction trimmed a stream's head,
+// the synthetic summary events covering the trimmed range are merged with the
+// live tail, so a replay (flight.NewReplaySession, dashboard) sees the whole
+// history instead of silently starting mid-stream. The summaries are only
+// consulted when the caller's window actually reaches into the trimmed head —
+// an uncompacted stream (live events start at v1) or a window that starts at
+// the live head costs no extra repository read beyond the one the empty-tail
+// fallback always did.
 //
-// The synthetic fallback honors the caller's ReadOptions (version window,
-// time filter, direction, limit): pre-fix it ignored them entirely, so a
+// The synthetic events honor the caller's ReadOptions (version window, time
+// filter, direction, limit): pre-fix the fallback ignored them entirely, so a
 // bounded or descending read on a fully-compacted stream returned every
 // summary in ascending order — callers paging with Limit got an unbounded
 // slice and DESC callers got the oldest-first order.
@@ -226,21 +258,38 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 	if err != nil {
 		return nil, err
 	}
-	if len(events) > 0 {
-		return events, nil
-	}
-
-	// Underlying store returned empty — check summaries as fallback.
 	if s.compactor == nil || s.compactor.repo == nil {
 		return events, nil
 	}
+	// Only look for summaries when the request could include trimmed history:
+	// an empty result, or a window that starts below the oldest live event.
+	if len(events) > 0 {
+		minLive := events[0].Version
+		for _, ev := range events {
+			if ev.Version < minLive {
+				minLive = ev.Version
+			}
+		}
+		if minLive <= 1 || (opts.FromVersion > 0 && opts.FromVersion >= minLive) {
+			return events, nil
+		}
+	}
 	summaries, summaryErr := s.compactor.repo.FindByStreamID(ctx, streamID)
 	if summaryErr != nil || len(summaries) == 0 {
-		// No summaries either, return the original empty result.
+		// No summaries either, return the original result unchanged.
 		return events, nil
 	}
+	synthetic := applyReadOptions(syntheticSummaryEvents(summaries), opts)
+	if len(events) == 0 {
+		return synthetic, nil
+	}
+	return mergeSyntheticWithLive(synthetic, events, opts), nil
+}
 
-	// Convert summaries to synthetic events.
+// syntheticSummaryEvents converts stored summaries into replayable
+// event.summary events (one per summary, version = the summary's end version
+// so it orders before the live events it precedes).
+func syntheticSummaryEvents(summaries []*EventSummary) []*Event {
 	synthetic := make([]*Event, 0, len(summaries))
 	for _, sum := range summaries {
 		synthetic = append(synthetic, &Event{
@@ -258,7 +307,27 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 			Timestamp: sum.CreatedAt,
 		})
 	}
-	return applyReadOptions(synthetic, opts), nil
+	return synthetic
+}
+
+// mergeSyntheticWithLive splices option-filtered synthetic summaries into the
+// live tail: summaries always precede the live events they were compacted
+// from (their versions are ≤ the trim point, which is < every live version),
+// so ascending reads get summaries first and descending reads get them last.
+// Limit applies to the merged slice, matching the stores' Read semantics.
+func mergeSyntheticWithLive(synthetic, live []*Event, opts ReadOptions) []*Event {
+	merged := make([]*Event, 0, len(synthetic)+len(live))
+	if opts.Direction == ReadDescending {
+		merged = append(merged, live...)
+		merged = append(merged, synthetic...)
+	} else {
+		merged = append(merged, synthetic...)
+		merged = append(merged, live...)
+	}
+	if opts.Limit > 0 && len(merged) > opts.Limit {
+		merged = merged[:opts.Limit]
+	}
+	return merged
 }
 
 // applyReadOptions filters and orders a synthetic event slice per the
@@ -297,6 +366,53 @@ func applyReadOptions(events []*Event, opts ReadOptions) []*Event {
 // threshold/4 since the last check, reducing redundant I/O on busy streams.
 const compactionCheckDivisor = 4
 
+// maybeSweepBookkeepingLocked drops per-stream bookkeeping entries (debounce
+// cursor, touch time, archive round counter and boundary) that have been idle
+// longer than bookkeepingTTL. serve mints one event stream per conversation,
+// so without this bound the maps kept three permanent entries per
+// conversation ever seen in a long-lived process.
+//
+// Resetting an idle stream's bookkeeping is safe by existing design:
+// lastChecked is a pure debounce cache, and the archive round counter already
+// restarts at 1 after every process restart (in-memory only) — the archive
+// sink stamps the stream identity into its filenames precisely because
+// "every stream restarts at round 1".
+//
+// Caller must hold mu. This is the only place that holds mu while taking
+// archiveMu (lock order mu → archiveMu); the archive path never takes mu
+// while holding archiveMu, so the order cannot invert.
+func (s *CompactableEventStore) maybeSweepBookkeepingLocked() {
+	now := time.Now()
+	if s.bookkeepingSweepEvery > 0 && now.Sub(s.lastBookkeepingSweep) < s.bookkeepingSweepEvery {
+		return
+	}
+	s.lastBookkeepingSweep = now
+	if s.bookkeepingTTL <= 0 || len(s.lastTouched) == 0 {
+		return
+	}
+	stale := make([]string, 0, 8)
+	for id, at := range s.lastTouched {
+		if now.Sub(at) > s.bookkeepingTTL {
+			stale = append(stale, id)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	for _, id := range stale {
+		delete(s.lastTouched, id)
+		delete(s.lastChecked, id)
+	}
+	s.archiveMu.Lock()
+	for _, id := range stale {
+		delete(s.roundCounter, id)
+		delete(s.lastArchivedVersion, id)
+	}
+	s.archiveMu.Unlock()
+	log.Debug("compaction: swept idle per-stream bookkeeping",
+		"count", len(stale), "ttl", s.bookkeepingTTL)
+}
+
 // maybeCompact checks if a stream needs compaction and runs it if so.
 // Uses debouncing to avoid redundant checks on every Append.
 func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID string) {
@@ -311,6 +427,8 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	}
 
 	s.mu.Lock()
+	s.lastTouched[streamID] = time.Now()
+	s.maybeSweepBookkeepingLocked()
 	lastCheck := s.lastChecked[streamID]
 	threshold := s.compactor.config.Threshold
 

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
@@ -28,8 +29,9 @@ import (
 // Sessions owns the per-session L2 lifecycle over a task fabric. Both the
 // serve and SDK entry points drive sessions through this type.
 //
-// All fields are injected at assembly and then read-only; Sessions holds no
-// mutable state of its own, so it is safe for concurrent use.
+// Reg/Fabric/Compile are injected at assembly and then read-only. The only
+// mutable state is the per-session admission lock table (admitMu/admitLocks),
+// which serializes Admit for one session ID — see lockAdmission.
 type Sessions struct {
 	// Reg is the per-session L2 graph registry (required).
 	Reg *agentfabric.SessionRegistry
@@ -38,6 +40,52 @@ type Sessions struct {
 	// Compile is the incremental projection coordinator that turns graph
 	// events into fabric tasks (required).
 	Compile *planprojection.CompileCoordinator
+
+	// admitMu guards admitLocks. admitLocks is the per-session admission
+	// serialization table: without it two concurrent Submits into the same
+	// RELEASED session both miss GetSession, one wins InitSession, and the
+	// loser's ErrSessionAlreadyExists branch returned BEFORE the winner ran
+	// the stale-task harvest — its wait loop then scanned the previous
+	// turn's still-present COMPLETED answer and returned it as this turn's
+	// result. Entries are refcounted so the table does not leak one entry
+	// per session ever admitted.
+	admitMu    sync.Mutex
+	admitLocks map[string]*admitLock
+}
+
+// admitLock is one session's admission mutex plus its waiter count.
+type admitLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockAdmission serializes admission for one session ID. The returned
+// unlock must be called exactly once. Concurrent admitters of DIFFERENT
+// sessions never contend — only same-session admission is serialized, which
+// is the only case where the harvest/recompile sequence may not interleave.
+func (s *Sessions) lockAdmission(sessionID string) (unlock func()) {
+	s.admitMu.Lock()
+	if s.admitLocks == nil {
+		s.admitLocks = make(map[string]*admitLock)
+	}
+	l := s.admitLocks[sessionID]
+	if l == nil {
+		l = &admitLock{}
+		s.admitLocks[sessionID] = l
+	}
+	l.refs++
+	s.admitMu.Unlock()
+
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		s.admitMu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(s.admitLocks, sessionID)
+		}
+		s.admitMu.Unlock()
+	}
 }
 
 // Admit registers one L2 session before its first task is created: it
@@ -48,6 +96,11 @@ type Sessions struct {
 // continuation, not an error — the existing session is reused and no
 // duplicate root is compiled. Failures are fail-fast: anything InitSession
 // registered before a failure is released again so a retry starts clean.
+//
+// Admission for one session ID is serialized (lockAdmission): a concurrent
+// re-admitter blocks until the winner has finished harvesting the previous
+// turn's terminal tasks, so no caller ever returns from Admit into a fabric
+// that still holds a stale answer its wait loop could mistake for a result.
 func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 	if s == nil || sessionID == "" {
 		return nil
@@ -61,6 +114,8 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 	if strings.Contains(sessionID, "/") {
 		return fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
 	}
+	unlock := s.lockAdmission(sessionID)
+	defer unlock()
 	if _, err := s.Reg.GetSession(sessionID); err == nil {
 		return nil
 	} else if !errors.Is(err, agentfabric.ErrSessionNotFound) {
@@ -119,6 +174,55 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 	slog.InfoContext(liveCtx, "agentruntime: admitted L2 session",
 		"session_id", sessionID, "root", g.Root())
 	return nil
+}
+
+// SessionStalled reports whether a session can no longer produce an answer:
+// the submission's plan task is terminal, the session owns at least one
+// fabric task, and every one of them is terminal too.
+//
+// It exists because grown L2 nodes carry MaxRetries=0 (planprojection), so a
+// single non-first-quantum error is terminally FAILED; with the dependency
+// cascade the continuation plan node dies with its failed tool and the answer
+// node is never grown. The wait loops' fast-fail only checked the submission
+// root and answer# tasks, so they spun their full deadline (10min SDK /
+// collabTimeout serve) on a session that could never answer. A stalled
+// session must fail fast instead.
+//
+// planTaskID is the submission root (peer-plan-N) — outside the sess/ prefix,
+// and still LIVE while its plan quantum runs: a completed root alone says
+// nothing, because the quantum that grows the session's nodes executes on the
+// plan task. A non-terminal plan task therefore never stalls.
+//
+// Callers must run their answer scan FIRST: a completed answer means the
+// session is finished, not stalled, and the scan is what returns its content.
+func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
+	if fabric == nil || sessionID == "" {
+		return false
+	}
+	if planTaskID != "" {
+		tk, err := fabric.Task(planTaskID)
+		if err != nil || (tk.State != taskfabric.StateCompleted && tk.State != taskfabric.StateFailed) {
+			// Plan quantum still in flight (or unreadable): the session may
+			// yet grow nodes.
+			return false
+		}
+	}
+	prefix := agentfabric.SessionTaskPrefix(sessionID)
+	seen := false
+	for _, id := range fabric.IDs() {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		tk, err := fabric.Task(id)
+		if err != nil {
+			continue
+		}
+		seen = true
+		if tk.State != taskfabric.StateCompleted && tk.State != taskfabric.StateFailed {
+			return false
+		}
+	}
+	return seen
 }
 
 // Release drops a session. A release miss is returned to the caller so it can

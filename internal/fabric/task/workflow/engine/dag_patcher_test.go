@@ -71,6 +71,55 @@ func dagStepIDs(dag *MutableDAG) []string {
 	return ids
 }
 
+// TestDAGPatchExecutor_RemoveNodeInverseRestoresBody pins the rollback
+// contract for remove-node (P1): the inverse of a remove must carry the
+// removed step's body, not a bare Target. Pre-fix the inverse was
+// {InsertNode, Target} with a nil Value, so replaying it created an empty
+// node (no AgentType/Metadata/DependsOn) and rebuilt no edges — any
+// remove-node rollback silently corrupted the DAG.
+func TestDAGPatchExecutor_RemoveNodeInverseRestoresBody(t *testing.T) {
+	ctx := context.Background()
+	dag, err := NewMutableDAG([]*Step{
+		{ID: "plan", Name: "plan", AgentType: "planner"},
+		{
+			ID:        "leaf",
+			Name:      "leaf step",
+			AgentType: "specialist",
+			DependsOn: []string{"plan"},
+			Metadata:  map[string]string{"k": "v"},
+		},
+	})
+	require.NoError(t, err)
+	exec := NewDAGPatchExecutor(dag)
+
+	inverse, err := exec.Apply(ctx, patch.RuntimePatch{Type: patch.PatchRemoveNode, Target: "leaf"})
+	require.NoError(t, err)
+	require.NotNil(t, inverse)
+	_, ok := dag.StepIndex()["leaf"]
+	require.False(t, ok, "fixture: node must be removed")
+
+	// Replay the inverse: the node must come back whole.
+	_, err = exec.Apply(ctx, *inverse)
+	require.NoError(t, err)
+
+	restored, ok := dag.StepIndex()["leaf"]
+	require.True(t, ok, "inverse insert must restore the node")
+	assert.Equal(t, "specialist", restored.AgentType, "node body must survive the rollback")
+	assert.Equal(t, "leaf step", restored.Name)
+	assert.Equal(t, map[string]string{"k": "v"}, restored.Metadata)
+	assert.Equal(t, []string{"plan"}, dag.ReadDeps("leaf"), "dependencies must survive the rollback")
+
+	// And the edge must be rebuilt, not just the DependsOn list.
+	snap := dag.Snapshot()
+	found := false
+	for _, tgt := range snap.Edges["plan"] {
+		if tgt == "leaf" {
+			found = true
+		}
+	}
+	assert.True(t, found, "the plan→leaf edge must be rebuilt by the inverse insert, got %v", snap.Edges["plan"])
+}
+
 func newTestMutableDAG(t *testing.T, ids ...string) *MutableDAG {
 	t.Helper()
 	steps := make([]*Step, 0, len(ids))

@@ -43,6 +43,12 @@ type ExecutionConfig struct {
 	// CompileStore is the event store the compile coordinator records
 	// provenance to (optional; nil = no provenance events).
 	CompileStore ares_events.EventStore
+	// PromptEnricher is the optional prompt enrichment hook applied to
+	// submissions before session admission (nil = pass-through). Serve
+	// wires its memory component here; the SDK leaves it nil because its
+	// Agent.composePrompt already folds memory into the input upstream —
+	// installing both would enrich twice.
+	PromptEnricher PromptEnricher
 	// Logger is the logger shared by the cognition bodies (nil = default).
 	Logger *slog.Logger
 }
@@ -111,7 +117,15 @@ func NewExecution(cfg ExecutionConfig) (*Execution, error) {
 	if grace <= 0 {
 		grace = 30 * time.Second
 	}
-	reaper := taskfabric.NewReaperWithKeep(cfg.Fabric, "sess/", grace, KeepSet(reg))
+	// Session tasks plus submission roots. peer-plan-N roots are not
+	// session-scoped, so a sess-only reaper never reclaimed them: every
+	// Submit in a long-lived process left one permanent fabric entry (and
+	// every 20ms answer scan walked over it). Their grace is longer than the
+	// session default on purpose — the wait loop reads the plan task's token
+	// usage after the answer arrives, which routinely outlives 30s.
+	const peerPlanGrace = 10 * time.Minute
+	reaper := taskfabric.NewReaperWithKeep(cfg.Fabric, "sess/", grace, KeepSet(reg)).
+		WithAdditionalPrefix("peer-plan-", peerPlanGrace)
 
 	ttl := cfg.SessionIdleTTL
 	if ttl <= 0 {
@@ -124,7 +138,7 @@ func NewExecution(cfg ExecutionConfig) (*Execution, error) {
 		Compile:        compile,
 		Router:         router,
 		Reaper:         reaper,
-		Submitter:      NewSubmitter(sessions),
+		Submitter:      NewSubmitter(sessions, WithPromptEnricher(cfg.PromptEnricher)),
 		SessionIdleTTL: ttl,
 	}, nil
 }

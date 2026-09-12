@@ -38,6 +38,16 @@ type PluginBus struct {
 	subscribers []*subscriber
 	mu          sync.RWMutex
 	started     bool
+	// startedPlugins records which plugin INSTANCES have COMPLETED Start
+	// successfully. Guarded by mu. Unregister and the hot-plug rollback
+	// paths consult it so a plugin removed while its Start was still in
+	// flight is never Stop()ed unstarted: pre-fix Unregister stopped
+	// whatever removeLocked returned and Register's post-start re-check then
+	// stopped it AGAIN (double Stop; for ObserverPlugin a real data race,
+	// since Start writes p.cancel unlocked while Stop reads it). Keyed by
+	// instance so a raced unregistration cannot leave a stale name entry
+	// that would mark a LATER re-registration of the same name as started.
+	startedPlugins map[RuntimePlugin]bool
 	// startCtx is the lifetime ctx handed to Start. Hot-plug registration
 	// (Register after Start) reuses it so a late plugin's Start runs under
 	// the SAME lifecycle as the batch plugins instead of an orphan ctx.
@@ -56,10 +66,11 @@ type PluginBus struct {
 // NewPluginBus creates a PluginBus with the given options.
 func NewPluginBus(opts ...PluginBusOption) *PluginBus {
 	b := &PluginBus{
-		caps:          make(map[Capability][]RuntimePlugin),
-		pluginTimeout: defaultPluginTimeout,
-		logger:        slog.Default(),
-		stopDone:      make(chan struct{}),
+		caps:           make(map[Capability][]RuntimePlugin),
+		startedPlugins: make(map[RuntimePlugin]bool),
+		pluginTimeout:  defaultPluginTimeout,
+		logger:         slog.Default(),
+		stopDone:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -127,6 +138,15 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 		b.remove(plugin)
 		return err
 	}
+	// Mark started BEFORE the post-checks: the rollback paths below Stop a
+	// plugin only because its Start completed, and Unregister (which reads
+	// the same flag) must see it too. Keyed by INSTANCE, not by name — a
+	// stale name-keyed entry left by a raced unregistration would make a
+	// later re-registration of the same name look started and get Stopped
+	// before its own Start ever ran.
+	b.mu.Lock()
+	b.startedPlugins[plugin] = true
+	b.mu.Unlock()
 	// Stop-race guard: the bus may have been stopped while this plugin was
 	// starting (started was read under the lock, then released). Without
 	// this check the plugin would stay running on a stopped bus with no
@@ -150,10 +170,18 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 		return fmt.Errorf("runtime: bus stopped during hot-plug start of %s", plugin.Name())
 	}
 	// Post-start re-check: an Unregister that slipped between the pre-check
-	// and Start removed and stopped a not-yet-started plugin — undo our
-	// start so the bus never keeps a running plugin outside its bookkeeping.
+	// and Start removed the plugin. If that Unregister already observed our
+	// started mark it stopped the plugin itself (and cleared the mark) —
+	// stopping again here would be a double Stop. Only tear down when the
+	// mark is still ours.
 	if !b.tracked(plugin.Name()) {
-		b.invokeStop(lifetime, plugin)
+		b.mu.Lock()
+		ours := b.startedPlugins[plugin]
+		delete(b.startedPlugins, plugin)
+		b.mu.Unlock()
+		if ours {
+			_ = b.invokeStop(lifetime, plugin)
+		}
 		return fmt.Errorf("runtime: plugin %s was unregistered during hot-plug start", plugin.Name())
 	}
 	b.Emit(lifetime, plugin.Name(), EventPluginStarted, "runtime", map[string]any{
@@ -163,18 +191,33 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 	return nil
 }
 
-// Unregister removes a plugin from the bus by name. When the bus is running,
-// the plugin is stopped first (same timeout/panic contract as Stop's per-
-// plugin teardown), then deregistered: capability entries, workflow hooks,
-// and the plugin list all drop it, so hooks stop firing and PluginsByCap
-// stops returning it immediately. This is the plug-out half of hot-plug —
-// the counterpart to Register-after-Start.
+// Unregister removes a plugin from the bus by name. When the bus is running
+// AND the plugin actually completed Start, it is stopped first (same
+// timeout/panic contract as Stop's per-plugin teardown), then deregistered:
+// capability entries, workflow hooks, and the plugin list all drop it, so
+// hooks stop firing and PluginsByCap stops returning it immediately. This is
+// the plug-out half of hot-plug — the counterpart to Register-after-Start.
+//
+// A plugin whose Start had NOT completed when Unregister arrived is removed
+// WITHOUT being stopped: stopping an unstarted plugin violates the plugin
+// lifecycle contract (and raced ObserverPlugin's unlocked p.cancel). The
+// concurrent Register observes the removal in its post-start re-check and
+// stops the plugin itself, exactly once.
 //
 // Returns an error naming the plugin when no such plugin is registered. A
 // plugin that fails to stop is still removed (stop errors are reported, not
 // retryable state), matching Stop's log-and-continue contract.
 func (b *PluginBus) Unregister(ctx context.Context, name string) error {
 	b.mu.Lock()
+	// wasStarted must be read BEFORE removeLocked, which drops the instance
+	// entry along with the registration.
+	var wasStarted bool
+	for _, p := range b.plugins {
+		if p.Name() == name {
+			wasStarted = b.startedPlugins[p]
+			break
+		}
+	}
 	plugin := b.removeLocked(name)
 	started := b.started
 	b.mu.Unlock()
@@ -182,7 +225,11 @@ func (b *PluginBus) Unregister(ctx context.Context, name string) error {
 	if plugin == nil {
 		return fmt.Errorf("runtime: plugin not registered: %s", name)
 	}
-	if !started {
+	if !started || !wasStarted {
+		// Either the bus is not running, or this instance never completed
+		// Start (a concurrent Register still owns bringing it up — or its
+		// post-start re-check will tear it down). Never Stop an unstarted
+		// plugin.
 		return nil
 	}
 	// Stop outside the lock (invokeStart/Stop emit events, and Emit takes
@@ -206,6 +253,9 @@ func (b *PluginBus) removeLocked(name string) RuntimePlugin {
 			b.plugins = append(b.plugins[:i], b.plugins[i+1:]...)
 			break
 		}
+	}
+	if removed != nil {
+		delete(b.startedPlugins, removed)
 	}
 	for cap, ps := range b.caps {
 		filtered := ps[:0]
@@ -277,6 +327,9 @@ func (b *PluginBus) Start(ctx context.Context) error {
 			})
 			errs = append(errs, err)
 		} else {
+			b.mu.Lock()
+			b.startedPlugins[p] = true
+			b.mu.Unlock()
 			b.Emit(ctx, p.Name(), EventPluginStarted, "runtime", map[string]any{
 				PayloadKeyPluginName:         p.Name(),
 				PayloadKeyPluginCapabilities: fmt.Sprintf("%v", p.Capabilities()),

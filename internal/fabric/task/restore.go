@@ -46,6 +46,11 @@ const (
 	restoreKeyRetryMax       = "retry_max"
 	restoreKeyCreatedAt      = "created_at"
 	restoreKeyCheckpointJSON = "checkpoint_json"
+	// restoreKeyFailedDependency names the predecessor whose terminal failure
+	// cascaded into this task. Written on every event of a cascaded task so
+	// the outcome writer can skip a task that never executed; folded back on
+	// restore so post-restart audit sees the same provenance.
+	restoreKeyFailedDependency = "failed_dependency"
 	// restoreKeyStrategyID rides on EVERY persisted event (same reasoning as
 	// the epoch key): the RuntimeObserver attributes fitness samples by it,
 	// and the observability-only task.acquired/completed events are exactly
@@ -238,6 +243,11 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		t.UpdatedAt = ev.Timestamp
 		if n := restoreInt(p, restoreKeyRetryAttempts); n > 0 {
 			t.RetryPolicy.Attempts = n
+		}
+		// Cascade provenance is durable: a task that was failed by a
+		// predecessor's cascade must stay distinguishable after a restart.
+		if fd := restoreString(p, restoreKeyFailedDependency); fd != "" {
+			t.FailedDependency = fd
 		}
 		// A terminal transition may carry the quantum's output as checkpoint
 		// (CompleteWithCheckpoint) — fold it before fixing the final state.

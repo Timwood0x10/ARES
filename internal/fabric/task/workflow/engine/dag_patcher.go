@@ -156,10 +156,23 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 		return &patch.RuntimePatch{Type: patch.PatchRemoveNode, Target: p.Target}, nil
 
 	case patch.PatchRemoveNode:
+		// Capture the node's body BEFORE removing it: the inverse must be a
+		// full re-insert, not a bare Target. A nil-Value insert replayed an
+		// empty node (no AgentType/Metadata/DependsOn) and rebuilt no edges,
+		// so every remove-node rollback silently corrupted the DAG.
+		// RemoveNode refuses nodes with dependents, so the step's own
+		// DependsOn fully describes the edges AddNode must rebuild.
+		var removed *Step
+		if cur, ok := dag.StepIndex()[p.Target]; ok && cur != nil {
+			removed = cloneStepForSnapshot(cur)
+		}
 		if err := dag.RemoveNode(ctx, p.Target); err != nil {
 			return nil, fmt.Errorf("workflow.dag remove %q: %w", p.Target, err)
 		}
-		return &patch.RuntimePatch{Type: patch.PatchInsertNode, Target: p.Target}, nil
+		if removed == nil {
+			removed = &Step{ID: p.Target}
+		}
+		return &patch.RuntimePatch{Type: patch.PatchInsertNode, Target: p.Target, Value: removed}, nil
 
 	case patch.PatchReplaceNode:
 		step, err := stepFromPatchValue(p.Value, p.Target)

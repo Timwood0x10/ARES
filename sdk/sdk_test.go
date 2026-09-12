@@ -333,18 +333,6 @@ func (m *mockLLMSvc) Close()                           {}
 // interface used by Runtime.llmSvc.
 var _ llmService = (*mockLLMSvc)(nil)
 
-// mockToolCall builds a llmcore.ToolCall for scripted LLM responses.
-func mockToolCall(id, name, args string) llmcore.ToolCall {
-	return llmcore.ToolCall{
-		ID:   id,
-		Type: "function",
-		Function: llmcore.FunctionCall{
-			Name:      name,
-			Arguments: args,
-		},
-	}
-}
-
 // recordingMemMgr wraps a real memory.MemoryManager and records AddMessage
 // calls so tests can assert which roles/content were persisted. All other
 // methods delegate to the embedded manager.

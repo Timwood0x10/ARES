@@ -65,14 +65,24 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 		// Admission can register the session BEFORE a later failure (fabric
 		// Create collision); release so only the reaper does not have to be
 		// the sole reclaimer. A never-admitted session is a swallowed no-op.
-		if sessionID != "" {
+		// Only for auto-admitted sessions: a caller-supplied ID may be shared
+		// with an in-flight turn, and this submitter must not tear down a
+		// session it does not own.
+		if sessionID != "" && t.SessionID == "" {
 			execCore.Sessions.ReleaseQuietly(sessionID)
 		}
 		return nil, fmt.Errorf("sdk submit: %w", err)
 	}
-	// reclaim the session on EVERY exit path (success releases it inside the
-	// answer node; this covers failure / timeout / cancellation).
-	defer execCore.Sessions.ReleaseQuietly(sessionID)
+	// Release on failure/timeout ONLY for auto-admitted sessions. A
+	// caller-supplied session is the CALLER's lifecycle: the answer node
+	// releases it on success, and the idle-TTL sweeper reclaims an abandoned
+	// one. Pre-fix the unconditional defer also fired on the success path
+	// and, worse, released a SHARED session when one of two concurrent turns
+	// finished — yanking the registry entry the other turn's planner quantum
+	// was still growing nodes into.
+	if t.SessionID == "" {
+		defer execCore.Sessions.ReleaseQuietly(sessionID)
+	}
 
 	waitCtx, taskBounded, cancel := l2WaitContext(ctx, t.Timeout)
 	if cancel != nil {
@@ -100,6 +110,25 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 				TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
 				Duration:   time.Since(start),
 			}, nil
+		}
+		// Fast failure: every session task terminal with no answer left means
+		// the graph can never grow one (a failed grown node cascades into the
+		// continuation plan node, and grown nodes retry zero times) — fail
+		// now instead of spinning the full deadline.
+		if agentruntime.SessionStalled(r.sdkFabric, sessionID, taskID) {
+			// Race guard: the answer-availability check above and this stall
+			// verdict are two separate reads, so the answer node can complete
+			// and record its body between them. Re-check once so a stall
+			// declared inside that window still returns the now-available
+			// answer instead of a spurious "stalled" error.
+			if answer, ok := l2SessionAnswer(r.sdkFabric, sessionID); ok {
+				return &Result{
+					Output:     answer,
+					TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
+					Duration:   time.Since(start),
+				}, nil
+			}
+			return nil, fmt.Errorf("sdk submit: session %s stalled — all tasks terminal, no answer", sessionID)
 		}
 		select {
 		case <-waitCtx.Done():

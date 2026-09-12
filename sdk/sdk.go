@@ -40,20 +40,17 @@ import (
 	tools "github.com/Timwood0x10/ares/internal/apitools"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
-	apiembed "github.com/Timwood0x10/ares/internal/embedding"
-	"github.com/Timwood0x10/ares/internal/fabric/agent"
-	"github.com/Timwood0x10/ares/internal/fabric/task"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/kernel"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
-	llm "github.com/Timwood0x10/ares/internal/llmsvcapi"
 	mcp "github.com/Timwood0x10/ares/internal/mcpclient"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 const strategyPriority = "priority"
@@ -259,185 +256,42 @@ func New(opts ...Option) (*Runtime, error) {
 		slog.Warn(hint)
 	}
 
-	// ---- LLM ----
-	llmCfg := &llm.Config{
-		BaseConfig: cfg.baseCfg,
-		LLMConfig:  cfg.llmCfg,
-		Fallbacks:  cfg.fallbacks,
-	}
-	llmSvc, err := llm.NewService(llmCfg)
+	// The heavy lifting lives in the sdkBuilder methods (builder.go); this
+	// function only orders the phases, arms the failure-cleanup defer, and maps
+	// phase errors to the caller.
+	b, err := newSDKBuilder(cfg)
 	if err != nil {
-		return nil, FriendlyErr("llm", cfg.llmCfg.Provider, err)
+		return nil, err
 	}
-
-	toolReg := tools.NewRegistry()
-
-	// ---- Stage 8: assemble the core component graph through the single
-	// Bootstrap kernel so the SDK reuses the same EventStore / NewEvolution /
-	// System Runtime instances as serve and start. Falls back to SDK wiring
-	// when the config is not Bootstrap-capable (sqlite/extra providers) or
-	// assembly fails, preserving prior behavior.
-	// The bootstrap ctx is cancelled in Close so Bootstrap's background
-	// goroutines exit before WaitBackground drains them. Ownership is
-	// transferred to the Runtime on the success path; on any error path the
-	// deferred cancel prevents a context leak (vet lostcancel).
-	bootstrapCtx, bootstrapCancel := context.WithCancel(context.Background())
-	bootstrapCancelTaken := false
-	// mcpClients, bootstrapComp and the mid-construction resources below are
-	// declared here (before the cleanup defer) so the deferred cleanup can
-	// reference them; variables referenced by a defer must already be in
-	// scope at the defer statement.
-	var mcpClients []*mcp.Client
-	var bootstrapComp *ares_bootstrap.Components
-	// memMgr/distillCleanup/pgPool are produced by wiring steps that succeed
-	// MID-construction; a LATER failure (MCP, knowledge, AKF tools,
-	// evolution) must release them too, or the failed New() leaks the memory
-	// manager's goroutines and the evidence PG pool until process exit.
-	var memMgr memory.MemoryManager
-	var distillCleanup func()
-	var pgPool *postgres.Pool
-	var knowStoreClose func()
+	// On any error path below, release everything created so far; on success
+	// the builder sets bootstrapCancelTaken and hands ownership to Close().
 	defer func() {
-		if !bootstrapCancelTaken {
-			// Error path: release everything created so far. The success path
-			// sets bootstrapCancelTaken and hands ownership to Runtime.Close().
-			bootstrapCancel()
-			// Drain Bootstrap background goroutines (they exit on ctx.Done()) so
-			// none outlives the failed construction, mirroring Runtime.Close().
-			if bootstrapComp != nil {
-				bootstrapComp.WaitBackground()
-			}
-			llmSvc.Close()
-			for _, c := range mcpClients {
-				_ = c.Close()
-			}
-			if distillCleanup != nil {
-				distillCleanup()
-			}
-			if memMgr != nil {
-				stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer stopCancel()
-				_ = memMgr.Stop(stopCtx)
-			}
-			if knowStoreClose != nil {
-				knowStoreClose()
-			}
-			if pgPool != nil {
-				_ = pgPool.Close()
-			}
+		if !b.bootstrapCancelTaken {
+			b.cleanupOnError()
 		}
 	}()
-	bootstrapComp = newBootstrapCore(bootstrapCtx, cfg)
 
-	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
-	var embClient apiembed.EmbeddingService
-	var expRepo repositories.ExperienceRepositoryInterface
-	var distillSvc *aresexp.DistillationService
-	var akgDistiller adapter.ConversationDistiller
-	if cfg.memCfg.Enabled {
-		w, err := wireMemory(context.Background(), cfg)
-		if err != nil {
-			return nil, fmt.Errorf("memory: %w", err)
-		}
-		memMgr = w.mgr
-		embClient = w.embClient
-		expRepo = w.expRepo
-		distillCleanup = w.cleanup
-		distillSvc = w.distillSvc
-		akgDistiller = w.akgDistiller
-	}
-
-	// ---- MCP ----
-	mcpClients, err = wireMCPClients(cfg, toolReg)
-	if err != nil {
+	b.assembleCore()
+	if err := b.wireMemoryPhase(); err != nil {
 		return nil, err
 	}
-
-	// ---- AKF Knowledge Fabric ----
-	embModelForAKG := resolveAKGEmbeddingModel(cfg)
-	kw, err := wireKnowledge(cfg, memMgr, embClient, embModelForAKG)
-	if err != nil {
+	if err := b.wireMCPPhase(); err != nil {
 		return nil, err
 	}
-	if kw != nil && kw.store != nil {
-		if closer, ok := kw.store.(interface{ Close() error }); ok {
-			knowStoreClose = func() { _ = closer.Close() }
-		}
-	}
-
-	// ---- Stage 9 (SDK unification): keep the SDK's own KnowledgeRuntime
-	// (its providers carry the live memSearcher/embedding backends) and bind
-	// the Bootstrap NewEvolution's KnowledgePatchExecutor to THAT instance via
-	// UpdateLiveKnowledgeRuntime. This satisfies the sharing rule (KnowledgePatchExecutor
-	// and AKF tools share one runtime) without replacing the SDK runtime with
-	// the Bootstrap one, whose memory provider has no searcher.
-	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil && kw.rt != nil {
-		bootstrapComp.NewEvolution.UpdateLiveKnowledgeRuntime(kw.rt)
-	}
-
-	// ---- AKF knowledge tools (auto-registered so the agent can call them) ----
-	if cfg.knlCfg.Enabled && kw.rt != nil {
-		if err := registerAKFTools(toolReg, kw.rt); err != nil {
-			return nil, fmt.Errorf("akf tools: %w", err)
-		}
-	}
-
-	// ---- Evolution hot-update + evidence store ----
-	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
-	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
-	// (wireSDKEvolution owns the evidence-persistence gating.)
-	var evoComponents *ares_bootstrap.NewEvolutionComponents
-	evoComponents, pgPool, err = wireSDKEvolution(cfg, kw, bootstrapComp)
-	if err != nil {
+	if err := b.wireKnowledgePhase(); err != nil {
 		return nil, err
 	}
-
-	// ---- RAG retriever wiring (best-effort, non-fatal) ----
-	if cfg.memCfg.EnableRAG && memMgr != nil {
-		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo,
-			kw.rt, kw.store, embModelForAKG)
+	if err := b.wireEvolutionPhase(); err != nil {
+		return nil, err
 	}
+	b.wireRetrieversAndBridge()
+	b.wireEventBackendPhase()
 
-	// ---- AKG DistillBridge (write loop: conversations → knowledge store) ----
-	akgBridge := buildAKGBridge(cfg, akgDistiller, kw.store, embClient, embModelForAKG)
-
-	// ---- Event backend ----
-	// Stage 8: when the Bootstrap core is available, subscribe distillation to
-	// Bootstrap's shared EventStore (single store across entry points) instead
-	// of a private SDK store; otherwise fall back to the SDK event backend.
-	rtCtx, rtCancel, eg, eventStore := wireSDKEventBackend(bootstrapComp, distillSvc, akgBridge)
-
-	runtime := &Runtime{
-		llmSvc:            llmSvc,
-		toolReg:           toolReg,
-		memMgr:            memMgr,
-		distillCleanup:    distillCleanup,
-		memEnabled:        cfg.memCfg.Enabled,
-		evoEnabled:        cfg.evoCfg.Enabled,
-		knowledgeEnabled:  cfg.knlCfg.Enabled,
-		knowledgeRT:       kw.rt,
-		knowledgeStore:    kw.store,
-		evolutionStore:    kw.evolutionStore,
-		evoComponents:     evoComponents,
-		eventStore:        eventStore,
-		mcpClients:        mcpClients,
-		trace:             cfg.trace,
-		gov:               cfg.gov,
-		bootstrap:         bootstrapComp,
-		bootstrapCancel:   bootstrapCancel,
-		evidencePool:      pgPool,
-		ctx:               rtCtx,
-		cancel:            rtCancel,
-		eg:                eg,
-		distillSvc:        distillSvc,
-		akgBridge:         akgBridge,
-		agentByCapability: make(map[string]*Agent),
-		sdkExecutors:      make(map[string]kernel.CapabilityExecutor),
-	}
+	rt := b.buildRuntime()
 	// Transfer Bootstrap ctx ownership to the Runtime on the success path so
 	// the deferred cancel above does not fire; Close owns cancellation now.
-	bootstrapCancelTaken = true
-	return runtime, nil
+	b.bootstrapCancelTaken = true
+	return rt, nil
 }
 
 // Close releases all resources held by the Runtime (LLM connections, memory

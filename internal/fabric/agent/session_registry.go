@@ -154,17 +154,25 @@ func (r *SessionRegistry) GetSession(sessionID string) (*L2Graph, error) {
 // event) or the session is abandoned. The fabric tasks are NOT deleted here
 // — that is the reaper's job; Release only drops the graph handle so
 // no new nodes can be grown into a finished session.
+//
+// Lock discipline: the entry is removed under r.mu, but stopSub runs AFTER
+// the unlock. stopSub unsubscribes and waits for the compile coordinator
+// goroutine (bounded by its reconcile timeout — up to 30s in production),
+// and holding r.mu across that wait froze every GetSession/InitSession/
+// SweepExpired in the process.
 func (r *SessionRegistry) ReleaseSession(sessionID string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	entry, ok := r.sessions[sessionID]
 	if !ok {
+		r.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrSessionNotFound, sessionID)
 	}
+	delete(r.sessions, sessionID)
+	r.mu.Unlock()
+
 	if entry.stopSub != nil {
 		entry.stopSub()
 	}
-	delete(r.sessions, sessionID)
 	return nil
 }
 

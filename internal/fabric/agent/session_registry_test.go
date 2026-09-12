@@ -119,6 +119,54 @@ func TestSessionRegistry_CompileCoordError(t *testing.T) {
 	require.NoError(t, r.ReleaseSession("s1"))
 }
 
+// TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop pins the lock
+// discipline (P1): stopSub unsubscribes and waits for the compile
+// coordinator goroutine (bounded by its reconcile timeout, up to 30s in
+// production). Pre-fix ReleaseSession ran it WHILE HOLDING r.mu, so that
+// wait froze every GetSession/InitSession/SweepExpired in the process. The
+// entry is dropped under the lock; the stop runs outside it.
+func TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop(t *testing.T) {
+	ctx := context.Background()
+	r := NewSessionRegistry()
+
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		return func() {
+			close(stopEntered)
+			<-releaseStop
+		}
+	}
+	_, err := r.InitSession(ctx, "s1", "prompt", nil, coord)
+	require.NoError(t, err)
+	_, err = r.InitSession(ctx, "s2", "prompt", nil, nil)
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- r.ReleaseSession("s1") }()
+	<-stopEntered // ReleaseSession is now blocked inside stopSub
+
+	// The registry must stay fully usable while the stop is in flight.
+	unblocked := make(chan struct{})
+	go func() {
+		defer close(unblocked)
+		_, gerr := r.GetSession("s2")
+		require.NoError(t, gerr, "GetSession must not block on another session's release")
+		ids := r.SessionIDs()
+		require.Contains(t, ids, "s2")
+	}()
+	select {
+	case <-unblocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry reads blocked while ReleaseSession waited on the compile stop (lock held across stopSub)")
+	}
+
+	close(releaseStop)
+	require.NoError(t, <-done)
+	_, err = r.GetSession("s1")
+	require.ErrorIs(t, err, ErrSessionNotFound, "released session must be gone once the stop finishes")
+}
+
 // TestSessionRegistry_SessionIDs verifies the registry can list its session
 // IDs.
 func TestSessionRegistry_SessionIDs(t *testing.T) {

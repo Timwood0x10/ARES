@@ -103,8 +103,12 @@ func TestNoInternalAgentloopImports(t *testing.T) {
 func TestL2ExecutionCoreConstructionLocked(t *testing.T) {
 	root := repoRoot(t)
 	allowed := map[string]bool{
-		filepath.Join("sdk", "l2.go"):                  true,
-		filepath.Join("cmd", "ares", "agent_kernel.go"): true,
+		filepath.Join("sdk", "l2.go"): true,
+		// agent_kernel.go delegates peer-agent wiring to the createPeerAgents
+		// builder, whose body (and the single NewExecution call it owns) lives
+		// in peer_assembly.go after the orchestrator split.
+		filepath.Join("cmd", "ares", "agent_kernel.go"):  true,
+		filepath.Join("cmd", "ares", "peer_assembly.go"): true,
 	}
 	var offenders []string
 	walkGoFiles(t, root, func(path string, data []byte) {
@@ -128,6 +132,6 @@ func TestL2ExecutionCoreConstructionLocked(t *testing.T) {
 		}
 	})
 	if len(offenders) > 0 {
-		t.Fatalf("agentruntime.NewExecution constructed outside the locked assembly sites (sdk/l2.go, cmd/ares/agent_kernel.go): %v", offenders)
+		t.Fatalf("agentruntime.NewExecution constructed outside the locked assembly sites (sdk/l2.go, cmd/ares/agent_kernel.go, cmd/ares/peer_assembly.go): %v", offenders)
 	}
 }

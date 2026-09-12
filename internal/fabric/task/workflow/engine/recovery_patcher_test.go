@@ -365,3 +365,48 @@ func TestRecoveryPatchExecutor_ChangeStrategy_Concurrent_NoRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestRecoveryPatchExecutor_SetDAG_Concurrent_NoRace pins the pointer-binding
+// contract (P1): SetDAG rebinds the executor to the agent's live DAG after
+// bootstrap, possibly while the evolution loop applies patches concurrently.
+// An unlocked pointer swap is a data race with every Apply/CanApply/Snapshot
+// read — the sibling DAGPatchExecutor already fixed the same bug with an
+// RWMutex. Run under -race.
+func TestRecoveryPatchExecutor_SetDAG_Concurrent_NoRace(t *testing.T) {
+	placeholder := newHeterogeneousRecoveryDAG(t)
+	exec := NewRecoveryPatchExecutor(placeholder)
+	live := newHeterogeneousRecoveryDAG(t)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			exec.SetDAG(live)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = exec.Apply(context.Background(), patch.RuntimePatch{
+				Type:  patch.PatchChangeMaxRetries,
+				Value: 2,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = exec.Snapshot(context.Background())
+		}()
+		go func() {
+			defer wg.Done()
+			_ = exec.CanApply(context.Background(), patch.RuntimePatch{
+				Type:  patch.PatchChangeRecoveryStrategy,
+				Value: string(RecoveryRetry),
+			})
+		}()
+	}
+	wg.Wait()
+
+	// The last SetDAG wins; the executor must be bound to a real DAG.
+	snap, err := exec.Snapshot(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, snap)
+}

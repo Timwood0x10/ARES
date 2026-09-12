@@ -59,7 +59,12 @@ func (s *RetrievalService) searchSingleQuery(ctx context.Context, q WeightedQuer
 					s.retrievalGuard.RecordEmbeddingFailure()
 				}
 			} else {
-				s.retrievalGuard.RecordEmbeddingFailure()
+				// Circuit open: the request was rejected, not executed. Do
+				// NOT record a failure — the rejection carries no evidence
+				// about the backend, and (pre-fix) recording it refreshed
+				// the breaker's lastFailureTime on every rejected call,
+				// pushing the half-open probe window forward forever so a
+				// recovered embedding service was never re-probed.
 				s.logger.Warn("Embedding circuit breaker open", "query", q.Query, "error", err)
 			}
 		}

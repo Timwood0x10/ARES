@@ -33,6 +33,15 @@ type Task struct {
 	// (kernel.CallerID), never from LLM-supplied arguments, so provenance
 	// such as "B.origin = A" is auditable end-to-end.
 	Origin string
+	// FailedDependency names the prerequisite task whose terminal FAILED
+	// cascaded into this one ("" = this task failed on its own, or is not
+	// failed). It exists because a FAILED prerequisite can never satisfy
+	// depsCompletedLocked: without cascading the whole downstream subgraph
+	// would sit READY forever — unschedulable, invisible to the reaper and a
+	// permanent "round still active" for PlanLoop. Provenance is recorded so
+	// operators can tell a subgraph that died of a root cause from one that
+	// executed and failed. Guarded by f.mu like every other Task field.
+	FailedDependency string
 	// Quantum counts how many execution quanta (agent steps) this task has
 	// run across ALL lease holders (accumulated across yield→resume cycles,
 	// preemptions and chaos-recovery replacements). It is the "semantic step"

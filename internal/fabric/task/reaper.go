@@ -14,10 +14,11 @@ import (
 // Harvesting rules:
 //   - Only COMPLETED and FAILED tasks are eligible (READY/LEASED/RUNNING/
 //     SUSPENDED are live or resumable and must survive).
-//   - A session prefix filter ("sess/<id>/") limits harvesting to L2 session
-//     tasks; non-session tasks (collab-*, peer-task-*) are invisible to this
-//     reaper. The collab GC loop (cmd/ares/collab_graph.go) already handles
-//     its own prefix.
+//   - Each prefix scope ("sess/<id>/", "peer-plan-") limits harvesting to its
+//     own ID family and carries its own grace period. Non-session families
+//     (collab-*, peer-task-*) stay invisible unless added via
+//     WithAdditionalPrefix — the collab GC loop (cmd/ares/collab_graph.go)
+//     already handles its own prefix.
 //   - A grace period prevents harvesting a task that just completed — the
 //     planner/answer path may still be reading its envelope when the state
 //     transition lands. The default grace is 30s.
@@ -30,15 +31,22 @@ import (
 // the planner still reads their envelopes for context assembly (decision C).
 // A wired keep predicate makes the session registry the authority: a task
 // whose owning session is still live is NEVER harvested, no matter its age;
-// grace then only protects the read window racing a session's release.
+// grace then only protects the read window racing a session's release. The
+// predicate applies to every scope; for non-session ID families (which no
+// session owns) it reports false, so grace alone decides.
 type Reaper struct {
-	fabric      *Fabric
-	prefix      string
-	gracePeriod time.Duration
+	fabric *Fabric
+	scopes []reaperScope
 	// keep reports whether a task's owning session is still live. Nil =
 	// grace-only harvesting (legacy semantics, safe only when sessions are
 	// shorter than the grace window).
 	keep func(taskID string) bool
+}
+
+// reaperScope is one harvested ID family with its own grace window.
+type reaperScope struct {
+	prefix string
+	grace  time.Duration
 }
 
 // NewReaper creates a terminal-task reaper scoped to the given session
@@ -57,17 +65,57 @@ func NewReaperWithKeep(fabric *Fabric, prefix string, gracePeriod time.Duration,
 	if gracePeriod <= 0 {
 		gracePeriod = 30 * time.Second
 	}
-	return &Reaper{fabric: fabric, prefix: prefix, gracePeriod: gracePeriod, keep: keep}
+	return &Reaper{
+		fabric: fabric,
+		scopes: []reaperScope{{prefix: prefix, grace: gracePeriod}},
+		keep:   keep,
+	}
 }
 
-// GracePeriod reports the effective read-window grace after construction
-// defaults are applied. Exposed for startup logging so operators can confirm
-// what the reaper actually runs with.
+// WithAdditionalPrefix returns a reaper that ALSO harvests terminal tasks
+// under the given prefix, with the given (independent) grace window. It
+// exists for submission roots (peer-plan-N): they are not session-scoped, so
+// a sess-only reaper never reclaims them and every Submit left a permanent
+// entry behind in a long-lived process. Their grace is deliberately longer
+// than the session default — the wait loop reads the plan task's token usage
+// after the answer arrives, which routinely outlives the session grace.
+//
+// The returned reaper shares the fabric and keep predicate with the receiver;
+// the receiver is not modified (a zero-value-scope reaper stays unusable).
+func (r *Reaper) WithAdditionalPrefix(prefix string, gracePeriod time.Duration) *Reaper {
+	if r == nil || prefix == "" {
+		return r
+	}
+	if gracePeriod <= 0 {
+		gracePeriod = 30 * time.Second
+	}
+	return &Reaper{
+		fabric: r.fabric,
+		scopes: append(append([]reaperScope(nil), r.scopes...), reaperScope{prefix: prefix, grace: gracePeriod}),
+		keep:   r.keep,
+	}
+}
+
+// GracePeriod reports the effective read-window grace of the primary
+// (first) scope after construction defaults are applied. Exposed for startup
+// logging so operators can confirm what the reaper actually runs with.
+// Additional prefixes keep their own grace — see WithAdditionalPrefix.
 func (r *Reaper) GracePeriod() time.Duration {
-	if r == nil {
+	if r == nil || len(r.scopes) == 0 {
 		return 0
 	}
-	return r.gracePeriod
+	return r.scopes[0].grace
+}
+
+// scopeFor returns the harvesting scope whose prefix matches the task ID, or
+// nil when the task belongs to no harvested family.
+func (r *Reaper) scopeFor(taskID string) *reaperScope {
+	for i := range r.scopes {
+		if r.scopes[i].prefix == "" || strings.HasPrefix(taskID, r.scopes[i].prefix) {
+			return &r.scopes[i]
+		}
+	}
+	return nil
 }
 
 // Sweep performs one harvesting pass: every terminal task whose ID starts
@@ -96,7 +144,8 @@ func (r *Reaper) Sweep() int {
 	// per-candidate Dependents scan (O(n) each, O(n²) per sweep).
 	referenced := r.fabric.ReferencedDependencies()
 	for _, id := range r.fabric.IDs() {
-		if r.prefix != "" && !strings.HasPrefix(id, r.prefix) {
+		scope := r.scopeFor(id)
+		if scope == nil {
 			continue
 		}
 		// Keep-set: a live session's tasks are its readable history
@@ -113,8 +162,9 @@ func (r *Reaper) Sweep() int {
 			continue
 		}
 		// Grace period: a task that just transitioned to terminal may
-		// still be read by the session's answer path.
-		if now.Sub(tk.UpdatedAt) < r.gracePeriod {
+		// still be read by the session's answer path. Per-scope: a
+		// submission root must outlive the wait that reads its token usage.
+		if now.Sub(tk.UpdatedAt) < scope.grace {
 			continue
 		}
 		// Dangling-dependency guard: another task still waits on (or reads)
@@ -148,8 +198,12 @@ func (r *Reaper) Run(done <-chan struct{}, interval time.Duration) {
 			return
 		case <-ticker.C:
 			if n := r.Sweep(); n > 0 {
+				prefixes := make([]string, 0, len(r.scopes))
+				for _, sc := range r.scopes {
+					prefixes = append(prefixes, sc.prefix)
+				}
 				log.Info("taskfabric: reaper harvested terminal tasks",
-					"count", n, "prefix", r.prefix)
+					"count", n, "prefixes", prefixes)
 			}
 		}
 	}

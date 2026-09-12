@@ -36,11 +36,44 @@ type Submitter struct {
 	// seq is the monotonic ID sequence. Instance-scoped so two runtimes in
 	// one process (tests, SDK + CLI embedding) never share counters.
 	seq atomic.Int64
+	// enricher is the optional prompt enrichment hook (nil = pass-through).
+	// Set once at construction (see SubmitterOption), never mutated after.
+	enricher PromptEnricher
 }
 
-// NewSubmitter builds the submission path over a Sessions view.
-func NewSubmitter(sessions *Sessions) *Submitter {
-	return &Submitter{sessions: sessions}
+// PromptEnricher augments a submission prompt with cross-cutting context —
+// conversation history, retrieved knowledge — before the session root is
+// admitted. sessionID is the resolved L2 session ID (auto-minted when the
+// payload carried none), so per-session state keys consistently. Returning
+// "" leaves the prompt unchanged: enrichment is additive context and must
+// never reject or empty a user submission.
+type PromptEnricher func(ctx context.Context, sessionID, prompt string) string
+
+// SubmitterOption configures optional Submitter behavior. The zero-value
+// options preserve the default pass-through admission semantics.
+type SubmitterOption func(*Submitter)
+
+// WithPromptEnricher installs a prompt enricher on the submission path.
+// A nil fn leaves the Submitter unenriched — the SDK path, whose
+// Agent.composePrompt already folds memory into the input before
+// submission, must NOT install a second enricher (double enrichment).
+func WithPromptEnricher(fn PromptEnricher) SubmitterOption {
+	return func(s *Submitter) {
+		if fn != nil {
+			s.enricher = fn
+		}
+	}
+}
+
+// NewSubmitter builds the submission path over a Sessions view, applying
+// optional configuration (e.g. WithPromptEnricher) at construction time so
+// the enricher is immutable before the runtime serves traffic.
+func NewSubmitter(sessions *Sessions, opts ...SubmitterOption) *Submitter {
+	s := &Submitter{sessions: sessions}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Seed advances the ID sequence to at least min — the cross-restart
@@ -115,7 +148,11 @@ func MaxRestoredSeq(ids []string) int64 {
 //
 // Returns the created root-task ID and the effective session ID (for
 // release/wait by callers that drove the auto-admission).
-func (s *Submitter) Submit(ctx context.Context, capability string, payload map[string]any) (taskID, sessionID string, err error) {
+func (s *Submitter) Submit(
+	ctx context.Context,
+	capability string,
+	payload map[string]any,
+) (taskID, sessionID string, err error) {
 	if s == nil || s.sessions == nil || s.sessions.Fabric == nil {
 		return "", "", fmt.Errorf("agentruntime: submit path not wired (nil sessions/fabric)")
 	}
@@ -141,6 +178,17 @@ func (s *Submitter) Submit(ctx context.Context, capability string, payload map[s
 		slog.InfoContext(ctx, "agentruntime: capability normalized to single L2 execution path",
 			"from", capability, "to", PlanCapability, "session_id", sessionID)
 		capability = PlanCapability
+	}
+	// Prompt enrichment runs after session-ID resolution (the enricher keys
+	// per-session state) and BEFORE admission: the enriched text must reach
+	// both the session root (Admit compiles it into the root envelope the
+	// planner reads first) and the payload fallback the planner falls back
+	// to, so the LLM plans on one consistent prompt.
+	if s.enricher != nil && strings.TrimSpace(prompt) != "" {
+		if enriched := s.enricher(ctx, sessionID, prompt); enriched != "" {
+			prompt = enriched
+			payload["input"] = prompt
+		}
 	}
 	if err := s.sessions.Admit(ctx, sessionID, prompt); err != nil {
 		return "", sessionID, err

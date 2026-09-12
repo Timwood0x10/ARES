@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Timwood0x10/ares/internal/agentipc"
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -586,6 +587,22 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 				return "", fmt.Errorf("agentipc: ask session %s answered empty", sessionID)
 			}
 			return answer, nil
+		}
+		// Fast failure: every session task terminal with no answer means the
+		// graph can never grow one (a failed grown node cascades into the
+		// continuation plan node, and grown nodes retry zero times) — fail
+		// now instead of spinning to the deadline (SDK parity).
+		if agentruntime.SessionStalled(k.fabric, sessionID, planTaskID) {
+			// Race guard (SDK parity): the answer scan above and this verdict
+			// are two separate reads, so the answer can complete between
+			// them — re-check once instead of erroring on a session that
+			// just answered.
+			if answer, ok := completedSessionAnswer(k, sessionID); ok && answer != "" {
+				k.sessions().ReleaseQuietly(sessionID)
+				return answer, nil
+			}
+			k.sessions().ReleaseQuietly(sessionID)
+			return "", fmt.Errorf("agentipc: ask session %s stalled — all tasks terminal, no answer", sessionID)
 		}
 		select {
 		case <-waitCtx.Done():

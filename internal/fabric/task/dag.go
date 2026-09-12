@@ -83,3 +83,46 @@ func depsCompletedLocked(tasks map[string]*Task, deps []string) bool {
 	}
 	return true
 }
+
+// cascadeFailureLocked fails every transitive READY dependent of the task
+// that just reached terminal FAILED. A FAILED predecessor can never satisfy
+// depsCompletedLocked again, so leaving its dependents READY would strand the
+// whole downstream subgraph forever: never in ReadyTasks (unschedulable),
+// protected from the reaper (READY is live), and a permanent "round still
+// active" for PlanLoop. Terminal failure therefore propagates — one exhausted
+// root kills the branch that can no longer run.
+//
+// Only READY dependents are cascaded. A LEASED/RUNNING/SUSPENDED dependent
+// cannot exist in practice (it could only be acquired while its dependencies
+// were COMPLETED, and COMPLETED never moves), and a terminal one is already
+// final; both are left untouched rather than fought over. Each cascaded task
+// records its own task.failed (with FailedDependency naming the nearest
+// failed predecessor) so the event log and every subscriber — including the
+// L2 answer-failure release — see the subgraph die. Callers must hold f.mu.
+func (f *Fabric) cascadeFailureLocked(rootID string, pending *[]*pendingAppend) {
+	// Reverse-edge index, built once under the lock: O(tasks·deps) per
+	// cascade instead of a full map scan per dequeued task.
+	dependents := make(map[string][]string, len(f.tasks))
+	for taskID, t := range f.tasks {
+		for _, dep := range t.Dependencies {
+			dependents[dep] = append(dependents[dep], taskID)
+		}
+	}
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, taskID := range dependents[cur] {
+			t := f.tasks[taskID]
+			if t == nil || t.State != StateReady {
+				continue
+			}
+			if err := t.transition(StateFailed); err != nil {
+				continue
+			}
+			t.FailedDependency = cur
+			*pending = append(*pending, f.recordLocked(t, EventTaskFailed))
+			queue = append(queue, taskID)
+		}
+	}
+}

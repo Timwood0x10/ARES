@@ -105,6 +105,36 @@ func TestRestoreFromKeepsTerminalTasks(t *testing.T) {
 	require.Error(t, err, "a completed task must not be acquirable")
 }
 
+// TestRestoreFromStoreKeepsCascadeProvenance verifies that a subgraph failed
+// by dependency cascade is still distinguishable after a restart: the
+// cascaded tasks fold back FAILED with their FailedDependency intact, so
+// post-restart audit can tell "died of a root cause" from "executed and
+// failed".
+func TestRestoreFromStoreKeepsCascadeProvenance(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	f1 := NewFabric().WithEventStore(store)
+
+	require.NoError(t, f1.Create(&Task{ID: "a", Capability: "rust"}))
+	require.NoError(t, f1.Create(&Task{ID: "b", Capability: "rust", Dependencies: []string{"a"}}))
+	e1, err := f1.Acquire("a", "agent-a", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, f1.Start("a", "agent-a", e1))
+	require.NoError(t, f1.Fail("a", "agent-a", e1))
+
+	f2 := NewFabric().WithEventStore(store)
+	require.NoError(t, f2.RestoreFromStore(context.Background()))
+
+	root, err := f2.Task("a")
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, root.State)
+	require.Empty(t, root.FailedDependency, "the root failed on its own")
+
+	dep, err := f2.Task("b")
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, dep.State, "cascade result must stay terminal")
+	require.Equal(t, "a", dep.FailedDependency, "cascade provenance must survive restore")
+}
+
 // TestRestoreFromStoreIdempotent verifies the fold is a pure function of the
 // log: two consecutive restores converge to identical state.
 func TestRestoreFromStoreIdempotent(t *testing.T) {

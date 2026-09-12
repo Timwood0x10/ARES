@@ -22,14 +22,20 @@ const (
 // canTransition reports whether the state machine allows from → to.
 // Legal transitions (docs/zh/architecture/ares-runtime.md §4):
 //
-//	READY → LEASED (acquire)
+//	READY → LEASED (acquire), FAILED (dependency-failure cascade)
 //	LEASED → RUNNING (start), READY (release)
 //	RUNNING → COMPLETED, FAILED, SUSPENDED (yield), READY (preempt/release)
 //	SUSPENDED → LEASED (re-acquire with preserved checkpoint), READY (release)
+//
+// READY → FAILED is only ever taken by the cascade in Fail (a terminal
+// predecessor failed): the task never acquired an owner, so there is no
+// agent that could drive it through RUNNING → FAILED. Without it the
+// downstream subgraph stays READY forever — depsCompletedLocked can never
+// see a COMPLETED predecessor again.
 func canTransition(from, to TaskState) bool {
 	switch from {
 	case StateReady:
-		return to == StateLeased
+		return to == StateLeased || to == StateFailed
 	case StateLeased:
 		return to == StateRunning || to == StateReady
 	case StateRunning:

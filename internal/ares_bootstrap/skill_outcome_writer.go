@@ -135,9 +135,16 @@ func (w *skillOutcomeWriter) consumeOneRecovered(ev *ares_events.Event) {
 // branch of fabric.Fail) also records — a failed attempt is real evidence
 // about the capability, and the fabric's retry budget bounds the record
 // churn.
+//
+// A cascade failure (failed_dependency set) is the opposite case: the task
+// never executed, so a rate=0.0 record would be a lie about the capability
+// and would drag down the confidence of every agent that offers it. Skipped.
 func (w *skillOutcomeWriter) consumeOne(ev *ares_events.Event) {
 	capability, _ := ev.Payload["capability"].(string)
 	if capability == "" {
+		return
+	}
+	if fd, _ := ev.Payload["failed_dependency"].(string); fd != "" {
 		return
 	}
 	rate := 0.0
