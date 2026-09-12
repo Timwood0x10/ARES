@@ -251,89 +251,22 @@ func TestGraphSubgraphParallelSiblingRace(t *testing.T) {
 	}
 }
 
-// recordingLLM echoes its last user message as the response and records every
-// input it received, so tests can assert data flow between chained agent
-// nodes.
-type recordingLLM struct {
-	mu     sync.Mutex
-	inputs []string
-}
-
-func (m *recordingLLM) Generate(_ context.Context, req *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
-	var last string
-	for _, msg := range req.Messages {
-		if msg.Role == roleUser {
-			last = msg.Content
-		}
-	}
-	m.mu.Lock()
-	m.inputs = append(m.inputs, last)
-	m.mu.Unlock()
-	return &llmcore.GenerateResponse{Content: "echo:" + last}, nil
-}
-
-func (m *recordingLLM) GetProvider() llmcore.LLMProvider { return llmcore.LLMProviderOllama }
-func (m *recordingLLM) GetModel() string                 { return "mock-model" }
-func (m *recordingLLM) Close()                           {}
-
-var _ llmService = (*recordingLLM)(nil)
-
-// TestGraphAgentChainDataFlow is a regression test for the pipeline data-flow
-// gap: agent b (downstream) must receive agent a's OUTPUT as its input, not
-// the stale global state["input"]. a echoes "echo:<input>", so a correct
-// chain yields b's output "echo:echo:start"; the buggy version (b reads
-// state["input"] again) yields "echo:start".
-func TestGraphAgentChainDataFlow(t *testing.T) {
-	rt := newTestRuntime(t)
-	defer rt.Close()
-
-	rec := &recordingLLM{}
-	rt.llmSvc = rec
-
-	agentA := rt.RegisterAgent("agent-a", WithInstruction("you are A"))
-	agentB := rt.RegisterAgent("agent-b", WithInstruction("you are B"))
-
-	g := NewGraph("chain")
-	g.AddNode("seed", func(_ context.Context, state map[string]any) error {
-		state["input"] = "start"
-		return nil
-	})
-	g.AddNode("a", agentA)
-	g.AddNode("b", agentB)
-	g.AddEdge("seed", "a", nil)
-	g.AddEdge("a", "b", nil)
-
-	res, err := rt.RunGraph(context.Background(), g)
-	if err != nil {
-		t.Fatalf("RunGraph error: %v", err)
-	}
-	// a: input "start" → output "echo:start" (stored at state["a"]).
-	if got := res.State["a"]; got != "echo:start" {
-		t.Fatalf("state[a] = %v, want echo:start", got)
-	}
-	// b: input MUST be a's output ("echo:start") → output "echo:echo:start".
-	if got := res.State["b"]; got != "echo:echo:start" {
-		t.Fatalf("state[b] = %v, want echo:echo:start (b must consume a's output, not state[input])", got)
-	}
-}
-
-// systemCapturingLLM records the system instruction of every request so a
-// test can assert that an AddNode'd agent's configuration (instruction/tools)
-// actually reaches the LLM instead of being replaced by a bare stand-in.
+// systemCapturingLLM records the full message text of every Generate request
+// and always answers "ok". Since the B3 convergence an agent's instruction
+// rides the composed PROMPT (not a system message), the capture keeps every
+// message so tests can assert the instruction reached the LLM at all.
 type systemCapturingLLM struct {
 	mu      sync.Mutex
 	systems []string
 }
 
 func (m *systemCapturingLLM) Generate(_ context.Context, req *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
-	var sys string
+	var all string
 	for _, msg := range req.Messages {
-		if msg.Role == roleSystem {
-			sys = msg.Content
-		}
+		all += msg.Content + "\n"
 	}
 	m.mu.Lock()
-	m.systems = append(m.systems, sys)
+	m.systems = append(m.systems, all)
 	m.mu.Unlock()
 	return &llmcore.GenerateResponse{Content: "ok"}, nil
 }

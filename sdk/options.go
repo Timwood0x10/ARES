@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tools "github.com/Timwood0x10/ares/internal/apitools"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
@@ -96,6 +97,10 @@ type config struct {
 	mcpConns        []MCPConn
 	fallbacks       []*llmcore.LLMConfig
 	trace           bool
+	// gov is the cognitive-execution budget applied to every fabric agent
+	// the runtime spawns (the L2 execution peer and syscall-spawned peers);
+	// zero value = unlimited per dimension (WithAgentGovernance).
+	gov agentfabric.Governance
 }
 
 // memoryCfg holds memory subsystem configuration.
@@ -689,6 +694,23 @@ func WithTimeout(d time.Duration) AgentOption {
 		if d > 0 {
 			c.timeout = d
 		}
+	}
+}
+
+// WithAgentGovernance sets the cognitive-execution budget applied to every
+// fabric agent the runtime spawns (the L2 execution peer and any peer
+// spawned via spawn_agent). Zero values mean unlimited per dimension; a
+// deadline bounds wall-clock lifetime from spawn. Mirrors cmd/ares's
+// kernel.agent_budget — the SDK's long-task safety gate, enforced by the
+// scheduler at quantum boundaries.
+func WithAgentGovernance(tokens, tools int, deadline time.Duration) Option {
+	return func(c *config) error {
+		c.gov = agentfabric.Governance{
+			TokenBudget: tokens,
+			ToolBudget:  tools,
+			Deadline:    deadline,
+		}
+		return nil
 	}
 }
 

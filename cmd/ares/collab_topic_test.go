@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -82,7 +83,14 @@ func newL2TopicKernel(t *testing.T, ctx context.Context, chat agentfabric.ChatCl
 	sched.PollInterval = 10 * time.Millisecond
 	sched.WithAgentFabric(agents)
 	go sched.Run(ctx)
-	return &kernelHandle{fabric: fabric, scheduler: sched, sessionReg: reg, compileCoord: coord}
+	sessions := &agentruntime.Sessions{Reg: reg, Fabric: fabric, Compile: coord}
+	return &kernelHandle{
+		fabric:       fabric,
+		scheduler:    sched,
+		sessionReg:   reg,
+		compileCoord: coord,
+		submitter:    agentruntime.NewSubmitter(sessions),
+	}
 }
 
 // TestCollabTopicAnsweredByL2Session locks the IPC contract: with the

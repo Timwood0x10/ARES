@@ -154,12 +154,72 @@ func TestPluginBus_RegisterNil(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestPluginBus_RegisterAfterStart locks the hot-plug contract: a plugin
+// registered after Start is started immediately (its Start runs), it is
+// visible to PluginsByCap, and it participates in the batch Stop.
 func TestPluginBus_RegisterAfterStart(t *testing.T) {
 	b := NewPluginBus()
 	require.NoError(t, b.Start(context.Background()))
 
-	err := b.Register(newTestPlugin("late", nil))
-	require.ErrorIs(t, err, ErrBusAlreadyStarted)
+	late := newTestPlugin("late", []Capability{"hot"})
+	require.NoError(t, b.Register(late), "hot-plug registration must succeed after Start")
+
+	late.mu.Lock()
+	require.True(t, late.startCalled, "hot-plugged plugin must be started immediately")
+	late.mu.Unlock()
+
+	found := false
+	for _, p := range b.PluginsByCap("hot") {
+		if p.Name() == "late" {
+			found = true
+		}
+	}
+	require.True(t, found, "hot-plugged plugin must be visible by capability")
+
+	require.NoError(t, b.Stop(context.Background()))
+	late.mu.Lock()
+	require.True(t, late.stopCalled, "hot-plugged plugin must be stopped by bus Stop")
+	late.mu.Unlock()
+}
+
+// TestPluginBus_Unregister locks the plug-out contract: Unregister stops a
+// running plugin, removes it from the plugin list, its capability index, and
+// its workflow hooks; an unknown name errors.
+func TestPluginBus_Unregister(t *testing.T) {
+	b := NewPluginBus()
+	p := newTestPlugin("plug", []Capability{"hot"})
+	require.NoError(t, b.Register(p))
+	require.NoError(t, b.Start(context.Background()))
+
+	require.NoError(t, b.Unregister(context.Background(), "plug"))
+
+	p.mu.Lock()
+	require.True(t, p.stopCalled, "unregistered plugin must be stopped")
+	p.mu.Unlock()
+	require.Empty(t, b.PluginsByCap("hot"), "unregistered plugin must leave the capability index")
+
+	err := b.Unregister(context.Background(), "plug")
+	require.Error(t, err, "double unregister must error")
+
+	require.NoError(t, b.Stop(context.Background()), "bus Stop after Unregister must not double-stop")
+}
+
+// TestPluginBus_RegisterAfterStart_FailureUnplugs locks the hot-plug
+// failure contract: when a late plugin fails to start, its registration is
+// rolled back (list + caps + hooks) so the bus never keeps a dead plugin.
+func TestPluginBus_RegisterAfterStart_FailureUnplugs(t *testing.T) {
+	b := NewPluginBus()
+	require.NoError(t, b.Start(context.Background()))
+
+	bad := newTestPlugin("bad", []Capability{"hot"})
+	bad.startErr = errors.New("boom")
+	require.Error(t, b.Register(bad))
+	require.Empty(t, b.PluginsByCap("hot"), "failed hot-plug must be rolled back")
+
+	require.NoError(t, b.Stop(context.Background()))
+	bad.mu.Lock()
+	require.False(t, bad.stopCalled, "rolled-back plugin must not be stopped by bus Stop")
+	bad.mu.Unlock()
 }
 
 func TestPluginBus_Stop(t *testing.T) {

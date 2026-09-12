@@ -83,6 +83,20 @@ type Scheduler struct {
 	// replacement spawned for a recovered task cannot hijack new tasks.
 	// Guarded by execMu.
 	boundExecutors map[string]string
+	// hybridStatic keeps statically-registered executors schedulable even
+	// when an agent fabric is attached (SDK hybrid mode). Peer mode (cmd/ares
+	// serve) assumes every static registration mirrors a managed fabric agent,
+	// so reconcileFabricDeaths sweeps registrations with no live fabric agent
+	// and buildCandidates offers only the fabric population. The SDK breaks
+	// that assumption: RegisterAgent / graph agents / auto-created executors
+	// are static capability executors that deliberately live OUTSIDE the
+	// fabric, while the L2 router peer lives INSIDE it. With this flag set,
+	// static executors
+	// stay candidates, fabric-death sweeping is skipped (the SDK has no chaos
+	// kills; UnregisterExecutor is its explicit control surface), and a
+	// static executor matching the task's capability wins over an overlapping
+	// fabric candidate (registered agents keep their pre-L2 behavior).
+	hybridStatic bool
 	// attribution is the optional execution-outcome source. When wired,
 	// execute() records every finalized outcome (agent, capability, success)
 	// so the evolution feedback loop can read attribution and push derived
@@ -288,6 +302,21 @@ func (s *Scheduler) WithAttribution(a *aresrecovery.ExecutionAttribution) *Sched
 // scheduler for chaining.
 func (s *Scheduler) WithAgentFabric(f *agentfabric.Fabric) *Scheduler {
 	s.agents = f
+	return s
+}
+
+// WithStaticPoolHybrid opts the scheduler into hybrid mode: static executor
+// registrations coexist with the agent fabric's live population as schedulable
+// candidates, and fabric-death reconciliation is disabled (the embedder
+// unregisters explicitly). Used by the SDK, where static capability executors
+// (RegisterAgent, graph agents, on-demand auto-creation) intentionally live
+// outside the fabric while the L2 router peer lives inside it. A static
+// executor whose capability matches the task wins over an overlapping fabric
+// candidate, so registered-agent behavior is unchanged. Peer mode (the
+// default when a fabric is attached) keeps the fabric as the single candidate
+// source. Returns the scheduler for chaining.
+func (s *Scheduler) WithStaticPoolHybrid() *Scheduler {
+	s.hybridStatic = true
 	return s
 }
 
@@ -1173,6 +1202,15 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 // slot.
 func (s *Scheduler) reconcileFabricDeaths() {
 	if s.agents == nil {
+		return
+	}
+	if s.hybridStatic {
+		// Hybrid mode (SDK): static registrations are real executors that
+		// deliberately live outside the fabric (RegisterAgent, graph agents)
+		// — there is no fabric copy to mirror, so a fabric-death sweep would
+		// delete live executors and strand their tasks on
+		// no-capable-candidate. The embedder unregisters explicitly.
+		s.sweepDeadTrackerEntries()
 		return
 	}
 	for id := range s.allExecutors() {

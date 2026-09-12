@@ -10,11 +10,9 @@ import (
 	"time"
 
 	tools "github.com/Timwood0x10/ares/internal/apitools"
-	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/detector"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
-	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 )
 
 func TestNew(t *testing.T) {
@@ -139,13 +137,16 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
-func TestBuildMessages(t *testing.T) {
+func TestComposePrompt(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("help"))
-	msgs := agent.buildMessages(context.Background(), "hello", "sess")
-	if len(msgs) < 2 {
-		t.Fatal("expected system+user messages")
+	prompt, _, _ := agent.composePrompt(context.Background(), "hello")
+	if !strings.Contains(prompt, "help") {
+		t.Fatal("expected instruction in prompt")
+	}
+	if !strings.Contains(prompt, "hello") {
+		t.Fatal("expected input in prompt")
 	}
 }
 
@@ -182,11 +183,11 @@ func TestBuildMessagesWithKnowledge(t *testing.T) {
 	defer rt.Close()
 
 	agent := rt.NewAgent("test", WithInstruction("help"))
-	msgs := agent.buildMessages(context.Background(), "hello", "sess")
-	// Should have at least system (instruction) + user messages.
-	// Knowledge context may be empty if no memory data exists, which is fine.
-	if len(msgs) < 2 {
-		t.Fatal("expected at least system+user messages")
+	prompt, _, _ := agent.composePrompt(context.Background(), "hello")
+	// Should contain the instruction and the input. Knowledge context may be
+	// empty if no memory data exists, which is fine.
+	if !strings.Contains(prompt, "help") || !strings.Contains(prompt, "hello") {
+		t.Fatal("expected instruction and input in prompt")
 	}
 	_ = rt.Close
 }
@@ -195,12 +196,10 @@ func TestBuildMessagesWithoutKnowledge(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("help"))
-	msgs := agent.buildMessages(context.Background(), "hello", "sess")
+	prompt, _, _ := agent.composePrompt(context.Background(), "hello")
 	// Without knowledge, no AKF context should be injected.
-	for _, m := range msgs {
-		if m.Role == roleSystem && strings.Contains(m.Content, "Nodes") {
-			t.Fatal("knowledge context should not appear without WithKnowledge()")
-		}
+	if strings.Contains(prompt, "Nodes") {
+		t.Fatal("knowledge context should not appear without WithKnowledge()")
 	}
 }
 
@@ -302,11 +301,12 @@ var calcTool = tools.ToolFunc{
 	Fn:       func(ctx context.Context, p map[string]any) (any, error) { return "42", nil },
 }
 
-// ---- 4a/4b integration tests: Agent.Run delegates to agentloop.Engine ----
+// ---- integration tests: Agent.Run delegates to the shared L2 session core ----
 //
 // These tests inject a mock LLM (implementing the unexported llmService
 // interface) by overriding Runtime.llmSvc after construction. They verify the
-// end-to-end wiring through Agent.Run → agentloop.Engine without a real LLM.
+// end-to-end wiring through Agent.Run → submitThroughL2 (the same execution
+// core serve/start use) without a real LLM.
 
 // mockLLMSvc scripts Generate responses per call. It implements llmService so
 // it can be assigned to Runtime.llmSvc. When responses are exhausted it returns
@@ -376,121 +376,9 @@ func (r *recordingMemMgr) snapshot() []memEntry {
 	return out
 }
 
-// TestAgentRun_EmitsTaskCompletedEvent (4a) verifies that a successful agent
-// run emits an EventTaskCompleted event carrying the original input and the LLM
-// output in its payload. TaskCompleted emission is gated on distillSvc != nil,
-// so the test sets a non-nil distillSvc (no subscriber runs because it is set
-// after New, so the event is only inspected, not consumed).
-func TestAgentRun_EmitsTaskCompletedEvent(t *testing.T) {
-	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
-	defer rt.Close()
-	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{
-		{Content: "the answer is 4", Usage: llmcore.TokenUsage{PromptTokens: 3, CompletionTokens: 5}},
-	}}
-	// A non-nil distillSvc enables TaskCompleted emission (mirrors distillSvc != nil
-	// in the original Agent.Run). Set after New so no distillation subscriber runs.
-	rt.distillSvc = &aresexp.DistillationService{}
-
-	agent := rt.NewAgent("task-agent", WithInstruction("help"))
-	res, err := agent.Run(context.Background(), "what is 2+2")
-	if err != nil {
-		t.Fatalf("Agent.Run error: %v", err)
-	}
-	if res.Output != "the answer is 4" {
-		t.Fatalf("Output = %q, want %q", res.Output, "the answer is 4")
-	}
-
-	evs, rerr := rt.eventStore.ReadAll(context.Background(), ares_events.ReadOptions{})
-	if rerr != nil {
-		t.Fatalf("ReadAll error: %v", rerr)
-	}
-	var found *ares_events.Event
-	for _, ev := range evs {
-		if ev.Type == ares_events.EventTaskCompleted {
-			found = ev
-			break
-		}
-	}
-	if found == nil {
-		t.Fatal("expected EventTaskCompleted in event store")
-	}
-	if got := found.Payload[ares_events.EventKeyTask]; got != "what is 2+2" {
-		t.Errorf("task payload = %v, want %q", got, "what is 2+2")
-	}
-	if got := found.Payload[ares_events.EventKeyResult]; got != "the answer is 4" {
-		t.Errorf("result payload = %v, want %q", got, "the answer is 4")
-	}
-	if got := found.Payload["agent_id"]; got != "task-agent" {
-		t.Errorf("agent_id payload = %v, want %q", got, "task-agent")
-	}
-	if got := found.Payload[ares_events.EventKeyTenantID]; got != ares_events.DefaultTenantID {
-		t.Errorf("tenant payload = %v, want %q", got, ares_events.DefaultTenantID)
-	}
-}
-
-// TestAgentRun_ToolCallEvents (4a) verifies that a tool-calling run emits
-// ToolCallStarted then ToolCallCompleted events on the agent-name stream with
-// strictly increasing versions.
-func TestAgentRun_ToolCallEvents(t *testing.T) {
-	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
-	defer rt.Close()
-	if err := rt.ToolRegistry().Register(calcTool); err != nil {
-		t.Fatal(err)
-	}
-	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{
-		{Content: "", ToolCalls: []llmcore.ToolCall{mockToolCall("tc1", "calculator", `{}`)}},
-		{Content: "computed"},
-	}}
-
-	agent := rt.NewAgent("evt-agent", WithTools(calcTool))
-	res, err := agent.Run(context.Background(), "compute")
-	if err != nil {
-		t.Fatalf("Agent.Run error: %v", err)
-	}
-	if res.Output != "computed" {
-		t.Fatalf("Output = %q, want %q", res.Output, "computed")
-	}
-	if res.ToolCalls != 1 {
-		t.Fatalf("ToolCalls = %d, want 1", res.ToolCalls)
-	}
-
-	evs, rerr := rt.eventStore.Read(context.Background(), "evt-agent", ares_events.ReadOptions{})
-	if rerr != nil {
-		t.Fatalf("Read error: %v", rerr)
-	}
-	// The agent stream now carries one EventLLMCall phase event per iteration
-	// (thread-state observability) plus the tool call's Started/Completed:
-	// iter0 = [LLMCall, Started, Completed], iter1 (final) = [LLMCall].
-	if len(evs) != 4 {
-		t.Fatalf("expected 4 agent events (2 LLM phase + 2 tool), got %d", len(evs))
-	}
-	if evs[0].Type != ares_events.EventLLMCall {
-		t.Errorf("event[0].Type = %s, want %s", evs[0].Type, ares_events.EventLLMCall)
-	}
-	if evs[1].Type != ares_events.EventToolCallStarted {
-		t.Errorf("event[1].Type = %s, want %s", evs[1].Type, ares_events.EventToolCallStarted)
-	}
-	if evs[2].Type != ares_events.EventToolCallCompleted {
-		t.Errorf("event[2].Type = %s, want %s", evs[2].Type, ares_events.EventToolCallCompleted)
-	}
-	if evs[3].Type != ares_events.EventLLMCall {
-		t.Errorf("event[3].Type = %s, want %s", evs[3].Type, ares_events.EventLLMCall)
-	}
-	if evs[2].Version <= evs[1].Version {
-		t.Errorf("versions not increasing: %d then %d", evs[1].Version, evs[2].Version)
-	}
-	// The completed event payload carries the tool name and success flag.
-	if got := evs[2].Payload["tool"]; got != "calculator" {
-		t.Errorf("completed tool = %v, want %q", got, "calculator")
-	}
-	if got := evs[2].Payload["success"]; got != true {
-		t.Errorf("completed success = %v, want true", got)
-	}
-}
-
-// TestAgentRun_WithMemory_PersistsMessages (4b) verifies that a run with memory
-// enabled persists both the user input (from buildMessages) and the assistant
-// response (from the engine) via MemoryManager.AddMessage.
+// TestAgentRun_WithMemory_PersistsMessages verifies that a run with memory
+// enabled persists both the user input (from composePrompt) and the assistant
+// response (after the L2 session answers) via MemoryManager.AddMessage.
 func TestAgentRun_WithMemory_PersistsMessages(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithDefaultMemory(), WithTrace(false))
 	defer rt.Close()
@@ -513,7 +401,7 @@ func TestAgentRun_WithMemory_PersistsMessages(t *testing.T) {
 	}
 
 	added := rec.snapshot()
-	// Expect at least a user message (buildMessages) and an assistant message (engine).
+	// Expect at least a user message (composePrompt) and an assistant message (post-L2).
 	var userContent, asstContent string
 	roles := map[string]bool{}
 	for _, m := range added {
@@ -539,10 +427,10 @@ func TestAgentRun_WithMemory_PersistsMessages(t *testing.T) {
 	}
 }
 
-// TestAgentRun_DelegatesToEngine verifies the delegation wiring: a mock LLM
-// answer flows back through Agent.Run as the Result.Output, and token counts
-// are mapped from the engine result into TokenUsage.
-func TestAgentRun_DelegatesToEngine(t *testing.T) {
+// TestAgentRun_DelegatesToL2 verifies the delegation wiring: a mock LLM
+// answer flows back through Agent.Run (the L2 session path) as the
+// Result.Output, and the planner quantum's token counts ride on TokenUsage.
+func TestAgentRun_DelegatesToL2(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{

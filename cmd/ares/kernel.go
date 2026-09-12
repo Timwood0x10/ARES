@@ -76,6 +76,11 @@ type kernelHandle struct {
 	// when the DAG execution gate is open; submitPeerTask admits sessions
 	// through it. Nil = legacy path, session payloads stay envelope-only.
 	sessionReg *agentfabric.SessionRegistry
+	// submitter is the shared L2 submission path (agentruntime.Submitter):
+	// session admission, root-task creation and the process-local ID
+	// sequence with its cross-restart seed. Nil until the peer kernel is
+	// assembled.
+	submitter *agentruntime.Submitter
 	// pluginBus is the runtime plugin ecosystem hooked to the scheduler's
 	// quantum boundary (runtime_bridge.go). Nil when the scheduler is absent.
 	pluginBus *runtime.PluginBus
@@ -1251,10 +1256,11 @@ func (h *pluginBusHook) driveLoopRound(ctx context.Context) {
 // kernel scheduler's quantum boundary (Agent OS closure: the plugins observe
 // every Schedule→Acquire→RunQuantum without the kernel importing the runtime).
 //
-// Registration order is load-bearing: PluginBus.Register REJECTS plugins
-// after Start (ErrBusAlreadyStarted), and PluginBus.Start is what hands each
-// plugin its EventBus reference — a plugin registered after Start never
-// receives a bus and stays a silent no-op while the beat keeps ticking.
+// Registration order is no longer load-bearing: PluginBus.Register hot-plugs
+// (a plugin registered after Start is started immediately under the bus
+// lifetime ctx and receives its EventBus reference), so the only ordering
+// constraint left is that the bus exists before plugins that emit during
+// their own Start.
 //
 // This wires the ROUND CLOCK (LoopPlugin beat). C1.3 (runtime plugin
 // half-closed-loop burial) removed the per-round capability dispatch from

@@ -70,7 +70,8 @@ flowchart LR
 bus := ares_runtime.NewPluginBus()
 ```
 
-- `Register(plugin)`: adds a plugin; **a duplicate name returns `ErrDuplicatePlugin`; `Register` after `Start` returns `ErrBusAlreadyStarted`**. A plugin implementing `WorkflowHook` is auto-registered as a hook.
+- `Register(plugin)`: adds a plugin; **a duplicate name returns `ErrDuplicatePlugin`**. A plugin implementing `WorkflowHook` is auto-registered as a hook. **Hot-plug: `Register` is valid before OR after `Start`** — a plugin registered on a running bus is started immediately under the bus's lifetime context (timeout + panic recovery + started/failed events), and a start failure unplugs it again so no dead registration survives.
+- `Unregister(ctx, name)`: the plug-out half of hot-plug — stops the plugin (same timeout/panic contract as `Stop`) and drops it from the plugin list, capability index, and workflow hooks.
 - `Start(ctx)` / `Stop(ctx)`: starts all plugins (a failing one is logged and iteration continues); stop is in **reverse registration order**; failures are aggregated with `errors.Join`.
 - `BeforeStep` / `AfterStep`: call all hooks **sequentially**, each with a timeout (`invokeWithTimeout`) and panic recovery. The contract is observational log-and-continue — **one failing hook doesn't stop the others**.
 - `Emit` / `Subscribe`: the event system for plugins. `Emit` is **non-blocking**; a saturated subscriber buffer drops events (tracked as `droppedEvents`, readable via `Stats()`), consistent with "never block callers because of a slow consumer".

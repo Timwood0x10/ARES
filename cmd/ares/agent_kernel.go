@@ -9,9 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentruntime"
@@ -34,64 +31,6 @@ import (
 	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
-
-// peerTaskSeq is a monotonic sequence for peer-mode task IDs (the old tracker
-// counter hack is gone: the shared LoadTracker is scheduler-internal now).
-var peerTaskSeq atomic.Int64
-
-// maxRestoredTaskSeq extracts the highest counter value N embedded in any
-// counter-derived task ID of a restored fabric. The ID families minted from
-// process-local counters all end in "-N" before an optional "/" or "#"
-// suffix:
-//
-//	peer-plan-N              (submitPeerTask root tasks)
-//	sess/sess-auto-N/d0/t#s  (session-scoped node tasks)
-//	task-<capability>-N      (agentsyscall create_task)
-//	plan-<origin>-N/rR#s     (agentsyscall create_plan rounds)
-//
-// A generic last-dash scan intentionally covers every such family (including
-// future ones) instead of enumerating prefixes: over-seeding only skips ID
-// values, while a missed family would let a fresh boot mint a colliding ID.
-// Non-numeric or non-positive tails (UUIDs, engine step IDs) parse to 0 and
-// are ignored.
-func maxRestoredTaskSeq(ids []string) int64 {
-	var maxN int64
-	for _, id := range ids {
-		dash := strings.LastIndexByte(id, '-')
-		if dash < 0 || dash+1 >= len(id) {
-			continue
-		}
-		tail := id[dash+1:]
-		if cut := strings.IndexAny(tail, "/#"); cut >= 0 {
-			tail = tail[:cut]
-		}
-		n, err := strconv.ParseInt(tail, 10, 64)
-		if err != nil || n <= 0 {
-			continue
-		}
-		if n > maxN {
-			maxN = n
-		}
-	}
-	return maxN
-}
-
-// seedPeerTaskSeq advances the peer-mode ID sequence to at least min — the
-// cross-restart collision guard for peer-plan-N / sess-auto-N (see
-// maxRestoredTaskSeq for why the restored log demands it: a re-minted
-// peer-plan-N fails Create with ErrTaskExists, a re-minted sess-auto-N
-// silently re-admits onto a restored session's root task). Grow-only via CAS:
-// a min below the current value is a no-op, so a fresh store (min 0) leaves
-// the counter untouched and concurrent submissions can never move it
-// backwards.
-func seedPeerTaskSeq(min int64) {
-	for {
-		cur := peerTaskSeq.Load()
-		if min <= cur || peerTaskSeq.CompareAndSwap(cur, min) {
-			return
-		}
-	}
-}
 
 // normalizedPeers resolves the flat peer population from config. The
 // agents.peers structure is the DEFAULT; when it is empty (legacy config),
@@ -191,8 +130,7 @@ func createPeerAgents(
 		// still holds the previous boot's peer-plan-N / sess-auto-N IDs. Seed
 		// the sequence past the max embedded N so the next mint cannot
 		// collide (grow-only: a no-op for a fresh in-memory store).
-		restoredSeq = maxRestoredTaskSeq(kernel.fabric.IDs())
-		seedPeerTaskSeq(restoredSeq)
+		restoredSeq = agentruntime.MaxRestoredSeq(kernel.fabric.IDs())
 	}
 	// Experience-derived confidence prior — recorded skill/task outcomes
 	// sharpen scheduling when the same pattern recurs. Nil (skills disabled)
@@ -401,6 +339,11 @@ func createPeerAgents(
 	// path always admits sessions (there is no gate-off legacy mode).
 	kernel.sessionReg = sessionReg
 	kernel.compileCoord = exec.Compile
+	kernel.submitter = exec.Submitter
+	// Cross-restart ID collision guard for the submission sequence
+	// (peer-plan-N / sess-auto-N): grow-only seed past the restored max (a
+	// no-op for a fresh in-memory store).
+	kernel.submitter.Seed(restoredSeq)
 
 	// Terminal-task reaper for L2 session tasks. Every grown node is a fabric
 	// task and the fabric never self-harvests, so without this loop the
@@ -700,76 +643,28 @@ func loadExperiencePrior(ctx context.Context, expRepo repositories.ExperienceRep
 	}
 }
 
-// submitPeerTask creates a task directly in the Task Fabric for the peer-agent
-// runtime (no leader dispatch). This is the entry point for user-submitted
-// work: the task enters READY and the Kernel scheduler picks it up via the
-// normal Schedule → Acquire → RunQuantum path.
+// submitPeerTask is the thin CLI glue over agentruntime.Submitter: the
+// single L2 submission path (session admission + root-task creation + the
+// process-local ID sequence) lives in the shared package so the SDK drives
+// the identical semantics. Exposed as POST /api/tasks on the serve HTTP
+// layer (actionHandler), closing the user-submission loop: a request reaches
+// the fabric and the scheduler executes it.
 //
-// It is exposed as POST /api/tasks on the serve HTTP layer (actionHandler),
-// closing the user-submission loop: a request reaches the fabric and the
-// scheduler executes it — no leader and no autopilot involved.
-//
-// Single execution path. EVERY submission becomes an L2 session task:
-//   - session-less payloads are auto-admitted into a fresh session (the
-//     capability argument is normalized to ares/plan with a warn log);
-//   - the envelope always carries SessionID, so the planner's first quantum
-//     finds a live graph and no session-less legacy task can exist.
-//
-// There is no legacy path anymore — a submission that cannot be admitted
-// fails fast instead of degrading into an unrunnable task.
-// planCapability is the submission capability in the single-L2-path world
-// (every submitted task is the first plan quantum of its session).
-const planCapability = "ares/plan"
-
-// answerCapability is the terminal L2 node: the session's sole exit. A
-// terminal failure of an ares/answer task means no successor can reach the
-// session graph (the answer-failure release key, see
-// releaseSessionOnAnswerFailure).
-const answerCapability = "ares/answer"
+// planCapability / answerCapability alias the shared L2 capability constants
+// (cmd/ares keeps the historical local names).
+const (
+	planCapability   = agentruntime.PlanCapability
+	answerCapability = agentruntime.AnswerCapability
+)
 
 func submitPeerTask(ctx context.Context, kernel *kernelHandle, capability string, payload map[string]any) (string, error) {
-	if kernel == nil || kernel.fabric == nil {
+	if kernel == nil || kernel.submitter == nil || kernel.fabric == nil {
 		return "", errors.New("peer mode: kernel fabric not wired")
 	}
-	if payload == nil {
-		payload = map[string]any{}
-	}
-	// Normalize every submission onto the L2 session path.
-	sessionID, _ := payload["session_id"].(string)
-	prompt, _ := payload["input"].(string)
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess-auto-%d", peerTaskSeq.Add(1))
-		payload["session_id"] = sessionID
-	}
-	if capability != planCapability {
-		slog.InfoContext(ctx, "peer mode: capability normalized to single L2 execution path",
-			"from", capability, "to", planCapability, "session_id", sessionID)
-		capability = planCapability
-	}
-	if err := kernel.sessions().Admit(ctx, sessionID, prompt); err != nil {
+	taskID, _, err := kernel.submitter.Submit(ctx, capability, payload)
+	if err != nil {
 		return "", err
 	}
-	taskID := fmt.Sprintf("peer-plan-%d", peerTaskSeq.Add(1))
-
-	env := &taskfabric.CheckpointEnvelope{
-		Payload: payload,
-	}
-	// SessionID is always stamped (auto-admitted above), so the
-	// plannerCognition always finds a live per-session L2 graph.
-	env.SessionID = sessionID
-	task := &taskfabric.Task{
-		ID:         taskID,
-		Capability: capability,
-		// Origin stays "" — this is a root task (user-submitted work), no
-		// agent caller. Agent-created tasks get their Origin from the
-		// create_task syscall's tool context (kernel.CallerID).
-		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-		Checkpoint:  env,
-	}
-	if err := kernel.fabric.Create(task); err != nil {
-		return "", fmt.Errorf("peer mode: create task: %w", err)
-	}
-	log.Info("peer mode: submitted task → READY", "task_id", taskID, "capability", capability)
 	return taskID, nil
 }
 

@@ -32,12 +32,16 @@ type namedHook struct {
 // It provides the EventBus interface to plugins and coordinates BeforeStep/
 // AfterStep hook calls with timeout and panic recovery.
 type PluginBus struct {
-	plugins       []RuntimePlugin
-	hooks         []namedHook
-	caps          map[Capability][]RuntimePlugin
-	subscribers   []*subscriber
-	mu            sync.RWMutex
-	started       bool
+	plugins     []RuntimePlugin
+	hooks       []namedHook
+	caps        map[Capability][]RuntimePlugin
+	subscribers []*subscriber
+	mu          sync.RWMutex
+	started     bool
+	// startCtx is the lifetime ctx handed to Start. Hot-plug registration
+	// (Register after Start) reuses it so a late plugin's Start runs under
+	// the SAME lifecycle as the batch plugins instead of an orphan ctx.
+	startCtx      context.Context
 	pluginTimeout time.Duration
 	logger        *slog.Logger
 	droppedEvents atomic.Int64
@@ -64,8 +68,17 @@ func NewPluginBus(opts ...PluginBusOption) *PluginBus {
 }
 
 // Register adds a plugin to the bus. Returns ErrDuplicatePlugin if a plugin
-// with the same name is already registered. Returns ErrBusAlreadyStarted if
-// called after Start.
+// with the same name is already registered.
+//
+// HOT-PLUG: Register is valid at any point in the bus lifecycle — before OR
+// after Start. When the bus is already running, the plugin is started
+// immediately under the bus's lifetime ctx (same invokeStart contract as the
+// batch path: timeout + panic recovery + started/failed events), so a late
+// plugin receives its EventBus reference and begins observing steps right
+// away. A start failure on the hot path returns the error AND removes the
+// half-started plugin again (unplug-on-failure) so the bus never keeps a
+// dead registration.
+//
 // If the plugin also implements WorkflowHook, it is automatically registered
 // as a hook.
 func (b *PluginBus) Register(plugin RuntimePlugin) error {
@@ -73,13 +86,9 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 		return errors.New("runtime: cannot register nil plugin")
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.started {
-		return ErrBusAlreadyStarted
-	}
 	for _, p := range b.plugins {
 		if p.Name() == plugin.Name() {
+			b.mu.Unlock()
 			return fmt.Errorf("runtime: %w: %s", ErrDuplicatePlugin, plugin.Name())
 		}
 	}
@@ -91,19 +100,176 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 	if hook, ok := plugin.(WorkflowHook); ok {
 		b.hooks = append(b.hooks, namedHook{pluginName: plugin.Name(), hook: hook})
 	}
+	started := b.started
+	lifetime := b.startCtx
+	b.mu.Unlock()
+
+	if !started {
+		return nil
+	}
+	// Hot path: the bus is already running — bring the plugin up now under
+	// the same lifetime ctx Start used.
+	if lifetime == nil {
+		lifetime = context.Background()
+	}
+	// A concurrent Unregister may have removed the plugin we just appended;
+	// never start a plugin the bus no longer tracks.
+	if !b.tracked(plugin.Name()) {
+		return fmt.Errorf("runtime: plugin %s was unregistered during registration", plugin.Name())
+	}
+	if err := b.invokeStart(lifetime, plugin); err != nil {
+		b.Emit(lifetime, plugin.Name(), EventPluginFailed, "runtime", map[string]any{
+			PayloadKeyPluginName: plugin.Name(),
+			PayloadKeyError:      err.Error(),
+		})
+		// Unplug-on-failure: remove the half-registered plugin so the bus
+		// state matches reality (no dead registration, no dangling hook).
+		b.remove(plugin)
+		return err
+	}
+	// Stop-race guard: the bus may have been stopped while this plugin was
+	// starting (started was read under the lock, then released). Without
+	// this check the plugin would stay running on a stopped bus with no
+	// one left to tear it down.
+	//
+	// Note the residual window: Stop snapshots the plugin list under the
+	// lock, so a plugin appended just before Stop's snapshot is torn down
+	// by Stop AND re-torn-down here. Both invokeStop calls are idempotent
+	// from the bus's perspective (stop errors are log-and-continue, and a
+	// second Stop on an already-stopped plugin is the plugin's own
+	// contract), so the race costs a redundant Stop rather than a leak —
+	// which is the trade we want.
+	b.mu.Lock()
+	stillRunning := b.started
+	b.mu.Unlock()
+	if !stillRunning {
+		b.mu.Lock()
+		b.removeLocked(plugin.Name())
+		b.mu.Unlock()
+		_ = b.invokeStop(context.Background(), plugin)
+		return fmt.Errorf("runtime: bus stopped during hot-plug start of %s", plugin.Name())
+	}
+	// Post-start re-check: an Unregister that slipped between the pre-check
+	// and Start removed and stopped a not-yet-started plugin — undo our
+	// start so the bus never keeps a running plugin outside its bookkeeping.
+	if !b.tracked(plugin.Name()) {
+		b.invokeStop(lifetime, plugin)
+		return fmt.Errorf("runtime: plugin %s was unregistered during hot-plug start", plugin.Name())
+	}
+	b.Emit(lifetime, plugin.Name(), EventPluginStarted, "runtime", map[string]any{
+		PayloadKeyPluginName:         plugin.Name(),
+		PayloadKeyPluginCapabilities: fmt.Sprintf("%v", plugin.Capabilities()),
+	})
 	return nil
+}
+
+// Unregister removes a plugin from the bus by name. When the bus is running,
+// the plugin is stopped first (same timeout/panic contract as Stop's per-
+// plugin teardown), then deregistered: capability entries, workflow hooks,
+// and the plugin list all drop it, so hooks stop firing and PluginsByCap
+// stops returning it immediately. This is the plug-out half of hot-plug —
+// the counterpart to Register-after-Start.
+//
+// Returns an error naming the plugin when no such plugin is registered. A
+// plugin that fails to stop is still removed (stop errors are reported, not
+// retryable state), matching Stop's log-and-continue contract.
+func (b *PluginBus) Unregister(ctx context.Context, name string) error {
+	b.mu.Lock()
+	plugin := b.removeLocked(name)
+	started := b.started
+	b.mu.Unlock()
+
+	if plugin == nil {
+		return fmt.Errorf("runtime: plugin not registered: %s", name)
+	}
+	if !started {
+		return nil
+	}
+	// Stop outside the lock (invokeStart/Stop emit events, and Emit takes
+	// RLock — never call them under the write lock).
+	return b.invokeStop(ctx, plugin)
+}
+
+// removeLocked drops every registration entry for name (plugin list, capability
+// index, workflow hooks) and returns the removed plugin, or nil when no plugin
+// with that name is registered. Caller must hold b.mu.
+//
+// The hook loop drains ALL matches rather than the first: RegisterHook is
+// public and permits duplicate names, so a single break would leave a
+// surviving hook still firing in BeforeStep/AfterStep after its plugin is
+// gone.
+func (b *PluginBus) removeLocked(name string) RuntimePlugin {
+	var removed RuntimePlugin
+	for i, p := range b.plugins {
+		if p.Name() == name {
+			removed = p
+			b.plugins = append(b.plugins[:i], b.plugins[i+1:]...)
+			break
+		}
+	}
+	for cap, ps := range b.caps {
+		filtered := ps[:0]
+		for _, p := range ps {
+			if p.Name() != name {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(b.caps, cap)
+		} else {
+			b.caps[cap] = filtered
+		}
+	}
+	kept := b.hooks[:0]
+	for _, nh := range b.hooks {
+		if nh.pluginName != name {
+			kept = append(kept, nh)
+		}
+	}
+	b.hooks = kept
+	return removed
+}
+
+// tracked reports whether a plugin name is still in the bus's plugin list
+// (read side of the hot-plug/unplug race guards in Register).
+func (b *PluginBus) tracked(name string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, p := range b.plugins {
+		if p.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// remove deletes a plugin's registration entries (list, caps, hooks). Used
+// to roll back a failed hot-plug start.
+func (b *PluginBus) remove(plugin RuntimePlugin) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.removeLocked(plugin.Name())
 }
 
 // Start initializes all registered plugins. If a plugin fails to start,
 // the error is logged but Start continues with remaining plugins.
 // Returns a combined error if any plugin failed.
+//
+// The ctx becomes the bus lifetime: hot-plug registration after Start runs
+// late plugins under the same ctx.
 func (b *PluginBus) Start(ctx context.Context) error {
 	b.mu.Lock()
 	b.started = true
+	b.startCtx = ctx
+	// Snapshot under the lock: hot-plug Register may append to b.plugins
+	// concurrently (it no longer rejects post-Start calls), so iterating the
+	// live slice here would race with that write.
+	plugins := make([]RuntimePlugin, len(b.plugins))
+	copy(plugins, b.plugins)
 	b.mu.Unlock()
 
 	var errs []error
-	for _, p := range b.plugins {
+	for _, p := range plugins {
 		if err := b.invokeStart(ctx, p); err != nil {
 			b.Emit(ctx, p.Name(), EventPluginFailed, "runtime", map[string]any{
 				PayloadKeyPluginName: p.Name(),
@@ -135,30 +301,42 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 		close(s.ch)
 	}
 	b.subscribers = b.subscribers[:0]
+	// Snapshot under the lock for the same reason as Start: hot-plug
+	// Register/Unregister mutate b.plugins while this teardown runs.
+	plugins := make([]RuntimePlugin, len(b.plugins))
+	copy(plugins, b.plugins)
 	b.mu.Unlock()
 
 	var errs []error
-	for i := len(b.plugins) - 1; i >= 0; i-- {
-		p := b.plugins[i]
-		if err := invokeWithTimeout(ctx, b.pluginTimeout, p.Name(), func(sctx context.Context) error {
-			return p.Stop(sctx)
-		}); err != nil {
-			b.logger.Error("runtime: plugin stop failed",
-				"plugin", p.Name(),
-				"error", err,
-			)
-			b.Emit(ctx, p.Name(), EventPluginFailed, "runtime", map[string]any{
-				PayloadKeyPluginName: p.Name(),
-				PayloadKeyError:      err.Error(),
-			})
+	for i := len(plugins) - 1; i >= 0; i-- {
+		if err := b.invokeStop(ctx, plugins[i]); err != nil {
 			errs = append(errs, err)
-		} else {
-			b.Emit(ctx, p.Name(), EventPluginStopped, "runtime", map[string]any{
-				PayloadKeyPluginName: p.Name(),
-			})
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// invokeStop tears one plugin down with the shared timeout/panic contract
+// and emits the stopped/failed event. Used by Stop (batch) and Unregister
+// (single hot-plug removal).
+func (b *PluginBus) invokeStop(ctx context.Context, p RuntimePlugin) error {
+	if err := invokeWithTimeout(ctx, b.pluginTimeout, p.Name(), func(sctx context.Context) error {
+		return p.Stop(sctx)
+	}); err != nil {
+		b.logger.Error("runtime: plugin stop failed",
+			"plugin", p.Name(),
+			"error", err,
+		)
+		b.Emit(ctx, p.Name(), EventPluginFailed, "runtime", map[string]any{
+			PayloadKeyPluginName: p.Name(),
+			PayloadKeyError:      err.Error(),
+		})
+		return err
+	}
+	b.Emit(ctx, p.Name(), EventPluginStopped, "runtime", map[string]any{
+		PayloadKeyPluginName: p.Name(),
+	})
+	return nil
 }
 
 // RegisterHook adds a named WorkflowHook to be called before and after each step.

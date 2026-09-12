@@ -34,7 +34,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/Timwood0x10/ares/internal/agentloop"
+	"github.com/Timwood0x10/ares/internal/agentruntime"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	tools "github.com/Timwood0x10/ares/internal/apitools"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -192,6 +193,23 @@ type Runtime struct {
 	// (the SDK wires the same kernel syscalls as peer mode). Created in
 	// ensureScheduler alongside sdkFabric; nil until the first Submit.
 	agentsFabric *agentfabric.Fabric
+	// l2Exec is the shared L2 execution core (agentruntime.Execution — the
+	// same core serve/start use): session registry, compile coordinator,
+	// L2 router, reaper, submitter. Built lazily by ensureL2 on first
+	// use; nil until wired (and permanently nil when no LLM is configured).
+	l2Exec *agentruntime.Execution
+	// l2Binder is the runtime's shared tool binder for the L2 planner
+	// (bridged from the tool registry including syscall tools). Kept so a
+	// tool registered after the L2 peer was spawned can be re-synced into
+	// the planner's view and the peer's tool/* capability set
+	// (resyncL2Tools, run on the L2 submit path).
+	l2Binder sub.ToolBinder
+	// l2Once guards l2Exec construction (same pattern as schedOnce).
+	l2Once sync.Once
+	// gov is the cognitive-execution budget injected into the L2 peer's
+	// SpawnSpec and syscall-spawned peers (WithAgentGovernance; zero =
+	// unlimited). Enforced by the scheduler via sched.WithGovernance.
+	gov agentfabric.Governance
 	// syscallTools are the LLM-facing spawn_agent/create_task definitions
 	// appended to every agent's tool list so SDK users can autonomously
 	// decompose tasks. Populated by wireSyscalls; nil before the first
@@ -256,7 +274,7 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 	llmSvc, err := llm.NewService(llmCfg)
 	if err != nil {
-		return nil, agentloop.FriendlyErr("llm", cfg.llmCfg.Provider, err)
+		return nil, FriendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
 
 	toolReg := tools.NewRegistry()
@@ -411,6 +429,7 @@ func New(opts ...Option) (*Runtime, error) {
 		eventStore:        eventStore,
 		mcpClients:        mcpClients,
 		trace:             cfg.trace,
+		gov:               cfg.gov,
 		bootstrap:         bootstrapComp,
 		bootstrapCancel:   bootstrapCancel,
 		evidencePool:      pgPool,
@@ -491,7 +510,10 @@ func (r *Runtime) Snapshot() kernel.Snapshot {
 }
 
 // ToolRegistry returns the internal tool registry. Use this to register custom
-// tools before creating agents.
+// tools before creating agents. A tool registered after the first Submit is
+// picked up by the L2 path on the next submission (resyncL2Tools re-bridges
+// the registry and extends the L2 peer's tool/* capabilities); registering
+// before the first Submit simply avoids that one-time re-sync.
 func (r *Runtime) ToolRegistry() *tools.Registry {
 	return r.toolReg
 }

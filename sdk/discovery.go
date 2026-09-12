@@ -4,12 +4,26 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/Timwood0x10/ares/internal/agentloop"
 	tools "github.com/Timwood0x10/ares/internal/apitools"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	rescore "github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
+
+// toolExecutor executes a registered tool by name. Localized from the retired
+// internal/agentloop engine (B4): the discovery adapters keep this narrow
+// contract so the tool-discovery machinery stays sdk-owned and decoupled from
+// the concrete registry type.
+type toolExecutor interface {
+	Execute(ctx context.Context, name string, args map[string]any) (tools.Result, error)
+}
+
+// toolExpander resolves runtime-discovered tool names into LLM tool
+// definitions so they can be appended to the active tool set. Localized from
+// the retired internal/agentloop engine (B4).
+type toolExpander interface {
+	Expand(ctx context.Context, names []string) ([]llmcore.Tool, error)
+}
 
 // resolveTools builds the LLM tool definitions, the tool executor, and (when
 // discovery is on) a runtime tool expander for one Agent.Run.
@@ -28,8 +42,8 @@ import (
 func (a *Agent) resolveTools(
 	ctx context.Context,
 	input string,
-) ([]llmcore.Tool, agentloop.ToolExecutor, agentloop.ToolExpander) {
-	legacy := func() ([]llmcore.Tool, agentloop.ToolExecutor, agentloop.ToolExpander) {
+) ([]llmcore.Tool, toolExecutor, toolExpander) {
+	legacy := func() ([]llmcore.Tool, toolExecutor, toolExpander) {
 		// snapshotTools: Evolve may reassign a.tools concurrently with Run.
 		llmTools := a.toCoreTools(a.snapshotTools())
 		if a.runtime != nil {
@@ -153,7 +167,7 @@ func rescoreToolToLLM(t rescore.Tool) llmcore.Tool {
 // the meta-tool without polluting the public registry and without leaving
 // MultiSource-only tools unexecutable.
 type discoveringExecutor struct {
-	delegate  agentloop.ToolExecutor  // a.runtime.toolReg
+	delegate  toolExecutor            // a.runtime.toolReg
 	metaTool  rescore.Tool            // toolsource.NewDiscoverToolsTool(source)
 	available map[string]rescore.Tool // run-start snapshot by tool Name()
 }
@@ -203,7 +217,7 @@ func rescoreResultToToolsResult(r rescore.Result) tools.Result {
 	return tools.Result{Success: r.Success, Data: data}
 }
 
-// sourceExpander implements agentloop.ToolExpander by looking up names in the
+// sourceExpander implements toolExpander by looking up names in the
 // available tool snapshot captured at run start (the source.Tools result).
 // The byName map is built once at construction — available is a read-only
 // snapshot never mutated after that point, so no locking is needed.
@@ -239,9 +253,9 @@ func (e *sourceExpander) Expand(_ context.Context, names []string) ([]llmcore.To
 	return out, nil
 }
 
-// Compile-time checks that the sdk discovery adapters satisfy the engine's
+// Compile-time checks that the sdk discovery adapters satisfy the local
 // narrow interfaces. If a signature drifts, these fail the build.
 var (
-	_ agentloop.ToolExecutor = (*discoveringExecutor)(nil)
-	_ agentloop.ToolExpander = (*sourceExpander)(nil)
+	_ toolExecutor = (*discoveringExecutor)(nil)
+	_ toolExpander = (*sourceExpander)(nil)
 )

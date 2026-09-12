@@ -16,10 +16,16 @@ import (
 // (registry + shared compile coordinator on one fabric).
 func admissionKernel() (*kernelHandle, *taskfabric.Fabric) {
 	fabric := taskfabric.NewFabric()
+	sessions := &agentruntime.Sessions{
+		Reg:     agentfabric.NewSessionRegistry(),
+		Fabric:  fabric,
+		Compile: planprojection.NewCompileCoordinator(fabric, nil),
+	}
 	return &kernelHandle{
 		fabric:       fabric,
-		sessionReg:   agentfabric.NewSessionRegistry(),
-		compileCoord: planprojection.NewCompileCoordinator(fabric, nil),
+		sessionReg:   sessions.Reg,
+		compileCoord: sessions.Compile,
+		submitter:    agentruntime.NewSubmitter(sessions),
 	}, fabric
 }
 

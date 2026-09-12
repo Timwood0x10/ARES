@@ -8,7 +8,7 @@ import (
 	tools "github.com/Timwood0x10/ares/internal/apitools"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
-	"github.com/Timwood0x10/ares/internal/kernel"
+	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
@@ -20,11 +20,11 @@ import (
 // syscalls operate on the same agent fabric + task fabric + scheduler:
 //
 //	SDK runtime → agentsyscall.Kernel → sdkFabric (tasks) + agentsFabric (agents)
-//	                                      → sched.RegisterExecutor (spawned agents)
+//	                                      → L2 router cognition (spawned peers)
 //
 // spawn_agent / create_task are registered into the runtime's tool registry,
-// so every SDK agent's LLM tool list carries them (see resolveTools) and the
-// registry executes them (the same ToolExecutor the agentloop engine uses).
+// so the L2 planner's binder carries them and the registry executes them
+// (spawned peers execute through the shared L2 router, cmd/ares parity).
 
 // syscallBinder adapts the SDK tool registry to the agentsyscall.ToolBinder
 // contract. BindTools only needs BindTool(name, fn); the SDK registry exposes
@@ -83,27 +83,39 @@ func (t *syscallTool) Execute(ctx context.Context, params map[string]interface{}
 
 func (t *syscallTool) Capabilities() []string { return nil }
 
-// sdkSyscallExecutor adapts a CapabilityExecutor (the sdkAgentExecutor shape)
-// to the agentsyscall.Executor contract so a spawned agent is a real
-// executable body — the same quantum, different outcome envelope (mirrors
-// peerExecutorAdapter in peer mode; no second executor
-// copy).
-type sdkSyscallExecutor struct {
-	inner kernel.CapabilityExecutor
+// l2RouterExecutor adapts the shared L2 router cognition to the
+// agentsyscall.Executor contract so a syscall-spawned peer executes exactly
+// like a serve-mode peer: one planner step per quantum (never a nested wait —
+// the scheduler drain is a single loop, so waiting for another task on the
+// same fabric from inside a quantum would deadlock it). Mirrors cmd/ares's
+// peerExecutorAdapter.
+type l2RouterExecutor struct {
+	id  string
+	typ models.AgentType
+	cog agentfabric.Cognition
 }
 
-var _ agentsyscall.Executor = (*sdkSyscallExecutor)(nil)
+var _ agentsyscall.Executor = (*l2RouterExecutor)(nil)
 
-// ID returns the wrapped executor's agent ID.
-func (e *sdkSyscallExecutor) ID() string { return e.inner.ID() }
+// ID returns the spawned peer's agent ID.
+func (e *l2RouterExecutor) ID() string { return e.id }
 
-// Type returns the wrapped executor's agent type.
-func (e *sdkSyscallExecutor) Type() models.AgentType { return e.inner.Type() }
+// Type returns the peer's declared capability.
+func (e *l2RouterExecutor) Type() models.AgentType { return e.typ }
 
-func (e *sdkSyscallExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*agentsyscall.StepOutcome, error) {
-	out, err := e.inner.ExecuteStep(ctx, task)
+// ExecuteStep stamps the caller identity (spawn_agent/create_task provenance
+// flows through kctx) and delegates one quantum to the router cognition.
+func (e *l2RouterExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*agentsyscall.StepOutcome, error) {
+	if e.cog == nil {
+		return nil, fmt.Errorf("sdk: spawned peer %s has no L2 router (execution core not wired)", e.id)
+	}
+	ctx = kctx.WithCallerID(ctx, e.id)
+	out, err := e.cog.ExecuteStep(ctx, task)
 	if err != nil {
 		return nil, err
+	}
+	if out == nil {
+		return &agentsyscall.StepOutcome{}, nil
 	}
 	return &agentsyscall.StepOutcome{
 		Done:       out.Done,
@@ -134,22 +146,30 @@ func (r *Runtime) wireSyscalls() {
 	if r.ctx != nil {
 		opts = append(opts, agentsyscall.WithLoopLifetime(r.ctx))
 	}
+	// Same cognitive-execution budget as the L2 peer: a syscall-spawned
+	// agent is bounded from birth (zero = unlimited), cmd/ares parity.
+	opts = append(opts, agentsyscall.WithAgentGovernance(r.gov))
 	kernelSyscall := agentsyscall.NewKernel(
 		r.agentsFabric,
 		r.sdkFabric,
-		// factory: a spawned agent executes with the same ReAct engine as a
-		// registered sdk agent — one executor instance, reused for both the
-		// fabric cognition and the scheduler registration. The executor's
-		// scheduler-facing Type is the DECLARED capability (not the generated
-		// agent id) so create_task sub-tasks can be matched to the peer.
+		// factory: a syscall-spawned peer executes through the shared L2
+		// router — one planner step per quantum, exactly like cmd/ares's
+		// serve-mode peers. The executor's Type is the DECLARED capability
+		// (not the generated agent id) so create_task sub-tasks match the
+		// peer's advertised capability. ensureL2 is safe here: the factory
+		// runs lazily inside a syscall tool call, long after wireSyscalls
+		// itself finished (no schedOnce re-entry).
 		func(agentID, capability string) agentsyscall.Executor {
-			exec := &sdkAgentExecutor{agent: r.NewAgent(agentID, WithTools()), typ: models.AgentType(capability), runCtxs: &r.taskRunCtxs}
-			return &sdkSyscallExecutor{inner: exec}
-		},
-		func(agentID string, executor agentsyscall.Executor) {
-			if se, ok := executor.(*sdkSyscallExecutor); ok {
-				r.sched.RegisterExecutor(agentID, se.inner)
+			var cog agentfabric.Cognition
+			if execCore := r.ensureL2(); execCore != nil {
+				cog = execCore.Router
 			}
+			return &l2RouterExecutor{id: agentID, typ: models.AgentType(capability), cog: cog}
+		},
+		func(string, agentsyscall.Executor) {
+			// No static-pool registration: capability matching happens
+			// through the L2 planner, and a static entry would win hybrid
+			// drains while the same peer also lives in the fabric pool.
 		},
 		opts...,
 	)

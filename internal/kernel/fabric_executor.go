@@ -101,9 +101,13 @@ func (s *Scheduler) appendFabricCandidates(cands []taskfabric.Candidate, registe
 			// Managed but not schedulable: no Cognition injected.
 			continue
 		}
+		caps, err := s.agents.CapabilitiesOf(id)
+		if err != nil {
+			continue
+		}
 		cands = append(cands, taskfabric.Candidate{
 			AgentID:      id,
-			Capabilities: append([]string(nil), a.Capabilities...),
+			Capabilities: caps,
 			Load:         s.tracker.Load(id),
 			Confidence:   s.tracker.Confidence(id),
 			Priority:     s.tracker.Priority(id),

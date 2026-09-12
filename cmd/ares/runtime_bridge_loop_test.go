@@ -63,10 +63,9 @@ func (s *stepPassthroughSpy) stepCount() int {
 	return s.afterSteps
 }
 
-// startSpyBus assembles the production wiring path with the spy registered:
-// Register BEFORE Start (the load-bearing order — Register after Start is a
-// guaranteed silent no-op via ErrBusAlreadyStarted, and the plugin would
-// never receive its EventBus reference).
+// startSpyBus assembles the production wiring path with the spy registered
+// before Start (the conventional batch order — hot-plug also works, but the
+// batch path is what serve uses).
 func startSpyBus(ctx context.Context, loopCfg kernelLoopConfig) (*pluginBusHook, *stepPassthroughSpy, error) {
 	bus := runtime.NewPluginBus()
 	spy := &stepPassthroughSpy{}

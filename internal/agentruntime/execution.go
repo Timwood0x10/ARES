@@ -61,6 +61,9 @@ type Execution struct {
 	// Reaper harvests terminal tasks of RELEASED sessions (keep-set = live
 	// sessions). The caller runs its loop.
 	Reaper *taskfabric.Reaper
+	// Submitter is the single user-submission path (session admission + root
+	// task creation + process-local ID sequence with cross-restart seeding).
+	Submitter *Submitter
 	// SessionIdleTTL is the effective idle TTL the caller's sweeper should use.
 	SessionIdleTTL time.Duration
 }
@@ -115,11 +118,13 @@ func NewExecution(cfg ExecutionConfig) (*Execution, error) {
 		ttl = agentfabric.DefaultSessionIdleTTL
 	}
 
+	sessions := &Sessions{Reg: reg, Fabric: cfg.Fabric, Compile: compile}
 	return &Execution{
-		Sessions:       &Sessions{Reg: reg, Fabric: cfg.Fabric, Compile: compile},
+		Sessions:       sessions,
 		Compile:        compile,
 		Router:         router,
 		Reaper:         reaper,
+		Submitter:      NewSubmitter(sessions),
 		SessionIdleTTL: ttl,
 	}, nil
 }

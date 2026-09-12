@@ -10,6 +10,7 @@
 .codescope/
 .workbuddy/
 .agnes/
+.mimocode/
 
 plan/
 bin/

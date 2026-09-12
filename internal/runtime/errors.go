@@ -7,11 +7,10 @@ import (
 
 // Sentinel errors for the runtime package.
 var (
-	ErrPluginPanic       = errors.New("plugin panic")
-	ErrPluginTimeout     = errors.New("plugin timeout")
-	ErrPluginNotFound    = errors.New("plugin not found")
-	ErrDuplicatePlugin   = errors.New("plugin name already registered")
-	ErrBusAlreadyStarted = errors.New("plugin bus already started")
+	ErrPluginPanic     = errors.New("plugin panic")
+	ErrPluginTimeout   = errors.New("plugin timeout")
+	ErrPluginNotFound  = errors.New("plugin not found")
+	ErrDuplicatePlugin = errors.New("plugin name already registered")
 	// ErrToolNotRegistered is returned by ToolPlugin.AfterStep when a step
 	// invokes a tool that is not in the plugin's allowlist. The allowlist is
 	// only enforced once at least one tool has been registered via

@@ -124,6 +124,39 @@ func (f *Fabric) CapabilitiesOf(agentID string) ([]string, error) {
 	return append([]string(nil), a.Capabilities...), nil
 }
 
+// AddCapabilities appends capabilities to a live agent that it does not
+// already advertise. Idempotent: an already-present capability is skipped, so
+// repeated re-syncs are cheap and never duplicate entries.
+//
+// This is the mutation half of hot tool registration: the SDK's L2 peer is
+// spawned once with the tool set that exists at first Submit, so a tool
+// registered later would otherwise have no capable candidate and its
+// tool/<name> node could never be scheduled. Guarded by f.mu, matching every
+// other fabric mutation; readers go through CapabilitiesOf.
+func (f *Fabric) AddCapabilities(agentID string, caps ...string) error {
+	if len(caps) == 0 {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.agents[agentID]
+	if !ok {
+		return ErrAgentNotFound
+	}
+	have := make(map[string]bool, len(a.Capabilities))
+	for _, c := range a.Capabilities {
+		have[c] = true
+	}
+	for _, c := range caps {
+		if c == "" || have[c] {
+			continue
+		}
+		have[c] = true
+		a.Capabilities = append(a.Capabilities, c)
+	}
+	return nil
+}
+
 // Agents returns the sorted list of registered agent IDs.
 func (f *Fabric) Agents() []string {
 	f.mu.Lock()

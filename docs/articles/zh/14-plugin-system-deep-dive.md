@@ -70,7 +70,8 @@ flowchart LR
 bus := runtime.NewPluginBus()
 ```
 
-- `Register(plugin)`：加一个插件；**重名返回 `ErrDuplicatePlugin`；`Start` 之后再 `Register` 返回 `ErrBusAlreadyStarted`**。若插件实现了 `WorkflowHook` 会自动注册为 hook。
+- `Register(plugin)`：加一个插件；**重名返回 `ErrDuplicatePlugin`**。若插件实现了 `WorkflowHook` 会自动注册为 hook。**热插拔：`Register` 在 `Start` 之前或之后都有效**——总线已运行时插件立即在总线生命周期 ctx 下启动（带超时 + panic 恢复 + started/failed 事件），启动失败会自动拔掉，不留死注册。
+- `Unregister(ctx, name)`：热插拔的拔出半边——先停插件（与 `Stop` 同一套超时/panic 契约），再从插件列表、能力索引和 workflow hooks 中摘除。
 - `Start(ctx)` / `Stop(ctx)`：启动所有插件（某个失败记日志继续）；停止按**注册的逆序**，失败用 `errors.Join` 汇总。
 - `BeforeStep` / `AfterStep`：**顺序**调用所有 hook，每个都带超时（`invokeWithTimeout`）和 panic 恢复。契约是"可观测性的 log-and-continue"——**单个 hook 挂了不影响其它 hook 执行**。
 - `Emit` / `Subscribe`：给插件的事件系统。`Emit` **非阻塞**，subscriber 缓冲满了就丢（有 `droppedEvents` 计数，`Stats()` 可查），符合"不能因为慢消费者阻塞调用方"。

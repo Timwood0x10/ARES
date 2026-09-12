@@ -52,7 +52,6 @@ func (r *Runtime) RunGraph(ctx context.Context, g *Graph) (*GraphResult, error) 
 	// falling back to a bare capability-named stand-in. Doing it here — before
 	// any round goroutine starts — also means the parallel rounds never write
 	// r.sdkExecutors concurrently (the scheduler reads it lock-free).
-	r.registerGraphAgents(snap)
 
 	st := newGraphRun()
 	maxIter := snap.maxIterations
@@ -215,7 +214,12 @@ func (r *Runtime) execGraphNode(ctx context.Context, snap graphSnapshot, st *gra
 		st.mu.Lock()
 		input := st.agentInput(snap, id)
 		st.mu.Unlock()
-		res, err := r.Submit(ctx, Task{Capability: n.agentName, Input: input})
+		// Agent nodes run the agent's own path (Agent.Run — since the B3
+		// convergence an L2 session with the agent's instruction/memory
+		// context composed in). Routing through Submit here would only
+		// strip the agent's identity: capability matching in L2 is
+		// planner-driven and ignores agentByCapability.
+		res, err := n.agent.Run(ctx, input)
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
@@ -293,30 +297,6 @@ func (r *Runtime) execGraphNode(ctx context.Context, snap graphSnapshot, st *gra
 		return nil
 	}
 	return fmt.Errorf("graph node %q has no executable kind", id)
-}
-
-// registerGraphAgents installs an executor for every *Agent node before the
-// run starts, single-threaded. It uses the retained *Agent pointer so a node
-// added via AddNode (never through RegisterAgent) resolves the INTENDED agent
-// (instruction/tools intact) instead of Submit auto-creating a bare
-// capability-named stand-in. Running once up front also keeps r.sdkExecutors
-// free of concurrent writes during the parallel rounds (the scheduler reads it
-// without the agent lock).
-func (r *Runtime) registerGraphAgents(snap graphSnapshot) {
-	r.ensureScheduler()
-	r.agentMu.Lock()
-	defer r.agentMu.Unlock()
-	for _, n := range snap.nodes {
-		if n.agent == nil {
-			continue
-		}
-		// check and register through the scheduler's own registry
-		// (execMu-guarded) — no direct map write.
-		if _, ok := r.sched.LookupExecutor(n.agentName); ok {
-			continue // already registered (e.g. via RegisterAgent) — keep it
-		}
-		r.sched.RegisterExecutor(n.agentName, &sdkAgentExecutor{agent: n.agent, runCtxs: &r.taskRunCtxs})
-	}
 }
 
 // agentInput resolves the input for an agent node. Pipeline data flow: a node

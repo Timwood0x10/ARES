@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
@@ -51,8 +52,14 @@ func buildTestPeerKernel(t *testing.T, ctx context.Context) (*kernelHandle, *rec
 	// The submission path always admits sessions, so the minimal
 	// kernel needs the same registry + coordinator pair createPeerAgents
 	// wires in production.
-	kernel.sessionReg = agentfabric.NewSessionRegistry()
-	kernel.compileCoord = planprojection.NewCompileCoordinator(kernel.fabric, nil)
+	sessions := &agentruntime.Sessions{
+		Reg:     agentfabric.NewSessionRegistry(),
+		Fabric:  kernel.fabric,
+		Compile: planprojection.NewCompileCoordinator(kernel.fabric, nil),
+	}
+	kernel.sessionReg = sessions.Reg
+	kernel.compileCoord = sessions.Compile
+	kernel.submitter = agentruntime.NewSubmitter(sessions)
 	cog := &recordingPeerCognition{}
 
 	// Spawn the peer agent WITH its execution body, advertising the

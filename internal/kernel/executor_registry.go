@@ -139,8 +139,10 @@ func (s *Scheduler) buildCandidates(taskID string) []taskfabric.Candidate {
 		// With the fabric wired (peer mode), the fabric's live population is
 		// the SINGLE candidate source: static registrations have a managed
 		// fabric copy, so a chaos kill reflects on the next drain. Only
-		// recovery-bound executors stay in the static pool.
-		if s.agents != nil {
+		// recovery-bound executors stay in the static pool. Hybrid mode (SDK)
+		// opts out: its static executors have no fabric copy and must stay
+		// schedulable.
+		if s.agents != nil && !s.hybridStatic {
 			continue
 		}
 		cands = append(cands, taskfabric.Candidate{
@@ -151,7 +153,50 @@ func (s *Scheduler) buildCandidates(taskID string) []taskfabric.Candidate {
 			Priority:     s.tracker.Priority(agentID),
 		})
 	}
+	if s.agents != nil && s.hybridStatic {
+		// Hybrid: merge the fabric population but let a static executor win
+		// its own capability — the SDK's registered-agent path must behave
+		// exactly as before the L2 peer joined the pool.
+		return s.hybridPreferStatic(taskID, cands, s.appendFabricCandidates(nil, execs))
+	}
 	return s.appendFabricCandidates(cands, execs)
+}
+
+// hybridPreferStatic merges static and fabric candidates for hybrid mode,
+// dropping fabric candidates whose capability set overlaps the task's
+// capability whenever a static executor also overlaps it ("static wins by
+// skip logic"). Non-overlapping fabric candidates (e.g. the L2 router peer
+// for ares/plan or tool/* nodes with no registered agent) stay. Both lists
+// are offered when no static executor can serve the task.
+func (s *Scheduler) hybridPreferStatic(taskID string, static, fab []taskfabric.Candidate) []taskfabric.Candidate {
+	// Defensive: hybrid mode assumes an attached task fabric (WithAgentFabric
+	// together with WithStaticPoolHybrid). With none there is nothing to
+	// prefer against — offer everything, matching the lookup-error branch.
+	if s.fabric == nil {
+		return append(static, fab...)
+	}
+	tk, err := s.fabric.Task(taskID)
+	if err != nil {
+		return append(static, fab...)
+	}
+	staticWins := false
+	for _, c := range static {
+		if taskfabric.Score(tk.Capability, c) > 0 {
+			staticWins = true
+			break
+		}
+	}
+	if !staticWins {
+		return append(static, fab...)
+	}
+	kept := make([]taskfabric.Candidate, 0, len(fab))
+	for _, c := range fab {
+		if taskfabric.Score(tk.Capability, c) > 0 {
+			continue // the static executor owns this capability
+		}
+		kept = append(kept, c)
+	}
+	return append(static, kept...)
 }
 
 // HasCapableExecutor reports whether a capable executor can resume taskID
@@ -225,6 +270,31 @@ func (s *Scheduler) allExecutors() map[string]CapabilityExecutor {
 		out[k] = v
 	}
 	return out
+}
+
+// HasStaticExecutorFor reports whether any statically-registered executor's
+// Type() equals capability. This is the routing-level check the SDK needs
+// before diverting a submission to L2: LookupExecutor cannot serve it, because
+// the registry key is the agent identity, not the capability. That distinction
+// only matters for syscall-spawned peers, which register under their generated
+// agentID while advertising the declared capability via Type() — so a
+// capability-keyed lookup misses exactly the executors this predicate exists
+// to find.
+func (s *Scheduler) HasStaticExecutorFor(capability string) bool {
+	if capability == "" {
+		return false
+	}
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	for _, ex := range s.executors {
+		if ex == nil {
+			continue
+		}
+		if string(ex.Type()) == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // Capabilities lists the distinct executor types across the registry AND the
