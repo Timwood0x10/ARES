@@ -1,6 +1,6 @@
 // Package ctx carries Kernel-validated caller identity through tool execution
-// contexts. The execution bodies (sub executor, agentfabric chat cognition,
-// agentloop engine) stamp the calling agent's ID into the context before
+// contexts. The execution bodies (sub executor, agentfabric cognition)
+// stamp the calling agent's ID into the context before
 // invoking a tool; the Kernel syscalls (agentsyscall) read it back so
 // provenance (Task.Origin) is enforced by the Kernel, never trusted from
 // LLM-supplied arguments.

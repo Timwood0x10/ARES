@@ -102,3 +102,9 @@ coverage.html
 /discovery
 /external-tools
 /custom-store
+
+# Regenerated benchmark raw outputs (curated data lives in
+# benchmarks/benchmark_report.md + benchmark_results.json)
+/benchmarks/*_bench.txt
+/benchmarks/logs/
+/benchmark-output.txt

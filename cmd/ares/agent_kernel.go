@@ -21,8 +21,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/fabric/agent"
-	"github.com/Timwood0x10/ares/internal/fabric/task"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llm "github.com/Timwood0x10/ares/internal/llm"
@@ -691,7 +691,8 @@ func (a *peerExecutorAdapter) ExecuteStep(ctx context.Context, task *models.Task
 	// Kernel syscalls (spawn_agent/create_task) enforce provenance
 	// (Task.Origin/ParentID) from kctx.CallerID — without the stamp, the
 	// serve path fell back to the LLM-supplied ParentID, which is
-	// forgeable. Mirrors agentloop engine's WithCallerID before Execute.
+	// forgeable. The same WithCallerID stamp the pre-0.3.1 SDK engine
+	// applied before Execute.
 	ctx = kctx.WithCallerID(ctx, a.id)
 	out, err := a.cog.ExecuteStep(ctx, task)
 	if err != nil {

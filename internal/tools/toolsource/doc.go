@@ -1,12 +1,13 @@
 // Package toolsource provides MCP-style proactive tool discovery (ToolSource)
-// and per-task tool selection (ToolSelector), wired back into agentloop.Engine.
+// and per-task tool selection (ToolSelector), wired into the L2 execution
+// path (fabric/agent router cognition).
 //
 // # Boundary
 //
 // toolsource discovers and selects executable tools (resources/core.Tool).
 // Conversion of those tools into LLM tool structs (internal/llmcore.Tool) happens in
 // the sdk layer, not here. This keeps toolsource decoupled from the LLM API
-// and avoids an import cycle with agentloop.
+// and avoids an import cycle with the execution layer.
 //
 // # Components
 //

@@ -88,8 +88,8 @@ func TestSubmit_EmptyCapabilityRoutesThroughL2(t *testing.T) {
 }
 
 // blockingLLM blocks until the context is done, then returns the context
-// error — it makes Timeout propagation observable through Submit → Run →
-// agentloop.Engine.
+// error — it makes Timeout propagation observable through Submit → the
+// L2 execution core.
 type blockingLLM struct{}
 
 func (b *blockingLLM) Generate(ctx context.Context, _ *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
@@ -117,7 +117,7 @@ func TestSubmit_TimeoutPropagates(t *testing.T) {
 	if err == nil {
 		t.Fatal("Submit must surface the timeout error")
 	}
-	// The agentloop engine wraps the LLM error with FriendlyErr (a string
+	// The L2 path wraps the LLM error with FriendlyErr (a string
 	// label, not an unwrappable %w chain), so assert on the surfaced message
 	// containing the deadline cause rather than errors.Is.
 	if !errors.Is(err, context.DeadlineExceeded) &&

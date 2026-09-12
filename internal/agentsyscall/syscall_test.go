@@ -335,8 +335,8 @@ func TestBindToolsRegistersBothTools(t *testing.T) {
 	}
 
 	// create_task — carry the caller in the context exactly as the tool
-	// execution bodies do (sub executor / chat cognition / agentloop
-	// engine), and verify the Kernel stamps it as Task.Origin.
+	// execution bodies do (sub executor / chat cognition / L2 tool
+	// cognition), and verify the Kernel stamps it as Task.Origin.
 	taskResult, err := binder.call(kctx.WithCallerID(ctx, "agent-A"), CreateTaskTool, map[string]any{
 		"capability": "ares/plan",
 		"payload":    map[string]any{"task_desc": "review code"},

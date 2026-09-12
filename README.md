@@ -231,7 +231,7 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Runtime state snapshot | `internal/ares_runtime`: `SaveStateSnapshot` / `LoadStateSnapshot` | Versioned runtime state snapshots via CheckpointStore (schema-version guarded) |
 | Capability Fabric (SkillCatalog) | `internal/ares_skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
 | Output guard | `internal/agents/outputguard` | Reject structurally inconsistent agent results at the boundary |
-| Run budgets | `sdk.WithMaxTokens` / `sdk.WithTimeout` (agentloop) | Bounded autonomous execution (token + wall-clock caps) |
+| Run budgets | `sdk.WithTimeout` (`Task.Timeout`, enforced on the L2 submission) | Wall-clock-bounded autonomous execution. `sdk.WithMaxTokens` is retained for API compatibility but is not enforced on the shared L2 path (0.3.1) |
 | Fingerprint cache | `internal/ares_arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
@@ -555,75 +555,74 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **Key design**: LLM is a **participant**, not a controller. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
-### Benchmarks (Apple M3 Max, darwin/arm64, 2026-08-25)
+### Benchmarks (Apple M3 Max, darwin/arm64, 2026-09-12)
 
 ```
-=== Runtime Evolution (internal/evolution) ===
-BenchmarkWorkflowGenome_Mutate     152k    7.92µs  11.9KB  157 allocs
-BenchmarkKnowledgeGenome_Mutate    2.67M    440ns    960B   11 allocs
-BenchmarkRecoveryGenome_Mutate     2.35M    521ns   1.28KB  21 allocs
-BenchmarkDiffEngine_Workflow       2.68M    448ns    304B    3 allocs
-BenchmarkCoordinator_Evaluate       188M   6.33ns      0B    0 allocs
-BenchmarkFullEvolutionCycle        277k    4.26µs   7.3KB   90 allocs
+=== Runtime Evolution (internal/runtime/evolution) ===
+BenchmarkWorkflowGenome_Mutate       19.2k    31.5µs   46.5KB    534 allocs
+BenchmarkKnowledgeGenome_Mutate      1.42M    427ns    960B       11 allocs
+BenchmarkRecoveryGenome_Mutate       1.00M    505ns    1.25KB     21 allocs
+BenchmarkDiffEngine_Workflow         1.00M    546ns    352B        3 allocs
+BenchmarkCoordinator_Evaluate        94.7M    6.26ns   0B          0 allocs
+BenchmarkFullEvolutionCycle          59.3k    9.81µs   13.5KB    157 allocs
 
 === Event System (internal/ares_events) ===
-BenchmarkMemoryStore_Append           2.24M   519ns    618B    7 allocs
-BenchmarkMemoryStore_AppendBatch      300k   3.74µs   8.9KB    1 alloc
-BenchmarkMemoryStore_Read             231k   5.40µs  17.5KB   11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 1.67M   704ns    625B    6 allocs
+BenchmarkMemoryStore_Append             944k    571ns    727B       8 allocs
+BenchmarkMemoryStore_AppendBatch       91.5k    6.50µs   21.1KB   102 allocs
+BenchmarkMemoryStore_Read              127k    4.73µs   17.1KB    11 allocs
+BenchmarkMemoryStore_ConcurrentAppend   873k    753ns    729B       7 allocs
 
-=== Evaluation Framework (internal/ares_eval) ===
-BenchmarkExactMatchEvaluator_Evaluate     490M   2.41ns     0B     0 allocs
-BenchmarkToolUsageEvaluator_Evaluate     38.4M  32.3ns     0B     0 allocs
-BenchmarkAgentTestRunner_RunSingle        3.92M   306ns   320B     5 allocs
-BenchmarkReportGenerator_GenerateMarkdown 351k   3.45µs  4.3KB   76 allocs
-BenchmarkLoader_Load                      24.8k  49.3µs  34.1KB  601 allocs
+=== Evaluation Framework (internal/runtime/eval) ===
+BenchmarkExactMatchEvaluator_Evaluate        254M    2.35ns   0B        0 allocs
+BenchmarkToolUsageEvaluator_Evaluate        22.0M    27.8ns   0B        0 allocs
+BenchmarkAgentTestRunner_RunSingle          2.00M    301ns    320B      5 allocs
+BenchmarkReportGenerator_GenerateMarkdown   175k     3.39µs   4.16KB   76 allocs
+BenchmarkLoader_Load                        12.4k    48.0µs   33.3KB  601 allocs
 
-=== AKG Knowledge Fabric (internal/knowledge) ===
+=== AKG Knowledge Fabric (internal/knowledge/*) ===
 --- Linkers (100 objs) ---
-DecisionLinker                      73.4k  16.6µs  10.9KB  295 allocs
-ArchitectureLinker                  30.0k  40.8µs 167.0KB   85 allocs
-TimelineLinker                      646k    1.83µs   3.1KB   11 allocs
-SimilarityLinker                     636   1.87ms   4.7MB 20217 allocs
+DecisionLinker                          36.3k    16.6µs   10.6KB     295 allocs
+ArchitectureLinker                      14.8k    40.7µs   163KB       85 allocs
+TimelineLinker                          314k     1.80µs   3.05KB     11 allocs
+SimilarityLinker                        315      1.90ms   4.49MB  20217 allocs
 --- Compiler (100 nodes) ---
-DefaultCompiler Prompt              25.9k  46.6µs  73.3KB  819 allocs
-DefaultCompiler All Formats         4.97k   248µs 365.2KB 3476 allocs
+DefaultCompiler Prompt                  13.4k    46.5µs   71.6KB     819 allocs
+DefaultCompiler All Formats             2.01k    289µs    400KB     5777 allocs
 --- Memory Store ---
-Store_Save                          1.78M   622ns    679B   11 allocs
-Store_Get                          21.7M   54.7ns     13B    1 alloc
-Store_QueryByType                   202k    5.77µs   4.5KB   11 allocs
-Store_Search                        16.0k  76.0µs  69.4KB 1514 allocs
+Store_Save                              1.00M    885ns    1.11KB     14 allocs
+Store_Get                               3.40M    176ns    430B        4 allocs
+Store_QueryByType                       23.5k    26.1µs   72.3KB    512 allocs
+Store_Search                            4.29k    144µs    271KB    3014 allocs
 --- Pipeline ---
-DefaultNormalizer_Normalize         2.28M   497ns    688B   10 allocs
+DefaultNormalizer_Normalize             1.20M    507ns    688B       10 allocs
 --- Planner ---
-KnowledgePlanner_Plan               1.72M   691ns   1.0KB   14 allocs
+KnowledgePlanner_Plan                   809k     746ns    984B       14 allocs
 --- Retriever (end-to-end, 100 objs) ---
-Retrieve                             126   9.23ms  16.2MB 129671 allocs
+Retriever_Retrieve                      69       32.1ms   55.9MB 453393 allocs
 
-=== Kernel (internal/taskfabric · agentfabric · agentipc) ===
---- Task Fabric (internal/taskfabric) ---
-Fabric_Create             2.59M    389ns    931B     3 allocs
-Fabric_Schedule           1.54M    800ns   1.85KB   18 allocs
-Fabric_RunQuantum         796k    1.60µs   3.7KB    23 allocs
-Fabric_ReadyTasks         3.25M    359ns    960B     4 allocs
-Fabric_IsReady           78.7M   15.0ns      0B     0 allocs
---- Agent Fabric (internal/agentfabric) ---
-Fabric_Spawn              3.11M    385ns    936B    10 allocs
-Fabric_SpawnWithResources 1.58M    762ns   1.48KB   14 allocs
-Fabric_SuspendResume     45.9M   24.7ns      0B     0 allocs
-Fabric_Children          46.0M   26.5ns     80B     1 alloc
+=== Kernel (internal/fabric/task · fabric/agent · agentipc) ===
+--- Task Fabric (internal/fabric/task) ---
+Fabric_Create              1.41M    395ns    352B      4 allocs
+Fabric_Schedule            1.10M    568ns    428B     10 allocs
+Fabric_RunQuantum          466k     1.30µs   1.13KB   16 allocs
+Fabric_ReadyTasks          1.54M    386ns    960B      4 allocs
+Fabric_IsReady             39.1M    15.4ns   0B        0 allocs
+--- Agent Fabric (internal/fabric/agent) ---
+Fabric_Spawn               1.49M    411ns    936B     10 allocs
+Fabric_SpawnWithResources  705k     828ns    1.45KB   14 allocs
+Fabric_SuspendResume       24.9M    24.0ns   0B        0 allocs
+Fabric_Children            22.7M    26.4ns   80B        1 alloc
 --- IPC (internal/agentipc) ---
-Bus_Send                 8.28M    143ns    280B     4 allocs
-Bus_RequestReply         1.00M   1.10µs    912B    14 allocs
-Bus_Broadcast (10 subs)   840k   1.49µs   3.0KB    41 allocs
-DualTrackDispatch         121M    9.9ns      0B     0 allocs
+Bus_Send                   1.95M    313ns    400B      8 allocs
+Bus_RequestReply           351k     1.73µs   1.29KB   22 allocs
+Bus_Broadcast              2.25M    263ns    400B      8 allocs
 
 === Observability & Recovery (internal/aresrecovery) ===
-GlobalTracer_TraceTask                   16.0M  85.4ns   247B     0 allocs
-GlobalTracer_TraceMessage                14.0M  91.2ns   282B     0 allocs
-GlobalTracer_Spans (200 spans)           784k   1.40µs  10.0KB    5 allocs
-Sandbox_ReplayRecoveryChain              457k   2.69µs   6.9KB   60 allocs
-Sandbox_SimulateAgentDeath               589k   2.03µs   4.8KB   47 allocs
+GlobalTracer_TraceTask                    6.63M   92.2ns   243B      0 allocs
+GlobalTracer_TraceMessage                 6.89M   85.9ns   293B      0 allocs
+GlobalTracer_Spans (200 spans)            425k    1.24µs   10.0KB    5 allocs
+Sandbox_ReplayRecoveryChain               208k    2.87µs   7.36KB   66 allocs
+Sandbox_SimulateAgentDeath                274k    2.15µs   5.04KB   51 allocs
 ```
 
 ### CLI
@@ -667,19 +666,19 @@ Beyond runtime-level evolution, ARES includes a **strategy-level Genetic Algorit
 | **Generation History** | Per-generation snapshots with metadata |
 | **Experience System** | 3-tier pipeline: ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### Benchmarks (Apple M3 Max, darwin/arm64, 2026-08-25)
+### Benchmarks (Apple M3 Max, darwin/arm64, 2026-09-12)
 
 ```
-=== GA Genome (internal/ares_evolution/genome) ===
-CrossoverUniform (10 params)        500k    2.46µs   3.1KB   31 allocs
-CrossoverUniform (100 params)       61.5k  17.8µs   21.2KB  38 allocs
-TruncationSelection (pop=100)       209k    5.82µs   952B     3 allocs
-TournamentSelection (pop=50,k=2)    287k    4.45µs  14.4KB  101 allocs
-RouletteWheelSelection (pop=100)    422k    2.84µs   3.4KB    7 allocs
-Evolve_OneGeneration (pop=100)      4.60M   263ns    344B     6 allocs
-Evolve_MultipleGenerations (100)    45.3k  25.9µs  29.6KB  600 allocs
-ApplyFitnessSharing (pop=100)        896   1.34ms   540KB  106 allocs
-RealWorldEvolution (100 gen)         100  10.05ms   4.4MB 61871 allocs
+=== GA Genome (internal/runtime/ares_evolution/genome) ===
+CrossoverUniform (10 params)          262k    2.29µs   2.97KB     31 allocs
+CrossoverUniform (100 params)        34.1k    17.2µs   20.6KB     38 allocs
+TruncationSelection (pop=100)        103k     5.82µs   952B        3 allocs
+TournamentSelection (pop=50,k=2)     158k     3.84µs   13.3KB    101 allocs
+RouletteWheelSelection (pop=100)     208k     3.02µs   3.34KB      7 allocs
+Evolve_OneGeneration (pop=100)       2.22M    271ns    344B        6 allocs
+Evolve_MultipleGenerations (100)     23.2k    26.3µs   33.6KB    600 allocs
+ApplyFitnessSharing (pop=100)        429      1.36ms   527KB     106 allocs
+RealWorldEvolution (100 gen)         58       10.5ms   4.31MB  61922 allocs
 ```
 
 ### Examples

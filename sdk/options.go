@@ -611,10 +611,11 @@ type agentConfig struct {
 	humanInput  HumanInputFunc
 	maxIter     int
 	// maxTokens caps the cumulative prompt+completion tokens across all LLM
-	// calls in one run (<=0 = unbounded). Passed through to agentloop.Request.
+	// calls in one run (<=0 = unbounded). Retained for API compatibility —
+	// the shared L2 execution path does not enforce a per-run token budget.
 	maxTokens int
 	// timeout caps the total wall-clock duration of one run (<=0 = no limit).
-	// Passed through to agentloop.Request.
+	// Applied to the L2 submission (Task.Timeout) every entry point uses.
 	timeout time.Duration
 	// discovery enables runtime tool discovery: when true the agent exposes a
 	// discover_tools meta-tool so the LLM can search the tool pool at runtime
@@ -717,8 +718,8 @@ func WithAgentGovernance(tokens, tools int, deadline time.Duration) Option {
 // WithToolDiscovery enables runtime tool discovery. When enabled, the agent
 // exposes a discover_tools meta-tool so the LLM can search the available tool
 // pool at runtime by name/description/tag and expand its active tool set on
-// demand. Tools discovered at runtime are expanded via the agentloop engine's
-// ToolExpander path (no second execution loop).
+// demand. Tools discovered at runtime are expanded via the ToolExpander
+// path (no second execution loop).
 //
 // Default is off: behaviour is byte-for-byte identical to the legacy
 // WithTools-only path (no meta-tool, no expander, Engine.Tools = registry).

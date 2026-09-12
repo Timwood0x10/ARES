@@ -29,7 +29,7 @@ flowchart TB
     subgraph L0["L0 入口层"]
         direction LR
         CLI["cmd/ares — 唯一用户 CLI 入口<br/>serve·status·tools·db·dashboard·evolution…<br/>（cmd/ 下另有 mock-db 测试工具）"]
-        SDK["sdk/ — 极简 SDK（与 CLI 共用引擎）<br/>Agent.Run = agentloop 同步 ReAct（by-design）"]
+        SDK["sdk/ — 极简 SDK（与 CLI 共用引擎）<br/>Agent.Run/Submit/Graph = 共享 L2 执行核（agentruntime）"]
     end
 
     %% ============ L1 组装层 ============

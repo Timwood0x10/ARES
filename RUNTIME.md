@@ -166,7 +166,7 @@ SUSPENDED─(下轮 drain re-acquire)→LEASED；过期租约→CheckExpiredLeas
 
 | # | 问题 | 状态与处置 |
 |---|------|------------|
-| **A1** | 双认知路径并存 | ✅ 定性收敛（2026-09-09）：agentloop 是 SDK `Agent.Run` 的 by-design 同步 ReAct 执行体（examples 经 sdk 间接消费），L2 router 是 serve 的图生长执行面——产品语义不同，非重复实现；两者共享 llmcore 契约原语（LLMMessage/Tool/ToolExecutor），漂移面集中在 tool whitelist 语义（已有 engine_test 锁定）。退役 agentloop = SDK 产品决策，超出代码收敛范围。 |
+| **A1** | 双认知路径并存 | ✅ 已统一（2026-09-12，0.3.1）：`internal/agentloop` 整包退役——SDK `Agent.Run`/`Submit`/`RunGraph` 与 serve 共用同一 `agentruntime` L2 执行核（session 注册表 + 增量编译 + router 认知 + reaper + Submitter，全仓仅两个构造点），单一 `kernel.Scheduler` 单循环 drain；`RegisterAgent` 仅身份登记。不变量由 `sdk/arch_test.go` 编译期锁定（零 agentloop import、构造点唯一）。 |
 | **A2** | fabric→runtime 反向依赖无测试保护 | ✅ 已修（2026-09-09）：新增 `internal/fabric/task/architecture_test.go` `TestFabricCoreMustNotImportRuntime`——锁 task 顶层 + agent + planprojection 三包禁 import internal/runtime（测试跳过；workflow/ 子树的 evolution-patch 应用面为既定评审过的 seam，gate 注释明示边界）。 |
 | **A3** | `CostUSD` 恒 0，缺模型价目表 | ✅ 已决策移除（2026-09-09）：USD 货币化不做——token 维度即成本信号（costPenalty 1/(1+tokens/100k)），StrategySample.CostUSD 占位字段与 cost_usd payload 键已删。observability 的 `ARES_cost_usd_total` 是独立既有指标面，另行评估。 |
 | **A4** | `distilled_memories` 幽灵 DB 表 | ✅ 已修（2026-09-09）：migrate_storage.go 的整族 DDL（表+RLS+7 索引+content_hash+去重索引+updated_at，即原语句 9-12）删除——新部署不再建废表；存量库不受影响（语句本就 IF NOT EXISTS，删除对其惰性）。删表数据属操作员决策，不进 schema migration。 |

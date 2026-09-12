@@ -1,19 +1,20 @@
 {
   "metadata": {
-    "date": "2026-06-11",
-    "run_type": "final",
+    "date": "2026-09-12",
+    "run_type": "post-L2-convergence",
     "platform": "darwin/arm64",
     "cpu": "Apple M3 Max",
-    "go_version": "go1.26.4",
-    "os": "Darwin 24.6.0",
-    "count": 3,
-    "statistic": "median"
+    "go_version": "go1.27.1",
+    "os": "Darwin 15.7.3",
+    "count": 1,
+    "benchtime": "500ms",
+    "statistic": "single-run"
   },
   "benchmarks": {
     "evaluation_framework": {
       "exact_match_evaluator": {
         "name": "ExactMatchEvaluator_Evaluate",
-        "ns_per_op": 3.11,
+        "ns_per_op": 2.35,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -21,7 +22,7 @@
       },
       "tool_usage_evaluator": {
         "name": "ToolUsageEvaluator_Evaluate",
-        "ns_per_op": 28.05,
+        "ns_per_op": 27.76,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -29,7 +30,7 @@
       },
       "agent_test_runner": {
         "name": "AgentTestRunner_RunSingle",
-        "ns_per_op": 323.2,
+        "ns_per_op": 300.6,
         "bytes_per_op": 320,
         "allocs_per_op": 5,
         "rating": "good",
@@ -37,91 +38,49 @@
       },
       "report_generator": {
         "name": "ReportGenerator_GenerateMarkdown",
-        "ns_per_op": 3431,
+        "ns_per_op": 3394,
         "bytes_per_op": 4258,
         "allocs_per_op": 76,
-        "rating": "acceptable",
+        "rating": "good",
         "tier": "normal"
       },
       "loader": {
         "name": "Loader_Load",
-        "ns_per_op": 48694,
-        "bytes_per_op": 34062,
+        "ns_per_op": 47959,
+        "bytes_per_op": 34063,
         "allocs_per_op": 601,
         "rating": "acceptable",
         "tier": "cold"
       }
     },
-    "streaming_handler": {
-      "convert_event": {
-        "name": "StreamHandler_ConvertEvent",
-        "ns_per_op": 4.89,
-        "bytes_per_op": 0,
-        "allocs_per_op": 0,
-        "rating": "excellent",
-        "tier": "hot"
-      },
-      "handle_stream": {
-        "name": "StreamHandler_HandleStream",
-        "ns_per_op": 3820,
-        "bytes_per_op": 9418,
-        "allocs_per_op": 69,
-        "rating": "good",
-        "tier": "normal"
-      },
-      "multiple_events_100": {
-        "name": "StreamHandler_MultipleEvents",
-        "ns_per_op": 30369,
-        "bytes_per_op": 38290,
-        "allocs_per_op": 462,
-        "rating": "good",
-        "tier": "normal"
-      }
-    },
     "tools_core": {
       "tool_registration": {
         "name": "ToolRegistration",
-        "ns_per_op": 4503,
-        "bytes_per_op": 9400,
+        "ns_per_op": 4778,
+        "bytes_per_op": 9464,
         "allocs_per_op": 12,
         "rating": "good",
         "tier": "normal"
       },
       "tool_execution": {
         "name": "ToolExecution",
-        "ns_per_op": 14.66,
+        "ns_per_op": 18.11,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
         "tier": "hot"
       },
-      "capability_detection": {
-        "name": "CapabilityDetection",
-        "ns_per_op": 7988,
-        "bytes_per_op": 1024,
-        "allocs_per_op": 8,
-        "rating": "good",
-        "tier": "normal"
-      },
-      "capability_matching": {
-        "name": "CapabilityMatching",
-        "ns_per_op": 4324,
-        "bytes_per_op": 600,
-        "allocs_per_op": 9,
-        "rating": "good",
-        "tier": "normal"
-      },
       "tool_filtering": {
         "name": "ToolFiltering",
-        "ns_per_op": 2412,
-        "bytes_per_op": 4504,
+        "ns_per_op": 2608,
+        "bytes_per_op": 4568,
         "allocs_per_op": 10,
         "rating": "good",
         "tier": "hot"
       },
       "result_creation_success": {
         "name": "ResultCreation_Success",
-        "ns_per_op": 0.268,
+        "ns_per_op": 0.273,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -129,7 +88,7 @@
       },
       "result_creation_error": {
         "name": "ResultCreation_Error",
-        "ns_per_op": 0.268,
+        "ns_per_op": 0.274,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -137,7 +96,7 @@
       },
       "parameter_validation": {
         "name": "ParameterValidation",
-        "ns_per_op": 7.264,
+        "ns_per_op": 7.135,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -145,7 +104,7 @@
       },
       "concurrent_tool_execution": {
         "name": "ConcurrentToolExecution",
-        "ns_per_op": 136.5,
+        "ns_per_op": 131.1,
         "bytes_per_op": 8,
         "allocs_per_op": 1,
         "rating": "good",
@@ -155,15 +114,15 @@
     "memory_distillation": {
       "score_memory": {
         "name": "ScoreMemory",
-        "ns_per_op": 3036,
-        "bytes_per_op": 2592,
-        "allocs_per_op": 20,
+        "ns_per_op": 3288,
+        "bytes_per_op": 768,
+        "allocs_per_op": 8,
         "rating": "good",
         "tier": "normal"
       },
       "conflict_detection": {
         "name": "ConflictDetection",
-        "ns_per_op": 1067,
+        "ns_per_op": 1060,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "good",
@@ -171,7 +130,7 @@
       },
       "noise_filter": {
         "name": "NoiseFilter",
-        "ns_per_op": 6984,
+        "ns_per_op": 6942,
         "bytes_per_op": 592,
         "allocs_per_op": 11,
         "rating": "good",
@@ -179,7 +138,7 @@
       },
       "memory_classification": {
         "name": "MemoryClassification",
-        "ns_per_op": 1951,
+        "ns_per_op": 1986,
         "bytes_per_op": 592,
         "allocs_per_op": 15,
         "rating": "good",
@@ -187,31 +146,31 @@
       },
       "experience_extraction": {
         "name": "ExperienceExtraction",
-        "ns_per_op": 147127,
-        "bytes_per_op": 21200,
+        "ns_per_op": 129045,
+        "bytes_per_op": 22864,
         "allocs_per_op": 267,
         "rating": "acceptable",
         "tier": "cold"
       },
       "topn_filter": {
         "name": "TopNFilter",
-        "ns_per_op": 2918,
-        "bytes_per_op": 5896,
-        "allocs_per_op": 9,
+        "ns_per_op": 3706,
+        "bytes_per_op": 16328,
+        "allocs_per_op": 10,
         "rating": "good",
         "tier": "normal"
       },
       "memory_operations_create": {
         "name": "MemoryOperations/Create",
-        "ns_per_op": 89.71,
+        "ns_per_op": 86.38,
         "bytes_per_op": 24,
-        "allocs_per_op": 2,
+        "allocs_per_op": 1,
         "rating": "excellent",
         "tier": "hot"
       },
       "memory_operations_classification": {
         "name": "MemoryOperations/Classification",
-        "ns_per_op": 291.2,
+        "ns_per_op": 283.7,
         "bytes_per_op": 64,
         "allocs_per_op": 3,
         "rating": "good",
@@ -219,7 +178,7 @@
       },
       "string_operations_format": {
         "name": "StringOperations/Format",
-        "ns_per_op": 73.05,
+        "ns_per_op": 65.61,
         "bytes_per_op": 64,
         "allocs_per_op": 3,
         "rating": "excellent",
@@ -229,7 +188,7 @@
     "errors": {
       "wrap": {
         "name": "Wrap",
-        "ns_per_op": 0.279,
+        "ns_per_op": 0.276,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -237,7 +196,7 @@
       },
       "fmt_errorf_w": {
         "name": "FmtErrorfW",
-        "ns_per_op": 90.08,
+        "ns_per_op": 80.33,
         "bytes_per_op": 64,
         "allocs_per_op": 2,
         "rating": "excellent",
@@ -245,7 +204,7 @@
       },
       "wrap_multiple_wraps": {
         "name": "WrapMultipleWraps",
-        "ns_per_op": 0.633,
+        "ns_per_op": 0.575,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
         "rating": "excellent",
@@ -253,7 +212,7 @@
       },
       "fmt_errorf_multiple_wraps": {
         "name": "FmtErrorfMultipleWraps",
-        "ns_per_op": 297.3,
+        "ns_per_op": 256.0,
         "bytes_per_op": 216,
         "allocs_per_op": 6,
         "rating": "good",
@@ -263,31 +222,23 @@
     "event_sourcing": {
       "memory_store_append": {
         "name": "MemoryStore_Append",
-        "ns_per_op": 563.6,
-        "bytes_per_op": 598,
-        "allocs_per_op": 7,
+        "ns_per_op": 570.8,
+        "bytes_per_op": 727,
+        "allocs_per_op": 8,
         "rating": "good",
         "tier": "hot"
       },
       "memory_store_append_batch": {
         "name": "MemoryStore_AppendBatch",
-        "ns_per_op": 3999,
-        "bytes_per_op": 9114,
-        "allocs_per_op": 1,
-        "rating": "good",
-        "tier": "hot"
-      },
-      "memory_store_concurrent_append": {
-        "name": "MemoryStore_ConcurrentAppend",
-        "ns_per_op": 707.4,
-        "bytes_per_op": 608,
-        "allocs_per_op": 6,
+        "ns_per_op": 6499,
+        "bytes_per_op": 21650,
+        "allocs_per_op": 102,
         "rating": "good",
         "tier": "hot"
       },
       "memory_store_read": {
         "name": "MemoryStore_Read",
-        "ns_per_op": 6607,
+        "ns_per_op": 4726,
         "bytes_per_op": 17528,
         "allocs_per_op": 11,
         "rating": "good",
@@ -295,7 +246,7 @@
       },
       "memory_store_read_all": {
         "name": "MemoryStore_ReadAll",
-        "ns_per_op": 38358,
+        "ns_per_op": 38009,
         "bytes_per_op": 81976,
         "allocs_per_op": 3,
         "rating": "acceptable",
@@ -303,126 +254,271 @@
       },
       "memory_store_subscribe": {
         "name": "MemoryStore_Subscribe",
-        "ns_per_op": 138851,
-        "bytes_per_op": 145424,
-        "allocs_per_op": 799,
+        "ns_per_op": 119029,
+        "bytes_per_op": 181945,
+        "allocs_per_op": 699,
         "rating": "acceptable",
         "tier": "cold"
+      },
+      "memory_store_concurrent_append": {
+        "name": "MemoryStore_ConcurrentAppend",
+        "ns_per_op": 752.8,
+        "bytes_per_op": 729,
+        "allocs_per_op": 7,
+        "rating": "good",
+        "tier": "hot"
+      }
+    },
+    "kernel_fabric": {
+      "task_create": {
+        "name": "Fabric_Create",
+        "ns_per_op": 394.9,
+        "bytes_per_op": 352,
+        "allocs_per_op": 4,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "task_schedule": {
+        "name": "Fabric_Schedule",
+        "ns_per_op": 567.8,
+        "bytes_per_op": 428,
+        "allocs_per_op": 10,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "task_run_quantum": {
+        "name": "Fabric_RunQuantum",
+        "ns_per_op": 1301,
+        "bytes_per_op": 1162,
+        "allocs_per_op": 16,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "task_ready_tasks": {
+        "name": "Fabric_ReadyTasks",
+        "ns_per_op": 385.8,
+        "bytes_per_op": 960,
+        "allocs_per_op": 4,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "task_is_ready": {
+        "name": "Fabric_IsReady",
+        "ns_per_op": 15.44,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "agent_spawn": {
+        "name": "Fabric_Spawn",
+        "ns_per_op": 411.3,
+        "bytes_per_op": 936,
+        "allocs_per_op": 10,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "agent_spawn_with_resources": {
+        "name": "Fabric_SpawnWithResources",
+        "ns_per_op": 828.3,
+        "bytes_per_op": 1480,
+        "allocs_per_op": 14,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "agent_suspend_resume": {
+        "name": "Fabric_LifecycleSuspendResume",
+        "ns_per_op": 24.04,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "agent_children": {
+        "name": "Fabric_Children",
+        "ns_per_op": 26.35,
+        "bytes_per_op": 80,
+        "allocs_per_op": 1,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "bus_send": {
+        "name": "Bus_Send",
+        "ns_per_op": 313.1,
+        "bytes_per_op": 400,
+        "allocs_per_op": 8,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "bus_request_reply": {
+        "name": "Bus_RequestReply",
+        "ns_per_op": 1728,
+        "bytes_per_op": 1320,
+        "allocs_per_op": 22,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "bus_broadcast": {
+        "name": "Bus_Broadcast",
+        "ns_per_op": 262.7,
+        "bytes_per_op": 400,
+        "allocs_per_op": 8,
+        "rating": "good",
+        "tier": "hot"
+      }
+    },
+    "runtime_evolution": {
+      "workflow_genome_mutate": {
+        "name": "WorkflowGenome_Mutate",
+        "ns_per_op": 31526,
+        "bytes_per_op": 47597,
+        "allocs_per_op": 534,
+        "rating": "acceptable",
+        "tier": "normal"
+      },
+      "knowledge_genome_mutate": {
+        "name": "KnowledgeGenome_Mutate",
+        "ns_per_op": 427.2,
+        "bytes_per_op": 960,
+        "allocs_per_op": 11,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "recovery_genome_mutate": {
+        "name": "RecoveryGenome_Mutate",
+        "ns_per_op": 505.1,
+        "bytes_per_op": 1280,
+        "allocs_per_op": 21,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "diff_engine_workflow": {
+        "name": "DiffEngine_Workflow",
+        "ns_per_op": 545.7,
+        "bytes_per_op": 352,
+        "allocs_per_op": 3,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "coordinator_evaluate": {
+        "name": "Coordinator_Evaluate",
+        "ns_per_op": 6.256,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "full_evolution_cycle": {
+        "name": "FullEvolutionCycle",
+        "ns_per_op": 9811,
+        "bytes_per_op": 13868,
+        "allocs_per_op": 157,
+        "rating": "good",
+        "tier": "normal"
       }
     }
   },
   "wired_system": {
     "dream_cycle_single_run": {
       "name": "BenchmarkDreamCycle_SingleRun",
-      "ns_per_op": 25000,
-      "bytes_per_op": 4500,
-      "allocs_per_op": 65,
+      "ns_per_op": 282.5,
+      "bytes_per_op": 272,
+      "allocs_per_op": 4,
       "rating": "good",
-      "tier": "normal",
-      "source": "estimated"
+      "tier": "normal"
     },
     "system_creation_pop_10": {
       "name": "BenchmarkWiredSystem_Creation/pop_10",
-      "ns_per_op": 45000,
-      "bytes_per_op": 12000,
-      "allocs_per_op": 180,
-      "rating": "good",
-      "tier": "normal",
-      "source": "estimated"
+      "ns_per_op": 49681,
+      "bytes_per_op": 27115,
+      "allocs_per_op": 129,
+      "rating": "acceptable",
+      "tier": "normal"
     },
     "system_creation_pop_20": {
       "name": "BenchmarkWiredSystem_Creation/pop_20",
-      "ns_per_op": 62000,
-      "bytes_per_op": 18500,
-      "allocs_per_op": 280,
-      "rating": "good",
-      "tier": "normal",
-      "source": "estimated"
+      "ns_per_op": 56079,
+      "bytes_per_op": 34911,
+      "allocs_per_op": 210,
+      "rating": "acceptable",
+      "tier": "normal"
     },
     "system_creation_pop_50": {
       "name": "BenchmarkWiredSystem_Creation/pop_50",
-      "ns_per_op": 105000,
-      "bytes_per_op": 38000,
-      "allocs_per_op": 520,
+      "ns_per_op": 78352,
+      "bytes_per_op": 58322,
+      "allocs_per_op": 453,
       "rating": "acceptable",
-      "tier": "normal",
-      "source": "estimated"
+      "tier": "normal"
     },
     "system_creation_pop_100": {
       "name": "BenchmarkWiredSystem_Creation/pop_100",
-      "ns_per_op": 175000,
-      "bytes_per_op": 68000,
-      "allocs_per_op": 920,
+      "ns_per_op": 121871,
+      "bytes_per_op": 97479,
+      "allocs_per_op": 858,
       "rating": "acceptable",
-      "tier": "cold",
-      "source": "estimated"
+      "tier": "cold"
     },
     "idle_evolution_10gens": {
       "name": "BenchmarkWiredSystem_IdleEvolution/10_generations",
-      "ns_per_op": 420000,
-      "bytes_per_op": 150000,
-      "allocs_per_op": 5000,
+      "ns_per_op": 1910916,
+      "bytes_per_op": 1271171,
+      "allocs_per_op": 12736,
       "rating": "acceptable",
-      "tier": "normal",
-      "source": "estimated"
+      "tier": "cold"
     },
     "idle_evolution_50gens": {
       "name": "BenchmarkWiredSystem_IdleEvolution/50_generations",
-      "ns_per_op": 2000000,
-      "bytes_per_op": 750000,
-      "allocs_per_op": 25000,
+      "ns_per_op": 9302207,
+      "bytes_per_op": 6354315,
+      "allocs_per_op": 63711,
       "rating": "acceptable",
-      "tier": "cold",
-      "source": "estimated"
+      "tier": "cold"
     },
     "idle_evolution_100gens": {
       "name": "BenchmarkWiredSystem_IdleEvolution/100_generations",
-      "ns_per_op": 4100000,
-      "bytes_per_op": 1500000,
-      "allocs_per_op": 50000,
+      "ns_per_op": 18130059,
+      "bytes_per_op": 12732570,
+      "allocs_per_op": 127381,
       "rating": "acceptable",
-      "tier": "cold",
-      "source": "estimated"
+      "tier": "cold"
     },
     "full_pipeline": {
       "name": "BenchmarkFullPipeline",
-      "ns_per_op": 2300000,
-      "bytes_per_op": 850000,
-      "allocs_per_op": 28000,
+      "ns_per_op": 8970315,
+      "bytes_per_op": 6358065,
+      "allocs_per_op": 63701,
       "rating": "acceptable",
-      "tier": "cold",
-      "source": "estimated"
+      "tier": "cold"
     }
   },
   "adaptive_behavior": {
     "mutation_fixed_rate": {
       "name": "BenchmarkAdaptiveMutation/fixed_rate",
-      "ns_per_op": 1600000,
-      "bytes_per_op": 600000,
-      "allocs_per_op": 20000,
+      "ns_per_op": 230586,
+      "bytes_per_op": 551283,
+      "allocs_per_op": 3352,
       "rating": "acceptable",
-      "tier": "cold",
-      "source": "estimated"
+      "tier": "cold"
     },
     "mutation_adaptive_rate": {
       "name": "BenchmarkAdaptiveMutation/adaptive_rate",
-      "ns_per_op": 1700000,
-      "bytes_per_op": 620000,
-      "allocs_per_op": 20500,
+      "ns_per_op": 229782,
+      "bytes_per_op": 551274,
+      "allocs_per_op": 3352,
       "rating": "acceptable",
-      "tier": "cold",
-      "source": "estimated"
+      "tier": "cold"
     }
   },
   "summary": {
-    "total_benchmarks": 47,
-    "excellent_count": 13,
-    "good_count": 19,
+    "total_benchmarks": 60,
+    "excellent_count": 15,
+    "good_count": 30,
     "acceptable_count": 15,
-    "zero_allocation_count": 10,
-    "hot_count": 21,
+    "zero_allocation_count": 12,
+    "hot_count": 36,
     "normal_count": 14,
-    "cold_count": 12
+    "cold_count": 10
   },
   "performance_tiers": {
     "excellent": {
@@ -430,7 +526,7 @@
       "description": "Ultra-fast operations suitable for hot paths"
     },
     "good": {
-      "threshold_ns": 1000,
+      "threshold_ns": 10000,
       "description": "Fast operations with minimal overhead"
     },
     "acceptable": {

@@ -130,8 +130,9 @@ func l2PeerCapabilities(toolNames []string) []string {
 //     CognitionFactory returns the router — the sole execution body.
 //  4. sched.WithAgentFabric — the scheduler's candidate pool now includes
 //     the L2 peer, so ares/plan / tool/* / ares/answer tasks drain through
-//     the router. Static per-capability executors (RegisterAgent) still win
-//     by skip logic — existing SDK agent registration is unaffected.
+//     the router — the sole execution body. RegisterAgent stays identity-only
+//     (instruction/tools composed into the session prompt); no static
+//     per-capability executors are registered into the scheduler anymore.
 func (r *Runtime) ensureL2() *agentruntime.Execution {
 	r.l2Once.Do(func() {
 		r.ensureScheduler()

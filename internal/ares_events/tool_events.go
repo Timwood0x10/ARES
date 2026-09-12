@@ -7,7 +7,7 @@ import (
 )
 
 // Tool-event payload keys shared by the tool-event emitters (today the
-// agentloop executor). Hoisting the keys here satisfies the goconst
+// L2 tool cognition). Hoisting the keys here satisfies the goconst
 // "string repeated >= 3 times" rule and gives the projection layer a
 // single, stable contract to read — the acceptance is that all emitters
 // produce the SAME key set.

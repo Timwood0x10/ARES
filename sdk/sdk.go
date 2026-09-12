@@ -169,10 +169,10 @@ type Runtime struct {
 	agentByCapability map[string]*Agent
 	agentMu           sync.Mutex
 	// ---- shared scheduler (SDK/kernel merge) ----
-	// sdkExecutors maps capability → the shared-scheduler executor wrapping
-	// the registered agent. Guarded by agentMu (same lock as
-	// agentByCapability). The map is passed BY REFERENCE to the shared
-	// scheduler, so late RegisterAgent calls are visible to the next drain.
+	// sdkExecutors is the scheduler's static-executor map, passed by
+	// reference to kernel.New. Since the L2 convergence nothing populates
+	// it — every task drains through the L2 router — and it remains only
+	// as the constructor's compatibility slot.
 	sdkExecutors map[string]kernel.CapabilityExecutor
 	// sdkFabric is the runtime's own Task Fabric; sched is the shared
 	// kernel.Scheduler driving submitted tasks (the SAME engine the
@@ -182,13 +182,6 @@ type Runtime struct {
 	schedOnce   sync.Once
 	schedCtx    context.Context
 	schedCancel context.CancelFunc
-	// taskRunCtxs maps fabric task ID → the Submit caller's wait context.
-	// sdkAgentExecutor merges its execution ctx onto the registered entry so
-	// a Submit timeout/cancellation aborts the in-flight agent run for THAT
-	// task (the scheduler ctx alone never fires on a submitter timeout).
-	// Entries are added/removed by submitThroughScheduler on every exit
-	// path, so the map never outlives an in-flight Submit.
-	taskRunCtxs sync.Map
 	// agentsFabric is the runtime's Agent Fabric, backing spawn_agent syscalls
 	// (the SDK wires the same kernel syscalls as peer mode). Created in
 	// ensureScheduler alongside sdkFabric; nil until the first Submit.

@@ -1,5 +1,5 @@
-// Package llmsvcapi provides the LLM service API used by the sdk and
-// agentloop layers (M5 internalization of the former api/service/llm).
+// Package llmsvcapi provides the LLM service API used by the sdk layer
+// (M5 internalization of the former api/service/llm).
 package llmsvcapi
 
 import (

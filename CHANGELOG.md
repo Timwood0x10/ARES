@@ -126,6 +126,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One execution engine: the SDK joins the shared L2 execution core**
+  (the 0.3.1 convergence): `Agent.Run`, `Submit` and `RunGraph` no longer
+  run a separate in-SDK ReAct engine — all three compose the prompt
+  (instruction + memory + knowledge) and submit through the same
+  `agentruntime.NewExecution` core `ares serve` builds (session registry +
+  planprojection compile coordinator + router cognition + reaper +
+  instance-scoped `Submitter`) and the same single-loop `kernel.Scheduler`
+  drain. `RegisterAgent` is identity-only (name/instruction/tools for
+  prompt composition; the per-capability static executor pool is no longer
+  populated), and unregistered capabilities (spawned peers, planner-grown
+  tool nodes) inherit the root session's governance through the L2
+  session. Root-cause fix for a scheduler deadlock: the removed path could
+  synchronously wait on another task from inside a scheduler quantum,
+  wedging the single-loop drain; a runtime without an LLM now refuses
+  `Run`/`Submit` loudly instead of half-wiring. Invariants are
+  compile-locked by `sdk/arch_test.go` (zero `internal/agentloop` imports;
+  exactly two `agentruntime.NewExecution` construction points).
+
 - **Experience distillation now defaults to ON** (P0-3): `memory.enable_distillation`
   became a tri-state (`*bool`) in both `internal/ares_config` and the SDK
   `ConfigFile`. Unset (the common case — the key absent from yaml) now resolves
@@ -334,6 +352,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed (breaking)
 
+- **`internal/agentloop` engine**: the SDK's synchronous ReAct loop is
+  retired — `Agent.Run`, `Submit` and `RunGraph` now route through the
+  shared L2 execution core (see Changed). The per-capability static
+  executor pool went with it (`sdkExecutors` is no longer populated and
+  `sdkAgentExecutor` is deleted); `RegisterAgent` remains as identity-only
+  agent registration (name/instruction/tools consumed by the L2 prompt
+  composition), and the duplicated `DiscoverToolsName` constant is gone.
 - **`api/discovery` and `api/evolution` packages deleted** (incl. genome and
   mutation subpackages): their canonical definitions live in
   `internal/discoveryapi` and `internal/evoapi`; the six consuming examples

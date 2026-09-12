@@ -46,12 +46,11 @@ func (r *Runtime) RunGraph(ctx context.Context, g *Graph) (*GraphResult, error) 
 		return nil, err
 	}
 
-	// Register every *Agent node's executor ONCE, up front, single-threaded.
-	// This uses the retained *Agent pointer so an agent added via AddNode
-	// (never through RegisterAgent) keeps its own instruction/tools instead of
-	// falling back to a bare capability-named stand-in. Doing it here — before
-	// any round goroutine starts — also means the parallel rounds never write
-	// r.sdkExecutors concurrently (the scheduler reads it lock-free).
+	// Node agents run via their retained *Agent pointer, so an agent added
+	// via AddNode (never through RegisterAgent) keeps its own
+	// instruction/tools instead of falling back to a bare capability-named
+	// stand-in. Since the L2 convergence no per-capability static executors
+	// are registered — Agent.Run routes through the shared L2 core itself.
 
 	st := newGraphRun()
 	maxIter := snap.maxIterations

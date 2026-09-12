@@ -457,31 +457,36 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
 
-### 基准测试（Apple M3 Max，darwin/arm64，2026-08-25）
+### 基准测试（Apple M3 Max，darwin/arm64，2026-09-12）
 
 ```
-=== 运行时进化（internal/evolution） ===
-BenchmarkWorkflowGenome_Mutate     152k   7.92µs  11.9KB  157 allocs
-BenchmarkKnowledgeGenome_Mutate    2.67M  440ns    960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.35M  521ns    1.28KB  21 allocs
-BenchmarkDiffEngine_Workflow       2.68M  448ns    304B     3 allocs
-BenchmarkCoordinator_Evaluate      188M   6.33ns     0B      0 allocs
-BenchmarkFullEvolutionCycle        277k   4.26µs   7.3KB    90 allocs
+=== 运行时进化（internal/runtime/evolution） ===
+BenchmarkWorkflowGenome_Mutate       19.2k   31.5µs  46.5KB    534 allocs
+BenchmarkKnowledgeGenome_Mutate      1.42M   427ns   960B       11 allocs
+BenchmarkRecoveryGenome_Mutate       1.00M   505ns   1.25KB     21 allocs
+BenchmarkDiffEngine_Workflow         1.00M   546ns   352B        3 allocs
+BenchmarkCoordinator_Evaluate        94.7M   6.26ns  0B          0 allocs
+BenchmarkFullEvolutionCycle          59.3k   9.81µs  13.5KB    157 allocs
 
 === 事件系统（internal/ares_events） ===
-BenchmarkMemoryStore_Append           2.24M  519ns    618B    7 allocs
-BenchmarkMemoryStore_AppendBatch      300k   3.74µs   8.9KB    1 alloc
-BenchmarkMemoryStore_Read             231k   5.40µs  17.5KB   11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 1.67M  704ns    625B    6 allocs
+BenchmarkMemoryStore_Append             944k   571ns    727B       8 allocs
+BenchmarkMemoryStore_AppendBatch       91.5k   6.50µs   21.1KB   102 allocs
+BenchmarkMemoryStore_Read              127k   4.73µs   17.1KB    11 allocs
+BenchmarkMemoryStore_ConcurrentAppend   873k   753ns    729B       7 allocs
 
-=== 内核（internal/taskfabric · agentfabric · agentipc） ===
-Fabric_Create             2.59M   389ns   931B     3 allocs
-Fabric_Schedule           1.54M   800ns   1.85KB   18 allocs
-Fabric_RunQuantum         796k   1.60µs   3.7KB    23 allocs
-Fabric_Spawn              3.11M   385ns   936B    10 allocs
-Bus_Send                  8.28M   143ns   280B     4 allocs
-Bus_RequestReply          1.00M   1.10µs   912B    14 allocs
-DualTrackDispatch         121M    9.9ns     0B      0 allocs
+=== 内核（internal/fabric/task · fabric/agent · agentipc） ===
+Fabric_Create              1.41M    395ns    352B      4 allocs
+Fabric_Schedule            1.10M    568ns    428B     10 allocs
+Fabric_RunQuantum          466k     1.30µs   1.13KB   16 allocs
+Fabric_ReadyTasks          1.54M    386ns    960B      4 allocs
+Fabric_IsReady             39.1M    15.4ns   0B        0 allocs
+Fabric_Spawn               1.49M    411ns    936B     10 allocs
+Fabric_SpawnWithResources  705k     828ns    1.45KB   14 allocs
+Fabric_SuspendResume       24.9M    24.0ns   0B        0 allocs
+Fabric_Children            22.7M    26.4ns   80B        1 alloc
+Bus_Send                   1.95M    313ns    400B      8 allocs
+Bus_RequestReply           351k     1.73µs   1.29KB   22 allocs
+Bus_Broadcast              2.25M    263ns    400B      8 allocs
 ```
 
 ### CLI
@@ -525,19 +530,19 @@ go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Exe
 | **世代历史** | 每代快照及元数据 |
 | **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### 基准测试（Apple M3 Max，darwin/arm64，2026-08-25）
+### 基准测试（Apple M3 Max，darwin/arm64，2026-09-12）
 
 ```
-=== GA Genome（internal/ares_evolution/genome） ===
-CrossoverUniform (10 params)        500k   2.46µs   3.1KB   31 allocs
-CrossoverUniform (100 params)       61.5k  17.8µs   21.2KB  38 allocs
-TruncationSelection (pop=100)       209k   5.82µs   952B     3 allocs
-TournamentSelection (pop=50,k=2)    287k   4.45µs  14.4KB  101 allocs
-RouletteWheelSelection (pop=100)    422k   2.84µs   3.4KB    7 allocs
-Evolve_OneGeneration (pop=100)      4.60M   263ns   344B     6 allocs
-Evolve_MultipleGenerations (100)    45.3k  25.9µs  29.6KB  600 allocs
-ApplyFitnessSharing (pop=100)         896   1.34ms   540KB 106 allocs
-RealWorldEvolution (100 gen)          100  10.05ms   4.4MB 61871 allocs
+=== GA Genome（internal/runtime/ares_evolution/genome） ===
+CrossoverUniform (10 params)         262k   2.29µs   2.97KB    31 allocs
+CrossoverUniform (100 params)       34.1k   17.2µs   20.6KB    38 allocs
+TruncationSelection (pop=100)       103k    5.82µs   952B       3 allocs
+TournamentSelection (pop=50,k=2)    158k    3.84µs   13.3KB   101 allocs
+RouletteWheelSelection (pop=100)    208k    3.02µs   3.34KB     7 allocs
+Evolve_OneGeneration (pop=100)      2.22M   271ns    344B       6 allocs
+Evolve_MultipleGenerations (100)    23.2k   26.3µs   33.6KB   600 allocs
+ApplyFitnessSharing (pop=100)       429     1.36ms   527KB    106 allocs
+RealWorldEvolution (100 gen)        58      10.5ms   4.31MB  61922 allocs
 ```
 
 ### 示例

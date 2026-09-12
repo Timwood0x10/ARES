@@ -9,8 +9,6 @@ import (
 )
 
 // DiscoverToolsName is the well-known name of the runtime discovery meta-tool.
-// The same constant is duplicated in package agentloop to keep that package
-// dependency-free; a shared test asserts both constants are equal.
 const DiscoverToolsName = "discover_tools"
 
 // maxDiscoverResults caps the number of tools returned to keep the LLM
@@ -74,7 +72,7 @@ func (t *discoverToolsTool) Parameters() *core.ParameterSchema {
 
 // Execute searches the source's tools and returns matching {name, description}
 // entries as Result.Data. Data is a JSON-encoded string (a JSON array of
-// objects) so the agentloop engine can parse it with encoding/json after the
+// objects) so consumers can parse it with encoding/json after the
 // runtime formats Result.Data with %v, and so the LLM sees valid JSON in the
 // tool message. Up to maxDiscoverResults matches are returned.
 func (t *discoverToolsTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {

@@ -56,8 +56,8 @@ flowchart TD
     end
 
     subgraph L3A["调度 internal/kernel"]
-        SCHED["scheduler.go:355 Run · :489 drain<br/>:800 execute · :919 executeWithCandidates<br/>hybridStatic:98 · WithStaticPoolHybrid:317"]
-        EXECREG["executor_registry.go<br/>buildCandidates:129 · hybridPreferStatic:171<br/>HasStaticExecutorFor:283 · LookupExecutor:256"]
+        SCHED["scheduler.go:355 Run · :489 drain<br/>:800 execute · :919 executeWithCandidates<br/>hybridStatic:99 · WithStaticPoolHybrid:318"]
+        EXECREG["executor_registry.go<br/>buildCandidates:129 · hybridPreferStatic:171<br/>LookupExecutor:256 · Capabilities:304"]
         FABEX["fabric_executor.go:16<br/>fabricAgentExecutor:39"]
         LOAD["load_tracker.go:23<br/>TryBegin:82 · ConfidenceFor:206"]
         DEC["decision_recorder.go:66"]
@@ -383,7 +383,7 @@ task.completed → skill_outcome_writer → Experience（下轮置信先验）
 
 | 文件 | 关键符号 |
 |---|---|
-| `executor_registry.go` | `buildCandidates:129` · `hybridPreferStatic:171` · `RegisterExecutorIfAbsent:43` · `LookupExecutor:256` · `HasStaticExecutorFor:283`（按 Type 匹配，syscall peer 注册在 agentID 下）· `Capabilities:304` |
+| `executor_registry.go` | `buildCandidates:129` · `hybridPreferStatic:171` · `RegisterExecutorIfAbsent:43` · `LookupExecutor:256` · `Capabilities:304` |
 | `fabric_executor.go` | `fabricExecutor:16` · `fabricAgentExecutor:39` · `appendFabricCandidates:80`（`:104` 走 `CapabilitiesOf`） |
 | `load_tracker.go` | `LoadTracker:23` · `TryBegin:82` · `End:92` · `ConfidenceFor:206` · `ConfidenceForMeasured` |
 | `decision_recorder.go` | `ScheduleDecision:45` · `DecisionRecorder:66` · `Record:75` |
@@ -447,7 +447,7 @@ task.completed → skill_outcome_writer → Experience（下轮置信先验）
 | `outputguard/guard.go` | `Guard:31` · `ValidateResult:45`（成功却带 error / 失败却无详情 → 拒绝） |
 | `strategy.go` | `ActiveStrategy:13` · `StrategySource:26` · `MergeNodeParams:59` · `ToolNamesFromParams:89` · `PriorHintFromParams:168` |
 
-执行体与调度的接缝是 `kernel.CapabilityExecutor`：`sub.Agent` 经 `sdkAgentExecutor`（SDK）或 fabric 的 `Cognition`（L2）挂上调度器。**ReAct 循环只存在于静态执行器路径**；L2 路径只有 router 分发。
+执行体与调度的接缝是 `kernel.CapabilityExecutor`：fabric 的 `Cognition` 经 `fabricAgentExecutor` 挂上调度器。B3 收敛后 SDK **只有一条 L2 路径**（`sdk/scheduler.go:13` 文件头注释）：drain 在单协程上串行执行量子，若某个量子内部再阻塞等同一 fabric 上的另一个任务，会与"必须调度该任务的 answer"的 drain 循环互锁——所以静态执行器分支被整体删除，没有 ReAct 私有循环。
 
 ### 5.8 通讯（4 个面）
 
@@ -647,8 +647,9 @@ kernel.go:975 recovery loop
 | 装配根 | `bootstrap.go:239` | `NewRuntime` + `bootstrap_runtime.go` | 独立进程（`bridge.go:3` `package main`） |
 | fabric | `kernel.fabric`（持久，`RestoreFromStore`） | `r.sdkFabric`（内存） | — |
 | L2 核 | `createPeerAgents agent_kernel.go:70` 内 `NewExecution:319` | `ensureL2 l2.go:135` 惰性 | — |
-| 提交入口 | `submitPeerTask:660`（薄胶水，同步返回 taskID） | `submitThroughScheduler scheduler.go:154`（同步等终答） | — |
-| 调度模式 | peer（fabric 唯一候选源） | hybrid（`WithStaticPoolHybrid:317` + `WithGovernance:203`） | — |
+| 提交入口 | `submitPeerTask:660`（薄胶水，同步返回 taskID） | `submitThroughScheduler scheduler.go:62`（同步等终答） | — |
+| 调度模式 | peer（fabric 唯一候选源） | hybrid（`WithStaticPoolHybrid:318` + `WithGovernance:204`，均在 `scheduler.go:46`/`:50` 接线） | — |
+| 执行路径 | L2 router | L2 router（B3 收敛后无静态执行器分支，`scheduler.go:62` 直接拒绝无 LLM 的提交） | — |
 | ID 序列 | `Submitter` + `Seed:346` | SDK 自己 Execution 的 `Submitter` | — |
 | reaper | `runBackground agent_kernel.go:354` | `eg.Go` `l2.go:193` | — |
 | idle-TTL sweeper | 有 `:374` | **无**（同步 Submit + defer 覆盖） | — |
@@ -664,7 +665,7 @@ kernel.go:975 recovery loop
 ```
 go build ./...     # clean
 go vet   ./internal/... ./sdk/... ./cmd/...
-go test  ./...     # 8802 passed / 136 packages
+go test  ./...     # 8749 passed / 135 packages
 go test -race ./internal/{runtime,agentruntime}/... ./sdk/... \
               ./internal/kernel/... ./internal/fabric/...   # clean
 ```

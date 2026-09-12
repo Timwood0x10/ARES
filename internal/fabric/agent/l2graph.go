@@ -415,9 +415,9 @@ var _ Cognition = (*toolCognition)(nil)
 func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
 	// Stamp the executing agent's identity so the Kernel syscalls
 	// (agentsyscall) enforce provenance — spawn parentage and Task.Origin —
-	// from the context, never from LLM-supplied arguments. This is the same
-	// contract the SDK ReAct engine upholds (agentloop/engine.go); without it
-	// the production serve path let spawn_agent fall back to the LLM's
+	// from the context, never from LLM-supplied arguments. This contract
+	// predates the L2 convergence (the retired SDK engine enforced it too);
+	// without it the production serve path let spawn_agent fall back to the LLM's
 	// parent_id and create_task stamp an empty Origin. One shared Cognition
 	// serves every agent, so the id rides the quantum-scoped executingAgentKey
 	// on the task payload (executor.go withExecutingAgent).

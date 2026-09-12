@@ -36,7 +36,7 @@ func TestToolArgShape_CollapsesValues(t *testing.T) {
 // TestToolCompletedPayload_UnifiedKeys is the identity-set invariant: every
 // emitter's completed payload must carry the SAME key set so the projection
 // layer reads one contract, not ad-hoc shapes. The keys here must match what
-// the tool-event emitters (agentloop/engine.go) emit.
+// the tool-event emitters (L2 tool cognition) emit.
 func TestToolCompletedPayload_UnifiedKeys(t *testing.T) {
 	p := ToolCompletedPayload{
 		AgentID:     "a1",
