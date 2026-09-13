@@ -280,7 +280,7 @@ Service returns the following error types:
 
 #### Test Coverage
 
-Current test coverage: 52.4%
+Current test coverage: 42.7% (measured with `go test -short -cover`; some cases carry the `integration` build tag and are skipped by default.)
 
 Tested functionality:
 - Default retrieval plan configuration

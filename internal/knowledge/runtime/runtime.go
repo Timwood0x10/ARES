@@ -111,6 +111,16 @@ func (r *KnowledgeRuntime) ProviderNames() []string {
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)
 	LazyLoading            bool // Clamp the graph budget when set; full lazy loading was removed with LazyGraph (tech-debt: see plan/0.3.1plan)
+	// Types restricts recall to these object types. It is forwarded to every
+	// provider as Intent.Scope.Types, which StoreProvider already honours.
+	// Empty means no type restriction.
+	//
+	// It exists because the query_knowledge MCP tool has always DECLARED a
+	// types filter in its parameter schema and advertised it in its tool
+	// description, but Execute gave callers no way to express one — the
+	// filter was silently ignored and a caller filtering by type received an
+	// unfiltered graph it could not tell apart from a correct one.
+	Types []knowledge.ObjectType
 }
 
 // maxLazyForGraph caps the graph budget in lazy mode before Reduce.
@@ -159,7 +169,7 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 	}
 
 	// 3. Load & Pipeline: stream from providers, normalize, resolve, summarize.
-	objects, err := r.loadAndProcess(ctx, sources, cfg)
+	objects, partial, err := r.loadAndProcess(ctx, sources, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load: %w", err)
 	}
@@ -196,6 +206,10 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 	if err != nil {
 		return nil, fmt.Errorf("reduce: %w", err)
 	}
+	// Attached AFTER reduce so a replaced graph still carries it: the graph
+	// is incomplete whenever a provider stream died, and a caller must be
+	// able to tell that apart from a complete answer.
+	graph.PartialErrors = partial
 
 	// Emit insight evidence to the unified Evidence Store.
 	if r.evColl != nil {
@@ -226,8 +240,9 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 // loadAndProcess streams objects from all selected providers concurrently,
 // runs the KnowledgePipeline on each object, and collects results.
 // Uses errgroup for goroutine lifecycle management (no bare goroutines).
-func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner.PlannedSource, cfg *Config) (map[string]*knowledge.KnowledgeObject, error) {
+func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner.PlannedSource, cfg *Config) (map[string]*knowledge.KnowledgeObject, []string, error) {
 	objects := make(map[string]*knowledge.KnowledgeObject)
+	var partial []string
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -250,6 +265,7 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				Goal: src.Requirement.Description,
 				Scope: knowledge.Scope{
 					MaxObjects: src.MaxResults,
+					Types:      cfg.Types,
 				},
 			}
 			if src.Query != nil && src.Query.Query != "" {
@@ -285,11 +301,17 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				}
 			}
 
-			// Check stream error.
+			// Check stream error. A provider that died mid-stream leaves the
+			// graph missing an entire source; that must be visible to the
+			// caller rather than logged and dropped, which presented a
+			// partial graph as a complete one.
 			select {
 			case sErr := <-streamErrCh:
 				if sErr != nil {
 					log.Warn("provider stream error (partial data may remain)", "provider", src.ProviderName, "error", sErr)
+					mu.Lock()
+					partial = append(partial, fmt.Sprintf("%s: %v", src.ProviderName, sErr))
+					mu.Unlock()
 				}
 			default:
 			}
@@ -298,14 +320,14 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 	}
 
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("load: %w", err)
+		return nil, nil, fmt.Errorf("load: %w", err)
 	}
 
 	if len(objects) == 0 {
-		return nil, errors.New("load: no objects loaded from any provider")
+		return nil, nil, errors.New("load: no objects loaded from any provider")
 	}
 
-	return objects, nil
+	return objects, partial, nil
 }
 
 // link runs all linkers to generate relations between objects.

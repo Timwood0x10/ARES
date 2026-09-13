@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -73,13 +74,19 @@ func (argsEmptyRows) Columns() []string         { return []string{"id"} }
 func (argsEmptyRows) Close() error              { return nil }
 func (argsEmptyRows) Next([]driver.Value) error { return io.EOF }
 
+// argsDriverSeq disambiguates the driver name across -count>1 re-runs.
+var argsDriverSeq atomic.Int64
+
 // TestTaskResultUpdateEmptyEmbeddingBindsNull locks REVIEW 3.7: Update used
 // FormatVector unconditionally, so an empty embedding became the literal
 // string "[]" and the $6::vector cast rejected it. Update must bind NULL
 // for an empty embedding, exactly like Create.
 func TestTaskResultUpdateEmptyEmbeddingBindsNull(t *testing.T) {
 	drv := &argsRecordingDriver{}
-	name := "args-recording-" + strings.ReplaceAll(strings.ReplaceAll(t.Name(), "/", "-"), "_", "-")
+	// Per-registration suffix: database/sql panics on a duplicate driver
+	// name, which a fixed name triggers under -count>1 re-runs.
+	name := fmt.Sprintf("args-recording-%s-%d",
+		strings.ReplaceAll(strings.ReplaceAll(t.Name(), "/", "-"), "_", "-"), argsDriverSeq.Add(1))
 	sql.Register(name, drv)
 	db, err := sql.Open(name, "")
 	if err != nil {

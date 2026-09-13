@@ -9,9 +9,11 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -67,16 +69,27 @@ func (emptyRows) Next([]driver.Value) error { return io.EOF }
 func newRecordingDB(t *testing.T) (*sql.DB, *recordingDriver) {
 	t.Helper()
 	drv := &recordingDriver{}
-	sql.Register(driverNameForTest(t), drv)
-	db, err := sql.Open(driverNameForTest(t), "")
+	// The name is computed ONCE: driverNameForTest is not idempotent (it
+	// carries a per-registration sequence), so Register and Open must share
+	// the same value.
+	name := driverNameForTest(t)
+	sql.Register(name, drv)
+	db, err := sql.Open(name, "")
 	if err != nil {
 		t.Fatalf("open recording db: %v", err)
 	}
 	return db, drv
 }
 
+// driverSeq disambiguates the driver name across repeated runs of the same
+// test in one process (-count>1): database/sql panics on a duplicate
+// registration, and the name must stay unique per registration.
+var driverSeq atomic.Int64
+
 func driverNameForTest(t *testing.T) string {
-	return "recording-" + t.Name() + "-" + strings.ReplaceAll(strings.ReplaceAll(t.Name(), "/", "-"), "_", "-")
+	return fmt.Sprintf("recording-%s-%d-%s",
+		t.Name(), driverSeq.Add(1),
+		strings.ReplaceAll(strings.ReplaceAll(t.Name(), "/", "-"), "_", "-"))
 }
 
 // TestKnowledgeRepository_Create_PerTenantConflictTarget verifies the dedup

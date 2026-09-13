@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/lib/pq" // postgres driver registration for the AKG store
@@ -27,7 +28,46 @@ import (
 // write loop (DistillBridge) and the read loop (StoreProvider) address the
 // same slice of the knowledge store. It must match the value used by the
 // SDK path (sdk/sdk.go) so both entry points see the same facts.
+//
+// It is only the FALLBACK. DistillBridge stamps objects with the calling
+// tenant (see adapter.DistillConversation), so the active namespace is the
+// tenant the write loop last used — see akgActiveNamespace.
 const akgNamespace = "default"
+
+// akgActiveNamespace holds the namespace the AKG write loop most recently
+// stamped distilled facts with. The read loop resolves through it
+// (akgNamespaceForRead) so writes and reads stay in lockstep now that facts
+// are tenant-attributed instead of all landing in akgNamespace.
+//
+// This encodes a SINGLE active AKG tenant per process: the event loop learns
+// the tenant per event, but nothing else in the system exposes a
+// request-scoped tenant to the knowledge read path, so last-write-wins is the
+// only coherent binding available without threading a tenant through Intent
+// end-to-end. A multi-tenant deployment that needs per-request read scoping
+// must supply Intent.Scope.Namespaces, which StoreProvider now honours.
+var akgActiveNamespace atomic.Value // string
+
+func init() {
+	akgActiveNamespace.Store(akgNamespace)
+}
+
+// akgNamespaceForRead resolves the namespace the AKG read loop should search.
+// Never empty: falls back to akgNamespace so a process that has not distilled
+// anything still reads the documented default.
+func akgNamespaceForRead() string {
+	if v, ok := akgActiveNamespace.Load().(string); ok && v != "" {
+		return v
+	}
+	return akgNamespace
+}
+
+// akgRememberNamespace records the namespace the write loop just used so the
+// read loop follows it. Empty values are ignored.
+func akgRememberNamespace(ns string) {
+	if ns != "" {
+		akgActiveNamespace.Store(ns)
+	}
+}
 
 // storageTypePostgres is the storage backend identifier for PostgreSQL used
 // across the bootstrap wiring to select the persistent store backend.
@@ -232,6 +272,10 @@ func triggerAKGBridge(
 	if tenantID == "" || len(taskText) < 10 || len(resultText) < 20 {
 		return
 	}
+
+	// The bridge stamps objects with this tenant; record it so the read
+	// loop (StoreProvider) searches the same namespace.
+	akgRememberNamespace(tenantID)
 
 	messages := []distillation.Message{
 		{Role: akgRoleUser, Content: taskText},

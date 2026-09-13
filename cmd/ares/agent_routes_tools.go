@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -30,6 +31,15 @@ import (
 	builtintools "github.com/Timwood0x10/ares/internal/tools/resources/builtin"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
+
+// toolCallWriteDeadline is the write deadline a tool-call handler extends
+// itself to. Tool execution is synchronous: a builtin can read a file, an
+// MCP tool pays a 30s stdio round-trip (mcpclient/stdio.go). The server's
+// WriteTimeout starts at request-header time, so without this extension any
+// call running past that budget had its connection killed mid-execution —
+// the caller got a bare EOF while the tool kept running. Slack covers
+// response encoding.
+const toolCallWriteDeadline = 2 * time.Minute
 
 // routeCallTool invokes a tool from the ARES registry by name.
 func (h *actionHandler) routeCallTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
@@ -62,6 +72,7 @@ type callToolRequest struct {
 
 func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
 	w.Header().Set("Content-Type", "application/json")
+	extendWriteDeadline(w, toolCallWriteDeadline)
 	var req callToolRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -142,6 +153,7 @@ func (h *actionHandler) handleListMCPTools(w http.ResponseWriter) {
 // monitoring handler).
 func (h *actionHandler) handleCallMCPTool(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal, name string) {
 	w.Header().Set("Content-Type", "application/json")
+	extendWriteDeadline(w, toolCallWriteDeadline)
 	var args map[string]any
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&args); err != nil && !errors.Is(err, io.EOF) {

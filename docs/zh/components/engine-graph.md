@@ -363,4 +363,4 @@ g.Node("tool", graph.NewToolNode(tool))
 
 **当前版本**：v1.0  
 **代码量**：~1,500 行（含测试）  
-**测试覆盖率**：82.3%
+**测试覆盖率**：75.0%（`go test -short -cover` 实测）

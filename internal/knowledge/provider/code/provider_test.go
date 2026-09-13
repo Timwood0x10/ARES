@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -436,5 +439,109 @@ func ParseConfig(path string) ([]byte, error) { return nil, nil }
 	// ParseConfig matches no goal tokens → 0.1.
 	if cfgObj.Relevance != 0.1 {
 		t.Errorf("ParseConfig Relevance: got %.2f, want 0.1 (no goal match)", cfgObj.Relevance)
+	}
+}
+
+// TestStreamSameNamedMethodsOnDifferentReceiversDoNotCollide locks method-ID
+// uniqueness.
+//
+// Regression: the object ID was built as name:pkg.FuncName with no receiver,
+// so two methods sharing a name on different receivers in one package
+// produced identical IDs. They are both streamed and the runtime keys results
+// by ID — last writer wins, and one declaration silently vanished from the
+// knowledge graph (and from collectSnippets).
+func TestStreamSameNamedMethodsOnDifferentReceiversDoNotCollide(t *testing.T) {
+	dir := t.TempDir()
+	src := `package sample
+
+// Alpha does alpha work.
+func (a *Alpha) Do() string { return "alpha" }
+
+// Beta does beta work.
+func (b *Beta) Do() string { return "beta" }
+
+// Free function sharing the name too.
+func Do() string { return "free" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	p, err := New("code", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	objCh, errCh := p.Stream(ctx, knowledge.Intent{Goal: "Do", Scope: knowledge.Scope{MaxObjects: 50}})
+
+	ids := map[string]int{}
+	var objs []*knowledge.KnowledgeObject
+	for obj := range objCh {
+		ids[obj.ID]++
+		objs = append(objs, obj)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	for id, n := range ids {
+		if n > 1 {
+			t.Fatalf("object ID %q was produced %d times — same-named methods on different "+
+				"receivers must not share an ID; the runtime keys results by ID and the "+
+				"later one silently overwrites the earlier", id, n)
+		}
+	}
+
+	// All three declarations must be present, not collapsed into one.
+	if len(objs) < 3 {
+		t.Fatalf("expected at least 3 distinct objects (2 methods + 1 func), got %d: %v",
+			len(objs), ids)
+	}
+}
+
+// TestStreamCJKDocTruncationIsValidUTF8 locks rune-safe summary truncation.
+//
+// Regression: summaries were cut with a byte-index slice (`summary[:200]`).
+// A 200-byte cut landing inside a 3-byte CJK rune emitted invalid UTF-8 into
+// a stored KnowledgeObject.Summary. The rest of the codebase already fixed
+// this class (pipeline/normalizer.go truncates by runes; adapter/memory.go
+// too), and internal/truncate exists precisely for it — these sites were
+// regressions by omission.
+func TestStreamCJKDocTruncationIsValidUTF8(t *testing.T) {
+	dir := t.TempDir()
+	// A doc comment well past 200 BYTES but far fewer than 200 runes' worth
+	// of ASCII, so the byte cut lands inside a multi-byte rune.
+	cjk := strings.Repeat("缓存策略与一致性哈希的权衡取舍", 40)
+	src := "package sample\n\n// " + cjk + "\nfunc CachePolicy() string { return \"\" }\n"
+	if err := os.WriteFile(filepath.Join(dir, "sample.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	p, err := New("code", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	objCh, errCh := p.Stream(ctx, knowledge.Intent{Goal: "CachePolicy", Scope: knowledge.Scope{MaxObjects: 20}})
+
+	var found bool
+	for obj := range objCh {
+		if !strings.Contains(obj.Summary, "缓存") && !strings.Contains(obj.Summary, "func CachePolicy") {
+			continue
+		}
+		found = true
+		if !utf8.ValidString(obj.Summary) {
+			t.Fatalf("summary must be valid UTF-8, got bytes %q", []byte(obj.Summary))
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected the CachePolicy object to be streamed")
 	}
 }

@@ -609,9 +609,11 @@ const archiveReadLimit = 500
 const maxArchiveRoundEvents = 50000
 
 // maxArchiveDrainRounds caps the number of rounds a single drain may archive,
-// bounding work when a stream accumulates many terminals before compaction.
-// Any residual is picked up by the next drain.
-const maxArchiveDrainRounds = 1000
+// so a pathological stream cannot park the compaction check indefinitely. It
+// is a var (not a const) only so tests can lower it; production never writes
+// it. Exhausting the cap is a HARD ERROR, not a quiet success — see
+// drainPendingRounds.
+var maxArchiveDrainRounds = 1000
 
 // archivePendingRounds archives the next un-archived round for the stream and
 // returns its error. It is a thin wrapper around archivePendingRoundsOnce that
@@ -638,7 +640,14 @@ func (s *CompactableEventStore) drainPendingRounds(ctx context.Context, streamID
 			return nil
 		}
 	}
-	return nil
+	// Cap exhausted with rounds still pending. Returning nil here told
+	// maybeCompact the archive was flushed, so it trimmed raw events whose
+	// RoundRecord was never written — permanent loss, and the exact hazard
+	// the sibling maxArchiveRoundEvents cap already guards by failing hard.
+	// Compaction is deferred to a later window instead.
+	return fmt.Errorf(
+		"archive: drain on stream %q hit the %d-round cap with rounds still pending; refusing to signal a complete flush",
+		streamID, maxArchiveDrainRounds)
 }
 
 // archivePendingRoundsOnce archives the next un-archived round (if any) for

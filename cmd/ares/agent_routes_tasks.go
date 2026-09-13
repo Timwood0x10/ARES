@@ -108,6 +108,12 @@ var collabRunSeq uint64
 // no-capable-candidate.
 func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
 	w.Header().Set("Content-Type", "application/json")
+	// This handler waits for the whole DAG to settle — up to collabTimeout.
+	// The server's WriteTimeout starts at request-header time, so without
+	// extending it here any graph running past that budget had its
+	// connection killed mid-wait (caller saw a bare EOF, outputs and task
+	// ids lost, work continued server-side). Slack covers response encoding.
+	extendWriteDeadline(w, collabTimeout+time.Minute)
 	if h.kernel == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		writeJSON(w, map[string]any{"error": "peer runtime not active"})

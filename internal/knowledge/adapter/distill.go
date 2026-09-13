@@ -188,11 +188,25 @@ func (b *DistillBridge) DistillConversation(
 	}
 
 	// Step 2: convert Memory → KnowledgeObject.
+	//
+	// Objects are stamped with the CALLER'S tenant, not the bridge's fixed
+	// namespace. The bridge namespace is a construction-time constant that
+	// production wiring sets to "default" (ares_bootstrap/knowledge_akg.go),
+	// so using it here put every tenant's distilled facts into one corpus:
+	// HybridSearch recalled them cross-tenant, and FindDuplicate — which is
+	// namespace-scoped — marked a fresh fact superseded because some other
+	// tenant had stored something similar (silent fact loss on top of the
+	// leak). An empty tenantID keeps the bridge namespace so callers that
+	// genuinely have no tenant behave exactly as before.
+	ns := b.namespace
+	if tenantID != "" {
+		ns = tenantID
+	}
 	pointers := make([]*distillation.Memory, len(memories))
 	for i := range memories {
 		pointers[i] = &memories[i]
 	}
-	objects := b.memoryAdapter.FromMemories(pointers, b.namespace)
+	objects := b.memoryAdapter.FromMemories(pointers, ns)
 	if len(objects) == 0 {
 		return nil, nil
 	}
@@ -280,11 +294,15 @@ func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.
 			continue
 		}
 		dup, dErr := knowledge.FindDuplicate(ctx, b.store, knowledge.DuplicateQuery{
-			// Namespace-scoped: the bridge writes every object into b.namespace,
-			// so a duplicate must live there too. Without it the search crossed
-			// namespaces and a same-shaped fact elsewhere marked THIS object
-			// superseded — the fact was silently never stored.
-			Namespace: b.namespace,
+			// Scoped to the object's OWN namespace, which DistillConversation
+			// stamps with the caller's tenant. Scoping to the bridge's fixed
+			// namespace was correct only while every object shared it; once
+			// objects are tenant-attributed, comparing against the bridge
+			// namespace would either match nothing (tenant objects live
+			// elsewhere) or — when the bridge namespace is still in use —
+			// compare one tenant's fact against another's and mark the fresh
+			// one superseded.
+			Namespace: obj.Namespace,
 			Vector:    vec,
 			Model:     b.model,
 			Threshold: b.gate.DedupThreshold,

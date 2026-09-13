@@ -41,7 +41,7 @@ func (m *memVectorStore) CreateCollection(_ context.Context, name string, dimens
 	return nil
 }
 
-func (m *memVectorStore) AddEmbedding(_ context.Context, table, id string, embedding []float64, metadata map[string]any) error {
+func (m *memVectorStore) AddEmbedding(_ context.Context, table, _, id string, embedding []float64, metadata map[string]any) error {
 	if _, ok := m.collections[table]; !ok {
 		return fmt.Errorf("collection %q does not exist", table)
 	}
@@ -123,7 +123,7 @@ func TestVectorStoreInMemoryCreateAddSearchDelete(t *testing.T) {
 	// Add embeddings.
 	vec1 := make([]float64, 128)
 	vec1[0] = 1.0
-	if err := store.AddEmbedding(ctx, collectionName, "doc-1", vec1, map[string]any{
+	if err := store.AddEmbedding(ctx, collectionName, "default", "doc-1", vec1, map[string]any{
 		"source": "test",
 	}); err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestVectorStoreInMemoryCreateAddSearchDelete(t *testing.T) {
 
 	vec2 := make([]float64, 128)
 	vec2[1] = 1.0
-	if err := store.AddEmbedding(ctx, collectionName, "doc-2", vec2, map[string]any{
+	if err := store.AddEmbedding(ctx, collectionName, "default", "doc-2", vec2, map[string]any{
 		"source": "test",
 	}); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestVectorStoreInMemoryAddToNonExistentCollection(t *testing.T) {
 	ctx := context.Background()
 
 	vec := make([]float64, 128)
-	err := store.AddEmbedding(ctx, "non-existent", "doc-1", vec, nil)
+	err := store.AddEmbedding(ctx, "non-existent", "default", "doc-1", vec, nil)
 	if err == nil {
 		t.Fatal("expected error when adding to non-existent collection")
 	}
@@ -204,14 +204,14 @@ func TestVectorStorePostgresCreateAddCosineSearch(t *testing.T) {
 	vec1 := make([]float64, dim)
 	vec1[0] = 1.0
 	metadata1 := map[string]any{"category": "alpha"}
-	if err := searcher.AddEmbedding(ctx, collectionName, "vs-doc-1", vec1, metadata1); err != nil {
+	if err := searcher.AddEmbedding(ctx, collectionName, "default", "vs-doc-1", vec1, metadata1); err != nil {
 		t.Fatal(err)
 	}
 
 	vec2 := make([]float64, dim)
 	vec2[1] = 1.0
 	metadata2 := map[string]any{"category": "beta"}
-	if err := searcher.AddEmbedding(ctx, collectionName, "vs-doc-2", vec2, metadata2); err != nil {
+	if err := searcher.AddEmbedding(ctx, collectionName, "default", "vs-doc-2", vec2, metadata2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -258,7 +258,7 @@ func TestVectorStorePostgresSearchWithLimit(t *testing.T) {
 		vec := make([]float64, dim)
 		vec[i] = 1.0
 		id := fmt.Sprintf("limit-doc-%d", i)
-		if err := searcher.AddEmbedding(ctx, collectionName, id, vec, map[string]any{"idx": i}); err != nil {
+		if err := searcher.AddEmbedding(ctx, collectionName, "default", id, vec, map[string]any{"idx": i}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -303,7 +303,7 @@ func TestVectorStorePostgresDeleteAndSearch(t *testing.T) {
 
 	vec := make([]float64, dim)
 	vec[0] = 1.0
-	if err := searcher.AddEmbedding(ctx, collectionName, "del-doc-1", vec, nil); err != nil {
+	if err := searcher.AddEmbedding(ctx, collectionName, "default", "del-doc-1", vec, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -317,7 +317,7 @@ func TestVectorStorePostgresDeleteAndSearch(t *testing.T) {
 	}
 
 	// Delete it.
-	if err := searcher.DeleteEmbedding(ctx, collectionName, "del-doc-1"); err != nil {
+	if err := searcher.DeleteEmbedding(ctx, collectionName, "default", "del-doc-1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -403,7 +403,7 @@ func TestVectorStorePostgresLargeVector(t *testing.T) {
 		vec[i] = float64(i+1) / float64(dim)
 	}
 
-	if err := searcher.AddEmbedding(ctx, collectionName, "large-pg-doc", vec, map[string]any{
+	if err := searcher.AddEmbedding(ctx, collectionName, "default", "large-pg-doc", vec, map[string]any{
 		"model": "text-embedding-ada-002",
 	}); err != nil {
 		t.Fatal(err)

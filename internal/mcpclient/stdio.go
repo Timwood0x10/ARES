@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+// stdioMaxFrameBytes bounds one MCP frame on the stdio transport.
+//
+// MCP frames are single-line JSON, so bufio.Scanner's default
+// MaxScanTokenSize (64KB) silently truncated any larger response: Scan()
+// failed and roundTrip reported "connection closed" while the child process
+// was perfectly healthy, killing every subsequent call on that client. 64MB
+// matches what the SSE transport's documentation already claimed this guard
+// was — the claim was previously false.
+const stdioMaxFrameBytes = 64 << 20
+
+// newStdioScanner builds the frame scanner for a stdio connection with the
+// transport's real size bound applied. Every construction site must use it:
+// a bare bufio.NewScanner reintroduces the 64KB truncation.
+func newStdioScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), stdioMaxFrameBytes)
+	return sc
+}
+
 // stdioTransport implements JSON-RPC over stdin/stdout.
 type stdioTransport struct {
 	cmd    *exec.Cmd
@@ -44,7 +63,7 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	tr := &stdioTransport{
 		cmd:    cmd,
 		stdin:  stdin,
-		stdout: bufio.NewScanner(stdout),
+		stdout: newStdioScanner(stdout),
 	}
 
 	c := &Client{

@@ -319,7 +319,7 @@ type RegisteredCallback struct {
 
 ## 8. 测试覆盖率
 
-当前测试覆盖率：**95.4%**
+当前测试覆盖率：**94.9%**（`go test -short -cover` 实测）
 
 包含以下测试场景：
 - 完整关闭流程测试

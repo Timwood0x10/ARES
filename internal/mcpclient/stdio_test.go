@@ -37,7 +37,7 @@ func newPipeTransport(t *testing.T) *pipeTransport {
 	return &pipeTransport{
 		tr: &stdioTransport{
 			stdin:  reqW,
-			stdout: bufio.NewScanner(respR),
+			stdout: newStdioScanner(respR),
 		},
 		serverIn:  reqR,
 		serverOut: respW,
@@ -163,4 +163,55 @@ func TestStdioRoundTrip_ConcurrentCloseAndRead(t *testing.T) {
 	// a goroutine stuck in Scan.
 	_ = pt.tr.stdin.Close()
 	<-done
+}
+
+// TestStdioRoundTrip_LargeResponseIsNotTruncated locks the framing bound.
+//
+// Regression: the transport used a bare bufio.NewScanner, whose default
+// MaxScanTokenSize is 64KB. MCP frames are single-line JSON, so any response
+// larger than that made Scan() fail — and roundTrip reported a misleading
+// "connection closed" while the child process was perfectly healthy. Every
+// subsequent call on that client then failed too. sse.go even documented a
+// "64MB stdio buffer" guard that did not exist.
+func TestStdioRoundTrip_LargeResponseIsNotTruncated(t *testing.T) {
+	pt := newPipeTransport(t)
+	defer func() { _ = pt.tr.stdin.Close() }()
+
+	// A response comfortably past the 64KB default token limit.
+	bigContent := make([]byte, 256*1024)
+	for i := range bigContent {
+		bigContent[i] = 'a' + byte(i%26)
+	}
+
+	go func() {
+		// Read the request so the client is parked in roundTrip, then answer
+		// with an oversized frame.
+		br := bufio.NewReader(pt.serverIn)
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		var req jsonrpcRequest
+		if json.Unmarshal([]byte(line), &req) != nil {
+			return
+		}
+		resp := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{"content": string(bigContent)},
+		}
+		frame, _ := json.Marshal(resp)
+		_, _ = pt.serverOut.Write(append(frame, '\n'))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := pt.tr.roundTrip(ctx, jsonrpcRequest{JSONRPC: "2.0", ID: 1, Method: "big"})
+	if err != nil {
+		t.Fatalf("large response must round-trip, got %v — a 64KB scanner limit silently kills the transport", err)
+	}
+	if resp == nil {
+		t.Fatal("expected a response")
+	}
 }

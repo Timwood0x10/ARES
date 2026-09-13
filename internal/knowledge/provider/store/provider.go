@@ -27,6 +27,10 @@ type StoreProvider struct {
 	emb   embedding.EmbeddingService // optional; nil = lexical-only search
 	model string
 	ns    string
+	// nsResolver optionally resolves the namespace per Stream so the read
+	// side follows the same tenant source the write side stamps. Read on
+	// every Stream; must be safe for concurrent use. See WithNamespaceResolver.
+	nsResolver func() string
 }
 
 // New creates a StoreProvider backed by the given KnowledgeStore.
@@ -39,7 +43,11 @@ type StoreProvider struct {
 //	        signals lexical-only recall.
 //	model - embedding model name selecting which Representation to compare;
 //	        empty is valid when emb is nil.
-//	ns    - namespace filter restricting recall to one AKG namespace.
+//
+// ns    - namespace filter restricting recall to one AKG namespace. Used as
+//
+//	the default; a per-call namespace (see WithNamespaceResolver and
+//	Intent.Scope.Namespaces) overrides it.
 func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingService, model, ns string) *StoreProvider {
 	return &StoreProvider{
 		name:  name,
@@ -48,6 +56,37 @@ func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingServic
 		model: model,
 		ns:    ns,
 	}
+}
+
+// WithNamespaceResolver installs a resolver consulted on every Stream for the
+// namespace to search, falling back to the constructor's static namespace
+// when it returns empty.
+//
+// It exists because the WRITE side stamps distilled objects with the calling
+// tenant (DistillBridge.DistillConversation), so a read provider pinned to
+// one construction-time namespace silently stops seeing them the moment a
+// real tenant id is in play. The resolver lets bootstrap wire the same tenant
+// source into both sides without threading a tenant through Intent at every
+// call site. The resolver is read on each Stream and must be safe for
+// concurrent use.
+func (p *StoreProvider) WithNamespaceResolver(resolve func() string) *StoreProvider {
+	p.nsResolver = resolve
+	return p
+}
+
+// namespaceFor reports the namespace one Stream should search. Precedence:
+// the intent's declared scope (a caller explicitly asking for one), then the
+// configured resolver, then the constructor's static namespace.
+func (p *StoreProvider) namespaceFor(intent knowledge.Intent) string {
+	if len(intent.Scope.Namespaces) > 0 && intent.Scope.Namespaces[0] != "" {
+		return intent.Scope.Namespaces[0]
+	}
+	if p.nsResolver != nil {
+		if ns := p.nsResolver(); ns != "" {
+			return ns
+		}
+	}
+	return p.ns
 }
 
 // Name returns the provider identifier.
@@ -107,7 +146,7 @@ func (p *StoreProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-
 
 		req := knowledge.HybridSearchRequest{
 			Query:        intent.Goal,
-			Namespace:    p.ns,
+			Namespace:    p.namespaceFor(intent),
 			TopK:         limit * 2,
 			FinalK:       limit,
 			MinScore:     0, // provider does not filter; the retriever layer applies its minScore

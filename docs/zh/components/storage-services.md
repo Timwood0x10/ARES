@@ -280,7 +280,7 @@ finalScore = baseScore * decayFactor
 
 #### 测试覆盖
 
-当前测试覆盖率：52.4%
+当前测试覆盖率：42.7%（`go test -short -cover` 实测；部分用例带 `integration` 标签，默认跳过）
 
 已测试的功能：
 - 默认检索计划配置

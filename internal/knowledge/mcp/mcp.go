@@ -343,15 +343,7 @@ func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (st
 		params.Limit = 20
 	}
 
-	budget := knowledge.TokenBudget{
-		MaxTokens: params.MaxTokens,
-		ForGraph:  params.Limit * 100,
-	}
-	if params.MaxTokens <= 0 {
-		budget.MaxTokens = 5000
-		budget.ForGraph = 3000
-	}
-	budget.Reserved = budget.MaxTokens - budget.ForGraph
+	budget := queryKnowledgeBudget(params.Limit, params.MaxTokens)
 
 	goal := params.Text
 	if goal == "" {
@@ -363,7 +355,7 @@ func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (st
 		return "", err
 	}
 
-	graph, err := rt.Execute(ctx, goal, budget, nil)
+	graph, err := rt.Execute(ctx, goal, budget, queryKnowledgeConfig(params))
 	if err != nil {
 		return "", fmt.Errorf("query: %w", err)
 	}
@@ -376,4 +368,51 @@ func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (st
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil
+}
+
+// queryKnowledgeBudget derives the token budget for a query_knowledge call.
+//
+// The previous inline arithmetic could produce a NEGATIVE Reserved: ForGraph
+// is Limit*100, so a caller asking for limit=20 with max_tokens=1000 got
+// Reserved = 1000-2000 = -1000. Reserved is clamped to at least zero here;
+// when the requested cap cannot even cover the graph allocation, the graph
+// share is reduced to what the cap allows rather than reporting a budget
+// that adds to more than it has.
+func queryKnowledgeBudget(limit, maxTokens int) knowledge.TokenBudget {
+	const defaultMaxTokens = 5000
+	const defaultForGraph = 3000
+	const tokensPerObject = 100
+
+	if maxTokens <= 0 {
+		return knowledge.TokenBudget{
+			MaxTokens: defaultMaxTokens,
+			ForGraph:  defaultForGraph,
+			Reserved:  defaultMaxTokens - defaultForGraph,
+		}
+	}
+	forGraph := limit * tokensPerObject
+	if forGraph > maxTokens {
+		forGraph = maxTokens
+	}
+	return knowledge.TokenBudget{
+		MaxTokens: maxTokens,
+		ForGraph:  forGraph,
+		Reserved:  maxTokens - forGraph,
+	}
+}
+
+// queryKnowledgeConfig maps the tool's declared type filter onto a runtime
+// Config so it reaches the providers as Intent.Scope.Types (which
+// StoreProvider honours). Previously the tool declared Types/Tags in its
+// parameter schema and advertised "by type, tag, or text search" in its
+// description, but neither was ever read — a caller filtering by type
+// received an unfiltered graph and had no way to tell.
+func queryKnowledgeConfig(p queryKnowledgeParams) *runtime.Config {
+	cfg := &runtime.Config{}
+	for _, t := range p.Types {
+		if t != "" {
+			cfg.Types = append(cfg.Types, knowledge.ObjectType(t))
+		}
+	}
+	return cfg
 }

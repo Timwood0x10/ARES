@@ -11,7 +11,13 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
+
+// sseHandshakeTimeout bounds how long an SSE connect waits for the server's
+// response headers. The stream body is unbounded (it is a long-lived event
+// stream), so this is scoped to the handshake only — see ConnectSSE.
+const sseHandshakeTimeout = 30 * time.Second
 
 // sseTransport implements JSON-RPC over MCP SSE transport.
 type sseTransport struct {
@@ -26,8 +32,15 @@ type sseTransport struct {
 
 // ConnectSSE connects to an MCP server via SSE transport.
 func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
+	// The stream itself is long-lived, so the client carries no overall
+	// Timeout — that would cut the stream off mid-flight. The handshake is
+	// bounded instead at the transport layer: ResponseHeaderTimeout covers
+	// exactly the phase where a silent or wedged server previously hung the
+	// connect forever whenever the caller's ctx had no deadline of its own.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = sseHandshakeTimeout
 	tr := &sseTransport{
-		client: &http.Client{Timeout: 0}, // SSE requires no timeout
+		client: &http.Client{Transport: transport},
 	}
 
 	sseReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

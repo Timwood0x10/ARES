@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	api_tools "github.com/Timwood0x10/ares/internal/apitools"
 	"github.com/Timwood0x10/ares/internal/ares_security"
@@ -33,6 +34,31 @@ import (
 func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Warn("actions: encode response failed", "error", err)
+	}
+}
+
+// extendWriteDeadline pushes this connection's write deadline out by d.
+//
+// The control-plane http.Server carries a short WriteTimeout so a stuck
+// handler cannot hold a connection open forever, but that deadline starts
+// when the request headers are read — it is not a per-response budget. A
+// long-poll handler (POST /api/graphs waits up to collabTimeout for its DAG
+// to settle; MCP tool calls wait on a 30s stdio round-trip) would therefore
+// have its connection killed mid-wait while the work continued server-side,
+// and the caller got a bare connection EOF with no outputs and no task ids.
+//
+// Handlers that legitimately wait must call this before they start waiting,
+// with a bound matching (or slightly exceeding) their own timeout.
+//
+// The call is best-effort: some ResponseWriter wrappers do not expose the
+// underlying conn, in which case the deadline is left as the server set it.
+// That degrades to the pre-fix behaviour, so the error is logged rather than
+// failing the request.
+func extendWriteDeadline(w http.ResponseWriter, d time.Duration) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(d)); err != nil {
+		slog.Debug("actions: could not extend write deadline; server WriteTimeout still applies",
+			"error", err)
 	}
 }
 

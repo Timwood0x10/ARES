@@ -250,16 +250,16 @@ func TestVectorSearcherAddAndDelete(t *testing.T) {
 	embedding := make([]float64, 1536)
 	embedding[0] = 1.0
 	metadata := map[string]any{"source": "test", "category": "integration"}
-	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "doc-1", embedding, metadata))
+	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "default", "doc-1", embedding, metadata))
 
 	// Add another embedding.
 	embedding2 := make([]float64, 1536)
 	embedding2[1] = 1.0
 	metadata2 := map[string]any{"source": "test", "category": "unit"}
-	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "doc-2", embedding2, metadata2))
+	require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "default", "doc-2", embedding2, metadata2))
 
 	// Delete the first embedding.
-	require.NoError(t, searcher.DeleteEmbedding(ctx, collectionName, "doc-1"))
+	require.NoError(t, searcher.DeleteEmbedding(ctx, collectionName, "default", "doc-1"))
 
 	// Verify deletion by searching - should only find doc-2.
 	results, err := searcher.Search(ctx, collectionName, "default", embedding2, 10)
@@ -295,7 +295,7 @@ func TestVectorSearcherSearchWithLimit(t *testing.T) {
 		embedding[i] = 1.0
 		id := fmt.Sprintf("doc-%d", i)
 		metadata := map[string]any{"index": i}
-		require.NoError(t, searcher.AddEmbedding(ctx, collectionName, id, embedding, metadata))
+		require.NoError(t, searcher.AddEmbedding(ctx, collectionName, "default", id, embedding, metadata))
 	}
 
 	// Search with limit 3.

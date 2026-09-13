@@ -319,7 +319,7 @@ Registered callback structure.
 
 ## 8. Test Coverage
 
-Current test coverage: **95.4%**
+Current test coverage: **94.9%** (measured with `go test -short -cover`)
 
 Includes following test scenarios:
 - Complete shutdown process testing

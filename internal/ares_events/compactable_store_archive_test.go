@@ -514,3 +514,70 @@ func TestArchiveSink_BoundaryStaysZeroAfterFailure(t *testing.T) {
 	assert.False(t, ok || boundary > 0,
 		"failed sinks must never advance the round boundary")
 }
+
+// TestArchiveSink_DrainCapExhaustionIsAHardError locks the compaction
+// precondition.
+//
+// Regression: drainPendingRounds returned nil after maxArchiveDrainRounds
+// passes even with rounds still pending. maybeCompact treats nil as "drain
+// complete" and proceeds to trim — destroying raw events whose RoundRecord
+// was never written, which the surrounding comments call out as permanent
+// data loss. The sibling cap (maxArchiveRoundEvents) already returned a hard
+// error for exactly this reason; the rounds cap did not.
+func TestArchiveSink_DrainCapExhaustionIsAHardError(t *testing.T) {
+	ces, sink := newArchiveTestStore(t, 0)
+	ctx := context.Background()
+	streamID := "stream-cap"
+
+	// Five pending rounds, cap of two: the drain cannot finish.
+	events := []*Event{
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r1"}},
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r2"}},
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r3"}},
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r4"}},
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r5"}},
+	}
+	require.NoError(t, ces.EventStore.Append(ctx, streamID, events, 0))
+
+	restore := limitArchiveDrainRounds(2)
+	defer restore()
+
+	err := ces.drainPendingRounds(ctx, streamID)
+	require.Error(t, err,
+		"an incomplete drain must be a hard error: returning nil tells maybeCompact "+
+			"the archive is flushed and it will trim raw events whose RoundRecord was never written")
+	assert.ErrorContains(t, err, "drain",
+		"the error must identify the archive drain so the compaction defer logs something actionable")
+
+	// The two rounds that DID archive must have been archived — a partial
+	// drain is still progress, it just may not be treated as complete.
+	assert.Equal(t, 2, sink.callCount(), "the passes that ran must have archived")
+}
+
+// TestArchiveSink_DrainCompletesWithinCapIsNil is the non-regression half:
+// a drain that finishes inside the cap still returns nil so compaction
+// proceeds.
+func TestArchiveSink_DrainCompletesWithinCapIsNil(t *testing.T) {
+	ces, sink := newArchiveTestStore(t, 0)
+	ctx := context.Background()
+	streamID := "stream-ok"
+
+	require.NoError(t, ces.EventStore.Append(ctx, streamID, []*Event{
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r1"}},
+		{Type: EventTaskCompleted, Payload: map[string]any{EventKeyTask: "r2"}},
+	}, 0))
+
+	restore := limitArchiveDrainRounds(5)
+	defer restore()
+
+	require.NoError(t, ces.drainPendingRounds(ctx, streamID))
+	assert.Equal(t, 2, sink.callCount())
+}
+
+// limitArchiveDrainRounds lowers the drain cap for one test and returns a
+// restore func. Production never writes the var.
+func limitArchiveDrainRounds(n int) func() {
+	prev := maxArchiveDrainRounds
+	maxArchiveDrainRounds = n
+	return func() { maxArchiveDrainRounds = prev }
+}

@@ -26,6 +26,14 @@ const (
 	paramLimit         = "limit"
 	paramRecursive     = "recursive"
 
+	// defaultReadMaxLines bounds a read that asks for no explicit window
+	// (limit=0). limit=0 means "no window requested", NOT "no bound": the
+	// result is returned whole to the caller, so an uncapped default is an
+	// OOM vector on a large file — reachable from an LLM-driven agent
+	// calling its own tool. total_lines + truncated report the truth so a
+	// caller can page explicitly.
+	defaultReadMaxLines = 1000
+
 	// Types
 	typeString = "string"
 	typeObject = "object"
@@ -276,10 +284,21 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 
 	// Read file line-by-line with offset/limit so a large file is never
 	// fully loaded into memory when the caller only wants a window.
+	//
+	// limit=0 means "no explicit window", NOT "no bound": the default read
+	// is capped at defaultReadMaxLines so a large file cannot OOM the
+	// process. The scanner's per-line buffer cap bounds one LINE; without a
+	// total cap every line was accumulated and then joined into a second
+	// full copy for "content". total_lines and truncated report the truth so
+	// a caller can ask for the rest explicitly.
 	offset := getInt(params, paramOffset, 0)
 	limit := getInt(params, paramLimit, 0)
 	if offset < 0 {
 		offset = 0
+	}
+	capped := limit <= 0
+	if capped {
+		limit = defaultReadMaxLines
 	}
 
 	f, err := os.Open(filePath) // #nosec G304
@@ -290,12 +309,14 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // 10MB max line
-	var resultLines []string
+	resultLines := make([]string, 0, min(limit, 1024))
 	totalLines := 0
+	truncated := false
 	for scanner.Scan() {
 		if totalLines >= offset {
-			if limit > 0 && len(resultLines) >= limit {
+			if len(resultLines) >= limit {
 				totalLines++
+				truncated = true
 				continue // keep counting totalLines but skip storing
 			}
 			resultLines = append(resultLines, scanner.Text())
@@ -318,6 +339,7 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 		"total_lines": totalLines,
 		"offset":      offset,
 		"limit":       limit,
+		"truncated":   truncated,
 	}), nil
 }
 

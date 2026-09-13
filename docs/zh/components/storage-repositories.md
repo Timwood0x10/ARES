@@ -345,7 +345,7 @@ err = repo.SetWithExpiration(ctx, "temp_key", "temp-value", "tenant-1", expiresA
 
 ## 测试覆盖
 
-当前测试覆盖率：75.0%
+当前测试覆盖率：12.0%（`go test -short -cover` 实测；19 个测试文件中 11 个带 `//go:build integration` 标签，默认 `make test` 全部跳过——含 `tenant_isolation_test.go`。起 Postgres 后跑 `go test -tags integration` 才能看到完整覆盖率）
 
 测试覆盖包括：
 - 正常路径测试

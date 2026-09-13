@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,9 +101,23 @@ func dropRef(mr **ManagedRows) { *mr = nil }
 // Query and QueryRow already had finalizers; QueryWithTenant had none, and
 // its finalizer must additionally clear the tenant context before releasing
 // the connection — a plain release would leak RLS state to other tenants.
+// tenantDriverSeq disambiguates sql.Register driver names across repeated
+// runs of the same test in one process (-count>1): database/sql panics on a
+// duplicate registration, and t.Name() alone repeats verbatim on re-run.
+var tenantDriverSeq atomic.Int64
+
+// TODO(tech-debt): this test is not re-runnable under -count>1 (pre-existing,
+// previously masked by the driver-name panic fixed above): iteration 1 passes,
+// iterations 2+ time out because their ManagedRows finalizer never runs — no
+// "garbage collected" warning is logged, so the runtime's finalizer goroutine
+// appears blocked by iteration 1's teardown (unclosed *sql.Rows held by the
+// collected ManagedRows + conn.Close interaction inside the finalizer body).
+// Not in the quality gate (go test ./... runs count=1); revisit only if
+// -count>1 re-runnability becomes a requirement.
 func TestQueryWithTenantFinalizerClearsTenantContext(t *testing.T) {
 	drv := &tenantRecordingDriver{}
-	name := "tenant-recording-" + strings.ReplaceAll(t.Name(), "/", "-")
+	name := fmt.Sprintf("tenant-recording-%s-%d",
+		strings.ReplaceAll(t.Name(), "/", "-"), tenantDriverSeq.Add(1))
 	sql.Register(name, drv)
 	db, err := sql.Open(name, "")
 	if err != nil {
@@ -164,7 +179,8 @@ func TestQueryWithTenantFinalizerClearsTenantContext(t *testing.T) {
 // atomic in the database and exactly one statement is issued.
 func TestSaveProfileIsSingleUpsert(t *testing.T) {
 	drv := &tenantRecordingDriver{}
-	name := "profile-recording-" + strings.ReplaceAll(t.Name(), "/", "-")
+	name := fmt.Sprintf("profile-recording-%s-%d",
+		strings.ReplaceAll(t.Name(), "/", "-"), tenantDriverSeq.Add(1))
 	sql.Register(name, drv)
 	db, err := sql.Open(name, "")
 	if err != nil {

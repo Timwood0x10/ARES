@@ -125,11 +125,19 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 	return results, nil
 }
 
-// AddEmbedding adds a vector embedding to the specified table.
-func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, embedding []float64, metadata map[string]any) error {
+// AddEmbedding adds a vector embedding to the specified table, scoped to one
+// tenant.
+func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, tenantID, id string, embedding []float64, metadata map[string]any) error {
 	safeTable, err := validateTable(table)
 	if err != nil {
 		return errors.Wrap(err, "invalid table name")
+	}
+
+	// Tenant scope is mandatory, mirroring Search(): the table is
+	// tenant-scoped (tenant_id NOT NULL), so a write without a tenant would
+	// land under the empty tenant — fail closed, never a silent orphan row.
+	if tenantID == "" {
+		return fmt.Errorf("add embedding: tenantID is required (tenant-scoped table %q)", table)
 	}
 
 	// Validate embedding dimensions.
@@ -158,11 +166,11 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 	}
 
 	query := fmt.Sprintf(`
-	   INSERT INTO %s (id, embedding, metadata)
-	  VALUES ($1, $2::vector, $3)
+	   INSERT INTO %s (id, tenant_id, embedding, metadata)
+	  VALUES ($1, $2, $3::vector, $4)
 	 `, safeTable)
 
-	_, err = v.db.ExecContext(ctx, query, id, embeddingJSON, metadataJSON)
+	_, err = v.db.ExecContext(ctx, query, id, tenantID, embeddingJSON, metadataJSON)
 	if err != nil {
 		return errors.Wrap(err, "add embedding")
 	}
@@ -170,8 +178,16 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 	return nil
 }
 
-// DeleteEmbedding deletes a vector embedding.
-func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) error {
+// DeleteEmbedding deletes a vector embedding scoped to one tenant. The delete
+// only removes the row when its tenant_id matches: a caller can never remove
+// another tenant's embedding by id alone (the same tenant boundary Search()
+// and AddEmbedding() enforce). Idempotent — deleting a non-existent id, or an
+// id owned by a different tenant, is a silent no-op (see the predicate comment
+// below for why the two are deliberately not distinguished).
+func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, tenantID, id string) error {
+	if tenantID == "" {
+		return fmt.Errorf("delete embedding: tenantID is required (tenant-scoped table %q)", table)
+	}
 	safeTable, err := validateTable(table)
 	if err != nil {
 		return errors.Wrap(err, "invalid table name")
@@ -182,15 +198,16 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 		return errors.Wrap(err, "invalid id")
 	}
 
-	// TODO(tech-debt): the delete is keyed on id alone, so it does not respect
-	// the tenant boundary that Search() enforces. Only ids of rows written
-	// through AddEmbedding (all under the empty tenant) are addressable in
-	// practice, but scoping this properly needs a tenantID parameter — the
-	// same deferred storage.VectorStore interface change noted on
-	// CreateCollection.
-	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, safeTable)
+	// Tenant predicate, same boundary as Search()/AddEmbedding: a delete
+	// keyed on id alone could remove another tenant's row given its id. The
+	// predicate makes that structurally impossible. Zero affected rows is
+	// NOT an error (idempotent delete, matching the repositories' Delete
+	// contract): "not found" and "owned by a different tenant" are both a
+	// no-op for this caller, and no pre-SELECT is done — a check-then-delete
+	// would only add a TOCTOU window and a second round trip.
+	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1 AND tenant_id = $2`, safeTable)
 
-	_, err = v.db.ExecContext(ctx, query, id)
+	_, err = v.db.ExecContext(ctx, query, id, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "delete embedding")
 	}
@@ -206,12 +223,12 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 // (`WHERE tenant_id = $3`); a table without the column made every search fail
 // with `column "tenant_id" does not exist`.
 //
-// TODO(tech-debt): AddEmbedding/DeleteEmbedding carry no tenant parameter yet,
-// so rows written through them land under the empty tenant and are invisible
-// to a tenant-scoped Search — fail closed, never a cross-tenant leak. Making
-// ad-hoc collections genuinely tenant-scoped requires extending the
-// storage.VectorStore interface (a breaking API change), which is deliberately
-// deferred pending an explicit decision.
+// TODO(tech-debt): DeleteEmbedding still carries no tenant parameter, so a
+// delete is keyed on id alone and does not respect the tenant boundary that
+// Search() enforces. AddEmbedding was made tenant-scoped (breaking
+// storage.VectorStore change, decision locked in review); extending
+// DeleteEmbedding the same way stays deferred because it is not part of the
+// interface.
 func vectorCollectionDDL(table string, dimension int) string {
 	return fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (

@@ -307,3 +307,99 @@ func TestDistillBridge_QualityGate(t *testing.T) {
 		})
 	}
 }
+
+// TestDistillBridge_ObjectsLandInTheCallerTenantNamespace locks the tenant
+// attribution contract.
+//
+// Regression: DistillConversation accepted tenantID and forwarded it to the
+// distiller, but stamped every resulting KnowledgeObject with the bridge's
+// FIXED namespace. Production wiring hardcodes that to the constant
+// "default" (ares_bootstrap/knowledge_akg.go), and the read side is wired to
+// the same constant — so every tenant's distilled facts landed in one
+// namespace and HybridSearch recalled them cross-tenant. Worse, FindDuplicate
+// is namespace-scoped, so tenant B's fresh fact was marked superseded because
+// tenant A had stored something similar: silent fact loss on top of the leak.
+func TestDistillBridge_ObjectsLandInTheCallerTenantNamespace(t *testing.T) {
+	store := newTestStore()
+	b := mustBridge(t, store, "bridge-default")
+
+	if _, err := b.DistillConversation(context.Background(), "conv-1",
+		[]distillation.Message{{Role: "user", Content: "hello"}}, "tenant-acme", "u1"); err != nil {
+		t.Fatalf("DistillConversation: %v", err)
+	}
+
+	if len(store.objects) == 0 {
+		t.Fatal("expected distilled objects to be persisted")
+	}
+	for id, obj := range store.objects {
+		if obj.Namespace != "tenant-acme" {
+			t.Fatalf("object %s landed in namespace %q, want the caller's tenant %q — "+
+				"a fixed bridge namespace makes every tenant share one corpus",
+				id, obj.Namespace, "tenant-acme")
+		}
+	}
+}
+
+// TestDistillBridge_EmptyTenantKeepsBridgeNamespace locks the fallback: a
+// caller that supplies no tenant keeps today's behaviour rather than
+// producing objects in an empty namespace (which the store's dedup and
+// several read paths reject or treat as "all namespaces").
+func TestDistillBridge_EmptyTenantKeepsBridgeNamespace(t *testing.T) {
+	store := newTestStore()
+	b := mustBridge(t, store, "bridge-default")
+
+	if _, err := b.DistillConversation(context.Background(), "conv-1",
+		[]distillation.Message{{Role: "user", Content: "hello"}}, "", "u1"); err != nil {
+		t.Fatalf("DistillConversation: %v", err)
+	}
+	for id, obj := range store.objects {
+		if obj.Namespace != "bridge-default" {
+			t.Fatalf("object %s namespace %q, want the bridge default when no tenant is given",
+				id, obj.Namespace)
+		}
+	}
+}
+
+// TestDistillBridge_IDsDoNotCollideAcrossTenants locks that the store's
+// global ID space cannot make two tenants overwrite each other. The
+// KnowledgeStore upserts ON CONFLICT (id) DO UPDATE, so an ID that ignores
+// the tenant turns "two tenants distilled the same sentence" into silent
+// data loss for the second one.
+func TestDistillBridge_IDsDoNotCollideAcrossTenants(t *testing.T) {
+	store := newTestStore()
+	b := mustBridge(t, store, "bridge-default")
+
+	msgs := []distillation.Message{{Role: "user", Content: "identical content"}}
+	if _, err := b.DistillConversation(context.Background(), "conv-a", msgs, "tenant-a", "u1"); err != nil {
+		t.Fatalf("tenant-a: %v", err)
+	}
+	firstCount := len(store.objects)
+	if firstCount == 0 {
+		t.Fatal("expected tenant-a to persist objects")
+	}
+
+	if _, err := b.DistillConversation(context.Background(), "conv-b", msgs, "tenant-b", "u1"); err != nil {
+		t.Fatalf("tenant-b: %v", err)
+	}
+	if len(store.objects) <= firstCount {
+		t.Fatalf("tenant-b's distill overwrote tenant-a's objects (count stayed %d) — "+
+			"object IDs must be tenant-bound because the store's ID space is global",
+			len(store.objects))
+	}
+
+	namespaces := map[string]bool{}
+	for _, obj := range store.objects {
+		namespaces[obj.Namespace] = true
+	}
+	if !namespaces["tenant-a"] || !namespaces["tenant-b"] {
+		t.Fatalf("both tenants must retain their own objects, saw namespaces %v", namespaces)
+	}
+}
+
+// mustBridge builds a DistillBridge over the shared test distiller with the
+// given fixed namespace and no pipeline/embedding (so only the namespace and
+// ID attribution paths run).
+func mustBridge(t *testing.T, store knowledge.KnowledgeStore, ns string) *DistillBridge {
+	t.Helper()
+	return NewDistillBridge(&testDistiller{}, nil, store, ns)
+}

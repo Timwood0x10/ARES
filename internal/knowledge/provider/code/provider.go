@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -16,7 +17,13 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
+
+// maxSummaryRunes bounds a generated object summary. It is a rune count, not
+// a byte count: summaries are stored and later rendered, and a byte-index cut
+// emits invalid UTF-8 when it lands inside a multi-byte rune.
+const maxSummaryRunes = 200
 
 // Object type constants used by CodeProvider.
 // Using ObjectCode to represent all code elements (structs, interfaces, functions)
@@ -307,21 +314,29 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 
 func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath string, fset *token.FileSet, goal string) *knowledge.KnowledgeObject {
 	funcName := d.Name.Name
+	qualifier := receiverQualifier(d)
+	displayName := funcName
+	if qualifier != "" {
+		displayName = qualifier + "." + funcName
+	}
 	pos := fset.Position(d.Pos())
 
-	summary := fmt.Sprintf("func %s defined at %s:%d", funcName, relPath, pos.Line)
+	summary := fmt.Sprintf("func %s defined at %s:%d", displayName, relPath, pos.Line)
 	if d.Doc != nil {
 		doc := strings.TrimSpace(d.Doc.Text())
 		if len(doc) > 0 {
-			summary = doc
-			if len(summary) > 200 {
-				summary = summary[:200] + "..."
-			}
+			// Rune-safe: a byte-index cut lands inside a multi-byte rune and
+			// emits invalid UTF-8 into a stored Summary (CJK docs hit this).
+			summary = truncate.WithEllipsis(doc, maxSummaryRunes)
 		}
 	}
 
 	return &knowledge.KnowledgeObject{
-		ID:         fmt.Sprintf("%s:%s.%s", p.name, file.Name.Name, funcName),
+		// The receiver is part of the identity: methods sharing a name on
+		// different receivers in one package are different declarations, and
+		// the runtime keys results by ID — without it the later one silently
+		// overwrote the earlier and a symbol vanished from the graph.
+		ID:         fmt.Sprintf("%s:%s.%s", p.name, file.Name.Name, displayName),
 		Type:       knowledge.ObjectCode,
 		Namespace:  p.name,
 		Summary:    summary,
@@ -331,4 +346,26 @@ func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath
 		UpdatedAt:  time.Now(),
 		Tags:       []string{tagFunction, file.Name.Name},
 	}
+}
+
+// receiverQualifier renders a method's receiver as a short type qualifier
+// ("*Alpha" → "Alpha", "Alpha" → "Alpha"). It returns "" for plain functions
+// so their IDs keep the shape callers already match on.
+func receiverQualifier(d *ast.FuncDecl) string {
+	if d.Recv == nil || len(d.Recv.List) == 0 {
+		return ""
+	}
+	switch expr := d.Recv.List[0].Type.(type) {
+	case *ast.StarExpr:
+		if id, ok := expr.X.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.Ident:
+		return expr.Name
+	}
+	// Unusual receiver shapes (generics, aliases) still need to be
+	// distinguishable; fall back to the printed form.
+	var buf strings.Builder
+	_ = printer.Fprint(&buf, token.NewFileSet(), d.Recv.List[0].Type)
+	return strings.TrimPrefix(buf.String(), "*")
 }

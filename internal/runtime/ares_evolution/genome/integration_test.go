@@ -113,7 +113,15 @@ func scoredPopulation(t *testing.T, ctx context.Context, scores []float64, opts 
 
 	mutator := &scoredMutator{scores: scores}
 	allOpts := append([]PopulationOption{}, opts...)
-	allOpts = append(allOpts, WithPopulationSize(len(scores)))
+	// Fixed seed unless the caller overrides: without it NewPopulation seeds
+	// its RNG from the clock, so whether the population's diversity survives
+	// N generations depends on WHEN the test runs — the "insufficient
+	// diversity" flake under load. A caller may still pass its own
+	// WithPopulationSeed (later options win) for seed-parameterized cases.
+	allOpts = append(allOpts,
+		WithPopulationSize(len(scores)),
+		WithPopulationSeed(20260913),
+	)
 
 	pop, err := NewPopulation(ctx, base, mutator, allOpts...)
 	if err != nil {

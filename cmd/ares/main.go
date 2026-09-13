@@ -738,6 +738,10 @@ func loadRecallConfig() (*ares_config.Config, error) {
 		}
 	}
 
+	// Arm the same path-traversal guard serve uses: SECURITY.md advertises
+	// the restriction as a production control, and loadRecallConfig was the
+	// one Load entry point that skipped it.
+	allowConfigDirFor(configPath)
 	cfg, err := ares_config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)

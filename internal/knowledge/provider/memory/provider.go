@@ -10,7 +10,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
+
+// maxSummaryRunes bounds a generated object summary. Rune count, not byte
+// count — see the call site.
+const maxSummaryRunes = 200
 
 // TaskSearcher is the minimal interface needed to query historical tasks.
 type TaskSearcher interface {
@@ -113,10 +118,9 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 		}
 
 		for i, r := range results {
-			summary := r.Summary
-			if len(summary) > 200 {
-				summary = summary[:200] + "..."
-			}
+			// Rune-safe: a byte-index cut lands inside a multi-byte rune and
+			// emits invalid UTF-8 into a stored Summary.
+			summary := truncate.WithEllipsis(r.Summary, maxSummaryRunes)
 
 			obj := &knowledge.KnowledgeObject{
 				ID:         fmt.Sprintf("%s_%s", p.name, r.ID),

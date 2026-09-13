@@ -54,7 +54,7 @@ type testVectorStore struct{}
 func (s *testVectorStore) Search(context.Context, string, string, []float64, int) ([]*storage.SearchResult, error) {
 	return nil, nil
 }
-func (s *testVectorStore) AddEmbedding(context.Context, string, string, []float64, map[string]any) error {
+func (s *testVectorStore) AddEmbedding(context.Context, string, string, string, []float64, map[string]any) error {
 	return nil
 }
 func (s *testVectorStore) CreateCollection(context.Context, string, int) error {

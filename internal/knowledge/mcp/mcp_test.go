@@ -436,3 +436,61 @@ func TestAKFServiceNilRuntimeHandlersReturnError(t *testing.T) {
 		t.Errorf("distill_memory output missing object id: %s", out)
 	}
 }
+
+// TestQueryKnowledgeBudgetNeverGoesNegative locks the budget arithmetic.
+//
+// Regression: Reserved was computed as MaxTokens - Limit*100 with no floor,
+// so limit=20 with max_tokens=1000 produced Reserved = -1000 — a budget
+// claiming more reasoning headroom than the total it was carved from.
+func TestQueryKnowledgeBudgetNeverGoesNegative(t *testing.T) {
+	cases := []struct {
+		name            string
+		limit, maxTok   int
+		wantMax         int
+		wantNonNegative bool
+	}{
+		{name: "defaults when uncapped", limit: 20, maxTok: 0, wantMax: 5000, wantNonNegative: true},
+		{name: "tight cap clamps graph share", limit: 20, maxTok: 1000, wantMax: 1000, wantNonNegative: true},
+		{name: "tiny cap", limit: 50, maxTok: 100, wantMax: 100, wantNonNegative: true},
+		{name: "roomy cap", limit: 5, maxTok: 10000, wantMax: 10000, wantNonNegative: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := queryKnowledgeBudget(tc.limit, tc.maxTok)
+			if b.MaxTokens != tc.wantMax {
+				t.Fatalf("MaxTokens = %d, want %d", b.MaxTokens, tc.wantMax)
+			}
+			if tc.wantNonNegative && b.Reserved < 0 {
+				t.Fatalf("Reserved = %d, must never be negative", b.Reserved)
+			}
+			if b.ForGraph < 0 {
+				t.Fatalf("ForGraph = %d, must never be negative", b.ForGraph)
+			}
+			if b.Reserved+b.ForGraph > b.MaxTokens {
+				t.Fatalf("budget over-allocates: Reserved(%d)+ForGraph(%d) > MaxTokens(%d)",
+					b.Reserved, b.ForGraph, b.MaxTokens)
+			}
+		})
+	}
+}
+
+// TestQueryKnowledgeConfigForwardsTypes locks that the tool's declared type
+// filter actually reaches the runtime. Previously the parameter schema
+// advertised Types and the description promised "by type, tag, or text
+// search" while the handler never read the field.
+func TestQueryKnowledgeConfigForwardsTypes(t *testing.T) {
+	cfg := queryKnowledgeConfig(queryKnowledgeParams{
+		Text:  "redis",
+		Types: []string{"decision", "", "memory"},
+	})
+	if len(cfg.Types) != 2 {
+		t.Fatalf("Types = %v, want 2 entries (empty string dropped)", cfg.Types)
+	}
+	if string(cfg.Types[0]) != "decision" || string(cfg.Types[1]) != "memory" {
+		t.Fatalf("Types = %v, want [decision memory]", cfg.Types)
+	}
+
+	if cfg := queryKnowledgeConfig(queryKnowledgeParams{Text: "x"}); len(cfg.Types) != 0 {
+		t.Fatalf("no filter declared must yield no type restriction, got %v", cfg.Types)
+	}
+}

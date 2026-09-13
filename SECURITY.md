@@ -56,11 +56,10 @@ configurations.**
 ### MCP Tool Execution
 
 MCP tools execute arbitrary commands. Only enable MCP servers from trusted
-sources. The `internal/ares_security` package provides sandboxing utilities —
-use them.
-
-### Quant Trading Module
-
-The quant module (`internal/ares_quant/`) can execute real market operations
-if connected to live trading APIs. **Never enable live trading credentials in
-development or testing environments.**
+sources. The `internal/ares_security` package provides authentication (JWT),
+authorization (RBAC), audit logging and input sanitization — it does **not**
+sandbox tool execution. Constrain MCP stdio servers yourself: launch them
+under a least-privilege account or container, and keep the server list to
+commands you control. The stdio transport requires an absolute command path
+(`mcpclient/stdio.go`) precisely because a bare name would otherwise resolve
+against `PATH`.

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -73,7 +74,7 @@ func (a *MemoryAdapter) FromMemory(m *distillation.Memory, ns string) *knowledge
 	}
 
 	return &knowledge.KnowledgeObject{
-		ID:         fmt.Sprintf("mem_%s", m.ID),
+		ID:         memoryObjectID(m.ID, ns),
 		Type:       objType,
 		Namespace:  ns,
 		Summary:    summary,
@@ -81,6 +82,25 @@ func (a *MemoryAdapter) FromMemory(m *distillation.Memory, ns string) *knowledge
 		CreatedAt:  m.CreatedAt,
 		UpdatedAt:  time.Now(),
 	}
+}
+
+// memoryObjectID derives a KnowledgeObject ID that is bound to its namespace.
+//
+// The store's ID space is GLOBAL — akf_objects upserts ON CONFLICT (id) DO
+// UPDATE — so an ID built from the Memory ID alone lets two namespaces that
+// distilled the same Memory overwrite each other, silently destroying the
+// second writer's fact. Binding the namespace in mirrors what
+// service/adapter.go already does for tenantID on the sibling distill path
+// ("the store's ID space is global, not per-namespace").
+//
+// The namespace is folded to a short digest so IDs stay bounded and
+// charset-safe regardless of what a caller passes as a namespace.
+func memoryObjectID(memoryID, ns string) string {
+	if ns == "" {
+		return "mem_" + memoryID
+	}
+	sum := sha256.Sum256([]byte(ns))
+	return fmt.Sprintf("mem_%x_%s", sum[:8], memoryID)
 }
 
 // FromMemories converts a slice of distillation.Memory into KnowledgeObjects.

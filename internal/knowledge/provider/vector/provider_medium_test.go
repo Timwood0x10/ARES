@@ -18,7 +18,7 @@ func (f *fakeVectorStore) Search(_ context.Context, _, _ string, _ []float64, _ 
 	return nil, nil
 }
 
-func (f *fakeVectorStore) AddEmbedding(_ context.Context, _, _ string, _ []float64, _ map[string]any) error {
+func (f *fakeVectorStore) AddEmbedding(_ context.Context, _, _, _ string, _ []float64, _ map[string]any) error {
 	return nil
 }
 

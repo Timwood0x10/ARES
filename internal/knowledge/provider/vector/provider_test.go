@@ -53,7 +53,7 @@ func (m *memVectorStore) Search(_ context.Context, table, _ string, _ []float64,
 	return results, nil
 }
 
-func (m *memVectorStore) AddEmbedding(_ context.Context, table, id string, embedding []float64, metadata map[string]any) error {
+func (m *memVectorStore) AddEmbedding(_ context.Context, table, _, id string, embedding []float64, metadata map[string]any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.vectors[id] = embedding
@@ -116,7 +116,7 @@ func TestVectorProvider_Stream(t *testing.T) {
 
 	// Seed test data.
 	_ = store.CreateCollection(ctx, "docs", 4)
-	_ = store.AddEmbedding(ctx, "docs", "doc-1", []float64{0.1, 0.2, 0.3, 0.4}, map[string]any{
+	_ = store.AddEmbedding(ctx, "docs", "default", "doc-1", []float64{0.1, 0.2, 0.3, 0.4}, map[string]any{
 		"summary": "PostgreSQL connection pooling with pgx",
 		"tags":    []string{"postgres", "pool"},
 	})

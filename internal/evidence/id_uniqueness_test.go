@@ -33,15 +33,19 @@ func TestNewEvidenceIDsAreUniqueWithinATick(t *testing.T) {
 	}
 }
 
-// TestNewEvidenceIDIsStableForOneValue locks the idempotency half of the
-// contract: the ID is computed once at construction, so re-appending the SAME
-// Evidence value is still deduplicated by the store rather than duplicated.
+// TestNewEvidenceIDIsStableForOneValue pins that the ID is not derived from
+// the payload content: two separately constructed records with identical
+// content must still get distinct IDs. A content digest alone would make
+// re-appended duplicates indistinguishable from within-tick collisions and
+// break the store's ON CONFLICT (id) DO NOTHING dedup contract.
+//
+// Stability of the ID across reads of the same value is a property of the
+// plain struct field (assigned once at construction in NewEvidence); it has no
+// observable failure mode to test here — a lazily recomputed ID would not be
+// a field at all and would fail to compile.
 func TestNewEvidenceIDIsStableForOneValue(t *testing.T) {
 	ev := NewEvidence("memory", KindKnowledge, map[string]any{"k": "v"})
 
-	if ev.ID != ev.ID {
-		t.Fatal("the ID stored on an Evidence value must not change")
-	}
 	if again := NewEvidence("memory", KindKnowledge, map[string]any{"k": "v"}); again.ID == ev.ID {
 		t.Fatal("two separately constructed records must not share an ID")
 	}

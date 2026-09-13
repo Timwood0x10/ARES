@@ -23,9 +23,25 @@ func TestFromMemory(t *testing.T) {
 		t.Fatal("expected non-nil KnowledgeObject")
 	}
 
-	expectedID := "mem_mem_abc"
-	if obj.ID != expectedID {
-		t.Errorf("expected ID '%s', got '%s'", expectedID, obj.ID)
+	// The ID is namespace-bound: akf_objects upserts ON CONFLICT (id), and
+	// the store's ID space is global, so an ID built from the Memory ID alone
+	// let two namespaces holding the same Memory overwrite each other.
+	if !strings.HasPrefix(obj.ID, "mem_") {
+		t.Errorf("ID %q must keep the mem_ prefix", obj.ID)
+	}
+	if !strings.Contains(obj.ID, "mem_abc") {
+		t.Errorf("ID %q must retain the source memory id", obj.ID)
+	}
+	if obj.ID == "mem_mem_abc" {
+		t.Error("ID must be namespace-bound; a bare memory id collides across namespaces")
+	}
+	// Same input, same namespace → same ID (idempotent upsert).
+	if again := NewMemoryAdapter(0).FromMemory(m, "default"); again.ID != obj.ID {
+		t.Errorf("ID must be stable for the same memory+namespace, got %q then %q", obj.ID, again.ID)
+	}
+	// A different namespace must NOT produce the same ID.
+	if other := NewMemoryAdapter(0).FromMemory(m, "other"); other.ID == obj.ID {
+		t.Error("IDs from different namespaces must differ")
 	}
 	if obj.Type != knowledge.ObjectMemory {
 		t.Errorf("expected ObjectMemory, got %s", obj.Type)

@@ -269,7 +269,7 @@ All Repository methods return standard error types:
 
 ## Test Coverage
 
-Current test coverage: 75.0%
+Current test coverage: 12.0% (measured with `go test -short -cover`; 11 of 19 test files carry a `//go:build integration` tag and are skipped by a default `make test` — including `tenant_isolation_test.go`. Start Postgres and run `go test -tags integration` for the full figure.)
 
 Test coverage includes:
 - Normal path tests

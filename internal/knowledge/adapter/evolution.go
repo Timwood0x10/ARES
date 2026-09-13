@@ -9,7 +9,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	ares_evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
+
+// maxSummaryRunes bounds a generated object summary. Rune count, not byte
+// count — a byte-index cut emits invalid UTF-8 when it lands inside a
+// multi-byte rune.
+const maxSummaryRunes = 200
 
 // FromStrategy converts an evolution Strategy into a KnowledgeObject.
 // The object type is set to ObjectDecision so it appears in decision-related queries.
@@ -22,9 +28,9 @@ func FromStrategy(s *ares_evolution.Strategy, ns string) *knowledge.KnowledgeObj
 	if summary == "" {
 		summary = fmt.Sprintf("Strategy %s (v%d)", s.ID, s.Version)
 	}
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	// Rune-safe: a byte-index cut lands inside a multi-byte rune and emits
+	// invalid UTF-8 into a stored Summary.
+	summary = truncate.WithEllipsis(summary, maxSummaryRunes)
 
 	tags := []string{"evolution", "strategy"}
 	if s.StrategyMutationType != "" {
@@ -97,9 +103,8 @@ func FromDecisionEvidence(ev evidence.Evidence, ns string) *knowledge.KnowledgeO
 	if payload.Reason != "" {
 		summary += ": " + payload.Reason
 	}
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	// Rune-safe: see FromStrategy.
+	summary = truncate.WithEllipsis(summary, maxSummaryRunes)
 
 	createdAt := ev.Timestamp
 	if payload.Timestamp != "" {
