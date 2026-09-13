@@ -415,19 +415,20 @@ func TestSessionRepository_ListByUserIDNullExpiredAt(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`CREATE TABLE sessions (
-		session_id TEXT PRIMARY KEY, user_id TEXT, input TEXT, status TEXT,
+		session_id TEXT PRIMARY KEY, tenant_id TEXT, user_id TEXT, input TEXT, status TEXT,
 		user_profile TEXT, metadata TEXT, created_at TIMESTAMP, updated_at TIMESTAMP, expired_at TIMESTAMP)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	now := time.Now()
 	// One row with a NULL expired_at (what Create writes for a zero
-	// ExpiredAt) and one with a set expiry, for the same user.
-	if _, err := db.Exec(`INSERT INTO sessions (session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
-		VALUES ('s-null', 'u1', 'in', 'pending', '{}', '{}', ?, ?, NULL)`, now, now); err != nil {
+	// ExpiredAt) and one with a set expiry, for the same user. Both carry the
+	// default tenant to match NewSessionRepositoryWithDB's bound tenant.
+	if _, err := db.Exec(`INSERT INTO sessions (session_id, tenant_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
+		VALUES ('s-null', 'default', 'u1', 'in', 'pending', '{}', '{}', ?, ?, NULL)`, now, now); err != nil {
 		t.Fatalf("insert null-expiry row: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO sessions (session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
-		VALUES ('s-set', 'u1', 'in', 'pending', '{}', '{}', ?, ?, ?)`, now, now, now.Add(time.Hour)); err != nil {
+	if _, err := db.Exec(`INSERT INTO sessions (session_id, tenant_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
+		VALUES ('s-set', 'default', 'u1', 'in', 'pending', '{}', '{}', ?, ?, ?)`, now, now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("insert set-expiry row: %v", err)
 	}
 

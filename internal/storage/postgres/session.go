@@ -11,18 +11,34 @@ import (
 )
 
 // SessionRepository handles session persistence.
+//
+// Tenant scoping: sessions carries a tenant_id column; every query filters on
+// the tenant bound at construction (empty → default tenant). No production
+// callers today, but kept tenant-safe so a revival cannot read another
+// tenant's sessions.
 type SessionRepository struct {
-	db DBTX
+	db       DBTX
+	tenantID string
 }
 
-// NewSessionRepository creates a new SessionRepository.
+// NewSessionRepository creates a new SessionRepository bound to the default tenant.
 func NewSessionRepository(pool *Pool) *SessionRepository {
-	return &SessionRepository{db: pool.db}
+	return NewSessionRepositoryWithTenant(pool.db, "")
 }
 
-// NewSessionRepositoryWithDB creates a new SessionRepository with a transaction or connection.
+// NewSessionRepositoryWithDB creates a new SessionRepository with a transaction or connection,
+// bound to the default tenant.
 func NewSessionRepositoryWithDB(db DBTX) *SessionRepository {
-	return &SessionRepository{db: db}
+	return NewSessionRepositoryWithTenant(db, "")
+}
+
+// NewSessionRepositoryWithTenant creates a SessionRepository scoped to one tenant.
+// An empty tenantID resolves to the default tenant.
+func NewSessionRepositoryWithTenant(db DBTX, tenantID string) *SessionRepository {
+	if tenantID == "" {
+		tenantID = DefaultTenantID
+	}
+	return &SessionRepository{db: db, tenantID: tenantID}
 }
 
 // Create creates a new session.
@@ -38,8 +54,8 @@ func (r *SessionRepository) Create(ctx context.Context, session *models.Session)
 	}
 
 	query := `
-		INSERT INTO sessions (session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO sessions (session_id, tenant_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`
 
 	// Pass nil for zero ExpiredAt so PostgreSQL stores NULL instead of the
@@ -52,6 +68,7 @@ func (r *SessionRepository) Create(ctx context.Context, session *models.Session)
 
 	_, err = r.db.ExecContext(ctx, query,
 		session.SessionID,
+		r.tenantID,
 		session.UserID,
 		session.Input,
 		session.Status,
@@ -72,14 +89,14 @@ func (r *SessionRepository) Create(ctx context.Context, session *models.Session)
 func (r *SessionRepository) GetByID(ctx context.Context, sessionID string) (*models.Session, error) {
 	query := `
 		SELECT session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at
-		FROM sessions WHERE session_id = $1
+		FROM sessions WHERE session_id = $1 AND tenant_id = $2
 	`
 
 	var session models.Session
 	var profileJSON, metadataJSON []byte
 	var expiredAt sql.NullTime
 
-	err := r.db.QueryRowContext(ctx, query, sessionID).Scan(
+	err := r.db.QueryRowContext(ctx, query, sessionID, r.tenantID).Scan(
 		&session.SessionID,
 		&session.UserID,
 		&session.Input,
@@ -125,7 +142,7 @@ func (r *SessionRepository) Update(ctx context.Context, session *models.Session)
 	query := `
 		UPDATE sessions
 		SET status = $1, user_profile = $2, metadata = $3, updated_at = $4
-		WHERE session_id = $5
+		WHERE session_id = $5 AND tenant_id = $6
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
@@ -134,6 +151,7 @@ func (r *SessionRepository) Update(ctx context.Context, session *models.Session)
 		metadataJSON,
 		time.Now(),
 		session.SessionID,
+		r.tenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update session")
@@ -152,9 +170,9 @@ func (r *SessionRepository) Update(ctx context.Context, session *models.Session)
 
 // Delete deletes a session.
 func (r *SessionRepository) Delete(ctx context.Context, sessionID string) error {
-	query := `DELETE FROM sessions WHERE session_id = $1`
+	query := `DELETE FROM sessions WHERE session_id = $1 AND tenant_id = $2`
 
-	result, err := r.db.ExecContext(ctx, query, sessionID)
+	result, err := r.db.ExecContext(ctx, query, sessionID, r.tenantID)
 	if err != nil {
 		return errors.Wrap(err, "delete session")
 	}
@@ -174,12 +192,12 @@ func (r *SessionRepository) Delete(ctx context.Context, sessionID string) error 
 func (r *SessionRepository) ListByUserID(ctx context.Context, userID string, limit, offset int) ([]*models.Session, error) {
 	query := `
 		SELECT session_id, user_id, input, status, user_profile, metadata, created_at, updated_at, expired_at
-		FROM sessions WHERE user_id = $1
+		FROM sessions WHERE user_id = $1 AND tenant_id = $2
 		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
+		LIMIT $3 OFFSET $4
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
+	rows, err := r.db.QueryContext(ctx, query, userID, r.tenantID, limit, offset)
 	if err != nil {
 		return nil, errors.Wrap(err, "query sessions")
 	}
@@ -229,9 +247,9 @@ func (r *SessionRepository) ListByUserID(ctx context.Context, userID string, lim
 
 // CleanupExpired removes expired sessions.
 func (r *SessionRepository) CleanupExpired(ctx context.Context) (int64, error) {
-	query := `DELETE FROM sessions WHERE expired_at IS NOT NULL AND expired_at < $1`
+	query := `DELETE FROM sessions WHERE expired_at IS NOT NULL AND expired_at < $1 AND tenant_id = $2`
 
-	result, err := r.db.ExecContext(ctx, query, time.Now())
+	result, err := r.db.ExecContext(ctx, query, time.Now(), r.tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired")
 	}

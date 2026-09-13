@@ -49,3 +49,40 @@ func TestValidateServeConfig_AcceptsMinimalConfig(t *testing.T) {
 		t.Fatalf("the minimal serve config must be accepted, got %v", err)
 	}
 }
+
+// TestValidateServeConfig_RejectsWildcardWithoutAuth locks C-5: binding a
+// wildcard host while security.auth_enabled is false left the unauthenticated
+// introspect read API (/api/v1/introspect/*) reachable from the network, and
+// serve only logged an Info line about it. A startup-time exposure must be a
+// hard error at the serve boundary, not a log the operator can miss — the
+// fix is one line of config (enable auth, set introspect.token, or bind
+// localhost), so refusing to start is cheaper than shipping an open port.
+func TestValidateServeConfig_RejectsWildcardWithoutAuth(t *testing.T) {
+	cfg := ares_config.NewMinimalConfig("http://localhost:11434", "", "llama3.2")
+	cfg.Server.Host = "0.0.0.0"
+	cfg.Security.AuthEnabled = false
+
+	err := validateServeConfig(cfg)
+	if err == nil {
+		t.Fatal("wildcard bind with auth disabled must be rejected at the serve boundary")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "0.0.0.0") && !strings.Contains(msg, "auth") {
+		t.Fatalf("the rejection must name the host and the auth gap, got: %v", err)
+	}
+
+	// Binding loopback keeps the no-auth setup legal: that is the documented
+	// localhost-only posture, not an exposure.
+	cfg.Server.Host = "127.0.0.1"
+	if err := validateServeConfig(cfg); err != nil {
+		t.Fatalf("loopback bind without auth must remain accepted, got: %v", err)
+	}
+
+	// Enabling auth on a wildcard bind must also remain legal.
+	cfg.Server.Host = "0.0.0.0"
+	cfg.Security.AuthEnabled = true
+	cfg.Security.JWTSecret = "test-secret-value-32-bytes-long!!"
+	if err := validateServeConfig(cfg); err != nil {
+		t.Fatalf("wildcard bind with auth enabled must be accepted, got: %v", err)
+	}
+}

@@ -271,6 +271,12 @@ func (r *ExperienceRepository) Delete(ctx context.Context, id, tenantID string) 
 // limit - maximum number of results to return.
 // Returns list of similar experiences ordered by similarity.
 func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Experience, error) {
+	// Fail closed on an empty embedding (invalid vector-search input) with a
+	// clear error instead of letting pgvector reject a zero-dimension literal.
+	// Matches every other repository's SearchByVector contract.
+	if len(embedding) == 0 {
+		return nil, errors.New("search by vector: embedding must not be empty")
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 

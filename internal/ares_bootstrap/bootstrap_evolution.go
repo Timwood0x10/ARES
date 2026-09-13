@@ -865,7 +865,10 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, func(
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	store, err := evolution.NewPGStrategyStore(db, "evolution_strategies", 100)
+	// No multi-tenant config exists yet, so pass an empty tenantID which the
+	// store resolves to the default tenant — matching the schema backfill.
+	// When evolution is made multi-tenant, source the tenant from cfg here.
+	store, err := evolution.NewPGStrategyStore(db, "evolution_strategies", 100, "")
 	if err != nil {
 		if closeErr := db.Close(); closeErr != nil {
 			log.Warn("pg strategy store: close db after init failure", "error", closeErr)

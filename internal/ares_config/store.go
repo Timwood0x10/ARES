@@ -73,9 +73,22 @@ func (s *ConfigStore) History() []ConfigChange {
 	return out
 }
 
+// coldReloadSections names the config groups that are read once while the
+// process wires its components and are never re-read afterwards. A hot reload
+// swaps the stored *Config for these groups too, so Current() shows the new
+// values while the running server still uses the old ones — the worst kind of
+// silent divergence. The reload record names them so the operator is not left
+// believing a rotated jwt_secret or a moved port took effect.
+const coldReloadSections = "server, security, kernel.chaos (apply on restart)"
+
 // Reload re-reads and validates the config file, atomically replacing the
 // current config on success. A failed reload is recorded but does not touch
 // the current config — the process keeps running with the last good config.
+//
+// Note: this is a store-level swap only. Nothing subscribes to the store, so
+// a successful Reload does not reconfigure running components; the record
+// discloses the sections that specifically require a restart (see
+// coldReloadSections).
 func (s *ConfigStore) Reload(ctx context.Context, path string) error {
 	cfg, err := Load(path)
 	if err != nil {
@@ -86,7 +99,8 @@ func (s *ConfigStore) Reload(ctx context.Context, path string) error {
 	// readers never observe the new config before its history entry exists.
 	s.mu.Lock()
 	s.current = cfg
-	s.appendRecord(true, fmt.Sprintf("reloaded %s", filepath.Base(path)))
+	s.appendRecord(true, fmt.Sprintf("reloaded %s; no live rebind — cold sections require restart: %s",
+		filepath.Base(path), coldReloadSections))
 	s.mu.Unlock()
 	return nil
 }

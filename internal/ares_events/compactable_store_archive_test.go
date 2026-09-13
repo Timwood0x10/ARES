@@ -577,7 +577,7 @@ func TestArchiveSink_DrainCompletesWithinCapIsNil(t *testing.T) {
 // limitArchiveDrainRounds lowers the drain cap for one test and returns a
 // restore func. Production never writes the var.
 func limitArchiveDrainRounds(n int) func() {
-	prev := maxArchiveDrainRounds
-	maxArchiveDrainRounds = n
-	return func() { maxArchiveDrainRounds = prev }
+	prev := maxArchiveDrainRounds.Load()
+	maxArchiveDrainRounds.Store(int64(n))
+	return func() { maxArchiveDrainRounds.Store(prev) }
 }

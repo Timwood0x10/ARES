@@ -162,6 +162,14 @@ func (h *actionHandler) handleCallMCPTool(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	// Same posture as handleCallTool / handleListMCPTools above: an unassembled
+	// registry is a legitimate wiring state, so it must degrade to 503 rather
+	// than dereference a nil map and panic the request goroutine.
+	if h.tools == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "no tool registry"})
+		return
+	}
 	result, err := h.tools.Execute(r.Context(), name, args)
 	h.auditAction("call_mcp_tool", name, princ, err == nil)
 	if err != nil {

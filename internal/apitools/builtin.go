@@ -475,30 +475,36 @@ func ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, e
 	return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
 }
 
-// isPrivateIP reports whether the given IP is in a private, loopback, or
-// link-local range. Requests to such addresses are blocked by default.
+// isPrivateIP reports whether the given IP is in a private, loopback,
+// link-local, unspecified, or CGNAT range. Requests to such addresses are
+// blocked by default.
+//
+// This mirrors internal/tools/resources/builtin/network/ssrf.go::isBlockedIP so
+// the two SSRF gates cannot drift apart — that version was hardened first and
+// is the reference. The hand-rolled checks that used to live here missed CGNAT
+// (100.64.0.0/10, the Kubernetes pod CIDR) and IPv6 ULA, and did not normalize
+// IPv4-mapped IPv6 addresses before classifying them.
 func isPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	// Normalize IPv4-mapped IPv6 to its 4-byte form so IsLoopback / IsPrivate
+	// classify it correctly across Go versions.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
 	}
-	if ip4 := ip.To4(); ip4 != nil {
-		// RFC 1918 private ranges.
-		if ip4[0] == 10 {
-			return true
-		}
-		if ip4[0] == 172 && ip4[1]&0xf0 == 16 {
-			return true
-		}
-		if ip4[0] == 192 && ip4[1] == 168 {
-			return true
-		}
-		// 0.0.0.0/8.
-		if ip4[0] == 0 {
-			return true
-		}
+	if ip.IsUnspecified() {
+		return true
+	}
+	// CGNAT / carrier-grade NAT (RFC 6598): 100.64.0.0/10. Used by Kubernetes
+	// pod CIDRs and ISP-grade NAT — reachable from inside a cluster but must
+	// not be an SSRF target. Not covered by IsPrivate (which only checks the
+	// RFC 1918 ranges).
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
 	}
 	return false
 }

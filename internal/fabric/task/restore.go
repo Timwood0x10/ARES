@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -157,7 +158,16 @@ func (f *Fabric) RestoreFromStore(ctx context.Context) error {
 	// strictly greater than any pre-crash fencing token. Only ever GROW the
 	// epoch: a repeated restore (idempotency contract) must never shrink it,
 	// or tokens handed out between two restores would be re-issued.
-	if next := maxEpoch + 1; next > f.epoch {
+	// Guard the +1 against uint64 overflow. A corrupted payload can report
+	// maxEpoch == MaxUint64, and the unguarded `+1` would wrap to 0, making
+	// `next > f.epoch` false — the epoch would never grow and pre-crash
+	// fencing tokens could be re-issued. Epoch exhaustion is unrecoverable in
+	// practice, so clamp to maxEpoch rather than wrapping.
+	if maxEpoch == math.MaxUint64 {
+		if f.epoch < maxEpoch {
+			f.epoch = maxEpoch
+		}
+	} else if next := maxEpoch + 1; next > f.epoch {
 		f.epoch = next
 	}
 	return nil

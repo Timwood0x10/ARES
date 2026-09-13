@@ -292,6 +292,21 @@ func validateServeConfig(cfg *ares_config.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("serve: invalid configuration: %w", err)
 	}
+	// Fail closed on an unauthenticated wildcard bind. serve_wiring only logged
+	// this at Info, so a config that exposed /api/v1/introspect/* and
+	// /api/runtime/config to every interface started happily. Every remedy is
+	// one line of config (enable security.auth_enabled, set introspect.token,
+	// or bind a loopback host), so refusing to start costs less than shipping
+	// an open port. authConfigured here mirrors the exact predicate
+	// serve_wiring uses to decide whether auth middleware is installed.
+	authConfigured := cfg.Security.AuthEnabled && cfg.Security.JWTSecret != ""
+	if isWildcardHost(cfg.Server.Host) && !authConfigured && cfg.Introspect.Token == "" {
+		return fmt.Errorf(
+			"serve: server.host %q binds all interfaces while security.auth_enabled is false — "+
+				"the unauthenticated control-plane read API is reachable from the network; "+
+				"set security.auth_enabled (+ security.jwt_secret), set introspect.token, or bind a loopback host",
+			cfg.Server.Host)
+	}
 	return nil
 }
 

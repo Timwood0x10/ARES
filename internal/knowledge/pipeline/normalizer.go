@@ -248,9 +248,13 @@ func tokenize(text string) map[string]int {
 
 // jaccardOverlap computes the Jaccard similarity coefficient between two
 // token sets. Returns a value in [0, 1].
+//
+// Two empty token sets have no shared evidence, so they overlap 0 — returning
+// 1.0 here used to make two content-free objects look like a perfect match and
+// get merged with confidence 1.0 by DefaultEntityMatcher.
 func jaccardOverlap(a, b map[string]int) float64 {
 	if len(a) == 0 && len(b) == 0 {
-		return 1.0
+		return 0.0
 	}
 	intersection := 0
 	for token := range a {

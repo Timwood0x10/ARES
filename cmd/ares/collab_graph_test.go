@@ -389,3 +389,26 @@ func (e *blockingExecutor) ExecuteStep(ctx context.Context, task *models.Task) (
 	res.SetError("blocked until cancel")
 	return &sub.StepOutcome{Done: true, Result: res}, nil
 }
+
+// TestGraphsEndpointNilScheduler locks E-6: handleSubmitGraph guarded only
+// against a nil kernel, then dereferenced h.kernel.scheduler.Capabilities().
+// The scheduler field is genuinely nilable (kernelHandle.scheduler is a plain
+// pointer, set only in peerAssembly; kernel.go's own readiness probe already
+// checks `if k.scheduler == nil`), so a kernel assembled without one panicked
+// the request goroutine instead of returning 503 like the sibling nil-kernel
+// path.
+func TestGraphsEndpointNilScheduler(t *testing.T) {
+	h := &actionHandler{
+		kernel: &kernelHandle{scheduler: nil},
+		apiKey: "test-key",
+		audit:  nil,
+	}
+	body := `{"schema_version":1,"nodes":[{"id":"n1","capability":"research"}],"edges":[]}`
+	code, out := postGraph(t, h, body)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (body: %v)", code, http.StatusServiceUnavailable, out)
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "scheduler") {
+		t.Errorf("error should name the missing scheduler, got: %v", out["error"])
+	}
+}

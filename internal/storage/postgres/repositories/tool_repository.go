@@ -325,6 +325,13 @@ func (r *ToolRepository) Delete(ctx context.Context, id, tenantID string) error 
 // limit - maximum number of results to return.
 // Returns list of similar tools ordered by similarity.
 func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Tool, error) {
+	// Fail closed on an empty embedding (invalid vector-search input) with a
+	// clear error rather than letting pgvector reject a zero-dimension
+	// literal with an opaque database message. Matches every other
+	// repository's SearchByVector contract.
+	if len(embedding) == 0 {
+		return nil, errors.New("search by vector: embedding must not be empty")
+	}
 	embeddingStr := postgres.FormatVector(embedding)
 	query := `
 		SELECT id, tenant_id, name, description, embedding::text, embedding_model, embedding_version,

@@ -396,11 +396,16 @@ func runRun(cmd *cobra.Command, _ []string) error {
 func parseRunArgs() []string {
 	var out []string
 	skipNext := false
+	seenRun := false
 	for i, a := range os.Args {
 		if i == 0 {
 			continue // skip program name
 		}
-		if a == "run" {
+		// Only the leading subcommand token is stripped. A later "run" is
+		// legitimate prompt text — `ares run please run the tests` used to
+		// drop both "run" words, silently rewriting the user's prompt.
+		if !seenRun && a == "run" {
+			seenRun = true
 			continue
 		}
 		if skipNext {

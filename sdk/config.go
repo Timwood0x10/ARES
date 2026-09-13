@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -448,6 +449,36 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Evolution.
 	if c.Evolution.Enabled {
 		opts = append(opts, WithEvolution())
+	}
+
+	// Tools.mcp: stdio MCP server command list. This is the one field in the
+	// tools block with a real SDK capability behind it (WithMCP); without this
+	// wiring an `ares init`-generated `tools.mcp` list was parsed, validated
+	// and silently dropped. Each entry is a command line — first token is the
+	// executable, the rest are arguments.
+	//
+	// tools.builtin is deliberately NOT wired: the sdk registers no built-in
+	// tools of its own (only MCP and AKF knowledge tools reach the registry),
+	// so honouring the flag would mean inventing a tool set that does not
+	// exist. It stays a documented no-op rather than a silent fake.
+	for _, cmdline := range c.Tools.MCP {
+		fields := strings.Fields(cmdline)
+		if len(fields) == 0 {
+			continue
+		}
+		opts = append(opts, WithMCP(MCPConn{
+			Command: fields[0],
+			Args:    fields[1:],
+		}))
+	}
+
+	// Reflection has no SDK implementation: there is no WithReflection and no
+	// consumer of the flag anywhere in the tree. Enabling it must fail loudly
+	// instead of drifting into a silent no-op that leaves the user believing
+	// self-reflection is active. The zero value (disabled) is the default and
+	// keeps working.
+	if c.Reflection.Enabled {
+		return nil, errors.New("sdk: reflection.enabled is set but the sdk has no reflection implementation; remove the key or set it to false")
 	}
 
 	return opts, nil

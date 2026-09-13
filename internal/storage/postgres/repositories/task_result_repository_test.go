@@ -409,7 +409,10 @@ func TestTaskResultRepository_SearchByVector(t *testing.T) {
 	}
 }
 
-// TestTaskResultRepository_SearchByVector_EmptyEmbedding tests search with empty embedding.
+// TestTaskResultRepository_SearchByVector_EmptyEmbedding locks the fail-closed
+// contract: an empty embedding is an invalid vector-search input and must be
+// rejected, not silently degraded to "no results". This matches every other
+// repository's SearchByVector and the empty-tenant guard (ErrMissingTenantID).
 func TestTaskResultRepository_SearchByVector_EmptyEmbedding(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -438,11 +441,10 @@ func TestTaskResultRepository_SearchByVector_EmptyEmbedding(t *testing.T) {
 	err := repo.Create(ctx, result)
 	require.NoError(t, err)
 
-	// Search with empty embedding
+	// Search with an empty embedding must fail closed.
 	searchResults, err := repo.SearchByVector(ctx, []float64{}, "tenant-1", 10)
-	require.NoError(t, err)
-	// Empty embedding should return no results
-	assert.Empty(t, searchResults)
+	require.Error(t, err)
+	assert.Nil(t, searchResults)
 }
 
 // TestTaskResultRepository_SearchByVector_TenantIsolation tests tenant isolation in vector search.

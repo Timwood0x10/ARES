@@ -26,8 +26,22 @@ type StrategyRow struct {
 }
 
 // StrategyRepository provides Postgres persistence for evolution strategies.
+//
+// UNSCHEMA-COMPATIBLE / NO PRODUCTION CALLERS. This repository assumes a
+// one-row-per-strategy model keyed on VARCHAR id with ON CONFLICT (id)
+// upsert. The authoritative evolution_strategies schema in migrate.go is
+// append-only one-row-per-version keyed on BIGSERIAL id plus strategy_id, and
+// is used by runtime/ares_evolution's PGStrategyStore (the only store wired in
+// production). That schema cannot express this repository's upsert model, so
+// the two are mutually incompatible — wiring this repository against the
+// migrated table would fail at runtime, not merely read across tenants.
+//
+// Queries here still scope by tenant_id, but tenant safety is not the
+// blocking concern; porting to the versioned schema is. Its tests run against
+// a legacy-shaped table created in repository_test_helper.go.
 type StrategyRepository struct {
-	db postgres.DBTX
+	db       postgres.DBTX
+	tenantID string
 }
 
 // NewStrategyRepository creates a new StrategyRepository.
@@ -38,18 +52,28 @@ type StrategyRepository struct {
 //
 // Returns:
 //
-//	*StrategyRepository - the configured repository instance.
+//	*StrategyRepository - the configured repository instance bound to the
+//	default tenant. Use NewStrategyRepositoryWithTenant to scope a specific
+//	tenant.
 func NewStrategyRepository(db postgres.DBTX) *StrategyRepository {
-	return &StrategyRepository{db: db}
+	return NewStrategyRepositoryWithTenant(db, "")
 }
 
-// GetActive returns the currently active strategy, or nil when no strategy
-// is marked active.
+// NewStrategyRepositoryWithTenant creates a StrategyRepository scoped to one
+// tenant. An empty tenantID resolves to the default tenant.
+func NewStrategyRepositoryWithTenant(db postgres.DBTX, tenantID string) *StrategyRepository {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return &StrategyRepository{db: db, tenantID: tenantID}
+}
+
+// GetActive returns the currently active strategy for this repository's
+// tenant, or nil when no strategy is marked active.
 //
-// Single-tenant by design: evolution_strategies has no tenant_id column —
-// the GA population is process-global, matching the evolution system's
-// single-trust-root scope. Multi-tenant isolation here would require a
-// schema migration and is out of scope until evolution itself is scoped.
+// Tenant-scoped: evolution_strategies now carries tenant_id, and the predicate
+// confines this read to the bound tenant — another tenant's active strategy is
+// invisible here.
 //
 // Args:
 //
@@ -62,10 +86,10 @@ func NewStrategyRepository(db postgres.DBTX) *StrategyRepository {
 func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error) {
 	query := `SELECT id, name, version, params, parent_id, prompt_template,
 		strategy_mutation_type, mutation_desc, score, created_at, is_active
-		FROM evolution_strategies WHERE is_active = true
+		FROM evolution_strategies WHERE is_active = true AND tenant_id = $1
 		ORDER BY version DESC LIMIT 1`
 
-	row := r.db.QueryRowContext(ctx, query)
+	row := r.db.QueryRowContext(ctx, query, r.tenantID)
 
 	var (
 		id, name, parentID, promptTmpl, mutationType, mutationDesc string
@@ -151,10 +175,10 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s St
 		}
 	}()
 
-	deactivateQ := `UPDATE evolution_strategies SET is_active = false WHERE is_active = true`
+	deactivateQ := `UPDATE evolution_strategies SET is_active = false WHERE is_active = true AND tenant_id = $1`
 	// RowsAffected is intentionally ignored: 0 affected rows means no
 	// previously active strategy (normal on first deployment).
-	if _, err := tx.ExecContext(ctx, deactivateQ); err != nil {
+	if _, err := tx.ExecContext(ctx, deactivateQ, r.tenantID); err != nil {
 		return errors.Wrap(err, "deactivate strategies")
 	}
 
@@ -167,7 +191,7 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s St
 	}
 
 	if _, err = tx.ExecContext(ctx, insertQ,
-		s.ID, s.Name, s.Version, paramsJSON,
+		r.tenantID, s.ID, s.Name, s.Version, paramsJSON,
 		s.ParentID, s.PromptTemplate,
 		s.StrategyMutationType, s.MutationDesc,
 		s.Score, createdAt,
@@ -186,9 +210,9 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s St
 // included — so rolling back to a KNOWN strategy always failed.
 func (r *StrategyRepository) activeInsertQuery() string {
 	return `INSERT INTO evolution_strategies
-		(id, is_active, name, version, params, parent_id, prompt_template,
+		(tenant_id, id, is_active, name, version, params, parent_id, prompt_template,
 		 strategy_mutation_type, mutation_desc, score, created_at, updated_at)
-		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		VALUES ($1, $2, true, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			is_active = true,
 			name = EXCLUDED.name,
@@ -199,15 +223,21 @@ func (r *StrategyRepository) activeInsertQuery() string {
 			strategy_mutation_type = EXCLUDED.strategy_mutation_type,
 			mutation_desc = EXCLUDED.mutation_desc,
 			score = EXCLUDED.score,
-			updated_at = NOW()`
+			updated_at = NOW()
+		-- id is not tenant-qualified: only re-activate a row this tenant
+		-- already owns. Another tenant's strategy with the same id must not
+		-- be taken over (the SET used to re-bind tenant_id unconditionally).
+		WHERE evolution_strategies.tenant_id = EXCLUDED.tenant_id`
 }
 
+// setActiveNoTx mirrors setActiveTx for a handle that cannot begin a
+// transaction. Without a transaction the two statements cannot be atomic, so
+// their ORDER is the safety property: the new strategy is inserted/activated
+// FIRST, then every other active row is deactivated. A failed insert therefore
+// leaves the previously active strategy in place. The old order deactivated
+// everything first, so an insert failure left the system with NO active
+// strategy at all.
 func (r *StrategyRepository) setActiveNoTx(ctx context.Context, s StrategyRow, paramsJSON []byte) error {
-	deactivateQ := `UPDATE evolution_strategies SET is_active = false WHERE is_active = true`
-	if _, err := r.db.ExecContext(ctx, deactivateQ); err != nil {
-		return errors.Wrap(err, "deactivate strategies")
-	}
-
 	insertQ := r.activeInsertQuery()
 
 	now := time.Now()
@@ -216,13 +246,22 @@ func (r *StrategyRepository) setActiveNoTx(ctx context.Context, s StrategyRow, p
 		createdAt = now
 	}
 
-	_, err := r.db.ExecContext(ctx, insertQ,
-		s.ID, s.Name, s.Version, paramsJSON,
+	if _, err := r.db.ExecContext(ctx, insertQ,
+		r.tenantID, s.ID, s.Name, s.Version, paramsJSON,
 		s.ParentID, s.PromptTemplate,
 		s.StrategyMutationType, s.MutationDesc,
 		s.Score, createdAt,
-	)
-	return errors.Wrap(err, "insert strategy")
+	); err != nil {
+		return errors.Wrap(err, "insert strategy")
+	}
+
+	// Deactivate every OTHER active strategy for this tenant, excluding the one
+	// just activated.
+	deactivateQ := `UPDATE evolution_strategies SET is_active = false WHERE is_active = true AND tenant_id = $1 AND id <> $2`
+	if _, err := r.db.ExecContext(ctx, deactivateQ, r.tenantID, s.ID); err != nil {
+		return errors.Wrap(err, "deactivate strategies")
+	}
+	return nil
 }
 
 // List returns the last n strategies ordered by version descending.
@@ -239,9 +278,9 @@ func (r *StrategyRepository) setActiveNoTx(ctx context.Context, s StrategyRow, p
 func (r *StrategyRepository) List(ctx context.Context, n int) ([]StrategyRow, error) {
 	query := `SELECT id, name, version, params, parent_id, prompt_template,
 		strategy_mutation_type, mutation_desc, score, created_at, is_active
-		FROM evolution_strategies ORDER BY version DESC LIMIT $1`
+		FROM evolution_strategies WHERE tenant_id = $1 ORDER BY version DESC LIMIT $2`
 
-	rows, err := r.db.QueryContext(ctx, query, n)
+	rows, err := r.db.QueryContext(ctx, query, r.tenantID, n)
 	if err != nil {
 		return nil, errors.Wrap(err, "list strategies")
 	}

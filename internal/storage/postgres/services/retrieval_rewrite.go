@@ -157,8 +157,17 @@ func (s *RetrievalService) buildQueries(ctx context.Context, original string, pl
 	}
 
 	// 2. LLM-based rewriting (optional, high quality but lower weight + fail-safe)
-	if plan.EnableQueryRewrite {
+	//
+	// Gated by shouldRewriteQuery, which enforces the minimum-length rule and
+	// the query cache. Without the gate every Search paid an LLM round-trip
+	// whenever EnableQueryRewrite was set, and the cache was written but never
+	// read — a repeat query hit the LLM again.
+	if plan.EnableQueryRewrite && s.shouldRewriteQuery(original) {
 		llmRewrites, err := s.llmBasedRewrite(ctx, original)
+		// Record the attempt either way: the gate's cache is the mechanism that
+		// stops a repeat Search from re-paying the LLM, and it must be written
+		// even when the rewrite produced nothing (nil client, provider error).
+		s.markQueryCached(original)
 		if err != nil {
 			s.logger.Warn("LLM rewrite failed, using rule-based only", "error", err)
 		} else {

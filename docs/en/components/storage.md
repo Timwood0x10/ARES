@@ -250,7 +250,7 @@ LIMIT 1000
 
 Every id-scoped query carries an explicit `AND tenant_id = $n`, and every
 id-scoped mutator takes `tenantID` as a parameter. The contract is locked by
-the isolation suites (`internal/ares_integration/tenant_isolation_mutators_test.go`):
+the isolation suites (`tests/integration/tenant_isolation_mutators_test.go`):
 a cross-tenant access returns `ErrRecordNotFound` and leaves the row untouched.
 
 ```sql

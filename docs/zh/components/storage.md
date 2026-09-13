@@ -250,7 +250,7 @@ LIMIT 1000
 
 每个 id-scoped 查询显式带 `AND tenant_id = $n`，每个 id-scoped mutator
 以参数接收 `tenantID`。契约由隔离测试套件锁定
-（`internal/ares_integration/tenant_isolation_mutators_test.go`）：
+（`tests/integration/tenant_isolation_mutators_test.go`）：
 跨租户访问返回 `ErrRecordNotFound` 且行数据不变。
 
 ```sql

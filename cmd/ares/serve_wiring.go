@@ -510,8 +510,13 @@ func startServeHTTPAndHooks(
 		"write", routeLevels[authWrite],
 		"local", routeLevels[authLocal],
 	)
+	// validateServeConfig has already refused to start on this combination
+	// (wildcard host + no auth + no introspect token), so reaching here means
+	// the operator either enabled auth, set a token, or bound loopback. The
+	// remaining Info line records which posture is live for the audit trail.
 	if isWildcardHost(cfg.Server.Host) && !authConfigured {
-		log.Info("WARNING: server.host binds all interfaces while security.auth_enabled is false — the unauthenticated introspect read API (/api/v1/introspect/*) is reachable from the network; set security.auth_enabled, introspect.token, or bind localhost", "host", cfg.Server.Host)
+		log.Info("serve: wildcard bind is gated by introspect.token (security.auth_enabled is false)",
+			"host", cfg.Server.Host)
 	}
 
 	// One shared audit sink for the actionHandler, so auth decisions and

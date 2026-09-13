@@ -149,6 +149,15 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]any{"error": "peer runtime not active"})
 		return
 	}
+	// scheduler is a plain pointer on kernelHandle, set only during peer
+	// assembly (kernel.go's own readiness probe already guards `k.scheduler ==
+	// nil`), so a partially assembled kernel must degrade to 503 here rather
+	// than dereference it for Capabilities().
+	if h.kernel.scheduler == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "peer scheduler not active"})
+		return
+	}
 	var req graphSubmissionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)

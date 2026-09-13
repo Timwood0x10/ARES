@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
@@ -610,10 +611,17 @@ const maxArchiveRoundEvents = 50000
 
 // maxArchiveDrainRounds caps the number of rounds a single drain may archive,
 // so a pathological stream cannot park the compaction check indefinitely. It
-// is a var (not a const) only so tests can lower it; production never writes
-// it. Exhausting the cap is a HARD ERROR, not a quiet success — see
+// is mutable only so tests can lower it; production never writes it.
+// Exhausting the cap is a HARD ERROR, not a quiet success — see
 // drainPendingRounds.
-var maxArchiveDrainRounds = 1000
+//
+// The value is atomic because Append spawns a background goroutine that calls
+// drainPendingRounds, so a test writing the knob races that reader: under
+// `go test -race` the package intermittently reported a data race here (and
+// the drain sometimes observed a half-written cap).
+var maxArchiveDrainRounds atomic.Int64
+
+func init() { maxArchiveDrainRounds.Store(1000) }
 
 // archivePendingRounds archives the next un-archived round for the stream and
 // returns its error. It is a thin wrapper around archivePendingRoundsOnce that
@@ -631,7 +639,10 @@ func (s *CompactableEventStore) archivePendingRounds(ctx context.Context, stream
 // CheckAndCompact so the compaction core cannot trim raw events belonging to
 // an un-archived round, which would permanently lose its RoundRecord.
 func (s *CompactableEventStore) drainPendingRounds(ctx context.Context, streamID string) error {
-	for range maxArchiveDrainRounds {
+	// Snapshot the cap once: it is read on every pass otherwise, and a test
+	// lowering it mid-drain would change the bound under the loop.
+	drainCap := int(maxArchiveDrainRounds.Load())
+	for range drainCap {
 		archived, err := s.archivePendingRoundsOnce(ctx, streamID)
 		if err != nil {
 			return err
@@ -647,7 +658,7 @@ func (s *CompactableEventStore) drainPendingRounds(ctx context.Context, streamID
 	// Compaction is deferred to a later window instead.
 	return fmt.Errorf(
 		"archive: drain on stream %q hit the %d-round cap with rounds still pending; refusing to signal a complete flush",
-		streamID, maxArchiveDrainRounds)
+		streamID, drainCap)
 }
 
 // archivePendingRoundsOnce archives the next un-archived round (if any) for

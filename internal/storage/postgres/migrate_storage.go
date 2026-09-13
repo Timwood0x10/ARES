@@ -41,36 +41,18 @@ var storageMigrations = []string{
 		updated_at TIMESTAMP DEFAULT NOW()
 	)`,
 
-	// RLS policies are RETAINED as the future-expansion isolation contract
-	// (decision: keep, not delete). They are INERT today and must NOT be
-	// relied on as a security control: the app connects as the table owner
-	// (Postgres skips RLS for the owner unless FORCE ROW LEVEL SECURITY is
-	// set — neither is used), and no query binds app.tenant_id. The real
-	// isolation barrier is the explicit `WHERE tenant_id = $N` predicate in
-	// every repository query, locked by tenant-contract tests.
-	//
-	// BEFORE ENFORCING THESE POLICIES (future multi-tenant work), all of the
-	// following are mandatory — skipping any one silently breaks the system:
-	//
-	//  1. Bind app.tenant_id via set_config on the SAME connection for EVERY
-	//     query. The policy reads current_setting('app.tenant_id', true),
-	//     which returns NULL when unset; `tenant_id = NULL` is never TRUE, so
-	//     every row becomes invisible AND (policy type ALL defaults WITH CHECK
-	//     to USING) every INSERT/UPDATE is rejected — a silent blackout with
-	//     no error, not a loud failure.
-	//  2. Switch to a non-owner role (or add FORCE ROW LEVEL SECURITY);
-	//     otherwise the owner keeps bypassing the policy entirely.
-	//  3. Bind per-transaction (set_config is_local=true inside a tx), not
-	//     connection-level. The existing QueryWithTenant uses is_local=false
-	//     and relies on ManagedRows.Close / a non-deterministic Go finalizer
-	//     to clear it — a leaked finalizer leaves a stale tenant GUC on a
-	//     pooled connection and the next bare query reads another tenant's
-	//     rows.
-	`ALTER TABLE knowledge_chunks_1024 ENABLE ROW LEVEL SECURITY`,
-
-	// Create tenant isolation policy
-	`CREATE POLICY tenant_isolation_knowledge_1024 ON knowledge_chunks_1024
-		USING (tenant_id = current_setting('app.tenant_id', true))`,
+	// RLS residue cleanup (signed 方案 B, plan/0.3.1plan/tenant_isolation.md
+	// 残骸清除): the policy this replaces never fired — the app connects as
+	// the table owner (Postgres skips RLS for the owner without FORCE) and no
+	// query binds app.tenant_id — it only implied a DB-level backstop that
+	// did not exist. Isolation is carried by the explicit `WHERE tenant_id =
+	// $N` predicates in repository queries, locked by the tenant-contract
+	// suites in tests/integration/. Both statements below are idempotent and
+	// also strip the residue from databases created by older builds. The
+	// pre-enforcement checklist (per-query set_config, non-owner role,
+	// per-transaction binding) lives in the plan document.
+	`ALTER TABLE knowledge_chunks_1024 DISABLE ROW LEVEL SECURITY`,
+	`DROP POLICY IF EXISTS tenant_isolation_knowledge_1024 ON knowledge_chunks_1024`,
 
 	// Create auto-update trigger for tsv
 	`DROP TRIGGER IF EXISTS tsvector_update_knowledge_1024 ON knowledge_chunks_1024`,
@@ -171,9 +153,9 @@ var storageMigrations = []string{
 			usage_count INTEGER DEFAULT 0
 		)`,
 
-	`ALTER TABLE experiences_1024 ENABLE ROW LEVEL SECURITY`,
-	`CREATE POLICY tenant_isolation_experiences_1024 ON experiences_1024
-		USING (tenant_id = current_setting('app.tenant_id', true))`,
+	// RLS residue cleanup (signed 方案 B) — see the knowledge_chunks_1024 note.
+	`ALTER TABLE experiences_1024 DISABLE ROW LEVEL SECURITY`,
+	`DROP POLICY IF EXISTS tenant_isolation_experiences_1024 ON experiences_1024`,
 
 	// Create indexes for experiences_1024.
 	// Partial on `embedding IS NOT NULL` for the same reason as the knowledge
@@ -272,9 +254,9 @@ var storageMigrations = []string{
 			UNIQUE (tenant_id, name)
 		)`,
 
-	`ALTER TABLE tools ENABLE ROW LEVEL SECURITY`,
-	`CREATE POLICY tenant_isolation_tools ON tools
-		USING (tenant_id = current_setting('app.tenant_id', true))`,
+	// RLS residue cleanup (signed 方案 B) — see the knowledge_chunks_1024 note.
+	`ALTER TABLE tools DISABLE ROW LEVEL SECURITY`,
+	`DROP POLICY IF EXISTS tenant_isolation_tools ON tools`,
 
 	// Create indexes for tools
 	`CREATE INDEX IF NOT EXISTS idx_tools_tenant_name 
@@ -308,9 +290,9 @@ var storageMigrations = []string{
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-	`ALTER TABLE conversations ENABLE ROW LEVEL SECURITY`,
-	`CREATE POLICY tenant_isolation_conversations ON conversations
-		USING (tenant_id = current_setting('app.tenant_id', true))`,
+	// RLS residue cleanup (signed 方案 B) — see the knowledge_chunks_1024 note.
+	`ALTER TABLE conversations DISABLE ROW LEVEL SECURITY`,
+	`DROP POLICY IF EXISTS tenant_isolation_conversations ON conversations`,
 
 	// Create indexes for conversations
 	`CREATE INDEX IF NOT EXISTS idx_conversations_session 
@@ -349,9 +331,9 @@ var storageMigrations = []string{
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-	`ALTER TABLE ` + storage_models.TaskResultsTable + ` ENABLE ROW LEVEL SECURITY`,
-	`CREATE POLICY tenant_isolation_task_results_1024 ON ` + storage_models.TaskResultsTable + `
-		USING (tenant_id = current_setting('app.tenant_id', true))`,
+	// RLS residue cleanup (signed 方案 B) — see the knowledge_chunks_1024 note.
+	`ALTER TABLE ` + storage_models.TaskResultsTable + ` DISABLE ROW LEVEL SECURITY`,
+	`DROP POLICY IF EXISTS tenant_isolation_task_results_1024 ON ` + storage_models.TaskResultsTable,
 
 	// Create indexes for task_results_1024
 	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_embedding
@@ -389,9 +371,9 @@ var storageMigrations = []string{
 			UNIQUE (tenant_id, key)
 		)`,
 
-	`ALTER TABLE secrets ENABLE ROW LEVEL SECURITY`,
-	`CREATE POLICY tenant_isolation_secrets ON secrets
-		USING (tenant_id = current_setting('app.tenant_id', true))`,
+	// RLS residue cleanup (signed 方案 B) — see the knowledge_chunks_1024 note.
+	`ALTER TABLE secrets DISABLE ROW LEVEL SECURITY`,
+	`DROP POLICY IF EXISTS tenant_isolation_secrets ON secrets`,
 
 	// Create indexes for secrets
 	`CREATE INDEX IF NOT EXISTS idx_secrets_tenant_key 

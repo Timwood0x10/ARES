@@ -229,7 +229,12 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 		return errors.Wrap(err, "failed to create secrets table")
 	}
 
-	// Create evolution_strategies table (mirrors migrate.go:166).
+	// Create evolution_strategies table in the LEGACY shape used only by the
+	// unwired StrategyRepository. This deliberately does NOT mirror migrate.go:
+	// the authoritative schema (migrate.go + runtime/ares_evolution's
+	// PGStrategyStore) is append-only one-row-per-version keyed on BIGSERIAL id
+	// plus strategy_id, which cannot express this repository's
+	// ON CONFLICT (id) upsert model. See StrategyRepository's doc comment.
 	// #nosec G101 - Test file with SQL table definition
 	evolutionTableSQL := `
 		DROP TABLE IF EXISTS evolution_strategies;

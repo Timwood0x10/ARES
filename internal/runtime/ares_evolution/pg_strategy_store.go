@@ -27,7 +27,17 @@ type PGStrategyStore struct {
 	db         *sql.DB
 	tableName  string
 	maxHistory int
+	// tenantID scopes every read/write to one tenant's strategy history. The
+	// evolution system is a per-process singleton (one deployed strategy at a
+	// time), so binding the tenant at construction is sufficient — this is not
+	// a per-request store. Empty falls back to defaultTenantID for
+	// single-tenant deployments.
+	tenantID string
 }
+
+// defaultTenantID matches the postgres package's DefaultTenantID backfill value,
+// keeping this store consistent with the schema migration for evolution_strategies.
+const defaultTenantID = "default"
 
 // NewPGStrategyStore creates a PostgreSQL-backed strategy store.
 // The table is created automatically if it does not exist.
@@ -37,23 +47,29 @@ type PGStrategyStore struct {
 //	db         - active database connection pool.
 //	tableName  - name of the table to store strategies in.
 //	maxHistory - maximum history entries per strategy (0 = unlimited).
+//	tenantID   - tenant that owns this store's strategy history; empty falls
+//	             back to defaultTenantID (single-tenant deployments).
 //
 // Returns:
 //
 //	*PGStrategyStore - the configured store.
 //	error - non-nil if table creation fails.
-func NewPGStrategyStore(db *sql.DB, tableName string, maxHistory int) (*PGStrategyStore, error) {
+func NewPGStrategyStore(db *sql.DB, tableName string, maxHistory int, tenantID string) (*PGStrategyStore, error) {
 	if db == nil {
 		return nil, errors.New("pg strategy store: db must not be nil")
 	}
 	if tableName == "" {
 		tableName = "evolution_strategies"
 	}
+	if tenantID == "" {
+		tenantID = defaultTenantID
+	}
 
 	store := &PGStrategyStore{
 		db:         db,
 		tableName:  tableName,
 		maxHistory: maxHistory,
+		tenantID:   tenantID,
 	}
 
 	if err := store.createTable(context.Background()); err != nil {
@@ -63,6 +79,7 @@ func NewPGStrategyStore(db *sql.DB, tableName string, maxHistory int) (*PGStrate
 	pgLog.Info(context.Background(), "pg strategy store initialized",
 		"table", tableName,
 		"max_history", maxHistory,
+		"tenant_id", tenantID,
 	)
 	return store, nil
 }
@@ -73,6 +90,7 @@ func (s *PGStrategyStore) createTable(ctx context.Context) error {
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id          BIGSERIAL PRIMARY KEY,
+			tenant_id   TEXT NOT NULL DEFAULT 'default',
 			strategy_id TEXT NOT NULL,
 			version     INTEGER NOT NULL DEFAULT 1,
 			name        TEXT NOT NULL DEFAULT '',
@@ -87,7 +105,8 @@ func (s *PGStrategyStore) createTable(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_%s_sid ON %s(strategy_id);
 		CREATE INDEX IF NOT EXISTS idx_%s_active ON %s(is_active) WHERE is_active = TRUE;
-	`, s.tableName, s.tableName, s.tableName, s.tableName, s.tableName)
+		ALTER TABLE %s ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+	`, s.tableName, s.tableName, s.tableName, s.tableName, s.tableName, s.tableName)
 	_, err := s.db.ExecContext(ctx, query)
 	return err
 }
@@ -103,12 +122,12 @@ func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 		SELECT strategy_id, version, name, parent_id, prompt_template,
 		       mutation_type, mutation_desc, params, score, created_at
 		FROM %s
-		WHERE is_active = TRUE
+		WHERE is_active = TRUE AND tenant_id = $1
 		ORDER BY created_at DESC
 		LIMIT 1
 	`, s.tableName)
 
-	row := s.db.QueryRowContext(ctx, query)
+	row := s.db.QueryRowContext(ctx, query, s.tenantID)
 	var (
 		strategyID, name, parentID, promptTmpl, mutType, mutDesc string
 		version                                                  int
@@ -164,42 +183,43 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Deactivate all existing active strategies.
+	// Deactivate all existing active strategies for THIS tenant only.
 	//nolint:gosec // G201: tableName is application-controlled, not user input
-	deactivateQuery := fmt.Sprintf(`UPDATE %s SET is_active = FALSE WHERE is_active = TRUE`, s.tableName)
-	if _, err := tx.ExecContext(ctx, deactivateQuery); err != nil {
+	deactivateQuery := fmt.Sprintf(`UPDATE %s SET is_active = FALSE WHERE is_active = TRUE AND tenant_id = $1`, s.tableName)
+	if _, err := tx.ExecContext(ctx, deactivateQuery, s.tenantID); err != nil {
 		return fmt.Errorf("pg strategy store: deactivate: %w", err)
 	}
 
-	// Insert the new active strategy.
+	// Insert the new active strategy, tagged with this store's tenant.
 	//nolint:gosec // G201: tableName is application-controlled, not user input
 	insertQuery := fmt.Sprintf(`
-		INSERT INTO %s (strategy_id, version, name, parent_id, prompt_template,
+		INSERT INTO %s (tenant_id, strategy_id, version, name, parent_id, prompt_template,
 		                mutation_type, mutation_desc, params, score, created_at, is_active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
 	`, s.tableName)
 	if _, err := tx.ExecContext(ctx, insertQuery,
-		strategy.ID, strategy.Version, strategy.Name, strategy.ParentID,
+		s.tenantID, strategy.ID, strategy.Version, strategy.Name, strategy.ParentID,
 		strategy.PromptTemplate, strategy.StrategyMutationType, strategy.MutationDesc,
 		paramsJSON, strategy.Score, strategy.CreatedAt,
 	); err != nil {
 		return fmt.Errorf("pg strategy store: insert: %w", err)
 	}
 
-	// Prune history if maxHistory is set.
+	// Prune history if maxHistory is set. Scoped to this tenant so pruning one
+	// tenant's history never deletes another tenant's rows.
 	if s.maxHistory > 0 {
 		//nolint:gosec // G201: tableName is application-controlled, not user input
 		pruneQuery := fmt.Sprintf(`
 			DELETE FROM %s
-			WHERE strategy_id = $1
+			WHERE strategy_id = $1 AND tenant_id = $2
 			  AND id NOT IN (
 			      SELECT id FROM %s
-			      WHERE strategy_id = $1
+			      WHERE strategy_id = $1 AND tenant_id = $2
 			      ORDER BY created_at DESC
-			      LIMIT $2
+			      LIMIT $3
 			  )
 		`, s.tableName, s.tableName)
-		if _, err := tx.ExecContext(ctx, pruneQuery, strategy.ID, s.maxHistory); err != nil {
+		if _, err := tx.ExecContext(ctx, pruneQuery, strategy.ID, s.tenantID, s.maxHistory); err != nil {
 			return fmt.Errorf("pg strategy store: prune: %w", err)
 		}
 	}
@@ -224,14 +244,15 @@ func (s *PGStrategyStore) GetHistory(ctx context.Context, id string, n int) ([]*
 		SELECT strategy_id, version, name, parent_id, prompt_template,
 		       mutation_type, mutation_desc, params, score, created_at
 		FROM %s
-		WHERE strategy_id = $1
+		WHERE strategy_id = $1 AND tenant_id = $2
 		ORDER BY created_at DESC
 	`, s.tableName)
+	args := []any{id, s.tenantID}
 	if n > 0 {
 		query += fmt.Sprintf(" LIMIT %d", n)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, id)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: get history: %w", err)
 	}

@@ -83,7 +83,7 @@ flowchart TD
         EVAL["eval/<br/>evaluator.go:14 · llm_judge.go:89<br/>process_verifier.go:28<br/>result_verifier.go:34<br/>types.go TestCase:60 · report.go:182"]
         MEM["memory/<br/>manager.go:20 · pipeline.go:97<br/>context/ · distillation/ · embedding/<br/>experience/ · experienceadapters/<br/>push/ · report/"]
         ARENA["arena/<br/>scenario.go:14 · injector.go:48<br/>service.go:28 · regression.go:108<br/>survival.go:72 · score.go:37<br/>http.go:90"]
-        AEVO["ares_evolution/ GA v1<br/>dream_cycle.go:186 · adapter.go<br/>genome/ population:28 selection:42<br/>crossover:55 multi_objective<br/>mutation/ mutator.go:23<br/>guided_mutator · llm_hint_provider<br/>scoring/ · experience/ · promotion/<br/>gate_eval.go · fitness_aggregator.go"]
+        AEVO["runtime/ares_evolution/ GA v1<br/>dream_cycle.go:186 · adapter.go<br/>genome/ population:28 selection:42<br/>crossover:55 multi_objective<br/>mutation/ mutator.go:23<br/>guided_mutator · llm_hint_provider<br/>scoring/ · experience/ · promotion/<br/>gate_eval.go · fitness_aggregator.go"]
         EVO2["evolution/ v2<br/>candidate.go · candidate_pipeline.go<br/>gate3_orchestrator.go<br/>coordinator/ · deployment/<br/>diff/ · genome/ · patch/"]
     end
 

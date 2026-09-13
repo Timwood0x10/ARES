@@ -295,9 +295,13 @@ func (r *TaskResultRepository) Delete(ctx context.Context, id, tenantID string) 
 // limit - maximum number of results to return.
 // Returns list of similar task results ordered by similarity.
 func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.TaskResult, error) {
-	// Handle empty embedding - return empty results
+	// An empty embedding is an invalid vector-search input, not "no
+	// constraint": `1 - (embedding <=> $1::vector)` needs a real vector, and
+	// silently returning no rows here used to hide the caller's failure to
+	// produce an embedding. Fail closed, matching every other repository's
+	// SearchByVector and the empty-tenant guard above.
 	if len(embedding) == 0 {
-		return []*storage_models.TaskResult{}, nil
+		return nil, errors.New("search by vector: embedding must not be empty")
 	}
 
 	// Convert embedding to pgvector format

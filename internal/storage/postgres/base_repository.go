@@ -77,13 +77,16 @@ func GetByID[T any](ctx context.Context, db DBTX, table, id, tenantID string, sc
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
 	}
-
-	query := fmt.Sprintf("SELECT * FROM %s WHERE id = $1", quotedTable)
-	args := []any{id}
-	if tenantID != "" {
-		query += " AND tenant_id = $2"
-		args = append(args, tenantID)
+	// Fail closed on an empty tenant. The tables behind this helper all carry a
+	// NOT NULL tenant_id column, so treating "" as "no tenant filter" silently
+	// degraded a scoped lookup into a cross-tenant one — the exact class of bug
+	// the per-repository guards exist to prevent.
+	if tenantID == "" {
+		return nil, ErrMissingTenantID
 	}
+
+	query := fmt.Sprintf("SELECT * FROM %s WHERE id = $1 AND tenant_id = $2", quotedTable)
+	args := []any{id, tenantID}
 
 	row := db.QueryRowContext(ctx, query, args...)
 	entity, err := scan(row)
@@ -109,13 +112,15 @@ func DeleteByID(ctx context.Context, db DBTX, table, id, tenantID string) error 
 	if id == "" {
 		return errors.ErrInvalidArgument
 	}
-
-	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", quotedTable)
-	args := []any{id}
-	if tenantID != "" {
-		query += " AND tenant_id = $2"
-		args = append(args, tenantID)
+	// Fail closed on an empty tenant, same rationale as GetByID: an unscoped
+	// DELETE is a cross-tenant delete, and every caller of this helper routes
+	// through a repository method that already carries a tenant parameter.
+	if tenantID == "" {
+		return ErrMissingTenantID
 	}
+
+	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1 AND tenant_id = $2", quotedTable)
+	args := []any{id, tenantID}
 
 	result, err := db.ExecContext(ctx, query, args...)
 	if err != nil {

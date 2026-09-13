@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -142,5 +143,37 @@ func TestConfigStoreWatchDebounceFastWrites(t *testing.T) {
 			t.Fatalf("watcher did not reload to final port within 3s, port=%d", s.Current().Server.Port)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestConfigStoreReloadDisclosesColdSections locks C-10: Reload replaced the
+// config and recorded "reloaded ok", but security.*, server.* and
+// kernel.chaos.* are consumed once at wiring time — a hot reload silently
+// changed nothing for them while telling the operator it succeeded. The
+// history entry must say so, instead of leaving an operator to believe a
+// rotated jwt_secret or a moved port took effect.
+func TestConfigStoreReloadDisclosesColdSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ares.yaml")
+	if err := os.WriteFile(path, []byte(storeYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewConfigStore(&Config{Server: ServerConfig{Port: 1}})
+	if err := s.Reload(context.Background(), path); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	hist := s.History()
+	if len(hist) != 1 {
+		t.Fatalf("history length = %d, want 1", len(hist))
+	}
+	msg := hist[0].Message
+	// server.* is in the reloaded file, so the entry must disclose that the
+	// running server was NOT rebound.
+	for _, want := range []string{"server", "restart"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("reload record must disclose the cold section %q, got: %q", want, msg)
+		}
 	}
 }

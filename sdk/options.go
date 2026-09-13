@@ -678,9 +678,17 @@ func WithHumanInput(fn HumanInputFunc) AgentOption {
 	}
 }
 
-// WithMaxIterations caps the number of ReAct (tool-calling) iterations the
-// agent will run before returning a "max iterations reached" result. Values
-// <= 0 fall back to the default (defaultMaxIterations).
+// WithMaxIterations records an iteration budget that the shared L2 path does
+// not enforce.
+//
+// Since 0.3.1 the L2 execution path is session-graph driven, so a run is
+// bounded by the planner's loop and WithAgentGovernance instead — this value
+// no longer shapes execution (see Agent.Run). The Evolve search-depth mapping
+// still reads it, so the field is not dead. Values <= 0 mean "unset".
+//
+// TODO(tech-debt): either enforce this budget on the L2 path or drop the
+// option. A stored-but-ignored bound is a silent no-op for callers who believe
+// they have capped a run.
 func WithMaxIterations(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {
@@ -689,10 +697,17 @@ func WithMaxIterations(n int) AgentOption {
 	}
 }
 
-// WithMaxTokens caps the cumulative prompt+completion tokens across all LLM
-// calls in one agent run. When the budget is exceeded the run stops early and
-// returns "max tokens reached" instead of burning more iterations (primitive
-// 4: bounded autonomous execution). Values <= 0 mean unbounded (default).
+// WithMaxTokens records a token budget that the shared L2 path does not
+// enforce.
+//
+// Since 0.3.1 the L2 execution path is session-graph driven, so a run is
+// bounded by WithTimeout / WithAgentGovernance instead — this value no longer
+// shapes execution (see Agent.Run). Nothing reads it back; the option is kept
+// purely for API compatibility. Values <= 0 mean unbounded (default).
+//
+// TODO(tech-debt): either accumulate prompt+completion tokens on the L2 path
+// and stop the run at this budget, or drop the option. A stored-but-ignored
+// bound is a silent no-op for callers who believe they have capped a run.
 func WithMaxTokens(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {

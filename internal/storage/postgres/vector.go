@@ -79,10 +79,16 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 		return nil, errors.Wrap(err, "format table name")
 	}
 
+	// `embedding IS NOT NULL` is required, not cosmetic: the async embedding
+	// worker backfills the column, so rows can legitimately exist with a NULL
+	// embedding. `1 - (NULL <=> $1)` evaluates to NULL and the distance Scan
+	// into a float64 then fails, which used to make a whole search error out
+	// merely because it reached a not-yet-embedded row (same predicate
+	// knowledge_repository.SearchByVector already carries).
 	query := fmt.Sprintf(`
 		SELECT id, 1 - (embedding <=> $1::vector) as distance, metadata
 		FROM %s
-		WHERE tenant_id = $3
+		WHERE tenant_id = $3 AND embedding IS NOT NULL
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2
 	`, safeTable)

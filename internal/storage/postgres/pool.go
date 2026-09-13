@@ -360,13 +360,14 @@ func (m *ManagedRows) Close() error {
 // before the caller finishes reading the row data.
 //
 // There is deliberately NO QueryRowWithTenant counterpart, so this method
-// never binds app.tenant_id. Under an enabled RLS policy that reads
-// current_setting('app.tenant_id', true), an unbound setting is NULL and the
-// policy filters every row — the query fail-closes to ErrNoRows rather than
-// leaking. That is safe but silent: a caller adding the first tenant-scoped
-// single-row read must go through QueryWithTenant (and Close the rows) or it
-// will see "not found" instead of an error. Add a QueryRowWithTenant when
-// that call site appears; do not reach for QueryRow on tenant data.
+// never binds app.tenant_id. If RLS policies are ever re-introduced (signed
+// 方案 B keeps them out — see migrate_storage.go), an unbound app.tenant_id is
+// NULL and such a policy filters every row — the query would fail-close to
+// ErrNoRows rather than leak. That is safe but silent: a caller adding the
+// first tenant-scoped single-row read must go through QueryWithTenant (and
+// Close the rows) or it will see "not found" instead of an error. Add a
+// QueryRowWithTenant when that call site appears; do not reach for QueryRow
+// on tenant data.
 func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *ManagedRow {
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

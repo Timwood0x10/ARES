@@ -426,6 +426,16 @@ func (s *RetrievalService) isPrecisionMode(query string) bool {
 func (s *RetrievalService) searchPrecision(ctx context.Context, req *SearchRequest) ([]*SearchResult, error) {
 	s.logger.Debug("Executing precision search pipeline", "query", req.Query)
 
+	// The constructor does not require kbRepo, but every stage below
+	// dereferences it. Short queries (<=10 runes, plus expressions) route
+	// here unconditionally via isPrecisionMode, so an unassembled kbRepo used
+	// to panic on the most common entry path. Fail loud instead: precision
+	// retrieval is impossible without the knowledge base, and silently
+	// returning no results would hide the misconfiguration.
+	if s.kbRepo == nil {
+		return nil, errors.New("retrieval: knowledge base repository is not configured; precision search is unavailable")
+	}
+
 	// 1. Exact Match (highest priority)
 	exact, err := s.searchExact(ctx, req)
 	if err != nil {

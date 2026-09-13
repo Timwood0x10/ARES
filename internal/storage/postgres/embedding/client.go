@@ -187,6 +187,15 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 			return nil, err
 		}
 
+		// The batch service may legally return fewer embeddings than inputs
+		// (per-item failures are dropped upstream). Indexing by position would
+		// panic mid-assignment, leaving the caller with a crash instead of an
+		// actionable error, so the count is verified up front.
+		if len(batchEmbeddings) != len(uncachedIndices) {
+			return nil, fmt.Errorf("embedding client: batch service returned %d embeddings for %d uncached inputs",
+				len(batchEmbeddings), len(uncachedIndices))
+		}
+
 		// Assign batch results and cache them
 		for i, idx := range uncachedIndices {
 			embeddings[idx] = batchEmbeddings[i]
