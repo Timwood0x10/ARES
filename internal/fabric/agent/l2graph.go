@@ -246,6 +246,14 @@ const argMetadataPrefix = "arg."
 // strict-schema tool (additionalProperties:false) rejects.
 const sessionMetadataKey = "session_id"
 
+// tenantMetadataKey rides Step.Metadata UNPREFIXED for the same reason as
+// sessionMetadataKey: it is envelope plumbing (planprojection.parseTenantID
+// reads this exact key to populate the grown task's checkpoint TenantID),
+// not a tool argument. It is declared here so l2graph and planner_cognition
+// share one definition; prefixing it would keep the tenant off the envelope
+// AND leak it into CallTool as an undeclared argument.
+const tenantMetadataKey = "tenant_id"
+
 // AddToolNode grows a tool-instance node into the session graph in ONE AddNode
 // call, with the predecessor already in step DependsOn (the session root, or
 // the last tool node in a chain).
@@ -639,7 +647,8 @@ func argsMetadata(args map[string]any) map[string]string {
 	}
 	md := make(map[string]string, len(args))
 	for k, v := range args {
-		if k == sessionMetadataKey {
+		// Unprefixed keys are envelope plumbing, not tool arguments.
+		if k == sessionMetadataKey || k == tenantMetadataKey {
 			md[k] = stringify(v)
 			continue
 		}

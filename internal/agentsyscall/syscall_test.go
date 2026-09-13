@@ -9,8 +9,9 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
-	"github.com/Timwood0x10/ares/internal/fabric/task"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // stubExecutor is a minimal Executor for testing.
@@ -571,5 +572,112 @@ func TestCreatePlanAtomicRejectsCycle(t *testing.T) {
 		if _, terr := fabric.Task(id); terr == nil {
 			t.Fatalf("task %q must not exist after failed plan", id)
 		}
+	}
+}
+
+// TestCreateTaskInheritsContextTenant pins the tenant inheritance of
+// agent-created tasks: the envelope carries the CREATING quantum's tenant
+// (tenantctx), never an LLM-supplied payload value — the same Kernel-enforced
+// contract Origin follows.
+func TestCreateTaskInheritsContextTenant(t *testing.T) {
+	kernel := NewKernel(agentfabric.NewFabric(), taskfabric.NewFabric(), nil, nil)
+	ctx := tenantctx.With(context.Background(), "tenant-acme")
+
+	res, err := kernel.CreateTask(ctx, CreateTaskArgs{
+		Capability: "tool/grep",
+		Payload:    map[string]any{"tenant_id": "forged", "query": "q"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	tk, err := kernel.fabric.Task(res.TaskID)
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	if err != nil {
+		t.Fatalf("DecodeCheckpoint: %v", err)
+	}
+	if dc.TenantID != "tenant-acme" {
+		t.Fatalf("envelope tenant must come from the creating context, not the LLM payload; got %q", dc.TenantID)
+	}
+
+	// A tenant-less context yields a tenant-less envelope (default fallback).
+	res2, err := kernel.CreateTask(context.Background(), CreateTaskArgs{
+		Capability: "tool/grep",
+		Payload:    map[string]any{"query": "q"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask (tenant-less): %v", err)
+	}
+	tk2, err := kernel.fabric.Task(res2.TaskID)
+	if err != nil {
+		t.Fatalf("Task (tenant-less): %v", err)
+	}
+	dc2, err := taskfabric.DecodeCheckpoint(tk2.Checkpoint)
+	if err != nil {
+		t.Fatalf("DecodeCheckpoint (tenant-less): %v", err)
+	}
+	if dc2.TenantID != "" {
+		t.Fatalf("tenant-less context must yield an empty envelope tenant, got %q", dc2.TenantID)
+	}
+}
+
+// TestAskAgentStampsContextTenant pins the ask_agent tenant contract: the
+// asking quantum's tenant rides the dispatched payload (overwriting any
+// LLM-supplied value), so the collaboration session executes under the
+// asker's scope; a non-map payload passes through untouched.
+func TestAskAgentStampsContextTenant(t *testing.T) {
+	var got any
+	kernel := NewKernel(agentfabric.NewFabric(), nil, nil, nil)
+	kernel.SetAskAgent(func(_ context.Context, _, _, _ string, payload any) error {
+		got = payload
+		return nil
+	})
+
+	// Forged tenant in the args is overwritten by the context tenant.
+	if _, err := kernel.AskAgent(tenantctx.With(context.Background(), "tenant-acme"), AskAgentArgs{
+		To:      "peer",
+		Topic:   "t",
+		Payload: map[string]any{"tenant_id": "forged", "q": 1},
+	}); err != nil {
+		t.Fatalf("AskAgent: %v", err)
+	}
+	m, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("payload must stay a map, got %T", got)
+	}
+	if m["tenant_id"] != "tenant-acme" {
+		t.Fatalf("context tenant must overwrite the forged value; got %v", m["tenant_id"])
+	}
+	if m["q"] != 1 {
+		t.Fatalf("caller payload keys must survive the stamp; got %v", m["q"])
+	}
+
+	// A tenant-less context stamps the empty tenant — never a stale or
+	// forged value.
+	if _, err := kernel.AskAgent(context.Background(), AskAgentArgs{
+		To:      "peer",
+		Topic:   "t",
+		Payload: map[string]any{"tenant_id": "forged"},
+	}); err != nil {
+		t.Fatalf("AskAgent (tenant-less): %v", err)
+	}
+	m2, ok := got.(map[string]any)
+	if !ok || m2["tenant_id"] != "" {
+		t.Fatalf("tenant-less context must overwrite with empty, got %v", got)
+	}
+}
+
+// TestAskAgentPayloadNonMapPassesThrough covers the helper's defensive
+// branch: AskAgentArgs.Payload is map-typed, so a non-map value can only
+// arrive through a future caller — it must pass through unstamped rather
+// than panic or be wrapped.
+func TestAskAgentPayloadNonMapPassesThrough(t *testing.T) {
+	if got := askAgentPayload(context.Background(), "opaque"); got != "opaque" {
+		t.Fatalf("non-map payload must pass through verbatim, got %v", got)
+	}
+	if got := askAgentPayload(tenantctx.With(context.Background(), "t"), "opaque"); got != "opaque" {
+		t.Fatalf("non-map payload must stay unstamped even with a context tenant, got %v", got)
 	}
 }

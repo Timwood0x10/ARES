@@ -122,6 +122,7 @@ func submitFabricTask(
 	env := taskfabric.NewCheckpointEnvelope(task.Payload)
 	env.UserProfile = task.UserProfile
 	env.UsedExperienceID = task.UsedExperienceID
+	env.TenantID = task.TenantID
 
 	if err := fabric.Create(&taskfabric.Task{
 		ID:           task.TaskID,

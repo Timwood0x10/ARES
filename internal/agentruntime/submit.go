@@ -170,6 +170,11 @@ func (s *Submitter) Submit(
 	// Normalize every submission onto the L2 session path.
 	sessionID, _ = payload["session_id"].(string)
 	prompt, _ := payload["input"].(string)
+	// The submission's tenant rides the envelope so it survives the
+	// scheduler's asynchronous execution (ToModelTask restores it and the
+	// quantum stamps it into tenantctx). Optional: an absent tenant leaves
+	// the envelope field empty and every consumer falls back to its default.
+	tenantID, _ := payload["tenant_id"].(string)
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("sess-auto-%d", s.seq.Add(1))
 		payload["session_id"] = sessionID
@@ -199,6 +204,7 @@ func (s *Submitter) Submit(
 	// SessionID is always stamped (auto-admitted above), so the
 	// plannerCognition always finds a live per-session L2 graph.
 	env.SessionID = sessionID
+	env.TenantID = tenantID
 	task := &taskfabric.Task{
 		ID:         taskID,
 		Capability: capability,

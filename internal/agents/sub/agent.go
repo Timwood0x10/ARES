@@ -437,7 +437,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			KeyError:                             execErr.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
 			ares_events.EventKeyResult:           execErr.Error(),
-			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
@@ -454,7 +454,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			KeyError:                             guardErr.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
 			ares_events.EventKeyResult:           guardErr.Error(),
-			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
@@ -466,7 +466,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 		KeyAgentID:                           a.id,
 		ares_events.EventKeyTask:             taskEventText(task),
 		ares_events.EventKeyResult:           resultEventText(result),
-		ares_events.EventKeyTenantID:         distillTenantID(),
+		ares_events.EventKeyTenantID:         distillTenantID(task),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		ares_events.EventKeyStrategyID:       task.StrategyID,
 	})
@@ -593,7 +593,7 @@ func (a *subAgent) runTaskAndEmit(
 			KeyError:                             err.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
 			ares_events.EventKeyResult:           err.Error(),
-			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
@@ -611,7 +611,7 @@ func (a *subAgent) runTaskAndEmit(
 		KeyAgentID:                           a.id,
 		ares_events.EventKeyTask:             taskEventText(task),
 		ares_events.EventKeyResult:           resultEventText(result),
-		ares_events.EventKeyTenantID:         distillTenantID(),
+		ares_events.EventKeyTenantID:         distillTenantID(task),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		ares_events.EventKeyStrategyID:       task.StrategyID,
 	})

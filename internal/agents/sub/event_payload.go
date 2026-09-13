@@ -13,20 +13,21 @@ import (
 const maxEventTextFieldLen = 4000
 
 // distillTenantID returns the tenant scope used when storing distilled
-// experiences produced from this agent's task events.
+// experiences produced from this agent's task events: the executing task's
+// own tenant (restored from its checkpoint envelope by the scheduler, stamped
+// at submission), falling back to ares_events.DefaultTenantID for tasks that
+// carry none.
 //
-// Tenant strategy (v1, single-tenant): every experience is stored under
-// ares_events.DefaultTenantID ("default"). This MUST match the tenant the GA's
-// GuidanceProvider reads from, otherwise distilled hints are silently never
-// consumed. The experience repository scopes every read by tenant_id, so both
-// the write side (this emitter → distillation subscriber) and the read side
-// (GuidanceProvider) must agree.
-//
-// Multi-tenant is intentionally out of scope here: it requires threading the
-// caller's tenant through the GA's Mutate request context so the
-// GuidanceProvider can resolve the correct tenant at hint-lookup time. Until
-// then, forcing a single default tenant keeps the loop genuinely closed.
-func distillTenantID() string {
+// The fallback MUST match the tenant the GA's GuidanceProvider reads from,
+// otherwise distilled hints are silently never consumed. The experience
+// repository scopes every read by tenant_id, so the write side (this emitter
+// → distillation subscriber) and the read side (GuidanceProvider) agree on
+// the default for tenant-less tasks, while tenant-carrying tasks scope their
+// own facts.
+func distillTenantID(task *models.Task) string {
+	if task != nil && task.TenantID != "" {
+		return task.TenantID
+	}
 	return ares_events.DefaultTenantID
 }
 

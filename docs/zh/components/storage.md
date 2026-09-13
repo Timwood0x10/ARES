@@ -12,7 +12,7 @@
 1. **向量维度隔离**: 按维度分表（避免混合向量空间）
 2. **去重**: 基于 hash 的实时去重 + 异步嵌入去重
 3. **优雅降级**: 所有关键路径都有完整的降级机制
-4. **多租户**: RLS（行级安全）+ Tenant Guard 双层保护
+4. **多租户**: 每个 id-scoped 查询显式带 `tenant_id` 谓词（纯应用层——DB 级 RLS 经评估后明确否决，见 §5.1）
 
 ## 2. 架构组件
 
@@ -31,11 +31,11 @@
 | `models_config` | 模型版本跟踪 | 无 |
 
 #### 关键特性
-- **多租户**: 所有表都包含 `tenant_id` 字段
+- **多租户**: 租户范围表（`knowledge_chunks_1024`、`experiences_1024`、`tools`、`conversations`、任务结果表、`secrets`）带 NOT NULL 的 `tenant_id` 列；其余表不做租户范围
 - **向量索引**: IVFFlat 索引用于向量相似度搜索
 - **全文搜索**: TSV 索引，使用预计算的 tsvector 列
 - **Hash 去重**: `content_hash` 上的 UNIQUE 索引用于实时去重
-- **行级安全**: RLS 策略用于租户隔离
+- **行级安全**: 未使用——应用以表 owner 身份连接，无 `FORCE` 时 PG 对 owner 跳过 RLS；既有的死策略已清除而非留作装饰（见 §5.1）
 - **异步嵌入**: 基于队列的嵌入流程，带重试机制
 
 ### 2.2 系统架构
@@ -246,22 +246,28 @@ LIMIT 1000
 
 ### 5.1 多租户隔离
 
-**双层保护：**
-1. **RLS（行级安全）**：数据库级别的逻辑隔离
-2. **Tenant Guard**：应用级别的物理隔离
+**单一机制——应用层显式谓词（已签字决策，plan/0.3.1plan/tenant_isolation.md 方案 B）：**
 
-**实现：**
-```go
-// Tenant Guard
-func (g *TenantGuard) SetTenantContext(ctx context.Context, tenantID string) error {
-    _, err := g.db.ExecContext(ctx, "SET app.tenant_id = $1", tenantID)
-    return err
-}
+每个 id-scoped 查询显式带 `AND tenant_id = $n`，每个 id-scoped mutator
+以参数接收 `tenantID`。契约由隔离测试套件锁定
+（`internal/ares_integration/tenant_isolation_mutators_test.go`）：
+跨租户访问返回 `ErrRecordNotFound` 且行数据不变。
 
-// RLS 策略
-CREATE POLICY tenant_isolation ON knowledge_chunks_1024
-FOR ALL USING (tenant_id = current_setting('app.tenant_id')::TEXT);
+```sql
+-- 隔离承载在语句本身：
+SELECT ... FROM knowledge_chunks_1024
+WHERE chunk_id = $1 AND tenant_id = $2
 ```
+
+**明确不用的方案：**
+- **RLS**：应用以表 owner 身份连接，PostgreSQL 对 owner 在无 `FORCE` 时
+  跳过 RLS——策略永远不触发。曾存在 6 条此类策略，它们暗示了一个并不
+  存在的 DB 级兜底，已全部移除。
+- **Tenant Guard / `SET app.tenant_id`**：已删除。池化连接上的 GUC 在语句
+  间即蒸发，只制造虚假安全感。
+
+当前部署为单租户（全部流量使用 `default` 租户）；在真实的多租户部署为
+请求级租户穿透买单之前，谓词层就是隔离的全部故事。
 
 ### 5.2 密钥管理
 

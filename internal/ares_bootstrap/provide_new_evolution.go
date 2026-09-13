@@ -594,17 +594,17 @@ func BuildKnowledgeRuntime(
 	// corpus to search and no query embedding to produce. The provider is
 	// skipped with a warning when AKG is not enabled (store nil).
 	if store != nil && emb != nil {
-		// The read namespace resolves per Stream through akgNamespaceForRead,
-		// which follows the tenant the AKG write loop last stamped facts
-		// with. Pinning the provider to the akgNamespace constant would make
-		// it miss every tenant-attributed fact the DistillBridge now writes.
-		sp := storeprovider.New("akg_store", store, emb, akgModelName(emb), akgNamespace).
-			WithNamespaceResolver(akgNamespaceForRead)
+		// The read namespace resolves per Stream: a tenant-carrying request
+		// (tenantctx, stamped by the scheduler from the task's checkpoint
+		// envelope) scopes recall to that tenant; tenant-less requests fall
+		// back to this constructor namespace — the same fallback the write
+		// side's DistillBridge uses, so the two halves stay in lockstep.
+		sp := storeprovider.New("akg_store", store, emb, akgModelName(emb), akgNamespace)
 		if err := reg.Register(sp); err != nil {
 			log.Warn("bootstrap: register AKG store provider for knowledge runtime", "error", err)
 		} else {
 			log.Info("bootstrap: AKG store provider wired for knowledge runtime",
-				"namespace", akgNamespaceForRead(), "model", akgModelName(emb))
+				"namespace", akgNamespace, "model", akgModelName(emb))
 		}
 	}
 

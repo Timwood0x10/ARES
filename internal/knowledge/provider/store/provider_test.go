@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider/store"
 	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // fakeEmbedding is a deterministic EmbeddingService used to exercise the
@@ -336,12 +337,14 @@ func itoa(i int) string {
 	return string(buf[pos:])
 }
 
-// TestStoreProvider_Stream_FollowsNamespaceResolver locks the read-side half
-// of tenant attribution. The DistillBridge now stamps distilled objects with
-// the calling tenant, so a read provider pinned to one construction-time
-// namespace silently stops seeing them. The resolver keeps write and read in
-// lockstep without threading a tenant through Intent at every call site.
-func TestStoreProvider_Stream_FollowsNamespaceResolver(t *testing.T) {
+// TestStoreProvider_Stream_FollowsContextTenant locks the read-side half of
+// tenant attribution. The DistillBridge stamps distilled objects with the
+// calling tenant, so a read provider pinned to one construction-time
+// namespace silently stops seeing them. The request-scoped tenant in the
+// Stream context (tenantctx, stamped by the scheduler from the task's
+// checkpoint envelope) keeps write and read in lockstep per request — the
+// replacement for the deleted process-global last-write-wins binding.
+func TestStoreProvider_Stream_FollowsContextTenant(t *testing.T) {
 	ctx := context.Background()
 	ms := memorystore.New()
 
@@ -363,11 +366,10 @@ func TestStoreProvider_Stream_FollowsNamespaceResolver(t *testing.T) {
 		t.Fatalf("seed save: %v", err)
 	}
 
-	active := "tenant-acme"
-	p := store.New("akg_store", ms, nil, "m", "default").
-		WithNamespaceResolver(func() string { return active })
+	p := store.New("akg_store", ms, nil, "m", "default")
 
-	objCh, errCh := p.Stream(ctx, knowledge.Intent{Goal: "redis caching", Scope: knowledge.Scope{MaxObjects: 10}})
+	objCh, errCh := p.Stream(tenantctx.With(ctx, "tenant-acme"),
+		knowledge.Intent{Goal: "redis caching", Scope: knowledge.Scope{MaxObjects: 10}})
 	var got []*knowledge.KnowledgeObject
 	for obj := range objCh {
 		got = append(got, obj)
@@ -384,9 +386,10 @@ func TestStoreProvider_Stream_FollowsNamespaceResolver(t *testing.T) {
 		}
 	}
 
-	// Switching the resolved namespace must move the search with it.
-	active = "tenant-other"
-	objCh, errCh = p.Stream(ctx, knowledge.Intent{Goal: "redis caching", Scope: knowledge.Scope{MaxObjects: 10}})
+	// Switching the CONTEXT tenant must move the search with it: a different
+	// request (different tenant) recalls a different corpus.
+	objCh, errCh = p.Stream(tenantctx.With(ctx, "tenant-other"),
+		knowledge.Intent{Goal: "redis caching", Scope: knowledge.Scope{MaxObjects: 10}})
 	got = got[:0]
 	for obj := range objCh {
 		got = append(got, obj)
@@ -406,8 +409,8 @@ func TestStoreProvider_Stream_FollowsNamespaceResolver(t *testing.T) {
 
 // TestStoreProvider_Stream_IntentNamespaceWins locks the precedence: a caller
 // that explicitly declares Intent.Scope.Namespaces overrides both the
-// resolver and the constructor default. This is the per-request escape hatch
-// a multi-tenant deployment uses to scope one query.
+// request-scoped tenant and the constructor default. This is the per-request
+// escape hatch a deployment uses to scope one query explicitly.
 func TestStoreProvider_Stream_IntentNamespaceWins(t *testing.T) {
 	ctx := context.Background()
 	ms := memorystore.New()
@@ -424,13 +427,13 @@ func TestStoreProvider_Stream_IntentNamespaceWins(t *testing.T) {
 		t.Fatalf("seed save: %v", err)
 	}
 
-	p := store.New("akg_store", ms, nil, "m", "default").
-		WithNamespaceResolver(func() string { return "resolver-ns" })
+	p := store.New("akg_store", ms, nil, "m", "default")
 
-	objCh, errCh := p.Stream(ctx, knowledge.Intent{
-		Goal:  "redis caching",
-		Scope: knowledge.Scope{Namespaces: []string{"explicit-ns"}, MaxObjects: 10},
-	})
+	objCh, errCh := p.Stream(tenantctx.With(ctx, "ctx-tenant"),
+		knowledge.Intent{
+			Goal:  "redis caching",
+			Scope: knowledge.Scope{Namespaces: []string{"explicit-ns"}, MaxObjects: 10},
+		})
 	var got []*knowledge.KnowledgeObject
 	for obj := range objCh {
 		got = append(got, obj)
@@ -439,15 +442,16 @@ func TestStoreProvider_Stream_IntentNamespaceWins(t *testing.T) {
 		t.Fatalf("stream error: %v", err)
 	}
 	if len(got) != 1 || got[0].ID != "akg:scoped:1" {
-		t.Fatalf("Intent.Scope.Namespaces must win over the resolver, got %d objects", len(got))
+		t.Fatalf("Intent.Scope.Namespaces must win over the ctx tenant, got %d objects", len(got))
 	}
 }
 
-// TestStoreProvider_Stream_EmptyResolverFallsBackToConstructorNamespace locks
-// the degradation path: a resolver that returns empty must not produce an
-// empty-namespace query (which several store implementations treat as "all
-// namespaces" — a cross-tenant scan).
-func TestStoreProvider_Stream_EmptyResolverFallsBackToConstructorNamespace(t *testing.T) {
+// TestStoreProvider_Stream_NoTenantFallsBackToConstructorNamespace locks the
+// degradation path: a request with no tenant in its context (tenant-less
+// deployment, or a pre-v5 envelope) must not produce an empty-namespace
+// query (which several store implementations treat as "all namespaces" — a
+// cross-tenant scan); it falls back to the constructor namespace.
+func TestStoreProvider_Stream_NoTenantFallsBackToConstructorNamespace(t *testing.T) {
 	ctx := context.Background()
 	ms := memorystore.New()
 
@@ -463,8 +467,7 @@ func TestStoreProvider_Stream_EmptyResolverFallsBackToConstructorNamespace(t *te
 		t.Fatalf("seed save: %v", err)
 	}
 
-	p := store.New("akg_store", ms, nil, "m", "static-ns").
-		WithNamespaceResolver(func() string { return "" })
+	p := store.New("akg_store", ms, nil, "m", "static-ns")
 
 	objCh, errCh := p.Stream(ctx, knowledge.Intent{Goal: "redis caching", Scope: knowledge.Scope{MaxObjects: 10}})
 	var got []*knowledge.KnowledgeObject

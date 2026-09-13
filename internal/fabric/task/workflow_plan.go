@@ -43,6 +43,11 @@ type PlanStep struct {
 	// Stamped onto the checkpoint envelope so the executor can look up the
 	// per-session L2 graph registry. Empty = session-less (legacy behavior).
 	SessionID string `json:"-"`
+	// TenantID scopes the compiled task to one tenant: stamped onto the
+	// checkpoint envelope so execution and knowledge recall resolve it (see
+	// parseTenantID for how grown nodes inherit it from the session's
+	// planner task). Empty = tenant-less (the process default applies).
+	TenantID string `json:"-"`
 }
 
 // CompilePlan validates a batch of PlanSteps and creates them as READY tasks
@@ -138,13 +143,16 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			Origin:       s.Origin,
 			RetryPolicy:  RetryPolicy{MaxRetries: maxRetries},
 		}
-		if s.Payload != nil || s.SessionID != "" {
+		if s.Payload != nil || s.SessionID != "" || s.TenantID != "" {
 			env := NewCheckpointEnvelope(s.Payload)
 			if strategyID != "" {
 				env.StrategyID = strategyID
 			}
 			if s.SessionID != "" {
 				env.SessionID = s.SessionID
+			}
+			if s.TenantID != "" {
+				env.TenantID = s.TenantID
 			}
 			t.Checkpoint = env
 		}

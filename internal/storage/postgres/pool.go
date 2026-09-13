@@ -358,6 +358,15 @@ func (m *ManagedRows) Close() error {
 // The connection is held until the row is fully consumed by Scan.
 // This avoids the data race that would occur if the connection were released
 // before the caller finishes reading the row data.
+//
+// There is deliberately NO QueryRowWithTenant counterpart, so this method
+// never binds app.tenant_id. Under an enabled RLS policy that reads
+// current_setting('app.tenant_id', true), an unbound setting is NULL and the
+// policy filters every row — the query fail-closes to ErrNoRows rather than
+// leaking. That is safe but silent: a caller adding the first tenant-scoped
+// single-row read must go through QueryWithTenant (and Close the rows) or it
+// will see "not found" instead of an error. Add a QueryRowWithTenant when
+// that call site appears; do not reach for QueryRow on tenant data.
 func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *ManagedRow {
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

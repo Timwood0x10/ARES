@@ -12,7 +12,7 @@ The Storage module is a production-grade AI Memory & Retrieval System built on P
 1. **Vector Dimension Segmentation**: Separate tables for each vector dimension (avoids mixing vector spaces)
 2. **Deduplication**: Hash-based deduplication + async embedding deduplication
 3. **Graceful Degradation**: Complete fallback mechanisms for all critical paths
-4. **Multi-Tenancy**: RLS (Row Level Security) + Tenant Guard dual-layer protection
+4. **Multi-Tenancy**: Explicit `tenant_id` predicates on every id-scoped query (application layer only — DB-level RLS was considered and deliberately rejected; see §5.1)
 
 ## 2. Architecture Components
 
@@ -31,11 +31,11 @@ The Storage module is a production-grade AI Memory & Retrieval System built on P
 | `models_config` | Model version tracking | None |
 
 #### Key Features
-- **Multi-tenant**: All tables include `tenant_id` field
+- **Multi-tenant**: Tenant-scoped tables (`knowledge_chunks_1024`, `experiences_1024`, `tools`, `conversations`, task results, `secrets`) carry a NOT NULL `tenant_id` column; other tables are not tenant-scoped
 - **Vector Index**: IVFFlat index for vector similarity search
 - **Full-text Search**: TSV index with pre-computed tsvector column
 - **Hash Deduplication**: UNIQUE index on `content_hash` for real-time deduplication
-- **Row Level Security**: RLS policies for tenant isolation
+- **Row Level Security**: NOT used — the app connects as the table owner, which bypasses non-FORCE RLS; the dead policies were removed rather than left as decoration (see §5.1)
 - **Asynchronous Embedding**: Queue-based embedding pipeline with retry mechanism
 
 ### 2.2 System Architecture
@@ -246,22 +246,30 @@ LIMIT 1000
 
 ### 5.1 Multi-Tenant Isolation
 
-**Dual-Layer Protection:**
-1. **RLS (Row Level Security)**: Database-level logical isolation
-2. **Tenant Guard**: Application-level physical isolation
+**Single mechanism — application-layer predicates (signed decision, plan/0.3.1plan/tenant_isolation.md 方案 B):**
 
-**Implementation:**
-```go
-// Tenant Guard
-func (g *TenantGuard) SetTenantContext(ctx context.Context, tenantID string) error {
-    _, err := g.db.ExecContext(ctx, "SET app.tenant_id = $1", tenantID)
-    return err
-}
+Every id-scoped query carries an explicit `AND tenant_id = $n`, and every
+id-scoped mutator takes `tenantID` as a parameter. The contract is locked by
+the isolation suites (`internal/ares_integration/tenant_isolation_mutators_test.go`):
+a cross-tenant access returns `ErrRecordNotFound` and leaves the row untouched.
 
-// RLS Policy
-CREATE POLICY tenant_isolation ON knowledge_chunks_1024
-FOR ALL USING (tenant_id = current_setting('app.tenant_id')::TEXT);
+```sql
+-- Isolation lives in the statement itself:
+SELECT ... FROM knowledge_chunks_1024
+WHERE chunk_id = $1 AND tenant_id = $2
 ```
+
+**Deliberately NOT used:**
+- **RLS**: the app connects as the table owner, and PostgreSQL skips RLS for
+  the owner without `FORCE` — policies could never fire. Six such policies
+  existed; they implied a DB-level backstop that did not exist and were
+  removed.
+- **Tenant Guard / `SET app.tenant_id`**: deleted. A pooled-connection GUC
+  evaporated between statements and gave false confidence.
+
+The deployment is single-tenant today (all traffic uses the `default`
+tenant); the predicate layer is the complete isolation story until a real
+multi-tenant deployment funds request-scoped tenant plumbing end to end.
 
 ### 5.2 Secret Management
 

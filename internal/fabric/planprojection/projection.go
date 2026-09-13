@@ -72,6 +72,7 @@ func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 		Priority:   parsePriority(s.Metadata),
 		Payload:    payload,
 		SessionID:  parseSessionID(s.Metadata),
+		TenantID:   parseTenantID(s.Metadata),
 	}
 }
 
@@ -114,4 +115,16 @@ func parseSessionID(meta map[string]string) string {
 		return ""
 	}
 	return meta["session_id"]
+}
+
+// parseTenantID reads the "tenant_id" key from step metadata — the same
+// unprefixed-metadata contract session_id uses. The planner stamps it onto
+// grown nodes from the executing task's tenant so a session's grown tool and
+// plan tasks execute (and recall knowledge) under the session's tenant
+// instead of the process default. A missing or non-string value yields "".
+func parseTenantID(meta map[string]string) string {
+	if meta == nil {
+		return ""
+	}
+	return meta["tenant_id"]
 }

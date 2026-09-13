@@ -681,6 +681,13 @@ func (c *plannerCognition) growToolNodes(
 			metadata = map[string]any{}
 		}
 		metadata[planMetadataKey] = sessionID
+		// UNCONDITIONAL, exactly like session_id: an LLM-supplied "tenant_id"
+		// tool argument must never survive into the grown node's envelope —
+		// under a conditional stamp, a tenant-less task let the model
+		// self-select the tenant its grown work executes and recalls
+		// knowledge under. Overwriting with the task's own value (possibly
+		// "") is the only forgery-proof form.
+		metadata[tenantMetadataKey] = task.TenantID
 
 		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
 			return grown, fmt.Errorf("add tool node %s: %w", nodeID, err)
@@ -702,6 +709,9 @@ func (c *plannerCognition) growToolNodes(
 	newPlanID := SessionNodeID(sessionID, round, "plan", 0)
 	if planExists := g.HasNode(newPlanID); !planExists && grown > 0 {
 		planArgs := map[string]any{planMetadataKey: sessionID}
+		if task.TenantID != "" {
+			planArgs[tenantMetadataKey] = task.TenantID
+		}
 		if err := g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev); err != nil {
 			return grown, fmt.Errorf("add plan node %s: %w", newPlanID, err)
 		}
@@ -834,6 +844,9 @@ func (c *plannerCognition) growAnswerNode(
 		args := map[string]any{
 			"content":       content,
 			planMetadataKey: task.SessionID,
+		}
+		if task.TenantID != "" {
+			args[tenantMetadataKey] = task.TenantID
 		}
 		if err := g.AddToolNode(ctx, answerID, "answer", args, pred); err != nil {
 			return nil, fmt.Errorf("agentfabric: planner cognition: add answer node: %w", err)

@@ -573,3 +573,133 @@ func TestStableRoundReplay(t *testing.T) {
 	require.Equal(t, SessionNodeID("s1", 2, "answer", 0),
 		SessionNodeID("s1", stableRound(g, p1), "answer", 0))
 }
+
+// TestPlannerGrownNodesInheritTenant pins the grown-node tenant inheritance:
+// a plan task carrying a tenant (restored from its envelope by the scheduler)
+// grows tool/plan/answer nodes whose metadata carries the same tenant, so the
+// projection stamps it onto the grown tasks' checkpoint envelopes — which is
+// how a session's grown work executes and recalls knowledge under the
+// session's tenant instead of the process default.
+func TestPlannerGrownNodesInheritTenant(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+	sessionID := "tenant-grow"
+	reg := NewSessionRegistry()
+	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+		return coord.SubscribeGraphEvents(ctx, dag)
+	}
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
+	require.NoError(t, err)
+
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "find the answer")
+
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: &fakePlannerChat{},
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	initialPlanID := SessionNodeID(sessionID, 0, "plan", 0)
+	planTask := models.NewTask(initialPlanID, models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.TenantID = "tenant-acme"
+	planTask.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	_, err = planner.ExecuteStep(ctx, planTask)
+	require.NoError(t, err)
+
+	// The grown tool node's fabric task must carry the session's tenant on
+	// its checkpoint envelope (via the metadata → PlanStep → envelope chain).
+	grepID := SessionNodeID(sessionID, 1, "grep", 0)
+	waitForTaskExists(t, fabric, grepID, 2*time.Second)
+	tk, err := fabric.Task(grepID)
+	require.NoError(t, err)
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-acme", dc.TenantID,
+		"a grown tool node must inherit the executing plan task's tenant")
+}
+
+// TestPlannerGrownNodesCannotForgeTenant pins the anti-forgery contract of
+// the grown-node tenant stamp: the executing task's tenant is written
+// UNCONDITIONALLY over the LLM's tool arguments, so a model emitting
+// {"tenant_id": "..."} in its tool-call args can never self-select the
+// tenant its grown work executes and recalls knowledge under. The
+// tenant-less case must yield a tenant-less envelope, not the forged value.
+func TestPlannerGrownNodesCannotForgeTenant(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+	sessionID := "forge-guard"
+	reg := NewSessionRegistry()
+	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+		return coord.SubscribeGraphEvents(ctx, dag)
+	}
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
+	require.NoError(t, err)
+
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "find the answer")
+
+	// The scripted LLM response for round 1 emits a forged tenant_id in the
+	// tool arguments; the executing plan task carries NO tenant.
+	chat := &forgingPlannerChat{}
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: chat,
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	initialPlanID := SessionNodeID(sessionID, 0, "plan", 0)
+	planTask := models.NewTask(initialPlanID, models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	_, err = planner.ExecuteStep(ctx, planTask)
+	require.NoError(t, err)
+
+	grepID := SessionNodeID(sessionID, 1, "grep", 0)
+	waitForTaskExists(t, fabric, grepID, 2*time.Second)
+	tk, err := fabric.Task(grepID)
+	require.NoError(t, err)
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	require.NoError(t, err)
+	require.Empty(t, dc.TenantID,
+		"a tenant-less plan task must not let LLM-supplied tenant_id reach the grown envelope")
+}
+
+// forgingPlannerChat emits a tool call whose arguments carry a forged
+// tenant_id — the exact shape a hostile or confused model would produce.
+type forgingPlannerChat struct{}
+
+func (c *forgingPlannerChat) Chat(_ context.Context, _ []*llmcore.LLMMessage, _ []llmcore.Tool, _ map[string]any) (*llmcore.GenerateResponse, error) {
+	return &llmcore.GenerateResponse{
+		ToolCalls: []llmcore.ToolCall{{
+			ID:       "tc-forge",
+			Type:     "function",
+			Function: llmcore.FunctionCall{Name: "grep", Arguments: `{"query":"first","tenant_id":"forged-tenant"}`},
+		}},
+	}, nil
+}

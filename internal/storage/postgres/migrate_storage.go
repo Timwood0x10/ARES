@@ -41,11 +41,34 @@ var storageMigrations = []string{
 		updated_at TIMESTAMP DEFAULT NOW()
 	)`,
 
-	// Enable RLS for knowledge_chunks_1024
+	// RLS policies are RETAINED as the future-expansion isolation contract
+	// (decision: keep, not delete). They are INERT today and must NOT be
+	// relied on as a security control: the app connects as the table owner
+	// (Postgres skips RLS for the owner unless FORCE ROW LEVEL SECURITY is
+	// set — neither is used), and no query binds app.tenant_id. The real
+	// isolation barrier is the explicit `WHERE tenant_id = $N` predicate in
+	// every repository query, locked by tenant-contract tests.
+	//
+	// BEFORE ENFORCING THESE POLICIES (future multi-tenant work), all of the
+	// following are mandatory — skipping any one silently breaks the system:
+	//
+	//  1. Bind app.tenant_id via set_config on the SAME connection for EVERY
+	//     query. The policy reads current_setting('app.tenant_id', true),
+	//     which returns NULL when unset; `tenant_id = NULL` is never TRUE, so
+	//     every row becomes invisible AND (policy type ALL defaults WITH CHECK
+	//     to USING) every INSERT/UPDATE is rejected — a silent blackout with
+	//     no error, not a loud failure.
+	//  2. Switch to a non-owner role (or add FORCE ROW LEVEL SECURITY);
+	//     otherwise the owner keeps bypassing the policy entirely.
+	//  3. Bind per-transaction (set_config is_local=true inside a tx), not
+	//     connection-level. The existing QueryWithTenant uses is_local=false
+	//     and relies on ManagedRows.Close / a non-deterministic Go finalizer
+	//     to clear it — a leaked finalizer leaves a stale tenant GUC on a
+	//     pooled connection and the next bare query reads another tenant's
+	//     rows.
 	`ALTER TABLE knowledge_chunks_1024 ENABLE ROW LEVEL SECURITY`,
 
 	// Create tenant isolation policy
-	`DROP POLICY IF EXISTS tenant_isolation_knowledge_1024 ON knowledge_chunks_1024`,
 	`CREATE POLICY tenant_isolation_knowledge_1024 ON knowledge_chunks_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -149,8 +172,6 @@ var storageMigrations = []string{
 		)`,
 
 	`ALTER TABLE experiences_1024 ENABLE ROW LEVEL SECURITY`,
-
-	`DROP POLICY IF EXISTS tenant_isolation_experiences_1024 ON experiences_1024`,
 	`CREATE POLICY tenant_isolation_experiences_1024 ON experiences_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -252,8 +273,6 @@ var storageMigrations = []string{
 		)`,
 
 	`ALTER TABLE tools ENABLE ROW LEVEL SECURITY`,
-
-	`DROP POLICY IF EXISTS tenant_isolation_tools ON tools`,
 	`CREATE POLICY tenant_isolation_tools ON tools
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -290,8 +309,6 @@ var storageMigrations = []string{
 		)`,
 
 	`ALTER TABLE conversations ENABLE ROW LEVEL SECURITY`,
-
-	`DROP POLICY IF EXISTS tenant_isolation_conversations ON conversations`,
 	`CREATE POLICY tenant_isolation_conversations ON conversations
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -333,8 +350,6 @@ var storageMigrations = []string{
 		)`,
 
 	`ALTER TABLE ` + storage_models.TaskResultsTable + ` ENABLE ROW LEVEL SECURITY`,
-
-	`DROP POLICY IF EXISTS tenant_isolation_task_results_1024 ON ` + storage_models.TaskResultsTable,
 	`CREATE POLICY tenant_isolation_task_results_1024 ON ` + storage_models.TaskResultsTable + `
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -375,8 +390,6 @@ var storageMigrations = []string{
 		)`,
 
 	`ALTER TABLE secrets ENABLE ROW LEVEL SECURITY`,
-
-	`DROP POLICY IF EXISTS tenant_isolation_secrets ON secrets`,
 	`CREATE POLICY tenant_isolation_secrets ON secrets
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 

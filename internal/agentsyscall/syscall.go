@@ -12,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // errUnroutableCapability is returned when a syscall asks for a capability
@@ -422,8 +423,13 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		// Origin is Kernel-enforced: stamped from the tool context caller
 		// (kctx.CallerID), never from LLM-supplied arguments. Empty =
 		// root call (no agent caller in context).
-		Origin:     kctx.CallerID(ctx),
-		Checkpoint: taskfabric.NewCheckpointEnvelope(args.Payload),
+		Origin: kctx.CallerID(ctx),
+		// The tenant is inherited from the CREATING quantum's context (never
+		// from args): an agent-spawned task must execute and recall knowledge
+		// under the same tenant its creating session runs under. Empty ctx
+		// tenant (tenant-less deployment) yields an empty envelope field —
+		// the documented default fallback.
+		Checkpoint: tenantStampedEnvelope(ctx, args.Payload),
 	}
 
 	if err := k.fabric.Create(task); err != nil {
@@ -475,11 +481,34 @@ func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult,
 		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
 	} else {
 		from := kctx.CallerID(ctx)
-		if err := fn(ctx, from, a.To, a.Topic, a.Payload); err != nil {
+		if err := fn(ctx, from, a.To, a.Topic, askAgentPayload(ctx, a.Payload)); err != nil {
 			return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
 		}
 	}
 	return &AskAgentResult{Accepted: true}, nil
+}
+
+// askAgentPayload stamps the asking quantum's tenant onto the message payload
+// so the collaboration session it spawns executes and recalls knowledge under
+// the asker's scope (executeAskViaSession copies the payload into the session
+// submission, whose envelope carries the tenant).
+//
+// The stamp is Kernel-enforced, exactly like Origin: an LLM-supplied
+// "tenant_id" in the ask arguments is OVERWRITTEN (never merged), so the
+// model cannot route its collaboration into another tenant's scope. A
+// non-map payload passes through unstamped — there is nothing to stamp and
+// no forgery surface (the session submission path only reads maps).
+func askAgentPayload(ctx context.Context, payload any) any {
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return payload
+	}
+	cp := make(map[string]any, len(m)+1)
+	for k, v := range m {
+		cp[k] = v
+	}
+	cp["tenant_id"] = tenantctx.From(ctx)
+	return cp
 }
 
 // BindTools registers the spawn_agent and create_task tools on the given
@@ -651,4 +680,14 @@ type ToolSchema struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
+}
+
+// tenantStampedEnvelope builds a create_task envelope carrying the creating
+// quantum's tenant (tenantctx). The tenant comes from the CONTEXT, never from
+// LLM-supplied arguments — an agent cannot spawn work into another tenant's
+// scope, exactly as it cannot forge Origin.
+func tenantStampedEnvelope(ctx context.Context, payload map[string]any) *taskfabric.CheckpointEnvelope {
+	env := taskfabric.NewCheckpointEnvelope(payload)
+	env.TenantID = tenantctx.From(ctx)
+	return env
 }

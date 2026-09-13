@@ -26,7 +26,13 @@ import (
 // Same asymmetry as v1→v2: v3 code rejects a v4 envelope
 // (ErrCheckpointSchemaVersion), so rolling back a deployment requires
 // draining in-flight tasks first.
-const CurrentCheckpointSchemaVersion = 4
+//
+// v4 → v5 (TenantID): TenantID added as an OPTIONAL field. A v4 envelope
+// decodes under v5 code with TenantID == "" (reads as "no tenant known" —
+// consumers fall back to their documented default tenant), so no migration
+// code is needed in the forward direction. Same rollback asymmetry as the
+// token fields: v4 code rejects a v5 envelope.
+const CurrentCheckpointSchemaVersion = 5
 
 // NewCheckpointEnvelope builds a checkpoint envelope stamped with the current
 // schema version.
@@ -103,6 +109,17 @@ type CheckpointEnvelope struct {
 	// OutputTokens is the cumulative LLM completion-token spend; see
 	// InputTokens.
 	OutputTokens int `json:"output_tokens,omitempty"`
+	// TenantID scopes this task to one tenant (the AKG knowledge loop's
+	// read/write coherence). It is stamped once at Create time from the
+	// submission and rides the envelope through yield→resume cycles, so the
+	// scheduler's ToModelTask can restore it onto models.Task and stamp it
+	// into the quantum's execution context (tenantctx) — which is how tool
+	// calls and knowledge recall resolve the same tenant the distillation
+	// write side attributes facts to, per request instead of per process.
+	// Empty means "no tenant known" (pre-v5 envelope or a tenant-less
+	// deployment): consumers fall back to their documented default tenant,
+	// never to another tenant's scope.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // DecodedCheckpoint is the result of DecodeCheckpoint: the envelope's fields
@@ -129,6 +146,9 @@ type DecodedCheckpoint struct {
 	// absent or when the envelope predates schema v4).
 	InputTokens  int
 	OutputTokens int
+	// TenantID is the tenant scope of this task ("" when absent or when the
+	// envelope predates schema v5).
+	TenantID string
 	// SchemaVersion is the envelope's version (0 when no checkpoint).
 	SchemaVersion int
 }
@@ -168,6 +188,7 @@ func DecodeCheckpoint(cp any) (DecodedCheckpoint, error) {
 			SessionID:        env.SessionID,
 			InputTokens:      env.InputTokens,
 			OutputTokens:     env.OutputTokens,
+			TenantID:         env.TenantID,
 			SchemaVersion:    env.SchemaVersion,
 		}, nil
 	}
@@ -245,6 +266,7 @@ func EncodeCheckpoint(dc DecodedCheckpoint) *CheckpointEnvelope {
 		SessionID:        dc.SessionID,
 		InputTokens:      dc.InputTokens,
 		OutputTokens:     dc.OutputTokens,
+		TenantID:         dc.TenantID,
 	}
 }
 

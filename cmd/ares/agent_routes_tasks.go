@@ -37,6 +37,11 @@ func (h *actionHandler) routeSubmitGraph(w http.ResponseWriter, r *http.Request,
 type submitTaskRequest struct {
 	Capability string         `json:"capability"`
 	Payload    map[string]any `json:"payload"`
+	// TenantID optionally scopes the submission to one tenant: it rides the
+	// task's checkpoint envelope so execution (and every knowledge recall the
+	// task triggers) resolves this tenant instead of the process default.
+	// Absent/empty keeps the documented single-tenant default.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // handleSubmitTask submits a task to the peer runtime through the kernel
@@ -66,6 +71,14 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, map[string]any{"error": "capability is required"})
 		return
 	}
+	if req.TenantID != "" {
+		if req.Payload == nil {
+			req.Payload = map[string]any{}
+		}
+		// The submitter reads the tenant from the payload (the single key
+		// every submission path shares) and stamps it onto the envelope.
+		req.Payload["tenant_id"] = req.TenantID
+	}
 	taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
 	if err != nil {
 		h.auditAction("submit_task", req.Capability, princ, false)
@@ -84,6 +97,15 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 
 // ── Collaboration Graph API ─────────────────────────────
 
+// graphNodeEnvelope builds a graph node's checkpoint envelope. The tenant
+// rides it so the node's execution (and its knowledge recall) resolves the
+// submitting tenant.
+func graphNodeEnvelope(tenantID string, n graphNodeSpec) *taskfabric.CheckpointEnvelope {
+	env := taskfabric.NewCheckpointEnvelope(map[string]any{"input": n.Input})
+	env.TenantID = tenantID
+	return env
+}
+
 // graphSubmissionRequest is the POST /api/graphs payload: an explicit DAG of
 // capability nodes with dependency edges. schema_version guards future wire
 // evolution; only version 1 is accepted today.
@@ -92,9 +114,13 @@ type graphSubmissionRequest struct {
 	// RunID is accepted for wire back-compat but IGNORED — the server always
 	// generates the run id (see handleSubmitGraph) to guarantee task-id
 	// uniqueness and cross-caller isolation.
-	RunID string          `json:"run_id,omitempty"`
-	Nodes []graphNodeSpec `json:"nodes"`
-	Edges []graphEdgeSpec `json:"edges"`
+	RunID string `json:"run_id,omitempty"`
+	// TenantID optionally scopes every node of the graph to one tenant: it
+	// rides each node's checkpoint envelope so execution and knowledge recall
+	// resolve this tenant instead of the process default.
+	TenantID string          `json:"tenant_id,omitempty"`
+	Nodes    []graphNodeSpec `json:"nodes"`
+	Edges    []graphEdgeSpec `json:"edges"`
 }
 
 // collabRunSeq makes server-generated run ids unique even within a single
@@ -169,7 +195,7 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 	// second's first Create would hit ErrTaskExists → a spurious 500. A
 	// process-wide atomic sequence closes that window deterministically.
 	runID := fmt.Sprintf("g%d-%d", time.Now().UnixNano(), atomic.AddUint64(&collabRunSeq, 1))
-	outputs, taskIDs, err := runCollabGraph(r.Context(), h.kernel, runID, req.Nodes, req.Edges)
+	outputs, taskIDs, err := runCollabGraph(r.Context(), h.kernel, runID, req.TenantID, req.Nodes, req.Edges)
 	status := http.StatusOK
 	ok := err == nil
 	if !ok {
@@ -335,7 +361,7 @@ func runCollabGCLoop(ctx context.Context, f *taskfabric.Fabric, every time.Durat
 // Failure semantics: the first FAILED node aborts the wait and is returned as
 // an error naming the node; sibling branches that already completed are still
 // reported in the outputs map (partial results survive).
-func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []graphNodeSpec, edges []graphEdgeSpec) (outputs map[string]string, taskIDs map[string]string, err error) {
+func runCollabGraph(ctx context.Context, k *kernelHandle, runID, tenantID string, nodes []graphNodeSpec, edges []graphEdgeSpec) (outputs map[string]string, taskIDs map[string]string, err error) {
 	if k == nil || k.fabric == nil {
 		return nil, nil, errors.New("collab graph: kernel fabric not wired")
 	}
@@ -397,7 +423,7 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 			// future wire evolution and must ride the schema_version guard rather
 			// than a silent magic number — see graphNodeSpec.
 			RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-			Checkpoint:  taskfabric.NewCheckpointEnvelope(map[string]any{"input": n.Input}),
+			Checkpoint:  graphNodeEnvelope(tenantID, n),
 		}); err != nil {
 			return nil, taskIDs, fmt.Errorf("collab graph %s: create node %q: %w", runID, n.ID, err)
 		}

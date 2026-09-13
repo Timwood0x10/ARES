@@ -30,8 +30,16 @@ type Task struct {
 	// (evolution loop closure). It is stamped once at submission and never
 	// re-read, so the executor's task.completed/failed events attribute the
 	// outcome to the strategy that actually chose the prompt/params.
-	StrategyID string    `json:"strategy_id,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	StrategyID string `json:"strategy_id,omitempty"`
+	// TenantID scopes the task to one tenant. It rides the fabric checkpoint
+	// envelope so it survives the scheduler's asynchronous execution, and the
+	// execution path stamps it into the quantum's context (tenantctx) so
+	// tool calls and knowledge recall resolve the same tenant the write side
+	// (distillation) attributes facts to. Empty means "no tenant known" —
+	// consumers fall back to their documented defaults, never to another
+	// tenant's scope.
+	TenantID  string    `json:"tenant_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // TaskContext contains task dependencies and coordination data.

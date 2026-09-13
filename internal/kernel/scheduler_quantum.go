@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/core/models"
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // quantumUsage is the side-channel ledger for one quantum: the LLM tokens it
@@ -63,7 +64,13 @@ func (s *Scheduler) buildQuantumStep(
 						tk.ID, executor.ID(), fmt.Errorf("executor panicked: %v", r))}
 				}
 			}()
-			out, stepErr := executor.ExecuteStep(ctx, s.ToModelTask(tk))
+			// The task's tenant rides the quantum's context: every
+			// cognition, tool call and knowledge query downstream resolves
+			// tenantctx.From(ctx) instead of a process-global, so recall is
+			// scoped per request (the fix for the AKG read/write coherence
+			// gap that akgActiveNamespace used to paper over).
+			mt := s.ToModelTask(tk)
+			out, stepErr := executor.ExecuteStep(tenantctx.With(ctx, mt.TenantID), mt)
 			done <- stepResult{out: out, err: stepErr}
 		}()
 		var out *sub.StepOutcome
@@ -75,8 +82,12 @@ func (s *Scheduler) buildQuantumStep(
 			return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown: %w", ctx.Err())
 		}
 		if stepErr != nil {
-			// A step error flows to fabric.Fail, which requeues (retry budget)
-			// or finalizes FAILED — the fabric owns the retry policy.
+			// A step error is returned to RunQuantum, which owns the fabric
+			// transition: a genuine failure goes through Fail (retry-budget
+			// requeue or terminal FAILED), while a cancellation — which is
+			// what the ctx.Done case above produces on scheduler shutdown —
+			// is RELEASED instead, so it neither burns Attempts nor cascades
+			// FAILED downstream (see taskfabric.isCancellation).
 			return nil, false, stepErr
 		}
 		if out == nil {
@@ -285,6 +296,10 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	// SessionID rides to the executor so the plannerCognition can look
 	// up the per-session L2 graph registry.
 	t.SessionID = dc.SessionID
+	// TenantID rides to the executor (and, via the ctx stamp below, to every
+	// tool call and knowledge query the quantum makes) so recall resolves the
+	// same tenant the distillation write side attributes facts to.
+	t.TenantID = dc.TenantID
 	// A resumed quantum observes where the previous step left off:
 	// the step checkpoint is surfaced to the executor as payload["checkpoint"].
 	if dc.StepCheckpoint != nil {
