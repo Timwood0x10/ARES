@@ -40,7 +40,10 @@ type submitTaskRequest struct {
 	// TenantID optionally scopes the submission to one tenant: it rides the
 	// task's checkpoint envelope so execution (and every knowledge recall the
 	// task triggers) resolves this tenant instead of the process default.
-	// Absent/empty keeps the documented single-tenant default.
+	// Absent/empty keeps the documented single-tenant default. NOTE: the
+	// tenant is caller-declared today — a genuine multi-tenant deployment
+	// must derive it from the authenticated principal server-side instead
+	// of trusting this field (see SECURITY.md → Tenancy).
 	TenantID string `json:"tenant_id,omitempty"`
 }
 
@@ -117,7 +120,8 @@ type graphSubmissionRequest struct {
 	RunID string `json:"run_id,omitempty"`
 	// TenantID optionally scopes every node of the graph to one tenant: it
 	// rides each node's checkpoint envelope so execution and knowledge recall
-	// resolve this tenant instead of the process default.
+	// resolve this tenant instead of the process default. Caller-declared
+	// today — see the auth-binding note on submitTaskRequest.TenantID.
 	TenantID string          `json:"tenant_id,omitempty"`
 	Nodes    []graphNodeSpec `json:"nodes"`
 	Edges    []graphEdgeSpec `json:"edges"`

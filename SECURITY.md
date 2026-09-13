@@ -63,3 +63,32 @@ under a least-privilege account or container, and keep the server list to
 commands you control. The stdio transport requires an absolute command path
 (`mcpclient/stdio.go`) precisely because a bare name would otherwise resolve
 against `PATH`.
+
+### Tenancy
+
+ARES is **single-tenant by default**: with no `tenant_id` on a submission,
+every task, distilled fact and knowledge recall runs under the `default`
+tenant. Tenant isolation is a **per-request opt-in scope** (`tenant_id` on
+`POST /api/tasks` / `POST /api/graphs`, or `payload["tenant_id"]` on SDK
+submissions) — there is no configuration switch, because the field itself is
+the switch.
+
+Two properties operators should rely on:
+
+- **The system never generates a non-default tenant on its own.** The tenant
+  is carried on the task's checkpoint envelope, restored into the execution
+  context (`tenantctx`) and stamped onto everything the request derives
+  (planner-grown nodes, `ask_agent` collaboration sessions, distilled
+  facts). Every fallback path resolves to `default`.
+- **The tenant is Kernel-enforced, not model-enforced.** An LLM-supplied
+  `tenant_id` in tool arguments, `create_task` payloads or `ask_agent`
+  payloads is overwritten by the executing context's tenant — the same
+  contract `Origin` follows. A model cannot self-select the tenant its work
+  executes or recalls knowledge under.
+
+**Warning for multi-tenant deployments**: today the tenant is
+*caller-declared* at the HTTP boundary. Any authenticated caller can submit
+under any tenant id. A genuine multi-tenant deployment MUST bind the tenant
+at the authentication layer (derive it from the JWT principal server-side)
+instead of trusting the request body. The runtime plumbing is ready for that
+swap — only the source of the tenant value changes.

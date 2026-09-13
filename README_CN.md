@@ -98,6 +98,21 @@ make examples          # 构建全部示例
 | **多 Agent** | 基于能力的 Agent 注册（`RegisterAgent`）+ 任务分发（`Submit`），支持 Peer IPC 与恢复 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
 
+## 租户模型
+
+默认单租户；按请求选择租户隔离。**没有配置开关 —— `tenant_id` 字段本身就是开关**，粒度精确到单个请求。
+
+| 模式 | 触发方式 | 行为 |
+|---|---|---|
+| **默认（单租户）** | 提交不带 `tenant_id` | 一切运行在 `default` 租户下 —— 任务、planner 生长的节点、`ask_agent` 会话、蒸馏事实与知识召回。行为与没有租户概念的完全一致。 |
+| **按请求隔离** | 提交带 `tenant_id`（`POST /api/tasks`、`POST /api/graphs`，或 SDK 提交的 `payload["tenant_id"]`） | 该请求及其全部派生工作端到端地在该租户下执行、存储与召回。 |
+
+运作机制：
+
+- 租户随任务的 **checkpoint 信封**（schema v5）穿越调度器的异步执行，恢复进量子的执行上下文（`tenantctx`），并盖章到所有下游 —— 生长的工具/答案节点、协作会话、蒸馏。空值即"无租户"，所有消费方回退 `default`。
+- **防伪造由 Kernel 强制**：LLM 在工具参数、`create_task` payload、`ask_agent` payload 里塞的 `tenant_id` 会被执行上下文的租户无条件覆盖（与 `Origin` 同一契约）。系统自身永远不会生成非 default 租户。
+- **多租户部署**：当前租户由 HTTP 边界的**调用方声明**。真正的多租户部署必须在鉴权层绑定租户（如从 JWT principal 服务端推导），而非信任请求体 —— 管道已就绪，只需更换租户值的来源。见 `SECURITY.md` → Tenancy。
+
 ## AKG —— 无需 LLM 的知识图谱（实验性）
 
 **⚠️ AKG（自适应知识图谱）处于 BETA 实验阶段。API 可能变化，非生产就绪。仅用于实验与反馈。**
@@ -140,7 +155,7 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 |---|---|---|
 | **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖 —— 消费方自行 blank-import MySQL 驱动）。CockroachDB / TiDB / Spanner 各只需一个文件。 | `KnowledgeStore`（新增后端时不变） |
 | **专业向量库** | 在你的 `KnowledgeStore` 实现内部添加向量召回（PostgreSQL store 已在 `HybridSearch` 中使用 pgvector 的 `ORDER BY embedding <=> $1`）。 | `KnowledgeStore`（新增后端时不变） |
-| **多租户** | 每个 `KnowledgeObject` 携带 `Namespace`；`Query`、`HybridSearch`、`ListByStatus` 均按其过滤，仓储层查询同时带显式 `tenant_id` 谓词。当前部署为单租户（全部在 `default` 下）；隔离由谓词承载，非 DB 强制。 | 无新接口 |
+| **多租户** | 按请求可选启用（见[租户模型](#租户模型)）：提交的 `tenant_id` 随 checkpoint 信封进入执行上下文并约束知识读写；仓储层查询带显式 `tenant_id` 谓词。默认部署为单租户（`default`），DB 层由谓词承载。 | 无新接口 |
 
 > 设计不变量：`KnowledgeStore` 是唯一的持久化契约。新增数据库或向量索引永远不改变它 —— 只会出现新的实现。这正是存储层演进时上层 runtime 逻辑不受影响的根本原因。
 
