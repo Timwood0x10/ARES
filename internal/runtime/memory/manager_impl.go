@@ -196,14 +196,19 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 	distiller.SetEmbeddingPipeline(pipeline)
 
 	return &memoryManager{
-		sessionMemory:   sessionMemory,
-		taskMemory:      taskMemory,
-		config:          config,
-		distiller:       distiller,
-		embedder:        embedder,
-		pipeline:        pipeline,
-		expRepo:         expRepo,
-		ctxCleaner:      memctx.NewContextCleaner(),
+		sessionMemory: sessionMemory,
+		taskMemory:    taskMemory,
+		config:        config,
+		distiller:     distiller,
+		embedder:      embedder,
+		pipeline:      pipeline,
+		expRepo:       expRepo,
+		ctxCleaner:    memctx.NewContextCleaner(),
+		// The recommended production constructor must wire session leasing
+		// exactly like NewMemoryManager: without it AcquireSessionLease
+		// always fails "not configured" and session-level concurrency
+		// protection is silently off on the path production actually uses.
+		leaseMgr:        lease.NewManager(),
 		defaultTenantID: "default",
 	}, nil
 }

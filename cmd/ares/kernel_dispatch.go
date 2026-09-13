@@ -113,6 +113,16 @@ func submitFabricTask(
 	if task.Context != nil {
 		deps = append([]string(nil), task.Context.Dependencies...)
 	}
+	// Carry the submission-time metadata in the Checkpoint slot so the
+	// scheduler's toModelTask can restore it for the executor (LLM path needs
+	// the profile; the outcome recorder needs UsedExperienceID). The envelope
+	// is the versioned protocol; a genuine progress checkpoint replaces it once
+	// a quantum runs (RunQuantum yield). Built through the constructor so the
+	// schema version is always stamped.
+	env := taskfabric.NewCheckpointEnvelope(task.Payload)
+	env.UserProfile = task.UserProfile
+	env.UsedExperienceID = task.UsedExperienceID
+
 	if err := fabric.Create(&taskfabric.Task{
 		ID:           task.TaskID,
 		Capability:   string(task.AgentType),
@@ -126,17 +136,7 @@ func submitFabricTask(
 		// grants ZERO retries — a transient failure finalizes FAILED immediately
 		// (once a review bug). 2 = first attempt + one retry.
 		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-		// Carry the submission-time metadata in the Checkpoint slot so the
-		// scheduler's toModelTask can restore it for the executor (LLM path
-		// needs the profile; the outcome recorder needs UsedExperienceID).
-		// The envelope is the versioned protocol (*CheckpointEnvelope);
-		// a genuine progress checkpoint replaces it once a quantum runs
-		// (RunQuantum yield).
-		Checkpoint: &taskfabric.CheckpointEnvelope{
-			UserProfile:      task.UserProfile,
-			Payload:          task.Payload,
-			UsedExperienceID: task.UsedExperienceID,
-		},
+		Checkpoint:  env,
 	}); err != nil && err != taskfabric.ErrTaskExists {
 		return fmt.Errorf("kernel fabric create: %w", err)
 	}

@@ -14,9 +14,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
+
+// ttlSeconds converts a TTL into whole seconds for storage, rounding UP.
+//
+// The column's 0 means "never expires", so truncating a positive sub-second
+// TTL to 0 silently inverted the intent: a short-lived record became permanent
+// (ttl_seconds = 0 is exactly what "keep forever" looks like to Query and
+// CleanupExpired). Zero or negative stays 0 — no expiry requested.
+func ttlSeconds(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Second - 1) / time.Second)
+}
 
 // PostgresStore persists evidence records in PostgreSQL.
 type PostgresStore struct {
@@ -94,7 +108,7 @@ func (s *PostgresStore) Append(ctx context.Context, e Evidence) error {
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (id) DO NOTHING`
 	_, err = s.db.ExecContext(ctx, insert,
-		id, e.Source, string(e.Kind), payload, metadata, e.Timestamp, int64(e.TTL.Seconds()))
+		id, e.Source, string(e.Kind), payload, metadata, e.Timestamp, ttlSeconds(e.TTL))
 	if err != nil {
 		return fmt.Errorf("evidence: append: %w", err)
 	}

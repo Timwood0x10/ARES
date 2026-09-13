@@ -232,6 +232,13 @@ const (
 // so an idle subscription performs no work.
 const reconcilePollInterval = 250 * time.Millisecond
 
+// reconcileTimeout bounds one full Reconcile triggered from the subscription
+// loop (drop compensation, sequence gap, failed incremental compile). The
+// loop's ctx is registry-owned and unbounded, and Reconcile takes the fabric
+// lock — the bound keeps a wedged lock holder from parking the subscriber
+// forever.
+const reconcileTimeout = 30 * time.Second
+
 // SkippedOp is one incremental-compile action that could not be applied
 // because the target task was in a state that forbids it (RUNNING/LEASED/
 // SUSPENDED). It is returned rather than dropped: a graph change the
@@ -696,7 +703,28 @@ func (c *CompileCoordinator) SubscribeGraphEvents(ctx context.Context, dag *engi
 		defer close(done)
 		var lastSeq uint64
 		var haveSeq bool
-		lastDropped := dag.DroppedEvents(subID)
+		// The drop signal is two-valued (counter + DAG version). The
+		// counter alone is not a sufficient compensation signal — a
+		// reconcile that runs while the publisher is still mid-burst sees a
+		// PARTIAL graph, finds nothing missing, and consuming the counter
+		// then means the nodes the burst adds afterwards (whose events were
+		// dropped) never trigger another reconcile: the counter stops moving
+		// the moment the burst ends. Pairing it with the graph version
+		// observed at the last drop-triggered reconcile keeps the signal
+		// alive until the projection has caught up with the last graph
+		// state that existed at a drop.
+		// The drop signal starts at ZERO, not at the current counter: the
+		// goroutine may be scheduled long after SubscribeGraphEvents
+		// returned — under load the publisher's whole burst (and its drops)
+		// can complete before this line runs, and initializing from the
+		// live counter would consume those drops before any reconcile ever
+		// saw them (the CI flake's exact signature: b64..b69 missing
+		// forever, dropped==last forever). Zero-basing means pre-start
+		// drops are caught by the first tick's check; the cost is one
+		// idempotent reconcile per fresh subscription. The version signal
+		// starts at zero for the same reason.
+		var lastDropped uint64
+		var lastDropVersion uint64
 		// Standing tick: created firing, then re-armed after EVERY fire
 		// (see the F-21 note above). armTailCheck also resets it on
 		// delivery so the post-burst check lands one full interval after
@@ -743,10 +771,18 @@ func (c *CompileCoordinator) SubscribeGraphEvents(ctx context.Context, dag *engi
 					log.Warn("planprojection: incremental compile skipped action",
 						"op", s.Op, "task_id", s.TaskID, "compile_id", res.CompileID, "error", s.Err)
 				}
-				lastDropped = c.checkDrops(ctx, dag, subID, lastDropped)
+				// Delivery path: only the drop counter can signal lost
+				// events. The version check is DISABLED here — this very
+				// event moved dag.Version(), so a version comparison would
+				// be true after every delivery and would full-reconcile
+				// per event, stomping in-flight incremental results.
+				lastDropped, lastDropVersion = c.checkDrops(ctx, dag, subID, lastDropped, lastDropVersion, false)
 				armTailCheck(tailCheck)
 			case <-tailCheck.C:
-				lastDropped = c.checkDrops(ctx, dag, subID, lastDropped)
+				// Tick path: no event was delivered, so a version that
+				// moved since the last projection means mutations whose
+				// events were dropped — reconcile to catch up (F-21).
+				lastDropped, lastDropVersion = c.checkDrops(ctx, dag, subID, lastDropped, lastDropVersion, true)
 				// F-21 fix: the tick is STANDING. Re-arm after every fire
 				// so a drop that lands while no event is delivered (the
 				// scheduler-delay-split burst tail) is still caught on the
@@ -776,23 +812,69 @@ func armTailCheck(t *time.Timer) {
 	t.Reset(reconcilePollInterval)
 }
 
-// checkDrops polls the subscriber's hub drop counter and reconciles when it
-// moved. Returns the counter for the next comparison.
-func (c *CompileCoordinator) checkDrops(ctx context.Context, dag *engine.MutableDAG, subID string, last uint64) uint64 {
+// checkDrops polls the subscriber's drop signal and reconciles when it moved.
+// It returns the (counter, dagVersion) pair to compare against next time.
+//
+// The signal is TWO-valued on purpose (F-21, and its deeper sibling found
+// while reproducing the CI flake): the drop counter alone is consumed the
+// first time it moves, but the reconcile that runs at that moment may see a
+// PARTIAL graph — the publisher is still mid-burst, so the nodes whose
+// events were dropped do not exist in the DAG yet, the reconcile finds
+// nothing to create, and the counter is marked consumed. When the burst
+// finishes and the graph completes, the counter never moves again and the
+// dropped tail is never materialized: the session stalls forever.
+//
+// Pairing the counter with the DAG version observed at the last drop-
+// triggered reconcile keeps the signal alive: any graph mutation after a
+// drop re-arms the need to reconcile, so the completion of the burst itself
+// (the very mutations that were dropped) triggers the compensating
+// reconcile. The version comparison settles once the projection has caught
+// up with the last graph state that existed at a drop — an idle,
+// fully-projected graph costs one cheap version read per tick.
+//
+// versionCheck gates the version half of the signal to the TIMER path only.
+// The delivery path must not compare versions: the event being processed IS
+// the version movement, so the comparison is true after every delivery and
+// would full-reconcile per event — stomping the incremental result with a
+// duplicate ChangeResult and rewriting live task state. The timer path runs
+// only when the loop has been idle, so a moved version there means mutations
+// whose events never arrived — the exact F-21 tail.
+//
+// The returned pair only advances when the compensation actually CONVERGED.
+// A Reconcile that still produced Skipped actions (a dependency chain the
+// compiler could not yet move) has NOT finished compensating — returning
+// fresh values anyway would mark the signal consumed; keep them unchanged so
+// the next interval re-runs the reconcile until Skipped is empty.
+func (c *CompileCoordinator) checkDrops(ctx context.Context, dag *engine.MutableDAG, subID string, lastCount uint64, lastVersion uint64, versionCheck bool) (uint64, uint64) {
 	dropped := dag.DroppedEvents(subID)
-	if dropped != last {
+	version := dag.Version()
+	if dropped != lastCount || (versionCheck && version != lastVersion) {
 		log.Warn("planprojection: graph events dropped; reconciling",
-			"dropped_total", dropped, "dropped_since_last_check", dropped-last)
-		c.reconcileNow(ctx, dag, "dropped events")
+			"dropped_total", dropped, "dropped_since_last_check", dropped-lastCount,
+			"dag_version", version, "last_seen_version", lastVersion)
+		// Bounded like reconcileNow: the subscription ctx is registry-owned
+		// and unbounded (F-12), and Reconcile takes the fabric lock, so a
+		// wedged lock holder must not park this subscriber forever — the
+		// standing tick is the only compensation path left.
+		rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+		res, err := c.Reconcile(rctx, dag)
+		cancel()
+		if err != nil {
+			log.Error("planprojection: reconcile failed", "reason", "dropped events", "error", err)
+		} else if len(res.Skipped) > 0 {
+			log.Warn("planprojection: drop compensation not yet converged; will retry next tick",
+				"skipped", len(res.Skipped))
+			return lastCount, lastVersion
+		}
 	}
-	return dropped
+	return dropped, version
 }
 
 // reconcileNow runs a full Reconcile and logs the outcome with its counts, so
 // "the graph changed but the task set did not" stays attributable even on
 // the compensation path.
 func (c *CompileCoordinator) reconcileNow(ctx context.Context, dag *engine.MutableDAG, reason string) {
-	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
 	defer cancel()
 	res, err := c.Reconcile(rctx, dag)
 	if err != nil {

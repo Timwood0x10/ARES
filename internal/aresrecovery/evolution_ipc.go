@@ -161,6 +161,13 @@ func gzipBytes(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// maxDecompressedPayload caps gunzipBytes. Collaboration payloads arrive from
+// peers, and a few dozen bytes of gzip can expand to gigabytes, so an
+// unbounded io.ReadAll is a memory-exhaustion vector (the message bus is a
+// hostile input surface, not a trusted one). Declared as a var so white-box
+// tests can shrink it.
+var maxDecompressedPayload int64 = 64 << 20
+
 // gunzipBytes decompresses data produced by gzipBytes.
 func gunzipBytes(data []byte) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(data))
@@ -168,7 +175,16 @@ func gunzipBytes(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = zr.Close() }()
-	return io.ReadAll(zr)
+	// Read one byte past the cap so "exactly at the limit" stays distinguishable
+	// from "over the limit".
+	out, err := io.ReadAll(io.LimitReader(zr, maxDecompressedPayload+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > maxDecompressedPayload {
+		return nil, fmt.Errorf("decompressed payload exceeds %d bytes", maxDecompressedPayload)
+	}
+	return out, nil
 }
 
 // Bus exposes the underlying agentipc bus (used by ops tooling and tests to

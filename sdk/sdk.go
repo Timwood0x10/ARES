@@ -179,6 +179,10 @@ type Runtime struct {
 	schedOnce   sync.Once
 	schedCtx    context.Context
 	schedCancel context.CancelFunc
+	// schedDone closes when the scheduler drain goroutine has returned; nil
+	// until the first Submit starts it. Close waits on it so a drain in
+	// flight cannot touch executors/stores after they are torn down.
+	schedDone chan struct{}
 	// agentsFabric is the runtime's Agent Fabric, backing spawn_agent syscalls
 	// (the SDK wires the same kernel syscalls as peer mode). Created in
 	// ensureScheduler alongside sdkFabric; nil until the first Submit.
@@ -299,9 +303,21 @@ func New(opts ...Option) (*Runtime, error) {
 func (r *Runtime) Close() {
 	// Stop the shared scheduler's drain loop first (SDK/kernel merge): it runs on
 	// its own context so a Submit in flight is cancelled before the executor
-	// agents and stores it depends on are torn down.
+	// agents and stores it depends on are torn down. The join is bounded so a
+	// stuck quantum cannot hang Close forever; drain's wg.Wait honors ctx
+	// cancellation, so the loop exits promptly under normal operation.
 	if r.schedCancel != nil {
 		r.schedCancel()
+	}
+	if r.schedDone != nil {
+		select {
+		case <-r.schedDone:
+		case <-time.After(30 * time.Second):
+			// Best-effort teardown must remain bounded: a drain wedged past
+			// the budget is logged (visible, not silent) and the teardown
+			// proceeds — the components below are closing either way.
+			slog.Warn("sdk: scheduler drain did not exit within 30s; proceeding with teardown")
+		}
 	}
 	// Stop background goroutines (event-driven distillation subscriber) first
 	// and wait for in-flight work, so the subscriber stops accepting new events

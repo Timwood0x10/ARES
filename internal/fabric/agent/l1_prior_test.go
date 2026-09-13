@@ -61,7 +61,7 @@ func TestL1PriorReachesPromptButNeverBlocks(t *testing.T) {
 	}
 
 	const sessionID = "m5-prior"
-	g, err := reg.InitSession(ctx, sessionID, "test prompt", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "test prompt", nil, compileCoord)
 	require.NoError(t, err)
 	rootStep := g.DAG().StepIndex()[g.Root()]
 	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))

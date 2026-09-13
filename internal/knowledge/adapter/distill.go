@@ -279,7 +279,16 @@ func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.
 		if !b.gate.EnableDedup {
 			continue
 		}
-		dup, dErr := knowledge.FindDuplicate(ctx, b.store, vec, b.model, b.gate.DedupThreshold)
+		dup, dErr := knowledge.FindDuplicate(ctx, b.store, knowledge.DuplicateQuery{
+			// Namespace-scoped: the bridge writes every object into b.namespace,
+			// so a duplicate must live there too. Without it the search crossed
+			// namespaces and a same-shaped fact elsewhere marked THIS object
+			// superseded — the fact was silently never stored.
+			Namespace: b.namespace,
+			Vector:    vec,
+			Model:     b.model,
+			Threshold: b.gate.DedupThreshold,
+		})
 		if dErr != nil {
 			slog.Warn("distill bridge: find duplicate",
 				"object_id", obj.ID, "error", dErr)

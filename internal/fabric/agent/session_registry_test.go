@@ -15,10 +15,9 @@ import (
 // initialized with a prompt, its graph is retrievable by ID, and the root
 // node carries the session-invariant prompt.
 func TestSessionRegistry_InitAndGet(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
-	g, err := r.InitSession(ctx, "s1", "find the answer", nil, nil)
+	g, err := r.InitSession("s1", "find the answer", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, g)
 	require.Equal(t, SessionRootID("s1"), g.Root())
@@ -32,13 +31,12 @@ func TestSessionRegistry_InitAndGet(t *testing.T) {
 // session that is already registered cannot be re-initialized — the second
 // InitSession returns an error, not a silent overwrite.
 func TestSessionRegistry_InitDuplicateFails(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
-	_, err := r.InitSession(ctx, "s1", "prompt", nil, nil)
+	_, err := r.InitSession("s1", "prompt", nil, nil)
 	require.NoError(t, err)
 
-	_, err = r.InitSession(ctx, "s1", "other", nil, nil)
+	_, err = r.InitSession("s1", "other", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already initialized")
 }
@@ -55,10 +53,9 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 // TestSessionRegistry_Release verifies that a released session is gone from
 // the registry — a subsequent Get returns ErrSessionNotFound.
 func TestSessionRegistry_Release(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
-	_, err := r.InitSession(ctx, "s1", "prompt", nil, nil)
+	_, err := r.InitSession("s1", "prompt", nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, r.ReleaseSession("s1"))
@@ -80,7 +77,6 @@ func TestSessionRegistry_ReleaseNotFound(t *testing.T) {
 // function is called during InitSession and its stop function is called on
 // Release.
 func TestSessionRegistry_CompileCoordWired(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
 	stopped := false
@@ -88,7 +84,7 @@ func TestSessionRegistry_CompileCoordWired(t *testing.T) {
 		return func() { stopped = true }
 	}
 
-	_, err := r.InitSession(ctx, "s1", "prompt", nil, coord)
+	_, err := r.InitSession("s1", "prompt", nil, coord)
 	require.NoError(t, err)
 
 	require.NoError(t, r.ReleaseSession("s1"))
@@ -98,7 +94,6 @@ func TestSessionRegistry_CompileCoordWired(t *testing.T) {
 // TestSessionRegistry_CompileCoordError verifies that a compile coordinator
 // that returns an error prevents the session from being registered.
 func TestSessionRegistry_CompileCoordError(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
 	// With the simplified signature (no error return), a coordinator that
@@ -112,7 +107,7 @@ func TestSessionRegistry_CompileCoordError(t *testing.T) {
 		return nil // no stop function — simulates a no-op coordinator
 	}
 
-	_, err := r.InitSession(ctx, "s1", "prompt", nil, coord)
+	_, err := r.InitSession("s1", "prompt", nil, coord)
 	require.NoError(t, err)
 	require.True(t, called, "compile coordinator must be called")
 
@@ -126,7 +121,6 @@ func TestSessionRegistry_CompileCoordError(t *testing.T) {
 // wait froze every GetSession/InitSession/SweepExpired in the process. The
 // entry is dropped under the lock; the stop runs outside it.
 func TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
 	stopEntered := make(chan struct{})
@@ -137,9 +131,9 @@ func TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop(t *testing.T) {
 			<-releaseStop
 		}
 	}
-	_, err := r.InitSession(ctx, "s1", "prompt", nil, coord)
+	_, err := r.InitSession("s1", "prompt", nil, coord)
 	require.NoError(t, err)
-	_, err = r.InitSession(ctx, "s2", "prompt", nil, nil)
+	_, err = r.InitSession("s2", "prompt", nil, nil)
 	require.NoError(t, err)
 
 	done := make(chan error, 1)
@@ -170,11 +164,10 @@ func TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop(t *testing.T) {
 // TestSessionRegistry_SessionIDs verifies the registry can list its session
 // IDs.
 func TestSessionRegistry_SessionIDs(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
-	_, _ = r.InitSession(ctx, "a", "p", nil, nil)
-	_, _ = r.InitSession(ctx, "b", "p", nil, nil)
+	_, _ = r.InitSession("a", "p", nil, nil)
+	_, _ = r.InitSession("b", "p", nil, nil)
 
 	ids := r.SessionIDs()
 	require.Len(t, ids, 2)
@@ -187,7 +180,7 @@ func TestSessionRegistry_SessionIDs(t *testing.T) {
 // ID and harvest its readable history), so the registry refuses it at the
 // single registration point.
 func TestSessionRegistry_InitRejectsSlashID(t *testing.T) {
-	_, err := NewSessionRegistry().InitSession(context.Background(), "a/b", "p", nil, nil)
+	_, err := NewSessionRegistry().InitSession("a/b", "p", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "must not contain a slash")
 }
@@ -197,14 +190,13 @@ func TestSessionRegistry_InitRejectsSlashID(t *testing.T) {
 // subscription stopped), and a non-positive window falls back to the
 // default instead of mass-releasing.
 func TestSessionRegistry_SweepExpired(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 	stopped := 0
 	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
 		return func() { stopped++ }
 	}
 
-	_, err := r.InitSession(ctx, "s1", "p", nil, coord)
+	_, err := r.InitSession("s1", "p", nil, coord)
 	require.NoError(t, err)
 
 	// A GetSession touch refreshes the idle clock: half a window after
@@ -223,7 +215,7 @@ func TestSessionRegistry_SweepExpired(t *testing.T) {
 	require.ErrorIs(t, err, ErrSessionNotFound)
 
 	// Non-positive idle selects the default (30m), never releases everything.
-	_, err = r.InitSession(ctx, "s2", "p", nil, nil)
+	_, err = r.InitSession("s2", "p", nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, r.SweepExpired(0),
 		"zero idle must fall back to the default window, not release live sessions")
@@ -235,7 +227,6 @@ func TestSessionRegistry_SweepExpired(t *testing.T) {
 // coordinator (bounded by its reconcile timeout, up to 30s) must not freeze
 // the whole registry while the sweep drains. Pre-fix the stop ran under r.mu.
 func TestSessionRegistry_SweepDoesNotHoldLockDuringStop(t *testing.T) {
-	ctx := context.Background()
 	r := NewSessionRegistry()
 
 	stopEntered := make(chan struct{})
@@ -246,9 +237,9 @@ func TestSessionRegistry_SweepDoesNotHoldLockDuringStop(t *testing.T) {
 			<-releaseStop
 		}
 	}
-	_, err := r.InitSession(ctx, "s1", "p", nil, coord)
+	_, err := r.InitSession("s1", "p", nil, coord)
 	require.NoError(t, err)
-	_, err = r.InitSession(ctx, "s2", "p", nil, nil)
+	_, err = r.InitSession("s2", "p", nil, nil)
 	require.NoError(t, err)
 
 	// Expire s1 without touching s2: GetSession on s2 refreshes its idle
@@ -278,6 +269,39 @@ func TestSessionRegistry_SweepDoesNotHoldLockDuringStop(t *testing.T) {
 
 	close(releaseStop)
 	require.Equal(t, []string{"s1"}, <-done)
+}
+
+// TestSessionRegistry_SubscriptionContextOwnedByRegistry pins F-12: the
+// compile subscription runs on a context the REGISTRY owns — no caller-scoped
+// context can kill the projection while the entry stays live, and release
+// (or the idle sweep) cancels it.
+func TestSessionRegistry_SubscriptionContextOwnedByRegistry(t *testing.T) {
+	r := NewSessionRegistry()
+	var releaseCtx, sweepCtx context.Context
+	coordFor := func(out *context.Context) func(context.Context, *engine.MutableDAG) func() {
+		return func(ctx context.Context, _ *engine.MutableDAG) func() {
+			*out = ctx
+			return func() {}
+		}
+	}
+
+	_, err := r.InitSession("s1", "p", nil, coordFor(&releaseCtx))
+	require.NoError(t, err)
+	_, err = r.InitSession("s2", "p", nil, coordFor(&sweepCtx))
+	require.NoError(t, err)
+
+	require.NoError(t, releaseCtx.Err(), "subscription must be live while its session is")
+	require.NoError(t, sweepCtx.Err())
+
+	require.NoError(t, r.ReleaseSession("s1"))
+	require.ErrorIs(t, releaseCtx.Err(), context.Canceled,
+		"release must cancel the registry-owned subscription context")
+
+	// The idle sweep is the teardown path for sessions never released.
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, []string{"s2"}, r.SweepExpired(time.Millisecond))
+	require.ErrorIs(t, sweepCtx.Err(), context.Canceled,
+		"idle sweep must cancel the registry-owned subscription context")
 }
 
 // TestSessionRootID verifies the deterministic root ID format so a

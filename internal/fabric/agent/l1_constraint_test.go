@@ -95,7 +95,7 @@ func TestL1DisabledToolNotGrown(t *testing.T) {
 	}
 
 	const sessionID = "m5-disabled"
-	g, err := reg.InitSession(ctx, sessionID, "test prompt", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "test prompt", nil, compileCoord)
 	require.NoError(t, err)
 
 	// Admit root.
@@ -155,7 +155,7 @@ func TestL1BudgetCapsInstances(t *testing.T) {
 	}
 
 	const sessionID = "m5-budget"
-	g, err := reg.InitSession(ctx, sessionID, "test prompt", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "test prompt", nil, compileCoord)
 	require.NoError(t, err)
 
 	// Admit root.
@@ -234,7 +234,7 @@ func TestNilL1DAGIsPermissive(t *testing.T) {
 	}
 
 	const sessionID = "m5-nil"
-	g, err := reg.InitSession(ctx, sessionID, "test prompt", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "test prompt", nil, compileCoord)
 	require.NoError(t, err)
 
 	rootStep := g.DAG().StepIndex()[g.Root()]

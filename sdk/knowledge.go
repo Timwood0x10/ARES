@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sync"
 
 	_ "github.com/lib/pq"
@@ -240,9 +241,13 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 		if sslMode == "" {
 			sslMode = sslModeDisable
 		}
+		// Credentials are escaped: a password containing the DSN's own
+		// delimiters (@ : / ? #) silently produced a malformed DSN — the driver
+		// either failed to parse it or connected to the wrong host/database.
+		// Matches the escaping cmd/ares/db.go already applied.
 		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-			cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
-			cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
+			url.QueryEscape(cfg.dbCfg.User), url.QueryEscape(cfg.dbCfg.Password),
+			cfg.dbCfg.Host, cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
 		db, err := sql.Open("postgres", dsn)
 		if err != nil {
 			return nil, fmt.Errorf("knowledge: open postgres store: %w", err)

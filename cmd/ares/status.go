@@ -230,6 +230,7 @@ func buildVersion() string {
 // falls back to minimal defaults so `ares status` still answers).
 func inspectStatusConfig(explicit string) (statusConfig, []string) {
 	if explicit != "" {
+		allowConfigDirFor(explicit)
 		cfg, err := ares_config.Load(explicit)
 		if err != nil {
 			return statusConfig{Source: explicit, Minimal: true},
@@ -241,6 +242,7 @@ func inspectStatusConfig(explicit string) (statusConfig, []string) {
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
+		allowConfigDirFor(candidate)
 		cfg, err := ares_config.Load(candidate)
 		if err != nil {
 			return statusConfig{Source: candidate, Minimal: true},

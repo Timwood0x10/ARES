@@ -55,7 +55,7 @@ func TestPlannerQuantumStampsTokenUsage(t *testing.T) {
 	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 		return coord.SubscribeGraphEvents(ctx, dag)
 	}
-	g, err := reg.InitSession(ctx, sessionID, "find the answer", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
 	require.NoError(t, err)
 
 	rootStep := g.DAG().StepIndex()[g.Root()]

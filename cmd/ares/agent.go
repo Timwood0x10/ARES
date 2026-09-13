@@ -127,13 +127,8 @@ func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) *ares_
 	}
 	// Legacy API key path.
 	if h.apiKey != "" {
-		auth := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if strings.HasPrefix(auth, prefix) {
-			token := strings.TrimPrefix(auth, prefix)
-			if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1 {
-				return &ares_security.Principal{Subject: "api-key", Role: ares_security.RoleOperator}
-			}
+		if token := bearerToken(r); token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) == 1 {
+			return &ares_security.Principal{Subject: "api-key", Role: ares_security.RoleOperator}
 		}
 	}
 	if h.apiKey == "" && h.auth == nil {
@@ -222,13 +217,18 @@ func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bo
 // bearerToken extracts the bearer token from the Authorization header
 // ("" when the header is absent or not Bearer). Shared by the API-key and
 // introspect-token comparisons.
+//
+// The scheme is matched case-insensitively: RFC 7235 defines it as
+// case-insensitive, and the JWT path (ares_security) already used EqualFold —
+// a lowercase "bearer <key>" was accepted as a JWT but rejected as an API key,
+// which made the same header behave differently per credential type.
 func bearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
+	const scheme = "Bearer "
+	if len(auth) < len(scheme) || !strings.EqualFold(auth[:len(scheme)], scheme) {
 		return ""
 	}
-	return strings.TrimPrefix(auth, prefix)
+	return auth[len(scheme):]
 }
 
 // isLoopbackRequest reports whether the request's TCP peer is a loopback

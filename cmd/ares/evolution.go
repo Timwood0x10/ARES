@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +62,12 @@ func init() {
 }
 
 func getNewEvolution() (*ares_bootstrap.NewEvolutionComponents, error) {
+	// Serialized: this is a process-global cache reached from cobra commands
+	// that can run concurrently (and from tests), and the previous
+	// check-then-assign was a plain data race on the pointer.
+	cachedComponentsMu.Lock()
+	defer cachedComponentsMu.Unlock()
+
 	// Components are cached so the expensive ProvideNewEvolution runs once.
 	if cachedComponents == nil {
 		// Create a minimal MutableDAG so workflow/scheduler/recovery genomes
@@ -78,7 +85,11 @@ func getNewEvolution() (*ares_bootstrap.NewEvolutionComponents, error) {
 	return cachedComponents, nil
 }
 
-var cachedComponents *ares_bootstrap.NewEvolutionComponents
+var (
+	// cachedComponentsMu guards the process-global evolution component cache.
+	cachedComponentsMu sync.Mutex // guards cachedComponents
+	cachedComponents   *ares_bootstrap.NewEvolutionComponents
+)
 
 func runEvolutionCycle() error {
 	ctx := context.Background()
@@ -575,6 +586,10 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	// The stall verdict needs sustained evidence: a single poll landing in
+	// the answer-node compile gap must not kill a live session (SDK parity —
+	// agentruntime.StallDetector documents the window).
+	stalls := &agentruntime.StallDetector{}
 	for {
 		// Fast failure: a failed plan means the session can never answer.
 		if tk, err := k.fabric.Task(planTaskID); err == nil && tk.State == taskfabric.StateFailed {
@@ -591,8 +606,10 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 		// Fast failure: every session task terminal with no answer means the
 		// graph can never grow one (a failed grown node cascades into the
 		// continuation plan node, and grown nodes retry zero times) — fail
-		// now instead of spinning to the deadline (SDK parity).
-		if agentruntime.SessionStalled(k.fabric, sessionID, planTaskID) {
+		// now instead of spinning to the deadline. The detector requires the
+		// verdict to hold across consecutive polls so a transient gap in the
+		// async answer-node compile is not mistaken for death (SDK parity).
+		if stalls.Stalled(k.fabric, sessionID, planTaskID) {
 			// Race guard (SDK parity): the answer scan above and this verdict
 			// are two separate reads, so the answer can complete between
 			// them — re-check once instead of erroring on a session that

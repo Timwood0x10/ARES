@@ -48,8 +48,10 @@ func NewMemoryExperienceStore(cfg ExperienceStoreConfig) *MemoryExperienceStore 
 	return store
 }
 
-// Append adds a normalized experience to the store.
-// Returns an error if the experience is invalid or the store is full.
+// Append adds a normalized experience to the store. At capacity the OLDEST
+// experiences are evicted (FIFO) to make room: a store that once fills must
+// keep accepting writes, otherwise the newest — most relevant — experience is
+// refused forever.
 //
 // Args:
 //
@@ -58,7 +60,7 @@ func NewMemoryExperienceStore(cfg ExperienceStoreConfig) *MemoryExperienceStore 
 //
 // Returns:
 //
-//	error - ErrInvalidExperience if validation fails, ErrStoreFull if at capacity.
+//	error - ErrInvalidExperience if validation fails.
 func (s *MemoryExperienceStore) Append(ctx context.Context, exp NormalizedExperience) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -71,9 +73,11 @@ func (s *MemoryExperienceStore) Append(ctx context.Context, exp NormalizedExperi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check capacity.
-	if s.config.MaxSize > 0 && len(s.exps) >= s.config.MaxSize {
-		return ErrStoreFull
+	// Evict the oldest entries to keep the newest MaxSize experiences.
+	if s.config.MaxSize > 0 {
+		if overflow := len(s.exps) + 1 - s.config.MaxSize; overflow > 0 {
+			s.evictOldest(overflow)
+		}
 	}
 
 	// Append experience.
@@ -87,8 +91,9 @@ func (s *MemoryExperienceStore) Append(ctx context.Context, exp NormalizedExperi
 	return nil
 }
 
-// AppendBatch adds multiple experiences in a single operation.
-// Returns an error if any experience is invalid or the store would exceed capacity.
+// AppendBatch adds multiple experiences in a single operation. At capacity
+// the OLDEST experiences are evicted (FIFO), matching Append; a batch larger
+// than MaxSize keeps only its newest MaxSize entries.
 //
 // Args:
 //
@@ -97,7 +102,7 @@ func (s *MemoryExperienceStore) Append(ctx context.Context, exp NormalizedExperi
 //
 // Returns:
 //
-//	error - ErrInvalidExperience if validation fails, ErrStoreFull if would exceed capacity.
+//	error - ErrInvalidExperience if validation fails.
 func (s *MemoryExperienceStore) AppendBatch(ctx context.Context, exps []NormalizedExperience) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -117,9 +122,15 @@ func (s *MemoryExperienceStore) AppendBatch(ctx context.Context, exps []Normaliz
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check capacity.
-	if s.config.MaxSize > 0 && len(s.exps)+len(exps) > s.config.MaxSize {
-		return ErrStoreFull
+	if s.config.MaxSize > 0 {
+		// A batch alone can exceed the cap: keep only its newest entries.
+		if len(exps) > s.config.MaxSize {
+			exps = exps[len(exps)-s.config.MaxSize:]
+		}
+		// Evict the oldest stored entries to keep the newest MaxSize.
+		if overflow := len(s.exps) + len(exps) - s.config.MaxSize; overflow > 0 {
+			s.evictOldest(overflow)
+		}
 	}
 
 	// Append all experiences.
@@ -383,6 +394,37 @@ func (s *MemoryExperienceStore) GetTaskTypeStatistics(ctx context.Context, taskT
 	}
 
 	return stats, nil
+}
+
+// evictOldest removes the n oldest entries (insertion order) to make room
+// for new arrivals. Positions shift with the eviction, so the positional
+// indices are rebuilt from scratch — O(MaxSize) on a bounded in-memory store,
+// and far cheaper to reason about than maintaining delta shifts.
+// Must be called with lock held.
+func (s *MemoryExperienceStore) evictOldest(n int) {
+	if n <= 0 {
+		return
+	}
+	if n >= len(s.exps) {
+		s.exps = s.exps[:0]
+	} else {
+		s.exps = append(s.exps[:0], s.exps[n:]...)
+	}
+	if s.indices != nil {
+		s.rebuildIndices()
+	}
+}
+
+// rebuildIndices recreates both positional indices from the current contents.
+// Must be called with lock held.
+func (s *MemoryExperienceStore) rebuildIndices() {
+	s.indices = &storeIndices{
+		strategyIndex: make(map[string][]int),
+		taskTypeIndex: make(map[string][]int),
+	}
+	for i, exp := range s.exps {
+		s.updateIndices(exp, i)
+	}
 }
 
 // updateIndices updates the store indices with a new experience.

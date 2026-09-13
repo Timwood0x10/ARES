@@ -58,7 +58,7 @@ func newSynthesisSession(t *testing.T, ctx context.Context, sessionID string) (*
 	fabric := taskfabric.NewFabric()
 	coord := planprojection.NewCompileCoordinator(fabric, nil)
 	reg := NewSessionRegistry()
-	g, err := reg.InitSession(ctx, sessionID, "find the answer", nil,
+	g, err := reg.InitSession(sessionID, "find the answer", nil,
 		func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 			return coord.SubscribeGraphEvents(ctx, dag)
 		})

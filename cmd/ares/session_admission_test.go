@@ -34,9 +34,8 @@ func admissionKernel() (*kernelHandle, *taskfabric.Fabric) {
 // of released sessions are harvestable, and IDs that are not session-scoped
 // are never kept (the reaper's prefix filter plus grace handle those).
 func TestSessionKeepSet(t *testing.T) {
-	ctx := context.Background()
 	reg := agentfabric.NewSessionRegistry()
-	if _, err := reg.InitSession(ctx, "keep-1", "p", nil, nil); err != nil {
+	if _, err := reg.InitSession("keep-1", "p", nil, nil); err != nil {
 		t.Fatalf("InitSession: %v", err)
 	}
 	keep := agentruntime.KeepSet(reg)
@@ -69,7 +68,7 @@ func TestReleaseSessionOnAnswerFailure(t *testing.T) {
 	ctx := context.Background()
 	reg := agentfabric.NewSessionRegistry()
 	for _, sid := range []string{"fail-1", "fail-2", "fail-3", "fail-4"} {
-		if _, err := reg.InitSession(ctx, sid, "p", nil, nil); err != nil {
+		if _, err := reg.InitSession(sid, "p", nil, nil); err != nil {
 			t.Fatalf("InitSession(%s): %v", sid, err)
 		}
 	}

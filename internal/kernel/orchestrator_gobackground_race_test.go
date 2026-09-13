@@ -28,7 +28,7 @@ import (
 func TestOrchestrator_GoBackground_RacingShutdownIsAlwaysAccountedFor(t *testing.T) {
 	const iterations = 500
 
-	var refused, joined, late int
+	var refused, joined int
 	for i := 0; i < iterations; i++ {
 		rootCtx, cancel := context.WithCancel(context.Background())
 		reg := NewRegistry()
@@ -75,7 +75,6 @@ func TestOrchestrator_GoBackground_RacingShutdownIsAlwaysAccountedFor(t *testing
 
 		switch {
 		case lateAdmission.Load():
-			late++
 			t.Fatalf("iteration %d: GoBackground admitted a loop AFTER Shutdown had already drained the errgroup — "+
 				"the stopped-flag check and errgroup.Go are not one critical section", i)
 		case started.Load():
@@ -85,5 +84,5 @@ func TestOrchestrator_GoBackground_RacingShutdownIsAlwaysAccountedFor(t *testing
 		}
 	}
 
-	t.Logf("joined=%d refused=%d of %d", joined+late, refused, iterations)
+	t.Logf("joined=%d refused=%d of %d", joined, refused, iterations)
 }

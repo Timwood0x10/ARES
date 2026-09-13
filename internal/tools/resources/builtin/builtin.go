@@ -32,20 +32,29 @@ import (
 // a directory the agent is permitted to read and write.
 const fileToolsAllowedDirEnv = "ARES_FILE_TOOLS_ALLOWED_DIR"
 
-// resolveFileToolsAllowedDir returns the directory that FileTools may operate
-// within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment variable.
-// When unset it falls back to the OS temp dir — NOT the working directory:
-// the CWD is typically the deployment's source tree, and silently granting
-// the agent read/write there was an unintended privilege escalation. A loud
-// warning marks the fallback so the operator sees the reduced scope.
-func resolveFileToolsAllowedDir() string {
+// resolveFileToolsAllowedDir returns the directory that FileTools and PDFTool
+// may operate within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment
+// variable — the single knob for every file-facing tool surface (the public
+// HTTP tool registry resolves the same variable first).
+//
+// When unset it falls back to a process-PRIVATE subdirectory of the OS temp
+// dir — neither the working directory (typically the deployment's source
+// tree; granting the agent read/write there is privilege escalation) nor the
+// shared temp dir itself (world-writable: any local user could pre-plant or
+// read the agent's files). The per-boot private dir costs nothing for a
+// scratch sandbox. A loud warning marks the fallback so the operator sees
+// the reduced scope.
+func resolveFileToolsAllowedDir() (string, error) {
 	if dir := os.Getenv(fileToolsAllowedDirEnv); dir != "" {
-		return dir
+		return dir, nil
 	}
-	fallback := os.TempDir()
-	log.Warn("builtin: ARES_FILE_TOOLS_ALLOWED_DIR not set; file tools fall back to the temp dir (not the working directory)",
+	fallback, err := os.MkdirTemp("", "ares-file-tools-")
+	if err != nil {
+		return "", fmt.Errorf("builtin: create private file-tools sandbox dir: %w", err)
+	}
+	log.Warn("builtin: ARES_FILE_TOOLS_ALLOWED_DIR not set; file tools fall back to a process-private temp dir",
 		"fallback_dir", fallback, "env", fileToolsAllowedDirEnv)
-	return fallback
+	return fallback, nil
 }
 
 // GeneralToolsDeps carries the optional runtime dependencies for the
@@ -91,6 +100,13 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	if len(deps) > 0 {
 		d = deps[0]
 	}
+	// Resolve the file sandbox ONCE so FileTools and PDFTool share the exact
+	// same directory — two resolutions could diverge under the private-dir
+	// fallback and silently split the sandbox.
+	fileSandboxDir, err := resolveFileToolsAllowedDir()
+	if err != nil {
+		return errors.Wrap(err, "register general tools")
+	}
 	tools := []core.Tool{
 		// Math capability
 		base.WithToolTags(builtin_math.NewCalculator(), map[string]string{
@@ -122,7 +138,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 		}),
 
 		// File capability — restricted to the configured allowed directory.
-		base.WithToolTags(builtin_file.NewFileTools(builtin_file.WithAllowedDir(resolveFileToolsAllowedDir())), map[string]string{
+		base.WithToolTags(builtin_file.NewFileTools(builtin_file.WithAllowedDir(fileSandboxDir)), map[string]string{
 			"domain": "file", "input_type": "text", "output_type": "text",
 			"side_effects": "true", "mutates_state": "true",
 		}),
@@ -181,7 +197,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 
 		// PDF capability — sandboxed to the same allowed directory as
 		// FileTools so it cannot read arbitrary files (REVIEW #30).
-		base.WithToolTags(builtin_pdf.NewPDFTool(builtin_pdf.WithAllowedDir(resolveFileToolsAllowedDir())), map[string]string{
+		base.WithToolTags(builtin_pdf.NewPDFTool(builtin_pdf.WithAllowedDir(fileSandboxDir)), map[string]string{
 			"domain": "pdf", "input_type": "file", "output_type": "text",
 			"side_effects": "false",
 		}),

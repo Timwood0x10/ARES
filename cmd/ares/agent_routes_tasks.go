@@ -391,9 +391,7 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID string, nodes []
 			// future wire evolution and must ride the schema_version guard rather
 			// than a silent magic number — see graphNodeSpec.
 			RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-			Checkpoint: &taskfabric.CheckpointEnvelope{
-				Payload: map[string]any{"input": n.Input},
-			},
+			Checkpoint:  taskfabric.NewCheckpointEnvelope(map[string]any{"input": n.Input}),
 		}); err != nil {
 			return nil, taskIDs, fmt.Errorf("collab graph %s: create node %q: %w", runID, n.ID, err)
 		}

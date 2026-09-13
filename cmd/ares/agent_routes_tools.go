@@ -217,15 +217,24 @@ func registerNativeTools(ctx context.Context, internalReg *core.Registry) error 
 }
 
 // newToolRegistry creates the public tool registry with built-in + custom tools.
-// The file tool is sandboxed to ARES_WORKSPACE_DIR (or the current working
-// directory if the env var is unset) to prevent path-traversal attacks.
+// The file tool is sandboxed to prevent path-traversal attacks. Resolution
+// order: ARES_FILE_TOOLS_ALLOWED_DIR (the SAME knob the agent-side builtin
+// tools use — one env var governs both file-tool surfaces), then the legacy
+// ARES_WORKSPACE_DIR, then the current working directory.
 func newToolRegistry() (*api_tools.Registry, error) {
 	r := api_tools.NewRegistry()
-	workspaceDir := os.Getenv("ARES_WORKSPACE_DIR")
-	if workspaceDir == "" {
-		workspaceDir, _ = os.Getwd()
+	sandboxDir := os.Getenv("ARES_FILE_TOOLS_ALLOWED_DIR")
+	if sandboxDir == "" {
+		sandboxDir = os.Getenv("ARES_WORKSPACE_DIR")
 	}
-	if err := api_tools.RegisterBuiltinTools(r, api_tools.WithFileSandboxDir(workspaceDir)); err != nil {
+	if sandboxDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve file sandbox dir from working directory: %w", err)
+		}
+		sandboxDir = wd
+	}
+	if err := api_tools.RegisterBuiltinTools(r, api_tools.WithFileSandboxDir(sandboxDir)); err != nil {
 		return nil, err
 	}
 	return r, nil

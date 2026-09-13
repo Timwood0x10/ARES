@@ -35,15 +35,29 @@ type SessionRegistry struct {
 	sessions map[string]*sessionEntry
 }
 
-// sessionEntry is one session's L2 graph plus its incremental-compile
-// coordinator subscription stop function.
+// sessionEntry is one session's L2 graph plus the teardown handles of its
+// incremental-compile coordinator subscription.
 type sessionEntry struct {
-	graph   *L2Graph
-	stopSub func() // stops the CompileCoordinator's graph-event subscription
+	graph     *L2Graph
+	stopSub   func()             // stops the CompileCoordinator's graph-event subscription
+	cancelSub context.CancelFunc // cancels the registry-owned subscription context
 	// lastAccessNano is the unix-nano time of the last InitSession/GetSession
 	// touch (idle TTL). Atomic so the read path keeps its shared lock;
 	// the idle sweeper releases entries nobody has touched within the window.
 	lastAccessNano atomic.Int64
+}
+
+// stop tears down the entry's compile subscription: it cancels the
+// registry-owned context and then waits for the coordinator goroutine to
+// return. Callers must invoke it AFTER releasing the registry lock — the
+// wait can block on an in-flight reconcile (bounded by its timeout).
+func (e *sessionEntry) stop() {
+	if e.cancelSub != nil {
+		e.cancelSub()
+	}
+	if e.stopSub != nil {
+		e.stopSub()
+	}
 }
 
 // ErrSessionNotFound is returned by GetSession/ReleaseSession when no L2
@@ -76,17 +90,17 @@ func NewSessionRegistry() *SessionRegistry {
 //   - sessionID: the session identifier (must be non-empty).
 //   - prompt: the session-invariant prompt stored on the root node.
 //   - params: the session-invariant params flattened onto root Metadata.
-//   - ctx: bounds the incremental-compile subscription's lifetime.
 //   - compileCoord: wires the graph into the incremental compiler; called
 //     once under the registry lock. Nil = no incremental compilation (test
-//     path only). The returned stop function is called on Release.
+//     path only). The subscription runs on a context the registry owns —
+//     torn down by ReleaseSession/SweepExpired, never by a caller-scoped
+//     context. The returned stop function is called on Release.
 //
 // Returns:
 //   - *L2Graph: the session's execution plan.
 //   - error: when sessionID is empty, a graph already exists for this
 //     session, or graph creation fails.
 func (r *SessionRegistry) InitSession(
-	ctx context.Context,
 	sessionID, prompt string,
 	params map[string]any,
 	compileCoord func(ctx context.Context, dag *engine.MutableDAG) (stop func()),
@@ -120,11 +134,15 @@ func (r *SessionRegistry) InitSession(
 	entry := &sessionEntry{graph: g}
 	entry.lastAccessNano.Store(time.Now().UnixNano())
 	if compileCoord != nil {
-		// ctx is the caller's, not Background: ReleaseSession is the normal
-		// stop, but a session that is never released (abandoned, crash on the
-		// admission path) must still die with its owner's context instead of
-		// leaking the compile subscription for the process lifetime.
-		entry.stopSub = compileCoord(ctx, g.DAG())
+		// The subscription runs on a context the REGISTRY owns, never on a
+		// caller-scoped one: a request-level ctx dies when the admission
+		// request returns, which killed the projection while the session
+		// entry stayed live — the session then silently stopped growing.
+		// ReleaseSession/SweepExpired are the stop points; a session that is
+		// never released is covered by the idle sweep (DefaultSessionIdleTTL).
+		subCtx, cancel := context.WithCancel(context.Background())
+		entry.cancelSub = cancel
+		entry.stopSub = compileCoord(subCtx, g.DAG())
 	}
 
 	r.sessions[sessionID] = entry
@@ -170,9 +188,7 @@ func (r *SessionRegistry) ReleaseSession(sessionID string) error {
 	delete(r.sessions, sessionID)
 	r.mu.Unlock()
 
-	if entry.stopSub != nil {
-		entry.stopSub()
-	}
+	entry.stop()
 	return nil
 }
 
@@ -214,29 +230,28 @@ func (r *SessionRegistry) SweepExpired(idle time.Duration) []string {
 	}
 	now := time.Now()
 	// Collect expired entries and delete them under the lock, but run each
-	// stopSub AFTER releasing it — same lock discipline as ReleaseSession:
-	// stopSub waits on the compile coordinator goroutine (bounded by its
-	// reconcile timeout, up to 30s in production), and running it under r.mu
-	// would freeze every GetSession/InitSession/ReleaseSession while the
-	// sweep drains. The SDK's idle sweeper calls this every minute, so a
-	// slow stopSub must never extend past the map operation.
+	// entry.stop() AFTER releasing it — same lock discipline as
+	// ReleaseSession: the stop waits on the compile coordinator goroutine
+	// (bounded by its reconcile timeout, up to 30s in production), and
+	// running it under r.mu would freeze every GetSession/InitSession/
+	// ReleaseSession while the sweep drains. The SDK's idle sweeper calls
+	// this every minute, so a slow stop must never extend past the map
+	// operation.
 	r.mu.Lock()
 	var expired []string
-	var stopSubs []func()
+	var released []*sessionEntry
 	for id, entry := range r.sessions {
 		if now.Sub(time.Unix(0, entry.lastAccessNano.Load())) < idle {
 			continue
 		}
-		if entry.stopSub != nil {
-			stopSubs = append(stopSubs, entry.stopSub)
-		}
+		released = append(released, entry)
 		delete(r.sessions, id)
 		expired = append(expired, id)
 	}
 	r.mu.Unlock()
 
-	for _, stop := range stopSubs {
-		stop()
+	for _, entry := range released {
+		entry.stop()
 	}
 	return expired
 }

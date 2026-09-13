@@ -39,7 +39,7 @@ func newPriorReadHarness(
 	tf := taskfabric.NewFabric()
 	coord := planprojection.NewCompileCoordinator(tf, nil)
 	reg := NewSessionRegistry()
-	g, err := reg.InitSession(ctx, sessionID, priorReadPrompt, nil,
+	g, err := reg.InitSession(sessionID, priorReadPrompt, nil,
 		func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 			return coord.SubscribeGraphEvents(ctx, dag)
 		})
@@ -152,7 +152,7 @@ func TestAbsentPriorLeavesMessagesUnchanged(t *testing.T) {
 		tf := taskfabric.NewFabric()
 		coord := planprojection.NewCompileCoordinator(tf, nil)
 		reg := NewSessionRegistry()
-		g, err := reg.InitSession(ctx, "prior-nofab", priorReadPrompt, nil,
+		g, err := reg.InitSession("prior-nofab", priorReadPrompt, nil,
 			func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 				return coord.SubscribeGraphEvents(ctx, dag)
 			})

@@ -111,7 +111,7 @@ func TestPlannerCognition_GrowsTwoPlanRoundsWithToolNodes(t *testing.T) {
 	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 		return coord.SubscribeGraphEvents(ctx, dag)
 	}
-	g, err := reg.InitSession(ctx, sessionID, "find the answer", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
 	require.NoError(t, err)
 
 	// Admit the session root: compile it as a fabric task so the root
@@ -229,7 +229,7 @@ func TestPlannerCognition_MaxDepthForcesAnswer(t *testing.T) {
 	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 		return coord.SubscribeGraphEvents(ctx, dag)
 	}
-	g, err := reg.InitSession(ctx, sessionID, "prompt", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "prompt", nil, compileCoord)
 	require.NoError(t, err)
 
 	// Admit root.
@@ -423,7 +423,7 @@ func TestPlannerCognition_StrategySteersGrowth(t *testing.T) {
 		fabric := taskfabric.NewFabric()
 		coord := planprojection.NewCompileCoordinator(fabric, nil)
 		reg := NewSessionRegistry()
-		g, err := reg.InitSession(ctx, sessionID, "find it", nil,
+		g, err := reg.InitSession(sessionID, "find it", nil,
 			func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 				return coord.SubscribeGraphEvents(ctx, dag)
 			})
@@ -501,7 +501,7 @@ func TestPlannerCognition_MissingInputPayloadErrors(t *testing.T) {
 	fabric := taskfabric.NewFabric()
 	coord := planprojection.NewCompileCoordinator(fabric, nil)
 	reg := NewSessionRegistry()
-	g, err := reg.InitSession(ctx, sessionID, "prompt", nil,
+	g, err := reg.InitSession(sessionID, "prompt", nil,
 		func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 			return coord.SubscribeGraphEvents(ctx, dag)
 		})
@@ -539,4 +539,37 @@ func TestPlannerCognition_MissingInputPayloadErrors(t *testing.T) {
 	require.Equal(t, 0, calls, "the LLM must not be called with an empty prompt")
 
 	require.NoError(t, reg.ReleaseSession(sessionID))
+}
+
+// TestStableRoundReplay pins F-10: a plan quantum's growth round is derived
+// from its OWN ancestor chain, so growing later rounds never moves it — a
+// re-executed quantum derives the same round (and therefore the same
+// tool/plan/answer node IDs) as its first execution. PlanDepth moves with
+// every later round and would fork the session into duplicate answer
+// branches on replay.
+func TestStableRoundReplay(t *testing.T) {
+	ctx := context.Background()
+
+	g, err := NewL2Graph(SessionRootID("s1"), "prompt", nil)
+	require.NoError(t, err)
+
+	// The admission-submitted plan task (not a graph node) is the round-0
+	// trigger and grows round 1.
+	require.Equal(t, 1, stableRound(g, "adm/s1"))
+
+	p1 := SessionNodeID("s1", 1, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, p1, "plan", nil, g.Root()))
+	require.Equal(t, 2, stableRound(g, p1), "a round-1 plan node grows round 2")
+
+	// Round 2 grows; round 1's derivation must NOT move — this is the
+	// replay-stability property the answer node's ID now depends on.
+	p2 := SessionNodeID("s1", 2, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, p2, "plan", nil, p1))
+	require.Equal(t, 2, stableRound(g, p1), "later rounds must not shift an earlier quantum's round")
+	require.Equal(t, 3, stableRound(g, p2))
+
+	// The answer node ID follows the same round, so a replay of p1's
+	// quantum derives the identical terminal.
+	require.Equal(t, SessionNodeID("s1", 2, "answer", 0),
+		SessionNodeID("s1", stableRound(g, p1), "answer", 0))
 }

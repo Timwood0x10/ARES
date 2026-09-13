@@ -298,7 +298,7 @@ func taskFor(id, capability string, payload map[string]any) *models.Task {
 func TestL2Cognition_AnswerReleasesSession(t *testing.T) {
 	ctx := context.Background()
 	reg := NewSessionRegistry()
-	g, err := reg.InitSession(ctx, "rel-1", "prompt", nil, nil)
+	g, err := reg.InitSession("rel-1", "prompt", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, g)
 
@@ -343,4 +343,31 @@ func TestIsL2Capability_PartitionsTraffic(t *testing.T) {
 	for _, c := range legacy {
 		require.False(t, IsL2Capability(c), "%q must NOT route to L2 peers", c)
 	}
+}
+
+// TestL2Graph_AncestorPlanCountMultiDeps pins F-11: a multi-dependency node
+// derives its plan-ancestor count from the DEEPEST plan chain across ALL its
+// edges, not from an arbitrary single edge. The old deps[0]-only walk
+// undercounts a fan-in node, shifting its derived growth round and breaking
+// replay stability.
+func TestL2Graph_AncestorPlanCountMultiDeps(t *testing.T) {
+	ctx := context.Background()
+
+	g, err := NewL2Graph("root", "prompt", nil)
+	require.NoError(t, err)
+	// root -> p1(plan) -> {p2(plan), t1(tool)} -> fanin(p1-branch via both)
+	require.NoError(t, g.AddToolNode(ctx, "p1", "plan", nil, "root"))
+	require.NoError(t, g.AddToolNode(ctx, "p2", "plan", nil, "p1"))
+	require.NoError(t, g.AddToolNode(ctx, "t1", "grep", nil, "p1"))
+	fanIn := &engine.Step{ID: "fanin", AgentType: "tool/read", DependsOn: []string{"t1", "p2"}}
+	require.NoError(t, g.DAG().AddNode(ctx, fanIn))
+
+	// Single-chain counts stay exact.
+	require.Equal(t, 1, g.AncestorPlanCount("p2"), "p2 sees exactly one plan ancestor (p1)")
+	require.Equal(t, 1, g.AncestorPlanCount("t1"), "t1 sees exactly one plan ancestor (p1)")
+
+	// The fan-in takes the MAX across edges: via p2 the chain carries two
+	// plan ancestors (p1, p2); via t1 only one (p1). Following deps[0]=t1
+	// alone would report 1 — the undercount F-11 pins.
+	require.Equal(t, 2, g.AncestorPlanCount("fanin"))
 }

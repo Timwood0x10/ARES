@@ -173,7 +173,4 @@ var (
 
 	// ErrExperienceNotFound indicates that the requested experience was not found.
 	ErrExperienceNotFound = errors.New("experience not found")
-
-	// ErrStoreFull indicates that the store has reached its maximum capacity.
-	ErrStoreFull = errors.New("experience store is full")
 )

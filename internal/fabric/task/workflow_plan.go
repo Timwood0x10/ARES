@@ -139,7 +139,7 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			RetryPolicy:  RetryPolicy{MaxRetries: maxRetries},
 		}
 		if s.Payload != nil || s.SessionID != "" {
-			env := &CheckpointEnvelope{Payload: s.Payload}
+			env := NewCheckpointEnvelope(s.Payload)
 			if strategyID != "" {
 				env.StrategyID = strategyID
 			}

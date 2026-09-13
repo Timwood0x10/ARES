@@ -195,9 +195,7 @@ func (s *Submitter) Submit(
 	}
 	taskID = fmt.Sprintf("peer-plan-%d", s.seq.Add(1))
 
-	env := &taskfabric.CheckpointEnvelope{
-		Payload: payload,
-	}
+	env := taskfabric.NewCheckpointEnvelope(payload)
 	// SessionID is always stamped (auto-admitted above), so the
 	// plannerCognition always finds a live per-session L2 graph.
 	env.SessionID = sessionID

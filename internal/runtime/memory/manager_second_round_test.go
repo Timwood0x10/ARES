@@ -164,3 +164,22 @@ func TestDeleteSessionUnknownIsIdempotent(t *testing.T) {
 		"reading an unknown session must return the sentinel, not an arbitrary error")
 	assert.Empty(t, msgs)
 }
+
+// TestDistillerConstructorWiresLeasing pins R-9: the RECOMMENDED production
+// constructor must ship with session leasing configured. Before the fix it
+// skipped lease.NewManager(), so AcquireSessionLease always failed "not
+// configured" and session-level concurrency protection was silently off on
+// the path production actually uses.
+func TestDistillerConstructorWiresLeasing(t *testing.T) {
+	ctx := context.Background()
+	mgr, err := NewMemoryManagerWithDistiller(DefaultMemoryConfig(), &testEmbedder{}, &testExpRepo{})
+	require.NoError(t, err)
+	defer func() { _ = mgr.Stop(ctx) }()
+
+	c := castConcrete(t, mgr)
+	l, err := c.AcquireSessionLease(ctx, "sess-d", "owner-a", time.Minute)
+	require.NoError(t, err, "recommended constructor must configure session leasing")
+	assert.Equal(t, "sess-d", l.SessionID)
+	assert.False(t, l.ExpiresAt.IsZero())
+	require.NoError(t, c.ReleaseSessionLease(ctx, "sess-d", "owner-a"))
+}

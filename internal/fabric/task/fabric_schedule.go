@@ -90,8 +90,12 @@ func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) er
 	if err := t.transition(StateReady); err != nil {
 		return err
 	}
+	// Record BEFORE clearing ownership, the same discipline Release / Fail /
+	// CheckExpiredLeases follow: recordLocked reads t.Owner for the event's
+	// AgentID, so clearing first made every task.preempted event anonymous and
+	// left "who was preempted" unanswerable from the log.
+	pending = append(pending, f.recordLocked(t, EventTaskPreempted))
 	t.Owner = ""
 	t.Lease = nil
-	pending = append(pending, f.recordLocked(t, EventTaskPreempted))
 	return nil
 }

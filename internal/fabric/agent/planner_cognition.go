@@ -604,6 +604,22 @@ func (c *plannerCognition) readNodeOutput(nodeID string) (string, error) {
 // instead of erroring on the duplicate ID, and a round whose plan node
 // already exists is a successful no-op.
 //
+// stableRound derives the growth round of the executing plan quantum. The
+// admission-submitted plan task (not a graph node) is the round-0 trigger and
+// grows round 1; a grown plan node sess/<sid>/d<N>/plan#0 has N-1 plan
+// ancestors and grows round N+1. In the normal flow this equals
+// PlanDepth()+1 — it only diverges on re-execution, which is exactly the
+// point: every node ID this quantum grows (tools, the round's plan node, the
+// answer node) is derived from the SAME stable round, so a replay after the
+// graph advanced re-derives the identical IDs instead of forking the session
+// into duplicate branches.
+func stableRound(g *L2Graph, taskID string) int {
+	if g.HasNode(taskID) {
+		return g.AncestorPlanCount(taskID) + 2
+	}
+	return 1
+}
+
 // Returns the number of tool nodes the round carries (grown or already
 // present), 0 when the round is genuinely empty — in which case the caller
 // forces an answer node.
@@ -614,15 +630,7 @@ func (c *plannerCognition) growToolNodes(
 	toolCalls []llmcore.ToolCall,
 	sessionID string,
 ) (int, error) {
-	// Stable round derivation. The admission-submitted plan task (not a
-	// graph node) is the round-0 trigger and grows round 1; a grown plan
-	// node sess/<sid>/d<N>/plan#0 has N-1 plan ancestors and grows round
-	// N+1. In the normal flow this equals the old PlanDepth()+1 — it only
-	// diverges on re-execution, which is exactly the point.
-	round := 1
-	if g.HasNode(task.TaskID) {
-		round = g.AncestorPlanCount(task.TaskID) + 2
-	}
+	round := stableRound(g, task.TaskID)
 	grown := 0
 
 	// Determine the predecessor for the first tool node: the current plan
@@ -805,14 +813,17 @@ func (c *plannerCognition) growAnswerNode(
 	content string,
 	resp *llmcore.GenerateResponse,
 ) (*StepOutcome, error) {
-	depth := g.PlanDepth()
-	answerID := SessionNodeID(task.SessionID, depth+1, "answer", 0)
+	// The answer node is the terminal of the SAME round the quantum would
+	// have grown, so its ID comes from the stable round derivation — never
+	// from PlanDepth, which moves as LATER rounds grow and would hand a
+	// re-executed quantum a different answer ID (duplicate answer branches).
+	answerID := SessionNodeID(task.SessionID, stableRound(g, task.TaskID), "answer", 0)
 
-	// Idempotency across quantum re-execution: answer growth does not
-	// advance PlanDepth, so a re-executed quantum derives the SAME answer
-	// node ID. Growing it again used to fail on the duplicate ID and burn
-	// the whole retry budget; a quantum whose answer already exists just
-	// completes successfully.
+	// Idempotency across quantum re-execution: the stable round makes the
+	// answer node ID identical across replays, so a re-executed quantum
+	// finds its own answer node. Growing it again used to fail on the
+	// duplicate ID and burn the whole retry budget; a quantum whose answer
+	// already exists just completes successfully.
 	if !g.HasNode(answerID) {
 		// Determine predecessor: the current plan node when in graph, else root.
 		pred := task.TaskID

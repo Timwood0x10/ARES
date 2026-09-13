@@ -581,6 +581,7 @@ security.jwt_expiry config, then the built-in default of ` + defaultTokenTTL + `
 Example:
   ARES_JWT_SECRET=changeme ares auth token --role operator --sub "deploy-user"`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			allowConfigDirFor(tokenConfigPath)
 			cfg, err := ares_config.Load(tokenConfigPath)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)

@@ -14,15 +14,26 @@ const (
 	// side carries task payloads, so the default must be an explicit
 	// loopback IP — never a wildcard, and not the "localhost" name (which
 	// a hosts-file remap could point off-loopback).
-	defaultServerHost   = "127.0.0.1"
-	defaultLLMProvider  = "ollama"
-	defaultLLMModel     = "gemma4"
+	defaultServerHost  = "127.0.0.1"
+	defaultLLMProvider = "ollama"
+	// defaultLLMModel must name a model the default provider (Ollama) can
+	// actually serve, and must match the SDK's default (sdk.defaultModel) so a
+	// zero-config serve and a zero-config SDK run behave the same. The previous
+	// value ("gemma4") existed in no Ollama registry, so the default config
+	// failed on its first inference.
+	defaultLLMModel     = "llama3.2"
 	defaultOutputFormat = "simple"
 	defaultStorageType  = "postgres"
 	defaultPGVectorTbl  = "embeddings"
 	providerOpenAI      = "openai"
 	providerOpenRouter  = "openrouter"
 	providerAnthropic   = "anthropic"
+	// defaultSubAgentTimeoutSeconds matches the shipped ares.yaml. Validate
+	// requires a positive sub-agent timeout, so leaving it at zero made
+	// every config that listed agents without an explicit timeout — and the
+	// whole NewMinimalConfig path, which never went through Validate —
+	// invalid.
+	defaultSubAgentTimeoutSeconds = 120
 )
 
 // DefaultArchiveDir is the default round-archive directory. Exported so the
@@ -81,6 +92,11 @@ func NewMinimalConfig(baseURL, apiKey, model string) *Config {
 		cfg.LLM.Provider = defaultLLMProvider // ollama
 	}
 	cfg.LLM.Model = model
+	// Assemble a default agent population BEFORE setDefaults so the defaults
+	// loop reaches it: assigning Sub afterwards left every sub-agent with a
+	// zero Timeout, which Validate rejects ("timeout must be positive"). A
+	// user who wants different agents supplies a config file instead.
+	cfg.Agents.Sub = defaultSubAgents()
 	// Memory defaults to enabled (nil Enabled field → IsEnabled() == true), so
 	// a minimal startup always satisfies the kernel scheduler's Memory
 	// requirement.
@@ -92,11 +108,6 @@ func NewMinimalConfig(baseURL, apiKey, model string) *Config {
 			cfg.LLM.Model = defaultLLMModel
 		}
 	}
-	// Assemble a default agent population so the runtime is immediately
-	// capable of task division (coder / reviewer / researcher), even with no
-	// config file. A user who wants different agents supplies a config file
-	// instead.
-	cfg.Agents.Sub = defaultSubAgents()
 	return cfg
 }
 
@@ -152,6 +163,13 @@ func (c *Config) setDefaults() {
 	}
 	if c.LLM.ScorerAPIBurst == 0 {
 		c.LLM.ScorerAPIBurst = 20
+	}
+	// Sub-agent timeouts default so a config that names agents without
+	// timing them still satisfies Validate. An explicit value always wins.
+	for i := range c.Agents.Sub {
+		if c.Agents.Sub[i].Timeout < 1 {
+			c.Agents.Sub[i].Timeout = defaultSubAgentTimeoutSeconds
+		}
 	}
 	if c.Output.Format == "" {
 		c.Output.Format = defaultOutputFormat

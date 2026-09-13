@@ -65,6 +65,15 @@ func NewReaperWithKeep(fabric *Fabric, prefix string, gracePeriod time.Duration,
 	if gracePeriod <= 0 {
 		gracePeriod = 30 * time.Second
 	}
+	// An empty prefix is a misconfiguration, not "match everything": fail
+	// closed (no scope ⇒ nothing harvested) and log loudly, so an operator who
+	// forgot the prefix does not silently get a reaper that sweeps every task
+	// family in the process.
+	if prefix == "" {
+		log.Error("taskfabric: reaper created with an empty prefix; harvesting disabled " +
+			"(an empty prefix would match every task family)")
+		return &Reaper{fabric: fabric, keep: keep}
+	}
 	return &Reaper{
 		fabric: fabric,
 		scopes: []reaperScope{{prefix: prefix, grace: gracePeriod}},
@@ -109,9 +118,17 @@ func (r *Reaper) GracePeriod() time.Duration {
 
 // scopeFor returns the harvesting scope whose prefix matches the task ID, or
 // nil when the task belongs to no harvested family.
+//
+// An empty prefix never matches: it used to match EVERY task, which turned a
+// misconfiguration into a reaper that harvests every family (collab-*, peer-*,
+// …) outside the documented "only my own ID family" contract. Failing closed
+// here too keeps a stray empty scope from surviving any other path.
 func (r *Reaper) scopeFor(taskID string) *reaperScope {
 	for i := range r.scopes {
-		if r.scopes[i].prefix == "" || strings.HasPrefix(taskID, r.scopes[i].prefix) {
+		if r.scopes[i].prefix == "" {
+			continue
+		}
+		if strings.HasPrefix(taskID, r.scopes[i].prefix) {
 			return &r.scopes[i]
 		}
 	}

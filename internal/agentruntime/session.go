@@ -125,12 +125,13 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 		return fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
 	}
 
-	// The compile subscription must outlive the submission request: tying it
-	// to the request context would kill the projection the moment the caller
-	// returns, while the session lives on.
+	// InitSession wires the compile subscription on a context the registry
+	// owns (released via ReleaseSession/idle sweep), so no caller-scoped
+	// workaround is needed here. liveCtx still shields the ROOT COMPILATION
+	// below from the submission request ending mid-admission.
 	liveCtx := context.WithoutCancel(ctx)
 	compile := s.Compile
-	g, err := s.Reg.InitSession(liveCtx, sessionID, prompt, nil,
+	g, err := s.Reg.InitSession(sessionID, prompt, nil,
 		func(subCtx context.Context, dag *engine.MutableDAG) (stop func()) {
 			return compile.SubscribeGraphEvents(subCtx, dag)
 		})
@@ -223,6 +224,45 @@ func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) boo
 		}
 	}
 	return seen
+}
+
+// StallConfirmations is how many consecutive polls a wait loop must observe
+// SessionStalled before it believes the verdict.
+//
+// The planner grows the answer node through the SAME asynchronous compile
+// pipeline as a tool node (planner_cognition.growAnswerNode → L2Graph.
+// AddToolNode → GraphEvent → CompileCoordinator → fabric.CompileNode), so a
+// plan quantum can return Done — plan task COMPLETED — while the grown answer
+// task is not in the fabric yet. A single poll landing in that gap saw "every
+// session task terminal, no answer" and declared a live session dead, which
+// is what made the SDK's session-continuation path fail intermittently under
+// load. Requiring the verdict to be stable across polls absorbs the gap; a
+// genuinely stalled session still reports within a few polls, far inside any
+// caller's wait budget.
+const StallConfirmations = 5
+
+// StallDetector turns SessionStalled's point-in-time verdict into a decision
+// that survives the answer-node compile gap. The zero value is ready to use;
+// one detector belongs to one wait loop, and that loop must be the only
+// goroutine touching it (no lock — same ownership rule as a loop-local
+// counter).
+type StallDetector struct {
+	consecutive int
+}
+
+// Stalled reports whether the session should be treated as stalled now. A
+// poll that sees any non-terminal session work resets the accumulated
+// evidence, so on-again/off-again progress never adds up to a false verdict.
+//
+// Callers keep SessionStalled's own contract: run the answer scan FIRST, then
+// ask the detector.
+func (d *StallDetector) Stalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
+	if !SessionStalled(fabric, sessionID, planTaskID) {
+		d.consecutive = 0
+		return false
+	}
+	d.consecutive++
+	return d.consecutive >= StallConfirmations
 }
 
 // Release drops a session. A release miss is returned to the caller so it can

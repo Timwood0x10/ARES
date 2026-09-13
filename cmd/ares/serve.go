@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"syscall"
@@ -203,6 +204,23 @@ func normalizeShutdownErr(err error) error {
 	return err
 }
 
+// allowConfigDirFor confines ares_config.Load to the directory holding the
+// given config path. The path-traversal guard inside Load is opt-in via
+// SetAllowedConfigDir and had NO production caller — SECURITY.md documented a
+// control that was a no-op at runtime (review C-3). Every Load entry point in
+// this binary calls this first, so each load in the process (initial,
+// hot-reload re-reads, status fallback candidates) is confined to the
+// operator's config directory.
+func allowConfigDirFor(path string) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		// A path that cannot be absolutized cannot be confined; Load
+		// surfaces its own error when it fails to read the file.
+		return
+	}
+	ares_config.SetAllowedConfigDir(filepath.Dir(abs))
+}
+
 func loadServeConfig() (*ares_config.Config, error) {
 	// Minimal setup: the user provides only the LLM endpoint (--llm-url) and
 	// optionally the API key / model. Everything else — agents, memory, tools,
@@ -240,6 +258,7 @@ func loadServeConfig() (*ares_config.Config, error) {
 		serveConfigPath = configPath
 	}
 
+	allowConfigDirFor(configPath)
 	cfg, err := ares_config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
@@ -258,11 +277,20 @@ func loadServeConfig() (*ares_config.Config, error) {
 	return cfg, nil
 }
 
-// validateServeConfig enforces the dependencies required by the full agent
+// validateServeConfig enforces the configuration contract of the full agent
 // serving entry point before Bootstrap starts any component.
+//
+// It runs the shared Config validator, which the config-file path already
+// gets from Config.Load. The no-config path (`ares serve --llm-url …`)
+// builds a config with NewMinimalConfig and returns it directly, so without
+// this call nothing validated that config at all — the only thing standing
+// between an operator and a late, deep wiring failure was a nil check.
 func validateServeConfig(cfg *ares_config.Config) error {
 	if cfg == nil {
 		return errors.New("serve: config is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("serve: invalid configuration: %w", err)
 	}
 	return nil
 }

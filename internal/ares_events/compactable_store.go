@@ -283,7 +283,63 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 	if len(events) == 0 {
 		return synthetic, nil
 	}
+	synthetic = dropOverlappingSummaries(synthetic, events)
+	if len(synthetic) == 0 {
+		return events, nil
+	}
 	return mergeSyntheticWithLive(synthetic, events, opts), nil
+}
+
+// dropOverlappingSummaries removes synthetic summaries whose covered range
+// reaches into the live events' version span.
+//
+// Concurrent compaction rounds can leave a summary covering 1–15 while a
+// later trim only removed up to 11, leaving live events at 12–14 INSIDE the
+// summary's range. Splicing such a summary before the live tail breaks the
+// version-ordered merge contract (a 15 would sort after a 12). Dropping the
+// overlap is lossless for replay semantics: the live events inside the range
+// ARE the original events the summary would stand in for.
+//
+// The end version is read from each synthetic event's own payload (not from
+// positional alignment with the summaries slice — applyReadOptions sorts and
+// filters, which breaks index correspondence). The payload value is int64 in
+// this process, but a JSON round-trip (PG repository path) yields float64,
+// so both are accepted.
+func dropOverlappingSummaries(synthetic []*Event, live []*Event) []*Event {
+	if len(synthetic) == 0 || len(live) == 0 {
+		return synthetic
+	}
+	minLive := live[0].Version
+	for _, ev := range live {
+		if ev.Version < minLive {
+			minLive = ev.Version
+		}
+	}
+	kept := make([]*Event, 0, len(synthetic))
+	for _, ev := range synthetic {
+		if summaryEndVersion(ev) >= minLive {
+			continue // range reaches into the live tail: the live events win
+		}
+		kept = append(kept, ev)
+	}
+	return kept
+}
+
+// summaryEndVersion extracts the covering range end from a synthetic
+// event.summary payload. Returns MaxInt64 on any decode trouble so a
+// malformed entry is treated as overlapping (conservative: dropped rather
+// than spliced out of order).
+func summaryEndVersion(ev *Event) int64 {
+	switch v := ev.Payload["end_version"].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		return 1 << 62 // conservative sentinel: treated as overlapping
+	}
 }
 
 // syntheticSummaryEvents converts stored summaries into replayable

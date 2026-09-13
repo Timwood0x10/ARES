@@ -233,7 +233,7 @@ func TestCanary_FullStackL2Sessions(t *testing.T) {
 		routerChat.scripts[s.id] = &canaryScript{responses: s.script}
 		routerChat.mu.Unlock()
 
-		g, err := reg.InitSession(ctx, s.id, "canary prompt "+s.id, nil, compileCoord)
+		g, err := reg.InitSession(s.id, "canary prompt "+s.id, nil, compileCoord)
 		require.NoError(t, err)
 		canaryAdmitRoot(t, ctx, fabric, g)
 

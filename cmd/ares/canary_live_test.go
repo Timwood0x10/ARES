@@ -139,7 +139,7 @@ func TestCanaryLiveLLM(t *testing.T) {
 	sched.PollInterval = 50 * time.Millisecond
 	go sched.Run(ctx)
 
-	g, err := reg.InitSession(ctx, sessionID, prompt, nil,
+	g, err := reg.InitSession(sessionID, prompt, nil,
 		func(subCtx context.Context, dag *engine.MutableDAG) (stop func()) {
 			return coord.SubscribeGraphEvents(subCtx, dag)
 		})

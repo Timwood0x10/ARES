@@ -223,7 +223,7 @@ func newPlannerSession(t *testing.T, sessionID string) (*SessionRegistry, *L2Gra
 	compileCoord := func(ctx context.Context, dag *engine.MutableDAG) (stop func()) {
 		return coord.SubscribeGraphEvents(ctx, dag)
 	}
-	g, err := reg.InitSession(context.Background(), sessionID, "find the answer", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
 	require.NoError(t, err)
 
 	// Admit the session root and drive it to COMPLETED so the planner can

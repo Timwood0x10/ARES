@@ -24,11 +24,13 @@ import (
 // ensureScheduler lazily starts the shared scheduler over the runtime's own
 // Task Fabric. It runs exactly once; subsequent calls reuse the started
 // scheduler. The scheduler goroutine lives until Runtime.Close cancels
-// schedCtx.
+// schedCtx, and Close joins it through schedDone before tearing down the
+// components a drain in flight may still be touching.
 func (r *Runtime) ensureScheduler() {
 	r.schedOnce.Do(func() {
 		r.sdkFabric = taskfabric.NewFabric()
 		r.schedCtx, r.schedCancel = context.WithCancel(context.Background())
+		r.schedDone = make(chan struct{})
 		r.sched = kernel.New(r.sdkFabric, r.sdkExecutors, nil)
 		r.sched.PollInterval = 20 * time.Millisecond
 		// the SDK is a peer-runtime facade — wire the same kernel
@@ -48,7 +50,11 @@ func (r *Runtime) ensureScheduler() {
 		// the L2 peer's token/tool budgets and deadline at quantum
 		// boundaries (cmd/ares parity). Wired here, before the drain starts.
 		r.sched.WithGovernance(r.agentsFabric)
-		go r.sched.Run(r.schedCtx)
+		done := r.schedDone
+		go func() {
+			defer close(done)
+			r.sched.Run(r.schedCtx)
+		}()
 	})
 }
 

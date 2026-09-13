@@ -294,8 +294,17 @@ const evidenceKeyStrategyID = "strategy_id"
 // agentStoppedGracefulReasons lists EventAgentStopped payload "reason"
 // values that represent intentional, operator-driven terminations. These
 // say nothing about strategy quality, so they produce no sample.
+//
+// "pause" (Manager.PauseAgent) and "restart" (Manager.RestartAgent) are
+// operator/chaos-driven lifecycle moves: the agent's cognitive quality is
+// untouched, and ResumeAgent relaunches the same instance. Treating them as
+// abnormal wrote a 0.0 failure sample into the active strategy's fitness on
+// every pause/restart — arena chaos runs systematically poisoned the fitness
+// window and could trigger spurious rollbacks.
 var agentStoppedGracefulReasons = map[string]bool{
 	"explicit_stop": true,
+	"pause":         true,
+	"restart":       true,
 }
 
 // eventToSample converts a task lifecycle event into a normalized [0,1]

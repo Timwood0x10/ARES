@@ -158,8 +158,11 @@ func wiringServeCfgStoreWatch(ctx context.Context, g *errgroup.Group, cfg *ares_
 	}
 
 	// EventStore is wired into Memory during Bootstrap,
-	// not post-Bootstrap here. validateServeConfig has already enforced that
-	// the full agent-serving entry point has its required Memory component.
+	// not post-Bootstrap here. validateServeConfig has already rejected a
+	// config that fails Config.Validate, so a Memory section that is present
+	// but nonsensical cannot reach this point. Memory itself is optional:
+	// Bootstrap leaves comp.Memory nil when memory.enabled is false and the
+	// consumers below probe for nil rather than assuming it exists.
 
 	// Stage 1 observability: report the System Runtime component snapshot
 	// (names, modes, lifecycle states) so operators can confirm which

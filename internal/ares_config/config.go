@@ -242,6 +242,19 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// firstNonEmptyEnv returns the value of the first environment variable in
+// names that is set and non-empty, or "" when none is. Used to accept a
+// canonical variable plus its historical aliases without duplicating the
+// `if v != ""` ladder.
+func firstNonEmptyEnv(names ...string) string {
+	for _, name := range names {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // resolveProviderAPIKey returns the credential carried by the environment
 // variable that belongs to provider. The provider-specific variable is tried
 // first; OPENROUTER_API_KEY is the historical generic override and remains
@@ -310,13 +323,16 @@ func LoadFromEnv(cfg *Config) error {
 			cfg.Storage.Port = port
 		}
 	}
-	if v := os.Getenv("DB_USERNAME"); v != "" {
+	// DB_USERNAME / DB_DATABASE are the canonical names; DB_USER / DB_NAME are
+	// the historical aliases `ares db migrate` documented and read, so both are
+	// accepted here to keep one env set working for every entry point.
+	if v := firstNonEmptyEnv("DB_USERNAME", "DB_USER"); v != "" {
 		cfg.Storage.Username = v
 	}
 	if v := os.Getenv("DB_PASSWORD"); v != "" {
 		cfg.Storage.Password = v
 	}
-	if v := os.Getenv("DB_DATABASE"); v != "" {
+	if v := firstNonEmptyEnv("DB_DATABASE", "DB_NAME"); v != "" {
 		cfg.Storage.Database = v
 	}
 	// Security environment variables. JWTSecret prefers ARES_JWT_SECRET and

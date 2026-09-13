@@ -90,6 +90,9 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 	}
 	ticker := time.NewTicker(l2PollInterval)
 	defer ticker.Stop()
+	// The stall verdict needs sustained evidence: a single poll landing in
+	// the answer-node compile gap must not kill a live session.
+	stalls := &agentruntime.StallDetector{}
 	for {
 		// Fast failure: a failed plan means the session can never answer.
 		if tk, err := r.sdkFabric.Task(taskID); err == nil && tk.State == taskfabric.StateFailed {
@@ -114,8 +117,10 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 		// Fast failure: every session task terminal with no answer left means
 		// the graph can never grow one (a failed grown node cascades into the
 		// continuation plan node, and grown nodes retry zero times) — fail
-		// now instead of spinning the full deadline.
-		if agentruntime.SessionStalled(r.sdkFabric, sessionID, taskID) {
+		// now instead of spinning the full deadline. The detector requires
+		// this to hold across consecutive polls so a transient gap in the
+		// async answer-node compile is not mistaken for death.
+		if stalls.Stalled(r.sdkFabric, sessionID, taskID) {
 			// Race guard: the answer-availability check above and this stall
 			// verdict are two separate reads, so the answer node can complete
 			// and record its body between them. Re-check once so a stall

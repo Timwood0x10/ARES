@@ -422,10 +422,8 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		// Origin is Kernel-enforced: stamped from the tool context caller
 		// (kctx.CallerID), never from LLM-supplied arguments. Empty =
 		// root call (no agent caller in context).
-		Origin: kctx.CallerID(ctx),
-		Checkpoint: &taskfabric.CheckpointEnvelope{
-			Payload: args.Payload,
-		},
+		Origin:     kctx.CallerID(ctx),
+		Checkpoint: taskfabric.NewCheckpointEnvelope(args.Payload),
 	}
 
 	if err := k.fabric.Create(task); err != nil {

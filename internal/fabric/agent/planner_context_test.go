@@ -53,7 +53,7 @@ func TestAssembleContextFromGraphPath(t *testing.T) {
 	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
 		return coord.SubscribeGraphEvents(ctx, dag)
 	}
-	g, err := reg.InitSession(ctx, sessionID, "analyze the system", nil, compileCoord)
+	g, err := reg.InitSession(sessionID, "analyze the system", nil, compileCoord)
 	require.NoError(t, err)
 
 	// Admit root and drive to completion so its prompt rides the envelope.
@@ -163,7 +163,7 @@ func TestContextIsChronological(t *testing.T) {
 	fabric := taskfabric.NewFabric()
 	reg := NewSessionRegistry()
 	const sessionID = "m3-order"
-	g, err := reg.InitSession(ctx, sessionID, "root prompt", nil, nil)
+	g, err := reg.InitSession(sessionID, "root prompt", nil, nil)
 	require.NoError(t, err)
 
 	// root -> first -> second -> plan

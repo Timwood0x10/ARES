@@ -99,20 +99,28 @@ func TestMemoryExperienceStore_Append(t *testing.T) {
 		}
 	})
 
-	t.Run("store full", func(t *testing.T) {
+	t.Run("capacity eviction keeps newest", func(t *testing.T) {
 		cfg := ExperienceStoreConfig{MaxSize: 1}
 		smallStore := NewMemoryExperienceStore(cfg)
 
 		exp1 := newTestExperience("exp-1", "strategy-1", "code_review")
-		err := smallStore.Append(ctx, exp1)
-		if err != nil {
+		if err := smallStore.Append(ctx, exp1); err != nil {
 			t.Fatalf("unexpected error on first append: %v", err)
 		}
 
+		// At capacity the store must still accept the write, evicting the
+		// OLDEST entry (FIFO) — never refusing new experience forever.
 		exp2 := newTestExperience("exp-2", "strategy-1", "code_review")
-		err = smallStore.Append(ctx, exp2)
-		if err != ErrStoreFull {
-			t.Errorf("expected ErrStoreFull, got %v", err)
+		if err := smallStore.Append(ctx, exp2); err != nil {
+			t.Fatalf("append at capacity must evict, not fail: %v", err)
+		}
+
+		got, err := smallStore.Query(ctx, "strategy-1", time.Time{}, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "exp-2" {
+			t.Errorf("eviction must keep the newest entry, got %+v", got)
 		}
 	})
 }
@@ -153,7 +161,7 @@ func TestMemoryExperienceStore_AppendBatch(t *testing.T) {
 		}
 	})
 
-	t.Run("batch exceeds capacity", func(t *testing.T) {
+	t.Run("batch beyond capacity evicts oldest", func(t *testing.T) {
 		cfg := ExperienceStoreConfig{MaxSize: 2}
 		smallStore := NewMemoryExperienceStore(cfg)
 
@@ -162,9 +170,24 @@ func TestMemoryExperienceStore_AppendBatch(t *testing.T) {
 			newTestExperience("exp-2", "strategy-1", "bug_fix"),
 			newTestExperience("exp-3", "strategy-2", "code_review"),
 		}
-		err := smallStore.AppendBatch(ctx, exps)
-		if err != ErrStoreFull {
-			t.Errorf("expected ErrStoreFull, got %v", err)
+		// A batch larger than MaxSize keeps only its newest MaxSize entries.
+		if err := smallStore.AppendBatch(ctx, exps); err != nil {
+			t.Fatalf("batch append beyond capacity must evict, not fail: %v", err)
+		}
+
+		stats, err := smallStore.GetStatistics(ctx, "strategy-1")
+		if err != nil {
+			t.Fatalf("statistics: %v", err)
+		}
+		if got := stats["total_experiences"]; got != 1 {
+			t.Errorf("expected the oldest strategy-1 entry evicted (1 left), got %v", got)
+		}
+		stats2, err := smallStore.GetStatistics(ctx, "strategy-2")
+		if err != nil {
+			t.Fatalf("statistics: %v", err)
+		}
+		if got := stats2["total_experiences"]; got != 1 {
+			t.Errorf("newest batch entry must survive, got %v entries for strategy-2", got)
 		}
 	})
 }

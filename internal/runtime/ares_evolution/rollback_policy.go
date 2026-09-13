@@ -245,6 +245,15 @@ func (p *RollbackPolicy) isGradualDeclineLocked() bool {
 		}
 	}
 
+	// Monotonic decline alone is not actionable: it says nothing about
+	// MAGNITUDE, so two 0.001 wobbles satisfied it and triggered a rollback
+	// while the configured degradationThreshold (typically 0.15) never applied.
+	// Require the window's net decline to reach the threshold as well.
+	netDecline := p.scoreHistory[checkStart].Score - p.scoreHistory[n-1].Score
+	if netDecline < p.degradationThreshold {
+		return false
+	}
+
 	// Every comparison in the checked range declined, and at least two of
 	// them exist.
 	return declines >= 2 && declines >= n-1-checkStart

@@ -50,9 +50,13 @@ func init() {
 func runDbMigrate() error {
 	host := getEnv("DB_HOST", "localhost")
 	port := getEnv("DB_PORT", "5432")
-	user := getEnv("DB_USER", "postgres")
+	// Both spellings are accepted because the two entry points historically
+	// disagreed: `ares serve` (LoadFromEnv) read DB_USERNAME/DB_DATABASE while
+	// this command read DB_USER/DB_NAME, so setting one of them silently left
+	// the other on its default. The longer name wins when both are set.
+	user := getEnv("DB_USERNAME", getEnv("DB_USER", "postgres"))
 	password := getEnv("DB_PASSWORD", "postgres")
-	dbname := getEnv("DB_NAME", "ARES")
+	dbname := getEnv("DB_DATABASE", getEnv("DB_NAME", "ARES"))
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		url.QueryEscape(user), url.QueryEscape(password),

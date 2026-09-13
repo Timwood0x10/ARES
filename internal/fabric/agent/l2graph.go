@@ -163,28 +163,49 @@ func (g *L2Graph) HasNode(nodeID string) bool {
 	return g.dag.HasNode(nodeID)
 }
 
-// AncestorPlanCount walks the predecessor chain from nodeID to the root and
-// counts PLAN nodes on the way. It is the STABLE derivation of a plan task's
-// own round: unlike PlanDepth (which counts every plan node in the graph),
-// the ancestor count of a given plan node never changes when a LATER round
-// grows — which is what makes re-executed plan quanta (fabric retry, lease
-// expiry after the graph already advanced) derive the SAME growth round as
-// their first execution.
+// AncestorPlanCount walks the predecessor chains from nodeID to the root and
+// counts PLAN nodes on the deepest one. It is the STABLE derivation of a plan
+// task's own round: unlike PlanDepth (which counts every plan node in the
+// graph), the ancestor count of a given plan node never changes when a LATER
+// round grows — which is what makes re-executed plan quanta (fabric retry,
+// lease expiry after the graph already advanced) derive the SAME growth round
+// as their first execution.
+//
+// A multi-dependency node takes the MAXIMUM plan count across all its
+// dependency edges: the chain reaching deepest into the plan history defines
+// the round. Following only one edge (the old deps[0] walk) undercounts when
+// a plan node fans in from several predecessors, shifting its derived round
+// and breaking replay stability.
 func (g *L2Graph) AncestorPlanCount(nodeID string) int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	count := 0
-	for id := nodeID; id != "" && id != g.root; {
-		deps := g.dag.ReadDeps(id)
-		if len(deps) == 0 {
-			break
-		}
-		id = deps[0]
-		if g.dag.AgentTypeOf(id) == planAgentType {
+	return g.ancestorPlanCount(nodeID, make(map[string]int))
+}
+
+// ancestorPlanCount is the memoized DFS core of AncestorPlanCount. The caller
+// must hold at least a read lock. The memo map keeps diamond-shaped
+// dependency subgraphs linear instead of exponential; the pre-seeded zero
+// makes even a hypothetical cycle in an externally built graph terminate.
+func (g *L2Graph) ancestorPlanCount(id string, memo map[string]int) int {
+	if id == "" || id == g.root {
+		return 0
+	}
+	if count, ok := memo[id]; ok {
+		return count
+	}
+	memo[id] = 0
+	best := 0
+	for _, dep := range g.dag.ReadDeps(id) {
+		count := g.ancestorPlanCount(dep, memo)
+		if dep != g.root && g.dag.AgentTypeOf(dep) == planAgentType {
 			count++
 		}
+		if count > best {
+			best = count
+		}
 	}
-	return count
+	memo[id] = best
+	return best
 }
 
 // CountToolClass counts how many L2 tool-instance nodes of the given tool

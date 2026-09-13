@@ -28,6 +28,22 @@ import (
 // draining in-flight tasks first.
 const CurrentCheckpointSchemaVersion = 4
 
+// NewCheckpointEnvelope builds a checkpoint envelope stamped with the current
+// schema version.
+//
+// Every producer must go through this (or set SchemaVersion explicitly).
+// DecodeCheckpoint's version gate is only meaningful if envelopes always carry
+// a version: a bare &CheckpointEnvelope{} left SchemaVersion at 0, which the
+// decoder accepted as a legacy value — so the "every envelope is versioned"
+// contract held on the read side but not on the write side, and any future
+// migration would have had to guess at those records.
+func NewCheckpointEnvelope(payload map[string]any) *CheckpointEnvelope {
+	return &CheckpointEnvelope{
+		SchemaVersion: CurrentCheckpointSchemaVersion,
+		Payload:       payload,
+	}
+}
+
 // CheckpointEnvelope is the durable, versioned checkpoint schema. It
 // wraps the submission-time metadata (UserProfile, Payload, UsedExperienceID)
 // and the quantum's progress (StepCheckpoint) in a tagged, versioned envelope

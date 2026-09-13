@@ -158,3 +158,44 @@ func TestCostAndLatencyPenaltiesCompose(t *testing.T) {
 	require.True(t, ok)
 	assert.InDelta(t, 0.25, s.Score, 1e-9)
 }
+
+// TestEventToSampleAgentStoppedGracefulReasons pins the G-7 contract:
+// EventAgentStopped with an operator-driven reason (explicit_stop, pause,
+// restart) must NOT produce a fitness sample. Pre-fix only "explicit_stop"
+// was graceful — every PauseAgent/RestartAgent (arena chaos runs, recovery
+// revival) wrote a 0.0 failure sample into the active strategy's fitness,
+// systematically poisoning the rollback window.
+func TestEventToSampleAgentStoppedGracefulReasons(t *testing.T) {
+	obs := &RuntimeObserver{}
+
+	graceful := []string{"explicit_stop", "pause", "restart"}
+	for _, reason := range graceful {
+		s, ok := obs.eventToSample(&ares_events.Event{
+			Type:      ares_events.EventAgentStopped,
+			Timestamp: time.Now(),
+			Payload:   map[string]any{"agent_id": "a", "reason": reason},
+		})
+		assert.False(t, ok, "graceful stop reason %q must not produce a fitness sample", reason)
+		assert.False(t, s.Success)
+		assert.Equal(t, 0.0, s.Score)
+	}
+
+	// No reason at all (sub-agent shutdown) stays graceful.
+	_, ok := obs.eventToSample(&ares_events.Event{
+		Type:      ares_events.EventAgentStopped,
+		Timestamp: time.Now(),
+		Payload:   map[string]any{"agent_id": "a"},
+	})
+	assert.False(t, ok, "reasonless agent stop must not produce a fitness sample")
+
+	// An abnormal reason (e.g. death) still yields the 0.0 failure sample —
+	// the graceful list must not swallow genuine failures.
+	s, ok := obs.eventToSample(&ares_events.Event{
+		Type:      ares_events.EventAgentStopped,
+		Timestamp: time.Now(),
+		Payload:   map[string]any{"agent_id": "a", "reason": "death"},
+	})
+	require.True(t, ok, "abnormal stop reason must still produce a failure sample")
+	assert.False(t, s.Success)
+	assert.Equal(t, 0.0, s.Score)
+}
