@@ -65,15 +65,28 @@ func (a *SecretAdapter) ParseFrom(data []byte, format SecretFormat) ([]byte, err
 }
 
 // parseJSON parses JSON input format.
+// Accepts both the object form ({"secrets": [...]}) and a bare top-level
+// array of items ([...]), matching parseYAML's dual-format tolerance. The
+// array form is what SecretRepository.Export produces, so an export can be
+// fed straight back into Import.
 func (a *SecretAdapter) parseJSON(data []byte) ([]byte, error) {
-	// Validate JSON format
+	// Try object format ({"secrets": [...]}).
 	var importData ImportData
-	if err := json.Unmarshal(data, &importData); err != nil {
-		return nil, errors.Wrap(err, "invalid JSON format")
+	if err := json.Unmarshal(data, &importData); err == nil {
+		// Return as-is (already JSON in the internal object form).
+		return data, nil
 	}
 
-	// Return as-is (already JSON)
-	return data, nil
+	// Try sequence format (a direct list of items) and normalize to object form.
+	var items []SecretImportItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, errors.Wrap(err, "invalid JSON format")
+	}
+	normalized, err := json.Marshal(ImportData{Secrets: items})
+	if err != nil {
+		return nil, errors.Wrap(err, "normalize import data")
+	}
+	return normalized, nil
 }
 
 // parseYAML parses YAML input format and converts to JSON using gopkg.in/yaml.v3.

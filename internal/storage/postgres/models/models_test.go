@@ -252,6 +252,62 @@ func TestExperience_NilEmbedding(t *testing.T) {
 	assert.False(t, exp.Success)
 }
 
+// TestExperience_MetadataForStorage verifies the Go-side Constraints field is
+// folded into the persisted metadata map under "constraints" (the experiences
+// table has no constraints column, so metadata is the only place it can live).
+func TestExperience_MetadataForStorage(t *testing.T) {
+	tests := []struct {
+		name        string
+		constraints string
+		metadata    map[string]interface{}
+		want        map[string]interface{}
+	}{
+		{
+			name:        "constraints_folds_into_metadata",
+			constraints: "use vector index",
+			metadata:    map[string]interface{}{"source": "distill"},
+			want:        map[string]interface{}{"source": "distill", "constraints": "use vector index"},
+		},
+		{
+			name:        "empty_constraints_leaves_metadata_unchanged",
+			constraints: "",
+			metadata:    map[string]interface{}{"source": "distill"},
+			want:        map[string]interface{}{"source": "distill"},
+		},
+		{
+			name:        "nil_metadata_still_folds_constraints",
+			constraints: "bounded",
+			metadata:    nil,
+			want:        map[string]interface{}{"constraints": "bounded"},
+		},
+		{
+			name:        "field_wins_over_stale_metadata_value",
+			constraints: "fresh",
+			metadata:    map[string]interface{}{"constraints": "stale"},
+			want:        map[string]interface{}{"constraints": "fresh"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exp := &Experience{Constraints: tt.constraints, Metadata: tt.metadata}
+			assert.Equal(t, tt.want, exp.MetadataForStorage())
+		})
+	}
+}
+
+// TestExperience_MetadataForStorage_DoesNotMutateReceiver ensures folding does
+// not write the constraints key back into the receiver's own metadata map.
+func TestExperience_MetadataForStorage_DoesNotMutateReceiver(t *testing.T) {
+	exp := &Experience{
+		Constraints: "folded",
+		Metadata:    map[string]interface{}{"source": "distill"},
+	}
+	got := exp.MetadataForStorage()
+	assert.Equal(t, "folded", got["constraints"])
+	_, exists := exp.Metadata["constraints"]
+	assert.False(t, exists, "MetadataForStorage must not mutate the receiver's map")
+}
+
 // TestTool_TableName tests table name returns correct value.
 func TestTool_TableName(t *testing.T) {
 	tool := &Tool{}

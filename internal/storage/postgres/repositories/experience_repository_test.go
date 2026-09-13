@@ -38,7 +38,8 @@ func TestExperienceRepository_Create(t *testing.T) {
 		Score:            0.8,
 		Success:          true,
 		AgentID:          "agent-1",
-		Metadata:         nil, // Note: metadata field has a bug in ExperienceRepository.Create
+		Metadata:         map[string]interface{}{"source": "test"},
+		Constraints:      "persisted constraint",
 		DecayAt:          time.Now().Add(30 * 24 * time.Hour),
 		CreatedAt:        time.Now(),
 	}
@@ -504,7 +505,7 @@ func TestExperienceRepository_ConcurrentOperations(t *testing.T) {
 				Embedding:        createTestEmbedding(),
 				EmbeddingModel:   "e5-large",
 				EmbeddingVersion: 1,
-				Metadata:         nil, // Note: metadata field has a bug in ExperienceRepository.Create
+				Metadata:         nil,
 				CreatedAt:        time.Now(),
 			}
 

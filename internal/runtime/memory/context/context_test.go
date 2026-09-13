@@ -217,3 +217,100 @@ func TestSessionMemory_GetExpiredSession(t *testing.T) {
 func contains(text, substr string) bool {
 	return strings.Contains(text, substr)
 }
+
+// TestSessionMemory_AddMessageBounded pins the storage bound (P1): AddMessage
+// used to append without limit — MaxHistory only truncates at BuildContext
+// READ time, so a long-lived session's stored message slice (and every
+// GetMessages/BuildContext copy of it) grew without bound across a server
+// lifetime. The store keeps the newest maxMessages and drops the oldest,
+// which is exactly what the read-side "keep last N" window draws from.
+func TestSessionMemory_AddMessageBounded(t *testing.T) {
+	memory := NewSessionMemory(10, time.Minute).WithMaxMessages(5)
+	if err := memory.Set(context.Background(), "s1", "u1", nil); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	for i := range 12 {
+		msg := Message{Role: RoleUser, Content: strings.Repeat("x", i+1)}
+		if err := memory.AddMessage(context.Background(), "s1", msg); err != nil {
+			t.Fatalf("AddMessage %d: %v", i, err)
+		}
+	}
+
+	got, err := memory.GetMessages(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("stored messages = %d, want the cap of 5 (newest kept)", len(got))
+	}
+	// The survivors must be the NEWEST five (contents of length 8..12).
+	for i, msg := range got {
+		wantLen := 8 + i
+		if len(msg.Content) != wantLen {
+			t.Fatalf("kept message %d has content length %d, want %d (oldest must be dropped first)",
+				i, len(msg.Content), wantLen)
+		}
+	}
+}
+
+// TestSessionMemory_DefaultMessageCap pins that a plain constructor is
+// bounded too — the fix must not depend on a caller remembering to set a cap.
+func TestSessionMemory_DefaultMessageCap(t *testing.T) {
+	memory := NewSessionMemory(10, time.Minute)
+	if err := memory.Set(context.Background(), "s1", "u1", nil); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	for i := 0; i < defaultMaxSessionMessages+50; i++ {
+		if err := memory.AddMessage(context.Background(), "s1", Message{Role: RoleUser}); err != nil {
+			t.Fatalf("AddMessage %d: %v", i, err)
+		}
+	}
+	got, err := memory.GetMessages(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(got) != defaultMaxSessionMessages {
+		t.Fatalf("stored messages = %d, want the default cap %d", len(got), defaultMaxSessionMessages)
+	}
+}
+
+// TestSessionMemory_GetMessagesRefreshesTTL pins the TTL contract (P1):
+// GetMessages took only an RLock and never touched AccessedAt, so a session
+// reached ONLY through GetMessages (BuildPromptMessages/BuildContext and the
+// memory tool both read via it) aged out of the TTL sweep mid-conversation —
+// its history vanished between two turns of an active chat. Every read that
+// proves the session is in use must refresh the access time, like Get does.
+func TestSessionMemory_GetMessagesRefreshesTTL(t *testing.T) {
+	memory := NewSessionMemory(10, 100*time.Millisecond)
+	if err := memory.Set(context.Background(), "s1", "u1", []Message{{Role: RoleUser, Content: "hi"}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Age the session to the edge of its TTL, then read it via GetMessages
+	// only (no Get/AddMessage) — the read must count as proof of life.
+	memory.mu.Lock()
+	memory.sessions["s1"].AccessedAt = time.Now().Add(-90 * time.Millisecond)
+	before := memory.sessions["s1"].AccessedAt
+	memory.mu.Unlock()
+
+	if _, err := memory.GetMessages(context.Background(), "s1"); err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+
+	memory.mu.Lock()
+	after := memory.sessions["s1"].AccessedAt
+	memory.mu.Unlock()
+	if !after.After(before) {
+		t.Fatalf("GetMessages must refresh AccessedAt: before=%v after=%v", before, after)
+	}
+
+	// And the refreshed access keeps the session alive past the original
+	// deadline: the cleanup sweep must not reap it.
+	time.Sleep(30 * time.Millisecond) // now 120ms after the original stamp
+	if removed := memory.Cleanup(context.Background()); removed != 0 {
+		t.Fatalf("cleanup removed %d sessions; a session read via GetMessages must survive its TTL window", removed)
+	}
+	if _, err := memory.GetMessages(context.Background(), "s1"); err != nil {
+		t.Fatalf("session must still be readable after the sweep: %v", err)
+	}
+}

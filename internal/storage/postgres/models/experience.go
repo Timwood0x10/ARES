@@ -140,3 +140,20 @@ func (e *Experience) GetUsageCount() int {
 	// Fall back to UsageCount field
 	return e.UsageCount
 }
+
+// MetadataForStorage returns the metadata map that should be persisted for
+// this experience. The experiences table has no constraints column, so the
+// Go-side Constraints field is folded in under the "constraints" key here —
+// otherwise a value set only on the struct field would be dropped on write
+// and GetConstraints (which reads metadata first) would find nothing on read.
+// The receiver's map is never mutated; a copy is returned.
+func (e *Experience) MetadataForStorage() map[string]interface{} {
+	out := make(map[string]interface{}, len(e.Metadata)+1)
+	for k, v := range e.Metadata {
+		out[k] = v
+	}
+	if e.Constraints != "" {
+		out["constraints"] = e.Constraints
+	}
+	return out
+}

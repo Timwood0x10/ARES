@@ -83,14 +83,31 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 			metadata JSONB DEFAULT '{}'::jsonb,
 			document_id UUID,
 			chunk_index INTEGER,
-			content_hash TEXT UNIQUE,
+			content_hash TEXT,
 			access_count INTEGER DEFAULT 0,
 			created_at TIMESTAMP DEFAULT NOW(),
-			updated_at TIMESTAMP DEFAULT NOW()
+			updated_at TIMESTAMP DEFAULT NOW(),
+			-- Mirror production (migrate_storage.go): content_hash dedup is
+			-- tenant-scoped. Production drops any single-column UNIQUE on
+			-- content_hash and adds this tenant composite, which is what the
+			-- repository's ON CONFLICT (tenant_id, content_hash) targets.
+			UNIQUE (tenant_id, content_hash)
 		)`
 
 	if _, err := db.Exec(knowledgeTableSQL); err != nil {
 		return errors.Wrap(err, "failed to create knowledge_chunks_1024 table")
+	}
+
+	// Populate tsv with the same trigger production uses (migrate_storage.go):
+	// SearchByKeyword matches on `tsv @@ plainto_tsquery`, so without this the
+	// column stays NULL and keyword search returns nothing.
+	if _, err := db.Exec(`DROP TRIGGER IF EXISTS tsvector_update_knowledge_1024 ON knowledge_chunks_1024`); err != nil {
+		return errors.Wrap(err, "failed to drop knowledge tsvector trigger")
+	}
+	if _, err := db.Exec(`CREATE TRIGGER tsvector_update_knowledge_1024 BEFORE INSERT OR UPDATE ON knowledge_chunks_1024
+		FOR EACH ROW EXECUTE FUNCTION
+		tsvector_update_trigger(tsv, 'pg_catalog.simple', content)`); err != nil {
+		return errors.Wrap(err, "failed to create knowledge tsvector trigger")
 	}
 
 	// Create experiences_1024 table
@@ -212,6 +229,29 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 		return errors.Wrap(err, "failed to create secrets table")
 	}
 
+	// Create evolution_strategies table (mirrors migrate.go:166).
+	// #nosec G101 - Test file with SQL table definition
+	evolutionTableSQL := `
+		DROP TABLE IF EXISTS evolution_strategies;
+		CREATE TABLE evolution_strategies (
+			id VARCHAR(255) PRIMARY KEY,
+			is_active BOOLEAN NOT NULL DEFAULT false,
+			name VARCHAR(255) NOT NULL DEFAULT '',
+			version INTEGER NOT NULL DEFAULT 1,
+			params JSONB DEFAULT '{}'::jsonb,
+			parent_id VARCHAR(255) DEFAULT '',
+			prompt_template TEXT DEFAULT '',
+			strategy_mutation_type VARCHAR(100) DEFAULT '',
+			mutation_desc TEXT DEFAULT '',
+			score DOUBLE PRECISION DEFAULT -1,
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW()
+		)`
+
+	if _, err := db.Exec(evolutionTableSQL); err != nil {
+		return errors.Wrap(err, "failed to create evolution_strategies table")
+	}
+
 	return nil
 }
 
@@ -224,6 +264,7 @@ func cleanupTestDB(t *testing.T, db *sql.DB) {
 		"conversations",
 		"task_results_1024",
 		"secrets",
+		"evolution_strategies",
 	}
 
 	for _, table := range tables {

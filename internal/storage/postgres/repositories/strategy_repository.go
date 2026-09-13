@@ -61,7 +61,7 @@ func NewStrategyRepository(db postgres.DBTX) *StrategyRepository {
 //	error - non-nil if query fails.
 func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error) {
 	query := `SELECT id, name, version, params, parent_id, prompt_template,
-		strategy_mutation_type, mutation_desc, score, created_at
+		strategy_mutation_type, mutation_desc, score, created_at, is_active
 		FROM evolution_strategies WHERE is_active = true
 		ORDER BY version DESC LIMIT 1`
 
@@ -73,10 +73,11 @@ func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error
 		score                                                      float64
 		createdAt                                                  time.Time
 		paramsJSON                                                 []byte
+		isActive                                                   bool
 	)
 
 	err := row.Scan(&id, &name, &version, &paramsJSON, &parentID,
-		&promptTmpl, &mutationType, &mutationDesc, &score, &createdAt)
+		&promptTmpl, &mutationType, &mutationDesc, &score, &createdAt, &isActive)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, errors.ErrNotFound
@@ -102,6 +103,7 @@ func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error
 		MutationDesc:         mutationDesc,
 		Score:                score,
 		CreatedAt:            createdAt,
+		IsActive:             isActive,
 	}, nil
 }
 
@@ -236,7 +238,7 @@ func (r *StrategyRepository) setActiveNoTx(ctx context.Context, s StrategyRow, p
 //	error - non-nil if query fails.
 func (r *StrategyRepository) List(ctx context.Context, n int) ([]StrategyRow, error) {
 	query := `SELECT id, name, version, params, parent_id, prompt_template,
-		strategy_mutation_type, mutation_desc, score, created_at
+		strategy_mutation_type, mutation_desc, score, created_at, is_active
 		FROM evolution_strategies ORDER BY version DESC LIMIT $1`
 
 	rows, err := r.db.QueryContext(ctx, query, n)
@@ -257,10 +259,11 @@ func (r *StrategyRepository) List(ctx context.Context, n int) ([]StrategyRow, er
 			score                                                      float64
 			createdAt                                                  time.Time
 			paramsJSON                                                 []byte
+			isActive                                                   bool
 		)
 
 		if err := rows.Scan(&id, &name, &version, &paramsJSON, &parentID,
-			&promptTmpl, &mutationType, &mutationDesc, &score, &createdAt); err != nil {
+			&promptTmpl, &mutationType, &mutationDesc, &score, &createdAt, &isActive); err != nil {
 			return nil, errors.Wrap(err, "scan strategy")
 		}
 
@@ -282,6 +285,7 @@ func (r *StrategyRepository) List(ctx context.Context, n int) ([]StrategyRow, er
 			MutationDesc:         mutationDesc,
 			Score:                score,
 			CreatedAt:            createdAt,
+			IsActive:             isActive,
 		})
 	}
 

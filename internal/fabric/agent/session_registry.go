@@ -213,18 +213,30 @@ func (r *SessionRegistry) SweepExpired(idle time.Duration) []string {
 		idle = DefaultSessionIdleTTL
 	}
 	now := time.Now()
+	// Collect expired entries and delete them under the lock, but run each
+	// stopSub AFTER releasing it — same lock discipline as ReleaseSession:
+	// stopSub waits on the compile coordinator goroutine (bounded by its
+	// reconcile timeout, up to 30s in production), and running it under r.mu
+	// would freeze every GetSession/InitSession/ReleaseSession while the
+	// sweep drains. The SDK's idle sweeper calls this every minute, so a
+	// slow stopSub must never extend past the map operation.
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	var expired []string
+	var stopSubs []func()
 	for id, entry := range r.sessions {
 		if now.Sub(time.Unix(0, entry.lastAccessNano.Load())) < idle {
 			continue
 		}
 		if entry.stopSub != nil {
-			entry.stopSub()
+			stopSubs = append(stopSubs, entry.stopSub)
 		}
 		delete(r.sessions, id)
 		expired = append(expired, id)
+	}
+	r.mu.Unlock()
+
+	for _, stop := range stopSubs {
+		stop()
 	}
 	return expired
 }

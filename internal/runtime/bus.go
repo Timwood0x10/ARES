@@ -327,9 +327,29 @@ func (b *PluginBus) Start(ctx context.Context) error {
 			})
 			errs = append(errs, err)
 		} else {
+			// Post-start re-check, in the SAME lock hold as the flag set:
+			// a concurrent Unregister may have removed (and left unstarted,
+			// since the flag was not yet visible) this plugin while its
+			// Start ran. Setting the flag unconditionally would re-create an
+			// entry for an untracked plugin AND leave it running with no one
+			// left to stop it — a leak. Mirror Register's hot-path guard:
+			// untracked means WE own the teardown.
 			b.mu.Lock()
-			b.startedPlugins[p] = true
+			stillTracked := false
+			for _, q := range b.plugins {
+				if q == p {
+					stillTracked = true
+					break
+				}
+			}
+			if stillTracked {
+				b.startedPlugins[p] = true
+			}
 			b.mu.Unlock()
+			if !stillTracked {
+				_ = b.invokeStop(ctx, p)
+				continue
+			}
 			b.Emit(ctx, p.Name(), EventPluginStarted, "runtime", map[string]any{
 				PayloadKeyPluginName:         p.Name(),
 				PayloadKeyPluginCapabilities: fmt.Sprintf("%v", p.Capabilities()),

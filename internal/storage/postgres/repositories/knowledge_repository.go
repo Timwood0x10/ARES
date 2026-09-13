@@ -328,7 +328,7 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) 
 	}
 
 	query := `
-		SELECT id, tenant_id, content, embedding_model, embedding_version,
+		SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
 			   embedding_status, source_type, source, metadata::text, document_id,
 			   chunk_index, content_hash, access_count, created_at, updated_at
 		FROM knowledge_chunks_1024
@@ -336,10 +336,10 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) 
 	`
 
 	chunk := &storage_models.KnowledgeChunk{}
-	var metadataStr string
+	var embeddingStr, metadataStr string
 	var documentID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
-		&chunk.ID, &chunk.TenantID, &chunk.Content,
+		&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
 		&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 		&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 		&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
@@ -351,6 +351,17 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) 
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get knowledge chunk by id")
+	}
+
+	// Parse embedding vector. Callers (e.g. CorrectKnowledge) read the chunk,
+	// mutate it, and write it back via Update, which persists embedding
+	// unconditionally — dropping it here would corrupt the vector.
+	if embeddingStr != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse embedding")
+		}
+		chunk.Embedding = embedding
 	}
 
 	// Parse metadata JSON string to map

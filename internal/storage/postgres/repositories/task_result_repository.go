@@ -155,7 +155,7 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, tenantID, id string)
 	}
 
 	query := `
-		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
+		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
 		WHERE id = $1 AND tenant_id = $2
@@ -163,11 +163,12 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, tenantID, id string)
 
 	result := &storage_models.TaskResult{}
 	var inputJSON, outputJSON []byte
+	var embeddingStr sql.NullString
 	var metadataStr string
 
 	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
-		&result.AgentID, &inputJSON, &outputJSON,
+		&result.AgentID, &inputJSON, &outputJSON, &embeddingStr,
 		&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
 		&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 	)
@@ -177,6 +178,16 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, tenantID, id string)
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get task result by id")
+	}
+
+	// Parse embedding vector. Nullable: the async embedding worker inserts the
+	// row first and backfills the vector later, so a NULL is legitimate.
+	if embeddingStr.Valid && embeddingStr.String != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr.String)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse embedding")
+		}
+		result.Embedding = embedding
 	}
 
 	// Parse input JSON
@@ -398,7 +409,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 // Returns list of task results ordered by created time (descending).
 func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantID string, limit int) ([]*storage_models.TaskResult, error) {
 	query := `
-		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
+		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
 		WHERE task_type = $1 AND tenant_id = $2
@@ -421,11 +432,11 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 	for rows.Next() {
 		result := &storage_models.TaskResult{}
 		var inputJSON, outputJSON []byte
-		var metadataStr string
+		var embeddingStr, metadataStr string
 
 		err := rows.Scan(
 			&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
-			&result.AgentID, &inputJSON, &outputJSON,
+			&result.AgentID, &inputJSON, &outputJSON, &embeddingStr,
 			&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
 			&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 		)
@@ -433,6 +444,17 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 			log.Error("Failed to scan task result row", "error", err)
 			skippedCount++
 			continue
+		}
+
+		// Parse embedding vector (nullable, e.g. async worker backfills later).
+		if embeddingStr != "" {
+			embedding, perr := postgres.ParseVectorString(embeddingStr)
+			if perr != nil {
+				log.Error("Failed to parse embedding vector", "task_id", result.ID, "error", perr)
+				skippedCount++
+				continue
+			}
+			result.Embedding = embedding
 		}
 
 		// Parse input JSON
@@ -484,7 +506,7 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 // Returns list of task results ordered by created time (descending).
 func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]*storage_models.TaskResult, error) {
 	query := `
-		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
+		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
 		WHERE session_id = $1 AND tenant_id = $2
@@ -506,16 +528,25 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 	for rows.Next() {
 		result := &storage_models.TaskResult{}
 		var inputJSON, outputJSON []byte
-		var metadataStr string
+		var embeddingStr, metadataStr string
 
 		err := rows.Scan(
 			&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
-			&result.AgentID, &inputJSON, &outputJSON,
+			&result.AgentID, &inputJSON, &outputJSON, &embeddingStr,
 			&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
 			&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 		)
 		if err != nil {
 			continue
+		}
+
+		// Parse embedding vector (nullable, e.g. async worker backfills later).
+		if embeddingStr != "" {
+			embedding, perr := postgres.ParseVectorString(embeddingStr)
+			if perr != nil {
+				continue
+			}
+			result.Embedding = embedding
 		}
 
 		// Parse input JSON

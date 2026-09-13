@@ -850,3 +850,48 @@ func TestPluginBus_UnregisterDuringHotPlugStart_NeverStopsUnstartedPlugin(t *tes
 	assert.LessOrEqual(t, p.stopCount.Load(), int32(1),
 		"the plugin must be stopped at most once, not by both Unregister and Register's rollback")
 }
+
+// TestPluginBus_UnregisterDuringBatchStart_TeardownOwnedByStart pins the
+// batch-start window (P2): Unregister arriving while Start's invokeStart is
+// still in flight removes the plugin (unstarted — the flag was not yet
+// visible), so Start's post-start re-check must BOTH stop the now-orphaned
+// plugin exactly once AND not leave a startedPlugins entry for it. Pre-fix
+// Start set the flag unconditionally and never stopped the orphan — a
+// running, untracked, never-stopped plugin (leak).
+func TestPluginBus_UnregisterDuringBatchStart_TeardownOwnedByStart(t *testing.T) {
+	bus := NewPluginBus()
+
+	p := &gatedPlugin{name: "gated", entered: make(chan struct{}), release: make(chan struct{})}
+	require.NoError(t, bus.Register(p)) // pre-Start: appended, not started
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- bus.Start(context.Background()) }()
+	<-p.entered // batch Start is now blocked inside the plugin's Start
+
+	// Unregister removes the plugin while its Start is still in flight.
+	// wasStarted=false (the flag is only set after invokeStart returns), so
+	// Unregister leaves the teardown to Start's post-check.
+	unregErr := make(chan error, 1)
+	go func() { unregErr <- bus.Unregister(context.Background(), "gated") }()
+	time.Sleep(20 * time.Millisecond)
+	close(p.release)
+
+	require.NoError(t, <-unregErr)
+	require.NoError(t, <-startErr)
+
+	// The orphan was started, so exactly ONE Stop must have run — after
+	// Start returned (never before it), owned by Start's post-check.
+	assert.False(t, p.stopEarly.Load(),
+		"Stop must never run before Start returned (unstarted plugin teardown)")
+	assert.Equal(t, int32(1), p.stopCount.Load(),
+		"the orphaned plugin must be stopped exactly once by Start's post-start re-check")
+	// The removed plugin must not resurface: a re-registration of the same
+	// name must be admitted (no duplicate-flag interference) and start clean.
+	p2 := &gatedPlugin{name: "gated", entered: make(chan struct{}), release: make(chan struct{})}
+	regErr2 := make(chan error, 1)
+	go func() { regErr2 <- bus.Register(p2) }()
+	<-p2.entered
+	close(p2.release)
+	require.NoError(t, <-regErr2)
+	assert.Equal(t, int32(0), p2.stopCount.Load(), "re-registered plugin must not be stopped by the stale teardown")
+}

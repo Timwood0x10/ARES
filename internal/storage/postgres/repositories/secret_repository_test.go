@@ -6,6 +6,7 @@ package repositories
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -391,7 +392,9 @@ func TestSecretRepository_UpdateMetadata(t *testing.T) {
 	require.NoError(t, err, "Secret should still be accessible after metadata update")
 	assert.Equal(t, "metadata_value", value, "Secret value should be unchanged")
 
-	// Verify the secret appears in the list.
+	// Verify the secret appears in the list AND that the written metadata is
+	// now readable (regression guard: List's SELECT once omitted the metadata
+	// column, so a successful UpdateMetadata write was silently unreadable).
 	secretList, err := repo.List(ctx, "tenant-meta-test")
 	require.NoError(t, err)
 	found := false
@@ -399,6 +402,10 @@ func TestSecretRepository_UpdateMetadata(t *testing.T) {
 		if secret.Key == "metadata_test_key" {
 			found = true
 			assert.Equal(t, "tenant-meta-test", secret.TenantID)
+			require.NotNil(t, secret.Metadata, "List should populate Metadata after UpdateMetadata")
+			assert.Equal(t, "user1", secret.Metadata["owner"])
+			assert.Equal(t, "testing", secret.Metadata["purpose"])
+			assert.Equal(t, "system", secret.Metadata["created_by"])
 			break
 		}
 	}
@@ -411,6 +418,18 @@ func TestSecretRepository_UpdateMetadata(t *testing.T) {
 	}
 	err = repo.UpdateMetadata(ctx, "metadata_test_key", "tenant-meta-test", updatedMetadata)
 	require.NoError(t, err, "Second metadata update should succeed")
+
+	// The overwrite must also be reflected on the next read.
+	secretList, err = repo.List(ctx, "tenant-meta-test")
+	require.NoError(t, err)
+	for _, secret := range secretList {
+		if secret.Key == "metadata_test_key" {
+			require.NotNil(t, secret.Metadata)
+			assert.Equal(t, "user2", secret.Metadata["owner"])
+			assert.Equal(t, "2.0", secret.Metadata["version"])
+			break
+		}
+	}
 }
 
 // TestSecretRepository_UpdateMetadata_NotFound tests updating metadata for non-existent secret.
@@ -799,4 +818,132 @@ func TestSecretRepository_LargeSecret(t *testing.T) {
 	value, err := repo.Get(ctx, "large_key", "tenant-1")
 	require.NoError(t, err)
 	assert.Equal(t, string(largeValue), value, "Large secret should match")
+}
+
+// TestSecretRepository_Export_Metadata verifies Export includes each secret's
+// metadata so a backup retains it (regression: Export's SELECT once omitted
+// the metadata column, silently dropping it from backups).
+func TestSecretRepository_Export_Metadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := getTestDB(t)
+	defer closeTestDB(t, db)
+	defer cleanupTestDB(t, db)
+
+	encryptionKey := make([]byte, 32)
+	for i := range encryptionKey {
+		encryptionKey[i] = byte(i)
+	}
+
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
+	ctx := context.Background()
+	const tenant = "tenant-export-md"
+
+	require.NoError(t, repo.Set(ctx, "exp_md_key", "exp_md_value", tenant))
+	require.NoError(t, repo.UpdateMetadata(ctx, "exp_md_key", tenant, map[string]interface{}{
+		"env": "prod",
+	}))
+
+	data, err := repo.Export(ctx, tenant)
+	require.NoError(t, err)
+
+	var entries []map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &entries))
+	require.Len(t, entries, 1)
+	md, ok := entries[0]["metadata"].(map[string]interface{})
+	require.True(t, ok, "Export entry should carry metadata")
+	assert.Equal(t, "prod", md["env"])
+}
+
+// TestSecretRepository_Import_Metadata verifies Import persists metadata
+// provided in the import payload (regression: Import's INSERT once omitted the
+// metadata column, silently dropping it on restore).
+func TestSecretRepository_Import_Metadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := getTestDB(t)
+	defer closeTestDB(t, db)
+	defer cleanupTestDB(t, db)
+
+	encryptionKey := make([]byte, 32)
+	for i := range encryptionKey {
+		encryptionKey[i] = byte(i)
+	}
+
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
+	ctx := context.Background()
+	const tenant = "tenant-import-md"
+
+	payload := `{
+		"secrets": [
+			{"key": "imp_md_key", "value": "imp_md_value", "metadata": {"team": "platform", "rank": 3}}
+		]
+	}`
+	count, err := repo.Import(ctx, tenant, []byte(payload), "json")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, count)
+
+	secrets, err := repo.List(ctx, tenant)
+	require.NoError(t, err)
+	require.Len(t, secrets, 1)
+	require.NotNil(t, secrets[0].Metadata, "Imported secret should carry metadata")
+	assert.Equal(t, "platform", secrets[0].Metadata["team"])
+	// JSON numbers decode to float64.
+	assert.Equal(t, float64(3), secrets[0].Metadata["rank"])
+}
+
+// TestSecretRepository_ExportImport_RoundTrip proves a full Export → Import
+// cycle works end to end. Previously Export emitted a bare JSON array that
+// Import's parser rejected ("invalid JSON format"), and the value was
+// base64-encoded ([]byte), so a backup could never be restored as plaintext.
+func TestSecretRepository_ExportImport_RoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := getTestDB(t)
+	defer closeTestDB(t, db)
+	defer cleanupTestDB(t, db)
+
+	encryptionKey := make([]byte, 32)
+	for i := range encryptionKey {
+		encryptionKey[i] = byte(i)
+	}
+
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
+	ctx := context.Background()
+	const src = "tenant-rt-src"
+	const dst = "tenant-rt-dst"
+
+	require.NoError(t, repo.Set(ctx, "rt_key", "super-secret-value", src))
+	require.NoError(t, repo.UpdateMetadata(ctx, "rt_key", src, map[string]interface{}{
+		"team": "platform",
+	}))
+
+	exported, err := repo.Export(ctx, src)
+	require.NoError(t, err)
+
+	// Restore into a different tenant.
+	count, err := repo.Import(ctx, dst, exported, "json")
+	require.NoError(t, err, "Export output must be importable")
+	require.EqualValues(t, 1, count)
+
+	// Value survives the round trip as plaintext.
+	value, err := repo.Get(ctx, "rt_key", dst)
+	require.NoError(t, err)
+	assert.Equal(t, "super-secret-value", value, "value should round-trip as plaintext")
+
+	// Metadata survives too.
+	secrets, err := repo.List(ctx, dst)
+	require.NoError(t, err)
+	require.Len(t, secrets, 1)
+	require.NotNil(t, secrets[0].Metadata)
+	assert.Equal(t, "platform", secrets[0].Metadata["team"])
 }

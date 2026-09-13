@@ -33,7 +33,7 @@ func NewExperienceRepository(db postgres.DBTX) *ExperienceRepository {
 // Returns error if insert operation fails.
 func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.Experience) error {
 	// Convert metadata to JSON for database storage
-	metadataJSON, err := json.Marshal(exp.Metadata)
+	metadataJSON, err := json.Marshal(exp.MetadataForStorage())
 	if err != nil {
 		return errors.Wrap(err, "marshal metadata")
 	}
@@ -145,19 +145,19 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string)
 	}
 
 	query := `
-		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
+		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count
 		FROM experiences_1024
 		WHERE id = $1 AND tenant_id = $2
 	`
 
 	exp := &storage_models.Experience{}
-	var metadataStr string
+	var embeddingStr, metadataStr string
 	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
-		&exp.EmbeddingModel, &exp.EmbeddingVersion,
+		&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
 		&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-		&exp.DecayAt, &exp.CreatedAt,
+		&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 	)
 
 	if err == sql.ErrNoRows {
@@ -165,6 +165,15 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string)
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get experience by id")
+	}
+
+	// Parse embedding vector (nullable, e.g. queued for async embedding).
+	if embeddingStr != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse embedding")
+		}
+		exp.Embedding = embedding
 	}
 
 	// Parse metadata JSON string to map
@@ -187,7 +196,7 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 		return postgres.ErrMissingTenantID
 	}
 	// Convert metadata to JSON for database storage
-	metadataJSON, err := json.Marshal(exp.Metadata)
+	metadataJSON, err := json.Marshal(exp.MetadataForStorage())
 	if err != nil {
 		return errors.Wrap(err, "marshal metadata")
 	}
@@ -261,7 +270,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at,
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count,
 			   1 - (embedding <=> $1::vector) as similarity
 		FROM experiences_1024
 		WHERE tenant_id = $2
@@ -287,7 +296,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt, &similarity,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount, &similarity,
 		)
 		if err != nil {
 			// Skip the single bad row instead of failing the whole search: one
@@ -357,7 +366,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 
 	sqlQuery := `
         SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-               score, success, agent_id, metadata::text, decay_at, created_at
+               score, success, agent_id, metadata::text, decay_at, created_at, usage_count
         FROM experiences_1024
         WHERE (input ILIKE '%' || $1 || '%' ESCAPE '\' OR output ILIKE '%' || $1 || '%' ESCAPE '\')
           AND tenant_id = $2
@@ -380,7 +389,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 		)
 		if err != nil {
 			continue
@@ -414,7 +423,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count
 		FROM experiences_1024
 		WHERE type = $1
 		  AND tenant_id = $2
@@ -437,7 +446,7 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 		)
 		if err != nil {
 			continue
@@ -530,7 +539,7 @@ func (r *ExperienceRepository) UpdateScore(ctx context.Context, tenantID, id str
 func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count
 		FROM experiences_1024
 		WHERE agent_id = $1
 		  AND tenant_id = $2
@@ -553,7 +562,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 		)
 		if err != nil {
 			continue

@@ -163,7 +163,7 @@ func (r *SecretRepository) Delete(ctx context.Context, key, tenantID string) err
 // Returns list of secret metadata (without values) or error if query fails.
 func (r *SecretRepository) List(ctx context.Context, tenantID string) ([]*storage_models.Secret, error) {
 	query := `
-		SELECT id, tenant_id, key, key_version, algorithm, expires_at, created_at
+		SELECT id, tenant_id, key, key_version, algorithm, expires_at, metadata::text, created_at
 		FROM secrets
 		WHERE tenant_id = $1
 		ORDER BY key ASC
@@ -179,15 +179,19 @@ func (r *SecretRepository) List(ctx context.Context, tenantID string) ([]*storag
 	for rows.Next() {
 		secret := &storage_models.Secret{}
 		var expiresAt sql.NullTime
+		var metadataStr string
 		err := rows.Scan(
 			&secret.ID, &secret.TenantID, &secret.Key,
-			&secret.KeyVersion, &secret.Algorithm, &expiresAt, &secret.CreatedAt,
+			&secret.KeyVersion, &secret.Algorithm, &expiresAt, &metadataStr, &secret.CreatedAt,
 		)
 		if err != nil {
 			continue
 		}
 		if expiresAt.Valid {
 			secret.ExpiresAt = expiresAt.Time
+		}
+		if metadataStr != "" {
+			_ = json.Unmarshal([]byte(metadataStr), &secret.Metadata)
 		}
 		secrets = append(secrets, secret)
 	}
@@ -482,7 +486,7 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 // include them so a backup/restored deployment retains working secrets.
 func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte, error) {
 	query := `
-		SELECT id, tenant_id, key, value, key_version, algorithm, expires_at, created_at
+		SELECT id, tenant_id, key, value, key_version, algorithm, expires_at, metadata::text, created_at
 		FROM secrets
 		WHERE tenant_id = $1
 		ORDER BY key ASC
@@ -495,14 +499,15 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 	defer func() { _ = rows.Close() }()
 
 	type exportEntry struct {
-		ID         string     `json:"id"`
-		TenantID   string     `json:"tenant_id"`
-		Key        string     `json:"key"`
-		Value      []byte     `json:"value"`
-		KeyVersion int        `json:"key_version"`
-		Algorithm  string     `json:"algorithm"`
-		ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-		CreatedAt  time.Time  `json:"created_at"`
+		ID         string                 `json:"id"`
+		TenantID   string                 `json:"tenant_id"`
+		Key        string                 `json:"key"`
+		Value      string                 `json:"value"`
+		KeyVersion int                    `json:"key_version"`
+		Algorithm  string                 `json:"algorithm"`
+		ExpiresAt  *time.Time             `json:"expires_at,omitempty"`
+		Metadata   map[string]interface{} `json:"metadata,omitempty"`
+		CreatedAt  time.Time              `json:"created_at"`
 	}
 
 	var entries []exportEntry
@@ -510,19 +515,25 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 		var e exportEntry
 		var expiresAt sql.NullTime
 		var encrypted []byte
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.Key, &encrypted, &e.KeyVersion, &e.Algorithm, &expiresAt, &e.CreatedAt); err != nil {
+		var metadataStr string
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Key, &encrypted, &e.KeyVersion, &e.Algorithm, &expiresAt, &metadataStr, &e.CreatedAt); err != nil {
 			continue
 		}
 		// Decrypt so the export is usable after restore without needing the
-		// same encryption key.
+		// same encryption key. Value is emitted as a plain string (not []byte,
+		// which encoding/json would base64-encode) so Import can consume it
+		// directly as plaintext.
 		if plain, dErr := r.decrypt(encrypted); dErr == nil {
-			e.Value = plain
+			e.Value = string(plain)
 		} else {
-			e.Value = encrypted
+			e.Value = string(encrypted)
 		}
 		if expiresAt.Valid {
 			t := expiresAt.Time
 			e.ExpiresAt = &t
+		}
+		if metadataStr != "" {
+			_ = json.Unmarshal([]byte(metadataStr), &e.Metadata)
 		}
 		entries = append(entries, e)
 	}
@@ -649,8 +660,8 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		// Insert secret into database with proper tenant isolation
 		insertQuery := `
             INSERT INTO secrets
-            (id, tenant_id, key, value, key_version, algorithm, expires_at, created_at)
-            VALUES (gen_random_uuid(), $1, $2, $3, 1, 'aes-gcm', $4, NOW())
+            (id, tenant_id, key, value, key_version, algorithm, expires_at, metadata, created_at)
+            VALUES (gen_random_uuid(), $1, $2, $3, 1, 'aes-gcm', $4, $5, NOW())
             RETURNING id
         `
 
@@ -664,8 +675,20 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 			expiresAt = parsedTime
 		}
 
+		// Persist metadata alongside the value so an Export → Import round
+		// trip does not silently drop it. Store {} when absent to match the
+		// column default rather than writing NULL.
+		if item.Metadata == nil {
+			item.Metadata = map[string]interface{}{}
+		}
+		metadataJSON, mErr := json.Marshal(item.Metadata)
+		if mErr != nil {
+			importErrors = append(importErrors, fmt.Sprintf("marshal metadata for key %s: %v", item.Key, mErr))
+			continue
+		}
+
 		var id string
-		err = tx.QueryRowContext(ctx, insertQuery, tenantID, item.Key, encrypted, expiresAt).Scan(&id)
+		err = tx.QueryRowContext(ctx, insertQuery, tenantID, item.Key, encrypted, expiresAt, metadataJSON).Scan(&id)
 		if err != nil {
 			importErrors = append(importErrors, fmt.Sprintf("insert secret %s: %v", item.Key, err))
 			continue

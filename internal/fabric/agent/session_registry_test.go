@@ -229,6 +229,57 @@ func TestSessionRegistry_SweepExpired(t *testing.T) {
 		"zero idle must fall back to the default window, not release live sessions")
 }
 
+// TestSessionRegistry_SweepDoesNotHoldLockDuringStop pins the same lock
+// discipline as ReleaseSession for the idle sweeper (P1): the SDK calls
+// SweepExpired every minute, so a stopSub that blocks on the compile
+// coordinator (bounded by its reconcile timeout, up to 30s) must not freeze
+// the whole registry while the sweep drains. Pre-fix the stop ran under r.mu.
+func TestSessionRegistry_SweepDoesNotHoldLockDuringStop(t *testing.T) {
+	ctx := context.Background()
+	r := NewSessionRegistry()
+
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		return func() {
+			close(stopEntered)
+			<-releaseStop
+		}
+	}
+	_, err := r.InitSession(ctx, "s1", "p", nil, coord)
+	require.NoError(t, err)
+	_, err = r.InitSession(ctx, "s2", "p", nil, nil)
+	require.NoError(t, err)
+
+	// Expire s1 without touching s2: GetSession on s2 refreshes its idle
+	// clock, so only s1 crosses the window.
+	_, err = r.GetSession("s2")
+	require.NoError(t, err)
+	time.Sleep(60 * time.Millisecond)
+	_, err = r.GetSession("s2")
+	require.NoError(t, err)
+
+	done := make(chan []string, 1)
+	go func() { done <- r.SweepExpired(50 * time.Millisecond) }()
+	<-stopEntered // the sweep is now blocked inside s1's stopSub
+
+	// The registry must stay fully usable while the stop is in flight.
+	unblocked := make(chan struct{})
+	go func() {
+		defer close(unblocked)
+		_, gerr := r.GetSession("s2")
+		require.NoError(t, gerr, "GetSession must not block on the sweep's compile stop")
+	}()
+	select {
+	case <-unblocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry reads blocked while SweepExpired waited on the compile stop (lock held across stopSub)")
+	}
+
+	close(releaseStop)
+	require.Equal(t, []string{"s1"}, <-done)
+}
+
 // TestSessionRootID verifies the deterministic root ID format so a
 // recompiled graph's root task is a 1:1 match to the original.
 func TestSessionRootID(t *testing.T) {

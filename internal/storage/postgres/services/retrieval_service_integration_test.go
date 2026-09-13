@@ -67,6 +67,7 @@ func createTestPool(db *sql.DB) *postgres.Pool {
 		User:            "postgres",
 		Password:        "postgres",
 		Database:        "styleagent",
+		SSLMode:         "disable", // local test container has no TLS; prod defaults to require
 		MaxOpenConns:    25,
 		MaxIdleConns:    5,
 		ConnMaxLifetime: 1 * time.Hour,

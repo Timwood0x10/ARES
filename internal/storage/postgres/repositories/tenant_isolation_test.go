@@ -176,6 +176,7 @@ func TestTenantIsolation_ToolDelete(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, toolA))
 
 	toolB := *toolA
+	toolB.ID = "" // fresh row; do not reuse tenant A's DB-assigned id
 	toolB.TenantID = "tenant-B"
 	toolB.Name = "isolated-tool-b"
 	require.NoError(t, repo.Create(ctx, &toolB))

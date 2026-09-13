@@ -13,11 +13,21 @@ var (
 	ErrTaskNotFound    = errors.New("task not found")
 )
 
+// defaultMaxSessionMessages bounds how many messages one session may STORE.
+// MaxHistory (the closed-loop context window) only truncates at BuildContext
+// read time, so without a storage bound a long-lived session's message slice
+// — and every GetMessages/BuildContext copy of it — grew without bound across
+// a server lifetime. The default is comfortably above every configured
+// read-side window (MaxHistory defaults to 10–50) so the newest history the
+// context builder draws from is always available.
+const defaultMaxSessionMessages = 500
+
 // SessionMemory stores conversation context for a session.
 type SessionMemory struct {
 	sessions     map[string]*SessionData
 	mu           sync.RWMutex
 	maxSize      int
+	maxMessages  int
 	ttl          time.Duration
 	cleanupTick  time.Duration
 	stopCleanup  chan struct{}
@@ -71,15 +81,27 @@ type Message struct {
 	ArtifactRefs []string   `json:"artifact_refs,omitempty"`
 }
 
-// NewSessionMemory creates a new SessionMemory.
+// NewSessionMemory creates a new SessionMemory. Per-session message storage
+// is bounded by defaultMaxSessionMessages; use WithMaxMessages to tune it.
 func NewSessionMemory(maxSize int, ttl time.Duration) *SessionMemory {
 	return &SessionMemory{
 		sessions:    make(map[string]*SessionData),
 		maxSize:     maxSize,
+		maxMessages: defaultMaxSessionMessages,
 		ttl:         ttl,
 		cleanupTick: ttl / 2, // Cleanup every half TTL period
 		stopCleanup: make(chan struct{}),
 	}
+}
+
+// WithMaxMessages sets the per-session stored-message cap (0 or negative
+// restores the default). Returns the receiver for chaining.
+func (m *SessionMemory) WithMaxMessages(n int) *SessionMemory {
+	if n <= 0 {
+		n = defaultMaxSessionMessages
+	}
+	m.maxMessages = n
+	return m
 }
 
 // StartCleanup starts the background cleanup task.
@@ -182,7 +204,9 @@ func (m *SessionMemory) Get(ctx context.Context, sessionID string) (*SessionData
 }
 
 // Set stores session data. The messages slice is copied so the caller
-// cannot mutate stored state through the original backing array.
+// cannot mutate stored state through the original backing array, and
+// truncated to the newest maxMessages so the storage bound holds on this
+// path too (AddMessage is the growth path; Set is the invariant).
 func (m *SessionMemory) Set(ctx context.Context, sessionID, userID string, messages []Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -193,6 +217,9 @@ func (m *SessionMemory) Set(ctx context.Context, sessionID, userID string, messa
 
 	msgCopy := make([]Message, len(messages))
 	copy(msgCopy, messages)
+	if m.maxMessages > 0 && len(msgCopy) > m.maxMessages {
+		msgCopy = msgCopy[len(msgCopy)-m.maxMessages:]
+	}
 
 	session := &SessionData{
 		SessionID:  sessionID,
@@ -207,7 +234,12 @@ func (m *SessionMemory) Set(ctx context.Context, sessionID, userID string, messa
 	return nil
 }
 
-// AddMessage adds a message to the session.
+// AddMessage adds a message to the session, keeping only the newest
+// maxMessages entries (the oldest are dropped). The bound is a STORAGE
+// bound, not the context window: MaxHistory truncates at BuildContext read
+// time and defaults far below this cap, so the newest history the context
+// builder needs is always present — while a long-lived session can no longer
+// grow its slice (and every copy of it) without limit.
 func (m *SessionMemory) AddMessage(ctx context.Context, sessionID string, msg Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -218,20 +250,30 @@ func (m *SessionMemory) AddMessage(ctx context.Context, sessionID string, msg Me
 	}
 
 	session.Messages = append(session.Messages, msg)
+	if m.maxMessages > 0 && len(session.Messages) > m.maxMessages {
+		// Drop from the front, preserving recency. Re-slice rather than
+		// copy: the append above already owns a backing array that no
+		// caller holds a reference to (GetMessages/Get always copy out).
+		session.Messages = session.Messages[len(session.Messages)-m.maxMessages:]
+	}
 	session.AccessedAt = time.Now()
 
 	return nil
 }
 
-// GetMessages returns session messages.
+// GetMessages returns session messages. The read counts as proof of life —
+// it refreshes AccessedAt exactly like Get, so a session reached only through
+// this path (BuildPromptMessages/BuildContext, the memory tool) cannot age
+// out of the TTL sweep in the middle of a conversation.
 func (m *SessionMemory) GetMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	session, exists := m.sessions[sessionID]
 	if !exists {
 		return nil, ErrSessionNotFound
 	}
+	session.AccessedAt = time.Now()
 
 	// Return a copy to prevent concurrent modification of internal slice
 	messages := make([]Message, len(session.Messages))

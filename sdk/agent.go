@@ -91,12 +91,16 @@ type StreamChunk struct {
 // the caller's ctx is eventually cancelled (every send also selects on
 // ctx.Done).
 //
-// NOTE: this is NOT token-level streaming. The full agent loop runs to
-// completion first and the final output is replayed in small chunks; the
-// first chunk arrives only after the entire run finishes.
+// Deprecated: Stream does not provide token-level streaming. The full agent
+// loop runs to completion first and the final output is replayed in
+// fixed-size chunks, so the first chunk arrives only after the whole run has
+// finished — it is a run-then-replay convenience, not a streaming API. Use
+// Run to obtain the result; call this only where chunked delivery of an
+// already-computed answer is acceptable.
 //
 // TODO(tech-debt): plumb token-level streaming through the L2 answer
-// path so Stream emits tokens as they are generated.
+// path so Stream emits tokens as they are generated; un-deprecate once the
+// tokens are emitted as they are produced.
 //
 // Usage:
 //
