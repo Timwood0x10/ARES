@@ -655,9 +655,23 @@ func WithTools(tt ...tools.Tool) AgentOption {
 	}
 }
 
-// WithHumanInput attaches a human-in-the-loop approval function. Before each
-// tool call, the function is invoked so a human can approve or reject it.
-// Return true to approve, false to skip the tool call.
+// WithHumanInput attaches a human-in-the-loop approval function.
+//
+// It is NOT enforced: the shared L2 execution path has no per-tool-call
+// interception point, so the callback is never invoked. Setting this option
+// therefore makes Agent.Run and Agent.Stream refuse with
+// ErrHumanInputUnsupported instead of silently dropping the gate the caller
+// asked for.
+//
+// Use WithAgentGovernance to bound a run (tool count, tokens, deadline); a
+// real approval hook needs a pre-dispatch callback in the L2 tool-cognition
+// path.
+//
+// TODO(tech-debt): wire an approval hook into fabric/agent tool cognition and
+// re-enable this option once it can actually gate a tool call.
+//
+// Deprecated: not supported on the L2 execution path; passing it makes Run
+// fail with ErrHumanInputUnsupported.
 func WithHumanInput(fn HumanInputFunc) AgentOption {
 	return func(c *agentConfig) {
 		c.humanInput = fn

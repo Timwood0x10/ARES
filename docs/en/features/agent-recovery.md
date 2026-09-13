@@ -1,5 +1,7 @@
 # Agent Crash Recovery
 
+> **⚠ Historical note (2026-09-13, v0.3.1)**: This document was written during the Leader/Sub execution model era. The Leader-Sub architecture was removed in v0.3.x (current: flat peers + kernel scheduler + task fabric); leader-related mechanisms described here are outdated. See [Comparison §3](../../framework-comparison-langchain-crewai-agentscope-goagent-en.md) and [Capability Map](../../CAPABILITY-MAP.en.md) for the current architecture. Kept for historical reference.
+
 When an agent crashes in ares, the Runtime detects it, creates a fresh instance, replays events to restore operational state, and loads conversation history from the memory store. The agent resumes with full context -- as if nothing happened.
 
 ## Recovery Architecture

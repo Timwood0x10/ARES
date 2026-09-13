@@ -226,18 +226,29 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			// poisons the barrier — the skipped seq is never completed by
 			// anyone, so every later event would re-wait the full
 			// flushOrderWaitTimeout only to skip as well, degrading every
-			// subsequent fabric mutation to one timeout each. The skipped
-			// event itself is lost from the durable log (logged below as a
-			// divergence); liveness of everything behind it is restored.
+			// subsequent fabric mutation to one timeout each.
 			if p.seq > f.flushedSeq {
 				f.flushedSeq = p.seq
 			}
 			flushed := f.flushedSeq
-			f.flushCond.L.Unlock()
-			f.flushCond.Broadcast()
-			log.Error("taskfabric: durable append ordering timed out; skipping causal barrier",
+			// Durability outranks causal order for a durable transition. A
+			// late append is recoverable — the store assigns its own per-stream
+			// version and restore folds events by task id, not by position —
+			// while a dropped task.completed/task.failed/task.created/
+			// task.checkpointed/task.expired is not: the task would be rebuilt
+			// from an older checkpoint and its already-committed work re-run.
+			// So a must-persist event falls THROUGH to the append below
+			// (out of causal order) instead of being dropped; only the
+			// observability-only events take the skip path.
+			if !isMustPersistEvent(p.typ) {
+				f.flushCond.L.Unlock()
+				f.flushCond.Broadcast()
+				log.Error("taskfabric: durable append ordering timed out; skipping causal barrier",
+					"event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
+				continue
+			}
+			log.Error("taskfabric: durable append ordering timed out; persisting must-persist event out of causal order",
 				"event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
-			continue
 		}
 		var appendErr error
 		if p.store != nil {
@@ -297,7 +308,7 @@ func (f *Fabric) discardAppends(pending *[]*pendingAppend) {
 func isMustPersistEvent(typ EventType) bool {
 	switch typ {
 	case EventTaskCreated, EventTaskCheckpointed, EventTaskCompleted,
-		EventTaskFailed, EventTaskExpired:
+		EventTaskFailed, EventTaskExpired, EventTaskDeleted:
 		return true
 	default:
 		return false
@@ -330,6 +341,8 @@ func taskEventType(typ EventType) ares_events.EventType {
 		return ares_events.EventTaskFailed
 	case EventTaskExpired:
 		return ares_events.EventTaskExpired
+	case EventTaskDeleted:
+		return ares_events.EventTaskDeleted
 	default:
 		return ""
 	}

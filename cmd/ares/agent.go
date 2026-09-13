@@ -194,7 +194,7 @@ func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bo
 		if token := bearerToken(r); token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(h.introspectToken)) == 1 {
 			return true
 		}
-		if h.readAuth == nil && h.apiKey == "" && isLoopbackRequest(r) {
+		if h.readAuth == nil && h.apiKey == "" && isTrustedLocalRequest(r) {
 			return true
 		}
 		w.WriteHeader(http.StatusUnauthorized)
@@ -207,7 +207,7 @@ func (h *actionHandler) checkAuthRead(w http.ResponseWriter, r *http.Request) bo
 	// to the network while serve.go only logged a warning. Non-loopback
 	// clients must configure one of the credential layers above.
 	if h.readAuth == nil && h.apiKey == "" {
-		if isLoopbackRequest(r) {
+		if isTrustedLocalRequest(r) {
 			return true
 		}
 		w.WriteHeader(http.StatusUnauthorized)
@@ -235,6 +235,10 @@ func bearerToken(r *http.Request) string {
 // address — the "local operator" the introspect read side trusts when no
 // token is required. RemoteAddr is always host:port on server-side
 // requests; a parse failure fails closed (not loopback).
+//
+// This is a raw address check only. Callers deciding whether to TRUST the
+// request must use isTrustedLocalRequest, which also rules out proxied
+// traffic.
 func isLoopbackRequest(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -242,6 +246,48 @@ func isLoopbackRequest(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// proxyForwardingHeaders are the headers a reverse proxy adds when it relays a
+// client request. http.Header.Get canonicalizes names, so the canonical
+// spelling is used here.
+var proxyForwardingHeaders = []string{
+	"Forwarded",
+	"X-Forwarded-For",
+	"X-Real-Ip",
+	"X-Forwarded-Host",
+	"X-Forwarded-Proto",
+	"X-Client-Ip",
+}
+
+// isTrustedLocalRequest reports whether the request may be treated as coming
+// from a local operator: the TCP peer is loopback AND the request was not
+// relayed by a proxy.
+//
+// The second condition is what keeps the loopback trust model honest. A
+// reverse proxy running on the same host (the common TLS-termination shape)
+// owns the TCP connection, so every relayed request arrives with
+// RemoteAddr == 127.0.0.1; trusting the address alone handed the
+// unauthenticated read side (task inputs, checkpoints, runtime config) to
+// anyone who could reach the proxy. A request carrying forwarding headers did
+// not originate on this host, so it is challenged like any other remote client
+// — fail closed.
+//
+// A deployment that terminates TLS locally and genuinely wants anonymous local
+// reads can be handed the trust back explicitly later (a trusted-proxy
+// allowlist that resolves the real client IP from the header); that is
+// deliberately not enabled here, because an implicit "trust 127.0.0.1" is
+// exactly the bypass this closes.
+func isTrustedLocalRequest(r *http.Request) bool {
+	if !isLoopbackRequest(r) {
+		return false
+	}
+	for _, name := range proxyForwardingHeaders {
+		if r.Header.Get(name) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // ── Endpoint registry (M-S2) ─────────────────────────────
@@ -448,7 +494,7 @@ func (h *actionHandler) authorize(level authLevel, w http.ResponseWriter, r *htt
 		}
 		return princ, true
 	case authLocal:
-		if !isLoopbackRequest(r) {
+		if !isTrustedLocalRequest(r) {
 			w.WriteHeader(http.StatusForbidden)
 			writeJSON(w, map[string]any{"error": "localhost only"})
 			return nil, false

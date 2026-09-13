@@ -318,14 +318,17 @@ func (s *Scheduler) Capabilities() []string {
 	agents := s.agents
 	s.execMu.RUnlock()
 	// Fabric half outside the registry lock (established pattern: the drain
-	// paths also call into the fabric without holding execMu).
+	// paths also call into the fabric without holding execMu). CapabilitiesOf
+	// takes the fabric's own lock and returns a copy: reading the live
+	// agent's Capabilities field after Get returned would race the SDK's hot
+	// tool registration, which appends to that slice under the fabric lock.
 	if agents != nil {
 		for _, id := range agents.Agents() {
-			a, err := agents.Get(id)
-			if err != nil || a == nil {
+			caps, err := agents.CapabilitiesOf(id)
+			if err != nil {
 				continue
 			}
-			for _, c := range a.Capabilities {
+			for _, c := range caps {
 				if !set[c] {
 					set[c] = true
 					out = append(out, c)

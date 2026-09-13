@@ -101,7 +101,7 @@ func TestConversationRepository_GetByID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve by ID
-	retrieved, err := repo.GetByID(ctx, conv.ID)
+	retrieved, err := repo.GetByID(ctx, conv.TenantID, conv.ID)
 	require.NoError(t, err)
 	assert.Equal(t, conv.ID, retrieved.ID)
 	assert.Equal(t, conv.SessionID, retrieved.SessionID)
@@ -125,7 +125,7 @@ func TestConversationRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewConversationRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "00000000-0000-0000-0000-000000000000")
+	_, err := repo.GetByID(ctx, "tenant-1", "00000000-0000-0000-0000-000000000000")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -143,7 +143,7 @@ func TestConversationRepository_GetByID_InvalidID(t *testing.T) {
 	repo := NewConversationRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByID(ctx, "")
+	_, err := repo.GetByID(ctx, "tenant-1", "")
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrInvalidArgument, err)
 }
@@ -305,7 +305,7 @@ func TestConversationRepository_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's deleted
-	_, err = repo.GetByID(ctx, conv.ID)
+	_, err = repo.GetByID(ctx, conv.TenantID, conv.ID)
 	assert.Error(t, err)
 	assert.Equal(t, errors.ErrRecordNotFound, err)
 }
@@ -547,11 +547,11 @@ func TestConversationRepository_CleanupExpired(t *testing.T) {
 	assert.Equal(t, int64(1), deleted)
 
 	// Verify expired conversation is deleted
-	_, err = repo.GetByID(ctx, expiredConv.ID)
+	_, err = repo.GetByID(ctx, expiredConv.TenantID, expiredConv.ID)
 	assert.Error(t, err)
 
 	// Verify non-expired conversation still exists
-	retrieved, err := repo.GetByID(ctx, nonExpiredConv.ID)
+	retrieved, err := repo.GetByID(ctx, nonExpiredConv.TenantID, nonExpiredConv.ID)
 	require.NoError(t, err)
 	assert.Equal(t, nonExpiredConv.ID, retrieved.ID)
 }
@@ -589,7 +589,7 @@ func TestConversationRepository_CleanupExpired_NoExpiration(t *testing.T) {
 	assert.Equal(t, int64(0), deleted)
 
 	// Verify conversation still exists
-	retrieved, err := repo.GetByID(ctx, conv.ID)
+	retrieved, err := repo.GetByID(ctx, conv.TenantID, conv.ID)
 	require.NoError(t, err)
 	assert.Equal(t, conv.ID, retrieved.ID)
 }
@@ -682,12 +682,12 @@ func TestConversationRepository_UpdateExpiresAt_TenantIsolation(t *testing.T) {
 	assert.Equal(t, int64(1), updated)
 
 	// Verify tenant-1 conversation was updated
-	retrieved1, err := repo.GetByID(ctx, conv1.ID)
+	retrieved1, err := repo.GetByID(ctx, conv1.TenantID, conv1.ID)
 	require.NoError(t, err)
 	assert.WithinDuration(t, newExpiresAt, retrieved1.ExpiresAt, time.Second)
 
 	// Verify tenant-2 conversation was not updated
-	retrieved2, err := repo.GetByID(ctx, conv2.ID)
+	retrieved2, err := repo.GetByID(ctx, conv2.TenantID, conv2.ID)
 	require.NoError(t, err)
 	assert.True(t, retrieved2.ExpiresAt.IsZero())
 }
@@ -916,7 +916,7 @@ func TestConversationRepository_RoleHandling(t *testing.T) {
 		require.NoError(t, err)
 
 		// Retrieve and verify role
-		retrieved, err := repo.GetByID(ctx, conv.ID)
+		retrieved, err := repo.GetByID(ctx, conv.TenantID, conv.ID)
 		require.NoError(t, err)
 		assert.Equal(t, role, retrieved.Role)
 	}
@@ -998,7 +998,7 @@ func TestConversationRepository_LongContent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve and verify content
-	retrieved, err := repo.GetByID(ctx, conv.ID)
+	retrieved, err := repo.GetByID(ctx, conv.TenantID, conv.ID)
 	require.NoError(t, err)
 	assert.Equal(t, longContent, retrieved.Content)
 }
@@ -1030,7 +1030,7 @@ func TestConversationRepository_NullFields(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve and verify
-	retrieved, err := repo.GetByID(ctx, conv.ID)
+	retrieved, err := repo.GetByID(ctx, conv.TenantID, conv.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "", retrieved.UserID)
 	assert.Equal(t, "", retrieved.AgentID)

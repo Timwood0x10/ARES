@@ -1,6 +1,7 @@
 package taskfabric
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -15,7 +16,9 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 // boundary, not a state decision):
 //
 //	done  → COMPLETED (preserving the checkpoint's worker result)
-//	err   → FAILED (or requeued to READY per retry policy)
+//	err   → FAILED (or requeued to READY per retry policy); a cancellation
+//	        (context.Canceled) is RELEASED instead — READY, unowned, retry
+//	        budget untouched, previous checkpoint preserved
 //	!done → SUSPENDED with the checkpoint preserved
 //
 // SUSPENDED semantics:
@@ -46,15 +49,26 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 //
 // Returns:
 //   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState, the step's own
-//     error (after the FAIL transition was applied), or the outcome of the
-//     quantum transition.
+//     error (after the FAIL or Release transition was applied), or the
+//     outcome of the quantum transition.
 //
 // Error propagation contract: when step returns an error, RunQuantum applies
-// f.Fail (retry budget requeue or final FAILED) and then RETURNS the step
-// error instead of swallowing it. Callers (kernelscheduler outcome
-// attribution, dispatch logging) must observe failures as failures — a
-// swallowed error made the scheduler record failed quanta as successes,
-// inflating agent confidence and hiding every task failure from logs.
+// a fabric transition and then RETURNS the step error instead of swallowing
+// it. Callers (kernelscheduler outcome attribution, dispatch logging) must
+// observe failures as failures — a swallowed error made the scheduler record
+// failed quanta as successes, inflating agent confidence and hiding every
+// task failure from logs.
+//
+// Cancellation is not a failure: a step error that wraps context.Canceled is
+// released (READY, unowned, retry budget untouched) rather than failed. The
+// kernel cancels the drain context on scheduler shutdown, so every in-flight
+// step returns context.Canceled — routing that through Fail burned
+// RetryPolicy.Attempts and, for a zero-retry task (the Create default),
+// finalized it FAILED and cascaded the whole downstream subgraph. The
+// must-persist task.failed event then made the loss permanent across
+// restart, even though nothing had actually failed. The kernel's own outcome
+// attribution already exempted context.Canceled from confidence scoring
+// (scheduler_quantum.go); this is the matching fabric-side half.
 func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
 	if err := f.Start(taskID, agentID, epoch); err != nil {
 		return err
@@ -73,6 +87,15 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 
 	checkpoint, done, stepErr := runStepRecovered(step)
 	if stepErr != nil {
+		if isCancellation(stepErr) {
+			// Release hands the task back to READY unowned and leaves the
+			// previous checkpoint in place, so the next drain re-acquires
+			// and resumes from the same PCB.
+			if releaseErr := f.Release(taskID, agentID, epoch); releaseErr != nil {
+				return errors.Join(stepErr, releaseErr)
+			}
+			return stepErr
+		}
 		if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
 			return errors.Join(stepErr, failErr)
 		}
@@ -88,6 +111,15 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 		return f.Complete(taskID, agentID, epoch)
 	}
 	return f.Yield(taskID, agentID, epoch, checkpoint)
+}
+
+// isCancellation reports whether err is a deliberate stop rather than a task
+// failure: context.Canceled anywhere in the chain (scheduler shutdown,
+// operator cancel). context.DeadlineExceeded is deliberately NOT treated as
+// cancellation — a step that ran out its own budget is a real failure the
+// retry policy must see.
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 // runStepRecovered executes one step closure with a panic boundary. A panic

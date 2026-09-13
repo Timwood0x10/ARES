@@ -1,7 +1,9 @@
 # ARES Evolution Intelligence Layer API
 
-**Version**: v0.2.4 (2026-06-30)  
-**Package**: `github.com/Timwood0x10/ares/internal/ares_evolution/genome`
+**Version**: v0.3.1 (updated 2026-09-13)  
+**Package**: `github.com/Timwood0x10/ares/internal/runtime/ares_evolution/genome`（原 `internal/ares_evolution`，已迁移）
+
+> **路径更新说明**：v0.3.x 包重组后，本文所述组件位于 `internal/runtime/ares_evolution/` 与 `internal/runtime/evolution/`（补丁引擎）。接口细节以源码为准，本文作为设计参考保留。
 
 ## Overview
 

@@ -313,6 +313,61 @@ func TestStagnationTriggersReset(t *testing.T) {
 	}
 }
 
+// TestStagnationResetDegeneratePopulationDoesNotPanic covers the smallest
+// legal population shapes with no elites.
+//
+// Regression (docs/reviews/0.3.1-final-deep-review.md §5.9 G-1):
+// resetCount = min(max(1, len/3), len-EliteCount) evaluates to 1 when len == 1
+// and EliteCount == 0, so startIdx = len - resetCount = 0 and the elite pick
+// `p.rng.Intn(startIdx)` panics ("invalid argument to Intn"). A legal
+// configuration therefore killed the whole evolution loop on stagnation.
+func TestStagnationResetDegeneratePopulationDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		size  int
+		elite int
+	}{
+		{name: "single_agent_no_elite", size: 1, elite: 0},
+		{name: "two_agents_no_elite", size: 2, elite: 0},
+		{name: "three_agents_no_elite", size: 3, elite: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			agents := make([]*mutation.Strategy, tc.size)
+			for i := range agents {
+				agents[i] = &mutation.Strategy{
+					ID:             fmt.Sprintf("a%d", i),
+					Score:          -1, // never evaluated: stagnation cannot improve
+					Params:         map[string]any{"temperature": 0.5},
+					PromptTemplate: "template",
+				}
+			}
+			pop := &Population{
+				Agents: agents,
+				Size:   tc.size,
+				cfg: PopulationConfig{
+					EliteCount:             tc.elite,
+					MaxStagnantGenerations: 1,
+				},
+				bestScore:           10,
+				stagnantGens:        1,
+				rng:                 rand.New(rand.NewSource(42)),
+				currentMutationRate: 0.2,
+			}
+
+			pop.handleStagnationLocked() // must not panic
+
+			if len(pop.Agents) != tc.size {
+				t.Fatalf("population size changed: %d, want %d", len(pop.Agents), tc.size)
+			}
+		})
+	}
+}
+
 func TestAdaptiveOptions(t *testing.T) {
 	t.Parallel()
 

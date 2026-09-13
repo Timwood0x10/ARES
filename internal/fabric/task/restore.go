@@ -123,7 +123,11 @@ func (f *Fabric) RestoreFromStore(ctx context.Context) error {
 		case ares_events.EventTaskCheckpointed,
 			ares_events.EventTaskCompleted,
 			ares_events.EventTaskFailed,
-			ares_events.EventTaskExpired:
+			ares_events.EventTaskExpired,
+			// The tombstone folds in the SAME pass as the other post-create
+			// events, so it lands after the task.created folded in pass one:
+			// a deleted task is created and then removed, never resurrected.
+			ares_events.EventTaskDeleted:
 			rest = append(rest, ev)
 		default:
 			// Observability-only event: never trusted for state rebuild
@@ -230,6 +234,14 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 			return err
 		}
 		f.tasks[id] = t
+		return nil
+
+	case ares_events.EventTaskDeleted:
+		// Absence is the tombstone's whole purpose, so this is the one event
+		// that may legally target an unknown task: a re-run fold (idempotent
+		// restore) or a log whose created event was trimmed away. Removing an
+		// absent task is a no-op, never an error.
+		delete(f.tasks, id)
 		return nil
 
 	case ares_events.EventTaskCheckpointed,

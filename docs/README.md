@@ -6,8 +6,10 @@ Welcome to the ARES framework documentation center.
 
 | Version | 中文 | English |
 |---------|------|---------|
-| v0.2.4 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
-| v0.2.0 | [发布说明](./zh/releases/v0.2.0.md) | [Release Notes](./en/releases/v0.2.0.md) |
+| v0.3.1 (dev) | [CHANGELOG](../CHANGELOG.md) | [CHANGELOG](../CHANGELOG.md) |
+| v0.3.0 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
+
+> 注：`docs/zh/features/` 中的部分特性文档写于 v1/v2 架构时期（2026-06 前后），涉及 Leader/Sub 模型的内容已过时——v0.3.x 起 Leader-Sub 架构已删除，现行架构见 [framework-comparison](./framework-comparison-langchain-crewai-agentscope-goagent-zh.md) §3 与 [CAPABILITY-MAP](./CAPABILITY-MAP.md)。这些旧文档保留作历史参考，待逐步重写。
 
 ## Documentation Languages / 文档语言
 
@@ -23,9 +25,11 @@ Welcome to the ARES framework documentation center.
 | Quick Start | [快速开始](./zh/guides/quick-start.md) | [Quick Start](./en/guides/quick-start.md) |
 | FAQ | [常见问题](./zh/guides/faq.md) | [FAQ](./en/guides/faq.md) |
 | Architecture | [架构设计](./zh/architecture/arch.md) | [Architecture](./en/architecture/arch.md) |
+| Framework Comparison | [框架对比](./framework-comparison-langchain-crewai-agentscope-goagent-zh.md) | [Framework Comparison](./framework-comparison-langchain-crewai-agentscope-goagent-en.md) |
+| Capability Map | [能力地图](./CAPABILITY-MAP.md) | [Capability Map](./CAPABILITY-MAP.en.md) |
 | Integration | [集成指南](./zh/development/integration-guide.md) | [Integration Guide](./en/development/integration-guide.md) |
 | Testing | [测试指南](./zh/development/testing-guide.md) | [Testing Guide](./en/development/testing-guide.md) |
-| config.yaml Guide | [config.yaml 配置指南](../articles/zh/25-config-yaml-guide.zh.md) | [config.yaml Guide](../articles/en/25-config-yaml-guide.en.md) |
+| config.yaml Guide | [config.yaml 配置指南](./articles/zh/25-config-yaml-guide.zh.md) | [config.yaml Guide](./articles/en/25-config-yaml-guide.en.md) |
 | API Reference | — | [API Reference](./en/api-reference.md) |
 
 ## Coding Standards / 编码规范
@@ -38,18 +42,18 @@ Welcome to the ARES framework documentation center.
 
 ---
 
-## Core Features
+## Core Features（现行架构，v0.3.x）
 
 | Feature | 中文 | English |
 |---------|------|---------|
-| Leader Failover | [Leader 故障转移](./zh/features/leader-failover.md) | [Leader Failover](./en/features/leader-failover.md) |
-| Dynamic Graph | [运行时动态图](./zh/features/dynamic-graph.md) | [Dynamic Graph](./en/features/dynamic-graph.md) |
+| Kernel Scheduler (task fabric) | [框架对比 §3](./framework-comparison-langchain-crewai-agentscope-goagent-zh.md) | [Comparison §3](./framework-comparison-langchain-crewai-agentscope-goagent-en.md) |
+| Agent Recovery | [Agent 恢复](./zh/features/agent-recovery.md) | [Agent Recovery](./en/features/agent-recovery.md) |
 | Event Sourcing | [事件溯源](./zh/features/event-sourcing.md) | [Event Sourcing](./en/features/event-sourcing.md) |
 | Memory Distillation | [记忆蒸馏](./zh/features/memory-distillation.md) | [Memory Distillation](./en/features/memory-distillation.md) |
-| Human-in-the-Loop | [人机协作](./zh/features/hitl.md) | [Human-in-the-Loop](./en/features/hitl.md) |
-| Agent Resurrection | [Agent 复活](./zh/features/resurrection.md) | [Agent Resurrection](./en/features/resurrection.md) |
 | Autonomous Evolution | [自主进化](./zh/features/autonomous-evolution.md) | [Autonomous Evolution](./en/features/autonomous-evolution.md) |
 | MCP & Dashboard | [MCP 与控制面板](./zh/features/mcp-and-dashboard.md) | [MCP & Dashboard](./en/features/mcp-and-dashboard.md) |
+
+> 已删除的特性（不要查找）：Leader Failover / Dynamic Graph（旧 leader 模型，v0.3.x 删除）；Agent Resurrection 独立特性（能力并入 aresrecovery / runtime manager 的恢复链路）。HITL（人机协作）在 `internal/fabric/task/workflow/engine` 有实现但未接入生产装配。
 
 ---
 
@@ -64,6 +68,8 @@ Welcome to the ARES framework documentation center.
 | Tool System | [工具系统](./articles/zh/05-tool-system-deep-dive.md) | [Tool System](./articles/en/05-tool-system-deep-dive.md) |
 | Autonomous Evolution | [自主进化](./articles/zh/11-autonomous-evolution-deep-dive.md) | [Autonomous Evolution](./articles/en/11-autonomous-evolution-deep-dive.md) |
 | Arena Fault Injection | [混沌工程](./articles/zh/09-arena-fault-injection-deep-dive.md) | [Arena Fault Injection](./articles/en/09-arena-fault-injection-deep-dive.md) |
+
+> 注：articles 深度文章写于不同版本时点，个别模块路径可能已迁移（如 workflow engine 现位于 `internal/fabric/task/workflow/engine`），以 [CAPABILITY-MAP](./CAPABILITY-MAP.md) 为准。
 
 ---
 
@@ -81,15 +87,11 @@ docs/
 │   └── guides/
 ├── zh/                # Chinese documentation
 │   ├── architecture/
-│   ├── components/
-│   ├── development/
 │   ├── features/
 │   └── guides/
-├── modules/           # Module analysis reports
-├── code-review/       # Code review reports
-└── development/       # Development guides
+└── (top-level comparison & map docs)
 ```
 
 ---
 
-**Last Updated**: 2026-06-27
+**Last Updated**: 2026-09-13

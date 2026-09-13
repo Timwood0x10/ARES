@@ -8,7 +8,7 @@
 
 This document compares five AI Agent frameworks: **LangChain (incl. LangGraph)**, **CrewAI**, **AgentScope**, **ARES**, and **tRPC-Agent-Go**. The comparison covers tech stack, architecture, workflow orchestration, multi-agent collaboration, memory systems, production reliability, deployment, and community maturity.
 
-**Note on scope**: ARES is a research-oriented Agent OS under active development (dev branch, ~1300 commits). Many features described here exist in code but are not yet wired into production paths. This document distinguishes between "implemented" and "production-wired" where possible.
+**Note on scope**: ARES is a research-oriented Agent OS under active development (dev branch, v0.3.1, ~640 commits, 2 contributors). Many features described here exist in code but are not yet wired into production paths. This document distinguishes between "implemented" and "production-wired" where possible. ARES facts verified against the code as of 2026-09-13; external framework info as of 2026-07.
 
 ---
 
@@ -18,7 +18,7 @@ This document compares five AI Agent frameworks: **LangChain (incl. LangGraph)**
 |-----------|----------------------|--------|------------|------|---------------|
 | **Primary Language** | Python, JavaScript/TypeScript | Python | Python | Go (1.26+) | Go (1.21+) |
 | **Core Dependencies** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b | openai-go, otel, ants/v2, zap |
-| **LLM Providers** | 50+ (OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock, etc.) | OpenAI, Anthropic, Google, Ollama, Groq, Azure, etc. | OpenAI, ModelScope, DashScope, etc. | OpenAI, Ollama (plugin-based) | OpenAI, Ollama, etc. |
+| **LLM Providers** | 50+ (OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock, etc.) | OpenAI, Anthropic, Google, Ollama, Groq, Azure, etc. | OpenAI, ModelScope, DashScope, etc. | 4: OpenAI, OpenRouter, Ollama, Anthropic (OpenAI/Ollama best tested) | OpenAI, Ollama, etc. |
 | **Vector DB** | 30+ (Pinecone, Chroma, Weaviate, Qdrant, FAISS, Milvus, PGVector, etc.) | LanceDB, Chroma | Built-in | PostgreSQL + pgvector (ivfflat index) | Built-in memory store, SQLite with vector extension |
 | **Document Loaders** | 100+ (PDF, HTML, LaTeX, Markdown, CSV, JSON, DB, S3, Web) | Few built-in | Moderate | None (code/task focused) | None |
 | **Communication Protocol** | REST (LangServe), SSE, limited gRPC | In-process function calls | Service Hub messaging, gRPC | AHP (legacy), agentipc (current) | tRPC (native), A2A, AG-UI, MCP, OpenAI-compatible API |
@@ -32,7 +32,7 @@ This document compares five AI Agent frameworks: **LangChain (incl. LangGraph)**
 
 **AgentScope** leverages Alibaba's tech stack with built-in distributed communication and good Kubernetes support.
 
-**ARES** is pure Go with zero Python dependencies. Go's static compilation gives fast startup, but the trade-off is a tiny ecosystem — no document loaders, few LLM providers, no pre-built RAG pipelines. The codebase is in active development with ~1300 commits on the dev branch.
+**ARES** is pure Go with zero Python dependencies. Go's static compilation gives fast startup, but the trade-off is a tiny ecosystem — no document loaders, few LLM providers, no pre-built RAG pipelines. The codebase is in active development (dev branch, v0.3.1, ~640 commits).
 
 **tRPC-Agent-Go** is a Go-native framework integrated with the tRPC ecosystem from Tencent.
 
@@ -113,7 +113,7 @@ flowchart TD
 - **LangGraph**'s graph model is the most flexible, supporting complex state machines, cycles, and conditional routing. The cost is a steep learning curve.
 - **CrewAI**'s team metaphor is the most intuitive. However, flexibility is limited.
 - **AgentScope**'s distributed architecture suits enterprise deployments. But the community is small and documentation is primarily Chinese.
-- **ARES**'s flat peer architecture with kernel scheduler is unique among these frameworks — it treats agents as disposable execution threads rather than fixed roles. The trade-off is that the architecture is still evolving (dev branch, ~1300 commits) and the ecosystem is minimal.
+- **ARES**'s flat peer architecture with kernel scheduler is unique among these frameworks — it treats agents as disposable execution threads rather than fixed roles. The trade-off is that the architecture is still evolving (dev branch, v0.3.1) and the ecosystem is minimal.
 - **tRPC-Agent-Go**'s Runner + GraphAgent architecture is the most service-friendly within the tRPC ecosystem.
 
 ---
@@ -133,7 +133,7 @@ flowchart TD
 | **Live Graph Mutation** | Not supported | Not supported | Not supported | Not in production | Not supported |
 | **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | Not in production | Supported (session-based) |
 | **Step Recovery** | Checkpoint replay | Not supported | Not supported | aresrecovery (lease expiry → requeue) | Not documented |
-| **Self Evolution** | Not native | Not supported | Not supported | Two evolution packages exist (old v0.2.9, new `internal/ares_evolution`); both are partially wired | SKILL.md evolution pipeline |
+| **Self Evolution** | Not native | Not supported | Not supported | GA evolution (`internal/runtime/evolution` + `internal/runtime/ares_evolution` dual-track; production assembly goes through ares_evolution with 4 genomes wired), unproven at scale | SKILL.md evolution pipeline |
 | **MCP Support** | Via LangChain MCP | Not native | Not native | Native WithMCP | Native mcptool integration |
 | **Protocol Support** | LangServe | None | gRPC | AHP (legacy), agentipc (current) | tRPC, A2A, AG-UI, MCP, OpenAI-compatible |
 
@@ -143,9 +143,9 @@ ARES's workflow capabilities are split across two packages:
 
 1. **production (task fabric + kernel scheduler)**: The real production path uses `taskfabric` for task state machines and `kernelscheduler` for dispatch. Tasks have DAG dependencies, epochs, leases, and checkpoints. This is what powers `ares serve`.
 
-2. **not-in-production (workflow/engine)**: The `internal/workflow/engine` package (MutableDAG, DynamicExecutor, HITL, LoopConfig, Subgraph) is implemented but **not wired into production** — it exists as a capability reserve for the evolution system's DAG mutation patches. The v0.3.0 review found it "zero production calls" (outstanding_tasks.md → open circuit list).
+2. **partially wired (fabric/task/workflow/engine)**: The package has moved to `internal/fabric/task/workflow/engine`. MutableDAG / RecoveryPatchExecutor / DAGPatchExecutor are used in production assembly (the evolution system and the L1 tool-class graph); however its **HITL (InterruptPlugin/InterruptStore) still has no production wiring** — no human-interrupt handler is registered on production paths.
 
-The evolution system has two packages: `internal/evolution` (v0.2.9 six-genome pipeline, being replaced) and `internal/ares_evolution` (newer, partially wired). Neither is fully production-proven.
+The evolution system has two packages: `internal/runtime/evolution` (Genome/Diff/Patch engine, the direct basis of `ares evolution run`) and `internal/runtime/ares_evolution` (GA population evolution with lifecycle gates; production serve wiring goes through this one, with 4 genomes wired: workflow/recovery/knowledge/memory; the scheduler dimension was retired, prompt genome is implemented but unwired). Neither is proven at production scale.
 
 ---
 
@@ -207,14 +207,14 @@ ARES uses application-level tenantID predicates on all repository queries (tenan
 | **Circuit Breaker** | Not supported | Not supported | Not supported | LLM failover (cooldown-based) | Not documented |
 | **Dead Letter Queue** | Not supported | Not supported | Not supported | Implemented in AHP (DLQ) but not wired into production | Not documented |
 | **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | Implementation exists in workflow/engine but not wired into production | Supported |
-| **Chaos Engineering** | Not supported | Not supported | Not supported | `ares_arena` (13 fault types) — wired into cmd/ares/arena.go | Not documented |
+| **Chaos Engineering** | Not supported | Not supported | Not supported | `internal/runtime/arena` (Kill/NetworkPartition/Pause/Slow/ToolTimeout/CorruptMemory/DisconnectMCP/LLMFailure injection primitives) — wired via `cmd/ares/serve_arena.go` | Not documented |
 
 ### 7.2 Notes on ARES Reliability
 
 - **FailoverClient**: ARES has a multi-provider LLM failover client with cooldown-based circuit breaking. When a provider returns errors (e.g., 429 rate limit), it is cooled down and the next provider is tried. This is production-wired in `ares serve`.
 - **Circuit Breaker**: The `internal/storage/postgres/circuit_breaker.go` is a PostgreSQL-specific circuit breaker for the retrieval guard, not a general-purpose mechanism.
 - **DLQ**: The AHP dead letter queue is implemented in `internal/ares_protocol/ahp/dlq.go` but has zero production call sites outside the AHP package itself.
-- **Chaos Engineering**: `internal/ares_arena` has 13 fault injection types and survival/scenario modes. The `cmd/ares/arena.go` entry point wires a subset of these into the serve binary.
+- **Chaos Engineering**: `internal/runtime/arena` provides fault injection primitives (KillAgent / KillOrchestrator / NetworkPartition / RemoveNode / RemoveEdge / Pause / Resume / SlowAgent / ToolTimeout / CorruptMemory / DisconnectMCP / InjectLLMFailure) plus survival/scenario modes. The `cmd/ares/serve_arena.go` entry point wires them into the serve binary.
 - **Chaos Isolation** (v0.3.1): Shadow sandbox mode (scratch fabric, zero production impact) + live mode with six guardrails (rate limit, cooldown, fail-safe latch, GA quiet window, target whitelist, emergency stop). Wired into `ares serve`.
 
 ---
@@ -292,11 +292,11 @@ ARES uses application-level tenantID predicates on all repository queries (tenan
 **Weaknesses (honest)**:
 - **Tiny ecosystem**: 2 contributors, ~20 built-in tools, no document loaders, few LLM providers. LangChain has 1000+ integrations — ARES has essentially zero third-party integrations.
 - **Very early stage**: dev branch, 2025 first release, architecture still evolving. The `ares serve` command was only stabilized in recent months.
-- **Many features are "implemented but not wired"**: The workflow engine (MutableDAG, HITL, Subgraph, LoopConfig), AHP DLQ, and parts of the evolution system exist in code but are not in production paths. The v0.3.0 review documented ~20 such "open circuits".
+- **Some features are "implemented but not wired"**: HITL interrupt handling, AHP DLQ, and the prompt genome exist in code but are not in production assembly paths (the MutableDAG family IS in production via the evolution wiring).
 - **No RAG pipeline**: Unlike LangChain, ARES has no built-in document loading, chunking, or retrieval-augmented generation pipeline.
-- **Limited LLM support**: OpenAI and Ollama are the only well-tested providers. No Anthropic, Google, Cohere, or local model support through a unified API.
+- **Limited LLM support**: 4 providers (OpenAI / OpenRouter / Ollama / Anthropic), with OpenAI and Ollama the best tested. No Google, Cohere, or Azure support through a unified API.
 - **Documentation is limited**: With 2 contributors, the docs are sparse compared to any established framework.
-- **Evolution system is unproven at scale**: Two evolution packages exist, neither has been validated on large production workloads.
+- **Evolution system is unproven at scale**: The dual-track evolution (patch engine + GA) has not been validated on large production workloads; the GA has 4 genome dimensions wired, prompt genome is implemented but unwired.
 
 ### 9.5 tRPC-Agent-Go
 
@@ -343,10 +343,13 @@ ARES uses application-level tenantID predicates on all repository queries (tenan
 | Failover LLM Client | ✅ | ✅ | `ares serve` production path |
 | Memory Distillation | ✅ | ✅ | Bootstrap-wired |
 | Event Sourcing | ✅ | ✅ | Task fabric + event store |
-| Mutable DAG (workflow/engine) | ✅ | ❌ | Zero production call sites |
-| HITL (workflow/engine) | ✅ | ❌ | Zero production call sites |
+| Mutable DAG (fabric/task/workflow/engine) | ✅ | ✅ | Evolution assembly + L1 tool-class graph |
+| HITL (fabric/task/workflow/engine) | ✅ | ❌ | No production wiring (no interrupt handler registered) |
 | AHP DLQ | ✅ | ❌ | No production call sites outside AHP |
-| Evolution (v0.2.9 six-genome) | ✅ | Partial | Being replaced |
-| Evolution (internal/ares_evolution) | ✅ | Partial | Partially wired |
+| Evolution (internal/runtime/evolution patch engine) | ✅ | Partial | `ares evolution run/status` CLI; GA assembly via ares_evolution |
+| Evolution (internal/runtime/ares_evolution GA) | ✅ | ✅ | Production serve assembly; 4 genomes wired; unproven at scale |
+| Cross-restart task restore (RestoreFromStore) | ✅ | ✅ | v0.3.1; PG-mode serve folds the task log on boot |
+| Plan round loops (PlanLoop) | ✅ | ✅ | v0.3.1; create_plan loop argument |
+| Serve memory enrichment (PromptEnricher) | ✅ | ✅ | v0.3.1; cross-turn session memory in serve |
 | Leader-Sub legacy | ❌ | N/A | Removed in v0.3.x |
 | Multi-tenant RLS (SET LOCAL) | ❌ | N/A | Descoped, replaced by app-level predicates |

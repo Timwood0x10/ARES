@@ -104,9 +104,9 @@ Agent options are a separate set (`func(*agentConfig)`):
 |--------|-----------|--------------|
 | `WithInstruction` | `(string)` | System instruction, prepended to the conversation |
 | `WithTools` | `(...tools.Tool)` | Attach tools |
-| `WithHumanInput` | `(fn HumanInputFunc)` | Human-in-the-loop approval callback before tool calls |
-| `WithMaxIterations` | `(n int)` | Cap the ReAct iteration count |
-| `WithMaxTokens` | `(n int)` | Cumulative token budget for one run |
+| `WithHumanInput` | `(fn HumanInputFunc)` | **Deprecated / not enforced**: the L2 path has no approval hook, so `Run` fails with `ErrHumanInputUnsupported` |
+| `WithMaxIterations` | `(n int)` | Cap the ReAct iteration count (retained for API compatibility) |
+| `WithMaxTokens` | `(n int)` | Cumulative token budget for one run (retained for API compatibility) |
 | `WithTimeout` | `(d time.Duration)` | Wall-clock budget for one run |
 | `WithToolDiscovery` | `()` | Runtime tool discovery (exposes a discover_tools meta-tool) |
 | `WithToolSource` | `(s toolsource.ToolSource)` | Set discovery source; implies discovery on |
@@ -124,8 +124,6 @@ Once you have a `Runtime`, creating an agent is trivial:
 agent := rt.NewAgent("assistant",
     sdk.WithInstruction("You are a helpful assistant."),
     sdk.WithTools(searchTool, calcTool),
-    sdk.WithHumanInput(approveFunc),
-    sdk.WithMaxIterations(10),
 )
 
 result, err := agent.Run(ctx, "What's 2+2?")

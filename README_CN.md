@@ -180,13 +180,16 @@ if err != nil {
 }
 defer rt.Close()
 
-// 带工具和人工审批的 Agent
+// 带工具的 Agent
 agent := rt.NewAgent("assistant",
     sdk.WithInstruction("你是一个助手。"),
     sdk.WithTools(calculatorTool, weatherTool),
-    sdk.WithHumanInput(approveFn),
 )
 result, _ := agent.Run(ctx, "计算 15*23")
+
+// 注意：sdk.WithHumanInput 已废弃且不生效——L2 执行路径没有逐工具调用的审批钩子，
+// 因此 Agent.Run 会返回 sdk.ErrHumanInputUnsupported 而不再静默忽略该闸门。
+// 如需约束一次运行，请使用 sdk.WithAgentGovernance(tokens, tools, deadline)。
 
 // 流式响应
 ch, _ := agent.Stream(ctx, "讲个故事")

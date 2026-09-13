@@ -19,6 +19,23 @@ const (
 	EventTaskCompleted    EventType = "task.completed"
 	EventTaskFailed       EventType = "task.failed"
 	EventTaskExpired      EventType = "task.expired"
+	// EventTaskDeleted is the tombstone for Delete: the task was removed and
+	// must stay removed across a restart.
+	//
+	// It is must-persist because the durable log already holds the task's
+	// task.created — without a tombstone, RestoreFromStore folds that created
+	// event back and the discarded work becomes READY again and re-executes.
+	// It is deliberately NOT emitted by RestoreTask (the delete-then-restore
+	// rollback primitive): re-installing a task from its in-memory snapshot
+	// needs no durable record, and a recompile that outlives the rollback is
+	// recovered by the graph reconcile (the live DAG is the source of truth).
+	//
+	// TODO(tech-debt): a task that is deleted and then reinstalled via
+	// RestoreTask has no durable trace of the reinstall, so a restart in that
+	// window drops it and relies on the DAG reconcile to re-create it. Emitting
+	// a task.created on RestoreTask would close that window at the cost of
+	// publishing a "created" event for a task that never had a create call.
+	EventTaskDeleted EventType = "task.deleted"
 	// EventTaskUpdated records an in-place rewrite of a task's scheduling
 	// shape (Dependencies) or its payload by the incremental compiler: one
 	// graph change moves one task instead of rebuilding the whole compiled

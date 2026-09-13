@@ -389,6 +389,62 @@ func TestLoadFromEnvOpenRouterAPIKey(t *testing.T) {
 	}
 }
 
+// TestLoadFromEnvProviderAPIKeys verifies that the provider-specific
+// environment variables the CLI documents (OPENAI_API_KEY /
+// ANTHROPIC_API_KEY) actually reach cfg.LLM.APIKey.
+//
+// Regression: the serve path only read LLM_API_KEY / OPENROUTER_API_KEY, so
+// `ares doctor` told operators to export OPENAI_API_KEY while `ares serve`
+// silently ignored it and failed with a 401.
+func TestLoadFromEnvProviderAPIKeys(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		envVar   string
+		envValue string
+		want     string
+	}{
+		{name: "openai", provider: providerOpenAI, envVar: "OPENAI_API_KEY", envValue: "sk-openai", want: "sk-openai"},
+		{name: "anthropic", provider: providerAnthropic, envVar: "ANTHROPIC_API_KEY", envValue: "sk-ant", want: "sk-ant"},
+		{name: "openrouter", provider: providerOpenRouter, envVar: "OPENROUTER_API_KEY", envValue: "or-key", want: "or-key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Blank every credential variable first so an ambient key in the
+			// developer's shell cannot make this test pass vacuously.
+			t.Setenv("LLM_API_KEY", "")
+			t.Setenv("OPENAI_API_KEY", "")
+			t.Setenv("ANTHROPIC_API_KEY", "")
+			t.Setenv("OPENROUTER_API_KEY", "")
+			t.Setenv(tc.envVar, tc.envValue)
+
+			cfg := &Config{LLM: LLMConfig{Provider: tc.provider}}
+			if err := LoadFromEnv(cfg); err != nil {
+				t.Fatalf("LoadFromEnv() error = %v", err)
+			}
+			if cfg.LLM.APIKey != tc.want {
+				t.Errorf("LLM.APIKey = %q, want %q", cfg.LLM.APIKey, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadFromEnvExplicitKeyWins verifies LLM_API_KEY keeps precedence over
+// the provider-specific variables, so an explicit override is never
+// clobbered by an ambient one.
+func TestLoadFromEnvExplicitKeyWins(t *testing.T) {
+	t.Setenv("LLM_API_KEY", "explicit")
+	t.Setenv("OPENAI_API_KEY", "ambient-openai")
+
+	cfg := &Config{LLM: LLMConfig{Provider: providerOpenAI}}
+	if err := LoadFromEnv(cfg); err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.LLM.APIKey != "explicit" {
+		t.Errorf("LLM.APIKey = %q, want explicit", cfg.LLM.APIKey)
+	}
+}
+
 // TestLoadFromEnvInvalidPort tests loading invalid port from environment.
 func TestLoadFromEnvInvalidPort(t *testing.T) {
 	cfg := &Config{

@@ -111,6 +111,11 @@ type StreamChunk struct {
 //	    fmt.Print(chunk.Content)
 //	}
 func (a *Agent) Stream(ctx context.Context, input string) (<-chan StreamChunk, error) {
+	// Surface the refusal synchronously as well: a caller that never drains
+	// the channel would otherwise never learn the gate was unenforceable.
+	if a.humanInput != nil {
+		return nil, ErrHumanInputUnsupported
+	}
 	ch := make(chan StreamChunk, 32)
 
 	go func() {
@@ -191,6 +196,13 @@ type TokenUsage struct {
 // WithToolDiscovery) no longer shape execution — the planner's loop and the
 // governance budget (WithAgentGovernance) bound the run instead.
 func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
+	// Checked first so the refusal is deterministic and never masked by an
+	// unrelated wiring error. The hook cannot be honoured on this path, and
+	// silently ignoring it would leave a caller believing destructive tools
+	// were gated.
+	if a.humanInput != nil {
+		return nil, ErrHumanInputUnsupported
+	}
 	if a.runtime == nil || a.runtime.llmSvc == nil {
 		return nil, errors.New("sdk: agent runtime has no LLM configured")
 	}

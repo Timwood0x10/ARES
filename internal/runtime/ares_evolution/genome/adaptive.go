@@ -586,6 +586,17 @@ func (p *Population) handleStagnationLocked() {
 
 	SortByScore(p.Agents)
 	startIdx := len(p.Agents) - resetCount
+	// The elite template below is picked from [0, startIdx), so startIdx must be
+	// at least 1 or rng.Intn(0) panics. The guard above only rejects
+	// resetCount <= 0, which does not cover len == 1 with EliteCount == 0:
+	// resetCount then equals 1 and startIdx becomes 0, killing the evolution
+	// loop on a legal configuration. Clamping keeps the single individual as
+	// the template (nothing is reset, which is the only safe move when it is
+	// the entire population).
+	if startIdx < 1 {
+		startIdx = 1
+	}
+	reset := len(p.Agents) - startIdx
 
 	// Inject random mutations from elites instead of exact copies.
 	// Each reset agent is a heavily perturbed clone of a random elite,
@@ -628,7 +639,7 @@ func (p *Population) handleStagnationLocked() {
 
 	p.stagnantGens = 0
 	el.Warn(context.Background(), "handleStagnationLocked", "stagnation reset injected",
-		"reset_count", resetCount,
+		"reset_count", reset,
 		"stagnant_generations", stagnantGens,
 		"generation", p.Generation,
 	)

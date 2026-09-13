@@ -1,5 +1,7 @@
 # Agent 崩溃恢复
 
+> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 Leader/Sub 执行模型时期。v0.3.x 起 Leader-Sub 架构已删除（现行为扁平对等 + 内核调度 + 任务织物），本文中涉及 leader 的机制描述已过时。现行架构见 [框架对比 §3](../../framework-comparison-langchain-crewai-agentscope-goagent-zh.md) 与 [能力地图](../../CAPABILITY-MAP.md)。保留作历史参考。
+
 当 ares 中的 Agent 崩溃时，Runtime 会检测到死亡，创建全新实例，回放事件恢复运行状态，并从记忆存储加载对话历史。Agent 恢复后拥有完整上下文，就像什么都没发生过一样。
 
 ## 恢复架构

@@ -104,9 +104,9 @@ Agent 选项是另一组（`func(*agentConfig)`）：
 |------|------|--------|
 | `WithInstruction` | `(string)` | 系统指令，prepend 到对话 |
 | `WithTools` | `(...tools.Tool)` | 附加工具 |
-| `WithHumanInput` | `(fn HumanInputFunc)` | 工具调用前的人审回调 |
-| `WithMaxIterations` | `(n int)` | 封顶 ReAct 迭代次数 |
-| `WithMaxTokens` | `(n int)` | 单次 run 的累计 token 预算 |
+| `WithHumanInput` | `(fn HumanInputFunc)` | **已废弃/不生效**：L2 路径无审批钩子，`Run` 会返回 `ErrHumanInputUnsupported` |
+| `WithMaxIterations` | `(n int)` | 封顶 ReAct 迭代次数（仅为 API 兼容保留） |
+| `WithMaxTokens` | `(n int)` | 单次 run 的累计 token 预算（仅为 API 兼容保留） |
 | `WithTimeout` | `(d time.Duration)` | 单次 run 的墙钟预算 |
 | `WithToolDiscovery` | `()` | 运行时工具发现（暴露 discover_tools 元工具） |
 | `WithToolSource` | `(s toolsource.ToolSource)` | 设发现来源，隐式开启 discovery |
@@ -124,8 +124,6 @@ Agent 选项是另一组（`func(*agentConfig)`）：
 agent := rt.NewAgent("assistant",
     sdk.WithInstruction("You are a helpful assistant."),
     sdk.WithTools(searchTool, calcTool),
-    sdk.WithHumanInput(approveFunc),
-    sdk.WithMaxIterations(10),
 )
 
 result, err := agent.Run(ctx, "What's 2+2?")

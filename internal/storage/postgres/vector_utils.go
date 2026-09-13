@@ -36,6 +36,24 @@ func FormatVector(embedding []float64) string {
 	return builder.String()
 }
 
+// VectorArg returns the SQL argument to bind for a `::vector` cast.
+//
+// An empty or nil embedding binds SQL NULL rather than the zero-dimension
+// literal "[]", because pgvector rejects '[]' for a VECTOR(n) column. This
+// mirrors what Create already does for un-backfilled rows (NULL), so a
+// read-modify-write of a row without a vector stays consistent instead of
+// failing on the update.
+//
+// The returned value is an untyped SQL argument (nil or a pgvector literal
+// string), not a vector: callers must keep the `$n::vector` cast in the query
+// so a NULL argument is still typed as vector.
+func VectorArg(embedding []float64) interface{} {
+	if len(embedding) == 0 {
+		return nil
+	}
+	return FormatVector(embedding)
+}
+
 // NormalizeVector normalizes a vector to unit length.
 // This is required for pgvector's cosine distance operator (<=>).
 func NormalizeVector(embedding []float64) []float64 {

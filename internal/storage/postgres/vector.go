@@ -182,6 +182,12 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 		return errors.Wrap(err, "invalid id")
 	}
 
+	// TODO(tech-debt): the delete is keyed on id alone, so it does not respect
+	// the tenant boundary that Search() enforces. Only ids of rows written
+	// through AddEmbedding (all under the empty tenant) are addressable in
+	// practice, but scoping this properly needs a tenantID parameter — the
+	// same deferred storage.VectorStore interface change noted on
+	// CreateCollection.
 	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, safeTable)
 
 	_, err = v.db.ExecContext(ctx, query, id)
@@ -190,6 +196,32 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 	}
 
 	return nil
+}
+
+// vectorCollectionDDL returns the CREATE TABLE statement for an ad-hoc vector
+// collection. CreateVectorTable and CreateCollection both route through it so
+// the column contract is defined exactly once.
+//
+// tenant_id is part of the schema because Search filters on it
+// (`WHERE tenant_id = $3`); a table without the column made every search fail
+// with `column "tenant_id" does not exist`.
+//
+// TODO(tech-debt): AddEmbedding/DeleteEmbedding carry no tenant parameter yet,
+// so rows written through them land under the empty tenant and are invisible
+// to a tenant-scoped Search — fail closed, never a cross-tenant leak. Making
+// ad-hoc collections genuinely tenant-scoped requires extending the
+// storage.VectorStore interface (a breaking API change), which is deliberately
+// deferred pending an explicit decision.
+func vectorCollectionDDL(table string, dimension int) string {
+	return fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id VARCHAR(255) PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
+			embedding VECTOR(%d),
+			metadata JSONB,
+			created_at TIMESTAMP DEFAULT NOW()
+		)
+	`, table, dimension)
 }
 
 // CreateVectorTable creates a table with vector support.
@@ -209,14 +241,7 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dim)
 	}
 
-	createTable := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id VARCHAR(255) PRIMARY KEY,
-			embedding VECTOR(%d),
-			metadata JSONB,
-			created_at TIMESTAMP DEFAULT NOW()
-		)
-	`, safeTable, dim)
+	createTable := vectorCollectionDDL(safeTable, dim)
 	if _, err = v.db.ExecContext(ctx, createTable); err != nil {
 		return errors.Wrap(err, "create vector table")
 	}
@@ -242,17 +267,21 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dimension)
 	}
 
-	query := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id VARCHAR(255) PRIMARY KEY,
-			embedding VECTOR(%d),
-			metadata JSONB,
-			created_at TIMESTAMP DEFAULT NOW()
-		)
-	`, safeName, dimension)
-
+	query := vectorCollectionDDL(safeName, dimension)
 	if _, err := v.db.ExecContext(ctx, query); err != nil {
 		return errors.Wrap(err, "create collection")
+	}
+
+	// Backfill the column for collections created before this fix:
+	// CREATE TABLE IF NOT EXISTS is inert on an existing table, so those
+	// tables would keep failing every Search with a missing-column error.
+	// Idempotent, so it is safe on the freshly created table too.
+	alter := fmt.Sprintf(
+		`ALTER TABLE %s ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`,
+		safeName,
+	)
+	if _, err := v.db.ExecContext(ctx, alter); err != nil {
+		return errors.Wrap(err, "add tenant_id column")
 	}
 
 	indexQuery := fmt.Sprintf(`

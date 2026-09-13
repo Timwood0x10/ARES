@@ -1,5 +1,7 @@
 # Agent Resurrection Plugin
 
+> **⚠ Historical note (2026-09-13, v0.3.1)**: This document was written during the Leader/Sub execution model era. The Leader-Sub architecture was removed in v0.3.x (current: flat peers + kernel scheduler + task fabric); leader-related mechanisms described here are outdated. See [Comparison §3](../../framework-comparison-langchain-crewai-agentscope-goagent-en.md) and [Capability Map](../../CAPABILITY-MAP.en.md) for the current architecture. Kept for historical reference.
+
 **Updated**: 2026-06-11
 
 ## Overview

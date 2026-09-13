@@ -152,7 +152,10 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string)
 	`
 
 	exp := &storage_models.Experience{}
-	var embeddingStr, metadataStr string
+	// embedding/metadata are nullable (an experience queued for async
+	// embedding has embedding = NULL); scanning NULL into a plain string
+	// fails, so both are carried as NullString.
+	var embeddingStr, metadataStr sql.NullString
 	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 		&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
@@ -168,8 +171,9 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string)
 	}
 
 	// Parse embedding vector (nullable, e.g. queued for async embedding).
-	if embeddingStr != "" {
-		embedding, err := postgres.ParseVectorString(embeddingStr)
+	// A NULL folds to an empty slice so a write-back binds NULL again.
+	if embeddingStr.Valid && embeddingStr.String != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr.String)
 		if err != nil {
 			return nil, errors.Wrap(err, "parse embedding")
 		}
@@ -177,8 +181,8 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string)
 	}
 
 	// Parse metadata JSON string to map
-	if metadataStr != "" {
-		if err := json.Unmarshal([]byte(metadataStr), &exp.Metadata); err != nil {
+	if metadataStr.Valid && metadataStr.String != "" {
+		if err := json.Unmarshal([]byte(metadataStr.String), &exp.Metadata); err != nil {
 			return nil, errors.Wrap(err, "parse metadata")
 		}
 	}
@@ -201,8 +205,10 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding to pgvector format
-	embeddingStr := postgres.FormatVector(exp.Embedding)
+	// Convert embedding to pgvector format. An empty embedding binds NULL
+	// (pgvector rejects the zero-dimension literal for a VECTOR(n) column),
+	// matching what Create writes for un-backfilled rows.
+	embeddingStr := postgres.VectorArg(exp.Embedding)
 
 	query := `
 		UPDATE experiences_1024
@@ -597,6 +603,11 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
 	if tenantID == "" {
 		return postgres.ErrMissingTenantID
+	}
+	// An explicit "set the vector" call must carry a vector: FormatVector
+	// would otherwise bind "[]", which pgvector rejects.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
 	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)

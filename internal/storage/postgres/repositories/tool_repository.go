@@ -6,10 +6,11 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	"github.com/lib/pq"
+
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
-	"github.com/lib/pq"
 )
 
 // ToolRepository provides data access for tool definitions.
@@ -644,6 +645,11 @@ func (r *ToolRepository) UpdateUsage(ctx context.Context, tenantID, id string, s
 func (r *ToolRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
 	if tenantID == "" {
 		return postgres.ErrMissingTenantID
+	}
+	// tools.embedding is NOT NULL, so an empty vector would surface as a raw
+	// constraint/dimension error instead of a typed argument error.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
 	}
 	embeddingStr := postgres.FormatVector(embedding)
 	query := `

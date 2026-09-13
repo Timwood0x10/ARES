@@ -593,6 +593,11 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, tenantID, id
 	if tenantID == "" {
 		return postgres.ErrMissingTenantID
 	}
+	// An explicit "set the vector" call must carry a vector: FormatVector
+	// would otherwise bind "[]", which pgvector rejects.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 

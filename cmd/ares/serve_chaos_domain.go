@@ -515,11 +515,15 @@ func agentEligibleForChaos(fabric *agentfabric.Fabric, agentID string, whitelist
 	if len(whitelist) == 0 {
 		return false
 	}
-	a, err := fabric.Get(agentID)
-	if err != nil || a == nil {
+	// CapabilitiesOf takes the fabric's lock and copies: reading the live
+	// agent's Capabilities field off the pointer Get returns would race the
+	// SDK's hot tool registration, which appends to that slice under the
+	// same lock.
+	capabilities, err := fabric.CapabilitiesOf(agentID)
+	if err != nil {
 		return false
 	}
-	for _, capName := range a.Capabilities {
+	for _, capName := range capabilities {
 		for _, w := range whitelist {
 			if capName == w {
 				return true

@@ -76,6 +76,79 @@ func TestFlushOrderTimeoutSkipDoesNotPoisonLaterEvents(t *testing.T) {
 	require.Equal(t, ares_events.EventTaskCompleted, store.order[0])
 }
 
+// TestFlushOrderTimeoutStillPersistsMustPersistEvent pins the durability half
+// of the ordering barrier: a must-persist event whose causal predecessor never
+// lands must still reach the store.
+//
+// Regression (docs/reviews/0.3.1-final-deep-review.md §5.6 F-2): the
+// orderTimedOut path skipped the Append for EVERY event type, so a terminal
+// task.completed/task.failed (or task.created/task.checkpointed/task.expired)
+// could be silently dropped from the durable log with nothing but a log line.
+// A restart then rebuilt the task from an older checkpoint and re-executed
+// work whose terminal state had already been committed in memory.
+//
+// Out-of-causal-order durability is the lesser evil: the store assigns its own
+// per-stream version and restore folds events by task id, not by position.
+func TestFlushOrderTimeoutStillPersistsMustPersistEvent(t *testing.T) {
+	origWait := flushOrderWaitTimeout
+	flushOrderWaitTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { flushOrderWaitTimeout = origWait })
+
+	store := newRecordingEventStore()
+	f := NewFabric()
+	f.store = store
+
+	// seq 1 never flushes (its owner is still in flight), so the must-persist
+	// event at seq 2 cannot satisfy its causal barrier.
+	p2 := &pendingAppend{
+		store:  store,
+		typ:    EventTaskCompleted,
+		taskID: "t-must",
+		event:  &ares_events.Event{Type: ares_events.EventTaskCompleted, StreamID: "t-must", ModuleName: "taskfabric"},
+		seq:    2,
+	}
+	f.flushAppends(&[]*pendingAppend{p2})
+
+	// The barrier still advanced past the ghost seq, so a later event is not
+	// poisoned into re-waiting the full bound.
+	f.flushCond.L.Lock()
+	flushed := f.flushedSeq
+	f.flushCond.L.Unlock()
+	require.Equal(t, uint64(2), flushed, "a timed-out must-persist flush must still advance flushedSeq")
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.order, 1,
+		"a must-persist event must never be dropped by the ordering barrier")
+	require.Equal(t, ares_events.EventTaskCompleted, store.order[0])
+}
+
+// TestFlushOrderTimeoutSkipsObservabilityEvent pins the other half of F-2: an
+// observability-only event may still be skipped, so the fix cannot degrade
+// into "always append and call it ordering".
+func TestFlushOrderTimeoutSkipsObservabilityEvent(t *testing.T) {
+	origWait := flushOrderWaitTimeout
+	flushOrderWaitTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { flushOrderWaitTimeout = origWait })
+
+	store := newRecordingEventStore()
+	f := NewFabric()
+	f.store = store
+
+	p2 := &pendingAppend{
+		store:  store,
+		typ:    EventTaskStarted, // observability-only: not in isMustPersistEvent
+		taskID: "t-obs",
+		event:  &ares_events.Event{Type: ares_events.EventTaskStarted, StreamID: "t-obs", ModuleName: "taskfabric"},
+		seq:    2,
+	}
+	f.flushAppends(&[]*pendingAppend{p2})
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Empty(t, store.order, "an observability-only event may be skipped on ordering timeout")
+}
+
 // TestFlushOrderStillEnforcedWithoutTimeout pins the unchanged half of #5:
 // with the predecessor landing in time, the barrier still holds the later
 // event back until the earlier one is appended (the skip-advance must not

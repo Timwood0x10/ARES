@@ -1,5 +1,7 @@
 # Human-in-the-Loop（人机协作）
 
+> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 Leader/Sub 执行模型时期。v0.3.x 起 Leader-Sub 架构已删除（现行为扁平对等 + 内核调度 + 任务织物），本文中涉及 leader 的机制描述已过时。现行架构见 [框架对比 §3](../../framework-comparison-langchain-crewai-agentscope-goagent-zh.md) 与 [能力地图](../../CAPABILITY-MAP.md)。保留作历史参考。
+
 **更新日期**: 2026-06-11
 
 ## 概述

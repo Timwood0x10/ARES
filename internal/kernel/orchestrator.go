@@ -518,11 +518,18 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 // exiting on the cancelled root context is the normal teardown path, not a
 // failure. Loops whose name matches no registered component still get the
 // panic recovery and logging — only the status mark is skipped.
+//
+// Admission is atomic with Shutdown's flag set, mirroring Adopt: the
+// stopped-check and errgroup.Go share one critical section, so only two
+// orders exist — the loop is registered before Shutdown's Wait, or it is
+// refused. Checking the flag and then releasing the lock before calling
+// errgroup.Go opened a window where a loop joined the group after Wait had
+// already returned, which the errgroup contract forbids and which left the
+// loop running with nobody waiting on it.
 func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) error) {
 	o.mu.Lock()
-	stopped := o.stopped
-	o.mu.Unlock()
-	if stopped {
+	if o.stopped {
+		o.mu.Unlock()
 		log.Warn("kernel: background loop not started (orchestrator shutting down)",
 			"component", name)
 		return
@@ -545,6 +552,7 @@ func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) er
 		}
 		return nil
 	})
+	o.mu.Unlock()
 }
 
 // runBackground invokes fn with a recover boundary so a panicking loop is

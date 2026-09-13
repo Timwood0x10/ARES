@@ -349,18 +349,42 @@ func (f *Fabric) CheckExpiredLeases() []string {
 // ErrTaskUndeletable — their quanta must finish or expire through the normal
 // paths; callers retry deletion afterwards if needed.
 //
-// Deletion emits NO event on purpose: it is housekeeping for graphs whose
-// results were already harvested, not a durable-state transition. The memory
-// store therefore cannot replay these tasks after a restart — accepted,
-// because replay value of harvested ephemeral work is nil.
+// Deletion writes a must-persist tombstone (EventTaskDeleted) when a durable
+// store is attached: the store already holds the task's task.created, so
+// without a tombstone RestoreFromStore folds the deleted task back and the
+// discarded work becomes READY again and re-executes after a restart.
 func (f *Fabric) Delete(id string) error {
+	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
+	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
-	return f.deleteLocked(id)
+	return f.deleteWithTombstoneLocked(id, &pending)
 }
 
-// deleteLocked is Delete's body for callers that already hold f.mu (the
-// CompilePlan batch compiler's rollback).
+// deleteWithTombstoneLocked records the tombstone for id and removes the task.
+// Callers MUST hold f.mu and flush the returned pending appends.
+func (f *Fabric) deleteWithTombstoneLocked(id string, pending *[]*pendingAppend) error {
+	t, ok := f.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	switch t.State {
+	case StateReady, StateCompleted, StateFailed:
+		// Record while the task is still attached so the tombstone carries the
+		// same provenance payload every other must-persist event does.
+		*pending = append(*pending, f.recordLocked(t, EventTaskDeleted))
+		delete(f.tasks, id)
+		return nil
+	default:
+		return ErrTaskUndeletable
+	}
+}
+
+// deleteLocked removes a task without emitting a tombstone. It is the
+// CompilePlan batch compiler's rollback primitive and is paired with
+// discardAppends: the batch's task.created appends are discarded because the
+// tasks no longer exist, so publishing a task.deleted for a task the durable
+// log never learned about would be a phantom of the mirror-image kind.
 func (f *Fabric) deleteLocked(id string) error {
 	t, ok := f.tasks[id]
 	if !ok {

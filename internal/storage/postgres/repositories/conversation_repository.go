@@ -118,26 +118,40 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *storage_model
 	return nil
 }
 
-// GetByID retrieves a conversation by ID.
+// conversationGetByIDQuery is the tenant-scoped lookup used by GetByID.
+//
+// It is a package-level constant (not an inline literal) so the tenant
+// predicate can be locked by a fast test that needs no database. RLS is not
+// enforced on this code path (repositories query pool.GetDB() directly, see
+// docs/reviews/0.3.1-final-deep-review.md §5.3 S-5), so an unscoped read here
+// is a genuine cross-tenant leak — it is not covered by any second line of
+// defence.
+const conversationGetByIDQuery = `
+		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
+		FROM conversations
+		WHERE id = $1 AND tenant_id = $2
+	`
+
+// GetByID retrieves a conversation by ID, scoped to one tenant.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // id - conversation ID, must be non-empty.
 // Returns conversation or error if not found or invalid argument.
-func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*storage_models.Conversation, error) {
+func (r *ConversationRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.Conversation, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
 	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
+	}
 
-	query := `
-		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
-		FROM conversations
-		WHERE id = $1
-	`
+	query := conversationGetByIDQuery
 
 	conv := &storage_models.Conversation{}
 	var metadataBytes []byte
 	var expiresAt sql.NullTime
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
 		&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &expiresAt, &conv.CreatedAt,
 	)

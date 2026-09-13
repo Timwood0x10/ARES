@@ -191,6 +191,29 @@ func (fc *FailoverClient) cooldownForError(err error) time.Duration {
 	return short
 }
 
+// callerAborted reports whether the CALLER's context ended (user abort,
+// upstream timeout, scheduler shutdown) rather than the provider failing.
+// An abort must never mark cooldown: the provider did nothing wrong, and
+// marking every client in the chain turned a single user cancel into a
+// "no provider available (all N cooled down)" outage for every unrelated
+// request during the next cooldown window.
+func callerAborted(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
+// coolDown records a cooldown for key unless the caller aborted, in which
+// case the provider keeps its clean record. It returns the cooldown that was
+// recorded, or 0 when the failure was the caller's doing — callers use the
+// zero return to skip the "cooling down" log line.
+func (fc *FailoverClient) coolDown(ctx context.Context, key string, err error) time.Duration {
+	if callerAborted(ctx) {
+		return 0
+	}
+	cd := fc.cooldownForError(err)
+	fc.markCooldown(key, cd)
+	return cd
+}
+
 // Generate tries each LLM client in order and returns the first successful
 // response. All errors trigger cooldown so the next call skips the provider
 // instead of waiting for the same timeout/429 again.
@@ -216,6 +239,12 @@ func (fc *FailoverClient) generateAttempting(ctx context.Context, call func(*Cli
 	var lastErr error
 
 	for _, client := range fc.clients {
+		// The caller already gave up: stop failing over instead of burning
+		// through the rest of the chain and blaming each provider for it.
+		if callerAborted(ctx) {
+			lastErr = ctx.Err()
+			break
+		}
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -236,8 +265,12 @@ func (fc *FailoverClient) generateAttempting(ctx context.Context, call func(*Cli
 		}
 
 		lastErr = err
-		cd := fc.cooldownForError(err)
-		fc.markCooldown(key, cd)
+		// An abort mid-call is the caller's doing, not the provider's:
+		// coolDown records nothing and we stop failing over.
+		cd := fc.coolDown(ctx, key, err)
+		if cd == 0 {
+			break
+		}
 
 		if isRateLimitError(err) {
 			log.Warn("FailoverClient: rate limited, cooling down",
@@ -281,6 +314,12 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 	var lastErr error
 
 	for _, client := range fc.clients {
+		// The caller already gave up: stop failing over instead of burning
+		// through the rest of the chain and blaming each provider for it.
+		if callerAborted(ctx) {
+			lastErr = ctx.Err()
+			break
+		}
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -298,8 +337,12 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		if err != nil {
 			attemptCancel()
 			lastErr = err
-			cd := fc.cooldownForError(err)
-			fc.markCooldown(key, cd)
+			// An abort mid-call is the caller's doing, not the provider's:
+			// coolDown records nothing and we stop failing over.
+			cd := fc.coolDown(ctx, key, err)
+			if cd == 0 {
+				break
+			}
 
 			if isRateLimitError(err) {
 				log.Warn("FailoverClient: rate limited on stream, cooling down",
@@ -337,7 +380,11 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			if !ok {
 				attemptCancel()
 				lastErr = fmt.Errorf("stream from %s closed before first chunk", client.GetProvider())
-				fc.markCooldown(key, fc.cooldownForError(lastErr))
+				// A stream torn down by the caller's cancel is not a
+				// provider fault; coolDown records nothing in that case.
+				if fc.coolDown(ctx, key, lastErr) == 0 {
+					break
+				}
 				log.Warn("FailoverClient: provider closed stream before first chunk, cooling down",
 					"provider", client.GetProvider(),
 					"model", client.GetModel(),
@@ -354,8 +401,12 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 				attemptCancel()
 				lastErr = fmt.Errorf("stream from %s: first chunk carried error: %w",
 					client.GetProvider(), first.Err)
-				cd := fc.cooldownForError(first.Err)
-				fc.markCooldown(key, cd)
+				// coolDown records nothing when the caller aborted, which
+				// is what a cancel during the handshake looks like.
+				cd := fc.coolDown(ctx, key, first.Err)
+				if cd == 0 {
+					break
+				}
 				log.Warn("FailoverClient: provider errored on first chunk, cooling down and failing over",
 					"provider", client.GetProvider(),
 					"model", client.GetModel(),
@@ -367,7 +418,9 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		case <-timer.C:
 			attemptCancel()
 			lastErr = fmt.Errorf("stream from %s: no first chunk within %s", client.GetProvider(), fc.timeout)
-			fc.markCooldown(key, fc.cooldownForError(lastErr))
+			// The timer firing means ctx was still live at the select, so
+			// this is a genuine provider silence — coolDown records it.
+			fc.coolDown(ctx, key, lastErr)
 			log.Warn("FailoverClient: provider silent on stream (handshake timeout), cooling down and failing over",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
@@ -430,6 +483,12 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*llmcore.LLMMessa
 	var lastErr error
 
 	for _, client := range fc.clients {
+		// The caller already gave up: stop failing over instead of burning
+		// through the rest of the chain and blaming each provider for it.
+		if callerAborted(ctx) {
+			lastErr = ctx.Err()
+			break
+		}
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -450,8 +509,12 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*llmcore.LLMMessa
 		}
 
 		lastErr = err
-		cd := fc.cooldownForError(err)
-		fc.markCooldown(key, cd)
+		// An abort mid-call is the caller's doing, not the provider's:
+		// coolDown records nothing and we stop failing over.
+		cd := fc.coolDown(ctx, key, err)
+		if cd == 0 {
+			break
+		}
 
 		log.Warn("FailoverClient: provider failed on chat, cooling down",
 			"provider", client.GetProvider(),

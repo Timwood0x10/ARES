@@ -195,13 +195,17 @@ if err != nil {
 }
 defer rt.Close()
 
-// Agent with tools and human-in-the-loop.
+// Agent with tools.
 agent := rt.NewAgent("assistant",
     sdk.WithInstruction("You are helpful."),
     sdk.WithTools(calculatorTool, weatherTool),
-    sdk.WithHumanInput(approveFn),
 )
 result, _ := agent.Run(ctx, "Calculate 15*23")
+
+// NOTE: sdk.WithHumanInput is deprecated and NOT enforced — the L2 execution
+// path has no per-tool-call approval hook, so Agent.Run refuses with
+// sdk.ErrHumanInputUnsupported rather than silently ignoring the gate.
+// Use sdk.WithAgentGovernance(tokens, tools, deadline) to bound a run.
 
 // Streaming response.
 ch, _ := agent.Stream(ctx, "Tell me a story")

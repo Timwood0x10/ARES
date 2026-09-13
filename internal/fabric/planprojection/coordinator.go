@@ -669,11 +669,18 @@ func (c *CompileCoordinator) applyReplaceNode(ctx context.Context, dag *engine.M
 //
 // Missed events are compensated, not tolerated: a sequence skip on the next
 // delivered event triggers a full Reconcile, and the hub drop counter is
-// polled after each delivered event plus once more shortly after the last one,
-// which catches drops at the tail of a burst where no later event arrives to
-// reveal the gap. The tail check is a one-shot timer armed by delivery, not a
-// standing ticker: an idle subscription costs nothing, because a drop requires
-// a full buffer, which requires events this loop is about to receive.
+// polled after each delivered event plus on a standing light tick.
+//
+// The tail check used to be a one-shot timer armed by delivery — which left a
+// dead window (F-21, docs/reviews/0.3.1-final-deep-review.md §0.1): a burst
+// split by scheduler delay could drop its tail AFTER the one-shot fired with
+// zero recorded drops and with no subsequent delivery to reveal the gap; the
+// session then stalled forever (tail nodes never materialized as fabric
+// tasks). The timer is now self-rearming: every fire re-arms it, so the drop
+// counter is re-checked every reconcilePollInterval even when no events are
+// delivered. The idle cost is one timer wakeup plus one locked map read per
+// 250ms per live session — negligible against a scheduler that runs LLM
+// quanta.
 //
 // This closes the "two graphs" gap: a GraphPatchExecutor mutation on the
 // live MutableDAG reaches the task set so the next scheduler drain sees the
@@ -690,11 +697,11 @@ func (c *CompileCoordinator) SubscribeGraphEvents(ctx context.Context, dag *engi
 		var lastSeq uint64
 		var haveSeq bool
 		lastDropped := dag.DroppedEvents(subID)
-		// Stopped and drained: it is armed only by a delivered event.
+		// Standing tick: created firing, then re-armed after EVERY fire
+		// (see the F-21 note above). armTailCheck also resets it on
+		// delivery so the post-burst check lands one full interval after
+		// the last event instead of on a partial window.
 		tailCheck := time.NewTimer(reconcilePollInterval)
-		if !tailCheck.Stop() {
-			<-tailCheck.C
-		}
 		defer tailCheck.Stop()
 		for {
 			select {
@@ -740,6 +747,11 @@ func (c *CompileCoordinator) SubscribeGraphEvents(ctx context.Context, dag *engi
 				armTailCheck(tailCheck)
 			case <-tailCheck.C:
 				lastDropped = c.checkDrops(ctx, dag, subID, lastDropped)
+				// F-21 fix: the tick is STANDING. Re-arm after every fire
+				// so a drop that lands while no event is delivered (the
+				// scheduler-delay-split burst tail) is still caught on the
+				// next interval instead of being lost forever.
+				armTailCheck(tailCheck)
 			}
 		}
 	}()

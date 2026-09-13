@@ -47,15 +47,9 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Handle nil or empty embedding
-	var embeddingStr interface{}
-	if len(chunk.Embedding) == 0 {
-		// Empty embedding: set to NULL in database
-		embeddingStr = nil
-	} else {
-		// Convert embedding vector to pgvector format
-		embeddingStr = postgres.FormatVector(chunk.Embedding)
-	}
+	// Handle nil or empty embedding: an empty vector binds SQL NULL (pgvector
+	// rejects the zero-dimension literal for a VECTOR(n) column).
+	embeddingStr := postgres.VectorArg(chunk.Embedding)
 
 	// Handle optional document_id
 	var documentID interface{}
@@ -336,7 +330,12 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) 
 	`
 
 	chunk := &storage_models.KnowledgeChunk{}
-	var embeddingStr, metadataStr string
+	// embedding is nullable: the async embedding worker inserts the row first
+	// and backfills the vector later, so a row awaiting backfill has
+	// embedding = NULL. Scanning that into a plain string fails with
+	// "converting NULL to string is unsupported" and made every un-embedded
+	// chunk unreadable by id.
+	var embeddingStr, metadataStr sql.NullString
 	var documentID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
@@ -354,10 +353,11 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) 
 	}
 
 	// Parse embedding vector. Callers (e.g. CorrectKnowledge) read the chunk,
-	// mutate it, and write it back via Update, which persists embedding
-	// unconditionally — dropping it here would corrupt the vector.
-	if embeddingStr != "" {
-		embedding, err := postgres.ParseVectorString(embeddingStr)
+	// mutate it, and write it back via Update; a NULL stays an empty slice so
+	// the write-back binds NULL again (see postgres.VectorArg) instead of
+	// corrupting the vector with a zero-dimension literal.
+	if embeddingStr.Valid && embeddingStr.String != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr.String)
 		if err != nil {
 			return nil, errors.Wrap(err, "parse embedding")
 		}
@@ -365,8 +365,8 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) 
 	}
 
 	// Parse metadata JSON string to map
-	if metadataStr != "" {
-		if err := json.Unmarshal([]byte(metadataStr), &chunk.Metadata); err != nil {
+	if metadataStr.Valid && metadataStr.String != "" {
+		if err := json.Unmarshal([]byte(metadataStr.String), &chunk.Metadata); err != nil {
 			return nil, errors.Wrap(err, "parse metadata")
 		}
 	}
@@ -394,8 +394,11 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding vector to pgvector format
-	embeddingStr := postgres.FormatVector(chunk.Embedding)
+	// Convert embedding vector to pgvector format. An empty vector must bind
+	// NULL: this is a read-modify-write path (callers fetch a chunk via
+	// GetByID, mutate a field, write it back), and rows awaiting async
+	// embedding backfill legitimately have no vector yet.
+	embeddingStr := postgres.VectorArg(chunk.Embedding)
 
 	// Handle optional document_id
 	var documentID interface{}
@@ -784,6 +787,12 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
 	if tenantID == "" {
 		return postgres.ErrMissingTenantID
+	}
+	// An explicit "set the vector" call must carry a vector: FormatVector
+	// would otherwise bind the zero-dimension literal "[]", which pgvector
+	// rejects with an opaque dimension error.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
 	}
 	embeddingStr := postgres.FormatVector(embedding)
 

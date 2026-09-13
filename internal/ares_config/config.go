@@ -242,6 +242,31 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// resolveProviderAPIKey returns the credential carried by the environment
+// variable that belongs to provider. The provider-specific variable is tried
+// first; OPENROUTER_API_KEY is the historical generic override and remains
+// the fallback for unlisted providers (including the empty/ollama case).
+//
+// Returns "" when no credential variable is set; callers treat that as
+// "nothing to override", never as an empty credential.
+func resolveProviderAPIKey(provider string) string {
+	switch provider {
+	case providerOpenAI:
+		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+			return v
+		}
+	case providerAnthropic:
+		if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+			return v
+		}
+	case providerOpenRouter:
+		if v := os.Getenv("OPENROUTER_API_KEY"); v != "" {
+			return v
+		}
+	}
+	return os.Getenv("OPENROUTER_API_KEY")
+}
+
 // LoadFromEnv loads configuration from environment variables.
 // Environment variables override YAML config.
 func LoadFromEnv(cfg *Config) error {
@@ -257,9 +282,14 @@ func LoadFromEnv(cfg *Config) error {
 	if v := os.Getenv("LLM_API_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
-	// Also support OPENROUTER_API_KEY as alternative
-	if v := os.Getenv("OPENROUTER_API_KEY"); v != "" && cfg.LLM.APIKey == "" {
-		cfg.LLM.APIKey = v
+	// Provider-specific fallbacks. `ares doctor` and the SDK both document
+	// OPENAI_API_KEY / ANTHROPIC_API_KEY, but this path used to read only
+	// LLM_API_KEY / OPENROUTER_API_KEY — an operator following the doctor
+	// output got a silent 401. An explicit LLM_API_KEY (set above) always
+	// wins, and OPENROUTER_API_KEY stays the final generic fallback so the
+	// previous behavior is preserved for unlisted providers.
+	if cfg.LLM.APIKey == "" {
+		cfg.LLM.APIKey = resolveProviderAPIKey(cfg.LLM.Provider)
 	}
 	if v := os.Getenv("LLM_PROVIDER"); v != "" {
 		cfg.LLM.Provider = v

@@ -65,6 +65,10 @@ const (
 	EventTaskPreempted    EventType = "task.preempted"
 	EventTaskReleased     EventType = "task.released"
 	EventTaskExpired      EventType = "task.expired"
+	// EventTaskDeleted is the tombstone published when a task is removed from
+	// the fabric. Must-persist: without it the durable log's task.created
+	// rebuilds the task after a restart.
+	EventTaskDeleted EventType = "task.deleted"
 
 	// Service discovery events (REVIEW #10 closure): forwarded by the
 	// bootstrap discovery bridge from the discovery Engine so detected MCP

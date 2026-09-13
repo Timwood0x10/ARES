@@ -59,6 +59,71 @@ func TestConfigRedacted(t *testing.T) {
 	}
 }
 
+// TestConfigRedactedChaosAndMCPSecrets verifies every secret the config dump
+// endpoint can reach is redacted, not just the four original fields.
+//
+// Regression: /api/runtime/config serialized Redacted(), but the chaos stop
+// token (which can halt live fault injection) and MCP transport credentials
+// (stdio env / SSE headers) plus LLM.Extra passed through in clear text.
+func TestConfigRedactedChaosAndMCPSecrets(t *testing.T) {
+	cfg := &Config{
+		LLM:    LLMConfig{Provider: "openai", Extra: map[string]string{"org": "sk-extra"}},
+		Kernel: KernelConfig{Chaos: ChaosConfig{StopToken: "chaos-token"}},
+		MCP: MCPConfig{Servers: []MCPServerEntry{
+			{
+				Name: "stdio-srv",
+				Transport: TransportEntry{
+					Type:  "stdio",
+					Stdio: &StdioEntry{Command: "npx", Env: map[string]string{"API_KEY": "stdio-secret"}},
+				},
+			},
+			{
+				Name: "sse-srv",
+				Transport: TransportEntry{
+					Type: "sse",
+					SSE:  &SSEEntry{URL: "https://example.invalid", Headers: map[string]string{"Authorization": "Bearer sse-secret"}},
+				},
+			},
+		}},
+	}
+
+	got := cfg.Redacted()
+
+	// The receiver must not be mutated: redaction has to deep-copy the maps
+	// before overwriting values, otherwise the live config loses its secrets.
+	if cfg.Kernel.Chaos.StopToken != "chaos-token" {
+		t.Error("Redacted must not mutate Kernel.Chaos.StopToken")
+	}
+	if cfg.LLM.Extra["org"] != "sk-extra" {
+		t.Error("Redacted must not mutate LLM.Extra")
+	}
+	if cfg.MCP.Servers[0].Transport.Stdio.Env["API_KEY"] != "stdio-secret" {
+		t.Error("Redacted must not mutate MCP stdio env")
+	}
+	if cfg.MCP.Servers[1].Transport.SSE.Headers["Authorization"] != "Bearer sse-secret" {
+		t.Error("Redacted must not mutate MCP sse headers")
+	}
+
+	// Secrets redacted.
+	if got.Kernel.Chaos.StopToken != "***" {
+		t.Errorf("Kernel.Chaos.StopToken = %q, want ***", got.Kernel.Chaos.StopToken)
+	}
+	if got.LLM.Extra["org"] != "***" {
+		t.Errorf("LLM.Extra[org] = %q, want ***", got.LLM.Extra["org"])
+	}
+	if got.MCP.Servers[0].Transport.Stdio.Env["API_KEY"] != "***" {
+		t.Errorf("stdio env = %q, want ***", got.MCP.Servers[0].Transport.Stdio.Env["API_KEY"])
+	}
+	if got.MCP.Servers[1].Transport.SSE.Headers["Authorization"] != "***" {
+		t.Errorf("sse header = %q, want ***", got.MCP.Servers[1].Transport.SSE.Headers["Authorization"])
+	}
+
+	// Non-secret transport fields must survive so the dump stays useful.
+	if got.MCP.Servers[0].Transport.Stdio.Command != "npx" || got.MCP.Servers[1].Transport.SSE.URL != "https://example.invalid" {
+		t.Error("non-secret MCP transport fields must be preserved")
+	}
+}
+
 // TestConfigRedactedEmptySecrets verifies Redacted handles empty secrets
 // without injecting "***" (no false redaction of empty values).
 func TestConfigRedactedEmptySecrets(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -484,6 +485,13 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 // Export exports secrets INCLUDING their decrypted values (for backup purposes).
 // Unlike List (which intentionally omits values for security), Export must
 // include them so a backup/restored deployment retains working secrets.
+//
+// Export fails loudly, naming the keys it could not decrypt, rather than
+// writing a payload that silently corrupts them. Emitting the ciphertext as
+// if it were the value would let Import re-encrypt already-encrypted
+// material, producing a permanently unreadable secret on the one path that
+// exists to prevent data loss — and would place recoverable secret material
+// into a backup artifact.
 func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte, error) {
 	query := `
 		SELECT id, tenant_id, key, value, key_version, algorithm, expires_at, metadata::text, created_at
@@ -511,6 +519,7 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 	}
 
 	var entries []exportEntry
+	var undecryptable []string
 	for rows.Next() {
 		var e exportEntry
 		var expiresAt sql.NullTime
@@ -523,11 +532,12 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 		// same encryption key. Value is emitted as a plain string (not []byte,
 		// which encoding/json would base64-encode) so Import can consume it
 		// directly as plaintext.
-		if plain, dErr := r.decrypt(encrypted); dErr == nil {
-			e.Value = string(plain)
-		} else {
-			e.Value = string(encrypted)
+		value, ok := r.exportableValue(encrypted)
+		if !ok {
+			undecryptable = append(undecryptable, e.Key)
+			continue
 		}
+		e.Value = value
 		if expiresAt.Valid {
 			t := expiresAt.Time
 			e.ExpiresAt = &t
@@ -540,12 +550,31 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 	if err := rows.Err(); err != nil {
 		return nil, errors.Wrap(err, "iterate export secrets")
 	}
+	if len(undecryptable) > 0 {
+		return nil, fmt.Errorf(
+			"export secrets: %d secret(s) could not be decrypted with the current encryption key (%s); "+
+				"refusing to write a backup that would corrupt them — restore the matching key or rotate these secrets first",
+			len(undecryptable), strings.Join(undecryptable, ", "))
+	}
 
 	data, err := json.Marshal(entries)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal secrets")
 	}
 	return data, nil
+}
+
+// exportableValue decrypts a stored secret for backup export. It reports
+// ok=false when the ciphertext cannot be opened with the process key —
+// wrong key, truncated blob, or a tampered GCM tag. Callers must treat that
+// as a hard failure: the ciphertext is not a usable secret value, and
+// writing it out as one corrupts the backup.
+func (r *SecretRepository) exportableValue(ciphertext []byte) (string, bool) {
+	plain, err := r.decrypt(ciphertext)
+	if err != nil {
+		return "", false
+	}
+	return string(plain), true
 }
 
 // Import imports secrets (for restore purposes).

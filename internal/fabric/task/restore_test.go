@@ -10,6 +10,52 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
+// TestRestoreDropsDeletedTask pins F-1: a task removed through Delete must not
+// be resurrected by a restart.
+//
+// Regression (docs/reviews/0.3.1-final-deep-review.md §5.6 F-1): Delete emitted
+// no event, so the task.created already sitting in the durable store folded the
+// task back on the next RestoreFromStore — explicitly discarded work became
+// READY again and was re-executed, with no tombstone to tell it apart.
+func TestRestoreDropsDeletedTask(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	f1 := NewFabric().WithEventStore(store)
+	ctx := context.Background()
+
+	require.NoError(t, f1.Create(newTask("kept")))
+	require.NoError(t, f1.Create(newTask("dropped")))
+	require.NoError(t, f1.Delete("dropped"))
+
+	f2 := NewFabric().WithEventStore(store)
+	require.NoError(t, f2.RestoreFromStore(ctx))
+
+	if _, err := f2.Task("kept"); err != nil {
+		t.Fatalf("surviving task must be restored: %v", err)
+	}
+	if _, err := f2.Task("dropped"); err != ErrTaskNotFound {
+		t.Fatalf("deleted task must NOT be resurrected by restore; got %v", err)
+	}
+}
+
+// TestRestoreDeletedTaskIsIdempotent locks the tombstone against the repeated
+// restore contract: folding the same log twice must keep the task absent.
+func TestRestoreDeletedTaskIsIdempotent(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	f1 := NewFabric().WithEventStore(store)
+	ctx := context.Background()
+
+	require.NoError(t, f1.Create(newTask("gone")))
+	require.NoError(t, f1.Delete("gone"))
+
+	f2 := NewFabric().WithEventStore(store)
+	require.NoError(t, f2.RestoreFromStore(ctx))
+	require.NoError(t, f2.RestoreFromStore(ctx))
+
+	if _, err := f2.Task("gone"); err != ErrTaskNotFound {
+		t.Fatalf("repeated restore must keep the deleted task absent; got %v", err)
+	}
+}
+
 // TestRestoreFromStoreResumesSuspendedTask is the integration contract: a
 // fabric instance discarded mid-execution (process crash) is fully rebuilt
 // from the event store alone — the task folds back to READY with its

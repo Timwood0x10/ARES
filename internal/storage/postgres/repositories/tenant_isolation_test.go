@@ -224,3 +224,43 @@ func TestTenantIsolation_ConversationDelete(t *testing.T) {
 	require.ErrorIs(t, err, errors.ErrRecordNotFound, "cross-tenant conversation delete must be rejected")
 	require.NoError(t, repo.Delete(ctx, conv.ID, "tenant-A"))
 }
+
+// TestTenantIsolation_ConversationGetByID verifies the read path enforces
+// tenant ownership too.
+//
+// Regression (docs/reviews/0.3.1-final-deep-review.md §5.3 S-1): GetByID used
+// to look a conversation up by UUID alone, so tenant B could read tenant A's
+// message if it knew the id.
+func TestTenantIsolation_ConversationGetByID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := getTestDB(t)
+	defer closeTestDB(t, db)
+	defer cleanupTestDB(t, db)
+
+	repo := NewConversationRepository(db)
+	ctx := context.Background()
+
+	conv := &storage_models.Conversation{
+		SessionID: "session-isolation-getbyid",
+		TenantID:  "tenant-A",
+		UserID:    "user-1",
+		AgentID:   "agent-1",
+		Role:      "user",
+		Content:   "tenant A only",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, repo.Create(ctx, conv))
+
+	// Same tenant reads its own row.
+	got, err := repo.GetByID(ctx, "tenant-A", conv.ID)
+	require.NoError(t, err)
+	require.Equal(t, conv.ID, got.ID)
+
+	// A different tenant must not see it, even with the correct UUID.
+	_, err = repo.GetByID(ctx, "tenant-B", conv.ID)
+	require.ErrorIs(t, err, errors.ErrRecordNotFound, "cross-tenant conversation read must be rejected")
+}

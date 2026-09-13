@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 // mockLLMServer creates an httptest.Server that returns the given status code
@@ -358,5 +360,130 @@ func TestFailoverClient_StreamFirstChunkErrorFailsOver(t *testing.T) {
 	}
 	if atomic.LoadInt32(primaryCount) != 1 {
 		t.Fatalf("expected primary called once, got %d", atomic.LoadInt32(primaryCount))
+	}
+}
+
+// cooledKeys reports the provider keys currently in cooldown, read under the
+// client's own lock. Tests use it to assert cooldown side effects directly.
+func cooledKeys(fc *FailoverClient) []string {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	out := make([]string, 0, len(fc.cooldowns))
+	for k := range fc.cooldowns {
+		out = append(out, k)
+	}
+	return out
+}
+
+// cancelledFailoverClient builds a two-provider failover client over servers
+// that always succeed, plus its key list in registration order.
+func cancelledFailoverClient(t *testing.T) (*FailoverClient, *httptest.Server, *httptest.Server) {
+	t.Helper()
+	primary, _ := mockLLMServer(200, successBody("primary-ok"))
+	t.Cleanup(primary.Close)
+	fallback, _ := mockLLMServer(200, successBody("fallback-ok"))
+	t.Cleanup(fallback.Close)
+	fc, err := NewFailoverClient([]*Config{
+		{Provider: "openrouter", APIKey: "key1", BaseURL: primary.URL, Model: "primary"},
+		{Provider: "openrouter", APIKey: "key2", BaseURL: fallback.URL, Model: "fallback"},
+	}, 10*time.Second, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFailoverClient: %v", err)
+	}
+	t.Cleanup(fc.Close)
+	return fc, primary, fallback
+}
+
+// TestFailoverClient_CancelledContextDoesNotPoisonCooldowns locks the
+// caller-cancellation contract for Generate: aborting a request is not a
+// provider fault, so no provider may be put into cooldown. Pre-fix, every
+// provider in the chain was marked on the way through, so one user abort
+// during a busy window made the next ~cooldownDuration of unrelated requests
+// fail with "no provider available (all N cooled down)".
+func TestFailoverClient_CancelledContextDoesNotPoisonCooldowns(t *testing.T) {
+	fc, _, _ := cancelledFailoverClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := fc.Generate(ctx, "hello"); err == nil {
+		t.Fatal("Generate on a cancelled context must fail")
+	}
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("caller cancellation must not cool down any provider, got %v", keys)
+	}
+}
+
+// TestFailoverClient_MidCallCancelDoesNotPoisonCooldowns locks the same
+// contract when the cancel lands while the request is in flight (the server
+// sees the disconnect and the client surfaces context.Canceled), which is
+// the shape a real user abort produces.
+func TestFailoverClient_MidCallCancelDoesNotPoisonCooldowns(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
+	fc, err := NewFailoverClient([]*Config{
+		{Provider: "ollama", BaseURL: server.URL, Model: "slow"},
+	}, 10*time.Second, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFailoverClient: %v", err)
+	}
+	t.Cleanup(fc.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = fc.Generate(ctx, "hello")
+	}()
+	// Let the request reach the server, then abort it mid-flight.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("mid-call caller cancel must not cool down any provider, got %v", keys)
+	}
+}
+
+// TestFailoverClient_CancelledContextDoesNotPoisonCooldownsChat locks the
+// Chat path, which has its own copy of the failover loop.
+func TestFailoverClient_CancelledContextDoesNotPoisonCooldownsChat(t *testing.T) {
+	fc, _, _ := cancelledFailoverClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msgs := []*llmcore.LLMMessage{{Role: "user", Content: "hello"}}
+	if _, err := fc.Chat(ctx, msgs, nil, nil); err == nil {
+		t.Fatal("Chat on a cancelled context must fail")
+	}
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("caller cancellation must not cool down any provider on Chat, got %v", keys)
+	}
+}
+
+// TestFailoverClient_CancelledContextDoesNotPoisonCooldownsStream locks the
+// GenerateStream path, whose handshake loop marks cooldown on the initial
+// GenerateStream error.
+func TestFailoverClient_CancelledContextDoesNotPoisonCooldownsStream(t *testing.T) {
+	fc, _, _ := cancelledFailoverClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := fc.GenerateStream(ctx, "hello"); err == nil {
+		t.Fatal("GenerateStream on a cancelled context must fail")
+	}
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("caller cancellation must not cool down any provider on stream, got %v", keys)
 	}
 }

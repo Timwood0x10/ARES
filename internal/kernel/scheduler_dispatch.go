@@ -286,14 +286,23 @@ func (s *Scheduler) freeCapableAgents(required []string, busy map[string]struct{
 		if !s.agents.IsIdle(id) {
 			continue
 		}
+		// Executable takes the agent's own lock, so reading it off the
+		// pointer Get returns is safe. Capabilities is NOT: it is a plain
+		// slice field the SDK's hot tool registration appends to under the
+		// fabric lock, so its capabilities come from the locked-copy
+		// accessor instead.
 		a, err := s.agents.Get(id)
 		if err != nil || a == nil || !a.Executable() {
+			continue
+		}
+		caps, err := s.agents.CapabilitiesOf(id)
+		if err != nil {
 			continue
 		}
 		if _, isBusy := busy[id]; isBusy {
 			continue
 		}
-		if !capableForAny(required, a.Capabilities) {
+		if !capableForAny(required, caps) {
 			continue
 		}
 		seen[id] = struct{}{}

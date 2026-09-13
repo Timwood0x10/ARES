@@ -8,7 +8,7 @@
 
 本文档对五个主流 AI Agent 框架进行客观对比：**LangChain（含 LangGraph）**、**CrewAI**、**AgentScope**、**ARES** 和 **tRPC-Agent-Go**。对比维度涵盖技术栈、架构设计、工作流编排、多 Agent 协作、记忆系统、生产可靠性、部署能力和社区成熟度。
 
-**范围说明**：ARES 是一个处于活跃开发中的研究型 Agent OS（dev 分支，约 1300 次提交）。本文描述的部分功能已在代码中实现但尚未接入生产路径，文中尽可能区分「已实现」与「已接入生产」。
+**范围说明**：ARES 是一个处于活跃开发中的研究型 Agent OS（dev 分支，v0.3.1，约 640 次提交，2 名贡献者）。本文描述的部分功能已在代码中实现但尚未接入生产路径，文中尽可能区分「已实现」与「已接入生产」。ARES 相关事实按 2026-09-13 代码核实；外部框架信息截至 2026-07。
 
 ---
 
@@ -18,7 +18,7 @@
 |-----------|----------------------|--------|------------|------|---------------|
 | **主要语言** | Python（主）、JavaScript/TypeScript | Python | Python | Go (1.26+) | Go (1.21+) |
 | **核心依赖** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b | openai-go, otel, ants/v2, zap |
-| **LLM 提供商** | 50+（OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock 等） | OpenAI, Anthropic, Google, Ollama, Groq, Azure 等 | OpenAI, ModelScope, DashScope 等 | OpenAI, Ollama（插件式） | OpenAI, Ollama 等 |
+| **LLM 提供商** | 50+（OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock 等） | OpenAI, Anthropic, Google, Ollama, Groq, Azure 等 | OpenAI, ModelScope, DashScope 等 | 4 个：OpenAI, OpenRouter, Ollama, Anthropic（OpenAI/Ollama 测试最充分） | OpenAI, Ollama 等 |
 | **向量数据库** | 30+（Pinecone, Chroma, Weaviate, Qdrant, FAISS, Milvus, PGVector 等） | LanceDB, Chroma | 内置 | PostgreSQL + pgvector (ivfflat 索引) | 内置存储、SQLite 向量扩展 |
 | **文档加载器** | 100+（PDF, HTML, LaTeX, Markdown, CSV, JSON, DB, S3, Web） | 少量内置 | 一般 | 无（面向代码/任务） | 无 |
 | **通信协议** | REST (LangServe), SSE, gRPC 有限支持 | 进程内函数调用 | Service Hub 消息传递, gRPC | AHP（遗留）、agentipc（现行） | tRPC, A2A, AG-UI, MCP, OpenAI 兼容 API |
@@ -32,7 +32,7 @@
 
 **AgentScope** 依托阿里巴巴技术栈，内置分布式通信，对 Kubernetes 支持良好。
 
-**ARES** 纯 Go、零 Python 依赖。Go 静态编译带来快速启动，但代价是生态极小——没有文档加载器、LLM 提供商少、没有预置 RAG 管线。代码库处于活跃开发中（dev 分支约 1300 次提交）。
+**ARES** 纯 Go、零 Python 依赖。Go 静态编译带来快速启动，但代价是生态极小——没有文档加载器、LLM 提供商少、没有预置 RAG 管线。代码库处于活跃开发中（dev 分支，v0.3.1，约 640 次提交）。
 
 **tRPC-Agent-Go** 是腾讯 tRPC 生态中的 Go 原生框架。
 
@@ -113,7 +113,7 @@ flowchart TD
 - **LangGraph** 的图模型最灵活，支持复杂状态机、循环、条件路由，但学习曲线陡峭。
 - **CrewAI** 的团队隐喻最直观，但灵活性有限。
 - **AgentScope** 的分布式架构适合企业部署，但社区小、文档以中文为主。
-- **ARES** 的扁平对等 + 内核调度在这些框架中独树一帜——把 agent 视为可丢弃的执行线程而非固定角色。代价是架构仍在演进（dev 分支，约 1300 次提交），生态极小。
+- **ARES** 的扁平对等 + 内核调度在这些框架中独树一帜——把 agent 视为可丢弃的执行线程而非固定角色。代价是架构仍在演进（dev 分支，v0.3.1），生态极小。
 - **tRPC-Agent-Go** 在 tRPC 生态内最服务友好。
 
 ---
@@ -133,7 +133,7 @@ flowchart TD
 | **运行时图变更** | 不支持 | 不支持 | 不支持 | 生产路径无 | 不支持 |
 | **人机交互** | `interrupt()` | `human_input=True` | 支持 | 生产路径无 | 支持（会话式） |
 | **步骤恢复** | Checkpoint 回放 | 不支持 | 不支持 | aresrecovery（租约过期→重新入队） | 未文档化 |
-| **自我进化** | 非原生 | 不支持 | 不支持 | 两个 evolution 包（旧 v0.2.9、新 `internal/ares_evolution`）均部分接入 | SKILL.md 进化管线 |
+| **自我进化** | 非原生 | 不支持 | 不支持 | GA 演化（`internal/runtime/evolution` + `internal/runtime/ares_evolution` 双轨，生产装配走 ares_evolution，4 genome 接线），未大规模验证 | SKILL.md 进化管线 |
 | **MCP 支持** | 经 LangChain MCP | 非原生 | 非原生 | 原生 WithMCP | 原生 mcptool |
 | **协议支持** | LangServe | 无 | gRPC | AHP（遗留）、agentipc（现行） | tRPC, A2A, AG-UI, MCP, OpenAI 兼容 |
 
@@ -143,9 +143,9 @@ ARES 的工作流能力分属两个包：
 
 1. **生产路径（task fabric + kernel scheduler）**：真实生产用 `taskfabric` 做任务状态机、`kernelscheduler` 做派发。任务有 DAG 依赖、epoch、租约、checkpoint。这是 `ares serve` 的引擎。
 
-2. **未接入生产（workflow/engine）**：`internal/workflow/engine` 包（MutableDAG、DynamicExecutor、HITL、LoopConfig、Subgraph）已实现但**未接入生产**——它作为演化系统 DAG 变异 patch 的能力储备存在。v0.3.0 review 记录其为「零生产调用」（outstanding_tasks.md 开放回路清单）。
+2. **部分接入（fabric/task/workflow/engine）**：包已迁至 `internal/fabric/task/workflow/engine`。MutableDAG / RecoveryPatchExecutor / DAGPatchExecutor 已在生产装配中使用（演化系统与 L1 工具类图）；但其中的 **HITL（InterruptPlugin/InterruptStore）仍无生产接线**——生产路径上没有注册任何人机交互中断处理器。
 
-演化系统有两个包：`internal/evolution`（v0.2.9 六基因组管线，正在被替换）和 `internal/ares_evolution`（较新，部分接入）。两者都未经大规模生产验证。
+演化系统有两个包：`internal/runtime/evolution`（Genome/Diff/Patch 补丁引擎，`ares evolution run` 的直接底座）和 `internal/runtime/ares_evolution`（GA 种群进化、生命周期门控，生产 serve 装配走这条线，实际接线 4 个 genome：workflow/recovery/knowledge/memory；scheduler 维度已退役、prompt genome 未接线）。两者都未经大规模生产验证。
 
 ---
 
@@ -207,14 +207,14 @@ ARES 使用应用层 tenantID 谓词（每个 `KnowledgeRepository.*`、`Experie
 | **熔断器** | 不支持 | 不支持 | 不支持 | LLM failover（冷却式） | 未文档化 |
 | **死信队列** | 不支持 | 不支持 | 不支持 | AHP 中已实现（DLQ）但未接入生产 | 未文档化 |
 | **人机交互** | `interrupt()` | `human_input=True` | 支持 | workflow/engine 有实现但未接入生产 | 支持 |
-| **混沌工程** | 不支持 | 不支持 | 不支持 | `ares_arena`（13 种故障类型）— 经 cmd/ares/arena.go 接入 | 未文档化 |
+| **混沌工程** | 不支持 | 不支持 | 不支持 | `internal/runtime/arena`（Kill/NetworkPartition/Pause/Slow/ToolTimeout/CorruptMemory/DisconnectMCP/LLMFailure 等注入原语）— 经 `cmd/ares/serve_arena.go` 接入 | 未文档化 |
 
 ### 7.2 ARES 可靠性说明
 
 - **FailoverClient**：ARES 有多提供商 LLM failover 客户端，带冷却式熔断。某个提供商报错（如 429 限流）后被冷却，尝试下一个。该机制已接入生产 `ares serve`。
 - **熔断器**：`internal/storage/postgres/circuit_breaker.go` 是 PostgreSQL 检索保护专用熔断器，不是通用机制。
 - **DLQ**：AHP 死信队列在 `internal/ares_protocol/ahp/dlq.go` 实现，但除 AHP 包自身外生产代码零调用点。
-- **混沌工程**：`internal/ares_arena` 有 13 种故障注入类型和生存/场景模式。`cmd/ares/arena.go` 入口将其中一部分接入 serve 二进制。
+- **混沌工程**：`internal/runtime/arena` 提供故障注入原语（KillAgent / KillOrchestrator / NetworkPartition / RemoveNode / RemoveEdge / Pause / Resume / SlowAgent / ToolTimeout / CorruptMemory / DisconnectMCP / InjectLLMFailure）和生存/场景模式。`cmd/ares/serve_arena.go` 入口接入 serve 二进制。
 - **混沌隔离**（v0.3.1）：影子沙箱模式（scratch fabric，零生产影响）+ 实时模式六道护栏（限流、冷却、fail-safe 闩锁、GA 静默窗口、目标白名单、急停）。已接入 `ares serve`。
 
 ---
@@ -292,11 +292,11 @@ ARES 使用应用层 tenantID 谓词（每个 `KnowledgeRepository.*`、`Experie
 **劣势（诚实陈述）**：
 - **生态极小**：2 名贡献者，~20 内置工具，无文档加载器，LLM 提供商少。LangChain 有 1000+ 集成，ARES 基本没有第三方集成。
 - **非常早期**：dev 分支，2025 首发，架构仍在演进。`ares serve` 命令近几个月才稳定。
-- **大量功能「已实现但未接入」**：workflow 引擎（MutableDAG、HITL、Subgraph、LoopConfig）、AHP DLQ、部分演化系统都在代码中存在但不在生产路径。v0.3.0 review 记录了约 20 个此类「开放回路」。
+- **部分功能「已实现但未接入」**：HITL 中断处理、AHP DLQ、prompt genome 等在代码中存在但不在生产装配路径（MutableDAG 系已随演化装配进入生产）。
 - **无 RAG 管线**：与 LangChain 不同，ARES 没有内置文档加载、分块、检索增强生成管线。
-- **LLM 支持有限**：仅 OpenAI 和 Ollama 经过充分测试。无 Anthropic、Google、Cohere 统一 API 支持。
+- **LLM 支持有限**：4 个提供商（OpenAI / OpenRouter / Ollama / Anthropic），其中 OpenAI 和 Ollama 经过充分测试。无 Google、Cohere、Azure 等统一 API 支持。
 - **文档有限**：2 名贡献者，文档远少于任何成熟框架。
-- **演化系统未在规模上验证**：两个 evolution 包均未在大型生产负载上验证。
+- **演化系统未在规模上验证**：evolution 双轨（补丁引擎 + GA）均未在大型生产负载上验证；GA 实际接线 4 个 genome 维度，prompt genome 已实现未接线。
 
 ### 9.5 tRPC-Agent-Go
 
@@ -343,10 +343,13 @@ ARES 使用应用层 tenantID 谓词（每个 `KnowledgeRepository.*`、`Experie
 | LLM Failover 客户端 | ✅ | ✅ | `ares serve` 生产路径 |
 | 记忆蒸馏 | ✅ | ✅ | Bootstrap 接线 |
 | 事件溯源 | ✅ | ✅ | task fabric + event store |
-| Mutable DAG（workflow/engine） | ✅ | ❌ | 零生产调用点 |
-| HITL（workflow/engine） | ✅ | ❌ | 零生产调用点 |
+| Mutable DAG（fabric/task/workflow/engine） | ✅ | ✅ | 演化装配 + L1 工具类图 |
+| HITL（fabric/task/workflow/engine） | ✅ | ❌ | 无生产接线（无中断处理器注册） |
 | AHP DLQ | ✅ | ❌ | 除 AHP 外无生产调用点 |
-| 演化（v0.2.9 六基因组） | ✅ | 部分 | 正在被替换 |
-| 演化（internal/ares_evolution） | ✅ | 部分 | 部分接入 |
+| 演化（internal/runtime/evolution 补丁引擎） | ✅ | 部分 | `ares evolution run/status` CLI；GA 装配经 ares_evolution |
+| 演化（internal/runtime/ares_evolution GA） | ✅ | ✅ | serve 生产装配；4 genome 接线；未大规模验证 |
+| 跨重启任务恢复（RestoreFromStore） | ✅ | ✅ | v0.3.1；PG 模式 serve 启动时回折 |
+| 计划轮次循环（PlanLoop） | ✅ | ✅ | v0.3.1；create_plan loop 参数 |
+| Serve 记忆增强（PromptEnricher） | ✅ | ✅ | v0.3.1；serve 会话跨轮记忆 |
 | Leader-Sub 遗留 | ❌ | N/A | v0.3.x 已移除 |
 | 多租户 RLS（SET LOCAL） | ❌ | N/A | 已 descope，改为应用层谓词 |

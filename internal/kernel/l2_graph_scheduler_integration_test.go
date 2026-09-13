@@ -362,7 +362,16 @@ func TestL2Graph_BurstGrowthConvergesThroughEvents(t *testing.T) {
 
 	sched := New(fabric, map[string]CapabilityExecutor{}, NewLoadTracker())
 	sched.WithAgentFabric(agents)
-	sched.PollInterval = 10 * time.Millisecond
+	// The chain below is SERIAL (each node depends on its predecessor) and
+	// maxConcurrentPerAgent is 1 by architectural definition, so the tasks
+	// drain strictly one per scheduler poll: this test's wall-clock is
+	// n × PollInterval by construction. A 10ms interval made that 0.71s
+	// nominal and the previous deadline (750ms/node = 53.25s) was derived
+	// from the same cadence, so under full-suite timer starvation both grew
+	// together and the deadline provided no headroom — it timed out on the
+	// exact budget it was sized for. A 2ms interval removes the cadence
+	// coupling: nominal drops ~5x, and the budget below is decoupled from n.
+	sched.PollInterval = 2 * time.Millisecond
 	go sched.Run(ctx)
 
 	ids := make([]string, 0, n+1)
@@ -375,14 +384,10 @@ func TestL2Graph_BurstGrowthConvergesThroughEvents(t *testing.T) {
 		prev = id
 	}
 
-	// The deadline scales with the node count: the graph is a SERIAL
-	// dependency chain (each node depends on the previous one) and
-	// maxConcurrentPerAgent is 1 by architectural definition, so all n+1
-	// tasks drain strictly one per scheduler poll. A flat 20s was fine on an
-	// idle machine but blew past it under full-suite parallel load —
-	// waitForAllCompleted returns the moment everything completes, so the
-	// larger budget costs nothing in the passing case.
-	waitForAllCompleted(t, fabric, ids, time.Duration(len(ids))*750*time.Millisecond)
+	// Nominal drain is ~140ms; 30s is ~200x headroom for timer starvation
+	// under parallel load, and waitForAllCompleted returns as soon as the
+	// chain completes, so the budget costs nothing in the passing case.
+	waitForAllCompleted(t, fabric, ids, 30*time.Second)
 	requireItemContent(t, fabric, "b0", "echo(echo,q0)")
 	requireItemContent(t, fabric, fmt.Sprintf("b%d", n-1), fmt.Sprintf("echo(echo,q%d)", n-1))
 }
@@ -399,24 +404,36 @@ func admitSessionRoot(t *testing.T, ctx context.Context, fabric *taskfabric.Fabr
 }
 
 // waitForAllCompleted polls until every listed task reads COMPLETED.
+//
+// The sleep is a poll backoff (bounded spin), not a synchronization
+// primitive: the deadline is what decides the outcome. The failure message
+// lists every pending id with its state so a genuine stall is diagnosable
+// without re-running under a debugger.
 func waitForAllCompleted(t *testing.T, fabric *taskfabric.Fabric, ids []string, timeout time.Duration) {
 	t.Helper()
+	const pollBackoff = 2 * time.Millisecond
+
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		done := true
+	for {
+		pending := make([]string, 0, len(ids))
 		for _, id := range ids {
 			tk, err := fabric.Task(id)
-			if err != nil || tk.State != taskfabric.StateCompleted {
-				done = false
-				break
+			switch {
+			case err != nil:
+				pending = append(pending, id+":missing")
+			case tk.State != taskfabric.StateCompleted:
+				pending = append(pending, id+":"+string(tk.State))
 			}
 		}
-		if done {
+		if len(pending) == 0 {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		if !time.Now().Before(deadline) {
+			t.Fatalf("not all %d tasks completed within %s; %d still pending: %v",
+				len(ids), timeout, len(pending), pending)
+		}
+		time.Sleep(pollBackoff)
 	}
-	t.Fatalf("not all %d tasks completed within %s", len(ids), timeout)
 }
 
 // TestL2Graph_SessionIDCrossesGrowthAndProjection pins the seam the planner
