@@ -1,6 +1,6 @@
 # ares Architecture Deep Dive (XIV): The Plugin System — Honestly, It's Not "Load a .so Without Code Changes" (0.3.x)
 
-> 0.3.x note: This article is a complete rewrite grounded in the current code. The old narrative of an "executor god object being decomposed by plugins", and the claim of a "ToolExpander" that instantly resolves skill names into LLM tool definitions, must be kept separate from the plugin contract that actually exists. This article covers only what we really have: the `RuntimePlugin` **interface contract** and the `PluginBus` **lifecycle/hook manager** in `internal/ares_runtime/`.
+> 0.3.x note: This article is a complete rewrite grounded in the current code. The old narrative of an "executor god object being decomposed by plugins", and the claim of a "ToolExpander" that instantly resolves skill names into LLM tool definitions, must be kept separate from the plugin contract that actually exists. This article covers only what we really have: the `RuntimePlugin` **interface contract** and the `PluginBus` **lifecycle/hook manager** in `internal/runtime`.
 
 > Let me be brutally honest first: **the "plugin system" in the current code is not dynamic loading.** No `go:plugin`, no `.so` hot-loading, no "inject external plugins without changing code". It is a **compiled-in Go interface + registry** — at startup assembly you `Register` structs that implement the interface into a `PluginBus`, which then owns lifecycles and calls the defined extension points.
 
@@ -8,7 +8,7 @@
 
 ## 1. What it actually is: a plugin contract + a bus
 
-`internal/ares_runtime/`'s package comment says it plainly:
+`internal/runtime`'s package comment says it plainly:
 
 > "Package runtime defines the plugin contract for extending workflow execution. Plugins are registered on a PluginBus which manages their lifecycle and invokes them at defined extension points (BeforeStep, AfterStep)."
 
@@ -124,7 +124,7 @@ This is arguably the most important part. Current "plugin system" real boundarie
 | Discover and register external plugins at runtime | ❌ Plugins are `Register`ed during startup assembly |
 | Lifecycle/hook management for a shared bus in one process | ✅ Real, `PluginBus` |
 
-**Why I stress this**: the old article's opening narrative about "splitting the executor's god object into plugins", and the claim that a "ToolExpander lets an Agent gain new skills without a restart", actually refer to *completely different mechanisms* — capability discovery in `internal/ares_skills/` (Discovery/Loader/Catalog/Resolver) and the event-callback registry in `internal/ares_callbacks/`. These do not go through `PluginBus`, and they are not "dynamic plugin loading". If what you want is "upload a plugin bundle to extend capabilities", **the current code does not have that**.
+**Why I stress this**: the old article's opening narrative about "splitting the executor's god object into plugins", and the claim that a "ToolExpander lets an Agent gain new skills without a restart", actually refer to *completely different mechanisms* — capability discovery in `internal/runtime/protocol/skills` (Discovery/Loader/Catalog/Resolver) and the event-callback registry in `internal/ares_callbacks/`. These do not go through `PluginBus`, and they are not "dynamic plugin loading". If what you want is "upload a plugin bundle to extend capabilities", **the current code does not have that**.
 
 ### 2.1 Don't confuse two systems: `ares_callbacks` ≠ plugins
 
@@ -134,7 +134,7 @@ This is arguably the most important part. Current "plugin system" real boundarie
 
 ### 2.2 The difference from skill capability discovery
 
-`internal/ares_skills/`'s SkillCatalog / SkillLoader / Resolver handle "skill manifests + the tool-trust gate" (see the `TrustLevel` discussion in the Security Hardening article). Skill discovery does read SKILL.md / manifest files from disk at runtime, which *looks* dynamic — but that's the dynamism of **capability data**, not of **plugin code**. Declared tools still have to pass the `Resolver` trust gate to become runnable providers, and they are not brought under `PluginBus` lifecycle management.
+`internal/runtime/protocol/skills`'s SkillCatalog / SkillLoader / Resolver handle "skill manifests + the tool-trust gate" (see the `TrustLevel` discussion in the Security Hardening article). Skill discovery does read SKILL.md / manifest files from disk at runtime, which *looks* dynamic — but that's the dynamism of **capability data**, not of **plugin code**. Declared tools still have to pass the `Resolver` trust gate to become runnable providers, and they are not brought under `PluginBus` lifecycle management.
 
 ---
 
@@ -172,7 +172,7 @@ flowchart LR
 
 ## 4. Conclusion
 
-- **What really exists** as a plugin mechanism = the `RuntimePlugin` interface contract in `internal/ares_runtime/` + the `PluginBus` (registration / lifecycle / `BeforeStep`/`AfterStep` hooks / event system), assembled in production at `cmd/ares/peer_mode.go` → `startPluginBus`.
+- **What really exists** as a plugin mechanism = the `RuntimePlugin` interface contract in `internal/runtime` + the `PluginBus` (registration / lifecycle / `BeforeStep`/`AfterStep` hooks / event system), assembled in production at `cmd/ares/peer_mode.go` → `startPluginBus`.
 - **The plugin actually wired into the kernel today** is mainly `LoopPlugin` (the kernel round clock), attached at the scheduler quantum boundary via `WithQuantumHook`.
 - It is **not** dynamic plugin loading: no `.so` / `go:plugin` / hot-loading. To extend capabilities without code changes, you take the `ares_skills` capability-data path — a completely different mechanism.
 - Don't confuse `ares_callbacks` (event-callback registry) with `PluginBus` (plugin bus) — one broadcasts events, the other manages plugin lifecycle.

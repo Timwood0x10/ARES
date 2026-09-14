@@ -13,7 +13,7 @@ import (
 // TestUpdateEmbeddingRejectsEmptyVector locks the fail-fast guard shared by
 // the four UpdateEmbedding implementations.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.3 S-3):
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding S-3):
 // UpdateEmbedding ran the embedding through FormatVector unconditionally, so
 // an empty slice became the zero-dimension literal "[]". The write then failed
 // with a raw pgvector dimension error — or, for tools.embedding (NOT NULL), a

@@ -80,7 +80,7 @@ func TestFlushOrderTimeoutSkipDoesNotPoisonLaterEvents(t *testing.T) {
 // of the ordering barrier: a must-persist event whose causal predecessor never
 // lands must still reach the store.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.6 F-2): the
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding F-2): the
 // orderTimedOut path skipped the Append for EVERY event type, so a terminal
 // task.completed/task.failed (or task.created/task.checkpointed/task.expired)
 // could be silently dropped from the durable log with nothing but a log line.

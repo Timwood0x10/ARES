@@ -316,7 +316,7 @@ func TestStagnationTriggersReset(t *testing.T) {
 // TestStagnationResetDegeneratePopulationDoesNotPanic covers the smallest
 // legal population shapes with no elites.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.9 G-1):
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding G-1):
 // resetCount = min(max(1, len/3), len-EliteCount) evaluates to 1 when len == 1
 // and EliteCount == 0, so startIdx = len - resetCount = 0 and the elite pick
 // `p.rng.Intn(startIdx)` panics ("invalid argument to Intn"). A legal

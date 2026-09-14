@@ -71,7 +71,7 @@ graph TB
 
 ## 核心组件
 
-### 1. Evolution 包 (`internal/evolution/`)
+### 1. Evolution 包 (`internal/runtime/evolution`)
 
 **顶层编排包**，将所有组件连接为一个完整的系统。
 
@@ -117,7 +117,7 @@ func Shutdown(system *WiredEvolutionSystem)
 
 ---
 
-### 2. Genome 包 (`internal/evolution/genome/`)
+### 2. Genome 包 (`internal/runtime/evolution/genome`)
 
 管理跨代演化的**策略 Agent 种群**，执行遗传算法的核心操作。
 
@@ -186,7 +186,7 @@ child, _ := crosser.Crossover(ctx, parentA, parentB)
 
 ---
 
-### 3. Mutation 包 (`internal/evolution/mutation/`)
+### 3. Mutation 包 (`internal/runtime/ares_evolution/mutation/`)
 
 通过修改参数或提示词模板从父代**生成子代策略**。
 
@@ -246,7 +246,7 @@ mutator, err := mutation.NewMutator(
 
 ---
 
-### 4. Arena 包 (`internal/arena/`)
+### 4. Arena 包 (`internal/runtime/arena`)
 
 提供候选策略与当前基线之间的**统计 A/B 测试**能力。
 
@@ -318,7 +318,7 @@ registry.Emit(&callbacks.Context{
 
 ---
 
-### 6. Experience 包 (`internal/experience/`)
+### 6. Experience 包 (`internal/runtime/ares_evolution/experience`)
 
 用于经验质量强化的**强盗反馈服务（Bandit Feedback Service）**。
 

@@ -1,6 +1,6 @@
 # ares Architecture Deep Dive (VIII): Event System — Append-Only Event Log, Compaction, and the Task Lifecycle (0.3.x)
 
-> 0.3.x update: `internal/taskfabric` now carries a full Task lifecycle event set (created/ready/acquired/started/yielded/checkpointed/preempted/released/completed/failed/expired/stolen). Task Fabric appends every state transition to an in-memory log and, when an `EventStore` is attached, writes to the durable layer so Scheduler/Task/Lease state can be rebuilt across restarts. Note: "events directly drive scheduling" is over-hyped — the scheduler is capability+priority work-stealing scoring, NOT event-driven dispatch where `task.completed → dependent becomes Ready`.
+> 0.3.x update: `internal/fabric/task` now carries a full Task lifecycle event set (created/ready/acquired/started/yielded/checkpointed/preempted/released/completed/failed/expired/stolen). Task Fabric appends every state transition to an in-memory log and, when an `EventStore` is attached, writes to the durable layer so Scheduler/Task/Lease state can be rebuilt across restarts. Note: "events directly drive scheduling" is over-hyped — the scheduler is capability+priority work-stealing scoring, NOT event-driven dispatch where `task.completed → dependent becomes Ready`.
 
 > Agent startup is an event, a task state transition is an event, a tool call is an event, an LLM response is an event, an Agent crash leaves an event too.
 > My idea was: if I record every state change as an append-only record, can I replay what happened after the process dies?
@@ -49,9 +49,9 @@ Core files:
 | `internal/ares_events/trim_store.go` | `TrimAwareStore`: trim old events after compaction |
 | `internal/ares_events/archive_hook.go` | `ArchiveSink`: round archiving hook |
 | `internal/ares_events/tool_events.go` | Unified tool-completion payload keys |
-| `internal/taskfabric/events.go` | Task lifecycle EventType + TaskEvent |
-| `internal/taskfabric/fabric.go` | Event recording / persistence / restore logic |
-| `internal/ares_flight/replay.go` | ReplaySession for step-by-step replay (see series #16) |
+| `internal/fabric/task/events.go` | Task lifecycle EventType + TaskEvent |
+| `internal/fabric/task/fabric.go` | Event recording / persistence / restore logic |
+| `internal/runtime/observability/flight/replay.go` | ReplaySession for step-by-step replay (see series #16) |
 
 ---
 
@@ -258,7 +258,7 @@ If the raw events were trimmed, `CompactableEventStore.Read` falls back: underly
 
 ## 5. Task Fabric: Task Lifecycle Events
 
-`internal/taskfabric/events.go` defines an `EventType` enum **separate** from `ares_events`:
+`internal/fabric/task/events.go` defines an `EventType` enum **separate** from `ares_events`:
 
 ```go
 const (
@@ -296,7 +296,7 @@ stateDiagram-v2
     Done --> [*]
 ```
 
-> This is an **intent-level** "transition → event" sketch, labeled with which events persist. For the exact state set and the functions each transition runs in, defer to the `internal/taskfabric` state machine; this article only asserts the event-side facts (including persist/non-persist).
+> This is an **intent-level** "transition → event" sketch, labeled with which events persist. For the exact state set and the functions each transition runs in, defer to the `internal/fabric/task` state machine; this article only asserts the event-side facts (including persist/non-persist).
 
 ### 5.2 What Persists vs What's Observability-Only
 
@@ -340,7 +340,7 @@ Reason: these are **in-place rewrites** (`SetDependencies` moves one task instea
 
 ### 7.1 ReplaySession
 
-`NewReplaySession(ctx, eventStore, taskID)` in `internal/ares_flight/replay.go` reads a task's stream ascending for step-by-step replay. See series #16 (Flight Recorder) for detail; here I only note its existence and its dependency on the event store.
+`NewReplaySession(ctx, eventStore, taskID)` in `internal/runtime/observability/flight/replay.go` reads a task's stream ascending for step-by-step replay. See series #16 (Flight Recorder) for detail; here I only note its existence and its dependency on the event store.
 
 ### 7.2 Task Fabric Cross-Restart Rebuild
 
@@ -363,7 +363,7 @@ sequenceDiagram
 
 ### 7.3 Relationship to "Agent Resurrection"
 
-Agent resurrection (two-phase recovery, snapshot-first, event-stream fallback) is the subject of **#07** (Runtime / Resurrection): `internal/ares_runtime/recovery.go`'s `RecoverSnapshotOrEvents()` prefers a snapshot then falls back to the event stream, and `event_recovery.go` rebuilds RecoveryState from events. Here the event system is only a **fallback data source** consumed by ares_runtime — a consumer, not a capability of the event system. Don't attribute it to the event layer.
+Agent resurrection (two-phase recovery, snapshot-first, event-stream fallback) is the subject of **#07** (Runtime / Resurrection): `internal/runtime/recovery.go`'s `RecoverSnapshotOrEvents()` prefers a snapshot then falls back to the event stream, and `event_recovery.go` rebuilds RecoveryState from events. Here the event system is only a **fallback data source** consumed by ares_runtime — a consumer, not a capability of the event system. Don't attribute it to the event layer.
 
 ---
 

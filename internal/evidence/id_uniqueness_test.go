@@ -6,7 +6,7 @@ import (
 
 // TestNewEvidenceIDsAreUniqueWithinATick pins V-1.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.4 V-1): NewEvidence
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding V-1): NewEvidence
 // derived its ID from UnixNano alone ("ev_%x"). On a coarse clock, or under
 // enough concurrency, two records created in the same tick produced the SAME
 // ID — and PostgresStore.Append writes with ON CONFLICT (id) DO NOTHING, so the

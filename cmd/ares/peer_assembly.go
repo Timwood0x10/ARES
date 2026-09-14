@@ -579,7 +579,7 @@ func (a *peerAssembly) startLoops() {
 	// Runtime plugin ecosystem closure: the PluginBus hooks the scheduler's
 	// quantum boundary (observer/checkpoint/tool plugins observe every
 	// Schedule→Acquire→RunQuantum). The adapter lives in runtime_bridge.go —
-	// the kernel stays free of any runtime import (§0.3 dependency rule).
+	// the kernel stays free of any runtime import.
 	// The loop knobs are parsed ONCE here and shared with the recovery loop
 	// below (a second parse would waste work and risk drift).
 	kernelLoopCfg := parseKernelLoopConfig(cfg)

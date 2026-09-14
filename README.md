@@ -118,6 +118,32 @@ How it holds together:
 - **Anti-forgery is Kernel-enforced**: an LLM-supplied `tenant_id` in tool arguments, `create_task` payloads or `ask_agent` payloads is overwritten by the executing context's tenant (the same contract `Origin` follows). The system never generates a non-default tenant on its own.
 - **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — the plumbing is ready for that swap; only the source of the value changes. See `SECURITY.md` → Tenancy.
 
+## Stability & Performance
+
+The 0.3.1 hardening cycle closed every known crash and leak class, and committed a performance baseline that future changes must compare against.
+
+**Where the records live:**
+
+- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) — the phase-by-phase stability program: lock-in tests for every fixed defect, a leak program with `goleak` gates on the kernel and workflow-engine packages, HTTP panic guard + request-ID observability, flake attribution, and a soak harness (`SOAK_SECONDS=N go test ./tests/soak/`)
+- [plan/benchmarks/](plan/benchmarks/) — the committed benchmark baseline (38 benchmarks across 7 packages) and the benchstat comparison workflow; any optimization PR must show a before/after comparison
+
+**Why AKG used to crash on simple questions (fixed in 0.3.1).** The retrieval
+service's constructor treats the knowledge-base repository as optional, but
+every query of ≤10 runes unconditionally routes to the precision pipeline,
+which dereferenced it. On any deployment without the knowledge base wired,
+the first short query panicked the handler. The fix fails loudly with a
+configuration error instead of panicking (locked by
+`retrieval_nil_kbrepo_test.go`), and every HTTP handler now runs under a
+panic guard that returns a structured 500 carrying a request ID instead of
+dropping the connection.
+
+**Baseline headline numbers** (Apple M3 Max): scheduler drain ~8µs per task
+(empty tick ~8.5ns), 64-node L2 growth chain ~132ms end-to-end, hybrid
+retrieval over 500 objects ~340ms. See the baseline file for the full set.
+
+Quality gate: `make check` (vet + staticcheck + golangci-lint + tests) must
+stay green on every change.
+
 ## AKG — Knowledge Graph Without LLMs (Experimental)
 
 **⚠️ AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL stage. The API may change; it is not production-ready. Use it for experimentation and feedback.**
@@ -168,7 +194,7 @@ The LLM never participates in extraction or build — it only consumes the retri
 
 > Start from "I want to use capability X" and find the code in one step.
 
-- [Capability–Module Map (English)](docs/CAPABILITY-MAP.en.md)
+- [Capability–Module Map (English)](docs/reference/CAPABILITY-MAP.en.md)
 
 ## CLI
 

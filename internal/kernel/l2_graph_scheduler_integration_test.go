@@ -395,7 +395,7 @@ func TestL2Graph_BurstGrowthConvergesThroughEvents(t *testing.T) {
 // admitSessionRoot compiles the L2 session root (which predates any event
 // subscription) as the admission task. Its completion unblocks every tool
 // node that depends on the root.
-func admitSessionRoot(t *testing.T, ctx context.Context, fabric *taskfabric.Fabric, plan *agentfabric.L2Graph) {
+func admitSessionRoot(t testing.TB, ctx context.Context, fabric *taskfabric.Fabric, plan *agentfabric.L2Graph) {
 	t.Helper()
 	root := plan.DAG().StepIndex()[plan.Root()]
 	require.NotNil(t, root, "L2 plan carries its session root")

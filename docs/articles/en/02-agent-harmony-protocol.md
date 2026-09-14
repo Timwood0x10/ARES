@@ -169,7 +169,7 @@ flowchart LR
 
 `agentipc` also has a layer about "how tasks are dispatched" (`policy.go`), parallel to the communication primitives: `ExecutionPolicy` (`PolicyLegacy` / `PolicyTaskFabric`) and `PolicyFlag` (an `atomic.Int64`, 0=legacy, 1=task fabric, flipped at runtime without restart). `DualTrackDispatcher` holds the legacy and new `Dispatcher` paths and picks the active one by the flag; with shadow mode on, the inactive path also runs and its outcome is compared (`Mismatches()`). That's the "dual-track equivalence" verification surface.
 
-> Note: production today is `PolicyTaskFabric` only — the Leader runtime is removed. `PolicyLegacy` is retained just as a library constant for dual-track/shadow verification. The legacy "AHP five message types / DLQ auto-retry" details are NOT in `internal/agentipc`; the legacy paths live under `internal/ares_protocol/ahp` and `internal/agents/peer` (not expanded here — 待核实).
+> Note: production today is `PolicyTaskFabric` only — the Leader runtime is removed. `PolicyLegacy` is retained just as a library constant for dual-track/shadow verification. The legacy "AHP five message types / DLQ auto-retry" details are NOT in `internal/agentipc`; the legacy paths live under `internal/runtime/protocol/ahp` and `internal/agents/peer` (not expanded here — 待核实).
 
 ## VII. Design Trade-offs (Honest Section)
 

@@ -12,7 +12,7 @@ import (
 
 // TestFindDuplicateRequiresNamespace pins K-1's fail-closed half.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.5 K-1): FindDuplicate
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding K-1): FindDuplicate
 // built its HybridSearchRequest without a Namespace, and every store keys
 // namespace isolation on that field — so the duplicate search scanned every
 // namespace. A caller in namespace A could have an object marked superseded (and

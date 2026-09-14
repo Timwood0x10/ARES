@@ -4,7 +4,7 @@
 - **Severity**: P1 / High
 - **Status**: fixed
 - **Date**: 2026-08-04
-- **Package**: `internal/system_runtime`
+- **Package**: `internal/kernel`
 
 ## Symptom
 

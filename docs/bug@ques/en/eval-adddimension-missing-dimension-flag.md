@@ -4,7 +4,7 @@
 - **Severity**: P2 / Medium
 - **Status**: fixed
 - **Date**: 2026-08-10
-- **Package**: `internal/eval`
+- **Package**: `internal/runtime/eval`
 
 ## Symptom
 

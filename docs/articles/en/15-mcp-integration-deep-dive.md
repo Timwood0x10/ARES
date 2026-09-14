@@ -4,7 +4,7 @@ The old way of giving an Agent a tool went like this: write a Go struct that imp
 
 Then someone asked: "what if our users want to plug in *their own* tools without you writing any code?" The architecture had never considered "tools that come from outside."
 
-This article, like the rest of this series, only talks about what I actually **read in `internal/ares_mcp/` and can show you source for**. Anything that doesn't line up with the code, I cut it or mark it （待核实） — I don't make things up.
+This article, like the rest of this series, only talks about what I actually **read in `internal/mcpclient` and can show you source for**. Anything that doesn't line up with the code, I cut it or mark it （待核实） — I don't make things up.
 
 ## One: The Tool-Registration Problem
 
@@ -75,7 +75,7 @@ sequenceDiagram
     Server-->>Client: {content: [{type:"text", text:"..."}], isError:false}
 ```
 
-In `internal/ares_mcp/jsonrpc.go` the message model looks like this:
+In `internal/runtime/protocol/mcp/jsonrpc.go` the message model looks like this:
 
 ```go
 type JSONRPCMessage struct {
@@ -126,7 +126,7 @@ One detail in `dispatchResponse` is worth mentioning: it delivers the response t
 
 ## Three: Transport layer — two paths, one interface
 
-MCP doesn't care how a message travels — only the JSON-RPC wire format. Moving bytes from A to B is the Transport's job. `internal/ares_mcp/transport.go` defines a 4-method interface:
+MCP doesn't care how a message travels — only the JSON-RPC wire format. Moving bytes from A to B is the Transport's job. `internal/runtime/protocol/mcp/transport.go` defines a 4-method interface:
 
 ```go
 type Transport interface {
@@ -305,7 +305,7 @@ In other words: **discovered services do not currently turn into connected MCP s
 
 ## Five: MCPManager — the lifeline of many servers
 
-A single `MCPClient` connects to one server. Managing connections, tool registration/unregistration, and hot reload across many servers is `MCPManager` (`internal/ares_mcp/manager.go`):
+A single `MCPClient` connects to one server. Managing connections, tool registration/unregistration, and hot reload across many servers is `MCPManager` (`internal/runtime/protocol/mcp/manager.go`):
 
 ```go
 type MCPManager struct {
@@ -366,7 +366,7 @@ The client declares `Tools: ListChanged: true`. When the server sends `notificat
 
 ### 5.3 Skill lazy connect (this one is actually wired)
 
-`internal/ares_skills/catalog.go` declares the `MCPConnector` interface (just `ConnectServer`), and `*ares_mcp.MCPManager` happens to satisfy it:
+`internal/runtime/protocol/skills/catalog.go` declares the `MCPConnector` interface (just `ConnectServer`), and `*ares_mcp.MCPManager` happens to satisfy it:
 
 ```go
 type MCPConnector interface {
@@ -589,7 +589,7 @@ It implements `core.ToolFactory` (with the compile-time assertion `var _ core.To
 
 ## Eleven: The server side — ares can be an MCP server too
 
-So far we've talked about ares as an MCP **client**. But `internal/ares_mcp/server.go` has the other face — ares can host an MCP server and expose its own capabilities to other MCP clients:
+So far we've talked about ares as an MCP **client**. But `internal/runtime/protocol/mcp/server.go` has the other face — ares can host an MCP server and expose its own capabilities to other MCP clients:
 
 ```go
 // internal/ares_mcp/server.go
@@ -609,7 +609,7 @@ type MCPServer struct {
 
 It registers three capability kinds: Tools (`ToolHandler`), Resources (`ResourceHandler`/`ResourceTemplate`), and Prompts (`PromptHandler`). Via the `ServerTransport` in `transport_server.go` it accepts clients over stdio and SSE server transports.
 
-That makes ares both a consumer of the MCP ecosystem (calling others' tools) and a producer (exposing its own). `internal/ares_skills/e2e_mcp_test.go` shows a real case: spawn a stdio subprocess serving an `MCPServer`, then connect to it with `MCPManager`'s stdio transport to exercise the whole "connect → register → call" chain.
+That makes ares both a consumer of the MCP ecosystem (calling others' tools) and a producer (exposing its own). `internal/runtime/protocol/skills/e2e_mcp_test.go` shows a real case: spawn a stdio subprocess serving an `MCPServer`, then connect to it with `MCPManager`'s stdio transport to exercise the whole "connect → register → call" chain.
 
 ---
 
@@ -649,20 +649,20 @@ Key files:
 
 | File | Responsibility |
 |------|----------------|
-| `internal/ares_mcp/client.go` | MCP client: transport I/O, handshake, tool discovery, tool calls, notifications |
-| `internal/ares_mcp/manager.go` | Multi-server management: lifecycle, tool (un)registration, hot reload, status |
-| `internal/ares_mcp/mcp_tool.go` | `MCPTool` adapter: MCP tool → `core.Tool` |
-| `internal/ares_mcp/schema.go` | `ConvertJSONSchema`: JSON Schema → ParameterSchema |
-| `internal/ares_mcp/jsonrpc.go` | JSON-RPC 2.0 message model, encode/decode, classification |
-| `internal/ares_mcp/transport.go` | `Transport` interface (Start/Send/Receive/Close) |
-| `internal/ares_mcp/transport_stdio.go` | Stdio transport: subprocess stdin/stdout |
-| `internal/ares_mcp/transport_sse.go` | SSE transport: HTTP SSE + same-host endpoint check |
-| `internal/ares_mcp/factory.go` | `MCPToolFactory`: factory-created MCP tools |
-| `internal/ares_mcp/server.go` | MCP server: ares as an MCP server |
-| `internal/ares_mcp/types.go` | MCP protocol type definitions |
+| `internal/runtime/protocol/mcp/client.go` | MCP client: transport I/O, handshake, tool discovery, tool calls, notifications |
+| `internal/runtime/protocol/mcp/manager.go` | Multi-server management: lifecycle, tool (un)registration, hot reload, status |
+| `internal/runtime/protocol/mcp/mcp_tool.go` | `MCPTool` adapter: MCP tool → `core.Tool` |
+| `internal/runtime/protocol/mcp/schema.go` | `ConvertJSONSchema`: JSON Schema → ParameterSchema |
+| `internal/runtime/protocol/mcp/jsonrpc.go` | JSON-RPC 2.0 message model, encode/decode, classification |
+| `internal/runtime/protocol/mcp/transport.go` | `Transport` interface (Start/Send/Receive/Close) |
+| `internal/runtime/protocol/mcp/transport_stdio.go` | Stdio transport: subprocess stdin/stdout |
+| `internal/runtime/protocol/mcp/transport_sse.go` | SSE transport: HTTP SSE + same-host endpoint check |
+| `internal/runtime/protocol/mcp/factory.go` | `MCPToolFactory`: factory-created MCP tools |
+| `internal/runtime/protocol/mcp/server.go` | MCP server: ares as an MCP server |
+| `internal/runtime/protocol/mcp/types.go` | MCP protocol type definitions |
 | `internal/ares_bootstrap/provide_mcp.go` | `ProvideMCP`/`SetupMCP`: config → MCPManager |
 | `internal/ares_bootstrap/skills_wiring.go` | `wireSkills`: MCPManager as the skill lazy connector |
-| `internal/ares_skills/catalog.go` | `Catalog`: `SetMCPConnector` / `Activate` lazy connect |
+| `internal/runtime/protocol/skills/catalog.go` | `Catalog`: `SetMCPConnector` / `Activate` lazy connect |
 | `cmd/ares/mcp.go` | `setupMCP`: bridges MCP tools into internalReg + public registry |
 | `cmd/ares/tools.go` | `newToolBinder`: Registry → `sub.ToolBinder` |
 | `internal/discovery/` | Optional discovery engine (not wired to the manager; see notes) |

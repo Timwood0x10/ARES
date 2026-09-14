@@ -9,7 +9,7 @@ import (
 
 // TestPreemptEventIdentifiesThePreemptedHolder pins F-4.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.6 F-4): Preempt
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding F-4): Preempt
 // cleared t.Owner/t.Lease BEFORE calling recordLocked, and recordLocked reads
 // t.Owner for the event's AgentID — so every task.preempted event was anonymous
 // and "who was preempted" was unanswerable from the durable log. Every other

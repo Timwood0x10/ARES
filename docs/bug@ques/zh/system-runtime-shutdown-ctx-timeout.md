@@ -4,7 +4,7 @@
 - **严重度**: P1 / High
 - **状态**: 已修复
 - **日期**: 2026-08-04
-- **涉及包**: `internal/system_runtime`
+- **涉及包**: `internal/kernel`
 
 ## 现象
 

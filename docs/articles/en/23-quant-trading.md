@@ -19,7 +19,7 @@ I grepped the entire repository. The result is unambiguous:
 | Any `market/`, `marketmaking/`, `portfolio/`, `research/`, `indicators/`, `dataflow/`, `store/`, `marketmaking_api/` sub-package | **does not exist** |
 
 If you grep `quant`, the hits are misleadingly unrelated:
-- `internal/taskfabric/quantum.go` and `internal/kernelscheduler/quantum_hook.go` — these are **execution quanta** (a "one execution step" concept in DAG orchestration), nothing to do with trading.
+- `internal/fabric/task/quantum.go` and `internal/kernel/quantum_hook.go` — these are **execution quanta** (a "one execution step" concept in DAG orchestration), nothing to do with trading.
 - The word "quanta" in `docs/25-config-yaml-guide` is the same scheduling concept.
 - `grep position` / `trading` / `strategy` hits resolve to `regex match positions`, `strategy_adapter.go` (an evolution strategy), and `progress` — all unrelated.
 
@@ -40,7 +40,7 @@ But the giveaway is that it's a blueprint, not a snapshot of reality: the interf
 | Interface cited in the doc | Package path (as written) | Reality |
 |----------------------------|---------------------------|---------|
 | `dashboard.AgentRequest` / `orch.CreateAgent()` | `ares/internal/dashboard` | `internal/dashboard` **was deleted** |
-| `graph.NewGraph()` | `ares/internal/workflow/graph` | real DAG lives in `internal/taskfabric` style; path is wrong |
+| `graph.NewGraph()` | `ares/internal/workflow/graph` | real DAG lives in `internal/fabric/task` style; path is wrong |
 | `internal/quant/market/polymarket.go` `FetchMarket` | — | file does not exist |
 | `internal/quant/market/yahoo.go` | — | file does not exist |
 
@@ -48,7 +48,7 @@ The doc also references `plan/quan/quant-implementation-plan.md` — **that plan
 
 ### 2.2 The "unverified（待核实）" entries in `CAPABILITY-MAP` and `ARCHITECTURE`
 
-- `docs/CAPABILITY-MAP.md` / `docs/CAPABILITY-MAP.en.md`:
+- `docs/reference/CAPABILITY-MAP.md` / `docs/reference/CAPABILITY-MAP.en.md`:
   > Quantitative trading | `internal/ares_quant` | Market making, indicators, portfolio management, research
 
   A row that lists `internal/ares_quant`, yet **no such package exists in any code directory.** (待核实: it may describe an removed or never-merged version.)
@@ -72,10 +72,10 @@ To avoid misleading people, let me be precise about which ares capabilities cite
 | ares capability | Real package | Note |
 |-----------------|--------------|------|
 | `EventStore` | `internal/ares_events` | real, `Append/Read/Subscribe` |
-| Arena fault injection | `internal/ares_arena` | real, wired to the Flight Recorder via `FlightBridge` |
-| Memory distillation | `internal/ares_memory` | real |
-| MCP tool registry | `internal/ares_mcp` / `tools` | real |
-| DAG workflows | `internal/taskfabric` | real, includes `quantum.go` (note: execution *quanta*, not trading) |
+| Arena fault injection | `internal/runtime/arena` | real, wired to the Flight Recorder via `FlightBridge` |
+| Memory distillation | `internal/runtime/memory` | real |
+| MCP tool registry | `internal/mcpclient` / `tools` | real |
+| DAG workflows | `internal/fabric/task` | real, includes `quantum.go` (note: execution *quanta*, not trading) |
 
 In other words: **nothing stops you from building a quant research system on ares — the framework's capabilities are all here — but the ares repo itself ships no trading logic.** To use it you'd build from the blueprint in `docs/en/development/quant-trading.md`, not import a ready-made `internal/ares_quant`.
 

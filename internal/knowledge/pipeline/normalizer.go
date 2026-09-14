@@ -147,13 +147,23 @@ func (m *DefaultEntityMatcher) Match(_ context.Context, obj *knowledge.Knowledge
 	if obj == nil || len(candidates) == 0 {
 		return &knowledge.ResolveResult{IsNew: true}, nil
 	}
+	return m.MatchTokens(context.Background(), obj,
+		tokenize(obj.Normalized+" "+obj.Summary), candidates, nil)
+}
+
+// MatchTokens is the tokenize-once fast path (TokenAwareMatcher): candidates'
+// token bags come from the pipeline's per-Process cache, so the O(n²) pair
+// loop allocates nothing. A nil candTokens (direct Match calls) falls back to
+// tokenizing each candidate here, preserving the legacy interface contract.
+func (m *DefaultEntityMatcher) MatchTokens(_ context.Context, obj *knowledge.KnowledgeObject, objTokens map[string]int, candidates []*knowledge.KnowledgeObject, candTokens map[string]map[string]int) (*knowledge.ResolveResult, error) {
+	if obj == nil || len(candidates) == 0 {
+		return &knowledge.ResolveResult{IsNew: true}, nil
+	}
 
 	threshold := m.MatchThreshold
 	if threshold <= 0 {
 		threshold = 0.7
 	}
-
-	objWords := tokenize(obj.Normalized + " " + obj.Summary)
 
 	var bestMatch string
 	var bestScore float64
@@ -162,8 +172,15 @@ func (m *DefaultEntityMatcher) Match(_ context.Context, obj *knowledge.Knowledge
 		if candidate.ID == obj.ID {
 			continue
 		}
-		candWords := tokenize(candidate.Normalized + " " + candidate.Summary)
-		score := jaccardOverlap(objWords, candWords)
+		candWords, cached := candTokens[candidate.ID]
+		if !cached {
+			if candTokens == nil {
+				candWords = tokenize(candidate.Normalized + " " + candidate.Summary)
+			} else {
+				continue // defensive: a cache miss means no tokens to compare
+			}
+		}
+		score := jaccardOverlap(objTokens, candWords)
 		if score > bestScore {
 			bestScore = score
 			bestMatch = candidate.ID

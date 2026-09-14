@@ -13,7 +13,7 @@ The tool system lives in several packages. I split it into five parts:
 
 1. **`tools/toolsource`** — the "tool origin" abstraction. `ToolSource` (`Tools` / `OnChange` / `Source`) plus three implementations: `StaticSource` / `RegistrySource` / `MultiSource`.
 2. **`tools/resources/core`** — the tool meta-model. The `core.Tool` interface, `ToolSchema`, `core.Registry` (including `ValidateParams` and the progressive-disclosure `activeTools`), and the builtin catalog (`builtin/`).
-3. **Runtime discovery & selection** — the `discover_tools` meta-tool (`discover_tool.go`), the three `ToolSelector`s (`selector.go` / `capability_selector.go`), and `agentloop.Engine.expandDiscoveredTools`.
+3. **Runtime discovery & selection** — the `discover_tools` meta-tool (`discover_tool.go`), the three `ToolSelector`s (`selector.go` / `capability_selector.go`), and `(*Agent).resolveTools`（`sdk/discovery.go`；原 `agentloop.Engine.expandDiscoveredTools` 已移除）.
 4. **`tools/planner` + `tools/discovery` + `tools/envcap`** — the capability-planner fallback, native-command discovery, and environment-capability search.
 5. **`agentfabric`** — the executors that actually run tools: the `ToolBinder` interface, the ReAct tool-loop `chatCognition`, and the L2-graph `toolCognition` (parameters travel through the `arg.`-prefixed namespace).
 
@@ -96,7 +96,7 @@ Key points of `core.Registry` (`registry.go`):
 
 ### 2.3 The thing that really runs tools is a ToolBinder, not the Registry
 
-`internal/agentfabric/chat_cognition.go` defines the `ToolBinder` interface (interface-at-the-consumer; both the sub executor and the fabric satisfy it):
+`internal/fabric/agent/executor.go` defines the `ToolBinder` interface (interface-at-the-consumer; both the sub executor and the fabric satisfy it):
 
 ```go
 type ToolBinder interface {
@@ -160,21 +160,34 @@ Execution:
 - `json.Marshal` the result into a JSON **string** (`[]discoverToolEntry`, the compact `{name, description}` shape) placed in `Result.Data` — so the data is valid JSON after `%v` formatting, visible to the LLM and parseable by the expander.
 - Capped at `maxDiscoverResults = 20` to keep context small.
 
-The "expansion" lives in `internal/agentloop/engine.go`. The `agentloop.Engine` does not import `toolsource`; it only depends on a narrow interface `ToolExpander`:
+The "expansion" lives in `sdk/discovery.go`. The ReAct-era
+`internal/agentloop/engine.go` (with its `ToolExpander` interface and
+`Engine.expandDiscoveredTools`) was deleted along with the ReAct engine; the
+current implementation is `sourceExpander`, which does **not** depend on the
+`toolsource` package — it only holds a pre-built `name → rescore.Tool` index:
 
 ```go
-type ToolExpander interface {
-    Expand(ctx context.Context, names []string) ([]core.Tool, error)
+type sourceExpander struct {
+    byName map[string]rescore.Tool
 }
+
+// Expand resolves names into LLM tool defs from the pre-built index.
+// Unknown names are skipped without error.
+func (e *sourceExpander) Expand(_ context.Context, names []string) ([]llmcore.Tool, error)
 ```
 
-In `Engine.executeToolCalls`, when the LLM happened to call `discover_tools` and it succeeded (`err == nil && result.Success`), it runs `expandDiscoveredTools`:
+`(*Agent).resolveTools` (`sdk/discovery.go:42`) takes this expansion path when
+the LLM calls `discover_tools` and the call succeeds:
 
-1. Parse the result as `[]struct{ Name string }` to get names;
-2. Call `req.ToolExpander.Expand(ctx, names)` to get LLM tool definitions;
-3. Dedup by `Function.Name` and append them to `st.activeTools`, available on **subsequent iterations**.
+1. Parse the result to get tool names;
+2. Call `sourceExpander.Expand(ctx, names)` to get LLM tool definitions;
+3. Dedup by `Function.Name` and append them to that run's tool set, available on
+   **subsequent iterations**.
 
-Note: this "automatic append" is **explicitly implemented by the engine** — expansion only happens when the LLM **actively called `discover_tools`** in that round; with a nil `ToolExpander`, expansion is disabled and the meta-tool result is returned to the LLM as text (no new callable tools). So it is not "tools auto-re-expand"; it is "**discovered tool names become callable next round**."
+Note: this "automatic append" is **explicitly implemented** — expansion only
+happens when the LLM **actively called `discover_tools`** in that round. So it is
+not "tools auto-re-expand"; it is "**discovered tool names become callable next
+round**."
 
 ---
 
@@ -483,7 +496,7 @@ Everything I could pin to code is collected in the assertion list below, so you 
 |---|---|---|
 | Tool origins have three implementations | `toolsource/toolsource.go` (`StaticSource`/`RegistrySource`/`MultiSource`) | ✅ verified |
 | discover_tools meta-tool | `toolsource/discover_tool.go`, `DiscoverToolsName="discover_tools"`, `maxDiscoverResults=20` | ✅ verified |
-| Expansion only happens when the LLM actively calls discover_tools | `agentloop/engine.go` `expandDiscoveredTools` / `ToolExpander` | ✅ verified |
+| Expansion only happens when the LLM actively calls discover_tools | `sdk/discovery.go` 的 `sourceExpander.Expand`（原 `agentloop/engine.go` 已移除） | ✅ verified |
 | Three selectors + keyword/capability extraction | `selector.go` / `capability_selector.go` | ✅ verified |
 | Registry.Execute runs ValidateParams | `resources/core/registry.go` | ✅ verified, but not on the agentfabric CallTool path |
 | Full builtin catalog and tags | `builtin/builtin.go` `RegisterGeneralTools` | ✅ verified |

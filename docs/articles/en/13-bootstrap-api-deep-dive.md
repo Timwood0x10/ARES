@@ -1,6 +1,6 @@
 # ares Architecture Deep Dive (XIII): Bootstrap & System Runtime — Wiring as a Readable Sequence (0.3.x)
 
-> 0.3.x update: `internal/ares_bootstrap.Bootstrap` is the single wiring hub. It assembles EventStore, Runtime, Memory, MCP, Skills, LLM, Distillation, AKG, Observability, NewEvolution, FlightRecorder, Evolution, GA, Discovery, and SystemRuntime in a fixed, meaningful order. The System Runtime (`internal/system_runtime.Orchestrator`) runs **Construct → Bind → Start → Ready** on startup in topological order and **Stop → Wait** in reverse topological order on shutdown (bounded by a 30s budget). The entry point is `Bootstrap(ctx, cfg, deps)` — not `New`, and there is no `DefaultConfig()`.
+> 0.3.x update: `internal/ares_bootstrap.Bootstrap` is the single wiring hub. It assembles EventStore, Runtime, Memory, MCP, Skills, LLM, Distillation, AKG, Observability, NewEvolution, FlightRecorder, Evolution, GA, Discovery, and SystemRuntime in a fixed, meaningful order. The System Runtime (`internal/kernel.Orchestrator`) runs **Construct → Bind → Start → Ready** on startup in topological order and **Stop → Wait** in reverse topological order on shutdown (bounded by a 30s budget). The entry point is `Bootstrap(ctx, cfg, deps)` — not `New`, and there is no `DefaultConfig()`.
 
 Every framework hits the moment when the user's first question shifts from "how do I call an LLM?" to "how do I wire all this together?" That's the moment you need a bootstrap.
 

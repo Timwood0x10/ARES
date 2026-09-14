@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -28,6 +29,36 @@ type EntityMatcher interface {
 	// Match tries to match the object to an existing entity.
 	// Returns the matched ID and confidence, or ("", 0, nil) for new entities.
 	Match(ctx context.Context, obj *KnowledgeObject, candidates []*KnowledgeObject) (*ResolveResult, error)
+}
+
+// tokenizeBag splits text into a lowercase word-count bag, matching the
+// DefaultEntityMatcher's token semantics (pipeline/normalizer.go's tokenize).
+// A local variant exists because hybrid.go's tokenize returns a set
+// (map[string]bool); the matcher contract needs counts.
+func tokenizeBag(text string) map[string]int {
+	tokens := make(map[string]int)
+	for _, word := range strings.Fields(strings.ToLower(text)) {
+		if word != "" {
+			tokens[word]++
+		}
+	}
+	return tokens
+}
+
+// TokenAwareMatcher is the tokenize-once fast path for entity matchers.
+// Implementations receive the object's token bag and a cache of candidate
+// token bags (keyed by candidate ID) computed once per Process call, instead
+// of re-tokenizing every candidate inside their own O(n²) pair loop. The
+// legacy Match method remains the fallback for matchers that do not opt in.
+type TokenAwareMatcher interface {
+	EntityMatcher
+
+	// MatchTokens runs the match with pre-computed token bags.
+	// objTokens is tokenizeBag(obj.Normalized + " " + obj.Summary);
+	// candTokens maps candidate ID to the same computation for each
+	// candidate. Bags are read-only shared state — implementations must
+	// not mutate them.
+	MatchTokens(ctx context.Context, obj *KnowledgeObject, objTokens map[string]int, candidates []*KnowledgeObject, candTokens map[string]map[string]int) (*ResolveResult, error)
 }
 
 // ResolveResult is the outcome of entity matching.
@@ -108,6 +139,16 @@ type KnowledgePipeline struct {
 	// half the cap, bounding the snapshot overshoot at 1.5× the cap while
 	// amortizing the rebuild cost.
 	staleEntries int
+
+	// candTokens caches the token bags of the LIVE pool (Phase 6 hot path):
+	// matching is O(n²) pairs and re-tokenizing both sides per pair made N
+	// objects cost O(n²·m) allocations. The cache is maintained
+	// INCREMENTALLY under mu — recordResolved upserts one bag per mutation
+	// and evictions delete one — so it stays consistent with the pool
+	// without any O(pool) rebuild. Guarded by mu; bags are read-only
+	// shared state. A nil cache (before the first mutation) is built
+	// lazily on first read.
+	candTokens map[string]map[string]int
 }
 
 // maxResolvedCandidates caps the entity-matching candidate pool. The pool is
@@ -182,7 +223,33 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 		candidates := p.candidates
 		p.mu.RUnlock()
 
+		// Tokenize-once fast path (Phase 6, hot-path allocation): matching
+		// is O(n²) pairs and each pair used to re-tokenize BOTH sides —
+		// N objects cost O(n²·m) tokenizations, each allocating a fresh map
+		// (pprof: 82% of retriever allocations). Matchers that implement
+		// MatchTokens receive pre-computed bags from a LIFECYCLE cache
+		// (p.candTokens, rebuilt lazily after mutations), so a batch of N
+		// Processes tokenizes each candidate roughly once instead of once
+		// per pair. The legacy Match interface stays for third-party
+		// matchers. Candidates are append-only shallow copies whose
+		// Normalized/Summary are immutable once published (see
+		// recordResolved), so a bag computed at publish time never goes
+		// stale; upserts mark the cache dirty and force a rebuild that
+		// re-reads the superseding copy.
+		var tokenAware []TokenAwareMatcher
+		for _, m := range p.matchers {
+			if tm, ok := m.(TokenAwareMatcher); ok {
+				tokenAware = append(tokenAware, tm)
+			}
+		}
+		if len(tokenAware) > 0 {
+			p.matchTokenAware(ctx, obj, candidates, tokenAware)
+		}
+
 		for _, matcher := range p.matchers {
+			if _, ok := matcher.(TokenAwareMatcher); ok {
+				continue // already handled by the fast path above
+			}
 			result, mErr := matcher.Match(ctx, obj, candidates)
 			if mErr != nil {
 				log.Warn("entity matcher failed (skipping)", "matcher", matcher.Name(), "error", mErr)
@@ -231,6 +298,43 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 	return obj, nil
 }
 
+// matchTokenAware runs the tokenize-once fast path for all TokenAwareMatcher
+// matchers: candidate token bags come from the pipeline's lifecycle cache
+// (incrementally maintained by recordResolved), so the O(n²) pair loop
+// allocates nothing. The read lock is held for the WHOLE match: concurrent
+// Process calls (loadAndProcess streams providers in parallel) run
+// recordResolved's cache writes under the write lock, so a bag map handed
+// out unlocked would race. All work under RLock is pure in-memory
+// computation — no IO, no re-entrant pipeline calls — so holding it only
+// serializes matching against publication, never against execution.
+// Explicit unlock (not defer) for symmetry; this helper never takes the
+// write lock itself.
+func (p *KnowledgePipeline) matchTokenAware(ctx context.Context, obj *KnowledgeObject, candidates []*KnowledgeObject, matchers []TokenAwareMatcher) {
+	objTokens := tokenizeBag(obj.Normalized + " " + obj.Summary)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, tm := range matchers {
+		result, mErr := tm.MatchTokens(ctx, obj, objTokens, candidates, p.candTokens)
+		if mErr != nil {
+			log.Warn("entity matcher failed (skipping)", "matcher", tm.Name(), "error", mErr)
+			continue
+		}
+		if result != nil && !result.IsNew {
+			obj.Confidence = mergeConfidence(obj.Confidence, result.Confidence)
+			for _, val := range p.validators {
+				vResult, vErr := val.Validate(ctx, obj, candidates)
+				if vErr != nil {
+					log.Warn("validator failed (skipping)", "validator", val.Name(), "error", vErr)
+					continue
+				}
+				if vResult != nil {
+					obj.Confidence = vResult.Confidence
+				}
+			}
+		}
+	}
+}
+
 // recordResolved inserts obj into the bounded candidate pool, maintaining the
 // FIFO eviction order and the published candidate snapshot. Caller behavior:
 // inserts are O(1) amortized — the snapshot is appended to in place and only
@@ -264,9 +368,18 @@ func (p *KnowledgePipeline) recordResolved(obj *KnowledgeObject) {
 			evictID := p.resolvedOrder[p.orderHead]
 			p.orderHead++
 			delete(p.resolvedObjects, evictID)
+			delete(p.candTokens, evictID)
 			p.staleEntries++
 		}
 	}
+	// Incremental token-cache maintenance: one bag per mutation keeps the
+	// cache pool-consistent at O(m) cost — no O(pool) rebuilds on the hot
+	// path. Allocated here on first use (a nil cache would otherwise make
+	// every MatchTokens call fall back to per-candidate tokenization).
+	if p.candTokens == nil {
+		p.candTokens = make(map[string]map[string]int, maxResolvedCandidates)
+	}
+	p.candTokens[obj.ID] = tokenizeBag(obj.Normalized + " " + obj.Summary)
 
 	if p.staleEntries > maxResolvedCandidates/2 {
 		p.compactCandidatesLocked()

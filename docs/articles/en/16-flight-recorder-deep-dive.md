@@ -743,7 +743,7 @@ Six endpoints, strictly read-only (nothing here mutates the recorder). They sit 
 
 ### 11.2 FlightBridge — Arena's probe
 
-Real code is in `internal/ares_arena/integration.go`; the signature differs from the old draft (takes `Action, Result`, not pointers):
+Real code is in `internal/runtime/arena/integration.go`; the signature differs from the old draft (takes `Action, Result`, not pointers):
 
 ```go
 type FlightBridge struct { recorder *flight.FlightRecorder }
@@ -789,7 +789,7 @@ The **real `arenaActionToCategory` mapping** (again, unlike the fabricated table
 
 ### 11.3 FlightToExperienceAdapter — failure is the best teacher
 
-Real code in `internal/ares_evolution/adapter.go`; the old draft's high-level story (learn only from final failures) holds:
+Real code in `internal/runtime/ares_evolution/adapter.go`; the old draft's high-level story (learn only from final failures) holds:
 
 ```go
 ch, err := subscriber.Subscribe(ctx, ares_events.EventFilter{
@@ -878,19 +878,19 @@ It records: each LLM call's start/end, tool calls, decisions, memory-distillatio
 
 | File | Responsibility | Core symbols |
 |------|----------------|--------------|
-| `internal/ares_flight/recorder.go` | Facade | idempotent lifecycle, genealogy auto-build, `Replay` |
-| `internal/ares_flight/collector.go` | Router + evidence export | `processEvent`, 4 evidence Sources, `payloadInt` |
-| `internal/ares_flight/timeline.go` | Timeline | 11 EventTypes, `pairStartOf`, ring cap 300 |
-| `internal/ares_flight/diagnostics.go` | Diagnostics | 8 categories, `ClassifyError`, `SuggestFix`, `AutoDiagnose` |
-| `internal/ares_flight/decision.go` | DecisionLog | 5 DecisionTypes, ring cap 200 |
-| `internal/ares_flight/pipeline.go` | Memory pipeline | `PipelineStage`, `CompressionRatio`, ring cap 50 |
-| `internal/ares_flight/replay.go` | Replay | `currentIdx=-1`, `Step/StepTo/Current/Summary/Reset` |
-| `internal/ares_flight/graph.go` | Call tree | `pendingChildren`, cycle guard, Mermaid/DOT/JSON |
-| `internal/ares_flight/genealogy.go` | Family tree | `LineageNode` + `Relation`, record-* methods |
-| `internal/ares_flight/genealogy_collector.go` | Lineage subscriber | failover branch (resurrection vs promotion) |
-| `internal/ares_flight/log.go` | Logging | `var log = logger.Module("flight")` |
-| `internal/ares_arena/integration.go` | FlightBridge | real `arenaActionToCategory` |
-| `internal/ares_evolution/adapter.go` | FlightToExperience | severity≥3 filter + `severityToScore` |
+| `internal/runtime/observability/flight/recorder.go` | Facade | idempotent lifecycle, genealogy auto-build, `Replay` |
+| `internal/runtime/observability/flight/collector.go` | Router + evidence export | `processEvent`, 4 evidence Sources, `payloadInt` |
+| `internal/runtime/observability/flight/timeline.go` | Timeline | 11 EventTypes, `pairStartOf`, ring cap 300 |
+| `internal/runtime/observability/flight/diagnostics.go` | Diagnostics | 8 categories, `ClassifyError`, `SuggestFix`, `AutoDiagnose` |
+| `internal/runtime/observability/flight/decision.go` | DecisionLog | 5 DecisionTypes, ring cap 200 |
+| `internal/runtime/observability/flight/pipeline.go` | Memory pipeline | `PipelineStage`, `CompressionRatio`, ring cap 50 |
+| `internal/runtime/observability/flight/replay.go` | Replay | `currentIdx=-1`, `Step/StepTo/Current/Summary/Reset` |
+| `internal/runtime/observability/flight/graph.go` | Call tree | `pendingChildren`, cycle guard, Mermaid/DOT/JSON |
+| `internal/runtime/observability/flight/genealogy.go` | Family tree | `LineageNode` + `Relation`, record-* methods |
+| `internal/runtime/observability/flight/genealogy_collector.go` | Lineage subscriber | failover branch (resurrection vs promotion) |
+| `internal/runtime/observability/flight/log.go` | Logging | `var log = logger.Module("flight")` |
+| `internal/runtime/arena/integration.go` | FlightBridge | real `arenaActionToCategory` |
+| `internal/runtime/ares_evolution/adapter.go` | FlightToExperience | severity≥3 filter + `severityToScore` |
 | `internal/ares_bootstrap/provide_wiring.go` | Wrappers | `categorizeSeverity` (default=5) |
 | `internal/introspect/flight.go` | `/api/flight/*` read-only | `FlightProvider` + `flightRecorderAdapter` |
 

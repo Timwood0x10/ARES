@@ -164,7 +164,7 @@ ARES 的工作流能力分属两个包：
 
 ARES 的对等协作使用 `agentipc.Bus` —— 真实进程内消息总线，提供 Send/Request/Reply/Delegate/Handoff/Subscribe 原语。agent 之间通过直接 IPC 消息通信，不经过编排器。该路径已接入生产 serve。
 
-遗留的 AHP（Agent Heartbeat Protocol）位于 `internal/ares_protocol/ahp`，目前仅用于演化 IPC 桥接，不参与生产调度。AHP 的心跳和 DLQ（死信队列）已实现但**未接入生产**——DLQ 在生产代码中零调用点。
+遗留的 AHP（Agent Heartbeat Protocol）位于 `internal/runtime/protocol/ahp`，目前仅用于演化 IPC 桥接，不参与生产调度。AHP 的心跳和 DLQ（死信队列）已实现但**未接入生产**——DLQ 在生产代码中零调用点。
 
 ---
 
@@ -213,7 +213,7 @@ ARES 使用应用层 tenantID 谓词（每个 `KnowledgeRepository.*`、`Experie
 
 - **FailoverClient**：ARES 有多提供商 LLM failover 客户端，带冷却式熔断。某个提供商报错（如 429 限流）后被冷却，尝试下一个。该机制已接入生产 `ares serve`。
 - **熔断器**：`internal/storage/postgres/circuit_breaker.go` 是 PostgreSQL 检索保护专用熔断器，不是通用机制。
-- **DLQ**：AHP 死信队列在 `internal/ares_protocol/ahp/dlq.go` 实现，但除 AHP 包自身外生产代码零调用点。
+- **DLQ**：AHP 死信队列在 `internal/runtime/protocol/ahp/dlq.go` 实现，但除 AHP 包自身外生产代码零调用点。
 - **混沌工程**：`internal/runtime/arena` 提供故障注入原语（KillAgent / KillOrchestrator / NetworkPartition / RemoveNode / RemoveEdge / Pause / Resume / SlowAgent / ToolTimeout / CorruptMemory / DisconnectMCP / InjectLLMFailure）和生存/场景模式。`cmd/ares/serve_arena.go` 入口接入 serve 二进制。
 - **混沌隔离**（v0.3.1）：影子沙箱模式（scratch fabric，零生产影响）+ 实时模式六道护栏（限流、冷却、fail-safe 闩锁、GA 静默窗口、目标白名单、急停）。已接入 `ares serve`。
 

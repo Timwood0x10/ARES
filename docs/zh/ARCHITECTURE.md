@@ -281,20 +281,20 @@ graph TB
 | `api/service` | 接口 | 服务层，编排各模块的业务逻辑 |
 | `api/core` | 接口 | 核心接口定义（Agent/Runtime/Workflow/Memory/LLM 等） |
 | `api/bootstrap` | 装配 | 一键启动所有模块的工厂函数 |
-| `internal/ares_runtime` | 运行时 | Runtime Manager、PluginBus、Checkpoint、Lifecycle |
+| `internal/runtime` | 运行时 | Runtime Manager、PluginBus、Checkpoint、Lifecycle |
 | `internal/agents` | 运行时 | Leader/Sub Agent 实现、Strategy 管理 |
-| `internal/workflow` | 运行是 | MutableDAG、DynamicExecutor、GraphPatchExecutor、HITL |
-| `internal/ares_evolution` | 进化 | GA 种群、NSGA-II、稳态GA、Crossover、Mutation、DreamCycle |
-| `internal/evolution` | 进化 | 6 Genomes、4 Differs、Coordinator、Patch 运行时进化管线 |
+| `internal/fabric/task/workflow` | 运行是 | MutableDAG、DynamicExecutor、GraphPatchExecutor、HITL |
+| `internal/runtime/ares_evolution` | 进化 | GA 种群、NSGA-II、稳态GA、Crossover、Mutation、DreamCycle |
+| `internal/runtime/evolution` | 进化 | 6 Genomes、4 Differs、Coordinator、Patch 运行时进化管线 |
 | `internal/evidence` | 进化 | Evidence 数据原语，驱动进化决策 |
 | `internal/knowledge` | 知识 | AKF 全链路：Runtime/Compiler/Linker/Provider/Retriever/Store |
-| `internal/ares_memory` | 记忆 | Session、Distillation、Embedding、MemoryPatcher |
-| `internal/ares_experience` | 记忆 | 经验反馈、排序、冲突解决 |
+| `internal/runtime/memory` | 记忆 | Session、Distillation、Embedding、MemoryPatcher |
+| `internal/runtime/memory/experience` | 记忆 | 经验反馈、排序、冲突解决 |
 | `internal/ares_events` | 事件 | EventStore、OCC、Compactor、MemStore/PGStore |
-| `internal/ares_mcp` | 通信 | MCP Client/Server、Stdio/SSE 传输、JSON-RPC |
-| `internal/ares_arena` | 混沌 | 故障注入、场景编排、弹性评分、回归测试 |
-| `internal/ares_flight` | 可观测 | 执行跟踪、Agent 谱系、诊断、回放 |
-| `internal/monitoring` | 可观测 | 控制台 SPA、多 Tab 面板、SSE 流式更新 |
+| `internal/mcpclient` | 通信 | MCP Client/Server、Stdio/SSE 传输、JSON-RPC |
+| `internal/runtime/arena` | 混沌 | 故障注入、场景编排、弹性评分、回归测试 |
+| `internal/runtime/observability/flight` | 可观测 | 执行跟踪、Agent 谱系、诊断、回放 |
+| `internal/runtime/observability` | 可观测 | 控制台 SPA、多 Tab 面板、SSE 流式更新 |
 | `internal/ares_quant` | 量化 | 投资组合模拟、市场数据、研究记忆 |
 | `internal/storage` | 存储 | PostgreSQL 连接池、查询、模型、仓库 |
 | `internal/ares_shutdown` | 基础设施 | 优雅关闭、信号处理、阶段管理 |
@@ -305,15 +305,15 @@ graph TB
 | `internal/ares_config` | 配置 | YAML/Env 配置加载与验证 |
 | `internal/logger` | 基础设施 | 结构化日志（Debug/Info/Warn/Error） |
 | `internal/errors` | 基础设施 | 错误包装与追踪链 |
-| `internal/ares_protocol/ahp` | 协议 | AHP 协议：Heartbeat/Queue/DLQ/Codec |
+| `internal/runtime/protocol/ahp` | 协议 | AHP 协议：Heartbeat/Queue/DLQ/Codec |
 | `internal/evidence` | 数据 | Evidence 数据结构与存储 |
 | `internal/ares_callbacks` | 运行时 | 事件回调机制 |
 | ~~`internal/ares_ctxutil`~~ | 工具 | 已并入 `internal/runtime`（D3，2026-09-10） |
 | `internal/truncate` | 工具 | 内容截断公用逻辑 |
 | `internal/plugins` | 运行时 | 插件（Resurrection） |
-| `internal/ares_observability` | 可观测 | 可观测性基础设施 |
-| `internal/ares_eval` | 评估 | Agent 评估框架 |
-| `internal/ares_flight` | 可观测 | 飞行记录器 |
+| `internal/runtime/observability` | 可观测 | 可观测性基础设施 |
+| `internal/runtime/eval` | 评估 | Agent 评估框架 |
+| `internal/runtime/observability/flight` | 可观测 | 飞行记录器 |
 | ~~`internal/ares_integration`~~ | 测试 | 已迁 `tests/integration/`（D1，2026-09-10） |
 | `internal/llm` | LLM | LLM 客户端、Provider、Failover、Output 解析 |
 | `internal/llmservice` | LLM | LLM 服务封装 |

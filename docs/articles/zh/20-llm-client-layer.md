@@ -136,7 +136,7 @@ ch, err := client.GenerateStream(attemptCtx, prompt)
 
 DeepSeek thinking-mode 响应里有个独立的 `reasoning_content` 字段，和 `content` 分开。ares 早期的解析直接丢掉了它。
 
-> 位置校正：旧文写的是在 `internal/core/models/message.go` 的 `Message`/`AssistantMsg` 上。**不准确**——这个字段存活在 `internal/llm/output` 包里：`output/openai.go` 的 `Message`（带 `reasoning_content` JSON tag）解析后，通过 `parseToolCallsFromResponse` 灌进 `output/toolcall.go` 的 `AssistantMsg.ReasoningContent`，再用 `AssistantMsg.toMap()` 原样写回请求（多轮工具调用时思考链能往返）：
+> 位置校正：旧文写的是在 `internal/llmcore/llm.go` 的 `Message`/`AssistantMsg` 上。**不准确**——这个字段存活在 `internal/llm/output` 包里：`output/openai.go` 的 `Message`（带 `reasoning_content` JSON tag）解析后，通过 `parseToolCallsFromResponse` 灌进 `output/toolcall.go` 的 `AssistantMsg.ReasoningContent`，再用 `AssistantMsg.toMap()` 原样写回请求（多轮工具调用时思考链能往返）：
 
 ```go
 // internal/llm/output/toolcall.go

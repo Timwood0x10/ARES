@@ -25,7 +25,7 @@ import (
 // kernelHandle carries the assembled kernel from agent construction to the
 // serve wiring.
 //
-// The Kernel pillars (ares-runtime.md §13) are assembled here:
+// The Kernel pillars (ares-runtime.md) are assembled here:
 //   - fabric:   Scheduler pillar (taskfabric: Create/Schedule/Acquire/RunQuantum)
 //   - agents:   Lifecycle pillar (agentfabric: spawn/suspend/resume/retire/kill)
 //   - recovery: Lifecycle recovery surface (aresrecovery: lease-expiry requeue /

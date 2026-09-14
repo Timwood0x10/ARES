@@ -11,7 +11,7 @@ import (
 // TestVectorCollectionDDLCarriesTenantID locks the tenant_id column into the
 // ad-hoc collection DDL produced by the production builder.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.3 S-4): CreateCollection
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding S-4): CreateCollection
 // created a table without tenant_id while Search ran `WHERE tenant_id = $3`, so
 // every search of a collection created through this API failed with
 // `column "tenant_id" does not exist`. knowledge/provider/vector calls

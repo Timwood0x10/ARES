@@ -48,7 +48,7 @@
 
 ### 2.2 `CAPABILITY-MAP` 与 `ARCHITECTURE` 里的"待核实"条目
 
-- `docs/CAPABILITY-MAP.md` / `docs/CAPABILITY-MAP.en.md`：
+- `docs/reference/CAPABILITY-MAP.md` / `docs/reference/CAPABILITY-MAP.en.md`：
   > 量化交易 | `internal/ares_quant` | 做市、指标、组合管理、研究
   
   这行白纸黑字列了个 `internal/ares_quant`，但**没有任何代码包里存在这个包**。（待核实：它可能描述的是一个已删除或从未合并的版本。）

@@ -228,7 +228,7 @@ func TestTenantIsolation_ConversationDelete(t *testing.T) {
 // TestTenantIsolation_ConversationGetByID verifies the read path enforces
 // tenant ownership too.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.3 S-1): GetByID used
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding S-1): GetByID used
 // to look a conversation up by UUID alone, so tenant B could read tenant A's
 // message if it knew the id.
 func TestTenantIsolation_ConversationGetByID(t *testing.T) {

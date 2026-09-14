@@ -1,8 +1,8 @@
 # ares Architecture Deep Dive (XXVIII): Skills Discovery — A Capability Catalog That Never Scans the Disk (0.3.x)
 
-> 0.3.x update: Skills discovery has landed as the **Capability Fabric** in `internal/ares_skills` — the framework-native skill discovery, indexing, and loading system. The `Catalog` facade plus `SourceManager` aggregates four declared source kinds (project / user / registered / experience, where registered itself falls into directory, git, and http-oci). `CatalogTools` exposes a quintet of catalog tools (skill_search/load/activate/list/experience). `ExperienceConfidenceSource` adapts the learned prior into a `taskfabric.ConfidenceSource` and feeds it into the Kernel Scheduler's fabric.
+> 0.3.x update: Skills discovery has landed as the **Capability Fabric** in `internal/runtime/protocol/skills` — the framework-native skill discovery, indexing, and loading system. The `Catalog` facade plus `SourceManager` aggregates four declared source kinds (project / user / registered / experience, where registered itself falls into directory, git, and http-oci). `CatalogTools` exposes a quintet of catalog tools (skill_search/load/activate/list/experience). `ExperienceConfidenceSource` adapts the learned prior into a `taskfabric.ConfidenceSource` and feeds it into the Kernel Scheduler's fabric.
 
-> Note: This article is grounded in the actual code (all of `internal/ares_skills`: source.go / indexer.go / discovery.go / resolver.go / loader.go / experience.go / experience_store.go / experience_confidence.go / git_source.go / http_source.go / changes.go / config.go / tools.go / types.go / fts5.go / catalog.go) — the dedicated Capability-Fabric discovery-chain article in the docs series.
+> Note: This article is grounded in the actual code (all of `internal/runtime/protocol/skills`: source.go / indexer.go / discovery.go / resolver.go / loader.go / experience.go / experience_store.go / experience_confidence.go / git_source.go / http_source.go / changes.go / config.go / tools.go / types.go / fts5.go / catalog.go) — the dedicated Capability-Fabric discovery-chain article in the docs series.
 
 ## 1. Skills Discovery: From "Searching" to "Declaring"
 
@@ -26,7 +26,7 @@ graph TB
 
 ## 2. SourceManager: Only Declared Sources
 
-`SourceManager` in `internal/ares_skills/source.go` never scans the whole disk or PATH — it only enumerates explicitly declared directory roots, and `SkillDirs` reads exactly **one level** below each root and requires `hasDeclaredMarker` (a `SKILL.md` or `skill.yaml` present) to count a directory as a skill. **Declaration validation, never deep recursive scanning**; a declared-but-absent root yields an empty set, not an error.
+`SourceManager` in `internal/runtime/protocol/skills/source.go` never scans the whole disk or PATH — it only enumerates explicitly declared directory roots, and `SkillDirs` reads exactly **one level** below each root and requires `hasDeclaredMarker` (a `SKILL.md` or `skill.yaml` present) to count a directory as a skill. **Declaration validation, never deep recursive scanning**; a declared-but-absent root yields an empty set, not an error.
 
 The four `SourceKind` values (`types.go`):
 
@@ -71,7 +71,7 @@ func (s *SourceManager) SkillDirs(source SourceDir) ([]string, error) {
 
 ## 3. Indexer: Metadata Only, Never the Body
 
-`Indexer.Index` in `internal/ares_skills/indexer.go` walks the declared sources and produces one `SkillIndexEntry` (`types.go`, Level-0 of progressive disclosure):
+`Indexer.Index` in `internal/runtime/protocol/skills/indexer.go` walks the declared sources and produces one `SkillIndexEntry` (`types.go`, Level-0 of progressive disclosure):
 
 ```go
 // SkillIndexEntry is the metadata-only index record (Level 0 of progressive
@@ -97,7 +97,7 @@ type SkillIndexEntry struct {
 
 ## 4. Discovery: Keyword Matching + FTS5 Fallback
 
-`Discovery` in `internal/ares_skills/discovery.go` touches only Level-0 metadata:
+`Discovery` in `internal/runtime/protocol/skills/discovery.go` touches only Level-0 metadata:
 
 - **Keyword matching** (`keywordSearch`): `splitTerms` lower-cases + whitespace-splits → `matchScore` counts hits across ID/name/keywords/capabilities/description → ranked by hit count desc + ID asc (deterministic).
 - **FTS5 full-text search** (`fts5.go`): `NewFTS5Index` builds an in-memory SQLite FTS5 virtual table (`modernc.org/sqlite`, CGO-free) over id/name/description/keywords, ordered by `ORDER BY rank`, mapping FTS rowid back to the entry slice index.
@@ -130,7 +130,7 @@ Trust tiers (`trustForSource`): `SourceProject`/`SourceUser` → `TrustAllowed`,
 
 ## 6. Experience: The Learned Source Doesn't "Generate" Skills
 
-`Experience` in `internal/ares_skills/experience.go` records `{skill, task_pattern, success_rate}` relevance **priors** (`types.go`):
+`Experience` in `internal/runtime/protocol/skills/experience.go` records `{skill, task_pattern, success_rate}` relevance **priors** (`types.go`):
 
 ```go
 type ExperienceRecord struct {
@@ -158,7 +158,7 @@ graph LR
 
 ## 7. Catalog Facade: One Wrapper for the Whole Chain
 
-`Catalog` in `internal/ares_skills/catalog.go` composes all components:
+`Catalog` in `internal/runtime/protocol/skills/catalog.go` composes all components:
 
 ```go
 func (c *Catalog) Build() error          // index all declared sources (git synced first, http manifests fetched)
@@ -235,7 +235,7 @@ graph TB
 
 ### 9.1 Benchmarks & Verification (no fabricated numbers)
 
-`internal/ares_skills/benchmark_test.go` defines 100-skill scenarios and assertions, **but the code contains no concrete ms/µs measurements** (those are environment-dependent; the raw figures in the earlier draft are not code constants and are deliberately dropped):
+`internal/runtime/protocol/skills/benchmark_test.go` defines 100-skill scenarios and assertions, **but the code contains no concrete ms/µs measurements** (those are environment-dependent; the raw figures in the earlier draft are not code constants and are deliberately dropped):
 
 | Benchmark / test | What it measures | Assertion in code |
 |------|------|------|

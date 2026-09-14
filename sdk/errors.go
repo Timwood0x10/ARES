@@ -13,7 +13,7 @@ import (
 // The approval hook has no interception point on the shared L2 execution path,
 // so it cannot be honoured. Refusing the run is the only honest option: an
 // ignored hook leaves the caller believing a destructive-tool gate is in force
-// (see docs/reviews/0.3.1-final-deep-review.md §5.2 E-2).
+// (see docs/reviews/0.3.1-final-deep-review.md finding E-2).
 var ErrHumanInputUnsupported = errors.New("sdk: WithHumanInput is not supported on the L2 execution path")
 
 // FriendlyErr wraps an LLM error with an actionable hint based on the

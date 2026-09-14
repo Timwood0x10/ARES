@@ -1,5 +1,7 @@
 # ares for Quant — 量化交易开发指南
 
+> **⚠ 过时声明（2026-09-13，v0.3.1）**：本文描述的 `internal/quant/`、`internal/ares_quant/` 模块与 `ares api.StartService()` 门面**在仓库中并不存在**——量化交易从未落地实现。本文保留作"本该如何设计"的方案参考，**不要按此路径找代码**。详见 [`articles/en/23-quant-trading.md`](../articles/en/23-quant-trading.md)（专文说明该模块不存在）与仓库根 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)。
+>
 > 本文档说明如何在 ares 框架上构建 TradingAgents 级别的量化多 Agent 系统。
 > 覆盖架构设计、目录结构、ares 接口使用、代码量预估。
 

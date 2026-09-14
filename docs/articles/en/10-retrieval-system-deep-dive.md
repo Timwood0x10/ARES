@@ -5,7 +5,7 @@
 > I realized back then: an agent's memory isn't about whether it has memory — it's about whether it can retrieve the right one.
 > An agent without retrieval is a goldfish: 7-second memory, forever reinventing the wheel.
 
-> Note: this article is based on real code (the full retrieval pipeline under `internal/storage/postgres/services`, the vector/keyword repository layer under `internal/storage/postgres/repositories`, the RAG recall in `internal/ares_memory/context/memory_retriever.go`, the experience ranking in `internal/ares_experience/ranking_service.go`, and FTS5/keyword search in `internal/ares_skills`). Every symbol and every flow below is something I actually read in this codebase. Anything that is "configured but not actually wired" or that I'm not sure about is marked （待核实） — I won't oversell it.
+> Note: this article is based on real code (the full retrieval pipeline under `internal/storage/postgres/services`, the vector/keyword repository layer under `internal/storage/postgres/repositories`, the RAG recall in `internal/runtime/memory/context/memory_retriever.go`, the experience ranking in `internal/runtime/memory/experience/ranking_service.go`, and FTS5/keyword search in `internal/runtime/protocol/skills`). Every symbol and every flow below is something I actually read in this codebase. Anything that is "configured but not actually wired" or that I'm not sure about is marked （待核实） — I won't oversell it.
 
 ---
 
@@ -24,7 +24,7 @@ Retrieval has a plain goal: pull genuinely useful context into the LLM at the ri
 The previous version of this article claimed that "the hybrid `RetrievalService` was written but never wired (the `advancedRetrieval` field is forever nil in the API layer), and only a pure-vector `SimpleRetrievalService` is in use." After actually reading the code, **that claim is backwards.** Correction:
 
 - **There is no `api/retrieval/service.go`**. The packages in the `api/` tree (`api/embedding`, `api/experience`, `api/knowledge`, `api/discovery` etc.) are now deprecated forwarding layers over their `internal/` counterparts (M5 internalization: `api/embedding`→`internal/embedding`, etc.) — **there is still no retrieval package**. Both retrieval services live under `internal/storage/postgres/services/`.
-- **The service actually wired into production is `RetrievalService`, not `SimpleRetrievalService`**. `internal/ares_memory/production_manager.go` constructs it via `services.NewRetrievalService(...)`, and `internal/ares_memory/production_manager_tasks.go` calls `retrievalService.Search(...)` in `ProductionMemoryManager.SearchSimilarTasks(ctx, query, limit)` at real runtime.
+- **The service actually wired into production is `RetrievalService`, not `SimpleRetrievalService`**. `internal/runtime/memory/production_manager.go` constructs it via `services.NewRetrievalService(...)`, and `internal/runtime/memory/manager_impl.go` calls `retrievalService.Search(...)` in `ProductionMemoryManager.SearchSimilarTasks(ctx, query, limit)` at real runtime.
 - **`SimpleRetrievalService` is the one that is defined but never called by any non-test code.** Grepping `NewSimpleRetrievalService` across the repo only finds its own definition file — no callers. （待核实: I found no production wiring for it.)
 - There is also a separate, genuinely wired **RAG vector-recall path**: `internal/ares_bootstrap/retriever_wiring.go`'s `wireRetrievers` injects a `MemoryRetriever` (vector search over distilled experiences) and a `KnowledgeRetriever` (hybrid search over AKG facts) into the MemoryManager, triggered through `manager_rag.go`'s `runRetrieval` when `EnableRAG=true`.
 
@@ -209,7 +209,7 @@ Dedup `deduplicateResults`: merge by `ID`, and on repeat hit `existing.Score += 
 
 For "find related memory", there are two code paths:
 
-### 7.1 RankingService (`internal/ares_experience/ranking_service.go`)
+### 7.1 RankingService (`internal/runtime/memory/experience/ranking_service.go`)
 `Rank` takes a batch of `*Experience` plus matching `baseScores` (semantic scores) and returns them sorted by FinalScore descending:
 
 ```
@@ -226,7 +226,7 @@ Configured weights: `UsageWeight=0.05`, `RecencyWeight=0.05`, `RecencyDays=30` (
 
 Inside `RetrievalService.Search`, `applyExperienceRanking` (`retrieval_search.go`) calls `rankingService.Rank`, then uses `conflictResolver.Resolve` for conflict groups, then writes `FinalScore` back onto `exp.Score` so the ranked score propagates to results — the code comment explicitly warns: without writing it back, rerank would re-sort on near-zero raw scores and `filterByScore` would drop experience results whenever `MinScore>0`, so the ranking feature would never surface its scores.
 
-### 7.2 MemoryRetriever (RAG, `internal/ares_memory/context/memory_retriever.go`)
+### 7.2 MemoryRetriever (RAG, `internal/runtime/memory/context/memory_retriever.go`)
 This is the context-augmentation path: `Retrieve(input, topK)`:
 1. Empty input short-circuits to empty
 2. `topK<=0` → `DefaultTopK=5`
@@ -263,7 +263,7 @@ sequenceDiagram
 
 ## 8. Skills Retrieval: Discovery Keyword + FTS5 (Another "Find Something" Chain)
 
-Retrieval isn't only vectors. Skill/capability discovery is a pure-text affair (see the Capability Fabric in article 28 of this series); here I align only the two real retrieval primitives (`internal/ares_skills`):
+Retrieval isn't only vectors. Skill/capability discovery is a pure-text affair (see the Capability Fabric in article 28 of this series); here I align only the two real retrieval primitives (`internal/runtime/protocol/skills`):
 
 **1. Keyword scoring (`discovery.go` `keywordSearch` + `matchScore`)**
 - `splitTerms` lower-cases, whitespace-splits, strips punctuation, dedupes

@@ -4,7 +4,7 @@ import "testing"
 
 // TestGradualDeclineGateUsesThreshold pins G-5.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.9 G-5):
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding G-5):
 // isGradualDeclineLocked only asked "did the recent half decline monotonically,
 // at least twice?" — it never consulted degradationThreshold. Two 0.001 wobbles
 // therefore satisfied it and triggered a rollback, so the configured threshold

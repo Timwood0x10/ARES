@@ -421,7 +421,7 @@ func assertSynthesis(t *testing.T, f *holyGrailFixture, wantB, wantC string) str
 //	  → kill B → B' recovery → converge
 //
 // The synthesis assertion: changing the child's output changes the final
-// result (§10.4).
+// result.
 func TestE2E_HolyGrail(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -486,7 +486,7 @@ func TestE2E_HolyGrail(t *testing.T) {
 
 	synthesis2 := assertSynthesis(t, f, outB2, outC2)
 	if synthesis == synthesis2 {
-		t.Fatalf("synthesis must change when child output changes (§10.4): got %q both times", synthesis)
+		t.Fatalf("synthesis must change when child output changes: got %q both times", synthesis)
 	}
 
 	// ── 11. Event stream assertions ──
@@ -511,5 +511,5 @@ func TestE2E_HolyGrail(t *testing.T) {
 	}
 
 	t.Logf("Holy Grail PASS: Submit→spawn→schedule→IPC synthesis (child-driven)→" +
-		"kill→recovery→converge; synthesis tracks child output (§10.4)")
+		"kill→recovery→converge; synthesis tracks child output")
 }

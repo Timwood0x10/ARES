@@ -1,7 +1,7 @@
 # ARES Evolution Intelligence Layer API
 
 **Version**: v0.3.1 (updated 2026-09-13)  
-**Package**: `github.com/Timwood0x10/ares/internal/runtime/ares_evolution/genome`（原 `internal/ares_evolution`，已迁移）
+**Package**: `github.com/Timwood0x10/ares/internal/runtime/ares_evolution/genome`（原 `internal/runtime/ares_evolution`，已迁移）
 
 > **路径更新说明**：v0.3.x 包重组后，本文所述组件位于 `internal/runtime/ares_evolution/` 与 `internal/runtime/evolution/`（补丁引擎）。接口细节以源码为准，本文作为设计参考保留。
 
@@ -446,8 +446,8 @@ if pop.StagnantGenerations() > 20 {
 
 ## References
 
-- [GA Benchmark Report](../benchmarks/ga_benchmark_report.md)
-- [Autonomous Evolution Guide](en/features/autonomous-evolution.md)
+- [GA Benchmark Report](../../benchmarks/ga_benchmark_report.md)
+- [Autonomous Evolution Guide](../en/features/autonomous-evolution.md)
 
 ---
 

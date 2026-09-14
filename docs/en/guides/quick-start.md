@@ -297,13 +297,13 @@ llm:
 
 ## Next Steps
 
-- Read [Architecture Documentation](arch.md) to understand system design
-- Read [Integration Guide](integration_guide_en.md) to learn how to integrate into existing projects
+- Read [Architecture Documentation](../architecture/arch.md) to understand system design
+- Read [Integration Guide](../development/integration-guide.md) to learn how to integrate into existing projects
 - Check [Example Code](../examples/) to learn more usage
 
 ## Get Help
 
-- Check [FAQ](faq_en.md)
+- Check [FAQ](faq.md)
 - Submit [Issue](https://github.com/Timwood0x10/ares/issues)
 
 ---

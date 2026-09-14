@@ -283,7 +283,7 @@ recordOutcomes(反馈闭环) → 后置守卫 → submitToCoordinator → deploy
 
 ## 12. 公共 API 层
 
-[api/evolution](../../../api/evolution/evolution.go) 封装内部实现，暴露：
+[internal/evoapi](../../../internal/evoapi/evolution.go) 封装内部实现，暴露：
 - `Strategy` / `Lineage` 数据模型。
 - `DreamCycle` 接口（`Run/SetEnabled/IsEnabled/TaskCount`）及 `NewDreamCycle`。
 - `Population` 接口（`Agents/Size/CurrentGeneration/BestScore/BestStrategy/ScoreAgents/Evolve`）及 `NewPopulation`，`ScorerFunc` 允许外部注入自己的评估器。

@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// Graph is dynamic orchestration as a first-class citizen of the SDK
-// (docs/design/sdk-graph-v030.md). Nodes execute, edges carry
+// Graph is dynamic orchestration as a first-class citizen of the SDK.
+// Nodes execute, edges carry
 // optional conditions, and an optional router overrides the next hop at
 // runtime — a minimal revival of the retired workflow-graph essentials
 // (NodeRouter + conditional edges + runtime mutation), driven through the

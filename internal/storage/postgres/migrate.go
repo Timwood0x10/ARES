@@ -15,7 +15,7 @@ import (
 // migrate_storage.go (storageMigrations) which defines them with full
 // Row-Level Security policies and complete indexes. They must NOT be
 // duplicated here to avoid schema drift between the two definitions.
-// The distilled_memories DDL was REMOVED (RUNTIME.md §8-A4): its repository
+// The distilled_memories DDL was REMOVED: its repository
 // and tools were deleted as a schema ghost, so fresh deployments no longer
 // create the table; existing databases keep theirs (removal is inert for
 // them).

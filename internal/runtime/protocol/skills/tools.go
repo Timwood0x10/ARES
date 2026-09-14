@@ -175,7 +175,7 @@ func CatalogTools(catalog *Catalog) []core.Tool {
 			catalog: catalog,
 			name:    ToolSkillExperience,
 			desc: "Query the learned-source experience store for the best " +
-				"historically successful skill of a task pattern (design §11). " +
+				"historically successful skill of a task pattern." +
 				"Returns {skill, task_pattern, success_rate} or a no-experience " +
 				"notice. Purely a relevance prior — it never executes anything.",
 			params: &core.ParameterSchema{

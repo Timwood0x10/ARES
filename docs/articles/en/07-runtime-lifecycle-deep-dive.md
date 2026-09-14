@@ -396,15 +396,15 @@ That moment I knew: **the money wasn't wasted.**
 
 | File | Core Responsibility |
 |------|-------------------|
-| `internal/agentfabric/agent.go` | `Agent` struct + `IDLE/RUNNING/SUSPENDED/RETIRED` + `CognitiveState` + `Executable()` |
-| `internal/agentfabric/lifecycle.go` | `SpawnSpec` + `spawn/suspend/resume/retire/kill/recover` lifecycle primitives |
-| `internal/agentfabric/fabric.go` | `Fabric` registry, Process Tree (provenance), resource quota, EventSink |
-| `internal/agentfabric/executor.go` | `Cognition` / `StepOutcome` / `CognitionFactory` / `CognitionFunc` |
-| `internal/agentfabric/l2graph.go` | `L2Graph` + router/tool/answer/root/plan cognitions + `DAGExecution` gate |
-| `internal/agentfabric/snapshot.go` | `AgentSnapshot` + `snapshotStore` + `LastSnapshot/ClearSnapshot/FindRevivableSnapshot` |
+| `internal/fabric/agent/agent.go` | `Agent` struct + `IDLE/RUNNING/SUSPENDED/RETIRED` + `CognitiveState` + `Executable()` |
+| `internal/fabric/agent/lifecycle.go` | `SpawnSpec` + `spawn/suspend/resume/retire/kill/recover` lifecycle primitives |
+| `internal/fabric/agent/fabric.go` | `Fabric` registry, Process Tree (provenance), resource quota, EventSink |
+| `internal/fabric/agent/executor.go` | `Cognition` / `StepOutcome` / `CognitionFactory` / `CognitionFunc` |
+| `internal/fabric/agent/l2graph.go` | `L2Graph` + router/tool/answer/root/plan cognitions + `DAGExecution` gate |
+| `internal/fabric/agent/snapshot.go` | `AgentSnapshot` + `snapshotStore` + `LastSnapshot/ClearSnapshot/FindRevivableSnapshot` |
 | `internal/aresrecovery/recovery.go` | `Recovery` + `RestartPolicy` + recovery chain (incl. test/chaos-only entry points) |
 | `internal/aresrecovery/chaos.go` | `Chaos` failure injection (kill/suspend) + `VerifyRecovery` |
-| `internal/taskfabric/state.go` | Task states (`READY/RUNNING/SUSPENDED/FAILED`…) and transitions |
+| `internal/fabric/task/state.go` | Task states (`READY/RUNNING/SUSPENDED/FAILED`…) and transitions |
 | `cmd/ares` | `runKernelRecoveryLoop` — the production recovery loop |
 
 ---

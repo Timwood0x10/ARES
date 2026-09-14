@@ -4,7 +4,7 @@
 
 ## 1. Why Agent Communication Matters
 
-In a multi-agent system agents must exchange messages — "I found X" / "help me verify Y" / "your conclusion conflicts with mine" (the archetypal collaboration phrases listed in `internal/agentipc/doc.go`). This is ARES's Kernel IPC pillar (P4), and the third of the three context layers (Task Shared / Agent Private / IPC Messages) — the first two live in `internal/agentfabric`; this layer is carried by this package.
+In a multi-agent system agents must exchange messages — "I found X" / "help me verify Y" / "your conclusion conflicts with mine" (the archetypal collaboration phrases listed in `internal/agentipc/doc.go`). This is ARES's Kernel IPC pillar (P4), and the third of the three context layers (Task Shared / Agent Private / IPC Messages) — the first two live in `internal/fabric/agent`; this layer is carried by this package.
 
 Let's first separate duties: **task dispatch is the Scheduler's (Task Fabric) job; agent communication is IPC's job.** They are not the same thing:
 

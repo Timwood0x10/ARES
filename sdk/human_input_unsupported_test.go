@@ -9,7 +9,7 @@ import (
 // TestWithHumanInputIsRefusedNotIgnored pins E-2: the human-in-the-loop
 // approval hook must never be silently dropped.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.2 E-2): WithHumanInput
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding E-2): WithHumanInput
 // stored the callback in agentConfig.humanInput, which was only ever copied
 // into Agent.humanInput — no code path invoked it. Since the B3 convergence
 // every run goes through the shared L2 session core, which has no per-tool-call

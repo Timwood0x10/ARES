@@ -1,7 +1,7 @@
 # ARES config.yaml Guide (English) (0.3.x)
 
 > Version: 0.3.x · Field names follow `configs/ares.yaml` and `internal/ares_config`
-> 中文版见 [Chinese Version](./25-config-yaml-guide.zh.md)
+> 中文版见 [Chinese Version](../zh/25-config-yaml-guide.zh.md)
 
 This guide explains how to write `ares.yaml` (or any `<name>.yaml`) to configure the ARES Runtime.
 Configuration is **YAML + strongly typed validation**. The top-level `ares_config.Config` has 17 sections; every field has a sensible default — set only what you need to override (zero-value philosophy). Defaults follow `internal/ares_config/config_defaults.go`.

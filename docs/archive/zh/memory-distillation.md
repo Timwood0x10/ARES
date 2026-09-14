@@ -41,7 +41,7 @@
 
 ### 1. TaskMemory
 
-**文件位置**: `internal/memory/context/task.go`
+**文件位置**: `internal/runtime/memory/context/task.go`
 
 负责管理单个任务的上下文信息，包括输入、输出、执行步骤和结果记录。
 
@@ -62,7 +62,7 @@ type TaskData struct {
 
 ### 2. memoryManager
 
-**文件位置**: `internal/memory/manager_impl.go`
+**文件位置**: `internal/runtime/memory/manager_impl.go`
 
 核心内存管理器，协调会话记忆、任务记忆和本地向量存储。
 
@@ -306,8 +306,8 @@ memory:
 
 | 文件路径 | 作用 |
 |---------|------|
-| `internal/memory/context/task.go` | TaskMemory 任务上下文管理 |
-| `internal/memory/manager_impl.go` | 内存管理器实现 + 蒸馏逻辑 |
+| `internal/runtime/memory/context/task.go` | TaskMemory 任务上下文管理 |
+| `internal/runtime/memory/manager_impl.go` | 内存管理器实现 + 蒸馏逻辑 |
 | `internal/storage/postgres/repositories/distilled_memory_repository.go` | PostgreSQL 持久化存储 |
 | `examples/knowledge-base/main.go` | KnowledgeBase 蒸馏示例 |
 | `internal/tools/resources/builtin/memory/distilled_memory_tools.go` | 蒸馏记忆搜索工具 |

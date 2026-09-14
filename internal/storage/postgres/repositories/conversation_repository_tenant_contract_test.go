@@ -13,7 +13,7 @@ import (
 // TestConversationGetByIDQueryIsTenantScoped locks the tenant predicate on the
 // conversation lookup query.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.3 S-1): GetByID took
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding S-1): GetByID took
 // no tenant argument and ran `WHERE id = $1`, so any caller holding a UUID
 // could read another tenant's conversation. RLS does not cover this path —
 // repositories query the raw *sql.DB and never set app.tenant_id — so the

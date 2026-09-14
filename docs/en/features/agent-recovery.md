@@ -1,6 +1,6 @@
 # Agent Crash Recovery
 
-> **⚠ Historical note (2026-09-13, v0.3.1)**: This document was written during the Leader/Sub execution model era. The Leader-Sub architecture was removed in v0.3.x (current: flat peers + kernel scheduler + task fabric); leader-related mechanisms described here are outdated. See [Comparison §3](../../framework-comparison-langchain-crewai-agentscope-goagent-en.md) and [Capability Map](../../CAPABILITY-MAP.en.md) for the current architecture. Kept for historical reference.
+> **⚠ Historical note (2026-09-13, v0.3.1)**: This document was written during the Leader/Sub execution model era. The Leader-Sub architecture was removed in v0.3.x (current: flat peers + kernel scheduler + task fabric); leader-related mechanisms described here are outdated. See [Comparison §3](../../reference/framework-comparison-langchain-crewai-agentscope-goagent-en.md) and [Capability Map](../../reference/CAPABILITY-MAP.en.md) for the current architecture. Kept for historical reference.
 
 When an agent crashes in ares, the Runtime detects it, creates a fresh instance, replays events to restore operational state, and loads conversation history from the memory store. The agent resumes with full context -- as if nothing happened.
 
@@ -42,14 +42,14 @@ graph TB
 
 ## How an Agent Dies
 
-An agent can die in three ways. All are handled in `internal/ares_runtime/manager.go`.
+An agent can die in three ways. All are handled in `internal/runtime/manager.go`.
 
 ### 1. Panic During Execution
 
 Each agent runs in a goroutine wrapped with `defer recover()`. When a panic is caught, it calls `NotifyAgentDead`:
 
 ```go
-// internal/ares_runtime/manager.go:146-166
+// internal/runtime/manager.go (line anchors drifted during the refactor; see the file itself)
 m.g.Go(func() error {
     defer func() {
         if r := recover(); r != nil {
@@ -117,7 +117,7 @@ flowchart TD
     ASYNC --> TIMEOUT["Timeout: 60s"]
 ```
 
-The actual code from `internal/ares_runtime/manager.go:416-454`:
+The actual code from `internal/runtime/manager.go`'s `RestoreAgent`:
 
 ```go
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
@@ -189,7 +189,7 @@ sequenceDiagram
 The old agent is marked `stopped = true` under write lock, its context is cancelled, and `agent.Stop()` is called with a 10s timeout.
 
 ```go
-// internal/ares_runtime/manager.go:310-328
+// internal/runtime/manager.go (line anchors drifted during the refactor; see the file itself)
 m.mu.Lock()
 oldMA, oldExists := m.agents[agentID]
 if oldExists && oldMA != nil {
@@ -334,7 +334,7 @@ If the checkpoint is missing or incomplete, `EventRecovery.RecoverFromEvents` re
 
 ## Resurrection Plugin
 
-The `resurrection.Supervisor` is a generic, agent-type-agnostic resurrection mechanism from `internal/plugins/resurrection/`.
+The `resurrection.Supervisor` is a generic, agent-type-agnostic resurrection mechanism from `internal/plugins/resurrection/` — removed with Leader-Sub; the current recovery path lives in `internal/aresrecovery/`.
 
 ```mermaid
 flowchart LR

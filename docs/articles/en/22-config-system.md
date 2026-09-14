@@ -233,7 +233,7 @@ One YAML file drives the entire SDK.
 
 ## Skill Source Configuration (skill_sources, ~/.ares/config.toml)
 
-The Capability Fabric's registered sources are declared in **`~/.ares/config.toml`** (not `ares.yaml`), parsed by `internal/ares_skills`'s `LoadSkillSources`/`LoadRegisteredSkillDirs` (`~` expansion + dedup + unknown types skipped as extension points):
+The Capability Fabric's registered sources are declared in **`~/.ares/config.toml`** (not `ares.yaml`), parsed by `internal/runtime/protocol/skills`'s `LoadSkillSources`/`LoadRegisteredSkillDirs` (`~` expansion + dedup + unknown types skipped as extension points):
 
 ```toml
 [[skill_sources]]
@@ -254,7 +254,7 @@ local_dir = "~/.ares/cache/skills"
 
 Key points: project (`.ares/skills`) and user (`~/.ares/skills`) sources are conventional directories that need **no configuration**; this file only declares extra sources — honoring "only declared sources are scanned, zero full-disk scanning." Consistent with the zero-value philosophy: no configuration means no extra sources.
 
-The backing struct (`internal/ares_skills/config.go`): `SkillSourceEntry{Type, Path, URL, LocalDir, ManifestURL}`, parsed with `pelletier/go-toml/v2`. Confirmed directory types are `directory` and `git`.
+The backing struct (`internal/runtime/protocol/skills/config.go`): `SkillSourceEntry{Type, Path, URL, LocalDir, ManifestURL}`, parsed with `pelletier/go-toml/v2`. Confirmed directory types are `directory` and `git`.
 
 ---
 

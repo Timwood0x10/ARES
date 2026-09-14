@@ -13,7 +13,7 @@ import (
 // TestCheckpointEnvelopeIsAlwaysVersionStamped locks the WRITE side of the
 // versioned-checkpoint contract.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.6 F-7): five call
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding F-7): five call
 // sites built &CheckpointEnvelope{...} directly, leaving SchemaVersion at 0 —
 // a value DecodeCheckpoint accepted as "legacy". The read side enforced a
 // version gate that the write side routinely bypassed, so a future schema

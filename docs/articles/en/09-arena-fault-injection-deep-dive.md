@@ -6,7 +6,7 @@
 >
 > 0.3.x update: fault injection and recovery verification are now split across **two independent surfaces**.
 > - **`internal/aresrecovery`**: targets the new Kernel model (agentfabric + taskfabric). The source comment states it plainly: **"Chaos breaks, Recovery fixes."** This is the surface that is actually wired into the production serve path — with a fail-safe latch.
-> - **`internal/ares_arena`**: targets the old "leader / sub-agent + DAG" model, running as a standalone `ares arena serve` chaos-drill process. Its `Injector` comment is equally plain: **"It does NOT implement recovery; the existing resurrection plugin and failover handle that automatically."**
+> - **`internal/runtime/arena`**: targets the old "leader / sub-agent + DAG" model, running as a standalone `ares arena serve` chaos-drill process. Its `Injector` comment is equally plain: **"It does NOT implement recovery; the existing resurrection plugin and failover handle that automatically."**
 
 > Boundary of this article: every symbol and flow below is something I actually read in this codebase. Where something is "configured but explicitly not done yet," or needs extra wiring to take effect, I mark it (待核实 / TBD) rather than dressing it up.
 
@@ -27,7 +27,7 @@ The easy trap when reading this code is that there are **two fully independent**
 | Surface | Location | Target model | Production wiring | Recovery responsibility |
 |---------|----------|--------------|-------------------|-------------------------|
 | Kernel chaos | `internal/aresrecovery` | agentfabric + taskfabric (new) | `cmd/ares` `wireChaos` (live is heavily gated; default shadow) | `Recovery` implements the full recovery chain itself |
-| Arena drill | `internal/ares_arena` | old leader/sub-agent + DAG | standalone process `ares arena serve` | `Injector` does **not** implement recovery — delegated to ares_runtime resurrection/failover |
+| Arena drill | `internal/runtime/arena` | old leader/sub-agent + DAG | standalone process `ares arena serve` | `Injector` does **not** implement recovery — delegated to ares_runtime resurrection/failover |
 
 Both are called "chaos," but one is **production-wired recovery verification with a fail-safe latch**; the other is a **drill process isolated from production**. The rest of this article covers each.
 
@@ -113,7 +113,7 @@ flowchart LR
 
 ---
 
-## 4. The arena drill process: `internal/ares_arena`
+## 4. The arena drill process: `internal/runtime/arena`
 
 This is the old, production-isolated chaos-drill layer, launched by `ares arena serve`. It starts its own demo pool (`arena-worker-1..3`, type=coder) and a mutable DAG, specifically to demonstrate "inject a fault → watch the system react."
 
@@ -121,16 +121,16 @@ Core files (real paths, which differ from the earlier article):
 
 | File | Purpose |
 |------|---------|
-| `internal/ares_arena/types.go` | ActionType (13 kinds), Action, Result, Stats |
-| `internal/ares_arena/injector.go` | Injector — wraps `ares_runtime` + `MutableDAG`, **does not implement recovery** |
-| `internal/ares_arena/service.go` | Service — Execute actions, record metrics, emit events/failure evidence |
-| `internal/ares_arena/scenario.go` | Scenario orchestration: YAML → sequential actions → report |
-| `internal/ares_arena/survival.go` | Survival mode: random injection on an interval |
-| `internal/ares_arena/metrics.go` | MetricsCollector — per-action-type aggregation |
-| `internal/ares_arena/score.go` | 3-dimensional resilience score |
-| `internal/ares_arena/http.go` | REST + SSE + API-key auth |
-| `internal/ares_arena/integration.go` | FlightBridge — arena actions → flight recorder |
-| `internal/ares_arena/evolution_bridge.go` | EvolutionBridge → evolution Coordinator (TBD) |
+| `internal/runtime/arena/types.go` | ActionType (13 kinds), Action, Result, Stats |
+| `internal/runtime/arena/injector.go` | Injector — wraps `ares_runtime` + `MutableDAG`, **does not implement recovery** |
+| `internal/runtime/arena/service.go` | Service — Execute actions, record metrics, emit events/failure evidence |
+| `internal/runtime/arena/scenario.go` | Scenario orchestration: YAML → sequential actions → report |
+| `internal/runtime/arena/survival.go` | Survival mode: random injection on an interval |
+| `internal/runtime/arena/metrics.go` | MetricsCollector — per-action-type aggregation |
+| `internal/runtime/arena/score.go` | 3-dimensional resilience score |
+| `internal/runtime/arena/http.go` | REST + SSE + API-key auth |
+| `internal/runtime/arena/integration.go` | FlightBridge — arena actions → flight recorder |
+| `internal/runtime/arena/evolution_bridge.go` | EvolutionBridge → evolution Coordinator (TBD) |
 | `cmd/ares/arena.go` | `ares arena` CLI: run / validate / list / serve / survival / inspect |
 | `cmd/ares/serve_chaos.go` | production kernel chaos wiring (`wireChaos` above) |
 
@@ -165,7 +165,7 @@ func (in *Injector) KillLeader(ctx context.Context) (string, error) {
 
 It implements no recovery itself. Recovery is *delegated/expected* from ares_runtime's resurrection and failover. `KillLeader` just finds a `type=="leader"` agent and calls `StopAgent` — "a replacement leader is then elected by failover" is **not** implemented in this process.
 
-`internal/ares_arena/e2e_chaos_recovery_test.go` is a real end-to-end check: it drives a genuine `ares_runtime.Manager`, registers a pool of workers with rebuild factories, calls `Manager.NotifyAgentDead(...)` to model a batch crash, then polls the factory call count to assert resurrection happens asynchronously and the Manager still tracks a live pool. It scales over 16/64/128.
+`internal/runtime/arena/e2e_chaos_recovery_test.go` is a real end-to-end check: it drives a genuine `ares_runtime.Manager`, registers a pool of workers with rebuild factories, calls `Manager.NotifyAgentDead(...)` to model a batch crash, then polls the factory call count to assert resurrection happens asynchronously and the Manager still tracks a live pool. It scales over 16/64/128.
 
 ### 4.2 Thirteen actions
 
@@ -307,7 +307,7 @@ flowchart LR
 After walking through all of this, I want you to remember not a score but the **two boundaries written into the comments**:
 
 1. In `internal/aresrecovery`: **"Chaos breaks, Recovery fixes."** Breaking and fixing are two independent responsibilities, welded together by an explicit `VerifyRecovery()` call. In production, live chaos is locked behind six guardrails, and the default posture never touches production agents (shadow sandbox).
-2. In `internal/ares_arena`: **"It does NOT implement recovery."** It only injects faults; recovery belongs to ares_runtime's existing mechanisms, and this is an isolated drill field.
+2. In `internal/runtime/arena`: **"It does NOT implement recovery."** It only injects faults; recovery belongs to ares_runtime's existing mechanisms, and this is an isolated drill field.
 
 I found no evidence in this repository for the earlier article's numbers such as "Score 100.0 (A+)", "revived in 1.4s", or "97.3% recovery rate", so none of them appear above. The Consistency dimension defaults to a heuristic, `parallel_actions` / `depends_on` are not yet implemented, and the EvolutionBridge back-fill effect is marked TBD.
 

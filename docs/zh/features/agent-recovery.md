@@ -1,6 +1,6 @@
 # Agent 崩溃恢复
 
-> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 Leader/Sub 执行模型时期。v0.3.x 起 Leader-Sub 架构已删除（现行为扁平对等 + 内核调度 + 任务织物），本文中涉及 leader 的机制描述已过时。现行架构见 [框架对比 §3](../../framework-comparison-langchain-crewai-agentscope-goagent-zh.md) 与 [能力地图](../../CAPABILITY-MAP.md)。保留作历史参考。
+> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 Leader/Sub 执行模型时期。v0.3.x 起 Leader-Sub 架构已删除（现行为扁平对等 + 内核调度 + 任务织物），本文中涉及 leader 的机制描述已过时。现行架构见 [框架对比 §3](../../reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) 与 [能力地图](../../reference/CAPABILITY-MAP.md)。保留作历史参考。
 
 当 ares 中的 Agent 崩溃时，Runtime 会检测到死亡，创建全新实例，回放事件恢复运行状态，并从记忆存储加载对话历史。Agent 恢复后拥有完整上下文，就像什么都没发生过一样。
 
@@ -42,14 +42,14 @@ graph TB
 
 ## Agent 怎么死的
 
-Agent 有三种死亡方式，都在 `internal/ares_runtime/manager.go` 中处理。
+Agent 有三种死亡方式，都在 `internal/runtime/manager.go` 中处理。
 
 ### 1. 执行过程中 Panic
 
 每个 Agent 在 goroutine 中运行，外层包裹 `defer recover()`。捕获到 panic 后调用 `NotifyAgentDead`：
 
 ```go
-// internal/ares_runtime/manager.go:146-166
+// internal/runtime/manager.go（行号已随重构漂移，见文件本身）
 m.g.Go(func() error {
     defer func() {
         if r := recover(); r != nil {
@@ -117,7 +117,7 @@ flowchart TD
     ASYNC --> TIMEOUT["超时: 60s"]
 ```
 
-实际代码（`internal/ares_runtime/manager.go:416-454`）：
+实际代码（`internal/runtime/manager.go` 的 `RestoreAgent`）：
 
 ```go
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
@@ -189,7 +189,7 @@ sequenceDiagram
 旧 Agent 在写锁下标记 `stopped = true`，取消其 context，调用 `agent.Stop()`（10s 超时）。
 
 ```go
-// internal/ares_runtime/manager.go:310-328
+// internal/runtime/manager.go（行号已随重构漂移，见文件本身）
 m.mu.Lock()
 oldMA, oldExists := m.agents[agentID]
 if oldExists && oldMA != nil {
@@ -334,7 +334,7 @@ sequenceDiagram
 
 ## 复活插件
 
-`resurrection.Supervisor` 是通用的、与 Agent 类型无关的复活机制（`internal/plugins/resurrection/`）。
+`resurrection.Supervisor` 是通用的、与 Agent 类型无关的复活机制（`internal/plugins/resurrection/` 已随 Leader-Sub 删除；现行恢复链路在 `internal/aresrecovery/`）。
 
 ```mermaid
 flowchart LR

@@ -399,7 +399,7 @@ func main() {
 }
 ```
 
-**Code Location**: `examples/travel/main.go:50-100`
+**Code Location**: `examples/_fixtures/01-quickstart/main.go`
 
 ### Scenario 3: Microservice Integration
 
@@ -604,10 +604,10 @@ func TestEndToEndIntegration(t *testing.T) {
 
 ## References
 
-- [Quick Start](quick_start_en.md)
-- [Architecture Documentation](arch.md)
-- [Configuration Reference](../examples/travel/config/server.yaml)
-- [API Documentation](storage/api_en.md)
+- [Quick Start](../guides/quick-start.md)
+- [Architecture Documentation](../architecture/arch.md)
+- [Configuration Reference](../../../examples/_fixtures/01-quickstart/ares.yaml)
+- [API Documentation](../api-reference.md)
 
 ## Support
 

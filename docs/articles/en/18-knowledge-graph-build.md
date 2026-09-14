@@ -124,7 +124,7 @@ The real "build a graph from markdown" is the **end-to-end test** `TestAKG_Build
 
 It `t.Logf`s object/edge counts but **asserts no fixed edge count** — the edge count depends on how many "fixes/depends on/calls/belongs to" patterns actually appear in the corpus. So "27K, 147, 73ms" are fabricated; I have no evidence, so I mark them (待核实). The truth: an AKG *can* be built from `docs/articles/**/*.md`, but the edge count varies on every run.
 
-For completeness: `internal/ares_skills/indexer.go`'s `parseFrontMatter` parses the `---` YAML header of each `SKILL.md` to produce skill metadata for the skill catalog — that's the **skills-discovery** path, not the AKG build pipeline. Don't conflate them.
+For completeness: `internal/runtime/protocol/skills/indexer.go`'s `parseFrontMatter` parses the `---` YAML header of each `SKILL.md` to produce skill metadata for the skill catalog — that's the **skills-discovery** path, not the AKG build pipeline. Don't conflate them.
 
 ---
 

@@ -4,7 +4,7 @@
 - **Severity**: P2 / Medium (wired-but-dead feature: API and tests exist, the production path can never trigger it)
 - **Status**: Fixed
 - **Date**: 2026-08-22
-- **Packages**: `internal/kernelscheduler`
+- **Packages**: `internal/kernel`
 
 ## Symptom
 
@@ -62,7 +62,7 @@ safe by epoch fencing.
 
 ## Reproduction & regression test
 
-`internal/kernelscheduler/scheduler_contract_test.go`:
+`internal/kernel/scheduler_contract_test.go`:
 
 ```
 TestPreemptLowerPriorityHandsBackRunningTask

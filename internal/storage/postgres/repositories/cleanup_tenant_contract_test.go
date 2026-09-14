@@ -54,7 +54,7 @@ func (stubResult) RowsAffected() (int64, error) { return 0, nil }
 // repository CleanupExpired must scope its DELETE by tenant_id. A tenant-less
 // global DELETE purges other tenants' rows — the maintenance worker runs it on
 // a schedule, so a missing predicate is a recurring cross-tenant write, not a
-// one-off. SQL-text and argument assertion (per DEVELOPMENT_PLAN §5) instead
+// one-off. SQL-text and argument assertion instead
 // of a live run: the point is the predicate, not the database.
 func TestCleanupExpiredCarriesTenantPredicate(t *testing.T) {
 	ctx := context.Background()

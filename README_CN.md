@@ -113,6 +113,27 @@ make examples          # 构建全部示例
 - **防伪造由 Kernel 强制**：LLM 在工具参数、`create_task` payload、`ask_agent` payload 里塞的 `tenant_id` 会被执行上下文的租户无条件覆盖（与 `Origin` 同一契约）。系统自身永远不会生成非 default 租户。
 - **多租户部署**：当前租户由 HTTP 边界的**调用方声明**。真正的多租户部署必须在鉴权层绑定租户（如从 JWT principal 服务端推导），而非信任请求体 —— 管道已就绪，只需更换租户值的来源。见 `SECURITY.md` → Tenancy。
 
+## 稳定性与性能
+
+0.3.1 加固周期关闭了全部已知的崩溃与泄漏类缺陷，并入库了性能基线——后续改动必须与之对照。
+
+**记录位置：**
+
+- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) —— 分阶段稳定性专项：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
+- [plan/benchmarks/](plan/benchmarks/) —— 入库的基准基线（7 包 38 基准）与 benchstat 对比流程；任何优化 PR 必须附前后对照
+
+**AKG 为什么曾在一问短句就崩溃（0.3.1 已修复）。** 检索服务的构造器把知识库
+仓储当可选参数（允许为空），但所有 ≤10 字符的短查询会无条件进入精确检索管线，
+而该管线直接解引用它。于是在任何未接知识库的部署上，第一个短查询就会让
+handler panic。修复后：入口 fail-loud 返回明确的配置错误而非 panic
+（`retrieval_nil_kbrepo_test.go` 锁定回归）；并且所有 HTTP handler 现在都跑在
+panic 守卫之下——返回带 requestID 的结构化 500，而不是掐断连接。
+
+**基线要点数字**（Apple M3 Max）：调度排空 ~8µs/任务（空转 tick ~8.5ns）、
+64 节点 L2 生长链端到端 ~132ms、500 对象混合检回 ~340ms。完整数字见基线文件。
+
+质量门：`make check`（vet + staticcheck + golangci-lint + 测试）每次改动必须全绿。
+
 ## AKG —— 无需 LLM 的知识图谱（实验性）
 
 **⚠️ AKG（自适应知识图谱）处于 BETA 实验阶段。API 可能变化，非生产就绪。仅用于实验与反馈。**

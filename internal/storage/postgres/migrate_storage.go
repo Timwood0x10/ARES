@@ -437,7 +437,7 @@ var storageMigrations = []string{
 		ON embedding_dead_letter(task_id, table_name)`,
 
 	// 9-12. distilled_memories table family (table, RLS, indexes,
-	// content_hash, dedup index, updated_at) — REMOVED (RUNTIME.md §8-A4):
+	// content_hash, dedup index, updated_at) — REMOVED:
 	// the repository and tools that read/wrote it were deleted as a schema
 	// ghost (zero production constructors), so fresh deployments must not
 	// create the table. Existing databases keep their table untouched

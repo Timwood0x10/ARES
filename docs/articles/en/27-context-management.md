@@ -1,6 +1,6 @@
 # ares Architecture Deep Dive (XXVII): Context Management — Three-Layer Context, Checkpointable Cognitive State, and the Prompt Gate (0.3.x)
 
-> Note: This article is grounded in the actual code (`internal/agentfabric/context.go` + `agent.go` for the three-layer context and `CognitiveState`, `internal/llm` for the `maxPromptLength` prompt-length gate, `internal/ares_memory` for session memory), the dedicated context-management article in the docs series.
+> Note: This article is grounded in the actual code (`internal/fabric/agent/context.go` + `agent.go` for the three-layer context and `CognitiveState`, `internal/llm` for the `maxPromptLength` prompt-length gate, `internal/runtime/memory` for session memory), the dedicated context-management article in the docs series.
 
 ## 1. Why Context Management Is the Agent's Lifeline
 
@@ -8,14 +8,14 @@ The LLM context window is a hard constraint: agents accumulate history every tur
 
 | Layer | Real mechanism | Location | What it controls |
 |-------|----------------|----------|------------------|
-| 1. Cognitive state | Three-layer context isolation (Task Shared / Agent Private / IPC) | `internal/agentfabric/context.go` | Who can see what; private never leaks |
-| 2. Persistence | Versioned `CognitiveState` + checkpointing | `internal/agentfabric/agent.go` / `context.go` | Persist only the checkpointable state; no hidden CoT |
-| 3. Session | Session memory (TTL / LRU / structured messages) | `internal/ares_memory` | How history is organized, retained, and reclaimed |
+| 1. Cognitive state | Three-layer context isolation (Task Shared / Agent Private / IPC) | `internal/fabric/agent/context.go` | Who can see what; private never leaks |
+| 2. Persistence | Versioned `CognitiveState` + checkpointing | `internal/fabric/agent/agent.go` / `context.go` | Persist only the checkpointable state; no hidden CoT |
+| 3. Session | Session memory (TTL / LRU / structured messages) | `internal/runtime/memory` | How history is organized, retained, and reclaimed |
 | 4. Call | `maxPromptLength` hard gate | `internal/llm` | Over-long prompts rejected before the LLM call |
 
 ## 2. The Three-Layer Context: Task Shared / Agent Private / IPC
 
-`internal/agentfabric/context.go` hard-codes the isolation requirement (design §13: Context three layers — don't share one brain): the `ContextLayer` enum defines three tiers:
+`internal/fabric/agent/context.go` hard-codes the isolation requirement (design §13: Context three layers — don't share one brain): the `ContextLayer` enum defines three tiers:
 
 ```go
 type ContextLayer int
@@ -55,7 +55,7 @@ graph TD
 
 ## 3. CognitiveState: Versioned and Checkpointable
 
-An agent's "cognitive content" is explicitly modeled as `CognitiveState` in `internal/agentfabric/agent.go` — state that is **independently persistable**: the Runtime does NOT depend on hidden chain-of-thought, only on this durable state (§13 invariant #5):
+An agent's "cognitive content" is explicitly modeled as `CognitiveState` in `internal/fabric/agent/agent.go` — state that is **independently persistable**: the Runtime does NOT depend on hidden chain-of-thought, only on this durable state (§13 invariant #5):
 
 ```go
 const CognitiveStateSchemaVersion = 1
@@ -87,7 +87,7 @@ graph LR
 
 ## 4. Session Memory: How History Is Retained and Reclaimed
 
-The history fed to the LLM comes from the session memory in `internal/ares_memory`. The core implementation is `SessionMemory` in `internal/ares_memory/context/session.go`:
+The history fed to the LLM comes from the session memory in `internal/runtime/memory`. The core implementation is `SessionMemory` in `internal/runtime/memory/context/session.go`:
 
 - **Bounded + TTL**: `NewSessionMemory(maxSize, ttl)`; beyond `maxSize` it `evictOldest` (LRU by `AccessedAt`, evicting the stalest session); a background `Cleanup` task runs on a half-TTL tick, removing sessions idle longer than `ttl` (`now - AccessedAt > ttl`).
 - **Deep-copy returns**: `Get` / `GetMessages` return copies, so callers can't mutate internal session state.

@@ -41,7 +41,7 @@ The Memory Distillation module is a component in the ares framework for extracti
 
 ### 1. TaskMemory
 
-**File Location**: `internal/memory/context/task.go`
+**File Location**: `internal/runtime/memory/context/task.go`
 
 Responsible for managing context information for individual tasks, including input, output, execution steps, and result records.
 
@@ -62,7 +62,7 @@ type TaskData struct {
 
 ### 2. memoryManager
 
-**File Location**: `internal/memory/manager_impl.go`
+**File Location**: `internal/runtime/memory/manager_impl.go`
 
 Core memory manager, coordinating session memory, task memory, and local vector storage.
 
@@ -306,8 +306,8 @@ memory:
 
 | File Path | Purpose |
 |-----------|---------|
-| `internal/memory/context/task.go` | TaskMemory task context management |
-| `internal/memory/manager_impl.go` | Memory manager implementation + distillation logic |
+| `internal/runtime/memory/context/task.go` | TaskMemory task context management |
+| `internal/runtime/memory/manager_impl.go` | Memory manager implementation + distillation logic |
 | `internal/storage/postgres/repositories/distilled_memory_repository.go` | PostgreSQL persistent storage |
 | `examples/knowledge-base/main.go` | KnowledgeBase distillation example |
 | `internal/tools/resources/builtin/memory/distilled_memory_tools.go` | Distilled memory search tools |

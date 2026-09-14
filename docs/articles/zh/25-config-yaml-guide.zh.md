@@ -1,7 +1,7 @@
 # ARES config.yaml 配置指南（中文版）（0.3.x）
 
 > 版本：0.3.x · 依据 `configs/ares.yaml` 实样与 `internal/ares_config` 字段名整理
-> 英文版见 [English Version](./25-config-yaml-guide.en.md)
+> 英文版见 [English Version](../en/25-config-yaml-guide.en.md)
 
 本指南说明如何编写 `ares.yaml`（或任意 `<name>.yaml`）来配置 ARES Runtime。
 配置采用 **YAML + 强类型校验**。顶层 `ares_config.Config` 有 17 个 section；所有字段都有合理默认值，只设置你需要覆盖的项即可（零值哲学）。默认值以 `internal/ares_config/config_defaults.go` 为准。

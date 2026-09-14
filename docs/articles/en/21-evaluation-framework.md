@@ -2,7 +2,7 @@
 
 "How do you know your agent improved?" This question keeps haunting us. The evolution engine generates new strategies and the candidate verification pipeline runs preserved-case regressions — but we need an objective way to say "strategy A is X% better than strategy B."
 
-The evaluation framework (`internal/ares_eval/`, ~3,000 lines) is part of the answer. It turns "looks better to me" into reproducible scores. **A disclaimer up front: it is far from a general-purpose "evaluate anything" platform.** More precisely it's a small library of "score this agent output" evaluators, plus a regression gate that actually compares strategies. This article covers only what really exists in the code.
+The evaluation framework (`internal/runtime/eval`, ~3,000 lines) is part of the answer. It turns "looks better to me" into reproducible scores. **A disclaimer up front: it is far from a general-purpose "evaluate anything" platform.** More precisely it's a small library of "score this agent output" evaluators, plus a regression gate that actually compares strategies. This article covers only what really exists in the code.
 
 ---
 
@@ -22,7 +22,7 @@ Before describing anything, we did the honest thing: we inventoried **what the c
 
 ## The Real Structure: Three Components
 
-The actual `internal/ares_eval/` is a plain pipeline — **no "Comparison layer", no "concurrent Runner layer"** as often drawn in docs:
+The actual `internal/runtime/eval` is a plain pipeline — **no "Comparison layer", no "concurrent Runner layer"** as often drawn in docs:
 
 ```mermaid
 graph TD
@@ -224,6 +224,6 @@ The scoring model is `LLMArenaScorer` in `ares_evolution/service/llm_arena_score
 
 ## An Honest Wrap-up
 
-`internal/ares_eval/` is not an ambitious "agent evaluation platform". It's a small scoring library: Loader + Runner + evaluators + report, plus a `DimensionJudgeBridge` that streams dimension diagnoses into the evidence store. "Comparison" is genuinely answered by the Gate-3 preserved-case regression with its statistical significance test — not by a `Comparison` struct. The `concurrent_runner.go`, `comparison.go`, and the HTTP service layer (`/eval/run` endpoints) from older posts **do not exist in the code**, and this article drops them.
+`internal/runtime/eval` is not an ambitious "agent evaluation platform". It's a small scoring library: Loader + Runner + evaluators + report, plus a `DimensionJudgeBridge` that streams dimension diagnoses into the evidence store. "Comparison" is genuinely answered by the Gate-3 preserved-case regression with its statistical significance test — not by a `Comparison` struct. The `concurrent_runner.go`, `comparison.go`, and the HTTP service layer (`/eval/run` endpoints) from older posts **do not exist in the code**, and this article drops them.
 
 **The best evaluation framework is the one that makes "is it better?" a question with a numerical answer.** Vibes don't scale. Reproducible scores do — but only when those scores come from code you can actually point to.

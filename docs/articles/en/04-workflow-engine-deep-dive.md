@@ -23,7 +23,7 @@ One sentence sums up the pipeline: **at runtime you mutate the MutableDAG → ev
 
 ### 1.1 Step and Workflow
 
-`Step` is defined in `internal/workflow/engine/types.go`. The fields I read:
+`Step` is defined in `internal/fabric/task/workflow/engine/types.go`. The fields I read:
 
 ```go
 type Step struct {
@@ -98,7 +98,7 @@ This detail is also exactly why `SetNodeMetadata` exists and mutates **both** th
 
 ## 2. MutableDAG: A Thread-Safe, Evolving Runtime Topology
 
-`internal/workflow/engine/mutable_dag.go`. Core struct:
+`internal/fabric/task/workflow/engine/mutable_dag.go`. Core struct:
 
 ```go
 type MutableDAG struct {
@@ -185,7 +185,7 @@ flowchart TD
 
 ## 3. GraphEventHub: Events, Sequence Numbers, Drop Counters
 
-`internal/workflow/engine/graph_events.go`. The core, straight from the source:
+`internal/fabric/task/workflow/engine/graph_events.go`. The core, straight from the source:
 
 ```go
 type GraphChange struct {
@@ -251,7 +251,7 @@ Why do both the sequence number and the drop counter get this much care? The sou
 
 ## 4. DAGPatchExecutor: Applying Structural Patches Straight to the Live Topology
 
-`internal/workflow/engine/dag_patcher.go`. This executor embodies a clear stance: **patches don't get "stored somewhere to be written elsewhere" — they mutate the live DAG directly.**
+`internal/fabric/task/workflow/engine/dag_patcher.go`. This executor embodies a clear stance: **patches don't get "stored somewhere to be written elsewhere" — they mutate the live DAG directly.**
 
 ```go
 type DAGPatchExecutor struct {
@@ -272,7 +272,7 @@ For `PatchSetNodeMetadata`, the `Value` may be a `map[string]string`, `*Step`, o
 
 ## 5. CompileCoordinator: Compiling the Graph into a Task Set
 
-Now the crux of 0.3.x: once the graph changes, how does the task set follow? All in `internal/planprojection/coordinator.go`.
+Now the crux of 0.3.x: once the graph changes, how does the task set follow? All in `internal/fabric/planprojection/coordinator.go`.
 
 ### 5.1 Two compile paths: full vs. incremental
 

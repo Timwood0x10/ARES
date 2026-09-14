@@ -103,19 +103,19 @@ The division of labor (the module names ARE the real `internal/` directories):
 
 | internal package | Responsibility | Key symbols (verified only) |
 |------|------------|------------------------------|
-| `internal/taskfabric` | Durable task intent + state machine + leases + checkpoints | `Task`, `TaskState` (READY/LEASED/RUNNING/SUSPENDED/COMPLETED/FAILED), `Fabric.Create/Acquire/Start/Yield/Complete/Fail/Renew/Release/Preempt/Schedule`, lease `Epoch` (fencing token), `RetryPolicy`, `ErrEpochMismatch` |
-| `internal/agentfabric` | Disposable agent lifecycle + process tree + three-layer Context; **does NOT schedule** | `Fabric`, `spawn/suspend/resume/retire/kill/recover`, `AgentType`, `Cognition`, `SpawnSpec` |
-| `internal/kernelscheduler` | "Agents are not orchestrated. They are scheduled." | `Scheduler`, `New`, `Run`, `Schedule→Acquire→RunQuantum→finalize`, `RegisterExecutor/UnregisterExecutor`, `PreemptLowerPriority` (cooperative preemption), `EventStore` event-driven drain |
+| `internal/fabric/task` | Durable task intent + state machine + leases + checkpoints | `Task`, `TaskState` (READY/LEASED/RUNNING/SUSPENDED/COMPLETED/FAILED), `Fabric.Create/Acquire/Start/Yield/Complete/Fail/Renew/Release/Preempt/Schedule`, lease `Epoch` (fencing token), `RetryPolicy`, `ErrEpochMismatch` |
+| `internal/fabric/agent` | Disposable agent lifecycle + process tree + three-layer Context; **does NOT schedule** | `Fabric`, `spawn/suspend/resume/retire/kill/recover`, `AgentType`, `Cognition`, `SpawnSpec` |
+| `internal/kernel` | "Agents are not orchestrated. They are scheduled." | `Scheduler`, `New`, `Run`, `Schedule→Acquire→RunQuantum→finalize`, `RegisterExecutor/UnregisterExecutor`, `PreemptLowerPriority` (cooperative preemption), `EventStore` event-driven drain |
 | `internal/aresrecovery` | Recovery subsystem — proves the Runtime survives agent death | `Recovery`, `RestartPolicy`, `EvolutionAwareSpawner` (evolution-aware spawn gate), Chaos (failure-injection verification) |
-| `internal/ares_experience` | Experience distillation | `DistillationService`, `Distill`, `TaskResult → Experience` (success / failure) |
+| `internal/runtime/memory/experience` | Experience distillation | `DistillationService`, `Distill`, `TaskResult → Experience` (success / failure) |
 | `internal/ares_events` | Event stream / flight-recorder substrate | `Event`, `EventType` (task.created/ready/acquired/started/yielded/checkpointed/preempted/released/completed/failed/expired/stolen), `EventStore` (Append/Read/Subscribe/StreamVersion) |
-| `internal/ares_evolution` | Evolution (strategy state machine) | `StrategyLifecycle`: `CANDIDATE→SHADOW→ACTIVE→DEGRADED`, verification gates + `Submit`, rollback policy |
+| `internal/runtime/ares_evolution` | Evolution (strategy state machine) | `StrategyLifecycle`: `CANDIDATE→SHADOW→ACTIVE→DEGRADED`, verification gates + `Submit`, rollback policy |
 | `internal/agentipc` | Peer-mesh communication | `Bus`, `Send/Request/Reply/Delegate/Handoff/Subscribe`, broadcast `Broadcast/Unsubscribe`, `Message`, `DeadLetterStore` (bounded FIFO) |
 | `internal/ares_bootstrap` + `sdk` | Component assembly + unified entry | `ares_bootstrap.Bootstrap`, `sdk.NewRuntime` |
 
 ## Key Mechanisms
 
-### Task State Machine (`internal/taskfabric`)
+### Task State Machine (`internal/fabric/task`)
 
 A Task survives its owner. `TaskState` machine:
 
@@ -147,11 +147,11 @@ An LLM agent can't be interrupted at an arbitrary instruction — it only hands 
 
 Chaos in `aresrecovery` is a **verification** harness: it injects failures on purpose, then invokes Recovery to prove the Runtime restores the tasks — "Chaos breaks things on purpose; Recovery proves the Runtime survives."
 
-### Experience Distillation (`internal/ares_experience`)
+### Experience Distillation (`internal/runtime/memory/experience`)
 
 A task's outcome is distilled into a reusable experience. `DistillationService.Distill` takes a `TaskResult`, uses an LLM to extract Problem / Solution / Constraints, and produces a `success` or `failure` `Experience` (`ExperienceTypeSuccess` / `ExperienceTypeFailure`).
 
-### Evolution (`internal/ares_evolution`)
+### Evolution (`internal/runtime/ares_evolution`)
 
 Evolution isn't hand-waving — it's a `StrategyLifecycle` state machine:
 
@@ -192,7 +192,7 @@ I built something a little unhinged — **a feature that randomly assassinates a
 2026/06/14 19:46:29 INFO orchestrator: resuming agent from step id=agent-6 resume_from=agent-1 start_step=4 total_steps=3
 ```
 
-> The `arena`/`orchestrator` identifiers shown above are from older/evolved text; don't treat them as the current modules' exact API. For verification, rely on `internal/ares_arena` and `internal/ares_runtime` (待核实).
+> The `arena`/`orchestrator` identifiers shown above are from older/evolved text; don't treat them as the current modules' exact API. For verification, rely on `internal/runtime/arena` and `internal/runtime` (待核实).
 
 ## Final Thoughts
 

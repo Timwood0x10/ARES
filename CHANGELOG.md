@@ -521,8 +521,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaces full-scan busy waits. IPC collaboration topics
   (`delegate-task`/`pipeline-stage`/`orchestrate-worker`) now execute through
   the kernel fabric DAG when wired (`wireEvolutionIPC` gained the kernel
-  handle; reply shape unchanged). Convergence self-verification:
-  `docs/fusion-convergence.md`.
+  handle; reply shape unchanged). Convergence self-verification (report since
+  pruned — its DoD is complete and the cited `cmd/ares` files it referenced
+  were themselves removed in the 0.3.1 modularization).
 
 ### Breaking changes
 
@@ -568,7 +569,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **sdk.Graph — dynamic graph orchestration returns to the SDK**
-  (`docs/design/sdk-graph-v040.md`, v0.4.0 M1): `NewGraph/AddNode/AddEdge/
+  (v0.4.0 M1): `NewGraph/AddNode/AddEdge/
   RemoveNode/RemoveEdge/SetRouter` + `(*Runtime).RunGraph` (≤10 new symbols).
   LLM (`*Agent`) nodes execute through the SAME kernel scheduling path as
   `Submit` (fabric quantum engine); function and subgraph nodes run inline
@@ -620,7 +621,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Versioning** (`VERSION` file + Makefile injection): `make build` embeds
   `0.3.0-dev` into `main.version`; `ares version` prefers the injected version,
   falling back to build-info pseudo-version. Deprecation policy documented in
-  `docs/design/versioning.md`.
+  (design notes were never committed).
 - **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md §6): security layer, config
   hot-reload, and fault-injection e2e all marked implemented.
 - **Quantum execution + scheduler resumption** (`cmd/ares/scheduler.go`,
@@ -1191,9 +1192,9 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 ### Documentation
 
 - **Architecture Diagram Overhaul**: Updated README architecture diagram to 6-layer model (added Evolution Engine layer), with GA engine details (7 selectors, 3 crossover, 6 mutation, 6 genomes), runtime evolution pipeline, and data flow sequence diagram.
-- **GA Deep-Dive Articles**: Updated `docs/articles/en/autonomous-evolution-deep-dive.md` and `docs/articles/zh/autonomous-evolution-deep-dive.md` with 6 new subsections (9.11-9.16) covering NSGA-II, steady-state GA, split score, experience system, memory evolution, and Phase 3-6 integration.
-- **GA-in-the-Trenches**: Updated `docs/articles/en/ga-in-the-trenches.md` and `docs/articles/zh/ga-in-the-trenches.md` with steady-state GA, NSGA-II, split score lessons, and new Lesson 6 on experience systems.
-- **Overview Update**: Updated `docs/articles/zh/autonomous-evolution-overview.md` with service bridge, memory evolution, and experience hints coverage.
+- **GA Deep-Dive Articles**: Updated `docs/articles/en/11-autonomous-evolution-deep-dive.md` and `docs/articles/zh/11-autonomous-evolution-deep-dive.md` with 6 new subsections (9.11-9.16) covering NSGA-II, steady-state GA, split score, experience system, memory evolution, and Phase 3-6 integration.
+- **GA-in-the-Trenches**: Updated `docs/articles/en/24.6-ga-in-the-trenches.md` and `docs/articles/zh/24.6-ga-in-the-trenches.md` with steady-state GA, NSGA-II, split score lessons, and new Lesson 6 on experience systems.
+- **Overview Update**: Updated `docs/articles/zh/24.7-autonomous-evolution-overview.md` with service bridge, memory evolution, and experience hints coverage.
 - **Feature Doc Update**: Updated `docs/en/features/autonomous-evolution.md` and `docs/zh/features/autonomous-evolution.md` with all new GA features.
 - **Analysis Plan Sync**: Updated `GA_ANALYSIS.md` and `GA_DEVELOPMENT_PLAN.md` to reflect completed implementation status.
 
@@ -1244,7 +1245,7 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 ### Documentation
 
 - **README Rewrite**: Reduced from 774 to 214 lines. SDK Quick Start at the top. English (`README.md`) and Chinese (`README_CN.md`) versions.
-- **GitHub Pages Website**: `docs/index.html` with dark theme, marked.js inline Markdown rendering, all articles browsable.
+- **GitHub Pages Website** (removed in 0.3.1): a `docs/index.html` dark-theme reader with marked.js inline Markdown rendering.
 - **Architecture Diagram**: Mermaid diagram covering SDK, LLM providers, Tools, Memory, Evolution, CLI, Examples.
 - **7 Cookbook Recipes**: `docs/cookbook/` with Chat, Tool Calling, Multi-Agent, Memory, Coding Agent, Code Review, GitHub Agent.
 - **CI Docs Deployment**: GitHub Actions workflow (`docs.yml`) auto-deploys `docs/` to Pages.

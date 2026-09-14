@@ -1,6 +1,6 @@
 # ares 架构深度解析（十二）：安全加固 —— 工具信任门与身份来源（0.3.x）
 
-> 0.3.x 说明：本文完全基于当前代码改写。早期版本里 `internal/ratelimit/`、`internal/storage/postgres/security.go`、`internal/security/sanitizer.go` 等旧路径在新版中已不再是安全加固的主战场。本文只描述当前真实存在的加固机制：**ares_skills 的工具信任门（Tool Trust）**、**agentsyscall 的身份来源不可伪造（Kernel 强制 provenance）**，以及 **Sanitizer 在 LLM 调用链上的兜底**。
+> 0.3.x 说明：本文完全基于当前代码改写。早期版本里 `internal/ares_ratelimit`、`internal/storage/postgres/security.go`、`internal/ares_security/sanitizer.go` 等旧路径在新版中已不再是安全加固的主战场。本文只描述当前真实存在的加固机制：**ares_skills 的工具信任门（Tool Trust）**、**agentsyscall 的身份来源不可伪造（Kernel 强制 provenance）**，以及 **Sanitizer 在 LLM 调用链上的兜底**。
 
 > 一个 Agent 的权限并不取决于你"以为"它有多大——而取决于**它拿到某个工具的那一刻，这个工具有没有经过信任判定**。而这套判定的起点，是一个只有四档的信任等级和一句"来源决定信任"的朴素原则。
 

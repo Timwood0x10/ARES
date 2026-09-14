@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSSEDisconnectNoGoroutineLeak pins the SSE handler leak fix (docs/reviews/DEEP_CODE_REVIEW.md
-// 1.7): the handler's deferred cleanup used to drain msgCh AFTER removing the
+// TestSSEDisconnectNoGoroutineLeak pins the SSE handler leak fix: the
+// handler's deferred cleanup used to drain msgCh AFTER removing the
 // session from t.sessions, but Close() — the only place that closes msgCh —
 // looks sessions up by ID, so the drain could never observe a close and every
 // disconnected client leaked one goroutine forever.

@@ -21,9 +21,9 @@
 
 The package names all look like "experience / memory," but they're three unrelated pipelines. Don't mix them up:
 
-1. **Experience distillation** (`internal/ares_experience`): distills a **task execution result** (`TaskResult`) into a reusable, rankable, feedback-driven `Experience`. This is the star of this article.
-2. **Memory distillation** (`internal/ares_memory/distillation` + `pipeline.go`): distills a **conversation** into classified `Memory` (knowledge/preference/interaction/profile), producing reports and pushing.
-3. **Skill priors** (`internal/ares_skills`): remembers "task-pattern → skill relevance" priors, used as a confidence source by the scheduler.
+1. **Experience distillation** (`internal/runtime/memory/experience`): distills a **task execution result** (`TaskResult`) into a reusable, rankable, feedback-driven `Experience`. This is the star of this article.
+2. **Memory distillation** (`internal/runtime/memory/distillation` + `pipeline.go`): distills a **conversation** into classified `Memory` (knowledge/preference/interaction/profile), producing reports and pushing.
+3. **Skill priors** (`internal/runtime/protocol/skills`): remembers "task-pattern → skill relevance" priors, used as a confidence source by the scheduler.
 
 They share the word "experience" but differ in inputs, outputs, and lifecycles. Walk through them one by one — **only what I read in the code.**
 
@@ -66,7 +66,7 @@ func HandleTaskCompletedForDistillation(ctx context.Context, svc *aresexp.Distil
 }
 ```
 
-The input struct `TaskResult` lives in `internal/ares_experience/task_result.go`:
+The input struct `TaskResult` lives in `internal/runtime/memory/experience/task_result.go`:
 
 ```go
 type TaskResult struct {
@@ -84,7 +84,7 @@ type TaskResult struct {
 
 ### 2.2 Main Flow: Distill
 
-`DistillationService` (`internal/ares_experience/distillation_service.go`) exposes the core method `Distill`, whose pipeline looks like this:
+`DistillationService` (`internal/runtime/memory/experience/distillation_service.go`) exposes the core method `Distill`, whose pipeline looks like this:
 
 ```mermaid
 flowchart LR
@@ -161,7 +161,7 @@ There's also a batch entry `DistillBatch(ctx, []*TaskResult)`: distills each one
 
 ### 2.3 The Domain Model: What an Experience Looks Like
 
-The `Experience` returned by the service is defined in `internal/ares_experience/ranked_experience.go` (mirrors the stored row):
+The `Experience` returned by the service is defined in `internal/runtime/memory/experience/ranked_experience.go` (mirrors the stored row):
 
 ```go
 type Experience struct {
@@ -307,7 +307,7 @@ func (c *ConflictResolver) Configure(problemSimilarityThreshold float64) error {
 }
 ```
 
-> Default threshold is `0.9` (overridable via `Configure`). Note this is a **different conflict mechanism** from `internal/ares_memory/distillation`'s `DistillationConfig.ConflictThreshold = 0.85` — one is the experience-ranking layer (ares_experience), the other is the conversation-distillation layer (ares_memory/distillation). Don't confuse them.
+> Default threshold is `0.9` (overridable via `Configure`). Note this is a **different conflict mechanism** from `internal/runtime/memory/distillation`'s `DistillationConfig.ConflictThreshold = 0.85` — one is the experience-ranking layer (ares_experience), the other is the conversation-distillation layer (ares_memory/distillation). Don't confuse them.
 
 ---
 
@@ -326,7 +326,7 @@ In other words: **an agent's last success/failure becomes the hint for the next 
 
 ### 6.2 Path B: Injecting Into a New Agent's Cognitive Context (Spawn prior)
 
-In `internal/agentfabric/lifecycle.go`, `SpawnSpec` has a field `ExperiencePrior any`:
+In `internal/fabric/agent/lifecycle.go`, `SpawnSpec` has a field `ExperiencePrior any`:
 
 ```go
 type SpawnSpec struct {
@@ -356,14 +356,14 @@ So "distilled experience can become a new agent's initial cognition" is a **real
 
 ## 7. Memory Distillation: Turning Conversations Into Classified Memory
 
-If the above is "task-level" distillation, `internal/ares_memory/distillation` handles "conversation-level" distillation. The entry `Distiller.DistillConversation` is a multi-stage orchestration (real phases in `distiller.go`):
+If the above is "task-level" distillation, `internal/runtime/memory/distillation` handles "conversation-level" distillation. The entry `Distiller.DistillConversation` is a multi-stage orchestration (real phases in `distiller.go`):
 
 ```
 extractPhase → classifyAndScorePhase → topNBeforeConflictPhase
             → embedPhase → resolveConflictsPhase → finalTopNPhase
 ```
 
-Combined with the `Pipeline` coordinator in `internal/ares_memory/pipeline.go`, it forms an end-to-end flow:
+Combined with the `Pipeline` coordinator in `internal/runtime/memory/pipeline.go`, it forms an end-to-end flow:
 
 ```mermaid
 flowchart LR
@@ -446,7 +446,7 @@ const (
 
 ## 8. Session & Task Memory: The Underlying Tools
 
-`ProductionMemoryManager` leans on two in-memory stores in `internal/ares_memory/context`:
+`ProductionMemoryManager` leans on two in-memory stores in `internal/runtime/memory/context`:
 
 - `SessionMemory`: holds sessions in `map[string]*SessionData`, `SessionData{SessionID, UserID, Messages, Context, AccessedAt, CreatedAt}`. A background `StartCleanup` prunes expired sessions every TTL/2; `Cleanup` removes at most 100 per call (avoids holding the lock too long).
 - `TaskMemory`: holds tasks in `map[string]*TaskData`; `TaskData` also tracks `Steps []StepRecord` / `Results []ResultRecord`. `TaskMemory.Distill` collapses a task into `models.Task` (input/output/context) for the "lightweight extraction" path.
@@ -473,7 +473,7 @@ const (
 
 ## 9. The MemoryManager Abstraction & the Production Implementation
 
-Experience distillation (ares_experience) runs on its own; the unified memory-access abstraction is `MemoryManager` (`internal/ares_memory/manager.go`), with three blocks:
+Experience distillation (ares_experience) runs on its own; the unified memory-access abstraction is `MemoryManager` (`internal/runtime/memory/manager.go`), with three blocks:
 
 - **Session**: CreateSession / AddMessage / GetMessages / AddStructuredMessage / BuildPromptMessages / BuildContext / DeleteSession
 - **Task**: CreateTask / CreateTaskWithID / UpdateTaskOutput / DistillTask / StoreDistilledTask / SearchSimilarTasks
@@ -507,7 +507,7 @@ It implements `validate-before-mutate` (a bad patch leaves config untouched) and
 
 ## 11. Skill Priors: Task Pattern → Relevance (Related But Not "Distillation")
 
-The third thing named "experience" is in `internal/ares_skills`. It's not the same as distillation above — this is a **Learned Source** that only biases future skill-discovery ranking, never auto-invokes a skill.
+The third thing named "experience" is in `internal/runtime/protocol/skills`. It's not the same as distillation above — this is a **Learned Source** that only biases future skill-discovery ranking, never auto-invokes a skill.
 
 - `Experience.Record(skill, taskPattern, successRate)`: stores {skill, task pattern, success rate}; re-recording the same (skill, pattern) pair replaces its rate; count is capped at `maxRecords=1000`, oldest evicted when exceeded.
 - `Experience.BestMatch(taskPattern)`: scores by **keyword overlap** (short patterns use containment; long patterns tokenize and score by overlap ratio, threshold `matchScoreThreshold=0.5`), returning the highest-success-rate prior.

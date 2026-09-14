@@ -8,7 +8,7 @@ import (
 // TestVectorArgEmptyBindsNULL locks the empty-embedding rule for `::vector`
 // columns.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.3 S-3): carriers
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding S-3): carriers
 // that build `SET embedding = $n::vector` passed FormatVector directly, which
 // returns the zero-dimension literal "[]" for an empty slice. pgvector rejects
 // '[]' for a VECTOR(n) column, so updating a row whose embedding had not been

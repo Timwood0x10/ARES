@@ -1,6 +1,6 @@
 # ares Architecture Deep Dive (VI): Security and Observability — Auth, RBAC, Sanitization, and Scheduling Observability (0.3.x)
 
-> 0.3.x note: This article is a complete rewrite grounded in the *current* `internal/ares_security/` and `internal/ares_observability/` implementations. Earlier versions of this article (a `SafeLogger`, a `LogTracer`, a rate-limiter factory, a four-phase graceful shut-down state machine) **no longer exist** in the codebase. This article only describes what is actually there now.
+> 0.3.x note: This article is a complete rewrite grounded in the *current* `internal/ares_security/` and `internal/runtime/observability` implementations. Earlier versions of this article (a `SafeLogger`, a `LogTracer`, a rate-limiter factory, a four-phase graceful shut-down state machine) **no longer exist** in the codebase. This article only describes what is actually there now.
 
 > The more dangerous a thing an Agent can do, the more you need to decide *before* it does it: who is using it, what it may touch, whether anything it emits leaks secrets — and, at runtime, whether every step it takes is actually visible.
 
@@ -11,8 +11,8 @@
 First, a reality check so the title doesn't mislead. The security and observability story in the current codebase is not a grand "defense-in-depth whitepaper"; it is a set of **small, clear modules that genuinely guard each HTTP boundary**.
 
 - Security: `internal/ares_security/` — **JWT auth + RBAC roles/permissions + request middleware + audit logging + sensitive-data sanitization** across 5 files.
-- Observability: `internal/ares_observability/` — a **`Tracer` interface (OTel and Noop implementations) + Metrics (OTel and Prometheus backends) + per-session cost tracking**.
-- Scheduling observability: **Scheduling Observatory** in `internal/kernelscheduler/decision_recorder.go`, plus the **runtime panel** in `internal/introspect/`.
+- Observability: `internal/runtime/observability` — a **`Tracer` interface (OTel and Noop implementations) + Metrics (OTel and Prometheus backends) + per-session cost tracking**.
+- Scheduling observability: **Scheduling Observatory** in `internal/kernel/decision_recorder.go`, plus the **runtime panel** in `internal/introspect/`.
 
 Everything in the previous version of this article that does not exist in the current code has been dropped. Every symbol below is present in the named file.
 
@@ -25,12 +25,12 @@ Core file list (real paths):
 | Middleware | `internal/ares_security/middleware.go` | `AuthMiddleware`, `NewAuthMiddleware`, `WithAudit`, `Principal`, `FromContext`, `Verify` |
 | Audit | `internal/ares_security/audit.go` | `AuditLogger`, `NewAuditLogger`, `Auth`, `Action` |
 | Sanitizer | `internal/ares_security/sanitizer.go` | `Sanitizer`, `Sanitize`, `SanitizeJSON`, `SanitizeOptions`, `SensitivePattern` |
-| Tracer iface | `internal/ares_observability/tracer.go` | `Tracer`, `LLMCall`, `ToolCall`, `AgentStep`, `AgentError` |
-| Noop impl | `internal/ares_observability/noop.go` | `NoopTracer`, `NewNoopTracer` |
-| OTel impl | `internal/ares_observability/otel_tracer.go` | `OTelTracer`, `NewOTelTracer`, `WithExporter`, `WithSampler`, `WithMetricReader` |
-| Metrics | `internal/ares_observability/metrics.go` | `Metrics`, `NewMetrics`, `RecordLLMCall`, `RecordToolCall`, `RecordAgentStepDuration`, `RecordAgentError` |
-| Prometheus | `internal/ares_observability/prometheus.go` | `PrometheusMetrics`, `NewPrometheusMetrics`, `MetricsHTTPHandler`, `RegisterMetricsRouter` |
-| Sched observability | `internal/kernelscheduler/decision_recorder.go` | `DecisionRecorder`, `ScheduleDecision`, `CandidateScore` |
+| Tracer iface | `internal/runtime/observability/tracer.go` | `Tracer`, `LLMCall`, `ToolCall`, `AgentStep`, `AgentError` |
+| Noop impl | `internal/runtime/observability/noop.go` | `NoopTracer`, `NewNoopTracer` |
+| OTel impl | `internal/runtime/observability/otel_tracer.go` | `OTelTracer`, `NewOTelTracer`, `WithExporter`, `WithSampler`, `WithMetricReader` |
+| Metrics | `internal/runtime/observability/metrics.go` | `Metrics`, `NewMetrics`, `RecordLLMCall`, `RecordToolCall`, `RecordAgentStepDuration`, `RecordAgentError` |
+| Prometheus | `internal/runtime/observability/prometheus.go` | `PrometheusMetrics`, `NewPrometheusMetrics`, `MetricsHTTPHandler`, `RegisterMetricsRouter` |
+| Sched observability | `internal/kernel/decision_recorder.go` | `DecisionRecorder`, `ScheduleDecision`, `CandidateScore` |
 | Runtime panel | `internal/introspect/` | `Dashboard`, `Store`, `Collector`, `Handler`, `Sink` |
 | LLM sanitizer wiring | `internal/llm/client.go` + `internal/ares_bootstrap/provide_llm.go` | `WithSanitizer` |
 

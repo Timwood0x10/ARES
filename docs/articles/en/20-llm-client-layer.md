@@ -137,7 +137,7 @@ ch, err := client.GenerateStream(attemptCtx, prompt)
 
 DeepSeek thinking-mode responses carry a `reasoning_content` field separate from `content`. Early ares parsing dropped it.
 
-> Location correction: the old article placed this on `Message`/`AssistantMsg` in `internal/core/models/message.go`. **Inaccurate** — the field lives in the `internal/llm/output` package: `output/openai.go`'s `Message` (with a `reasoning_content` JSON tag) is parsed and threaded into `AssistantMsg.ReasoningContent` in `output/toolcall.go` via `parseToolCallsFromResponse`, and `AssistantMsg.toMap()` writes it back (so the thinking trace round-trips through multi-turn tool calls):
+> Location correction: the old article placed this on `Message`/`AssistantMsg` in `internal/llmcore/llm.go`. **Inaccurate** — the field lives in the `internal/llm/output` package: `output/openai.go`'s `Message` (with a `reasoning_content` JSON tag) is parsed and threaded into `AssistantMsg.ReasoningContent` in `output/toolcall.go` via `parseToolCallsFromResponse`, and `AssistantMsg.toMap()` writes it back (so the thinking trace round-trips through multi-turn tool calls):
 
 ```go
 // internal/llm/output/toolcall.go

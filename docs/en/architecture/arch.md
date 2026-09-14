@@ -1,5 +1,16 @@
 # ARES Architecture Design
 
+> **⚠ Historical document (2026-09-13, v0.3.1)**: this was written during the
+> **Leader/Sub execution model**. That architecture was deleted in v0.3.x — the
+> current runtime is flat peers plus a kernel scheduler (`internal/kernel`) and
+> a task fabric (`internal/fabric/task`): no leader, no sub-agent hierarchy, no
+> message-queue dispatch. Every `LeaderAgent` / `SubAgents` /
+> `internal/agents/leader/` reference below no longer exists.
+>
+> **For the current architecture read** [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)
+> at the repository root (layered map of all 38 packages, every claim anchored
+> to a `file:line`). This document is kept as a historical reference.
+
 **Last Updated**: 2026-03-24
 
 ## System Architecture Overview
@@ -112,10 +123,10 @@ graph TB
 **Code Locations**:
 - Leader Agent: `internal/agents/leader/agent.go`
 - Sub Agent: `internal/agents/sub/agent.go`
-- Protocol: `internal/ares_protocol/ahp/`
+- Protocol: `internal/runtime/protocol/ahp`
 - LLM Client: `internal/llm/client.go`
 - Storage Pool: `internal/storage/postgres/pool.go`
-- Memory Manager: `internal/memory/production_manager.go`
+- Memory Manager: `internal/runtime/memory/production_manager.go`
 - Experience Distillation: `api/experience/`
 - Experience Repository: `internal/storage/postgres/repositories/`
 
@@ -262,7 +273,7 @@ func (p *Pool) WithConnection(ctx context.Context, fn func(*sql.Conn) error) err
 |-------|-----------|---------------|
 | Language | Go 1.21+ | - |
 | LLM | Ollama / OpenRouter | `internal/llm/client.go` |
-| Protocol | AHP (Agent Handshake Protocol) | `internal/ares_protocol/ahp/` |
+| Protocol | AHP (Agent Handshake Protocol) | `internal/runtime/protocol/ahp` |
 | Storage | PostgreSQL 15+ with pgvector | `internal/storage/postgres/` |
 | Concurrency | errgroup, sync | - |
 | Tools | Built-in tools | `internal/tools/` |
@@ -272,7 +283,7 @@ func (p *Pool) WithConnection(ctx context.Context, fn func(*sql.Conn) error) err
 
 ## Message Format (AHP Protocol)
 
-**Code Location**: `internal/ares_protocol/ahp/message.go`
+**Code Location**: `internal/runtime/protocol/ahp/message.go`
 
 ```go
 type Message struct {

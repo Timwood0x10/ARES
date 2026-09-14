@@ -1,5 +1,9 @@
 # Event Sourcing
 
+> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 **Leader/Sub 执行模型**时期。§「与 Leader 故障转移的集成」所述的 `LeaderSupervisor`、Leader 选举、`failover.triggered` 流程在 v0.3.x 已删除——现行架构是扁平对等 + 内核调度（`internal/kernel`）+ 任务织物（`internal/fabric/task`），崩溃恢复走 `RestoreFromStore` 事件重放（见 `docs/reference/serve-walkthrough.md`）。EventStore 本身（`internal/ares_events/`）仍是现行组件，本文的 Append/Read/乐观并发描述有效；仅 Leader 相关章节过时。
+>
+> **现行架构见**：仓库根 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)。
+
 **更新日期**: 2026-06-11
 
 ## 概述
@@ -320,7 +324,7 @@ sequenceDiagram
 
 ## DLQ 自动重试
 
-失败的消息处理与 `internal/ares_protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
+失败的消息处理与 `internal/runtime/protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
 
 ```go
 dlq := ahp.NewDLQ(10000)

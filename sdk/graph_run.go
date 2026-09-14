@@ -13,7 +13,7 @@ import (
 // cancelled / a hard cap trips), returning every node result plus the final
 // shared state.
 //
-// Execution model (docs/design/sdk-graph-v030.md):
+// Execution model:
 //   - Rounds are barriers: every currently-runnable node launches in parallel,
 //     the round ends when they all settle.
 //   - LLM (*Agent) nodes go through the kernel scheduling path — the same

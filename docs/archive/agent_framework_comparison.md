@@ -21,7 +21,7 @@
 - **计划轮次循环**（v0.3.1）：`taskfabric.PlanLoop` 支持整个计划 DAG 重执行最多 N 轮，含 `UntilCondition` 提前停止与 `Replan` 增量重规划钩子。
 - DAG 任务状态机（依赖、租约、epoch 隔离、checkpoint、优先级抢占）、MCP 接入、扁平对等 agent + agentipc 消息总线（Leader-Sub 架构已于 v0.3.x 删除）。
 - 可观测：introspect 只读面板（调度决策、任务状态机、agent 生命周期、事件流）+ OTel traces + 结构化日志 + Prometheus metrics。
-- **诚实的局限**：生态极小（2 名贡献者、内置工具约 20 个、无文档加载器、LLM 提供商 4 个：OpenAI / OpenRouter / Ollama / Anthropic，其中前两者测试最充分）；workflow/engine 的 HITL 能力已实现但未接入生产路径；演化系统未经大规模生产负载验证。详见 `docs/framework-comparison-langchain-crewai-agentscope-goagent-zh.md`。
+- **诚实的局限**：生态极小（2 名贡献者、内置工具约 20 个、无文档加载器、LLM 提供商 4 个：OpenAI / OpenRouter / Ollama / Anthropic，其中前两者测试最充分）；workflow/engine 的 HITL 能力已实现但未接入生产路径；演化系统未经大规模生产负载验证。详见 `docs/reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md`。
 
 - 统一 SDK：`sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` 一份 YAML 装配 LLM / 工具 / 记忆 / 蒸馏 / 进化 / 知识（`config.yaml` 指南：`docs/articles/zh/25-config-yaml-guide.zh.md`）。v0.3.1 起 SDK 与 serve 共用同一个 L2 执行内核（`agentruntime.NewExecution`），不再有独立的 SDK 内置 ReAct 引擎。
 - **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / SDK 入口共用同一内核（组件图等价有契约测试锁定）。v0.3.1 起六个 kernel 支柱（scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus）也纳入编排。
@@ -33,7 +33,7 @@
 - **计划轮次循环**（v0.3.1）：`taskfabric.PlanLoop` 支持整个计划 DAG 重执行最多 N 轮，含 `UntilCondition` 提前停止与 `Replan` 增量重规划钩子。
 - DAG 任务状态机（依赖、租约、epoch 隔离、checkpoint、优先级抢占）、MCP 接入、扁平对等 agent + agentipc 消息总线（Leader-Sub 架构已于 v0.3.x 删除）。
 - 可观测：introspect 只读面板（调度决策、任务状态机、agent 生命周期、事件流）+ OTel traces + 结构化日志 + Prometheus metrics。
-- **诚实的局限**：生态极小（2 名贡献者、内置工具约 20 个、无文档加载器、LLM 提供商 4 个：OpenAI/OpenRouter/Ollama/Anthropic，其中 OpenAI/Ollama 测试最充分）；workflow/engine 的 HITL 能力已实现但未接入生产路径。详见 `docs/framework-comparison-langchain-crewai-agentscope-goagent-zh.md`。
+- **诚实的局限**：生态极小（2 名贡献者、内置工具约 20 个、无文档加载器、LLM 提供商 4 个：OpenAI/OpenRouter/Ollama/Anthropic，其中 OpenAI/Ollama 测试最充分）；workflow/engine 的 HITL 能力已实现但未接入生产路径。详见 `docs/reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md`。
 
 ---
 

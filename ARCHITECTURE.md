@@ -1,7 +1,7 @@
 # ARES 架构总图（模块 · 数据流 · 真实任务全程）
 
 > 当前代码的完整模块地图。每条结论带 `file:line` 锚点，可直接跳源码核对。
-> 运行时实况（主链/状态机/断线台账）见 `RUNTIME.md`。审查证据见 `docs/reviews/`。
+> 审查证据见 `docs/reviews/`。一次请求从入口到完成的逐步走读见 `docs/reference/serve-walkthrough.md`。
 
 ---
 

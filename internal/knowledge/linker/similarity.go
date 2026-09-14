@@ -25,22 +25,29 @@ func (l *SimilarityLinker) Link(_ context.Context, objects []*knowledge.Knowledg
 		minScore = 0.3
 	}
 
-	var edges []knowledge.Relation
-	n := len(objects)
-
-	for i := 0; i < n; i++ {
-		tokensA := tokenize(objects[i].Summary)
-		if len(tokensA) == 0 {
+	// K-5: tokenize every summary exactly ONCE, up front. The old loop
+	// re-tokenized objects[j] inside the j-loop — O(n²·m) tokenizations,
+	// each allocating a fresh map (n=500 cost ~125k tokenize calls and
+	// 123MB per Link). After this hoist the pair loop costs only
+	// O(n²·min(|A|,|B|)) map lookups with zero allocation.
+	tokens := make([]map[string]int, len(objects))
+	present := make([]int, 0, len(objects))
+	for i, obj := range objects {
+		t := tokenize(obj.Summary)
+		if len(t) == 0 {
 			continue
 		}
+		tokens[i] = t
+		present = append(present, i)
+	}
 
-		for j := i + 1; j < n; j++ {
-			tokensB := tokenize(objects[j].Summary)
-			if len(tokensB) == 0 {
-				continue
-			}
-
-			score := jaccardSimilarity(tokensA, tokensB)
+	var edges []knowledge.Relation
+	for a := 0; a < len(present); a++ {
+		i := present[a]
+		tokensA := tokens[i]
+		for b := a + 1; b < len(present); b++ {
+			j := present[b]
+			score := jaccardSimilarity(tokensA, tokens[j])
 			if score >= minScore {
 				edges = append(edges, knowledge.Relation{
 					From:  objects[i].ID,

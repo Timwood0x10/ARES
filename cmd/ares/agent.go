@@ -387,8 +387,8 @@ type routeSpec struct {
 	// authWrite routes (nil otherwise). These are dispatch glue only — the
 	// handler bodies are the pre-registry functions, untouched.
 	Handler func(*actionHandler, http.ResponseWriter, *http.Request, *ares_security.Principal)
-	// Desc documents the route (one line, for the registry audit in
-	// docs/reviews/ARCHITECTURE_REVIEW_MERMAID.md §6 / M-S3).
+	// Desc documents the route (one line, for the registry audit trail —
+	// the M-S control-plane hardening batch, CHANGELOG [0.3.1] Security).
 	Desc string
 }
 

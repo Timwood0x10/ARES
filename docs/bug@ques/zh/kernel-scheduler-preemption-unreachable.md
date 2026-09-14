@@ -4,7 +4,7 @@
 - **严重度**: P2 / Medium（功能假接线：API 存在、测试存在，但生产路径永不触发）
 - **状态**: 已修复
 - **日期**: 2026-08-22
-- **涉及包**: `internal/kernelscheduler`
+- **涉及包**: `internal/kernel`
 
 ## 现象
 
@@ -56,7 +56,7 @@ epoch 不匹配，benign）。下一个可用 drain 重新 Acquire 被抢占的�
 
 ## 复现与回归测试
 
-`internal/kernelscheduler/scheduler_contract_test.go`:
+`internal/kernel/scheduler_contract_test.go`:
 
 ```
 TestPreemptLowerPriorityHandsBackRunningTask

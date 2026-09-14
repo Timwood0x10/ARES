@@ -1,5 +1,9 @@
 # ARES 框架架构设计
 
+> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 **Leader/Sub 执行模型**时期。v0.3.x 起该架构已删除——现行为扁平对等（peer）+ 内核调度器（`internal/kernel`）+ 任务织物（`internal/fabric/task`），无 leader、无 sub-agent 层级、无消息队列分发。本文中的 `LeaderAgent`、`SubAgents`、`internal/agents/leader/` 等均已不存在。
+>
+> **现行架构请读**：仓库根的 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)（38 个包的分层总图，每条结论带 `file:line` 锚点）。本文保留作历史参考。
+
 **更新日期**: 2026-03-25
 
 ## 系统架构总览
@@ -112,10 +116,10 @@ graph TB
 **代码位置**:
 - Leader Agent: `internal/agents/leader/agent.go`
 - Sub Agent: `internal/agents/sub/agent.go`
-- Protocol: `internal/ares_protocol/ahp/`
+- Protocol: `internal/runtime/protocol/ahp`
 - LLM Client: `internal/llm/client.go`
 - Storage Pool: `internal/storage/postgres/pool.go`
-- Memory Manager: `internal/memory/production_manager.go`
+- Memory Manager: `internal/runtime/memory/production_manager.go`
 - Experience Distillation: `api/experience/`
 - Experience Repository: `internal/storage/postgres/repositories/`
 
@@ -502,7 +506,7 @@ ares/
 |------|----------|----------|
 | 语言 | Go 1.21+ | - |
 | LLM | Ollama / OpenRouter | `internal/llm/client.go` |
-| 协议 | AHP (Agent Handshake Protocol) | `internal/ares_protocol/ahp/` |
+| 协议 | AHP (Agent Handshake Protocol) | `internal/runtime/protocol/ahp` |
 | 存储 | PostgreSQL 15+ with pgvector | `internal/storage/postgres/` |
 | 并发 | errgroup, sync | - |
 | 工具 | 内置工具 | `internal/tools/` |
@@ -512,7 +516,7 @@ ares/
 
 ## 消息格式 (AHP Protocol)
 
-**代码位置**: `internal/ares_protocol/ahp/message.go`
+**代码位置**: `internal/runtime/protocol/ahp/message.go`
 
 ```go
 type Message struct {

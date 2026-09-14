@@ -15,7 +15,7 @@
 
 1. **`tools/toolsource`** —— 工具的"来源抽象"。`ToolSource`（`Tools` / `OnChange` / `Source`），以及 `StaticSource` / `RegistrySource` / `MultiSource` 三个实现。
 2. **`tools/resources/core`** —— 工具元模型。`core.Tool` 接口、`ToolSchema`、`core.Registry`（含参数校验 `ValidateParams` 与渐进披露 `activeTools`）、内置工具目录（`builtin/`）。
-3. **运行时发现与选择** —— `discover_tools` 元工具（`discover_tool.go`）、三个 `ToolSelector`（`selector.go` / `capability_selector.go`）、`agentloop.Engine.expandDiscoveredTools`。
+3. **运行时发现与选择** —— `discover_tools` 元工具（`discover_tool.go`）、三个 `ToolSelector`（`selector.go` / `capability_selector.go`）、`(*Agent).resolveTools`（`sdk/discovery.go`；原 `agentloop.Engine.expandDiscoveredTools` 已移除）。
 4. **`tools/planner` + `tools/discovery` + `tools/envcap`** —— 能力规划兜底、本机命令发现、环境能力检索。
 5. **`agentfabric`** —— 真正把工具调起来的执行体：`ToolBinder` 接口、ReAct 工具循环 `chatCognition`、以及 L2 图里的 `toolCognition`（参数走 `arg.` 前缀命名空间）。
 
@@ -95,7 +95,7 @@ type Tool interface {
 
 ### 2.3 真正执行工具的是 ToolBinder，不是 Registry
 
-`internal/fabric/agent/chat_cognition.go` 里定义了 `ToolBinder` 接口（消费端接口，sub executor 和 fabric 都满足它）：
+`internal/fabric/agent/executor.go` 里定义了 `ToolBinder` 接口（消费端接口，sub executor 和 fabric 都满足它）：
 
 ```go
 type ToolBinder interface {
@@ -159,19 +159,23 @@ func (t *discoverToolsTool) Parameters() *core.ParameterSchema {
 - 结果 `json.Marshal` 成一个 JSON **字符串**（`[]discoverToolEntry`，`{name, description}` 紧凑形式）放进 `Result.Data`——所以数据落到 `%v` 格式化后是合法 JSON，LLM 能看到，展开器也能解析。
 - 上限 `maxDiscoverResults = 20` 条，保持 context 小。
 
-关键的"展开"在 `internal/agentloop/engine.go`。`agentloop.Engine` 不认识 `toolsource`，它只依赖一个窄接口 `ToolExpander`：
+关键的"展开"在 `sdk/discovery.go`。ReAct 时期的 `internal/agentloop/engine.go`（含 `ToolExpander` 接口与 `Engine.expandDiscoveredTools`）已随 ReAct 引擎删除；现在的实现是 `sourceExpander`，它**不依赖 `toolsource` 包**，只持有一份预建的 `name → rescore.Tool` 索引：
 
 ```go
-type ToolExpander interface {
-    Expand(ctx context.Context, names []string) ([]core.Tool, error)
+type sourceExpander struct {
+    byName map[string]rescore.Tool
 }
+
+// Expand resolves names into LLM tool defs from the pre-built index.
+// Unknown names are skipped without error.
+func (e *sourceExpander) Expand(_ context.Context, names []string) ([]llmcore.Tool, error)
 ```
 
-`Engine.executeToolCalls` 里，当 LLM 调用的恰好是 `discover_tools`、且执行成功（`err == nil && result.Success`）时，走 `expandDiscoveredTools`：
+`(*Agent).resolveTools`（`sdk/discovery.go:42`）在 LLM 调用 `discover_tools`、执行成功时走这条展开路径：
 
-1. 把结果当 `[]struct{ Name string }` 解析出名字；
-2. 调 `req.ToolExpander.Expand(ctx, names)` 得到 LLM 工具定义；
-3. 按 `Function.Name` 去重，追加进 `st.activeTools`，供**后续迭代**使用。
+1. 把结果解析出工具名；
+2. 调 `sourceExpander.Expand(ctx, names)` 得到 LLM 工具定义；
+3. 按 `Function.Name` 去重后追加进该次运行的工具集，供**后续迭代**使用。
 
 注意这里的"自动追加"是 **显式由 engine 代码实现**的：只有 LLM **主动调用了 `discover_tools`**，该轮展开才会发生；`ToolExpander == nil` 时展开被禁用，元工具结果只作为文本回给 LLM（不会变成可调用工具）。所以不是"工具自动重展开"，而是"**被发现的工具名，下一轮才可调用**"。
 
@@ -482,7 +486,7 @@ graph LR
 |---|---|---|
 | 工具来源有三个实现 | `toolsource/toolsource.go`（`StaticSource`/`RegistrySource`/`MultiSource`） | ✅ 已核实 |
 | discover_tools 元工具 | `toolsource/discover_tool.go`，`DiscoverToolsName="discover_tools"`，`maxDiscoverResults=20` | ✅ 已核实 |
-| 展开只在 LLM 主动调 discover_tools 时发生 | `agentloop/engine.go` `expandDiscoveredTools` / `ToolExpander` | ✅ 已核实 |
+| 展开只在 LLM 主动调 discover_tools 时发生 | `sdk/discovery.go` 的 `sourceExpander.Expand`（原 `agentloop/engine.go` 已移除） | ✅ 已核实 |
 | 三个选择器 + 关键词/能力提取 | `selector.go` / `capability_selector.go` | ✅ 已核实 |
 | Registry.Execute 带 ValidateParams | `resources/core/registry.go` | ✅ 已核实，但 agentfabric CallTool 路径不走它 |
 | 全部内置工具目录与标签 | `builtin/builtin.go` `RegisterGeneralTools` | ✅ 已核实 |

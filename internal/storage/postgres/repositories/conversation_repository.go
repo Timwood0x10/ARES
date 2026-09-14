@@ -123,7 +123,7 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *storage_model
 // It is a package-level constant (not an inline literal) so the tenant
 // predicate can be locked by a fast test that needs no database. RLS is not
 // enforced on this code path (repositories query pool.GetDB() directly, see
-// docs/reviews/0.3.1-final-deep-review.md §5.3 S-5), so an unscoped read here
+// docs/reviews/0.3.1-final-deep-review.md finding S-5), so an unscoped read here
 // is a genuine cross-tenant leak — it is not covered by any second line of
 // defence.
 const conversationGetByIDQuery = `

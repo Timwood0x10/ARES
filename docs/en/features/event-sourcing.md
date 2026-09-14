@@ -1,5 +1,19 @@
 # Event Sourcing
 
+> **⚠ Historical document (2026-09-13, v0.3.1)**: written during the
+> **Leader/Sub execution model** era. The "Leader failover integration" section
+> below describes `LeaderSupervisor`, leader election and a `failover.triggered`
+> flow that were all removed in v0.3.x — the current runtime is flat peers plus
+> a kernel scheduler (`internal/kernel`) and a task fabric
+> (`internal/fabric/task`); crash recovery replays the event log through
+> `RestoreFromStore` (see `docs/reference/serve-walkthrough.md`). The EventStore
+> itself (`internal/ares_events/`) is still current, so the Append/Read and
+> optimistic-concurrency parts of this document remain accurate; only the
+> Leader-related sections are stale.
+>
+> **For the current architecture read** [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)
+> at the repository root.
+
 **Updated**: 2026-06-11
 
 ## Overview
@@ -320,7 +334,7 @@ This is more reliable than checkpoints because no state is lost between snapshot
 
 ## DLQ Auto-Retry
 
-Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/ares_protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
+Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/runtime/protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
 
 ```go
 dlq := ahp.NewDLQ(10000)

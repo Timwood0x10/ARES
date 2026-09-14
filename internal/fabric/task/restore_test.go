@@ -13,7 +13,7 @@ import (
 // TestRestoreDropsDeletedTask pins F-1: a task removed through Delete must not
 // be resurrected by a restart.
 //
-// Regression (docs/reviews/0.3.1-final-deep-review.md §5.6 F-1): Delete emitted
+// Regression (docs/reviews/0.3.1-final-deep-review.md finding F-1): Delete emitted
 // no event, so the task.created already sitting in the durable store folded the
 // task back on the next RestoreFromStore — explicitly discarded work became
 // READY again and was re-executed, with no tombstone to tell it apart.

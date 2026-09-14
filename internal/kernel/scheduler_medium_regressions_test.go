@@ -1,6 +1,6 @@
 package kernel
 
-// §3.1 (MEDIUM) regressions for the scheduler:
+// MEDIUM regressions for the scheduler:
 // budget-exhaustion livelock, neutral outcome attribution, Scheduled task
 // counting, recovery-binding capability mismatch, quantum shutdown boundary,
 // and the drain semaphore's ctx-aware send.
@@ -20,7 +20,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// ── §3.1 #1: budget-exhausted sole candidate must not churn leases ──
+// ── #1: budget-exhausted sole candidate must not churn leases ──
 
 // TestBudgetExhaustedSoleCandidateDoesNotChurnLeases pins the pre-schedule
 // budget filter: when every candidate's budget is exhausted, the scheduler
@@ -99,7 +99,7 @@ func TestBudgetExhaustedSoleCandidateDoesNotChurnLeases(t *testing.T) {
 	waitForTaskState(t, fabric, "t-budget", taskfabric.StateCompleted, 5*time.Second)
 }
 
-// ── §3.1 #2 + #3: non-executor failures end neutral ──
+// ── #2 + #3: non-executor failures end neutral ──
 
 // TestEndQuantumOutcomeNeutralForNonExecutorConditions pins the neutral
 // attribution set: fabric start-stage sentinels (the task was concurrently
@@ -147,7 +147,7 @@ func TestEndQuantumOutcomeNeutralForNonExecutorConditions(t *testing.T) {
 	}
 }
 
-// ── §3.1 #4: Scheduled counts tasks, not quanta ──
+// ── #4: Scheduled counts tasks, not quanta ──
 
 // yieldingExecutor yields on its first step (Done=false) and completes on
 // the second — one task, two quanta.
@@ -206,7 +206,7 @@ func TestScheduledCountsTasksNotQuanta(t *testing.T) {
 	}
 }
 
-// ── §3.1 #5: recovery binding with a non-overlapping capability ──
+// ── #5: recovery binding with a non-overlapping capability ──
 
 // TestBoundExecutorCapabilityMismatchFallsThrough pins the stranding fix: a
 // recovery executor bound to a task whose capability it cannot run must not
@@ -242,7 +242,7 @@ func TestBoundExecutorCapabilityMismatchFallsThrough(t *testing.T) {
 	}
 }
 
-// ── §3.1 #6: a stuck executor must not block shutdown ──
+// ── #6: a stuck executor must not block shutdown ──
 
 // blockingExecutor parks every step until release is closed.
 type blockingExecutor struct {
@@ -314,7 +314,7 @@ func TestStuckExecutorDoesNotBlockShutdown(t *testing.T) {
 	close(exec.release)
 }
 
-// ── §3.1 #7: the drain semaphore send must respect ctx cancellation ──
+// ── #7: the drain semaphore send must respect ctx cancellation ──
 
 // TestDrainSemaphoreSendRespectsCancellation pins the shutdown liveness of
 // the spawn loop: with every semaphore slot held by a stuck quantum, a
@@ -369,7 +369,7 @@ func TestDrainSemaphoreSendRespectsCancellation(t *testing.T) {
 	close(exec.release)
 }
 
-// ── §3.1 #10: LoadTracker entries for dead agents are swept ──
+// ── #10: LoadTracker entries for dead agents are swept ──
 
 // TestReconcileForgetsDeadAgentTrackerEntries pins the bounded-growth fix:
 // when an agent disappears from the fabric, its accumulated tracker stats

@@ -1,6 +1,6 @@
 package agentfabric
 
-// §3.2 (MEDIUM) regressions for the agent fabric:
+// MEDIUM regressions for the agent fabric:
 // CognitionFactory lock discipline, record's agent-state read, the death
 // snapshot store bound, and planner growth idempotency across quantum
 // re-execution.

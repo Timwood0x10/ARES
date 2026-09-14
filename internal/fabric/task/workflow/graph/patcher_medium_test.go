@@ -1,6 +1,6 @@
 package graph
 
-// §3.2 (MEDIUM) regressions for the graph patch
+// MEDIUM regressions for the graph patch
 // executor: the SetGraph/Apply race, the unbound-executor contract, and the
 // remove-node rollback losing every edge that touched the removed node.
 

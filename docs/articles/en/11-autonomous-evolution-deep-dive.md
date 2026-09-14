@@ -1,8 +1,8 @@
 # ares Architecture Deep Dive (XI): Autonomous Evolution — When Agents Learn to Improve Themselves (0.3.x)
 
 > The honest 0.3.x picture up front: **two evolution engines coexist, and their roles are opposite to intuition.**
-> The one really wired into production bootstrap is **v1** — `internal/ares_evolution`'s **StrategyLifecycle** (G1 guardrail → G2 shadow → G3 eval → G4 deployment). Every promoted strategy crosses this gate.
-> **v2** — `internal/evolution`'s **Candidate → Verify → Promote** release closed-loop — is the newer, oft-discussed pipeline. As a library with runnable examples (`examples/`) it's complete, but it **has no production caller today**; it is "code-complete, waiting to be wired."
+> The one really wired into production bootstrap is **v1** — `internal/runtime/ares_evolution`'s **StrategyLifecycle** (G1 guardrail → G2 shadow → G3 eval → G4 deployment). Every promoted strategy crosses this gate.
+> **v2** — `internal/runtime/evolution`'s **Candidate → Verify → Promote** release closed-loop — is the newer, oft-discussed pipeline. As a library with runnable examples (`examples/`) it's complete, but it **has no production caller today**; it is "code-complete, waiting to be wired."
 > GA (population genetic algorithm) is demoted to an optional zero-token / parameter-tuning path, but its `Crossover` / `Fitness` have already been **removed from v2's core `Genome` interface** (zero production callers).
 
 > Have you ever wondered why agents can't get smarter with use?
@@ -11,7 +11,7 @@
 > And more crucially — **"being able to generate a better strategy" and "being willing to ship that strategy" are two completely different things.**
 > This article covers how far ares has actually gone on each, and which parts are still just code.
 
-> Note: this article is based on real code (see `internal/evolution/` (v2 candidate/gates/GA lineage), `internal/ares_evolution/` (v1 lifecycle/fitness/guardrails/eval gate), `internal/evolution/genome/` and `internal/ares_evolution/genome/` (GA and DAG genomes), `internal/ares_bootstrap/provide_new_evolution.go` (L1 wiring), `internal/evolution/coordinator/` and `deployment/`, `internal/evolution/patch/`). Every symbol and path I describe I actually read in this code. Anything that is "only claimed in comments/docs, not provided by code," "example-only benchmark," or "configured but not wired," I mark （待核实）/ (unverified) or delete outright — I don't oversell it.
+> Note: this article is based on real code (see `internal/runtime/evolution` (v2 candidate/gates/GA lineage), `internal/runtime/ares_evolution` (v1 lifecycle/fitness/guardrails/eval gate), `internal/runtime/evolution/genome` and `internal/runtime/ares_evolution/genome` (GA and DAG genomes), `internal/ares_bootstrap/provide_new_evolution.go` (L1 wiring), `internal/runtime/evolution/coordinator` and `deployment/`, `internal/runtime/evolution/patch`). Every symbol and path I describe I actually read in this code. Anything that is "only claimed in comments/docs, not provided by code," "example-only benchmark," or "configured but not wired," I mark （待核实）/ (unverified) or delete outright — I don't oversell it.
 
 ---
 
@@ -19,7 +19,7 @@
 
 The title says "autonomous evolution," but ares actually has **two** evolution systems, and pretending otherwise helps nobody:
 
-| | **v1: `internal/ares_evolution`** | **v2: `internal/evolution`** |
+| | **v1: `internal/runtime/ares_evolution`** | **v2: `internal/runtime/evolution`** |
 |---|---|---|
 | Main flow | `StrategyLifecycle`: Strategy → G1 guardrail → G2 shadow → G3 eval → G4 deploy | Candidate → Verify (Gate1/2/3) → Release → Promote |
 | State machine | Strategy states: candidate / shadow / active / rollback | Candidate states: candidate → verified → rejected / promoted |
@@ -39,14 +39,14 @@ I'm establishing this up front because the next sections keep switching between 
 
 Mapping concepts from biological evolution. Note that I deliberately refuse to over-fix the mapping, because ares's "mutation" and "selection" have two implementations on two paths:
 
-| Biology | Agent Evolution | v1 `ares_evolution` | v2 `internal/evolution` |
+| Biology | Agent Evolution | v1 `ares_evolution` | v2 `internal/runtime/evolution` |
 |---|---|---|---|
 | **Mutation** | Tune params / swap prompt / mutate DAG | `mutation.Mutator`; `genome.Population.EvolveOnIdle` | `GAGenerator.Generate` (mutating stable instructions) |
 | **Selection** | New-vs-old, statistically significant | `RuntimeFitnessAggregator` weighted fitness | Gate-3 `CandidateRegressionChecker` (preserved-case win rate, Welch's t-test significance) |
 | **Inheritance** | Record strategy lineage | `PopulationGenealogyRecorder.Record` | `CandidateStore` lifecycle + `Genealogy` |
 | **Release gate** | Decide "can it ship" | `StrategyLifecycle` G2/G3/G4 + `RollbackPolicy` | `CandidatePipeline.Release` → canary deploy → `SetStable` → `Promote` |
 
-The **GA population evolution loop** below is the skeleton of the v1 `genome` package (`internal/ares_evolution/genome/`) — pure in-memory, zero-token, the "tune parameters" path:
+The **GA population evolution loop** below is the skeleton of the v1 `genome` package (`internal/runtime/ares_evolution/genome`) — pure in-memory, zero-token, the "tune parameters" path:
 
 ```mermaid
 graph TD
@@ -97,7 +97,7 @@ This is what 0.3.x introduced. It solves the core pain points: **separating judg
 
 ### 3.1 The candidate is a first-class object
 
-`internal/evolution/candidate.go`:
+`internal/runtime/evolution/candidate.go`:
 
 ```go
 type CandidateKind int
@@ -181,7 +181,7 @@ The three gates in detail:
 
 ### 3.4 Release pipeline: Release → manager → canary → SetStable → Promote
 
-`CandidatePipeline.Release(ctx, candidateID)` (`internal/evolution/candidate_pipeline.go`):
+`CandidatePipeline.Release(ctx, candidateID)` (`internal/runtime/evolution/candidate_pipeline.go`):
 
 1. Only accepts `StatusVerified` candidates (else `ErrCandidateNotFound` / `ErrCandidateNotVerified`).
 2. **Release-time gate-3 recheck**: the `regressionCheck` injected via `WithReleaseRegressionCheck` runs **before any patch is built/applied**; on failure the candidate is `Reject("release regression gate: ...")` and neither runtime nor stable is touched.
@@ -194,7 +194,7 @@ The key point: **rollback is a first-class candidate field**. And "who approves,
 
 ### 3.5 Where candidates come from: Diagnoser (human) and GAGenerator (GA mutation)
 
-`Diagnoser` (`internal/evolution/diagnoser.go`) answers "which role repeatedly fails, and how." It queries `evidence.Store` for `Source="result_verifier"`, `Kind=KindDimensionEval` failure records, clustered by role:
+`Diagnoser` (`internal/runtime/evolution/diagnoser.go`) answers "which role repeatedly fails, and how." It queries `evidence.Store` for `Source="result_verifier"`, `Kind=KindDimensionEval` failure records, clustered by role:
 
 ```go
 const MinFailureClusterSize = 2 // ≥2 same-role failures before a candidate — a one-off isn't a systemic gap
@@ -203,7 +203,7 @@ const MinFailureClusterSize = 2 // ≥2 same-role failures before a candidate �
 - `Generate(req)`: the candidate content (diff/reason) is provided by a **human**; the diagnoser only packages the failure evidence — v1 explicitly does **no automatic LLM candidate generation** (must stay within a bounded harness, Ch. 8).
 - `GenerateGA(role, n)`: when `WithGAGenerator` is attached, generates candidates by GA-mutating the stable instructions.
 
-`GAGenerator` (`internal/evolution/ga_generator.go`) treats the stable instructions as the parent and mutates with `mutation.Mutator`, keeping only children whose text genuinely differs:
+`GAGenerator` (`internal/runtime/evolution/ga_generator.go`) treats the stable instructions as the parent and mutates with `mutation.Mutator`, keeping only children whose text genuinely differs:
 
 ```go
 // Only keep children whose PromptTemplate genuinely differs from stable
@@ -217,9 +217,9 @@ GA candidates must carry evidence IDs (`ErrGAGeneratorNoEvidence`), and the gene
 
 ### 3.6 Gate-3's LLM scorer: LLMArenaScorer + gate3 assembly
 
-Gate 3 needs a scorer for "instructions × case." 0.3.0 uses `LLMArenaScorer` (`internal/ares_evolution/service/llm_arena_scorer.go`, implementing `ares_arena.Scorer`) in two LLM steps: **execute** (instructions as behavior, case as task → output), then **grade** (LLM scores output quality 0–1, parsed and clamped).
+Gate 3 needs a scorer for "instructions × case." 0.3.0 uses `LLMArenaScorer` (`internal/runtime/ares_evolution/service/llm_arena_scorer.go`, implementing `ares_arena.Scorer`) in two LLM steps: **execute** (instructions as behavior, case as task → output), then **grade** (LLM scores output quality 0–1, parsed and clamped).
 
-`internal/evolution/gate3_orchestrator.go` provides the assembly entry points:
+`internal/runtime/evolution/gate3_orchestrator.go` provides the assembly entry points:
 
 - **`BuildRegressionGate3(profileStore, client, testCases, opts...)`**: pure assembly `LLMClient → LLMArenaScorer → CandidateRegressionChecker`, returns `func(c *Candidate) error`, injectable into both `CandidateVerifier.WithRegressionCheck` and `CandidatePipeline.WithReleaseRegressionCheck`.
 - **`LoadRegressionGate3(profileStore, configPath, testCases, opts...)`**: loads `llm.Client` from YAML (e.g. `configs/ares.local.yaml`) then assembles; when `llm.fallbacks` is non-empty it builds a `FailoverClient` (primary + fallback providers, auto-switch on rate-limit). Gate-3 uses a more lenient circuit breaker (8 failures / 15s) because the scorer already retries with exponential backoff.
@@ -232,7 +232,7 @@ Gate 3 uses `ares_arena`'s `BatchScorer` (`ScoreBatch`): collapse count executio
 
 `plan/0.3.1plan/REVIEW_PROGRESS.md` states plainly:
 
-> `evolution` (old package): apart from `LLMAdapter` (used by the bootstrap 15-min ticker), the entire Candidate→Verify→Promote pipeline (`NewCandidatePipeline` / `NewGAGenerator` / `NewDiagnoser`, etc.) is reachable only via examples/tests; it has been superseded by `internal/ares_evolution`.
+> `evolution` (old package): apart from `LLMAdapter` (used by the bootstrap 15-min ticker), the entire Candidate→Verify→Promote pipeline (`NewCandidatePipeline` / `NewGAGenerator` / `NewDiagnoser`, etc.) is reachable only via examples/tests; it has been superseded by `internal/runtime/ares_evolution`.
 
 I grepped all of `internal/` for `NewCandidatePipeline` / `NewCandidateVerifier` / `BuildRegressionGate3` — every caller is in `_test.go` or `examples/`. **So the "newest" pipeline in this article is a fully-designed, well-tested, but not-yet-production candidate release system.** That's not a put-down — it's the truth about its "factory-gate status."
 
@@ -240,7 +240,7 @@ I grepped all of `internal/` for `NewCandidatePipeline` / `NewCandidateVerifier`
 
 ## 4. The v1 Production Path: StrategyLifecycle's Four Gates (the one actually running)
 
-Since production uses v1, let's cover it properly. `StrategyLifecycle` in `internal/ares_evolution/lifecycle.go` is the **sole entry point** for promoting a strategy (B2/B3 fix: `deployBestStrategy` now calls `Submit`, not direct `Deploy` — no route around the G2 shadow gate once wired). The strategy state machine:
+Since production uses v1, let's cover it properly. `StrategyLifecycle` in `internal/runtime/ares_evolution/lifecycle.go` is the **sole entry point** for promoting a strategy (B2/B3 fix: `deployBestStrategy` now calls `Submit`, not direct `Deploy` — no route around the G2 shadow gate once wired). The strategy state machine:
 
 ```
 candidate → shadow → active ─(degradation)→ rollback pending → active(old)
@@ -282,7 +282,7 @@ Key details:
 
 ### 4.1 Fitness: RuntimeFitnessAggregator (weighted multi-source)
 
-The v1 "scoring backend" is `RuntimeFitnessAggregator` (`internal/ares_evolution/fitness_aggregator.go`), merging multiple evidence sources into a single [0,1] fitness for both the lifecycle decision and the deployment gate.
+The v1 "scoring backend" is `RuntimeFitnessAggregator` (`internal/runtime/ares_evolution/fitness_aggregator.go`), merging multiple evidence sources into a single [0,1] fitness for both the lifecycle decision and the deployment gate.
 
 ```go
 func DefaultFitnessWeights() FitnessWeights {
@@ -317,7 +317,7 @@ func DefaultAggregatorConfig() AggregatorConfig {
 
 ### 4.2 Guardrail: ValidateToolSet (tool-set whitelist check)
 
-`EvolutionGuardrails.ValidateToolSet(generation, tools) *GuardrailResult` (`internal/ares_evolution/guardrails.go`) validates an evolved tool whitelist at selection time — three checks:
+`EvolutionGuardrails.ValidateToolSet(generation, tools) *GuardrailResult` (`internal/runtime/ares_evolution/guardrails.go`) validates an evolved tool whitelist at selection time — three checks:
 
 1. **Upper bound**: `len(tools) > MaxToolsEnabled` → `ShouldStop=true` (`tool_set_upper_bound`).
 2. **At least one tool** (when `requireAnyTool`): empty set → rejected (`tool_set_empty`).
@@ -327,7 +327,7 @@ It **mutates no state** — it only reports whether the set may proceed. It comp
 
 ### 4.3 Eval gate: EvalGate (G3) — and the trap I flagged as a GAP
 
-`EvalGate` (`internal/ares_evolution/gate_eval.go`) wraps `ares_eval.EvaluatorRegistry` against a fixed suite, default `MinScore=0.7`. `StrictMode` exists but defaults to `false`:
+`EvalGate` (`internal/runtime/ares_evolution/gate_eval.go`) wraps `ares_eval.EvaluatorRegistry` against a fixed suite, default `MinScore=0.7`. `StrictMode` exists but defaults to `false`:
 
 ```go
 func DefaultEvalGateConfig() EvalGateConfig {
@@ -346,7 +346,7 @@ The problem (details in §8, E3): production assembly `buildEvalGate` (`internal
 
 If the v2 candidate pipeline and the v1 lifecycle both depend on LLMs (gate-3, G3), the `genome` package's population evolution is the one **pure in-memory, zero-LLM-call** path — it only sorts/scales/crosses/mutates based on existing `Score` data, costing memory-bandwidth order of magnitude (exact per-second throughput is marked unverified in §8; I won't publish fake numbers).
 
-This package is where the §2 GA loop lands. The core struct, `Population` (`internal/ares_evolution/genome/population.go`):
+This package is where the §2 GA loop lands. The core struct, `Population` (`internal/runtime/ares_evolution/genome/population.go`):
 
 ```go
 type Population struct {
@@ -368,7 +368,7 @@ It also returns the sentinel error `ErrSelectionEmptyPopulation` on an empty pop
 
 ### 5.1 Three crossover operators
 
-`internal/ares_evolution/genome/crossover.go` (`CrossoverInterface.Crossover(ctx, a, b)`):
+`internal/runtime/ares_evolution/genome/crossover.go` (`CrossoverInterface.Crossover(ctx, a, b)`):
 
 - **UniformCrossover (independent, equal-probability)**: each param 50% from A/B. Signature `uniformCrossParams(paramsA, paramsB) (map[string]any, string)` — the string is an inheritance description (`from_A=[...] from_B=[...]`) for lineage tracing.
 - **MultiPointCrossover (k-point segment)**: switches parent at k cut points, preserving within-segment correlation. Cut points via Fisher-Yates partial shuffle (non-repeating, uniform); k=1 → one-point, k=len-1 → ~uniform.
@@ -378,7 +378,7 @@ Crossover offspring are tagged `mutation.MutationCrossover`, distinct from mutat
 
 ### 5.2 Three selection operators
 
-`internal/ares_evolution/genome/selection.go` (`Selection.Select(ctx, pop, n)`):
+`internal/runtime/ares_evolution/genome/selection.go` (`Selection.Select(ctx, pop, n)`):
 
 - **TruncationSelection**: `SortByScore` then top-N, fully deterministic.
 - **TournamentSelection**: default k=3, pick 3 at random, return the best, repeat n times; larger k = stronger pressure.
@@ -406,15 +406,15 @@ func SortByScore(strategies []*mutation.Strategy) {
 - **Steady-state GA** (`EvolveSteadyState`): replace only 10–50% per generation (`replaceRate` default 0.3), preserving exploration history for smoother online learning.
 - **Canonical/selection score split** (`effectiveScore()`): `Score` is never temporarily modified; `SelectionScore` resets to 0 each generation and absorbs fitness-sharing adjustments — protecting canonical fitness from pollution.
 
-> Honest: `internal/evolution/genome/genome.go` (the v2 interface) explicitly states `Crossover` and `Fitness` **were removed from the core `Genome` interface in 2026-07** ("zero production callers"), now optional via `CrossoverGenome` / `FitnessGenome` (type-asserted). So "GA has crossover" must be stated carefully: **the population package (v1) has crossover operators, but v2's `Genome` plugin interface no longer requires crossover.**
+> Honest: `internal/runtime/evolution/genome/genome.go` (the v2 interface) explicitly states `Crossover` and `Fitness` **were removed from the core `Genome` interface in 2026-07** ("zero production callers"), now optional via `CrossoverGenome` / `FitnessGenome` (type-asserted). So "GA has crossover" must be stated carefully: **the population package (v1) has crossover operators, but v2's `Genome` plugin interface no longer requires crossover.**
 
 ---
 
 ## 6. v2 Genome Registry and WorkflowGenome: Evolving DAG Topology
 
-Beyond tuning strategy parameters, v2 `internal/evolution/genome/` provides genomes that evolve DAG structure. The `Genome` interface is minimal — `Name()` / `Mutate(n)` / `Snapshot()` (`Crossover` / `Fitness` are now optional extensions).
+Beyond tuning strategy parameters, v2 `internal/runtime/evolution/genome` provides genomes that evolve DAG structure. The `Genome` interface is minimal — `Name()` / `Mutate(n)` / `Snapshot()` (`Crossover` / `Fitness` are now optional extensions).
 
-`WorkflowGenome` (`internal/evolution/genome/workflow_genome.go`) operates on an `engine.MutableDAG`; `Mutate` randomly picks one of 9 operators:
+`WorkflowGenome` (`internal/runtime/evolution/genome/workflow_genome.go`) operates on an `engine.MutableDAG`; `Mutate` randomly picks one of 9 operators:
 
 ```
 InsertNode / RemoveNode / ReplaceNode / Parallelize / Serialize
