@@ -17,7 +17,7 @@
 //
 // Run:
 //
-//	go run examples/29-akf-graph-node/main.go
+//	go run examples/_internal/29-akf-graph-node/main.go
 package main
 
 import (

@@ -177,10 +177,10 @@ It implements no recovery itself. Recovery is *delegated/expected* from ares_run
 
 ### 4.3 Scenario orchestration
 
-`scenario.go` defines action sequences in YAML. Real examples live in `examples/arena/` (`leader_assassination.yaml`, `cascading_storm.yaml`):
+`scenario.go` defines action sequences in YAML. Real examples live in `examples/arena/` (`peer_failure.yaml`, `cascading_storm.yaml`):
 
 ```yaml
-name: leader-assassination-and-recovery
+name: peer-failure-and-leaderless-recovery
 config:
   stop_on_error: false
   parallel_actions: false
@@ -188,18 +188,23 @@ config:
   cooldown: 1s
 actions:
   - delay: 2s
-    action: { type: kill_leader }
-    label: kill-leader
-  - delay: 1s
     action: { type: kill_agent, target_id: agent-1 }
     label: kill-agent-1
+  - delay: 1s
+    action: { type: kill_agent, target_id: agent-2 }
+    label: kill-agent-2
   - delay: 3s
-    action: { type: network_partition, target_id: agent-2 }
-    label: partition-agent-2
+    action: { type: network_partition, target_id: agent-3 }
+    label: partition-agent-3
   - delay: 1s
     action: { type: slow_agent, target_id: agent-3, metadata: { delay: 10s } }
     label: slow-agent-3
 ```
+
+> The pre-0.3.1 example was "leader assassination" built on a `kill_leader`
+> action. The kernel scheduler is leaderless — no `models.AgentType` is
+> `"leader"` — so `Injector.KillLeader` always returned `ErrLeaderNotFound`
+> and the scenario was a silent no-op. It was rewritten as peer failure.
 
 `ValidateScenario` checks the name, at least one action, non-negative delays, per-action validity, and non-negative `max_concurrent`/`timeout`. `RunScenarioReport` supports warmup/cooldown, an overall timeout, and `stop_on_error`.
 

@@ -25,7 +25,7 @@
 //
 // Run:
 //
-//	go run examples/05-evolution-demo/main.go
+//	go run examples/_fixtures/05-evolution-demo/main.go
 //
 // Expected output:
 //

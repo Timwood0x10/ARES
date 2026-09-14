@@ -70,17 +70,6 @@ func (s State) String() string {
 	}
 }
 
-// IsTerminal returns true if the state is a terminal state
-// (no further transitions are expected).
-func (s State) IsTerminal() bool {
-	switch s {
-	case StateStopped, StateDisabled, StateFailed:
-		return true
-	default:
-		return false
-	}
-}
-
 // IsHealthy returns true if the component is in a healthy state
 // (Ready or Degraded with explicit config).
 func (s State) IsHealthy() bool {

@@ -32,7 +32,7 @@
 //
 // Run:
 //
-//	go run ./examples/runtime_evolution/full
+//	go run examples/_internal/runtime_evolution/full
 //
 // Expected output:
 //

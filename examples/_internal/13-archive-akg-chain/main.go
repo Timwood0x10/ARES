@@ -25,7 +25,7 @@
 //
 // Run:
 //
-//	go run ./examples/13-archive-akg-chain
+//	go run ./examples/_internal/13-archive-akg-chain
 //
 // Expected output:
 //

@@ -37,7 +37,7 @@
 //
 // Run (from the repo root):
 //
-//	go run examples/aresos-demo/main.go
+//	go run examples/_internal/aresos-demo/main.go
 //
 // Expected output: a 7-step log ending with A2's synthesis decision:
 //

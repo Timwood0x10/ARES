@@ -12,11 +12,14 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -176,7 +179,7 @@ func (h *actionHandler) checkAuth(w http.ResponseWriter, r *http.Request) *ares_
 }
 
 // auditAction records a destructive action on the modular audit sink.
-func (h *actionHandler) auditAction(action, target string, princ *ares_security.Principal, ok bool) {
+func (h *actionHandler) auditAction(r *http.Request, action, target string, princ *ares_security.Principal, ok bool) {
 	if h.audit == nil {
 		return
 	}
@@ -184,7 +187,7 @@ func (h *actionHandler) auditAction(action, target string, princ *ares_security.
 	if princ != nil {
 		subject = princ.Subject
 	}
-	h.audit.Action(action, subject, target, ok)
+	h.audit.Action(action, subject, target, ok, ares_security.RequestDetailsFrom(r))
 }
 
 // checkAuthRead gates the JSON read surfaces at READ permission: a valid
@@ -541,6 +544,19 @@ func (h *actionHandler) authorize(level authLevel, w http.ResponseWriter, r *htt
 // then its handler runs. The registry replaced the hand-written routing
 // switch one-for-one; the handler bodies are unchanged.
 func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Correlation ID first (C-8): an inbound X-Request-Id wins (subject to
+	// sanity limits — an attacker-controlled oversized header must not flow
+	// into logs), otherwise one is minted. Canonicalized onto the request
+	// header so downstream components — including the inner control server's
+	// auth middleware — can read it without new context plumbing, and echoed
+	// on the response for client correlation.
+	if reqID := sanitizeRequestID(r.Header.Get("X-Request-Id")); reqID != "" {
+		r.Header.Set("X-Request-Id", reqID)
+	} else {
+		r.Header.Set("X-Request-Id", newRequestID())
+	}
+	w.Header().Set("X-Request-Id", r.Header.Get("X-Request-Id"))
+
 	// Limit request body on all POST endpoints to 1MB to prevent
 	// memory exhaustion from oversized payloads.
 	if r.Method == http.MethodPost && r.Body != nil {
@@ -557,13 +573,88 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		spec.Handler(h, w, r, princ)
+		h.dispatchAction(w, r, princ, spec)
 		return
 	}
 	// Unreachable in practice — the registry's final entry matches every
 	// path — but kept as the fail-safe: an exotic request target still
 	// reaches the control server instead of a silent no-response.
 	h.inner.ServeHTTP(w, r)
+}
+
+// dispatchAction runs one route's handler under the panic guard (Phase 3):
+// a panicking handler must yield a structured 500 carrying the request ID
+// and an audit entry, not a dropped connection. net/http keeps the process
+// alive through handler panics, but the client would see a reset and the
+// incident would leave no request-attributed trace.
+func (h *actionHandler) dispatchAction(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal, spec routeSpec) {
+	tw := &trackingWriter{ResponseWriter: w}
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("http: panic in action handler",
+				"request_id", r.Header.Get("X-Request-Id"),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"panic", rec,
+				"stack", string(debug.Stack()))
+			h.auditAction(r, "panic", r.URL.Path, princ, false)
+			if !tw.wrote {
+				tw.WriteHeader(http.StatusInternalServerError)
+				writeJSON(tw, map[string]any{"error": "internal server error", "request_id": r.Header.Get("X-Request-Id")})
+			}
+		}
+	}()
+	spec.Handler(h, tw, r, princ)
+}
+
+// trackingWriter records whether anything was written so the panic guard can
+// still emit a 500 for an unwritten response instead of triggering a
+// "superfluous WriteHeader" double-write panic.
+type trackingWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+// WriteHeader records the write before delegating.
+func (t *trackingWriter) WriteHeader(code int) {
+	t.wrote = true
+	t.ResponseWriter.WriteHeader(code)
+}
+
+// Write records the write before delegating.
+func (t *trackingWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+// requestIDMaxLen bounds an inbound correlation ID: the value flows into
+// logs and responses, so an attacker-supplied multi-kilobyte header must not
+// be echoed verbatim.
+const requestIDMaxLen = 64
+
+// sanitizeRequestID returns the inbound ID when it is short printable ASCII,
+// else "" (the dispatcher mints a fresh one).
+func sanitizeRequestID(v string) string {
+	if len(v) == 0 || len(v) > requestIDMaxLen {
+		return ""
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < 0x21 || v[i] > 0x7e { // printable, space excluded
+			return ""
+		}
+	}
+	return v
+}
+
+// newRequestID mints a short random hex correlation ID. The fallback covers
+// a crypto/rand failure (depleted entropy at boot) — uniqueness within the
+// process is still overwhelmingly likely via the nanosecond timestamp.
+func newRequestID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "req-" + time.Now().Format("20060102T150405.000000000")
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // ── Registry route adapters ──────────────────────────────

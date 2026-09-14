@@ -99,6 +99,12 @@ func (t *LoadTracker) End(agentID string, success bool) {
 	// "no capable candidate" even with live, idle executors).
 	if t.load[agentID] > 0 {
 		t.load[agentID]--
+	} else {
+		// Unmatched End (N-4): no TryBegin is in flight. The only producer is
+		// a straggler quantum outliving the agent's Forget — recording its
+		// outcome would recreate the ghost entry reconciliation just removed.
+		// Drop the outcome; the busy slot is already absent.
+		return
 	}
 	t.done[agentID]++
 	if success {

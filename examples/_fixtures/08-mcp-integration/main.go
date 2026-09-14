@@ -30,7 +30,7 @@
 //
 // Run:
 //
-//	go run examples/08-mcp-integration/main.go
+//	go run examples/_fixtures/08-mcp-integration/main.go
 //
 // Expected output:
 //

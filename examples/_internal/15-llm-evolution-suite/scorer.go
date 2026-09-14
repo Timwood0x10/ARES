@@ -21,7 +21,7 @@
 //
 // Run:
 //
-//	go run ./examples/15-llm-evolution-suite scorer
+//	go run ./examples/_internal/15-llm-evolution-suite scorer
 //
 // Expected output:
 //

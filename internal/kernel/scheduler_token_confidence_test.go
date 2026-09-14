@@ -241,8 +241,11 @@ func TestMeasuredTrackerValueWinsOverPrior(t *testing.T) {
 	fabric := taskfabric.NewFabric().WithConfidenceSource(staticPrior{0.9})
 	tracker := NewLoadTracker()
 	// Measured history: 1 success in 2 attempts → 0.5, which must WIN over
-	// the 0.9 prior (live feedback outranks stale priors).
+	// the 0.9 prior (live feedback outranks stale priors). Seeded with real
+	// Begin/End pairs: an unmatched End is dropped (N-4 ghost guard).
+	tracker.Begin("rust-meas")
 	tracker.End("rust-meas", true)
+	tracker.Begin("rust-meas")
 	tracker.End("rust-meas", false)
 	exec := &probingExecutor{id: "rust-meas", typ: models.AgentType("rust")}
 	sched := New(fabric, map[string]CapabilityExecutor{"rust-meas": exec}, tracker)
@@ -302,6 +305,7 @@ func TestConfidenceForMeasured(t *testing.T) {
 	assert.True(t, measured, "override → measured")
 
 	tracker.SetAgentConfidence("b", -1) // clear
+	tracker.Begin("b")
 	tracker.End("b", true)
 	v, measured = tracker.ConfidenceForMeasured("b", "code")
 	assert.Equal(t, 1.0, v)

@@ -22,7 +22,7 @@
 //
 // Run:
 //
-//	go run examples/09-full-app/main.go
+//	go run examples/_fixtures/09-full-app/main.go
 //
 // Then open http://localhost:8080 in a browser.
 //

@@ -33,7 +33,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 	// JWT or API key) could trigger them — the declared "chaos is RoleAdmin
 	// only" policy was never enforced.
 	if chaosType != "stop" && !ares_security.HasPermission(princ.Role, ares_security.PermAdmin) {
-		h.auditAction("chaos-"+chaosType, "denied", princ, false)
+		h.auditAction(r, "chaos-"+chaosType, "denied", princ, false)
 		w.WriteHeader(http.StatusForbidden)
 		writeJSON(w, map[string]any{"error": "insufficient role: chaos operations require admin permission"})
 		return
@@ -52,13 +52,13 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Chaos-Token")), []byte(h.chaosStopToken)) != 1 {
-			h.auditAction("chaos-stop", "live-loop", princ, false)
+			h.auditAction(r, "chaos-stop", "live-loop", princ, false)
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = fmt.Fprint(w, `{"error":"invalid X-Chaos-Token"}`) // best-effort body
 			return
 		}
 		liveChaosCtl.RequestStop()
-		h.auditAction("chaos-stop", "live-loop", princ, true)
+		h.auditAction(r, "chaos-stop", "live-loop", princ, true)
 		_, _ = fmt.Fprint(w, `{"status":"stopping","message":"live chaos loop will exit"}`) // best-effort body
 
 	case "random-kill":
@@ -69,12 +69,12 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		if h.kernel != nil {
 			target, err := chaosKillRandomFabric(r.Context(), h.kernel)
 			if err != nil {
-				h.auditAction("chaos-random-kill", "unknown", princ, false)
+				h.auditAction(r, "chaos-random-kill", "unknown", princ, false)
 				w.WriteHeader(http.StatusBadRequest)
 				writeJSON(w, map[string]any{"error": err.Error()})
 				return
 			}
-			h.auditAction("chaos-random-kill", target, princ, true)
+			h.auditAction(r, "chaos-random-kill", target, princ, true)
 			writeJSON(w, map[string]any{
 				"chaos": "random-kill", "target": target, "success": true,
 				"message": "chaos: killed fabric agent " + target + " (kernel recovery will resume its tasks)",
@@ -89,12 +89,12 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		}
 		target := agents[rand.Intn(len(agents))]
 		if err := h.mgr.StopAgent(r.Context(), target.ID); err != nil {
-			h.auditAction("chaos-random-kill", target.ID, princ, false)
+			h.auditAction(r, "chaos-random-kill", target.ID, princ, false)
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
-		h.auditAction("chaos-random-kill", target.ID, princ, true)
+		h.auditAction(r, "chaos-random-kill", target.ID, princ, true)
 		writeJSON(w, map[string]any{
 			"chaos": "random-kill", "target": target.ID, "success": true,
 			"message": "chaos: killed random agent " + target.ID,
@@ -103,12 +103,12 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		if h.kernel != nil {
 			killed, failed, err := chaosKillAllFabric(r.Context(), h.kernel)
 			if err != nil {
-				h.auditAction("chaos-kill-all", "unknown", princ, false)
+				h.auditAction(r, "chaos-kill-all", "unknown", princ, false)
 				w.WriteHeader(http.StatusBadRequest)
 				writeJSON(w, map[string]any{"error": err.Error()})
 				return
 			}
-			h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, true)
+			h.auditAction(r, "chaos-kill-all", strings.Join(killed, ","), princ, true)
 			writeJSON(w, map[string]any{
 				"chaos": "kill-all", "killed": killed, "failed": failed, "success": true,
 			})
@@ -122,7 +122,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 			}
 		}
 		// audit reflects whether ALL agents were stopped, not a blanket true.
-		h.auditAction("chaos-kill-all", strings.Join(killed, ","), princ, len(killed) == len(agents))
+		h.auditAction(r, "chaos-kill-all", strings.Join(killed, ","), princ, len(killed) == len(agents))
 		writeJSON(w, map[string]any{
 			"chaos": "kill-all", "killed": killed, "success": len(killed) == len(agents),
 		})
@@ -134,12 +134,12 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		if h.kernel != nil {
 			requeued, err := chaosRecoverSweep(h.kernel)
 			if err != nil {
-				h.auditAction("chaos-recover", "unknown", princ, false)
+				h.auditAction(r, "chaos-recover", "unknown", princ, false)
 				w.WriteHeader(http.StatusBadRequest)
 				writeJSON(w, map[string]any{"error": err.Error()})
 				return
 			}
-			h.auditAction("chaos-recover", strings.Join(requeued, ","), princ, true)
+			h.auditAction(r, "chaos-recover", strings.Join(requeued, ","), princ, true)
 			writeJSON(w, map[string]any{
 				"chaos": "recover", "recovered_tasks": requeued, "success": true,
 				"message": "requeued expired-lease tasks; replacement executors resume from checkpoint",
@@ -159,7 +159,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, prin
 		}
 		// audit reflects whether ALL down agents were recovered, not a blanket true.
 		ok := needRecover == 0 || len(recovered) == needRecover
-		h.auditAction("chaos-recover", strings.Join(recovered, ","), princ, ok)
+		h.auditAction(r, "chaos-recover", strings.Join(recovered, ","), princ, ok)
 		writeJSON(w, map[string]any{
 			"chaos": "recover", "recovered": recovered, "success": ok,
 		})

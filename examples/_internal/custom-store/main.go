@@ -21,7 +21,7 @@
 //
 // Run:
 //
-//	go run ./examples/custom-store
+//	go run ./examples/_internal/custom-store
 //
 // Expected output:
 //

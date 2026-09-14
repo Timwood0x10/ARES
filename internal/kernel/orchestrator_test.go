@@ -26,9 +26,15 @@ type lifecycleComp struct {
 	stopErr  error
 	waitErr  error
 
-	// blockWait makes Wait block forever (no context), simulating a
-	// misbehaving component that ignores shutdown.
+	// blockWait makes Wait block until releaseWait is called, simulating a
+	// misbehaving component that ignores shutdown. The production path
+	// leaves a hung component's waiter goroutine stuck (one bounded
+	// goroutine, by design); tests release it at cleanup so the package
+	// goleak gate stays meaningful.
 	blockWait bool
+	waitMu    sync.Mutex
+	waitBlock chan struct{}
+	unblock   sync.Once
 
 	// failReady marks the component as started then fails Ready, simulating
 	// a partial start that must be cleaned up by rollback.
@@ -74,9 +80,27 @@ func (c *lifecycleComp) Stop(_ context.Context) error {
 
 func (c *lifecycleComp) Wait() error {
 	if c.blockWait {
-		<-make(chan struct{}) // block forever, ignoring cancellation
+		c.waitMu.Lock()
+		if c.waitBlock == nil {
+			c.waitBlock = make(chan struct{})
+		}
+		ch := c.waitBlock
+		c.waitMu.Unlock()
+		<-ch
 	}
 	return c.waitErr
+}
+
+// releaseWait unblocks a blocking Wait. Safe to call before Wait (the
+// channel is created and closed immediately) and idempotent (sync.Once).
+func (c *lifecycleComp) releaseWait() {
+	c.waitMu.Lock()
+	if c.waitBlock == nil {
+		c.waitBlock = make(chan struct{})
+	}
+	ch := c.waitBlock
+	c.waitMu.Unlock()
+	c.unblock.Do(func() { close(ch) })
 }
 
 func TestOrchestrator_Start_HappyPath(t *testing.T) {
@@ -380,9 +404,9 @@ func TestOrchestrator_Shutdown_BlockingWaiterTimesOut(t *testing.T) {
 	defer cancel()
 
 	reg := NewRegistry()
-	requireNoErr(t, reg.Register(&lifecycleComp{
-		name: "a", blockWait: true,
-	}, ModeRequired))
+	hung := &lifecycleComp{name: "a", blockWait: true}
+	t.Cleanup(hung.releaseWait)
+	requireNoErr(t, reg.Register(hung, ModeRequired))
 
 	o := NewOrchestrator(reg, rootCtx)
 	if err := o.Start(context.Background()); err != nil {

@@ -164,7 +164,7 @@ func generateSummary(id, domain string, objType knowledge.ObjectType, rng *rand.
 
 // TestAKFLargeScaleBenchmark validates Planner selection and token savings
 // with a large corpus (5000+ articles) to demonstrate real-world AKF value.
-// Run: go test -run TestAKFLargeScaleBenchmark -v ./examples/knowledge-fabric/
+// Run: go test -run TestAKFLargeScaleBenchmark -v ./examples/_internal/knowledge-fabric/
 func TestAKFLargeScaleBenchmark(t *testing.T) {
 	ctx := context.Background()
 

@@ -2,18 +2,18 @@
 // example suite. It merges the former standalone examples 15-18 into one
 // command with four scenarios selected by a subcommand:
 //
-//	go run ./examples/15-llm-evolution-suite scorer     — LLMArenaScorer smoke test
-//	go run ./examples/15-llm-evolution-suite regression — preserved-case regression comparison
-//	go run ./examples/15-llm-evolution-suite gate3     — candidate gate-3 end-to-end
-//	go run ./examples/15-llm-evolution-suite release   — candidate release closed loop
+//	go run ./examples/_internal/15-llm-evolution-suite scorer     — LLMArenaScorer smoke test
+//	go run ./examples/_internal/15-llm-evolution-suite regression — preserved-case regression comparison
+//	go run ./examples/_internal/15-llm-evolution-suite gate3     — candidate gate-3 end-to-end
+//	go run ./examples/_internal/15-llm-evolution-suite release   — candidate release closed loop
 //
 // All scenarios drive a real LLM configured in configs/ares.local.yaml
 // (git-ignored), make real API calls, and may incur usage cost. A full
 // transcript of each run is written to
-// ./examples/15-llm-evolution-suite/logs/run-<ts>.log.
+// ./examples/_internal/15-llm-evolution-suite/logs/run-<ts>.log.
 //
 // The offline, reproducible GA candidate evolution lives separately in
-// examples/19-ga-candidate-e2e (no real LLM needed).
+// examples/_internal/19-ga-candidate-e2e (no real LLM needed).
 package main
 
 import (
@@ -56,7 +56,7 @@ func main() {
 	setupLog()
 
 	if len(os.Args) < 2 {
-		fmt.Println("usage: go run ./examples/15-llm-evolution-suite <scenario>")
+		fmt.Println("usage: go run ./examples/_internal/15-llm-evolution-suite <scenario>")
 		fmt.Println("  scorer     — LLMArenaScorer smoke test (single case, old vs bad score)")
 		fmt.Println("  regression — preserved-case regression comparison (old vs new strategy)")
 		fmt.Println("  gate3      — candidate gate-3 end-to-end (bad rejected, good verified)")

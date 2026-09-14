@@ -32,7 +32,7 @@
 //
 // Run:
 //
-//	go run examples/21-ai-assistant-integration/main.go
+//	go run examples/_internal/21-ai-assistant-integration/main.go
 //
 // Expected output (order is deterministic):
 //

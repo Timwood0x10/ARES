@@ -88,7 +88,7 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, p
 	if h.tools != nil {
 		result, err := h.tools.Execute(r.Context(), req.Name, req.Params)
 		if err != nil {
-			h.auditAction("call_tool", req.Name, princ, false)
+			h.auditAction(r, "call_tool", req.Name, princ, false)
 			// Distinguish "tool not found" from a real execution failure so
 			// callers get an accurate error instead of a blanket 404.
 			if _, ok := h.tools.Get(req.Name); ok {
@@ -105,7 +105,7 @@ func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request, p
 			}
 			return
 		}
-		h.auditAction("call_tool", req.Name, princ, true)
+		h.auditAction(r, "call_tool", req.Name, princ, true)
 		writeJSON(w, map[string]any{
 			"tool": req.Name, "success": result.Success, "data": result.Data,
 		})
@@ -171,7 +171,7 @@ func (h *actionHandler) handleCallMCPTool(w http.ResponseWriter, r *http.Request
 		return
 	}
 	result, err := h.tools.Execute(r.Context(), name, args)
-	h.auditAction("call_mcp_tool", name, princ, err == nil)
+	h.auditAction(r, "call_mcp_tool", name, princ, err == nil)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		writeJSON(w, map[string]any{"error": err.Error()})

@@ -14,7 +14,7 @@
 // It is fully offline and reproducible: the mutator, crossover, and population
 // are all seeded (seed 42) and fitness is a deterministic heuristic over the
 // strategy's prompt template and parameters, so no real LLM is needed. Gate 3
-// (LLM regression) is intentionally not attached — see examples/17 and 18 for
+// (LLM regression) is intentionally not attached — see examples/_internal/17 and 18 for
 // the real-LLM gate-3 path.
 //
 // Learning objectives:
@@ -35,7 +35,7 @@
 //
 // Run from the repo root:
 //
-//	go run ./examples/19-ga-candidate-e2e
+//	go run ./examples/_internal/19-ga-candidate-e2e
 //
 // Expected output:
 //
@@ -46,7 +46,7 @@
 //	reproducibility OK: same-seed GA run converged to the same champion
 //
 // A full transcript is written to
-// ./examples/19-ga-candidate-e2e/logs/run-<ts>.log.
+// ./examples/_internal/19-ga-candidate-e2e/logs/run-<ts>.log.
 package main
 
 import (
@@ -392,7 +392,7 @@ func main() {
 	log.Printf("reproducibility OK: same-seed GA run converged to the same champion")
 
 	fmt.Println("── REAL GA evolution closed-loop demo done ──")
-	log.Printf("gate-3 note: LLM regression gate not attached; see examples/17,18 for the real-LLM path")
+	log.Printf("gate-3 note: LLM regression gate not attached; see examples/_internal/17,18 for the real-LLM path")
 }
 
 // setupLog tees all output to stdout and a timestamped log file.

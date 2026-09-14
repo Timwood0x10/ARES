@@ -3,7 +3,7 @@
 //
 // Usage:
 //
-//	go run examples/11-knowledge-import/akg/
+//	go run examples/_internal/11-knowledge-import/akg/
 package main
 
 import (

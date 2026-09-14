@@ -177,10 +177,10 @@ func (in *Injector) KillLeader(ctx context.Context) (string, error) {
 
 ### 4.3 场景编排
 
-`scenario.go` 用 YAML 定义动作序列。真实示例在 `examples/arena/`（`leader_assassination.yaml`、`cascading_storm.yaml`）：
+`scenario.go` 用 YAML 定义动作序列。真实示例在 `examples/arena/`（`peer_failure.yaml`、`cascading_storm.yaml`）：
 
 ```yaml
-name: leader-assassination-and-recovery
+name: peer-failure-and-leaderless-recovery
 config:
   stop_on_error: false
   parallel_actions: false
@@ -188,18 +188,20 @@ config:
   cooldown: 1s
 actions:
   - delay: 2s
-    action: { type: kill_leader }
-    label: kill-leader
-  - delay: 1s
     action: { type: kill_agent, target_id: agent-1 }
     label: kill-agent-1
+  - delay: 1s
+    action: { type: kill_agent, target_id: agent-2 }
+    label: kill-agent-2
   - delay: 3s
-    action: { type: network_partition, target_id: agent-2 }
-    label: partition-agent-2
+    action: { type: network_partition, target_id: agent-3 }
+    label: partition-agent-3
   - delay: 1s
     action: { type: slow_agent, target_id: agent-3, metadata: { delay: 10s } }
     label: slow-agent-3
 ```
+
+> 0.3.1 之前的示例是建立在 `kill_leader` 动作上的"刺杀 leader"。内核调度器是无领导的——没有任何 `models.AgentType` 是 `"leader"`——所以 `Injector.KillLeader` 恒返回 `ErrLeaderNotFound`，整个场景是静默空转。现已改写为 peer 失效场景。
 
 `ValidateScenario` 检查名称、至少一个动作、delay 非负、每动作有效性、`max_concurrent`/`timeout` 非负。`RunScenarioReport` 支持 warmup/cooldown、整体 timeout、`stop_on_error`。
 

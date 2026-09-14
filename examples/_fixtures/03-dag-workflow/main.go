@@ -7,7 +7,7 @@
 // expressed with sdk.Graph on the single kernel execution path.
 //
 // Ops alternative: any of these shapes can also be submitted over HTTP via
-// POST /api/graphs — see examples/28-collab-graphs and
+// POST /api/graphs — see examples/_fixtures/28-collab-graphs and
 // docs/cookbook/orchestration-modes.md.
 //
 // Core APIs used (with package paths):
@@ -16,7 +16,7 @@
 //
 // Run:
 //
-//	go run examples/03-dag-workflow/main.go
+//	go run examples/_fixtures/03-dag-workflow/main.go
 package main
 
 import (

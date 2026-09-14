@@ -28,7 +28,7 @@
 //
 // Run:
 //
-//	go run ./examples/runtime_evolution/knowledge
+//	go run examples/_internal/runtime_evolution/knowledge
 //
 // Expected output:
 //

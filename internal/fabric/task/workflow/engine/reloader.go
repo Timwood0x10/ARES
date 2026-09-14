@@ -90,14 +90,14 @@ func (w *FileWatcher) Watch(ctx context.Context, dir string) error {
 
 		w.wg.Add(1)
 		w.g.Go(func() error {
-			w.fsnotifyLoop(dir)
+			w.fsnotifyLoop(ctx, dir)
 			return nil
 		})
 	} else {
 		// Fallback to polling
 		w.wg.Add(1)
 		w.g.Go(func() error {
-			w.watchLoop(dir)
+			w.watchLoop(ctx, dir)
 			return nil
 		})
 	}
@@ -131,12 +131,18 @@ func (w *FileWatcher) watchDirectory(ctx context.Context, dir string) {
 // fsnotifyLoop watches for file change events.
 // The watcher is closed by Close() after this goroutine exits, so no
 // deferred close is needed here (fixing a double-close bug).
-func (w *FileWatcher) fsnotifyLoop(dir string) {
+// fsnotifyLoop consumes watcher events until EITHER stop context (Close) or
+// the Watch context is cancelled (F-17): a caller cancelling its ctx without
+// calling Close must not leave the event loop — and its fsnotify handle —
+// alive.
+func (w *FileWatcher) fsnotifyLoop(ctx context.Context, dir string) {
 	defer w.wg.Done()
 
 	for {
 		select {
 		case <-w.stopCtx.Done():
+			return
+		case <-ctx.Done():
 			return
 		case event, ok := <-w.watcher.Events:
 			if !ok {
@@ -169,7 +175,9 @@ func (w *FileWatcher) fsnotifyLoop(dir string) {
 }
 
 // watchLoop periodically checks for file changes (fallback when fsnotify unavailable).
-func (w *FileWatcher) watchLoop(dir string) {
+// watchLoop polls the directory until EITHER stop context (Close) or the
+// Watch context is cancelled (F-17), mirroring fsnotifyLoop.
+func (w *FileWatcher) watchLoop(ctx context.Context, dir string) {
 	defer w.wg.Done()
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
@@ -177,6 +185,8 @@ func (w *FileWatcher) watchLoop(dir string) {
 	for {
 		select {
 		case <-w.stopCtx.Done():
+			return
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if err := w.scanAndLoad(w.stopCtx, dir); err != nil {
@@ -196,11 +206,17 @@ func (w *FileWatcher) Close() {
 	if w.g != nil {
 		_ = w.g.Wait()
 	}
-	if w.watcher != nil {
-		if err := w.watcher.Close(); err != nil {
+	// Swap the handle under the lock (F-17): the loops have exited by now
+	// (wg.Wait above), but the lock keeps the nil-out race-free against any
+	// other accessor and makes a double Close a no-op.
+	w.mu.Lock()
+	watcher := w.watcher
+	w.watcher = nil
+	w.mu.Unlock()
+	if watcher != nil {
+		if err := watcher.Close(); err != nil {
 			log.Warn("reloader: close watcher failed", "error", err)
 		}
-		w.watcher = nil
 	}
 }
 
@@ -439,8 +455,11 @@ func (r *WorkflowReloader) StartWatching(ctx context.Context, dir string) error 
 	}
 	watcher.RegisterCallback(r.onReload)
 
-	// Use reloader's cancel context for watching
+	// Use reloader's cancel context for watching. On failure the watcher's
+	// fsnotify handle and stop context must be released here (F-17): the
+	// caller only sees the error and has no other reference to close.
 	if err := watcher.Watch(r.cancelCtx, dir); err != nil {
+		watcher.Close()
 		return errors.Wrap(err, "start watcher")
 	}
 

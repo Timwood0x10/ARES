@@ -28,7 +28,7 @@
 //
 // Run:
 //
-//	go run examples/14-tool-discovery/main.go
+//	go run examples/_internal/14-tool-discovery/main.go
 //
 // Expected output:
 //

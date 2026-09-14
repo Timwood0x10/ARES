@@ -29,7 +29,7 @@
 //
 // Run:
 //
-//	go run examples/22-evolution-blocks/main.go
+//	go run examples/_internal/22-evolution-blocks/main.go
 //
 // Expected output (numeric values are deterministic per run):
 //

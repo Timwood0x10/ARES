@@ -56,7 +56,7 @@ var keyFacts = map[string][]string{
 }
 
 // TestAKFAccuracy measures content preservation across the AKF pipeline.
-// Run: go test -run TestAKFAccuracy -v ./examples/knowledge-fabric/
+// Run: go test -run TestAKFAccuracy -v ./examples/_internal/knowledge-fabric/
 func TestAKFAccuracy(t *testing.T) {
 	ctx := context.Background()
 	reg := buildRegistry()

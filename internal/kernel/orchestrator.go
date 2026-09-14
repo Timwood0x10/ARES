@@ -249,12 +249,14 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	go func() {
 		waitCh <- o.eg.Wait()
 	}()
+	egWaitTimer := time.NewTimer(waitTimeout)
+	defer egWaitTimer.Stop()
 	select {
 	case waitErr := <-waitCh:
 		if waitErr != nil {
 			errs = append(errs, fmt.Errorf("kernel: errgroup wait: %w", waitErr))
 		}
-	case <-time.After(waitTimeout):
+	case <-egWaitTimer.C:
 		errs = append(errs, fmt.Errorf("kernel: errgroup wait timed out after %s", waitTimeout))
 	}
 
@@ -296,17 +298,24 @@ func (o *Orchestrator) stopComponent(ctx context.Context, name string) error {
 		go func() {
 			waitCh <- waiter.Wait()
 		}()
+		// NewTimer instead of time.After (N-6): the healthy path returns before
+		// the deadline and must not leave an un-cancellable timer behind.
+		waitTimer := time.NewTimer(stopTimeout)
+		defer waitTimer.Stop()
 		select {
 		case waitErr := <-waitCh:
 			if waitErr != nil {
 				log.Warn("kernel: wait error",
 					"component", name, "error", waitErr)
 			}
-		case <-time.After(stopTimeout):
-			log.Warn("kernel: wait timed out (goroutine leaked)",
+		case <-waitTimer.C:
+			// The buffered channel lets the waiter goroutine send and exit as
+			// soon as Wait() returns (N-5): no leak, only a bounded overshoot
+			// for this component's bookkeeping.
+			log.Warn("kernel: wait timed out",
 				"component", name, "timeout", stopTimeout)
 		case <-ctx.Done():
-			log.Warn("kernel: wait aborted by shutdown context (goroutine leaked)",
+			log.Warn("kernel: wait aborted by shutdown context",
 				"component", name)
 		}
 	}
@@ -336,17 +345,19 @@ func (o *Orchestrator) cleanupComponent(ctx context.Context, name string) {
 		go func() {
 			waitCh <- waiter.Wait()
 		}()
+		cleanupTimer := time.NewTimer(stopTimeout)
+		defer cleanupTimer.Stop()
 		select {
 		case waitErr := <-waitCh:
 			if waitErr != nil {
 				log.Warn("kernel: cleanup wait error",
 					"component", name, "error", waitErr)
 			}
-		case <-time.After(stopTimeout):
-			log.Warn("kernel: cleanup wait timed out (goroutine leaked)",
+		case <-cleanupTimer.C:
+			log.Warn("kernel: cleanup wait timed out",
 				"component", name, "timeout", stopTimeout)
 		case <-ctx.Done():
-			log.Warn("kernel: cleanup wait aborted by context (goroutine leaked)",
+			log.Warn("kernel: cleanup wait aborted by context",
 				"component", name)
 		}
 	}

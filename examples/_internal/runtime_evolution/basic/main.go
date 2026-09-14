@@ -29,7 +29,7 @@
 //
 // Run:
 //
-//	go run ./examples/runtime_evolution/basic
+//	go run examples/_internal/runtime_evolution/basic
 //
 // Expected output:
 //

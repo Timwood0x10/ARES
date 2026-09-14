@@ -71,7 +71,7 @@ func (h *actionHandler) handleEvolutionApprove(w http.ResponseWriter, r *http.Re
 		return
 	}
 	h.lifecycle.Approve()
-	h.auditAction("evolution_approve", "lifecycle", princ, true)
+	h.auditAction(r, "evolution_approve", "lifecycle", princ, true)
 	snap := h.lifecycle.Snapshot()
 	writeJSON(w, map[string]any{
 		"status":         "approved",
@@ -87,7 +87,7 @@ func (h *actionHandler) handleEvolutionApprove(w http.ResponseWriter, r *http.Re
 func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, agentID, action string, princ *ares_security.Principal, fn func(context.Context, string) error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := fn(r.Context(), agentID); err != nil {
-		h.auditAction(action, agentID, princ, false)
+		h.auditAction(r, action, agentID, princ, false)
 		// Map error to proper HTTP status; don't leak raw err.Error().
 		status := http.StatusInternalServerError
 		msg := "internal server error"
@@ -111,7 +111,7 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 		})
 		return
 	}
-	h.auditAction(action, agentID, princ, true)
+	h.auditAction(r, action, agentID, princ, true)
 	writeJSON(w, map[string]any{
 		"action": action, "agent": agentID, "success": true,
 		"message": action + " agent " + agentID + " succeeded",

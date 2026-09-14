@@ -231,6 +231,16 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		if !ok || executor == nil {
 			return s.handleStaleWinner(taskID, winner, epoch)
 		}
+		// N-3 observability: in peer mode the fabric had no live agent for the
+		// winner, yet a static registration exists (legacy mode or a
+		// recovery-bound executor). Correctness is fenced — a stale holder's
+		// completion is rejected by the epoch token — but the dispatch stays
+		// visible instead of silent so a dead agent's lingering static
+		// registration can be spotted in logs.
+		if s.agents != nil {
+			log.Debug("kernel scheduler: peer-mode dispatch fell back to a static registration",
+				"task_id", taskID, "winner", winner)
+		}
 	}
 	// Track the busy slot while the quantum runs so the next Schedule sees the
 	// real load; end records the outcome for confidence.

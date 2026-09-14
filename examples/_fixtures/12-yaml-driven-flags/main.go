@@ -23,7 +23,7 @@
 //
 // Run:
 //
-//	go run examples/12-yaml-driven-flags/main.go
+//	go run examples/_fixtures/12-yaml-driven-flags/main.go
 //
 // Expected output:
 //
@@ -35,7 +35,7 @@
 //
 // To use a different config file:
 //
-//	ARES_YAML=./my-config.yaml go run examples/12-yaml-driven-flags/main.go
+//	ARES_YAML=./my-config.yaml go run examples/_fixtures/12-yaml-driven-flags/main.go
 package main
 
 import (

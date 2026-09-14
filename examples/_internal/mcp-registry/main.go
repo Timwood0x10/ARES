@@ -24,7 +24,7 @@
 //
 // Run:
 //
-//	go run ./examples/mcp-registry
+//	go run ./examples/_internal/mcp-registry
 //
 // Expected output:
 //

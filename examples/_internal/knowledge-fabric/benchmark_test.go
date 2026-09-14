@@ -16,8 +16,8 @@ import (
 
 // Benchmark token savings of AKF pipeline vs naive full-dump.
 //
-// Run:  go test -bench=BenchmarkAKFSavings -benchmem -v ./examples/knowledge-fabric/
-// Print details: go test -run TestAKFSavings -v ./examples/knowledge-fabric/
+// Run:  go test -bench=BenchmarkAKFSavings -benchmem -v ./examples/_internal/knowledge-fabric/
+// Print details: go test -run TestAKFSavings -v ./examples/_internal/knowledge-fabric/
 
 // rawArticles simulates full-length article content for each demo article.
 // Each Raw is ~300-600 chars of realistic Chinese technical documentation.

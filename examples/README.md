@@ -31,7 +31,7 @@ Legend: ★ flagship · LLM = needs a configured provider · dry = runs without 
 | Example | Concept | Needs LLM |
 |---|---|---|
 | [01-quickstart](_fixtures/01-quickstart/) | Runtime → Agent → Run, minimal surface | yes |
-| [02-tool-calling](_fixtures/02-tool-calling/) | Custom tools (`sdk.ToolFunc`) + ReAct loop | yes |
+| [02-tool-calling](_fixtures/02-tool-calling/) | Custom tools (`sdk.ToolFunc`) + L2 session planner | yes |
 | [04-multi-agent](_fixtures/04-multi-agent/) | RegisterAgent by capability + Submit dispatch | yes |
 | [07-human-in-loop](_fixtures/07-human-in-loop/) | Human approval gates inside agent loops | yes |
 | [12-yaml-driven-flags](_fixtures/12-yaml-driven-flags/) | Config-driven setup (`ares.yaml`) | no |

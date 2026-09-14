@@ -634,7 +634,7 @@ func TestLoadExampleFiles(t *testing.T) {
 		wantName    string
 		wantActions int
 	}{
-		{"leader_assassination.yaml", "leader-assassination-and-recovery", 4},
+		{"peer_failure.yaml", "peer-failure-and-leaderless-recovery", 4},
 		{"cascading_storm.yaml", "cascading-failure-storm", 7},
 	}
 

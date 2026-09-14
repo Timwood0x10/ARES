@@ -187,6 +187,12 @@ func runServe() error {
 		return err
 	}
 
+	// Opt-in pprof/expvar on a loopback listener (Phase 3 observability):
+	// ARES_PPROF_ADDR unset = off; non-loopback addresses refuse to start.
+	if err := startPprofServer(ctx, g); err != nil {
+		return err
+	}
+
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	// A context cancellation (SIGINT/SIGTERM → graceful shutdown) surfaces as
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —

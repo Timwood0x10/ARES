@@ -84,12 +84,12 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 	}
 	taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
 	if err != nil {
-		h.auditAction("submit_task", req.Capability, princ, false)
+		h.auditAction(r, "submit_task", req.Capability, princ, false)
 		w.WriteHeader(http.StatusInternalServerError)
 		writeJSON(w, map[string]any{"error": err.Error(), "status": "error"})
 		return
 	}
-	h.auditAction("submit_task", req.Capability, princ, true)
+	h.auditAction(r, "submit_task", req.Capability, princ, true)
 	w.WriteHeader(http.StatusAccepted)
 	writeJSON(w, map[string]any{
 		"task_id": taskID,
@@ -188,7 +188,7 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 	}
 	for _, n := range req.Nodes {
 		if !caps[n.Capability] {
-			h.auditAction("submit_graph", n.Capability, princ, false)
+			h.auditAction(r, "submit_graph", n.Capability, princ, false)
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]any{
 				"error":                  "no peer executor declares capability " + n.Capability,
@@ -231,7 +231,7 @@ func (h *actionHandler) handleSubmitGraph(w http.ResponseWriter, r *http.Request
 			status = http.StatusInternalServerError
 		}
 	}
-	h.auditAction("submit_graph", runID, princ, ok)
+	h.auditAction(r, "submit_graph", runID, princ, ok)
 	w.WriteHeader(status)
 	resp := map[string]any{
 		"graph_id": runID,

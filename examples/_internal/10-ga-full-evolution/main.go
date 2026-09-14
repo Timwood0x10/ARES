@@ -25,7 +25,7 @@
 //
 // Run:
 //
-//	go run examples/10-ga-full-evolution/main.go
+//	go run examples/_internal/10-ga-full-evolution/main.go
 //
 // Expected output:
 //

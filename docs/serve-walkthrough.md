@@ -1061,6 +1061,26 @@ shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context
 
 HTTP 就此监听。
 
+`buildCostMux`（`agent.go:129`）挂在 `actionHandler` 上，与 `controlServer` 并列——cost 面是独立的一小片 mux，不走 introspect。
+
+**关停链注册的顺序即执行的逆序基础**。`httpSrv.Shutdown` 注册在 `PhasePreShutdown`（`:1057-1059`），所以 HTTP 是**第一个**被优雅关闭的。加上 §3 的阶段预算，完整链路是：
+
+```
+第一个信号
+ ├─ StartShutdown(30s)
+ │    ├─ PhasePreShutdown (5s)  → httpSrv.Shutdown      ← HTTP 先停，不再收新请求
+ │    ├─ PhaseGraceful   (20s)  → MCP / runtime 等
+ │    ├─ PhaseForce       (5s)
+ │    └─ PhaseDone        (1s)
+ ├─ shutdownSystemRuntime(15s 独立预算)                  ← 逆拓扑：先停依赖者，最后关 EventStore
+ │    └─ orch.Shutdown → 各组件 Stop（EventStore 的 Close 是叶子）
+ └─ cancel() → comp.WaitBackground()                     ← 等蒸馏订阅 / GA ticker / LLM 建议循环退出
+```
+
+`comp.WaitBackground()`（`serve_wiring.go:93-96`）等的正是 §4.6 的蒸馏订阅、§4.11 的 GA ticker 与 LLM 建议循环——**没有它，这些 goroutine 会活过优雅关闭**。
+
+EventStore 的关闭顺序由 §4.11 `wireSystemRuntime` 的依赖图决定（`:125-131` 注释）：它是依赖叶子，逆拓扑关停保证每个依赖它的组件先停，所以关掉它不会切断活跃写者。
+
 ---
 
 ## 8. HTTP 分发
@@ -2452,6 +2472,10 @@ HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
 |---|---|
 | CLI 入口 | `cmd/ares/main.go`、`cmd/ares/serve.go` |
 | 装配 wiring | `cmd/ares/serve_wiring.go`、`cmd/ares/serve_peer.go`、`cmd/ares/peer_assembly.go`、`cmd/ares/agent_kernel.go` |
+| Peer 装配后置接线 | `cmd/ares/serve_peer.go`（`injectToolClassDAG` / `buildToolClassDAG` / `wireLiveDAGAndCompile` / `wireEvolutionLoops` / `wireIntrospectPanel` / `setupPeerRegistry`）、`cmd/ares/evolution.go`（`wireEvolutionIPC`） |
+| 混沌注入 | `cmd/ares/serve_chaos_domain.go`（`wireChaos` / `effectiveChaosMode` / `shadowSandboxLoop` / `liveChaosLoop`） |
+| AKF 工具 | `cmd/ares/serve_wiring.go:268`（`wiringServeAKFTools`） |
+| 维护 worker | `internal/ares_bootstrap/maintenance_worker.go`（`startExpiryCleanupWorker` / `runExpiredCleanup`） |
 | Bootstrap | `internal/ares_bootstrap/bootstrap.go`、`bootstrap_builder.go` |
 | 经验蒸馏 | `internal/ares_bootstrap/bootstrap_steps.go`（`wireDistillation` / `subscribeDistillationEvents`）、`provide_distillation.go` |
 | AKG 知识闭环 | `internal/ares_bootstrap/knowledge_akg.go`（`wireAKGLoop` / `triggerAKGBridge`）、`retriever_wiring.go`（`wireRetrievers`） |

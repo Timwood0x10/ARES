@@ -8,14 +8,14 @@
 文档化的 Demo**，证明 ARES 的核心思想——Agent 像进程一样存在、像线程一样被 Kernel
 调度、像 Peer 一样协作、像进程一样死亡和恢复。
 
-与 `examples/26-runtime-scheduling-demo`（真实 LLM + leader/sub 编排）不同，本 demo
+与 `examples/_internal/26-runtime-scheduling-demo`（真实 LLM + leader/sub 编排）不同，本 demo
 **不需要 LLM、不需要配置文件**：`agentfabric` 与 `agentipc` 是纯内存库，任何机器上
 `go run` 即打印完整故事。这正是「大闭环」的确定性验收——不依赖外部服务。
 
 ## 运行
 
 ```bash
-go run examples/aresos-demo/main.go
+go run examples/_internal/aresos-demo/main.go
 ```
 
 ## 故事线（7 步 + P3 治理）
@@ -47,7 +47,7 @@ go run examples/aresos-demo/main.go
   provenance，见 `agentfabric.Children`）。
 - **Kernel 只管机制**：本 demo 里 `agentfabric` 提供 Spawn/生命周期/checkpoint，
   `agentipc` 提供协作——「要不要拆、找谁」完全是 A 的认知（demo 层的决策函数）。
-- **Quantum 边界**：每步 `CheckpointCognitive` 即一个认知执行边界（一轮 ReAct），
+- **Quantum 边界**：每步 `CheckpointCognitive` 即一个认知执行边界（一个量子步），
   非墙钟时间片（见 aresos-plan.md 核心模型修正 §9）。
 
 ## 用到的公共 API（无任何库层改动）

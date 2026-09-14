@@ -25,7 +25,7 @@
 //
 // Run:
 //
-//	go run ./examples/15-llm-evolution-suite release
+//	go run ./examples/_internal/15-llm-evolution-suite release
 //
 // Expected output (three scenarios):
 //

@@ -274,3 +274,36 @@ func TestLoadTracker_ScoreStaysPositiveAfterMultipleRounds(t *testing.T) {
 		}
 	}
 }
+
+// TestEndWithoutBeginDoesNotCreateGhostEntry locks N-4: an End that arrives
+// with no in-flight Begin (a straggler quantum outliving the agent's Forget)
+// must not record an outcome. The old behavior unconditionally did
+// done++/ok++, recreating a history entry the reconciliation just removed —
+// a ghost that skews confidence for a retired agent generation.
+func TestEndWithoutBeginDoesNotCreateGhostEntry(t *testing.T) {
+	tr := NewLoadTracker()
+
+	// Unmatched End on an unknown agent: nothing may be recorded.
+	tr.End("ghost-agent", true)
+
+	snap := tr.Snapshot()
+	for _, entry := range snap.Agents {
+		if entry.AgentID == "ghost-agent" {
+			t.Fatalf("unmatched End recreated a ghost entry: %+v", entry)
+		}
+	}
+
+	// Same after Forget: Begin/End legitimately, Forget, then a straggler
+	// End — the entry must stay gone.
+	tr.Begin("rotating-agent")
+	tr.End("rotating-agent", true)
+	tr.Forget("rotating-agent")
+	tr.End("rotating-agent", false)
+
+	snap = tr.Snapshot()
+	for _, entry := range snap.Agents {
+		if entry.AgentID == "rotating-agent" {
+			t.Fatalf("straggler End after Forget recreated a ghost entry: %+v", entry)
+		}
+	}
+}

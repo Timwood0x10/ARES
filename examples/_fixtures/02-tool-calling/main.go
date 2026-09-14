@@ -27,7 +27,7 @@
 //
 // Run:
 //
-//	go run examples/02-tool-calling/main.go
+//	go run examples/_fixtures/02-tool-calling/main.go
 //
 // Expected output (when an LLM backend is configured):
 //

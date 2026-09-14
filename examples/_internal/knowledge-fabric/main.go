@@ -25,7 +25,7 @@
 //
 // Run:
 //
-//	go run ./examples/knowledge-fabric
+//	go run ./examples/_internal/knowledge-fabric
 //
 // Expected output:
 //

@@ -23,7 +23,7 @@
 //
 // Run:
 //
-//	go run ./examples/15-llm-evolution-suite regression
+//	go run ./examples/_internal/15-llm-evolution-suite regression
 //
 // Expected output:
 //

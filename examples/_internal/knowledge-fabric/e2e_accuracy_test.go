@@ -86,7 +86,7 @@ var evalCases = []evalCase{
 
 // TestAKFEndToEndAccuracy measures how well the AKF pipeline preserves
 // critical facts compared to dumping all raw content directly into the prompt.
-// Run: go test -run TestAKFEndToEndAccuracy -v ./examples/knowledge-fabric/
+// Run: go test -run TestAKFEndToEndAccuracy -v ./examples/_internal/knowledge-fabric/
 func TestAKFEndToEndAccuracy(t *testing.T) {
 	ctx := context.Background()
 

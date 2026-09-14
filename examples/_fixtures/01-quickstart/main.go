@@ -24,7 +24,7 @@
 //
 // Run:
 //
-//	go run examples/01-quickstart/main.go
+//	go run examples/_fixtures/01-quickstart/main.go
 //
 // Expected output (when an LLM backend is configured):
 //
@@ -96,7 +96,9 @@ func run() error {
 	)
 
 	// ── Step 4: Run one conversational turn ──
-	// Run executes a ReAct loop: build message → call LLM → call tool if needed → return.
+	// Run executes one L2 session: the submission is admitted as a session,
+	// the planner cognition grows the session graph (tool nodes dispatch
+	// through the shared tool binder), and the terminal answer is returned.
 	// The argument is the user's natural-language input; the return is *Result
 	// containing output text, tool-call count, token usage, and duration.
 	result, err := agent.Run(ctx, "Calculate 15*23 + 100, what's the result?")

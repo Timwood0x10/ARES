@@ -158,3 +158,21 @@ func TestEvaluate(t *testing.T) {
 		}
 	})
 }
+
+// TestEvaluateZeroCreatedAtScoresNeutralFreshness locks K-9: a zero
+// CreatedAt means the store left the column NULL (unknown), not that the
+// object is ancient. The old switch landed unknown timestamps in the oldest
+// tier (0.3); the fix scores them neutral (0.5).
+func TestEvaluateZeroCreatedAtScoresNeutralFreshness(t *testing.T) {
+	cfg := QualityGateConfig{}
+
+	unknown := cfg.Evaluate(&KnowledgeObject{CreatedAt: time.Time{}})
+	if unknown.FreshnessScore != 0.5 {
+		t.Fatalf("zero CreatedAt freshness = %v, want 0.5 (neutral)", unknown.FreshnessScore)
+	}
+
+	recent := cfg.Evaluate(&KnowledgeObject{CreatedAt: time.Now()})
+	if recent.FreshnessScore != 1.0 {
+		t.Fatalf("recent CreatedAt freshness = %v, want 1.0", recent.FreshnessScore)
+	}
+}

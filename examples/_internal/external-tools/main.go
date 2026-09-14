@@ -24,7 +24,7 @@
 //
 // Run:
 //
-//	go run ./examples/external-tools
+//	go run ./examples/_internal/external-tools
 //
 // Expected output:
 //

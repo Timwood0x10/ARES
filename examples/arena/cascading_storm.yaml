@@ -2,24 +2,25 @@
 #
 # Purpose:
 #   This YAML defines an ordered chaos scenario for the ARES Arena: a sequence
-#   of fault injections (kill agent, slow agent, kill leader, network
-#   partition, tool timeout, memory corrupt) fired at staggered delays to
-#   simulate cascading failures across multiple agents.
+#   of fault injections (kill agent, slow agent, network partition, tool
+#   timeout, memory corrupt) fired at staggered delays to simulate cascading
+#   failures across multiple agents.
 #
 # Learning objectives:
 #   - How a chaos scenario is declared as an ordered list of actions, each
 #     with a delay, an action type, a target, and a label.
 #   - How scenario config controls execution: stop_on_error, parallel_actions,
 #     max_concurrent, warmup, cooldown.
-#   - How to combine fault types (kill_agent / slow_agent / kill_leader /
+#   - How to combine fault types (kill_agent / slow_agent /
 #     network_partition / tool_timeout / memory_corrupt) into one storm.
 #
 # Run (via the arena tooling that consumes scenario YAML):
 #   Scenario Mode replays this action list against the agents under test.
 #
 # Expected behavior:
-#   The Arena applies each action at its delay and measures how the agent
-#   system (leader + members) survives the cascade.
+#   The Arena applies each action at its delay and measures how the peer
+#   population survives the cascade. There is no leader to lose — the
+#   scheduler is leaderless, so surviving peers keep draining the fabric.
 
 name: cascading-failure-storm
 description: "Simulate cascading failures across multiple agents"
@@ -47,11 +48,16 @@ actions:
       metadata:
         delay: 10s
     label: slow-agent-2
-  # ── Action 3: kill the leader after 7s ──
+  # ── Action 3: kill a third agent after 7s ──
+  # (The pre-0.3.1 script fired kill_leader here. There is no leader agent in
+  # the peer architecture — Injector.KillLeader looks for Type == "leader",
+  # which no AgentType declares, so it always returned ErrLeaderNotFound and
+  # this action was a silent no-op. Replaced with a third kill_agent.)
   - delay: 7s
     action:
-      type: kill_leader
-    label: kill-leader
+      type: kill_agent
+      target_id: agent-3
+    label: kill-agent-3
   # ── Action 4: partition agent-3 off the network after 2s ──
   - delay: 2s
     action:

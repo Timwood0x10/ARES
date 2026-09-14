@@ -81,14 +81,19 @@ docs/
 ├── articles/          # Deep-dive articles (en + zh)
 ├── en/                # English documentation
 │   ├── architecture/
-│   ├── components/
 │   ├── development/
 │   ├── features/
 │   └── guides/
 ├── zh/                # Chinese documentation
 │   ├── architecture/
+│   ├── development/
 │   ├── features/
 │   └── guides/
+├── cookbook/          # Runnable recipe agents
+├── operator/          # Operator runbook
+├── reviews/           # Architecture review reports
+├── bug@ques/          # Bug post-mortems (append-only, see plan/rules)
+├── convergence/       # Package fan-in audit
 └── (top-level comparison & map docs)
 ```
 

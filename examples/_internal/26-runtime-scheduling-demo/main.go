@@ -36,11 +36,11 @@
 //
 // Run (from the repo root):
 //
-//	go run examples/26-runtime-scheduling-demo/main.go
+//	go run examples/_internal/26-runtime-scheduling-demo/main.go
 //
 // Config: the demo reads ./ares.yaml (the root config with your real LLM
 // endpoints). A version-safe template lives at
-// examples/25-dual-endpoint-fallback/ares.yaml.
+// examples/_internal/25-dual-endpoint-fallback/ares.yaml.
 //
 // Expected output:
 //
@@ -139,7 +139,7 @@ reference file paths.`),
 	elapsed := time.Since(start)
 	if err != nil {
 		if strings.Contains(err.Error(), "API key") {
-			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set your LLM key in ./ares.yaml (see examples/25-dual-endpoint-fallback)\n", err)
+			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set your LLM key in ./ares.yaml (see examples/_internal/25-dual-endpoint-fallback)\n", err)
 			return
 		}
 		fmt.Fprintf(os.Stderr, "❌ submit: %v\n", err)

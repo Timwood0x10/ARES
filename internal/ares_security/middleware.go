@@ -133,7 +133,7 @@ func (m *AuthMiddleware) auditAuth(r *http.Request, decision, subject, role stri
 	if m.audit == nil {
 		return
 	}
-	m.audit.Auth(decision, subject, role, r.Method, r.URL.Path, status)
+	m.audit.Auth(decision, subject, role, r.Method, r.URL.Path, status, RequestDetailsFrom(r))
 }
 
 // bearerToken extracts the token from an Authorization header. Only the

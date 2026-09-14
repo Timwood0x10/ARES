@@ -37,7 +37,7 @@
 //
 // Run:
 //
-//	go run examples/07-human-in-loop/main.go
+//	go run examples/_fixtures/07-human-in-loop/main.go
 //
 // Expected output:
 //
@@ -64,6 +64,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Timwood0x10/ares/sdk"
 )
@@ -71,13 +72,22 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── Step 1: Create a Runtime with Ollama and trace logging ──
+	// ── Step 1: Create a Runtime with Ollama, trace logging and a run budget ──
 	// NewRuntime initialises the top-level container. WithOllama selects the
 	// Ollama provider with model "llama3.2" (no API key needed). WithTrace(true)
 	// turns on per-step trace logging so you can follow the agent's reasoning.
+	//
+	// WithAgentGovernance is the supported replacement for the removed human
+	// gate: it is a RUNTIME-level Option (not an AgentOption), enforced on the
+	// L2 session path at quantum boundaries, and it bounds three dimensions at
+	// once — cumulative tool calls, cumulative token spend, and wall clock.
+	// A run that exhausts any of them is yielded back rather than looping.
+	// Here the tool budget is deliberately tight (3) so a multi-step task hits
+	// it visibly; raise it for real work.
 	rt := sdk.NewRuntime(
 		sdk.WithOllama("llama3.2"),
 		sdk.WithTrace(true),
+		sdk.WithAgentGovernance(20000, 3, 2*time.Minute),
 	)
 	defer rt.Close()
 
@@ -117,10 +127,12 @@ func main() {
 	}
 	fmt.Println("⚠️  WithHumanInput is refused:", sdk.ErrHumanInputUnsupported)
 
-	// ── Step 4: The supported alternative — a governance budget ──
-	// WithAgentGovernance is enforced on the L2 path: it bounds how many tools
-	// a run may invoke, its token spend and its wall-clock deadline. Use it to
-	// contain an autonomous agent when no human gate is available.
+	// ── Step 4: Build the agent — the budget is already on the Runtime ──
+	// Note there is NO per-agent gate here. WithAgentGovernance was applied in
+	// Step 1 at the Runtime level (it is an Option, not an AgentOption), so
+	// every agent built from this Runtime inherits the same tool/token/deadline
+	// bound. That is the supported containment model now that human approval
+	// cannot be honoured mid-run.
 	agent := rt.NewAgent("assistant",
 		sdk.WithInstruction(`You are a helpful assistant with access to the working directory.
 Read before you write, and never assume a file's contents.`),

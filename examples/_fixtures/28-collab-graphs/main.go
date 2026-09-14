@@ -17,7 +17,7 @@
 //
 // Run:
 //
-//	go run examples/28-collab-graphs/main.go
+//	go run examples/_fixtures/28-collab-graphs/main.go
 package main
 
 import (

@@ -33,7 +33,7 @@
 //
 // Run:
 //
-//	go run examples/06-chaos-resilience/main.go
+//	go run examples/_fixtures/06-chaos-resilience/main.go
 //
 // Expected output:
 //

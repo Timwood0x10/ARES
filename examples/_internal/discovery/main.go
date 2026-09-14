@@ -21,7 +21,7 @@
 //
 // Run:
 //
-//	go run ./examples/discovery
+//	go run ./examples/_internal/discovery
 //
 // Expected output:
 //

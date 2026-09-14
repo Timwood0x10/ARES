@@ -1261,7 +1261,7 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 - **Docker Compose**: `docker-compose.yml` + `Dockerfile.demo` for one-command demo deployment (Ollama + full-app).
 - **Makefile**: Added `quickstart`, `examples`, `install-cli`, `test-eval` targets.
 - **Example Cleanup**: Removed 20+ stale/duplicate examples; kept 9 curated SDK examples + advanced ones in git history.
-- **Chaos Arena YAML**: Restored `examples/arena/leader_assassination.yaml` and `cascading_storm.yaml` with all built-in action types.
+- **Chaos Arena YAML**: Restored `examples/arena/peer_failure.yaml` (formerly `leader_assassination.yaml` — rewritten for the leaderless scheduler) and `cascading_storm.yaml` with all built-in action types.
 
 ### Performance
 

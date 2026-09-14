@@ -14,6 +14,10 @@ func newTestFileWatcher(t *testing.T, loader WorkflowLoader, workflows map[strin
 	if err != nil {
 		t.Fatalf("NewFileWatcher failed: %v", err)
 	}
+	// Every watcher owns an fsnotify handle whose backend runs kqueue
+	// goroutines until Close (Phase 1 leak gate): no test may leave one
+	// behind. Close is idempotent, so an explicit Close in a test is fine.
+	t.Cleanup(w.Close)
 	return w
 }
 

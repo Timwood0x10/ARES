@@ -8,7 +8,7 @@
 
 ```bash
 # 从仓库根目录运行（读取 ./ares.yaml 的真实 LLM 端点与 key）
-go run examples/27-peer-spawn-demo/main.go [optional task text]
+go run examples/_fixtures/27-peer-spawn-demo/main.go [optional task text]
 ```
 
 > 注意：LLM API 偶发波动时 Submit 可能失败（`task sdk-task-N failed`），
@@ -87,7 +87,7 @@ agentsyscall: created task "task-researcher-4" (researcher) → READY
 - stderr 出现 `agentsyscall: spawned agent ... registered as executor` 与
   `agentsyscall: created task ... → READY` = LLM 确实自主调用了拆分工具。
 - `spawned-researcher-* → LLM call` = 子任务经调度器分派给 spawned peer，
-  由真实 ReAct 引擎执行（非桩）。
+  由真实 L2 会话执行核执行（非桩）。
 
 ## Evidence
 

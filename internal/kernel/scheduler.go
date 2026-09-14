@@ -281,7 +281,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// completion is rejected by the fencing token.
 	preemptTicker := time.NewTicker(s.preemptInterval())
 	defer preemptTicker.Stop()
+	// WaitGroup-managed (N-2): Run must not return while a preemption sweep
+	// is still in flight — an unmanaged sweep racing shutdown could mutate
+	// durable state after the caller believes the scheduler fully stopped.
+	// The sweep is bounded (one ResumableTasks pass), so Wait cannot hang.
+	var preemptWG sync.WaitGroup
+	preemptWG.Add(1)
 	go func() {
+		defer preemptWG.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -298,6 +305,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 		}
 	}()
+	defer preemptWG.Wait()
 
 	// Subscribe to dependency-relevant task events when a store is wired.
 	// The channel is nil (and the select case inert) when eventStore is nil,

@@ -24,7 +24,7 @@
 //
 // Run:
 //
-//	go run ./examples/15-llm-evolution-suite gate3
+//	go run ./examples/_internal/15-llm-evolution-suite gate3
 //
 // Expected output:
 //

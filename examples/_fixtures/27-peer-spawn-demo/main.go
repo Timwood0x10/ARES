@@ -38,7 +38,7 @@
 //
 // Run (from the repo root — reads ./ares.yaml for your real LLM endpoints):
 //
-//	go run examples/27-peer-spawn-demo/main.go
+//	go run examples/_fixtures/27-peer-spawn-demo/main.go
 //
 // Expected output:
 //

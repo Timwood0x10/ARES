@@ -11,13 +11,15 @@
 // Purpose:
 //
 //	Show how to create specialised agents (coordinator, researcher, writer),
-//	register them as peer capabilities, and submit a task that the Runtime
-//	dispatches to the matching agent.
+//	register them as peer capabilities, and submit one task PER capability so
+//	you can watch the Runtime route each submission to a different agent.
 //
 // Learning objectives (what this example teaches you):
 //   - How to create multiple agents with distinct system instructions.
 //   - How to register them as peer capabilities with RegisterAgent.
-//   - How to call Submit() and interpret the Result (Output, Duration).
+//   - How Submit() matches a task's Capability to the registered agent —
+//     the dispatch is the Runtime's, not a coordinator agent's.
+//   - How to interpret each Result (Output, Duration).
 //   - How YAML-driven config keeps Go code minimal.
 //
 // Core APIs used (with package paths):
@@ -32,15 +34,23 @@
 //
 // Run:
 //
-//	go run examples/04-multi-agent/main.go
+//	go run examples/_fixtures/04-multi-agent/main.go
 //
 // Expected output (when an LLM backend is configured):
 //
-//	📋 Task: Research and write a one-paragraph summary about the Go programming language
+//	📋 [researcher] List three concrete facts about the Go programming language's concurrency model.
+//	📝 Result (researcher):
+//	<three facts from the researcher agent>
+//	   took: <duration>
 //
-//	📝 Result:
-//	<the synthesised final output from the agent>
+//	📋 [writer] Write one sentence explaining what a goroutine is, for a beginner.
+//	📝 Result (writer):
+//	<one sentence from the writer agent>
+//	   took: <duration>
 //
+//	📋 [coordinator] Given that goroutines are lightweight threads …
+//	📝 Result (coordinator):
+//	<the synthesised paragraph from the coordinator agent>
 //	   took: <duration>
 //
 // If the run fails with an "API key" error, set OPENAI_API_KEY or install
@@ -96,27 +106,38 @@ Be factual and concise.`),
 Be concise and engaging.`),
 	)
 
-	// ── Step 3: Submit the task ──
+	// ── Step 3: Submit one task per capability ──
 	// Submit is the uniform entry point: the Runtime picks the agent
-	// registered for the task's capability and returns the Result.
-	task := "Research and write a one-paragraph summary about the Go programming language"
-	fmt.Printf("📋 Task: %s\n", task)
-
-	result, err := rt.Submit(ctx, sdk.Task{
-		Capability: "coordinator",
-		Input:      task,
-	})
-	if err != nil {
-		// Provide a hint if the error is about a missing API key.
-		if strings.Contains(err.Error(), "API key") {
-			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set OPENAI_API_KEY or install Ollama\n", err)
-			return
-		}
-		fmt.Fprintf(os.Stderr, "❌ submit: %v\n", err)
-		return
+	// registered for the task's Capability and returns that agent's Result.
+	// Registering three agents but submitting only to one would not show the
+	// dispatch — each submission below routes to a DIFFERENT agent, which is
+	// the whole point of capability-based routing (no coordinator tells the
+	// others what to do; the Runtime matches task → capability → agent).
+	tasks := []struct{ capability, input string }{
+		{"researcher", "List three concrete facts about the Go programming language's concurrency model."},
+		{"writer", "Write one sentence explaining what a goroutine is, for a beginner."},
+		{"coordinator", "Given that goroutines are lightweight threads scheduled by the Go runtime, write a one-paragraph summary of Go's approach to concurrency."},
 	}
 
-	// Print the output and duration.
-	fmt.Printf("📝 Result:\n%s\n", result.Output)
-	fmt.Printf("\n   took: %v\n", result.Duration)
+	for _, t := range tasks {
+		fmt.Printf("\n📋 [%s] %s\n", t.capability, t.input)
+
+		result, err := rt.Submit(ctx, sdk.Task{
+			Capability: t.capability,
+			Input:      t.input,
+		})
+		if err != nil {
+			// Provide a hint if the error is about a missing API key.
+			if strings.Contains(err.Error(), "API key") {
+				fmt.Fprintf(os.Stderr, "❌ %v\n   → Set OPENAI_API_KEY or install Ollama\n", err)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "❌ submit %s: %v\n", t.capability, err)
+			continue
+		}
+
+		// Print the output and duration.
+		fmt.Printf("📝 Result (%s):\n%s\n", t.capability, result.Output)
+		fmt.Printf("   took: %v\n", result.Duration)
+	}
 }
