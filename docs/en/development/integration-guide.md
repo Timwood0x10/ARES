@@ -605,7 +605,7 @@ func TestEndToEndIntegration(t *testing.T) {
 ## References
 
 - [Quick Start](../guides/quick-start.md)
-- [Architecture Documentation](../architecture/arch.md)
+- [Architecture Documentation](../../../ARCHITECTURE.md)
 - [Configuration Reference](../../../examples/_fixtures/01-quickstart/ares.yaml)
 - [API Documentation](../api-reference.md)
 

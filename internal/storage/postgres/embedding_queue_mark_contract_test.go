@@ -13,7 +13,7 @@ import (
 // Mark* statement addresses a queue row by its source-row identity
 // (table_name, task_id) — the two fixed components of dedupe_key (see
 // generateDedupeKey). A task_id-only WHERE would rewrite every table's entry
-// for that id. SQL-text assertion per DEVELOPMENT_PLAN §5; MarkFailed's
+// for that id. SQL-text assertion; MarkFailed's
 // transactional statements are covered behaviorally by the PG integration
 // suite (tests/integration/storage_test.go) plus the guard test below.
 func TestMarkStatementsScopeBySourceRowIdentity(t *testing.T) {

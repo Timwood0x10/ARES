@@ -1,6 +1,6 @@
 // Peer-spawn demo — prove a REAL LLM autonomously decomposes a task.
 //
-// This is the "LLM decides to split" showcase (W2, aresos-plan.md §6): the
+// This is the "LLM decides to split" showcase (W2): the
 // coordinator agent receives a task that is complex enough to benefit from
 // decomposition, and decides BY ITSELF to call the spawn_agent / create_task
 // syscalls (they are injected into every SDK agent's LLM tool list by the

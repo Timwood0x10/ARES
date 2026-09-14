@@ -227,7 +227,7 @@ evolution:
   #   tool_weight: 0.0                # e.g. 0.15
 
   # tool_projection: the production trigger for the ToolStep projection (Y1
-  #   §12-1). It is NOT a duplicate of channel_feedback.tool_enabled above:
+  #   Y1 item 12-1). It is NOT a duplicate of channel_feedback.tool_enabled above:
   #   that writes ONE evidence record per tool call as it happens, while this
   #   worker periodically projects the tool-call EVENT LOG into
   #   per-(tool#arg_shape) success rates carrying `tool_step_id` — the key the

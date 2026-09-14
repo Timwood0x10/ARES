@@ -297,9 +297,9 @@ llm:
 
 ## 下一步
 
-- 查看 [架构文档](../architecture/arch.md) 了解系统设计
+- 查看 [架构文档](../../../ARCHITECTURE.md) 了解系统设计
 - 查看 [集成指南](../development/integration-guide.md) 了解如何集成到现有项目
-- 查看 [示例代码](../examples/) 学习更多用法
+- 查看 [示例代码](../../../examples/) 学习更多用法
 
 ## 获取帮助
 

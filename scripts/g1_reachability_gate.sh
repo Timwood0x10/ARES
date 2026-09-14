@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# G1 reachability gate (ares-repair-plan-zh.md §8): every internal package
+# G1 reachability gate (design doc): every internal package
 # must be reachable from a production entrypoint (cmd/ares, sdk, services)
 # unless whitelisted here. Prevents "built but never wired" packages
 # from re-entering the tree unnoticed.

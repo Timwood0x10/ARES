@@ -1,6 +1,6 @@
 # 27 · Peer-Spawn Demo — 真实 LLM 自主拆分任务
 
-> 展示 W2（aresos-plan.md §6）的完整闭环：**LLM 自己决定**是否拆分任务，
+> 展示 W2（aresos-plan.md 第6节）的完整闭环：**LLM 自己决定**是否拆分任务，
 > 决定拆分时调用 `spawn_agent` / `create_task` 系统调用，内核负责执行。
 > 这是"机制能跑"与"LLM 真的会自主拆分"之间的最后一块真实性证据。
 

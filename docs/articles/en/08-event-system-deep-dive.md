@@ -33,7 +33,7 @@ But let me be clear about what this design actually buys you, and what it does *
 - ✅ **Replay**: read a stream ascending and step through it; `ares_flight`'s ReplaySession replays/jumps through events.
 - ✅ **Cross-restart rebuild**: `taskfabric` can rebuild its task set from the persisted events (`RestoreFromStore`).
 - ⚠️ **It does NOT** guarantee "replayable side effects" — it records what happened, it doesn't rewind external world effects.
-- ⚠️ **It does NOT** persist every lifecycle event (see §5): most transitions are observability-only; after a restart the topology is rebuilt by recompiling the live DAG, not by replaying these.
+- ⚠️ **It does NOT** persist every lifecycle event (see Section 5): most transitions are observability-only; after a restart the topology is rebuilt by recompiling the live DAG, not by replaying these.
 
 Core files:
 

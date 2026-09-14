@@ -2,7 +2,7 @@
 // Runtime (H1: RegisterAgent + Submit, no leader/sub).
 //
 // ARES is a Peer Agent operating system where all agents are first-class
-// cognitive processes with no inherent hierarchy (aresos-plan.md §1.1): a
+// cognitive processes with no inherent hierarchy: a
 // flat set of capability agents registered on the Runtime, and tasks are
 // dispatched to the agent registered for their capability. The legacy
 // Leader/Sub team orchestration (NewTeam/team.Run) has been removed; this

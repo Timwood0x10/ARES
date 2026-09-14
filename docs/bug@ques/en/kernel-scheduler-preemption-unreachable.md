@@ -47,7 +47,7 @@ previous drain" — i.e. RUNNING was expected to survive across drains; the
 ## Fix
 
 `Run` gains one managed watcher goroutine (exits on ctx cancellation, each
-sweep recover-guarded — code_rules_v2 §4.1/§4.2) that calls
+sweep recover-guarded — code_rules_v2 Section 4.1/ Section 4.2) that calls
 `PreemptLowerPriority(ResumableTasks())` once per poll tick, independent of
 the blocking drain loop.
 

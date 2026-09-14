@@ -678,17 +678,12 @@ func WithHumanInput(fn HumanInputFunc) AgentOption {
 	}
 }
 
-// WithMaxIterations records an iteration budget that the shared L2 path does
-// not enforce.
-//
-// Since 0.3.1 the L2 execution path is session-graph driven, so a run is
-// bounded by the planner's loop and WithAgentGovernance instead — this value
-// no longer shapes execution (see Agent.Run). The Evolve search-depth mapping
-// still reads it, so the field is not dead. Values <= 0 mean "unset".
-//
-// TODO(tech-debt): either enforce this budget on the L2 path or drop the
-// option. A stored-but-ignored bound is a silent no-op for callers who believe
-// they have capped a run.
+// WithMaxIterations sets the iteration budget consumed by Evolve's
+// search_depth parameter mapping (deeper search = more iterations) and
+// readable via Agent.MaxIterations. It is NOT an execution bound on the
+// shared L2 path: runs are bounded by the planner's convergence loop,
+// WithTimeout, and WithAgentGovernance's tool/deadline budgets there.
+// Values <= 0 mean "unset".
 func WithMaxIterations(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {
@@ -697,17 +692,21 @@ func WithMaxIterations(n int) AgentOption {
 	}
 }
 
-// WithMaxTokens records a token budget that the shared L2 path does not
-// enforce.
+// WithMaxTokens caps LLM token consumption. On the shared L2 execution path
+// it is bridged into the runtime's governance budget (WithAgentGovernance's
+// TokenBudget — enforced by the scheduler at quantum boundaries), so a run
+// that exceeds the budget cooperatively yields instead of burning tokens.
 //
-// Since 0.3.1 the L2 execution path is session-graph driven, so a run is
-// bounded by WithTimeout / WithAgentGovernance instead — this value no longer
-// shapes execution (see Agent.Run). Nothing reads it back; the option is kept
-// purely for API compatibility. Values <= 0 mean unbounded (default).
+// Bridging semantics: the budget is the L2 PEER'S LIFETIME TOTAL (every run
+// through the shared peer), not a per-run allowance — the runtime enforces
+// one budget for the process, and the first positive WithMaxTokens (or
+// WithAgentGovernance, whichever is applied first) wins; later agents'
+// values do not tighten it. For an explicit, per-runtime budget use
+// WithAgentGovernance directly. Values <= 0 mean unbounded (default).
 //
-// TODO(tech-debt): either accumulate prompt+completion tokens on the L2 path
-// and stop the run at this budget, or drop the option. A stored-but-ignored
-// bound is a silent no-op for callers who believe they have capped a run.
+// CHANGE (0.3.1): this option used to be stored and silently ignored on the
+// L2 path; callers who relied on it being a no-op will now observe budget
+// enforcement.
 func WithMaxTokens(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {

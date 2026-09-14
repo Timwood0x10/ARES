@@ -13,7 +13,7 @@ ARES 是 **Agent 操作系统**：Agent 不是被编排的工作流节点，而�
 |---|---|
 | 一个内核：所有调度决策经过 `internal/kernel` | `kernel/scheduler.go`；kernel **不 import** runtime（`runtime/architecture_test.go` 锁定） |
 | 一张图：`MutableDAG` 是全仓唯一任务图载体 | `fabric/task/workflow/engine/mutable_dag.go:34` |
-| 一条主线：L2 router 是唯一生产执行路径，serve 与 SDK 共用执行核 | `internal/agentruntime/`（§5.2） |
+| 一条主线：L2 router 是唯一生产执行路径，serve 与 SDK 共用执行核 | `internal/agentruntime/`（第5.2节） |
 | 无领导者调度："B 完成→C 就绪"由织物状态机推导 | `fabric/task/dag.go` |
 | 执行量子可恢复 | `fabric/task/quantum.go:58` `RunQuantum` |
 | Epoch fencing：过期持有者不能驱动已易主任务 | `fabric/task/fabric.go:290` `Acquire` / `:712` `ownerLocked` |
@@ -430,11 +430,11 @@ task.completed → skill_outcome_writer → Experience（下轮置信先验）
 
 **PluginBus 热插拔**（`bus.go`）— `Register:84` 在 Start 前后都有效；热路径 `invokeStart:497`，失败自动 `remove`；成功后复查 `started`（防与 Stop 竞态留下孤儿）。`Unregister:176` → `removeLocked:201`（**排空所有同名 hook**，不 break 第一个）。`Start:260`/`Stop:290` 均**锁内快照** `b.plugins` 再遍历（热插拔移除了"Start 后不可变"的不变量，未加锁遍历是 data race）。`Emit:406` 全程持 RLock。`ErrBusAlreadyStarted` 已删除。
 
-**Manager**（`manager.go`）+ `manager_lifecycle.go:17` `Start` / `:107` `Stop` / `:379` `healthCheck` + `manager_chaos.go`（7 种注入，见 §5.10）
+**Manager**（`manager.go`）+ `manager_lifecycle.go:17` `Start` / `:107` `Stop` / `:379` `healthCheck` + `manager_chaos.go`（7 种注入，见第5.10节）
 
 **插件**（均实现 `plugin.go:35` `RuntimePlugin`）：`observer.go:14`（事件落库）· `loop.go:33`（轮次时钟）· `tool.go:19`（工具白名单门）· `interrupt.go:15`（HITL）· `recovery.go:11`（步骤级恢复许可）· `collector.go:11` `ExecutionCollector`（路由/工具/记忆命中/中断/错误记录，`Export:190` 可入 checkpoint）
 
-**子系统**：`observability/`（`tracer.go:9` · `cost.go:38` `CostTracker` · `prometheus.go:23` · `otel_tracer.go:20` · `flight/` `recorder.go:14` `Collector:30` `timeline.go:55` `genealogy.go:34` `diagnostics.go:45` `replay.go:33`）· `protocol/`（`mcp/` JSON-RPC 客户端+服务端 · `skills/` 目录/信任/FTS5/经验加权选择 `catalog.go:43` `resolver.go:49` `experience.go:25` · `ahp/` agent 线协议 `protocol.go:13` `queue.go:13` `heartbeat.go` `dlq.go`）· `archive/`（`writer.go:42` 轮次归档 `round_N.json` · `sink.go:43`）· `eval/`（`evaluator.go:14` · `llm_judge.go:89` · `process_verifier.go:28` · `result_verifier.go:34` · `types.go:60` TestCase）· `memory/`（见 §5.9）· `arena/`（见 §5.10）
+**子系统**：`observability/`（`tracer.go:9` · `cost.go:38` `CostTracker` · `prometheus.go:23` · `otel_tracer.go:20` · `flight/` `recorder.go:14` `Collector:30` `timeline.go:55` `genealogy.go:34` `diagnostics.go:45` `replay.go:33`）· `protocol/`（`mcp/` JSON-RPC 客户端+服务端 · `skills/` 目录/信任/FTS5/经验加权选择 `catalog.go:43` `resolver.go:49` `experience.go:25` · `ahp/` agent 线协议 `protocol.go:13` `queue.go:13` `heartbeat.go` `dlq.go`）· `archive/`（`writer.go:42` 轮次归档 `round_N.json` · `sink.go:43`）· `eval/`（`evaluator.go:14` · `llm_judge.go:89` · `process_verifier.go:28` · `result_verifier.go:34` · `types.go:60` TestCase）· `memory/`（见第5.9节）· `arena/`（见第5.10节）
 
 ### 5.7 Agent 执行（`internal/agents/`）
 

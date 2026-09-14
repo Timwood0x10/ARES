@@ -145,7 +145,7 @@ sched.WithQuantumHook(newPluginBusHook(bus, loop, loopCfg))
 1. **把"一条执行路径"的横向关注点拆开**：checkpoint、interrupt、recovery、loop、memory、evolution 都以统一接口挂在总线上，执行核心不必知道每个细节。
 2. **统一的生命周期管理**：`Start` / `Stop`（逆序）、超时、panic 恢复、事件发布都由 bus 提供，插件作者不用自己造。
 3. **钩子"可观测性、不阻断"**：`BeforeStep`/`AfterStep` 的 log-and-continue 契约，保证了观测型插件坏了也不会拖垮调度。
-4. **与内核解耦**：`runtime_bridge.go` 里那句注释很关键——"the adapter lives in runtime_bridge.go — the kernel stays free of any runtime import"（§0.3 依赖规则）。内核不 import runtime 包，插件接缝在装配层（`cmd/ares`）打开。
+4. **与内核解耦**：`runtime_bridge.go` 里那句注释很关键——"the adapter lives in runtime_bridge.go — the kernel stays free of any runtime import"（第0.3节依赖规则）。内核不 import runtime 包，插件接缝在装配层（`cmd/ares`）打开。
 
 代价也直白：**扩展要想生效，必须改代码重新编译**，或者走 `ares_skills` 的能力数据路径。如果你在做平台化，想让第三方不改二进制就能贡献能力，这条路当前是封死的（待核实：是否有尚未合入的动态插件加载演进）。
 

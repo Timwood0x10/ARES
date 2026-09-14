@@ -19,7 +19,7 @@
 
 ## 二、原生消息单元：Message
 
-所有 IPC 一律走 `internal/agentipc/bus.go` 的 `Message`（design §13：Context layer 3 IPC Messages）：
+所有 IPC 一律走 `internal/agentipc/bus.go` 的 `Message`（design 第13节：Context layer 3 IPC Messages）：
 
 ```go
 type Message struct {

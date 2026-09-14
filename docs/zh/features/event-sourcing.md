@@ -1,9 +1,5 @@
 # Event Sourcing
 
-> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 **Leader/Sub 执行模型**时期。§「与 Leader 故障转移的集成」所述的 `LeaderSupervisor`、Leader 选举、`failover.triggered` 流程在 v0.3.x 已删除——现行架构是扁平对等 + 内核调度（`internal/kernel`）+ 任务织物（`internal/fabric/task`），崩溃恢复走 `RestoreFromStore` 事件重放（见 `docs/reference/serve-walkthrough.md`）。EventStore 本身（`internal/ares_events/`）仍是现行组件，本文的 Append/Read/乐观并发描述有效；仅 Leader 相关章节过时。
->
-> **现行架构见**：仓库根 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)。
-
 **更新日期**: 2026-06-11
 
 ## 概述
@@ -292,35 +288,6 @@ CREATE TABLE events (
 CREATE INDEX idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX idx_events_created_at ON events (created_at);
 ```
-
-## 与 Leader 故障转移的集成
-
-Event Sourcing 用完整的事件日志替代基于 Checkpoint 的恢复。不再依赖周期性快照，而是记录每次状态转换：
-
-```mermaid
-sequenceDiagram
-    participant Leader
-    participant Store as EventStore
-    participant Super as Supervisor
-    participant New as New Leader
-
-    Leader->>Store: Append(failover.triggered)
-    Leader--xSuper: 心跳超时
-
-    Super->>Store: Read("leader-main")
-    Store-->>Super: [agent.started, task.created, task.dispatched, ...]
-
-    Super->>New: 重放事件
-    New->>New: 从事件流重建状态
-    New->>Store: Append(failover.completed)
-```
-
-新 Leader 重放事件流以重建：
-- 哪些任务已分发但未完成
-- 哪些 Agent 处于活跃状态
-- 最后的会话状态
-
-这比 Checkpoint 更可靠，因为快照之间的状态不会丢失。
 
 ## DLQ 自动重试
 

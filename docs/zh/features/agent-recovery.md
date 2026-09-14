@@ -1,7 +1,5 @@
 # Agent 崩溃恢复
 
-> **⚠ 历史文档标注（2026-09-13，v0.3.1）**：本文写于 Leader/Sub 执行模型时期。v0.3.x 起 Leader-Sub 架构已删除（现行为扁平对等 + 内核调度 + 任务织物），本文中涉及 leader 的机制描述已过时。现行架构见 [框架对比 §3](../../reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) 与 [能力地图](../../reference/CAPABILITY-MAP.md)。保留作历史参考。
-
 当 ares 中的 Agent 崩溃时，Runtime 会检测到死亡，创建全新实例，回放事件恢复运行状态，并从记忆存储加载对话历史。Agent 恢复后拥有完整上下文，就像什么都没发生过一样。
 
 ## 恢复架构
@@ -280,83 +278,6 @@ func (a *LeaderAgent) Snapshot() (map[string]any, error) {
     }, nil
 }
 ```
-
-## Leader 故障转移
-
-Leader Agent 有额外的故障转移层，通过 `LeaderSupervisor` 实现。Leader 死亡时，执行基于检查点的恢复：
-
-```mermaid
-sequenceDiagram
-    participant SV as LeaderSupervisor
-    participant HB as HeartbeatMonitor
-    participant Old as 旧 Leader
-    participant CP as CheckpointStore
-    participant ER as EventRecovery
-    participant TR as TaskRecovery
-    participant New as 新 Leader
-
-    SV->>HB: CheckTimeouts()
-    HB-->>SV: 检测到 Leader 超时
-    SV->>SV: 发出 EventFailoverTriggered
-
-    SV->>Old: Stop（30s 超时）
-    SV->>CP: GetLatest(leaderID)
-    alt 检查点存在
-        CP-->>SV: LeaderCheckpoint
-    else 检查点缺失
-        SV->>ER: RecoverFromEvents(leaderID)
-        ER-->>SV: RecoveryState（会话 + 待处理任务）
-    end
-
-    SV->>SV: HandleFailover（ColdRestartStrategy，3 次重试）
-    SV->>New: 创建 + 注入检查点 + 启动
-
-    SV->>TR: RecoverStaleTasks(sessionID)
-    TR-->>SV: 孤儿任务标记为 failed
-
-    SV->>SV: 发出 EventFailoverCompleted
-```
-
-### 检查点
-
-`LeaderCheckpoint` 存储 `leader_id`、`session_id`、`status` 和 `metadata`。通过 upsert 语义持久化到 PostgreSQL。Leader 在创建或恢复会话时保存检查点。
-
-### 事件恢复
-
-如果检查点缺失或不完整，`EventRecovery.RecoverFromEvents` 通过回放完整事件流重建状态：
-- `EventSessionCreated` -> 捕获 session ID
-- `EventTaskCreated` -> 将任务加入待处理列表
-- `EventTaskCompleted` -> 从待处理列表移除任务
-
-### 孤儿任务清理
-
-`TaskRecovery.RecoverStaleTasks` 将状态为 `pending` 或 `running` 的任务标记为 `failed`，错误信息为 `"leader failover: task orphaned"`。
-
-## 复活插件
-
-`resurrection.Supervisor` 是通用的、与 Agent 类型无关的复活机制（`internal/plugins/resurrection/` 已随 Leader-Sub 删除；现行恢复链路在 `internal/aresrecovery/`）。
-
-```mermaid
-flowchart LR
-    SUP[Resurrection Supervisor] -->|Watch| A1[Agent 1 + Factory]
-    SUP -->|Watch| A2[Agent 2 + Factory]
-    SUP -->|Watch| A3[Agent 3 + Factory]
-
-    SUP -->|每 10s 检查| HC[HealthChecker]
-    HC -->|OnFailure| RES[resurrect goroutine]
-
-    RES -->|1| NEW[Factory -> 新 Agent]
-    RES -->|2| REPLAY[回放事件]
-    RES -->|3| RESTORE[RestoreState]
-    RES -->|4| START[启动新 Agent]
-    RES -->|5| OLD[停止旧 Agent]
-```
-
-配置默认值：
-- `CheckInterval`：10s
-- `ResurrectTimeout`：60s
-- `MaxAttempts`：3
-- `HeartbeatInterval`：5s
 
 ## 事件溯源
 

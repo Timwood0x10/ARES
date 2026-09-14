@@ -44,7 +44,7 @@ import (
 // debt marker: the goal state is an EMPTY allowlist.
 // (NewArenaPlugin was removed with internal/runtime/arena.go: the plugin-bus
 // fault-injection demo had zero production consumers and was superseded by
-// the arena/ package's RegressionTester family — RUNTIME.md §8-A6.)
+// the arena/ package's RegressionTester family.)
 // (NewCheckpointPlugin and NewEvolutionPlugin were removed with C1.3, the
 // runtime plugin half-closed-loop burial: CheckpointPlugin/EvolutionPlugin
 // had zero production registrations and the loop's per-round capability

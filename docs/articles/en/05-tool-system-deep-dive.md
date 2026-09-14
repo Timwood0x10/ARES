@@ -118,7 +118,7 @@ type ToolBinder interface {
 
 Lesson two: **this `chatCognition` path does not go through `Registry.Execute`, so it does not get that `ValidateParams` layer** — whether params are sane depends on the concrete binder callbacks and each tool's own `params["key"].(string)` assertion. In other words: **`Registry.Execute` validates centrally; the `ToolBinder.CallTool` path does not necessarily.** They are two different entry points — don't conflate them.
 
-A mermaid drawing covering §2.2 / §2.3:
+A mermaid drawing covering Section 2.2 / Section 2.3:
 
 ```mermaid
 graph TB

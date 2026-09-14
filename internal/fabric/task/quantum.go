@@ -6,8 +6,8 @@ import (
 	"fmt"
 )
 
-// QuantumStep is one Agent Step executed inside a quantum (design §5 of
-// ares-runtime.md): reasoning → tool call → observation. It returns the
+// QuantumStep is one Agent Step executed inside a quantum
+// (ares-runtime.md): reasoning → tool call → observation. It returns the
 // durable checkpoint (progress so far) and whether the task is complete.
 type QuantumStep func() (checkpoint any, done bool, err error)
 

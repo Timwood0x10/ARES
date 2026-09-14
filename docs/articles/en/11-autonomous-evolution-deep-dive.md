@@ -87,7 +87,7 @@ A few conservative decisions — all real defaults in the code:
 - **`BreedingPoolRatio` default 0.3**: `EvolveOnIdle` only lets the top 30% of survivors breed — stronger selection pressure, don't waste compute on mediocre parents.
 - **`Score == -1` means unevaluated**: `SortByScore` forces these to the end, so "an individual that never ran Arena can't survive by luck."
 
-What actually decides "can a new strategy ship" is the **lifecycle gate** (v1, §4) or the **candidate gate-3** (v2, §3). Evolution never ends at "a better strategy was generated" — it ends at "it passed the release gate."
+What actually decides "can a new strategy ship" is the **lifecycle gate** (v1, Section 4) or the **candidate gate-3** (v2, Section 3). Evolution never ends at "a better strategy was generated" — it ends at "it passed the release gate."
 
 ---
 
@@ -338,15 +338,15 @@ func DefaultEvalGateConfig() EvalGateConfig {
 }
 ```
 
-The problem (details in §8, E3): production assembly `buildEvalGate` (`internal/ares_bootstrap/eval_gate_wiring.go`) **only sets `MinScore`, never `StrictMode=true`**. When registry/runner/suite is missing, `Check` returns `true` (passes) and records a skipped count — a deliberate degradation contract, but **with no operational signal**, and **if `eval_suite` isn't configured, no G3 gate is built at all** (an honest absence, not a fake pass-through).
+The problem (details in Section 8, E3): production assembly `buildEvalGate` (`internal/ares_bootstrap/eval_gate_wiring.go`) **only sets `MinScore`, never `StrictMode=true`**. When registry/runner/suite is missing, `Check` returns `true` (passes) and records a skipped count — a deliberate degradation contract, but **with no operational signal**, and **if `eval_suite` isn't configured, no G3 gate is built at all** (an honest absence, not a fake pass-through).
 
 ---
 
 ## 5. The GA Population Engine (v1 `ares_evolution/genome`): Zero-Token Parameter Evolution
 
-If the v2 candidate pipeline and the v1 lifecycle both depend on LLMs (gate-3, G3), the `genome` package's population evolution is the one **pure in-memory, zero-LLM-call** path — it only sorts/scales/crosses/mutates based on existing `Score` data, costing memory-bandwidth order of magnitude (exact per-second throughput is marked unverified in §8; I won't publish fake numbers).
+If the v2 candidate pipeline and the v1 lifecycle both depend on LLMs (gate-3, G3), the `genome` package's population evolution is the one **pure in-memory, zero-LLM-call** path — it only sorts/scales/crosses/mutates based on existing `Score` data, costing memory-bandwidth order of magnitude (exact per-second throughput is marked unverified in Section 8; I won't publish fake numbers).
 
-This package is where the §2 GA loop lands. The core struct, `Population` (`internal/runtime/ares_evolution/genome/population.go`):
+This package is where the Section 2 GA loop lands. The core struct, `Population` (`internal/runtime/ares_evolution/genome/population.go`):
 
 ```go
 type Population struct {
@@ -372,7 +372,7 @@ It also returns the sentinel error `ErrSelectionEmptyPopulation` on an empty pop
 
 - **UniformCrossover (independent, equal-probability)**: each param 50% from A/B. Signature `uniformCrossParams(paramsA, paramsB) (map[string]any, string)` — the string is an inheritance description (`from_A=[...] from_B=[...]`) for lineage tracing.
 - **MultiPointCrossover (k-point segment)**: switches parent at k cut points, preserving within-segment correlation. Cut points via Fisher-Yates partial shuffle (non-repeating, uniform); k=1 → one-point, k=len-1 → ~uniform.
-- **HalfSplitPromptCrossover (half-sentence)**: `tmplA[:mid] + tmplB[mid:]`. **Known flaw: byte-length `len(string)` splitting breaks UTF-8 Chinese** (see §8; unfixed).
+- **HalfSplitPromptCrossover (half-sentence)**: `tmplA[:mid] + tmplB[mid:]`. **Known flaw: byte-length `len(string)` splitting breaks UTF-8 Chinese** (see Section 8; unfixed).
 
 Crossover offspring are tagged `mutation.MutationCrossover`, distinct from mutation offspring.
 
@@ -465,7 +465,7 @@ graph TD
 
 `SetToolClassDAG(dag)` injects a second graph — the **L1 capability graph**: one node per `toolName#argShape`, whose `enabled/budget/prior` metadata constrains L2 growth (planCognition reads it before growing a tool node). The comment is explicit: the L1 graph is **not compiled into taskfabric and is not an execution plan** — it's a capability catalog; evolution structure patches (`SetNodeMetadata`) mutate this catalog's metadata.
 
-> Honest — the boundary here matters (`TOOL_DAG_MAINLINE_DESIGN.md` §10):
+> Honest — the boundary here matters (`TOOL_DAG_MAINLINE_DESIGN.md` Section 10):
 > - **"Evolution acts on peer-level agent topology" is fine to write; "acts on a single agent's internal workflow" is NOT** (M4 hasn't removed `chatStepState`; nothing closes that loop before M4).
 > - **`UpdateLiveDAG` only gets the real DAG after the `serve` entry (`buildLiveAgentDAG`)**; at bootstrap, `ProvideNewEvolution` registers a placeholder, and a comment states "evolution verdicts are available but no live topology to act on."
 > - **Evolution only modifies L1; L2 is a runtime artifact and accepts no patches** — a stated invariant.
@@ -474,7 +474,7 @@ graph TD
 
 ## 8. Honest Accounting: What I Deleted, Flagged, and What's Missing
 
-Before writing this I audited the old draft's "looks-good-but-unfounded" claims against `TOOL_DAG_MAINLINE_DESIGN.md` §10's **release-wording boundary** (the B-list).
+Before writing this I audited the old draft's "looks-good-but-unfounded" claims against `TOOL_DAG_MAINLINE_DESIGN.md` Section 10's **release-wording boundary** (the B-list).
 
 ### 8.1 Three confirmed debts (E1 / E2 / E3) — I verified them in the code, they're real
 
@@ -508,7 +508,7 @@ Config fact: `shadow_execution` and `channel_feedback` are defined in `internal/
 
 ### 8.4 Explicitly flagged "unresolved / not wired"
 
-- **v2 candidate pipeline has no production caller** (§3.7 — the biggest honesty point of this article).
+- **v2 candidate pipeline has no production caller** (Section 3.7 — the biggest honesty point of this article).
 - **Production deploy gate is off by default and refuses unreferenced patches**: bootstrap wires `DeploymentPipeline` into the coordinator only when `cfg.Evolution.Enabled && Deployment.Enabled` (default `false`); and `deploymentAdapter.Deploy` requires a `StrategyID` while `deployment_wiring.go` states "**today no patch producer sets StrategyID**" — so enabling the gate rejects nearly every patch as "unmeasurable." This is **deliberate** (an unjudgeable patch must not be promoted), but it means the deploy guard currently behaves like "the door is open but the guard stops everyone."
 - **HalfSplitPromptCrossover's Unicode flaw**: byte-length `len(string)` splitting corrupts multi-byte Chinese; unfixed.
 - **`getCurrentStrategy()`**: the old hardcoded placeholder has been replaced by the `StrategyStore` interface (`GetActive`/`SetActive`/`GetHistory`), with a DB-backed implementation (`PGStrategyStore`) on the v1 side. But I have **not traced the runtime path of every `getCurrentStrategy` / `shouldEvolve` wiring point in v1/v2 production** — I've only confirmed the interface and implementations exist. I mark this detail unverified rather than overselling a "complete closed loop."

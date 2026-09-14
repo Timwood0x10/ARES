@@ -3,7 +3,7 @@
 // This is the "Agent as Thread" showcase: the runtime owns dispatch, agents
 // are disposable execution threads.
 //
-// ARES is a Peer Agent operating system (aresos-plan.md §1.1): all agents are
+// ARES is a Peer Agent operating system: all agents are
 // equal peers — no Leader/Worker hierarchy. The legacy Leader/Sub team path
 // (NewTeam/team.Run) has been removed. This example demonstrates the current
 // peer flow.

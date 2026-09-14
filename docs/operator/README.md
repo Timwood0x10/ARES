@@ -1,7 +1,7 @@
 # ARES Operator Runbook
 
 > 版本：0.3.0 · 适用命令：`ares serve` / `ares start`
-> 本文档是 M9 里程碑交付（AGENTOS_DEVELOPMENT_PLAN.md §6），覆盖：快速启动、配置调优、
+> 本文档是 M9 里程碑交付（AGENTOS_DEVELOPMENT_PLAN.md 第6节），覆盖：快速启动、配置调优、
 > 健康检查、认证、热重载、升级与故障排查。架构总览见
 > [docs/zh/architecture/ares-runtime.md](../zh/architecture/ares-runtime.md)。
 
@@ -41,7 +41,7 @@ docker compose logs -f ares-demo
 | `llm.fallbacks` | `provider` / `api_key` / `model` | — | 主 LLM 失败时的备用（错误时自动降级） |
 | `kernel` | `resources` / `quota_apply_interval` | 1m | 每 agent 资源预算与配额应用周期 |
 | `kernel` | `autopilot` | `false` | 演示任务注入器开关（生产勿开） |
-| `security` | `jwt_secret` / `auth_enabled` | 空 / false | JWT 认证（见 §4） |
+| `security` | `jwt_secret` / `auth_enabled` | 空 / false | JWT 认证（见第4节） |
 | `memory` | `archive.enabled` | true | 事件归档（压缩存储） |
 | `discovery` | `enabled` | false | 服务发现（可选，需外部依赖） |
 

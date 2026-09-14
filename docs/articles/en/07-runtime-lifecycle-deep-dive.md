@@ -213,7 +213,7 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 
 - The target Agent must be IDLE or SUSPENDED. The `cognitive` state is **fully replaced** into the agent.
 - If it was SUSPENDED, it flips back to IDLE.
-- This is the concrete action behind "a dead Agent's cognition is picked up by another/new Agent" (§13 invariant: **Agent disposable, Task durable**).
+- This is the concrete action behind "a dead Agent's cognition is picked up by another/new Agent" (Section 13 invariant: **Agent disposable, Task durable**).
 
 ---
 
@@ -237,7 +237,7 @@ graph TB
 
 Points to note:
 
-- **Process Tree is Pure Provenance**: `children[parentID]` only answers "who spawned whom" — it never forms a permission hierarchy (§13 invariant #1: A ≡ B ≡ C, peer cognitive processes).
+- **Process Tree is Pure Provenance**: `children[parentID]` only answers "who spawned whom" — it never forms a permission hierarchy (Section 13 invariant #1: A ≡ B ≡ C, peer cognitive processes).
 - **Resource quota (P5) is admission control**: claimed once at spawn, released at kill/retire. An empty/closed `resourceBudget` disables admission control.
 - **Events are best-effort**: a failed `sink.Emit` **never breaks the state machine** — the in-memory registry is authoritative. Conversely, rebuilding state across process restarts requires the event log (Evidence-Driven).
 - **Death-snapshot store**: one snapshot per identity, keeping the **most recent** death. `Retire` clears it (terminal); a successful in-place revival calls `ClearSnapshot` to consume it, so a long-running process doesn't accumulate stale snapshots. When several dead Agents share a capability, recovery picks the one with the **most recent `DiedAt`** — fresh cognition is the safest revival seed.
@@ -350,7 +350,7 @@ Two injectable failures: `FailureKill="kill"` (hard kill, removed immediately) a
 
 **2. The lifetime-cumulative restart budget is counter-intuitive**
 
-A success doesn't reset the sick agent's budget (see §7), which stops pathological cycling — but at the cost that an occasionally-crashed, otherwise-recoverable agent can still hit `ErrRecoveryExhausted` after a few "successful" revivals. There's currently no decay/decrement strategy — an open question.
+A success doesn't reset the sick agent's budget (see Section 7), which stops pathological cycling — but at the cost that an occasionally-crashed, otherwise-recoverable agent can still hit `ErrRecoveryExhausted` after a few "successful" revivals. There's currently no decay/decrement strategy — an open question.
 
 **3. The in-place revival dependency chain is fragile**
 

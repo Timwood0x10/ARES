@@ -2,7 +2,7 @@ package taskfabric
 
 import "time"
 
-// Task is the durable-intent object (design §3 of docs/zh/architecture/ares-runtime.md).
+// Task is the durable-intent object (docs/zh/architecture/ares-runtime.md).
 // Agents are disposable; a Task survives its owner via lease expiry and
 // preserved checkpoints.
 type Task struct {
@@ -45,7 +45,7 @@ type Task struct {
 	// Quantum counts how many execution quanta (agent steps) this task has
 	// run across ALL lease holders (accumulated across yield→resume cycles,
 	// preemptions and chaos-recovery replacements). It is the "semantic step"
-	// number the observability UI shows as Quantum #N (dashboard.md §4:
+	// number the observability UI shows as Quantum #N (
 	// "Agent is executing semantic quantum #18"). Guarded by f.mu like every
 	// other Task field.
 	Quantum int

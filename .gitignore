@@ -108,3 +108,6 @@ coverage.html
 /benchmarks/*_bench.txt
 /benchmarks/logs/
 /benchmark-output.txt
+
+# Go test binaries (go test -c output)
+*.test

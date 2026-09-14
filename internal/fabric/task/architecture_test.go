@@ -1,6 +1,6 @@
 package taskfabric
 
-// Architecture red line (RUNTIME.md §8-A2): the task fabric CORE — this
+// Architecture red line: the task fabric CORE — this
 // package (taskfabric top level), internal/fabric/agent, and
 // internal/fabric/planprojection — must never import internal/runtime. The
 // fabric is the engine the kernel schedules against; runtime is the service

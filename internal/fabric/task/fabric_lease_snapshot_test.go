@@ -77,7 +77,7 @@ func TestFabricLeaseSnapshot(t *testing.T) {
 // TestFabricLeaseSnapshotPureRead verifies purity: taking a snapshot does not
 // expire leases, mutate states, or advance any counter — unlike
 // CheckExpiredLeases, which is a write path and must never be used for
-// observation (monitoring.md §2.2 note).
+// observation (monitoring.md note).
 func TestFabricLeaseSnapshotPureRead(t *testing.T) {
 	f := NewFabric()
 	if err := f.Create(&Task{ID: "t-x", Capability: "cap"}); err != nil {

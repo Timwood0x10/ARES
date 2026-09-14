@@ -203,7 +203,15 @@ type Runtime struct {
 	// gov is the cognitive-execution budget injected into the L2 peer's
 	// SpawnSpec and syscall-spawned peers (WithAgentGovernance; zero =
 	// unlimited). Enforced by the scheduler via sched.WithGovernance.
-	gov agentfabric.Governance
+	//
+	// govMu guards gov's post-construction mutation: NewAgent's
+	// WithMaxTokens bridge (sdk.go) writes it while ensureL2's l2Once body
+	// (l2.go) reads it, and NewAgent is legal to call concurrently with
+	// another agent's first Run. Construction (builder.go) completes before
+	// any handle exists, so reads before the first NewAgent are lock-free
+	// by construction.
+	govMu sync.Mutex
+	gov   agentfabric.Governance
 	// syscallTools are the LLM-facing spawn_agent/create_task definitions
 	// appended to every agent's tool list so SDK users can autonomously
 	// decompose tasks. Populated by wireSyscalls; nil before the first
@@ -399,6 +407,17 @@ func (r *Runtime) KnowledgeStore() knowledge.KnowledgeStore {
 	return r.knowledgeStore
 }
 
+// governanceSnapshot returns the current governance budget under govMu.
+// Every post-construction read of r.gov goes through here: NewAgent's
+// WithMaxTokens bridge writes concurrently, so a bare field read races
+// (found in code review; locked pattern mirrors the once-body reads in
+// ensureL2 and wireSyscalls).
+func (r *Runtime) governanceSnapshot() agentfabric.Governance {
+	r.govMu.Lock()
+	defer r.govMu.Unlock()
+	return r.gov
+}
+
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,
 // an optional system instruction, and an optional set of tools.
 func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
@@ -406,6 +425,23 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 	for _, o := range opts {
 		o(ac)
 	}
+	// Bridge WithMaxTokens into the runtime's governance budget (Phase 7):
+	// the shared L2 path enforces token limits exclusively through
+	// Governance at quantum boundaries, so an agent-level WithMaxTokens
+	// that stops at the agentConfig would be a silent no-op — exactly the
+	// "stored but ignored bound" the option's old doc admitted to. The
+	// bridge happens here, before the first Run/Submit can call ensureL2,
+	// which stamps r.gov into the L2 peer ONCE (l2Once): a WithMaxTokens
+	// applied after the first run of ANY agent on this runtime cannot take
+	// effect — NewAgent is the last bridge point. Only a positive value
+	// bridges; a later agent with a SMALLER budget would otherwise silently
+	// tighten every other agent (documented: first positive value wins,
+	// WithAgentGovernance remains the explicit runtime-level control).
+	r.govMu.Lock()
+	if ac.maxTokens > 0 && r.gov.TokenBudget <= 0 {
+		r.gov.TokenBudget = ac.maxTokens
+	}
+	r.govMu.Unlock()
 	return &Agent{
 		name:        name,
 		instruction: ac.instruction,

@@ -145,7 +145,7 @@ Pushing past the imagination the word "plugin" conjures, `RuntimePlugin` + `Plug
 1. **Splits cross-cutting concerns off one execution path**: checkpoint, interrupt, recovery, loop, memory, and evolution all hang on the bus with a uniform interface, so the execution core doesn't have to know the details of each.
 2. **Centralized lifecycle management**: `Start`/`Stop` (reverse order), timeouts, panic recovery, and event publishing are all provided by the bus — plugin authors don't reinvent them.
 3. **Observe-only hooks that don't block**: the log-and-continue contract of `BeforeStep`/`AfterStep` means an observational plugin breaking won't take down scheduling.
-4. **Decoupled from the kernel**: the note in `runtime_bridge.go` is key — "the adapter lives in runtime_bridge.go — the kernel stays free of any runtime import" (§0.3 dependency rule). The kernel doesn't import `runtime`; the plugin seam is opened at the assembly layer (`cmd/ares`).
+4. **Decoupled from the kernel**: the note in `runtime_bridge.go` is key — "the adapter lives in runtime_bridge.go — the kernel stays free of any runtime import" (Section 0.3 dependency rule). The kernel doesn't import `runtime`; the plugin seam is opened at the assembly layer (`cmd/ares`).
 
 The cost is equally direct: **an extension must be compiled in to take effect**, or it goes through the `ares_skills` capability-data path. If you're building a platform and want third parties to contribute capabilities without recompiling, that path is currently closed (待核实 / to be verified: whether a dynamic-loading evolution exists but isn't merged).
 

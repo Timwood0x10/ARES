@@ -605,7 +605,7 @@ func TestEndToEndIntegration(t *testing.T) {
 ## 参考文档
 
 - [快速开始](../guides/quick-start.md)
-- [架构文档](../architecture/arch.md)
+- [架构文档](../../../ARCHITECTURE.md)
 - [配置参考](../../../examples/_fixtures/01-quickstart/ares.yaml)
 - [API 文档](../../en/api-reference.md)
 

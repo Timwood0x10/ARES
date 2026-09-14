@@ -210,7 +210,7 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 
 - 目标 Agent 必须在 IDLE 或 SUSPENDED。把 `cognitive` **整个替换**进这个 Agent。
 - 如果它是 SUSPENDED，顺便切回 IDLE。
-- 这就是"一个死亡 Agent 的认知由另一个/新的 Agent 捡起来"的落地动作（§13 不变式：**Agent 可丢，Task 耐操**）。
+- 这就是"一个死亡 Agent 的认知由另一个/新的 Agent 捡起来"的落地动作（第13节不变式：**Agent 可丢，Task 耐操**）。
 
 ---
 
@@ -234,7 +234,7 @@ graph TB
 
 几个要点：
 
-- **进程树（Process Tree）是 Pure Provenance**：`children[parentID]` 只回答"谁 spawn 了谁"，绝不构成权限层级（§13 不变式 #1：A ≡ B ≡ C，平级认知体）。
+- **进程树（Process Tree）是 Pure Provenance**：`children[parentID]` 只回答"谁 spawn 了谁"，绝不构成权限层级（第13节不变式 #1：A ≡ B ≡ C，平级认知体）。
 - **资源配额（P5）是准入控制**：spawn 时一次性 claim，kill/retire 时释放。`resourceBudget` 为空/关闭则不做准入控制。
 - **事件是 best-effort**：`sink.Emit` 失败**永远不破坏状态机**——内存注册表才是权威。反过来说，跨进程重启想重建状态，就得靠事件日志了（Evidence-Driven）。
 - **死亡快照库**：每个身份只留**最近一次**死亡快照。`Retire` 时清掉（terminal）；成功原地复活后会 `ClearSnapshot` 消费掉，防止长跑进程里堆满过期快照。多个死亡 Agent 共享同一能力时，恢复优先取 `DiedAt` **最新的那个**——最新鲜的认知是最安全的复活种子。

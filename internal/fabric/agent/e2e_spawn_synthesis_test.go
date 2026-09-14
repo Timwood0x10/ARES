@@ -26,7 +26,7 @@ import (
 //  3. B/C/D are SAME-LEVEL agents (A ≡ B ≡ C ≡ D).
 //  4. B/C/D have independent Cognitive State.
 //  5. B/C/D can independently checkpoint.
-//  6. A dies — B/C/D do NOT die (§13 invariant #2).
+//  6. A dies — B/C/D do NOT die (invariant #2).
 //  7. Tasks do not disappear when A dies.
 //  8. A (or a replacement) synthesises the children's results.
 func TestEndToEndSpawnSynthesis(t *testing.T) {
@@ -137,7 +137,7 @@ func TestEndToEndSpawnSynthesis(t *testing.T) {
 		t.Fatalf("D checkpoint mismatch: got %v", checkpointD.Checkpoint)
 	}
 
-	// Step 6: A dies (kill). B/C/D must survive (§13 invariant #2).
+	// Step 6: A dies (kill). B/C/D must survive (invariant #2).
 	if err := fabric.Kill(ctx, "A"); err != nil {
 		t.Fatalf("kill A: %v", err)
 	}

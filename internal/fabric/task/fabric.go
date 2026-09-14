@@ -50,7 +50,7 @@ var (
 	ErrTaskNotMutable = errors.New("taskfabric: task is not mutable in its current state")
 )
 
-// Fabric owns Tasks and their leases (design §6 of ares-runtime.md:
+// Fabric owns Tasks and their leases (ares-runtime.md:
 // Acquire / Release / Yield / Checkpoint). It is the scheduler's substrate:
 // agents compete for tasks via CAS ownership, never via a leader's dispatch.
 // Every ownership-carrying operation is fenced by the lease epoch (fencing
@@ -67,7 +67,7 @@ type Fabric struct {
 	tasks      map[string]*Task
 	events     []TaskEvent
 	store      ares_events.EventStore // optional persistent event sink; guarded by mu
-	confidence ConfidenceSource       // experience-derived confidence (§8 Skill-first); guarded by mu
+	confidence ConfidenceSource       // experience-derived confidence (Skill-first); guarded by mu
 	now        func() time.Time       // injectable clock for lease tests
 	epoch      uint64
 	// strategyStamp is the submission-time attribution source: called
@@ -107,7 +107,7 @@ func (f *Fabric) WithClock(now func() time.Time) *Fabric {
 	return f
 }
 
-// WithConfidenceSource wires the experience-derived confidence (design §8:
+// WithConfidenceSource wires the experience-derived confidence
 // Skill-first — Score's Confidence comes from ares_skills.Experience
 // BestMatch SuccessRate). Schedule fills candidates that do not declare a
 // confidence with the provider's prior. Nil detaches. Guarded by mu.
@@ -389,7 +389,7 @@ func (f *Fabric) LeaseSnapshot() []LeaseEntry {
 	return out
 }
 
-// TaskView is the full task row for the Tasks page (dashboard.md §5): unlike
+// TaskView is the full task row for the Tasks page: unlike
 // LeaseEntry it includes terminal states, the accumulated quantum count, and
 // the owner across the whole lifecycle — so the UI can render the task board
 // (Ready/Running/Done) and the DAG from one source.
@@ -418,8 +418,8 @@ type TaskView struct {
 }
 
 // TaskSnapshot returns a point-in-time copy of EVERY task, including terminal
-// ones, ordered by TaskID. It powers the Tasks page board + DAG (dashboard.md
-// §5: "see the real task dependency graph"). Terminal tasks are included so the Done column
+// ones, ordered by TaskID. It powers the Tasks page board + DAG
+// ("see the real task dependency graph"). Terminal tasks are included so the Done column
 // and the dependency closure render correctly. Purely read-only: everything
 // is copied under f.mu, no write path fires.
 func (f *Fabric) TaskSnapshot() []TaskView {

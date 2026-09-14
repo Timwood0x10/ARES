@@ -19,7 +19,7 @@ Let's first separate duties: **task dispatch is the Scheduler's (Task Fabric) jo
 
 ## 2. The Native Message Unit: Message
 
-Every IPC message uses `Message` from `internal/agentipc/bus.go` (design §13: Context layer 3 — IPC Messages):
+Every IPC message uses `Message` from `internal/agentipc/bus.go` (design Section 13: Context layer 3 — IPC Messages):
 
 ```go
 type Message struct {

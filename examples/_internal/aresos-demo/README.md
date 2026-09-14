@@ -48,7 +48,7 @@ go run examples/_internal/aresos-demo/main.go
 - **Kernel 只管机制**：本 demo 里 `agentfabric` 提供 Spawn/生命周期/checkpoint，
   `agentipc` 提供协作——「要不要拆、找谁」完全是 A 的认知（demo 层的决策函数）。
 - **Quantum 边界**：每步 `CheckpointCognitive` 即一个认知执行边界（一个量子步），
-  非墙钟时间片（见 aresos-plan.md 核心模型修正 §9）。
+  非墙钟时间片（见 aresos-plan.md 核心模型修正第9节）。
 
 ## 用到的公共 API（无任何库层改动）
 

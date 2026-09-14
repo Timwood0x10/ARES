@@ -20,7 +20,7 @@ const (
 )
 
 // canTransition reports whether the state machine allows from → to.
-// Legal transitions (docs/zh/architecture/ares-runtime.md §4):
+// Legal transitions (docs/zh/architecture/ares-runtime.md):
 //
 //	READY → LEASED (acquire), FAILED (dependency-failure cascade)
 //	LEASED → RUNNING (start), READY (release)

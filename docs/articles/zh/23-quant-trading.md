@@ -31,9 +31,9 @@
 
 不多，但确实有一份真实存在的东西——**文档，而不是代码**：
 
-### 2.1 `docs/en/development/quant-trading.md`（真实存在）
+### 2.1 `docs/en/development/quant-trading.md`（已于 2026-09-14 清理移除）
 
-这是一份**设计指南 / 实施计划**，标题就是"ares for Quant — 量化交易开发指南"。它描述的是一个**应该被建成**的东西：8 个 Agent 角色（基本面/情绪/新闻/技术分析师、多空研究员、交易员、风控、组合经理），一份 `internal/quant/` 的架构（约 1,850 行）+ `examples/quant-trading/`（约 1,710 行）的**行数预估**。
+这曾是一份**设计指南 / 实施计划**，标题就是"ares for Quant — 量化交易开发指南"。它描述的是一个**应该被建成**的东西：8 个 Agent 角色（基本面/情绪/新闻/技术分析师、多空研究员、交易员、风控、组合经理），一份 `internal/quant/` 的架构（约 1,850 行）+ `examples/quant-trading/`（约 1,710 行）的**行数预估**。
 
 但关键在于：**这份文档本身就是蓝图，不是现状。** 证据是它引用的接口全是已删除或不存在的包：
 
@@ -53,7 +53,7 @@
   
   这行白纸黑字列了个 `internal/ares_quant`，但**没有任何代码包里存在这个包**。（待核实：它可能描述的是一个已删除或从未合并的版本。）
 
-- `docs/zh/ARCHITECTURE.md`：
+- `docs/zh/ARCHITECTURE.md`（已于 2026-09-14 清理移除，被仓库根 `ARCHITECTURE.md` 取代）：
   - 架构图里画了 `QUANT["internal/ares_quant<br/>Portfolio / Market / Research / MarketMaking / Indicators"]`
   - 模块表里写 `internal/ares_quant | 量化 | 投资组合模拟、市场数据、研究记忆`
 
@@ -77,7 +77,7 @@
 | MCP 工具注册 | `internal/runtime/protocol/mcp` / `tools` | 真实存在 |
 | DAG 工作流 | `internal/fabric/task` | 真实存在，含 `quantum.go`（注意：是调度量子） |
 
-也就是说：**"用 ares 去写一个量化研究系统"这件事在技术上没有障碍——框架的能力都在，但 ares 仓库本身并没有内置任何交易逻辑。** 想用，就得照着 `docs/en/development/quant-trading.md` 那份蓝图从零搭，而不是 import 一个现成的 `internal/ares_quant`。
+也就是说：**"用 ares 去写一个量化研究系统"这件事在技术上没有障碍——框架的能力都在，但 ares 仓库本身并没有内置任何交易逻辑。** 想用，就得自己从零搭出蓝图里的模块，而不是 import 一个现成的 `internal/ares_quant`。
 
 ---
 

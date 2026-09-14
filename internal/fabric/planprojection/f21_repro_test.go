@@ -12,7 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 )
 
-// F-21 regression tests (docs/reviews/0.3.1-final-deep-review.md §0.1):
+// F-21 regression tests (docs/reviews/0.3.1-final-deep-review.md):
 // graph-event drops must ALWAYS be compensated. The two failure modes both
 // leave session tail nodes unmaterialized as fabric tasks ("missing"
 // forever):

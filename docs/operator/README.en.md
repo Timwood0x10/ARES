@@ -1,7 +1,7 @@
 # ARES Operator Runbook
 
 > Version: 0.3.0 · Commands: `ares serve` / `ares start`
-> This document is the M9 milestone deliverable (AGENTOS_DEVELOPMENT_PLAN.md §6),
+> This document is the M9 milestone deliverable (AGENTOS_DEVELOPMENT_PLAN.md Section 6),
 > covering: quick start, configuration tuning, health checks, authentication,
 > hot-reload, upgrades and troubleshooting. For the architecture overview see
 > [docs/en/architecture/ares-architecture.md](../en/architecture/ares-architecture.md).
@@ -43,7 +43,7 @@ docker compose logs -f ares-demo
 | `llm.fallbacks` | `provider` / `api_key` / `model` | — | Backup LLMs on primary failure (automatic failover) |
 | `kernel` | `resources` / `quota_apply_interval` | 1m | Per-agent resource budget and quota application period |
 | `kernel` | `autopilot` | `false` | Demo task injector switch (keep off in production) |
-| `security` | `jwt_secret` / `auth_enabled` | empty / false | JWT authentication (see §4) |
+| `security` | `jwt_secret` / `auth_enabled` | empty / false | JWT authentication (see Section 4) |
 | `memory` | `archive.enabled` | true | Event archiving (compacted storage) |
 | `discovery` | `enabled` | false | Service discovery (optional, external deps) |
 

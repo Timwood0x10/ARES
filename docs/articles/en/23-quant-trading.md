@@ -31,9 +31,9 @@ The old article claimed the quant module had **9,768 lines (~11% of the codebase
 
 Not much — but one thing is real: **a document, not code.**
 
-### 2.1 `docs/en/development/quant-trading.md` (real)
+### 2.1 `docs/en/development/quant-trading.md` (removed 2026-09-14)
 
-This is a **design guide / implementation plan** — literally titled "ares for Quant — 量化交易开发指南." It describes what **should be built**: 8 agent roles (fundamentals / sentiment / news / technical analysts, bull & bear researchers, trader, risk manager, portfolio manager), plus an architecture for `internal/quant/` (~1,850 lines) and `examples/quant-trading/` (~1,710 lines) with **line-count estimates**.
+This was a **design guide / implementation plan** — literally titled "ares for Quant — 量化交易开发指南." It describes what **should be built**: 8 agent roles (fundamentals / sentiment / news / technical analysts, bull & bear researchers, trader, risk manager, portfolio manager), plus an architecture for `internal/quant/` (~1,850 lines) and `examples/quant-trading/` (~1,710 lines) with **line-count estimates**.
 
 But the giveaway is that it's a blueprint, not a snapshot of reality: the interfaces it cites are all in deleted or nonexistent packages.
 
@@ -53,7 +53,7 @@ The doc also references `plan/quan/quant-implementation-plan.md` — **that plan
 
   A row that lists `internal/ares_quant`, yet **no such package exists in any code directory.** (待核实: it may describe an removed or never-merged version.)
 
-- `docs/zh/ARCHITECTURE.md`:
+- `docs/zh/ARCHITECTURE.md` (removed 2026-09-14, superseded by the repo-root `ARCHITECTURE.md`):
   - draws `QUANT["internal/ares_quant<br/>Portfolio / Market / Research / MarketMaking / Indicators"]` in its diagram
   - tabulates `internal/ares_quant | 量化 | 投资组合模拟、市场数据、研究记忆`
 
@@ -77,7 +77,7 @@ To avoid misleading people, let me be precise about which ares capabilities cite
 | MCP tool registry | `internal/mcpclient` / `tools` | real |
 | DAG workflows | `internal/fabric/task` | real, includes `quantum.go` (note: execution *quanta*, not trading) |
 
-In other words: **nothing stops you from building a quant research system on ares — the framework's capabilities are all here — but the ares repo itself ships no trading logic.** To use it you'd build from the blueprint in `docs/en/development/quant-trading.md`, not import a ready-made `internal/ares_quant`.
+In other words: **nothing stops you from building a quant research system on ares — the framework's capabilities are all here — but the ares repo itself ships no trading logic.** To use it you'd build those modules from scratch yourself, not import a ready-made `internal/ares_quant`.
 
 ---
 

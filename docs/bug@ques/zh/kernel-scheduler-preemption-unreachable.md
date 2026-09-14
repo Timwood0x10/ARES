@@ -44,7 +44,7 @@ s.PreemptLowerPriority(tasks) // 只在这里调用
 ## 修复
 
 `Run` 增加一个受管 watcher goroutine（ctx 退出即止、单次扫描带 recover 边界，
-符合 code_rules_v2 §4.1/§4.2）：每个 poll tick 独立执行一次
+符合 code_rules_v2 第4.1节/第4.2节）：每个 poll tick 独立执行一次
 `PreemptLowerPriority(ResumableTasks())`，不再依赖会阻塞的 drain 主循环。
 
 语义保持"quantum 永不在步内被打断"：抢占只改 durable 状态（RUNNING→READY、

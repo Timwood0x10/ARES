@@ -328,7 +328,14 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 
 	// ── 7. Lease expiry → recovery → replacement resumes → COMPLETED ────
 	advance(7 * time.Minute) // past the scheduler's 5-minute lease TTL
-	if state := waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 10*time.Second); state != taskfabric.StateCompleted {
+	// 30s budget (~30x the nominal recovery path, same headroom posture as
+	// the L2 burst-growth test): the 10s deadline used to fail the whole
+	// suite under full-repo parallel load (observed once at exactly 10.03s
+	// with CPU starvation — the wait includes lease-expiry requeue and a
+	// scheduler poll, both timer-sensitive), while isolated reruns always
+	// passed in ~1s. A deadline that only fits an idle machine is a flake
+	// factory, not a regression signal.
+	if state := waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 30*time.Second); state != taskfabric.StateCompleted {
 		t.Fatalf("task must complete after recovery, got %s", state)
 	}
 

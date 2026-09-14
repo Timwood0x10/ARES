@@ -15,7 +15,7 @@ LLM 的 context window 是硬约束：Agent 每轮对话都会累积历史，工
 
 ## 二、三层上下文：Task Shared / Agent Private / IPC
 
-`internal/fabric/agent/context.go` 定义了对隔离的硬性要求（design §13：Context three layers，不要共用一个大脑）：`ContextLayer` 枚举三档：
+`internal/fabric/agent/context.go` 定义了对隔离的硬性要求（design 第13节：Context three layers，不要共用一个大脑）：`ContextLayer` 枚举三档：
 
 ```go
 type ContextLayer int
@@ -30,7 +30,7 @@ const (
 Fabric 提供读写入口并**以"深拷贝"保证隔离**：
 
 - `SetTaskContext` / `TaskContext`：绑定时给 Agent 一份任务的 Task Shared State 副本，Agent 永远改不到调用方的 map。
-- `SetPrivate` / `Private`：私有草稿层，**绝不泄漏到 Task Shared State 或其它 Agent**（§13 不变量 #5/6）。
+- `SetPrivate` / `Private`：私有草稿层，**绝不泄漏到 Task Shared State 或其它 Agent**（第13节不变量 #5/6）。
 - `ContextView`：只读快照，把 `TaskShared` 与 `Private` 一起取出，正是为了验证"私有不从 Task 泄漏"。
 
 区分 **Fabric 存什么**：`agent.go` 的 `Agent` 只持有 `taskContext` 与 `privateContext`；IPC 层不落在 Fabric，而是由 `internal/agentipc` 的 `Message` / `Bus` 承载（即上一篇的 peer 消息总线）。
@@ -55,7 +55,7 @@ graph TD
 
 ## 三、CognitiveState：版本化、可检查点
 
-Agent 的"认知内容"被显式建模为 `internal/fabric/agent/agent.go` 的 `CognitiveState`——它是**可独立持久化**的状态，Runtime **不依赖隐藏的 chain-of-thought**，只依赖这份持久状态（§13 不变量 #5）：
+Agent 的"认知内容"被显式建模为 `internal/fabric/agent/agent.go` 的 `CognitiveState`——它是**可独立持久化**的状态，Runtime **不依赖隐藏的 chain-of-thought**，只依赖这份持久状态（第13节不变量 #5）：
 
 ```go
 const CognitiveStateSchemaVersion = 1

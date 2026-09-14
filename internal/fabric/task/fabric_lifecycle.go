@@ -126,7 +126,7 @@ func (f *Fabric) Start(id, agentID string, epoch uint64) error {
 	return nil
 }
 
-// Yield is the quantum-boundary primitive (design §4 correction 2): it
+// Yield is the quantum-boundary primitive: it
 // hands execution back to the Runtime at a checkpoint. The state after yield
 // is decided by the Scheduler (continue/suspend/preempt/handoff/complete);
 // The default transition is SUSPENDED with the checkpoint preserved.

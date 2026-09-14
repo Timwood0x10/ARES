@@ -466,7 +466,7 @@ graph TD
 
 `SetToolClassDAG(dag)` 注入另外一张图——**L1 能力图**：每个节点是 `toolName#argShape`，Metadata 里的 `enabled/budget/prior` 约束 L2 生长（planCognition 在长节点前读它）。注意注释里说得明白：L1 图**不编译进 taskfabric、不是执行计划**，它是一张能力目录；进化结构 patch（`SetNodeMetadata`）改的是这张目录的元数据。
 
-> 诚实点：这一节的边界要讲清楚（`TOOL_DAG_MAINLINE_DESIGN.md` §10 的措辞边界）：
+> 诚实点：这一节的边界要讲清楚（`TOOL_DAG_MAINLINE_DESIGN.md` 第10节的措辞边界）：
 > - **"进化作用于 peer 级 agent 拓扑"可以写；"作用于单 agent 内部工作流"目前**不能****写**（M4 删 `chatStepState` 前一律未闭环）；
 > - **`UpdateLiveDAG` 只在 `serve` 入口（`buildLiveAgentDAG`）之后才拿到真 DAG**；bootstrap 阶段 `ProvideNewEvolution` 注册的是占位 DAG，注释明说"evolution verdicts 可用但没有活拓扑可作用"，必须等 serve 注入；
 > - **进化只改 L1，L2 是运行时产物，不接受 patch**——这是明写的不变量。
@@ -475,7 +475,7 @@ graph TD
 
 ## 八、诚实盘点：我删了什么、标了什么、缺了什么
 
-写这篇之前，我把旧稿里"好看但不实"的话都扒了一遍。对照 `TOOL_DAG_MAINLINE_DESIGN.md` §10 的**发布措辞边界**（B-list），逐条对账如下：
+写这篇之前，我把旧稿里"好看但不实"的话都扒了一遍。对照 `TOOL_DAG_MAINLINE_DESIGN.md` 第10节的**发布措辞边界**（B-list），逐条对账如下：
 
 ### 8.1 三项已确认的欠账（E1 / E2 / E3）——我在代码里核实了，属实
 

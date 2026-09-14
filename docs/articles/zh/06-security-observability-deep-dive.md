@@ -232,7 +232,7 @@ flowchart LR
     S[Schedule 调用] --> RC{DecisionRecorder.Record}
     RC --> RB[有界环形缓冲 ≤ 200 条]
     RB --> SNAP[Snapshot 副本, 新到旧]
-    SNAP --> P[introspect 面板 / dashboard.md §7]
+    SNAP --> P[introspect 面板 / dashboard.md 第7节]
 ```
 
 ---

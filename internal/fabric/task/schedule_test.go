@@ -6,7 +6,7 @@ import (
 )
 
 // TestFabricSchedulePicksBestCapable verifies Schedule picks the best capable
-// executor (capability × load × confidence — design §8 "who is the best
+// executor (capability × load × confidence "who is the best
 // executor") and acquires the task for it, granting a usable fencing token.
 func TestFabricSchedulePicksBestCapable(t *testing.T) {
 	f := NewFabric()

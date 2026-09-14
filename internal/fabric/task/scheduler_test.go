@@ -20,7 +20,7 @@ func TestScoreCapabilityGating(t *testing.T) {
 	}
 }
 
-// TestPickBestExecutorWins verifies "who is the best executor" (design §8):
+// TestPickBestExecutorWins verifies "who is the best executor":
 // the agent covering the capability chain fully, with low load and high
 // confidence, wins — not merely the idle one.
 func TestPickBestExecutorWins(t *testing.T) {

@@ -101,7 +101,7 @@ type Scheduler struct {
 	// (backward compatible with tests and minimal wiring).
 	agents *agentfabric.Fabric
 	// decisions records every scheduling decision (candidate pool + scores +
-	// winner) for the Scheduling Observatory (dashboard.md §7). It is written
+	// winner) for the Scheduling Observatory. It is written
 	// in executeWithCandidates and read via DecisionsSnapshot — the panel
 	// explains WHY a task went to a particular agent.
 	decisions *DecisionRecorder
@@ -363,7 +363,7 @@ func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 
 // SchedulerSnapshot is a point-in-time, read-only view of the scheduler's
 // observable state — the runtime introspection panel's Domain A read-model
-// (monitoring.md §2.2: queue depth, preemption cadence, executor inventory,
+// (queue depth, preemption cadence, executor inventory,
 // budget/governance wiring, per-agent load). Every field is a copy taken
 // under the appropriate lock; callers never touch scheduling internals.
 type SchedulerSnapshot struct {
@@ -396,7 +396,7 @@ type SchedulerSnapshot struct {
 }
 
 // DecisionsSnapshot returns the recorded scheduling decisions (newest first)
-// for the Scheduling Observatory (dashboard.md §7). Purely read-only: the
+// for the Scheduling Observatory. Purely read-only: the
 // recorder's lock is internal; no scheduling write path is touched.
 func (s *Scheduler) DecisionsSnapshot() []ScheduleDecision {
 	if s.decisions == nil {

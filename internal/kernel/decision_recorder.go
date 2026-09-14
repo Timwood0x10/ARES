@@ -1,6 +1,6 @@
 // Package kernel — scheduling-decision recorder.
 //
-// The Scheduling Observatory (dashboard.md §7) exists to explain WHY a task
+// The Scheduling Observatory exists to explain WHY a task
 // was assigned to a particular agent: the candidate pool, each candidate's
 // capability-overlap / load / confidence / priority scores, and the final
 // winner. This file records one decision per Schedule call into a bounded
@@ -22,7 +22,7 @@ import (
 const maxRecordedDecisions = 200
 
 // CandidateScore is one candidate's scheduling score breakdown — the
-// "Capability Match" + "Scheduling Score" rows of dashboard.md §7.
+// "Capability Match" + "Scheduling Score" rows.
 type CandidateScore struct {
 	// AgentID is the candidate executor.
 	AgentID string `json:"agentId"`
@@ -40,7 +40,7 @@ type CandidateScore struct {
 	Score float64 `json:"score"`
 }
 
-// ScheduleDecision is one immutable scheduling decision (dashboard.md §7:
+// ScheduleDecision is one immutable scheduling decision (e.g.
 // "Decision: TASK-184 ↓ agent-7f21 ↓ Acquire ↓ epoch = 42").
 type ScheduleDecision struct {
 	// TaskID is the scheduled task.

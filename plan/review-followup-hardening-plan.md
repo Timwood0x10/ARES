@@ -39,7 +39,7 @@ flowchart LR
 
 ### S3. syscall 与控制面一致性核对（0.5 天）
 - 核对 agentsyscall.Kernel 的身份/配额校验与 HTTP 面板写路径（kill/resume/chaos）是否共用同一授权源；chaos 类端点确认仅本机可达。
-- 产出一页核对结论（可并入 ARCHITECTURE_REVIEW_MERMAID.md §6 勾销）。
+- 产出一页核对结论（可并入 ARCHITECTURE_REVIEW_MERMAID.md 第6节勾销）。
 
 ---
 
@@ -58,7 +58,7 @@ flowchart LR
 - 验收：默认配置下 promote 路径四门齐上（或明确 fail-closed）；闭环测试补一条"默认配置→四门全过才 SetActive"。
 
 ### G3. 文档与默认值对账（0.5 天）
-- ARCHITECTURE.md / configs/*.yaml 样例 / README 同步新默认；RUNTIME.md §5 顺带修事件总线"未接线"自相矛盾行。
+- ARCHITECTURE.md / configs/*.yaml 样例 / README 同步新默认；RUNTIME.md 第5节顺带修事件总线"未接线"自相矛盾行。
 
 ---
 

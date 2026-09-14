@@ -1,6 +1,6 @@
 // Runtime Evolution Demo (full) — the runtime evolution chain over three
-// genomes (workflow, knowledge, recovery; the scheduler dimension is retired
-// per fusion plan §B1), real executors,
+// genomes (workflow, knowledge, recovery; the scheduler dimension is retired),
+// real executors,
 // and a full evolution cycle per subsystem.
 //
 // Purpose:
@@ -107,7 +107,7 @@ func main() {
 	// ── Step 3: Register ALL genomes ──
 	// Workflow mutates the DAG topology, knowledge the knowledge-retrieval
 	// parameters, recovery the failure handling policy. (The scheduler
-	// dimension is retired — fusion plan §B1.)
+	// dimension is retired.)
 	genomeReg := genome.NewRegistry()
 	mustRegisterGenome(genomeReg, genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig()))
 	mustRegisterGenome(genomeReg, genome.NewKnowledgeGenome(nil, genome.DefaultKnowledgeGenomeConfig()))

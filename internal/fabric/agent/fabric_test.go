@@ -33,7 +33,7 @@ func (s *recordingSink) count(typ AgentEventType) int {
 	return n
 }
 
-// TestSpawnEstablishesProvenanceNotHierarchy verifies §13 invariant #1:
+// TestSpawnEstablishesProvenanceNotHierarchy verifies invariant #1:
 // spawn creates a parent-child link (Process Tree) but the child is a
 // SAME-LEVEL cognitive process — both parent and child can compete for the
 // same task (both are IDLE and schedulable). The link is provenance only,
@@ -67,7 +67,7 @@ func TestSpawnEstablishesProvenanceNotHierarchy(t *testing.T) {
 	}
 }
 
-// TestParentDeathChildSurvives verifies §13 invariant #2 + #7: killing a
+// TestParentDeathChildSurvives verifies invariant #2 + #7: killing a
 // parent does NOT kill the child or its tasks. The child stays alive (IDLE)
 // and the Process Tree edge is preserved for provenance.
 func TestParentDeathChildSurvives(t *testing.T) {
@@ -104,7 +104,7 @@ func TestParentDeathChildSurvives(t *testing.T) {
 	}
 }
 
-// TestCognitiveStateCheckpointResume verifies §13 invariant #5: an agent's
+// TestCognitiveStateCheckpointResume verifies invariant #5: an agent's
 // cognitive state is independently checkpointable. A new agent can resume
 // the cognitive state of a dead agent (Agent disposable, cognition durable).
 func TestCognitiveStateCheckpointResume(t *testing.T) {
@@ -156,7 +156,7 @@ func TestCognitiveStateCheckpointResume(t *testing.T) {
 	_ = a1 // silence unused
 }
 
-// TestContextThreeLayersIsolation verifies §13 invariant #6: the three
+// TestContextThreeLayersIsolation verifies invariant #6: the three
 // context layers (Task Shared / Agent Private / IPC) do NOT bleed into each
 // other. Private state written by one agent never appears in another agent's
 // Task Shared State or Private State.

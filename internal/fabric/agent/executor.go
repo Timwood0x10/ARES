@@ -9,7 +9,7 @@ import (
 )
 
 // Cognition is the execution contract for one quantum of cognitive work
-// (design §13: "Agent decides. Kernel enforces."). Each invocation of
+// ("Agent decides. Kernel enforces."). Each invocation of
 // ExecuteStep runs one quantum — a bounded reasoning/action step that either
 // completes the task (Done), yields progress for resumption (Checkpoint), or
 // fails.

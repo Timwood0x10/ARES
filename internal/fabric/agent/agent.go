@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// AgentState is the lifecycle state of a managed Agent (design §3 of
-// ares-runtime: disposable execution).
+// AgentState is the lifecycle state of a managed Agent (ares-runtime: disposable execution).
 type AgentState string
 
 const (
@@ -21,8 +20,7 @@ const (
 	StateRetired AgentState = "RETIRED"
 )
 
-// Agent is a disposable, peer-equivalent cognitive process (design §3 +
-// §13). Agents are NOT orchestrated — they are scheduled (by taskfabric) and
+// Agent is a disposable, peer-equivalent cognitive process . Agents are NOT orchestrated — they are scheduled (by taskfabric) and
 // managed (by this Fabric). An Agent independently holds its own Cognitive
 // State; the Runtime never depends on hidden CoT, only on checkpointable
 // state.
@@ -40,7 +38,7 @@ type Agent struct {
 	Confidence float64
 	// Parent is the spawning agent's identity ("" for a root agent). This
 	// is PROVENANCE ONLY — parent/child does NOT form a permission
-	// hierarchy (§13 invariant #1: A ≡ B ≡ C).
+	// hierarchy (invariant #1: A ≡ B ≡ C).
 	Parent string
 	// Priority is the scheduling priority (>= 0; 0 = normal). It mirrors
 	// OS-thread priority: the taskfabric scheduler boosts higher-priority
@@ -74,8 +72,7 @@ type Agent struct {
 // migration from prior versions. (A versioned structure.)
 const CognitiveStateSchemaVersion = 1
 
-// CognitiveState is the agent's independent cognitive content (design §13:
-// Context / Observation / Working Memory / Decision / Tool State / Checkpoint).
+// CognitiveState is the agent's independent cognitive content (Context / Observation / Working Memory / Decision / Tool State / Checkpoint).
 // It is independently checkpointable — the Runtime does NOT depend on hidden
 // chain-of-thought, only on this durable state.
 //

@@ -185,7 +185,7 @@ The capability-catalog wiring is **not** done in one place in `serve.go` — it'
 3. `SetGitSources` / `SetHTTPSources`; MCP attached as the lazy connector; `SyncGitSources` is non-fatal (degrading to local-checkout indexing on failure)
 4. `catalog.Build()` — built exactly once at startup; failure is logged, not fatal
 5. `SeedRegistry` pours into `skills.Registry` → `setter.SetSkillsRegistry(reg)` attaches to the memoryManager resident "Available skills" block
-6. `bootstrap.go` used to start `NewSkillOutcomeRecorder(catalog).Start(ctx, comp.EventStore)` here — removed as dead code (starved from the start; see §6), leaving a TODO(tech-debt) at the wiring spot
+6. `bootstrap.go` used to start `NewSkillOutcomeRecorder(catalog).Start(ctx, comp.EventStore)` here — removed as dead code (starved from the start; see Section 6), leaving a TODO(tech-debt) at the wiring spot
 
 **② Tool exposure** (`cmd/ares/serve.go` / `tools.go`):
 

@@ -5,7 +5,7 @@ import (
 )
 
 // Schedule picks the best capable candidate for a task and acquires it on its
-// behalf (design §8: capability-aware scheduling — "who is the best executor",
+// behalf (capability-aware scheduling — "who is the best executor",
 // not merely "who is idle"). The Scheduler orchestrates
 // uniformly — ReadyTasks → Schedule → execute; idle agents Steal → Acquire.
 // The scoring (capability overlap × (1-load) × confidence) comes from
@@ -26,7 +26,7 @@ func (f *Fabric) Schedule(taskID string, candidates []Candidate, ttl time.Durati
 	if err != nil {
 		return "", 0, err
 	}
-	// Design §8 (Skill-first): the experience prior supplies confidence for
+	// Skill-first: the experience prior supplies confidence for
 	// candidates that do not declare one — Score's Confidence comes from the
 	// wired ConfidenceSource (ares_skills.Experience BestMatch SuccessRate).
 	//

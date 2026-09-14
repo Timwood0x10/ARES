@@ -15,7 +15,7 @@ The LLM context window is a hard constraint: agents accumulate history every tur
 
 ## 2. The Three-Layer Context: Task Shared / Agent Private / IPC
 
-`internal/fabric/agent/context.go` hard-codes the isolation requirement (design §13: Context three layers — don't share one brain): the `ContextLayer` enum defines three tiers:
+`internal/fabric/agent/context.go` hard-codes the isolation requirement (design Section 13: Context three layers — don't share one brain): the `ContextLayer` enum defines three tiers:
 
 ```go
 type ContextLayer int
@@ -30,7 +30,7 @@ const (
 The Fabric exposes read/write entry points and enforces isolation **by deep copy**:
 
 - `SetTaskContext` / `TaskContext`: binds a copy of the task's Task Shared State to an agent; the agent can never mutate the caller's map.
-- `SetPrivate` / `Private`: private scratchpad layer — **never leaks into Task Shared State or other agents** (§13 invariants #5/6).
+- `SetPrivate` / `Private`: private scratchpad layer — **never leaks into Task Shared State or other agents** (Section 13 invariants #5/6).
 - `ContextView`: a read-only snapshot pulling `TaskShared` and `Private` together, precisely so you can verify "private never bleeds into task".
 
 Note **what the Fabric stores**: the `Agent` (in `agent.go`) holds only `taskContext` and `privateContext`; the IPC layer does not live in the Fabric — it is carried by `internal/agentipc`'s `Message` / `Bus` (the peer message bus from the previous article).
@@ -55,7 +55,7 @@ graph TD
 
 ## 3. CognitiveState: Versioned and Checkpointable
 
-An agent's "cognitive content" is explicitly modeled as `CognitiveState` in `internal/fabric/agent/agent.go` — state that is **independently persistable**: the Runtime does NOT depend on hidden chain-of-thought, only on this durable state (§13 invariant #5):
+An agent's "cognitive content" is explicitly modeled as `CognitiveState` in `internal/fabric/agent/agent.go` — state that is **independently persistable**: the Runtime does NOT depend on hidden chain-of-thought, only on this durable state (Section 13 invariant #5):
 
 ```go
 const CognitiveStateSchemaVersion = 1
@@ -120,7 +120,7 @@ if utf8.RuneCountInString(prompt) > c.promptMaxLength() {
 }
 ```
 
-The key point: this is a **front gate** — an over-limit prompt is rejected before it reaches the provider, rather than being shoved into the window and truncated implicitly by the provider. It is not "compression"; real control of history size comes from §2, §3, and §4 (three-layer isolation limits what's visible, checkpointable state is naturally the leanest mental model, and session whitespace is bounded by TTL/turn count).
+The key point: this is a **front gate** — an over-limit prompt is rejected before it reaches the provider, rather than being shoved into the window and truncated implicitly by the provider. It is not "compression"; real control of history size comes from Section 2, Section 3, and Section 4 (three-layer isolation limits what's visible, checkpointable state is naturally the leanest mental model, and session whitespace is bounded by TTL/turn count).
 
 ## 6. Summary
 

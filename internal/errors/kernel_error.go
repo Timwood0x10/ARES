@@ -7,7 +7,7 @@ import "strings"
 // chain, so it can be emitted directly by structured logging with precise
 // task/agent/op/code attribution for fast production triage.
 //
-// Field conventions (see ares-repair-plan-zh.md §2.5):
+// Field conventions:
 //   - Op:      operation name, e.g. "schedule", "acquire", "run_quantum".
 //   - Code:    machine-readable error code, e.g. "no_capable_candidate".
 //   - TaskID:  the affected task (empty means not task-scoped).

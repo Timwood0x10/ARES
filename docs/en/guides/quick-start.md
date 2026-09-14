@@ -297,9 +297,9 @@ llm:
 
 ## Next Steps
 
-- Read [Architecture Documentation](../architecture/arch.md) to understand system design
+- Read [Architecture Documentation](../../../ARCHITECTURE.md) to understand system design
 - Read [Integration Guide](../development/integration-guide.md) to learn how to integrate into existing projects
-- Check [Example Code](../examples/) to learn more usage
+- Check [Example Code](../../../examples/) to learn more usage
 
 ## Get Help
 

@@ -65,7 +65,7 @@ Legend: ★ flagship · LLM = needs a configured provider · dry = runs without 
 | [25-dual-endpoint-fallback](_fixtures/25-dual-endpoint-fallback/) | Dual-endpoint LLM fallback config template (`ares.yaml`, no Go code) |
 | [eval](_fixtures/eval/) · [evaluation](_fixtures/evaluation/) | Evaluation harness + shared assertion library |
 
-> The scheduler genome dimension was RETIRED (fusion plan §B1): sdk.Graph runs
+> The scheduler genome dimension was RETIRED (fusion plan Section B1): sdk.Graph runs
 > fully-parallel ready batches. A future concurrency dimension may evolve
 > `sdk.Graph.MaxRoundConcurrency`.
 

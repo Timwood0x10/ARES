@@ -350,7 +350,7 @@ Three concepts do not mix:
 
 > The core Runtime (P0-P5 + production wiring) is complete. v0.3.0 focuses on
 > advanced features built on the three pillars (Scheduler / IPC / Lifecycle)
-> without changing the core invariants (§11).
+> without changing the core invariants (Section 11).
 
 ### Priority matrix
 
@@ -410,7 +410,7 @@ decision dimensions (**Evolution decides; Kernel enforces**):
   Simulate future scenarios)
 - Performance benchmarks (collaboration / tracing / sandbox)
 
-### Relation to the "no premature design" list (§11 invariant #10 revision)
+### Relation to the "no premature design" list (Section 11 invariant #10 revision)
 
 Promoted from deferred to scheduled (2026-08-17): multi-agent collaboration,
 auto spawn/clone policy, complex resource allocation (quota weights), new

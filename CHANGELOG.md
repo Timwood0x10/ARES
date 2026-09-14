@@ -126,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`sdk.WithMaxTokens` is now enforced (was a silent no-op on the L2
+  path)**: the value bridges into the runtime's cognitive-governance budget
+  (`WithAgentGovernance`'s `TokenBudget` — enforced by the scheduler at
+  quantum boundaries), so a run that exceeds the budget cooperatively yields
+  instead of burning tokens. Semantics to note: the budget is the shared L2
+  peer's LIFETIME TOTAL (not per-run), the first positive value applied
+  (with `WithAgentGovernance` taking precedence) wins for the runtime, and
+  callers who relied on the option being ignored will now observe
+  enforcement. `sdk.WithMaxIterations` remains Evolve's search-depth knob
+  only — its doc now says so explicitly (bounds on the L2 path come from
+  `WithTimeout` / `WithAgentGovernance`).
 - **One execution engine: the SDK joins the shared L2 execution core**
   (the 0.3.1 convergence): `Agent.Run`, `Submit` and `RunGraph` no longer
   run a separate in-SDK ReAct engine — all three compose the prompt
@@ -622,7 +633,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `0.3.0-dev` into `main.version`; `ares version` prefers the injected version,
   falling back to build-info pseudo-version. Deprecation policy documented in
   (design notes were never committed).
-- **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md §6): security layer, config
+- **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md Section 6): security layer, config
   hot-reload, and fault-injection e2e all marked implemented.
 - **Quantum execution + scheduler resumption** (`cmd/ares/scheduler.go`,
   `internal/agents/sub/executor.go`): the sub-agent executor is refactored into
@@ -910,7 +921,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Kernel Dispatch & DAG Fixes
 
 - **Kernel dispatch fake success** (`cmd/ares/kernel.go`): `kernelTaskDispatcher.Dispatch` unconditionally reported `SetSuccess(nil, "dispatched via kernel")` for every task, so the leader aggregated empty results (`items=0`) while the scheduler actually executed the work — the `EventSubTaskResult` reflux was bypassed and no producer existed in production. The dispatcher is now event-driven: it subscribes to `EventTaskCompleted/Failed` (broadcast), submits tasks through the fabric, waits for the real terminal event (with the same 300s timeout contract as the leader dispatcher), and rebuilds the `TaskResult` from the fabric checkpoint (`items`/`reason`/`metadata`) plus the original task's `UsedExperienceID`. Legacy sync path (no fabric) keeps immediate success; fabric present but no event store fails explicitly. `flipKernelToTaskFabric` injects the fabric reference and wires the event store so `fabric.record` emits externally. `user_profile` is now passed through to the executor (struct reference), so the LLM path no longer degrades to the empty `executeByType` fallback. Contract tests cover result reflux + `UserProfile` passthrough, timeout, worker failure, and the legacy/batch adapters.
-- **Kernel DAG wiring** (`cmd/ares/kernel.go`): `taskFromPayload` now accepts `dependencies` as both `[]string` (in-memory hop via `kernelTaskDispatcher.Dispatch`) and `[]any` (JSON round-trip). Previously the `[]any`-only assertion silently dropped every DAG edge on the Task Fabric path, defeating the `IsReady` gate (ares-runtime.md §9). Test extended to cover both shapes.
+- **Kernel DAG wiring** (`cmd/ares/kernel.go`): `taskFromPayload` now accepts `dependencies` as both `[]string` (in-memory hop via `kernelTaskDispatcher.Dispatch`) and `[]any` (JSON round-trip). Previously the `[]any`-only assertion silently dropped every DAG edge on the Task Fabric path, defeating the `IsReady` gate (ares-runtime.md Section 9). Test extended to cover both shapes.
 - **Planner DAG truncation** (`internal/agents/leader/planner.go`): dependency resolution now runs *after* the `maxTasks` truncation. Previously a retained task could depend on a truncated task — a dangling reference that permanently blocked the Task Fabric's `IsReady` gate (deadlock). Regression test `TestPlan_DependenciesAfterTruncation` covers the truncation-dependency interplay.
 
 ### Candidate Release Closed-Loop (evolution)

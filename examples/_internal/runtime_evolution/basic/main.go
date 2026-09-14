@@ -100,7 +100,7 @@ func buildDAG() *engine.MutableDAG {
 func registerComponents(dag *engine.MutableDAG) (*genome.Registry, *diff.Registry, *patch.Registry) {
 	// ── Register genomes ──
 	// A genome knows how to mutate its subsystem and snapshot its state;
-	// TODO(evolution-dim): the scheduler dimension was retired (fusion §B1);
+	// TODO(evolution-dim): the scheduler dimension was retired
 	// a future concurrency genome may evolve sdk.Graph.MaxRoundConcurrency.
 	// The workflow genome mutates the DAG topology;
 	// node scheduling.

@@ -148,7 +148,7 @@ func (r *Runtime) wireSyscalls() {
 	}
 	// Same cognitive-execution budget as the L2 peer: a syscall-spawned
 	// agent is bounded from birth (zero = unlimited), cmd/ares parity.
-	opts = append(opts, agentsyscall.WithAgentGovernance(r.gov))
+	opts = append(opts, agentsyscall.WithAgentGovernance(r.governanceSnapshot()))
 	kernelSyscall := agentsyscall.NewKernel(
 		r.agentsFabric,
 		r.sdkFabric,

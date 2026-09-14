@@ -1,19 +1,5 @@
 # Event Sourcing
 
-> **⚠ Historical document (2026-09-13, v0.3.1)**: written during the
-> **Leader/Sub execution model** era. The "Leader failover integration" section
-> below describes `LeaderSupervisor`, leader election and a `failover.triggered`
-> flow that were all removed in v0.3.x — the current runtime is flat peers plus
-> a kernel scheduler (`internal/kernel`) and a task fabric
-> (`internal/fabric/task`); crash recovery replays the event log through
-> `RestoreFromStore` (see `docs/reference/serve-walkthrough.md`). The EventStore
-> itself (`internal/ares_events/`) is still current, so the Append/Read and
-> optimistic-concurrency parts of this document remain accurate; only the
-> Leader-related sections are stale.
->
-> **For the current architecture read** [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)
-> at the repository root.
-
 **Updated**: 2026-06-11
 
 ## Overview
@@ -302,35 +288,6 @@ CREATE TABLE events (
 CREATE INDEX idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX idx_events_created_at ON events (created_at);
 ```
-
-## Integration with Leader Failover
-
-Event sourcing replaces checkpoint-based recovery with a complete event log. Instead of periodic snapshots, every state transition is recorded:
-
-```mermaid
-sequenceDiagram
-    participant Leader
-    participant Store as EventStore
-    participant Super as Supervisor
-    participant New as New Leader
-
-    Leader->>Store: Append(failover.triggered)
-    Leader--xSuper: Heartbeat timeout
-
-    Super->>Store: Read("leader-main")
-    Store-->>Super: [agent.started, task.created, task.dispatched, ...]
-
-    Super->>New: Replay events
-    New->>New: Rebuild state from event stream
-    New->>Store: Append(failover.completed)
-```
-
-The new leader replays the event stream to reconstruct:
-- Which tasks were dispatched but not completed
-- Which agents were active
-- The last known session state
-
-This is more reliable than checkpoints because no state is lost between snapshots.
 
 ## DLQ Auto-Retry
 

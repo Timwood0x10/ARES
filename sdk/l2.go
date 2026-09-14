@@ -167,7 +167,9 @@ func (r *Runtime) ensureL2() *agentruntime.Execution {
 			Capabilities: l2PeerCapabilities(binder.ListTools()),
 			// Cognitive-execution budget from birth (WithAgentGovernance;
 			// zero = unlimited), same as cmd/ares's configured peers.
-			Governance: r.gov,
+			// Snapshot under govMu: a concurrent NewAgent's WithMaxTokens
+			// bridge may write gov while this once-body runs.
+			Governance: r.governanceSnapshot(),
 			// The execution body is always the L2 router — no ReAct
 			// loop, no per-agent engine (mainline parity with cmd/ares).
 			CognitionFactory: func([]string) agentfabric.Cognition {

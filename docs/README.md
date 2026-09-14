@@ -9,7 +9,7 @@ Welcome to the ARES framework documentation center.
 | v0.3.1 (dev) | [CHANGELOG](../CHANGELOG.md) | [CHANGELOG](../CHANGELOG.md) |
 | v0.3.0 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
 
-> 注：`docs/zh/features/` 中的部分特性文档写于 v1/v2 架构时期（2026-06 前后），涉及 Leader/Sub 模型的内容已过时——v0.3.x 起 Leader-Sub 架构已删除，现行架构见 [framework-comparison](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) §3 与 [CAPABILITY-MAP](./reference/CAPABILITY-MAP.md)。这些旧文档保留作历史参考，待逐步重写。
+> 注：`docs/zh/features/` 中的部分特性文档写于 v1/v2 架构时期（2026-06 前后），涉及 Leader/Sub 模型的内容已过时——v0.3.x 起 Leader-Sub 架构已删除，现行架构见 [framework-comparison](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md)第3节与 [CAPABILITY-MAP](./reference/CAPABILITY-MAP.md)。这些旧文档保留作历史参考，待逐步重写。
 
 ## Documentation Languages / 文档语言
 
@@ -46,7 +46,7 @@ Welcome to the ARES framework documentation center.
 
 | Feature | 中文 | English |
 |---------|------|---------|
-| Kernel Scheduler (task fabric) | [框架对比 §3](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) | [Comparison §3](./reference/framework-comparison-langchain-crewai-agentscope-goagent-en.md) |
+| Kernel Scheduler (task fabric) | [框架对比第3节](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) | [Comparison第3节](./reference/framework-comparison-langchain-crewai-agentscope-goagent-en.md) |
 | Agent Recovery | [Agent 恢复](./zh/features/agent-recovery.md) | [Agent Recovery](./en/features/agent-recovery.md) |
 | Event Sourcing | [事件溯源](./zh/features/event-sourcing.md) | [Event Sourcing](./en/features/event-sourcing.md) |
 | Memory Distillation | [记忆蒸馏](./articles/zh/03-memory-distillation-deep-dive.md) | [Memory Distillation](./articles/en/03-memory-distillation-deep-dive.md) |

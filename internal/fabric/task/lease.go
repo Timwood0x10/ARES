@@ -2,8 +2,8 @@ package taskfabric
 
 import "time"
 
-// Lease is a TTL-based ownership lease (abstracted from SessionLease — design
-// §3). The same shape serves TaskLease / ResourceLease / CapabilityLease.
+// Lease is a TTL-based ownership lease (abstracted from SessionLease).
+// The same shape serves TaskLease / ResourceLease / CapabilityLease.
 type Lease struct {
 	// Owner is the agent identity holding the lease.
 	Owner string

@@ -195,7 +195,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		}
 	}
 	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.ttl)
-	// Record the scheduling decision for the Observatory (dashboard.md §7):
+	// Record the scheduling decision for the Observatory:
 	// candidate breakdown + winner. Recorded even on failure (e.g. no capable
 	// candidate) so the panel explains why a task stayed unscheduled.
 	if s.decisions != nil {

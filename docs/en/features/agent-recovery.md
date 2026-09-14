@@ -1,7 +1,5 @@
 # Agent Crash Recovery
 
-> **⚠ Historical note (2026-09-13, v0.3.1)**: This document was written during the Leader/Sub execution model era. The Leader-Sub architecture was removed in v0.3.x (current: flat peers + kernel scheduler + task fabric); leader-related mechanisms described here are outdated. See [Comparison §3](../../reference/framework-comparison-langchain-crewai-agentscope-goagent-en.md) and [Capability Map](../../reference/CAPABILITY-MAP.en.md) for the current architecture. Kept for historical reference.
-
 When an agent crashes in ares, the Runtime detects it, creates a fresh instance, replays events to restore operational state, and loads conversation history from the memory store. The agent resumes with full context -- as if nothing happened.
 
 ## Recovery Architecture
@@ -280,83 +278,6 @@ func (a *LeaderAgent) Snapshot() (map[string]any, error) {
     }, nil
 }
 ```
-
-## Leader Failover
-
-Leader agents have an additional failover layer via `LeaderSupervisor`. When the leader dies, the supervisor performs checkpoint-based recovery:
-
-```mermaid
-sequenceDiagram
-    participant SV as LeaderSupervisor
-    participant HB as HeartbeatMonitor
-    participant Old as Old Leader
-    participant CP as CheckpointStore
-    participant ER as EventRecovery
-    participant TR as TaskRecovery
-    participant New as New Leader
-
-    SV->>HB: CheckTimeouts()
-    HB-->>SV: Leader timeout detected
-    SV->>SV: Emit EventFailoverTriggered
-
-    SV->>Old: Stop (30s timeout)
-    SV->>CP: GetLatest(leaderID)
-    alt Checkpoint exists
-        CP-->>SV: LeaderCheckpoint
-    else Checkpoint missing
-        SV->>ER: RecoverFromEvents(leaderID)
-        ER-->>SV: RecoveryState (session + pending tasks)
-    end
-
-    SV->>SV: HandleFailover (ColdRestartStrategy, 3 retries)
-    SV->>New: Create + Inject checkpoint + Start
-
-    SV->>TR: RecoverStaleTasks(sessionID)
-    TR-->>SV: Orphaned tasks marked as failed
-
-    SV->>SV: Emit EventFailoverCompleted
-```
-
-### Checkpoint
-
-The `LeaderCheckpoint` stores `leader_id`, `session_id`, `status`, and `metadata`. It is persisted to PostgreSQL with upsert semantics. The leader saves a checkpoint whenever it creates or recovers a session.
-
-### Event Recovery
-
-If the checkpoint is missing or incomplete, `EventRecovery.RecoverFromEvents` reconstructs state by replaying the full event stream:
-- `EventSessionCreated` -> captures session ID
-- `EventTaskCreated` -> adds task to pending list
-- `EventTaskCompleted` -> removes task from pending list
-
-### Orphaned Task Cleanup
-
-`TaskRecovery.RecoverStaleTasks` marks tasks with status `pending` or `running` as `failed` with error `"leader failover: task orphaned"`.
-
-## Resurrection Plugin
-
-The `resurrection.Supervisor` is a generic, agent-type-agnostic resurrection mechanism from `internal/plugins/resurrection/` — removed with Leader-Sub; the current recovery path lives in `internal/aresrecovery/`.
-
-```mermaid
-flowchart LR
-    SUP[Resurrection Supervisor] -->|Watch| A1[Agent 1 + Factory]
-    SUP -->|Watch| A2[Agent 2 + Factory]
-    SUP -->|Watch| A3[Agent 3 + Factory]
-
-    SUP -->|checks every 10s| HC[HealthChecker]
-    HC -->|OnFailure| RES[resurrect goroutine]
-
-    RES -->|1| NEW[Factory -> New Agent]
-    RES -->|2| REPLAY[Replay Events]
-    RES -->|3| RESTORE[RestoreState]
-    RES -->|4| START[Start New Agent]
-    RES -->|5| OLD[Stop Old Agent]
-```
-
-Configuration defaults:
-- `CheckInterval`: 10s
-- `ResurrectTimeout`: 60s
-- `MaxAttempts`: 3
-- `HeartbeatInterval`: 5s
 
 ## Event Sourcing
 

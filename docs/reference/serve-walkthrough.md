@@ -41,7 +41,7 @@ SUSPENDED → LEASED (re-acquire with preserved checkpoint), READY (release)
 
 ```go
 var rootCmd = &cobra.Command{
-	Use:   "ares",
+	Use: "ares",
 	Short: "ARES — Agent Runtime & Evolution System",
 	...
 }
@@ -62,7 +62,7 @@ func main() {
 
 ```go
 var serveCmd = &cobra.Command{
-	Use:   "serve",
+	Use: "serve",
 	Short: "Start full agent monitoring with LLM + MCP + dashboard",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runServe()
@@ -86,10 +86,10 @@ var serveCmd = &cobra.Command{
 
 ```go
 if serveLLMURL != "" {
-    cfg := ares_config.NewMinimalConfig(serveLLMURL, serveLLMKey, serveLLMModel)
-    if serveHost != "" { cfg.Server.Host = serveHost }
-    if servePort > 0  { cfg.Server.Port = servePort }
-    return cfg, nil
+ cfg := ares_config.NewMinimalConfig(serveLLMURL, serveLLMKey, serveLLMModel)
+ if serveHost != "" { cfg.Server.Host = serveHost }
+ if servePort > 0 { cfg.Server.Port = servePort }
+ return cfg, nil
 }
 ```
 
@@ -104,7 +104,7 @@ if err != nil { return nil, fmt.Errorf("load config: %w", err) }
 if err := ares_config.LoadFromEnv(cfg); err != nil { ... }
 // CLI flags win over env (SERVER_HOST/SERVER_PORT) and YAML
 if serveHost != "" { cfg.Server.Host = serveHost }
-if servePort > 0  { cfg.Server.Port = servePort }
+if servePort > 0 { cfg.Server.Port = servePort }
 ```
 
 优先级：**CLI flag > 环境变量 > YAML**。
@@ -117,11 +117,11 @@ if servePort > 0  { cfg.Server.Port = servePort }
 
 ```go
 if err := cfg.Validate(); err != nil {
-    return fmt.Errorf("serve: invalid configuration: %w", err)
+ return fmt.Errorf("serve: invalid configuration: %w", err)
 }
 authConfigured := cfg.Security.AuthEnabled && cfg.Security.JWTSecret != ""
 if isWildcardHost(cfg.Server.Host) && !authConfigured && cfg.Introspect.Token == "" {
-    return fmt.Errorf("serve: server.host %q binds all interfaces while ...")
+ return fmt.Errorf("serve: server.host %q binds all interfaces while ...")
 }
 ```
 
@@ -138,9 +138,9 @@ if isWildcardHost(cfg.Server.Host) && !authConfigured && cfg.Introspect.Token ==
 ```go
 shutdownMgr := ares_shutdown.NewManager(30 * time.Second)
 shutdownMgr.RegisterPhase(ares_shutdown.PhasePreShutdown, 5*time.Second)
-shutdownMgr.RegisterPhase(ares_shutdown.PhaseGraceful,    20*time.Second)
-shutdownMgr.RegisterPhase(ares_shutdown.PhaseForce,       5*time.Second)
-shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone,        1*time.Second)
+shutdownMgr.RegisterPhase(ares_shutdown.PhaseGraceful, 20*time.Second)
+shutdownMgr.RegisterPhase(ares_shutdown.PhaseForce, 5*time.Second)
+shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
 
 g, ctx := errgroup.WithContext(ctx)
 var compPtr atomic.Pointer[ares_bootstrap.Components]
@@ -169,7 +169,7 @@ goroutine 里：
 ```go
 serveStore, closeStore, err := newServeEventStore(cfg)
 comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
-    EventStore: serveStore,
+ EventStore: serveStore,
 })
 ```
 
@@ -181,9 +181,9 @@ comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
 
 ```go
 if cfg.Storage.Enabled && cfg.Storage.Host != "" {
-    pool, err := postgres.NewPool(pgCfg)
-    store, err := ares_events.NewPostgresEventStore(pool)
-    return store, store.Close, nil
+ pool, err := postgres.NewPool(pgCfg)
+ store, err := ares_events.NewPostgresEventStore(pool)
+ return store, store.Close, nil
 }
 compactable, _, err := archive.NewCompactableStoreWithArchive(cfg.Memory.Archive)
 return compactable, compactable.Close, nil
@@ -201,13 +201,13 @@ return compactable, compactable.Close, nil
 bctx, bcancel := context.WithCancel(ctx)
 comp := &Components{}
 b := &bootstrapBuilder{...}
-if err := b.assembleCore();         err != nil { return nil, err }
-if err := b.assembleExperience();   err != nil { return nil, err }
+if err := b.assembleCore(); err != nil { return nil, err }
+if err := b.assembleExperience(); err != nil { return nil, err }
 if err := b.assembleEvolutionDAG(); err != nil { return nil, err }
 if err := b.assembleNewEvolution(); err != nil { return nil, err }
 if err := b.assembleLegacyEvolution(); err != nil { return nil, err }
 b.wireEvolutionWiring()
-if err := b.wirePlatform();         err != nil { return nil, err }
+if err := b.wirePlatform(); err != nil { return nil, err }
 return comp, nil
 ```
 
@@ -230,8 +230,8 @@ return comp, nil
 
 ```go
 if !cfg.Memory.IsEnabled() {
-    log.Info("bootstrap: memory disabled ..., skipping construction")
-    return nil, nil
+ log.Info("bootstrap: memory disabled ..., skipping construction")
+ return nil, nil
 }
 ```
 
@@ -245,15 +245,15 @@ Skills 那步还会起一个 `startSkillOutcomeWriter`，把 `task.completed/fai
 
 | # | 步骤 | 建什么 |
 |---|---|---|
-| 2 | `assembleCore` | EventStore / Runtime / Memory / MCP / Skills（§4.4） |
-| 3 | `assembleExperience` | LLM + 经验蒸馏 + AKG 闭环 + 观测面（§4.5） |
-| 4 | `assembleEvolutionDAG` | 进化 DAG + live memory store + KnowledgeRuntime + EvidenceStore（§4.7） |
-| 5 | `assembleNewEvolution` | 运行时进化系统 + FlightRecorder（§4.8） |
-| 6 | `assembleLegacyEvolution` | 旧进化系统 + 调度器关停 watcher（§4.9） |
-| 7 | `wireEvolutionWiring` | 检索器 + 部署管线 + 最小 DAG 注册（§4.10） |
-| 8 | `wirePlatform` | **GA 进化** + Discovery + SystemRuntime + 过期清理（§4.11） |
+| 2 | `assembleCore` | EventStore / Runtime / Memory / MCP / Skills（第4.4节） |
+| 3 | `assembleExperience` | LLM + 经验蒸馏 + AKG 闭环 + 观测面（第4.5节） |
+| 4 | `assembleEvolutionDAG` | 进化 DAG + live memory store + KnowledgeRuntime + EvidenceStore（第4.7节） |
+| 5 | `assembleNewEvolution` | 运行时进化系统 + FlightRecorder（第4.8节） |
+| 6 | `assembleLegacyEvolution` | 旧进化系统 + 调度器关停 watcher（第4.9节） |
+| 7 | `wireEvolutionWiring` | 检索器 + 部署管线 + 最小 DAG 注册（第4.10节） |
+| 8 | `wirePlatform` | **GA 进化** + Discovery + SystemRuntime + 过期清理（第4.11节） |
 
-这六步里藏着本文前半段一直没提的三条闭环：**经验蒸馏闭环**（§4.6）、**AKG 知识闭环**（§4.6）、**GA 进化闭环**（§4.11）。它们都在 `Bootstrap` 里完成装配，但要等 §12 调度器拿到分数之后才真正开始转。
+这六步里藏着本文前半段一直没提的三条闭环：**经验蒸馏闭环**（第4.6节）、**AKG 知识闭环**（第4.6节）、**GA 进化闭环**（第4.11节）。它们都在 `Bootstrap` 里完成装配，但要等第12节 调度器拿到分数之后才真正开始转。
 
 ---
 
@@ -270,7 +270,7 @@ guidanceProvider, embClient := wireDistillation(bctx, cfg, comp, deps, &b.cleanu
 comp.ExpRepo = deps.ExpRepo
 ```
 
-`embClient` 会被后面的 `wireRetrievers`（§4.10）复用来建 MemoryRetriever——**蒸馏写入与 RAG 读取共享同一个 embedding 客户端**（`:181-182` 注释）。`guidanceProvider` 交给 GA 做经验引导变异（§4.11）。
+`embClient` 会被后面的 `wireRetrievers`（第4.10节）复用来建 MemoryRetriever——**蒸馏写入与 RAG 读取共享同一个 embedding 客户端**（`:181-182` 注释）。`guidanceProvider` 交给 GA 做经验引导变异（第4.11节）。
 
 **AKG 闭环**（`:189-198`）：`wireAKGLoop` 建 `KnowledgeStore`（默认内存，PG 可选）和写侧 `DistillBridge`，门控在 `cfg.Knowledge.RetrievalEnabled`：
 
@@ -280,7 +280,7 @@ comp.KnowledgeStore = knowStore
 comp.AKGBridge = akgBridge
 ```
 
-**事件订阅**（`:200`）：`subscribeDistillationEvents(bctx, comp)`——蒸馏与 AKG 的触发点，见 §4.6。
+**事件订阅**（`:200`）：`subscribeDistillationEvents(bctx, comp)`——蒸馏与 AKG 的触发点，见第4.6节。
 
 **观测面**（`:202-220`）：`EvolutionTracer` / `FeedbackStore` / `GlobalTracer` **只在这里创建一次**。dashboard 读、运行时写钩子（GA 代记录、任务/agent 生命周期追踪）写的是**同一批实例**——所以控制面端点返回的是活数据而非空列表（`:204-207` 注释）。旧的 `:8090` 独立 dashboard server 已移除（`:214-215` 注释），观测数据直供 `introspect.ControlServer`。
 
@@ -288,19 +288,19 @@ comp.AKGBridge = akgBridge
 
 ### 4.6 蒸馏与 AKG 的事件闭环
 
-这是 §4.5 第 `:200` 行那句 `subscribeDistillationEvents` 的内部，也是本文此前完全缺失的一环。
+这是第4.5节第 `:200` 行那句 `subscribeDistillationEvents` 的内部，也是本文此前完全缺失的一环。
 
 **入口** `subscribeDistillationEvents` — `bootstrap_steps.go:102`：
 
 ```go
 if comp.Distillation == nil || comp.EventStore == nil {
-    return                                     // :108  无蒸馏服务则整体 no-op
+ return // :108 无蒸馏服务则整体 no-op
 }
 ch, err := comp.EventStore.Subscribe(ctx, ares_events.EventFilter{
-    Types: []ares_events.EventType{
-        ares_events.EventTaskCompleted,        // :113
-        ares_events.EventTaskFailed,           // :114
-    },
+ Types: []ares_events.EventType{
+ ares_events.EventTaskCompleted, // :113
+ ares_events.EventTaskFailed, // :114
+ },
 })
 ```
 
@@ -314,7 +314,7 @@ ch, err := comp.EventStore.Subscribe(ctx, ares_events.EventFilter{
 
 ```go
 if tenantID == "" || len(taskText) < 10 || len(resultText) < 20 {
-    return
+ return
 }
 ```
 
@@ -346,10 +346,10 @@ if tenantID == "" || len(taskText) < 10 || len(resultText) < 20 {
 **进化 DAG**（`:247` → `bootstrap.go:326`）：
 
 ```go
-if !enabled { return nil, nil }        // bootstrap.go:327-329
+if !enabled { return nil, nil } // bootstrap.go:327-329
 ```
 
-启用时建一条三节点链 `input → process → output`（`bootstrap.go:330-334`），agentType 分别是 `parser` / `processor` / `formatter`。这是**占位拓扑**——§4.10 会说明它为何是合成的。
+启用时建一条三节点链 `input → process → output`（`bootstrap.go:330-334`），agentType 分别是 `parser` / `processor` / `formatter`。这是**占位拓扑**—— 第4.10节 会说明它为何是合成的。
 
 **live memory store**（`:257` → `bootstrap.go:346`）：把 `comp.Memory` 类型断言成 `MemoryConfigStore`。内存被禁用时回退到最小 manager，**保证进化系统总有 store 可写**，而不是空指针。
 
@@ -358,7 +358,7 @@ if !enabled { return nil, nil }        // bootstrap.go:327-329
 ```go
 var embForRuntime apiembed.EmbeddingService
 if embClient != nil {
-    embForRuntime = embClient
+ embForRuntime = embClient
 }
 knowRt := BuildKnowledgeRuntime(comp.VectorStore, embForRuntime, knowStore)
 comp.KnowledgeRuntime = knowRt
@@ -388,7 +388,7 @@ comp.EvidenceStore = evStore
 
 ```go
 if !enabled {
-    return nil, evidence.NewMemoryStore(), nil     // bootstrap.go:373-375
+ return nil, evidence.NewMemoryStore(), nil // bootstrap.go:373-375
 }
 ```
 
@@ -398,10 +398,10 @@ if !enabled {
 
 ```go
 if comp.EventStore != nil {
-    comp.FlightRecorder = flight.NewFlightRecorder(flight.FlightRecorderConfig{
-        EventStore:    comp.EventStore,
-        EvidenceStore: evStore,
-    })
+ comp.FlightRecorder = flight.NewFlightRecorder(flight.FlightRecorderConfig{
+ EventStore: comp.EventStore,
+ EvidenceStore: evStore,
+ })
 ```
 
 `:336-342` 的注释点明了两件事：
@@ -419,7 +419,7 @@ if comp.EventStore != nil {
 
 ```go
 if !cfg.Evolution.Enabled || deps.EventStore == nil || deps.ExpRepo == nil {
-    return nil, nil
+ return nil, nil
 }
 ```
 
@@ -433,9 +433,9 @@ if !cfg.Evolution.Enabled || deps.EventStore == nil || deps.ExpRepo == nil {
 
 ```go
 comp.bgGroup.Go(func() error {
-    <-bctx.Done()          // bctx：Bootstrap 失败时 runCleanups 会取消它
-    sched.Shutdown()
-    return nil
+ <-bctx.Done() // bctx：Bootstrap 失败时 runCleanups 会取消它
+ sched.Shutdown()
+ return nil
 })
 ```
 
@@ -460,10 +460,10 @@ comp.bgGroup.Go(func() error {
 
 ```go
 staging := &deploymentStagingRuntime{
-    reg: comp.NewEvolution.PatchReg,
-    agg: evolution.NewRuntimeFitnessAggregator(comp.EvidenceStore, ...),
-    coldStartScore: 0.5,
-    asm: comp.NewEvolution.ActiveStrategyManager,
+ reg: comp.NewEvolution.PatchReg,
+ agg: evolution.NewRuntimeFitnessAggregator(comp.EvidenceStore, ...),
+ coldStartScore: 0.5,
+ asm: comp.NewEvolution.ActiveStrategyManager,
 }
 ```
 
@@ -476,8 +476,8 @@ staging := &deploymentStagingRuntime{
 
 ```go
 log.InfoContext(ctx, "bootstrap: evolution verdicts available but no live agent topology to act on",
-    "live_dag_registered", false,
-    "synthetic_dag_key", runtime.AgentDAGEvolutionKey)
+ "live_dag_registered", false,
+ "synthetic_dag_key", runtime.AgentDAGEvolutionKey)
 ```
 
 即：**standalone Bootstrap 没有 agent 群体，没有真实拓扑可操作**。serve 入口（`buildLiveAgentDAG` + `UpdateLiveDAG`）才是唯一的 live-DAG 供给者，之后会取代这个占位 DAG。日志把这件事说破，而不是让合成图静默吞掉 promotion。
@@ -492,12 +492,12 @@ log.InfoContext(ctx, "bootstrap: evolution verdicts available but no live agent 
 
 ```go
 if err := wireGAEvolution(bctx, cfg, comp, comp.NewEvolution, guidanceProvider, &b.cleanups); err != nil {
-    b.runCleanups()
-    return err
+ b.runCleanups()
+ return err
 }
 ```
 
-`guidanceProvider` 来自 §4.5 的蒸馏——**经验蒸馏的输出在这里回流进 GA 的变异**，这是两条闭环的交汇点。
+`guidanceProvider` 来自第4.5节 的蒸馏——**经验蒸馏的输出在这里回流进 GA 的变异**，这是两条闭环的交汇点。
 
 #### 4.11.1 `wireGAEvolution` — `bootstrap_evolution.go:510`
 
@@ -516,8 +516,8 @@ newEvol.StrategyStore = memStore
 
 ```go
 base := &mutation.Strategy{
-    ID:     "bootstrap-root",
-    Params: map[string]any{paramTemperature: 0.7, paramMaxTokens: 4096},
+ ID: "bootstrap-root",
+ Params: map[string]any{paramTemperature: 0.7, paramMaxTokens: 4096},
 }
 ```
 
@@ -585,15 +585,15 @@ startExpiryCleanupWorker(bctx, comp)
 
 ```go
 defer func() {
-    if r := recover(); r != nil {
-        logMaintenance.ErrorContext(ctx, "bootstrap: expiry cleanup panicked", ...)
-    }
+ if r := recover(); r != nil {
+ logMaintenance.ErrorContext(ctx, "bootstrap: expiry cleanup panicked", ...)
+ }
 }()
 ```
 
 注释一句话说明理由：**maintenance 不能把进程带崩**。
 
-前面几处出现的 `comp.ExpiryCleaners = append(...)` 都是往这个列表里塞（§4.6 经验表、§4.7 `evidence_records`、§4.5 `wireExpiryCleaners` 铺开的其余保留期表），最终都在这里被同一个 ticker 驱动。
+前面几处出现的 `comp.ExpiryCleaners = append(...)` 都是往这个列表里塞（第4.6节 经验表、第4.7节`evidence_records`、第4.5节`wireExpiryCleaners` 铺开的其余保留期表），最终都在这里被同一个 ticker 驱动。
 
 ---
 
@@ -606,7 +606,7 @@ defer func() {
 ```go
 cfgStore := ares_config.NewConfigStore(cfg)
 if serveConfigPath != "" {
-    g.Go(func() error { return cfgStore.Watch(ctx, cfgPath) })
+ g.Go(func() error { return cfgStore.Watch(ctx, cfgPath) })
 }
 ```
 
@@ -619,9 +619,9 @@ if serveConfigPath != "" {
 三级降级链：
 
 ```go
-adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg)   // 主
+adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg) // 主
 if err == nil { return adapter, nil }
-for _, fb := range cfg.LLM.Fallbacks { ... }                   // 配置的 fallback
+for _, fb := range cfg.LLM.Fallbacks { ... } // 配置的 fallback
 // Last resort: local ollama — but ONLY when the config did not
 // explicitly name any LLM
 ```
@@ -631,14 +631,14 @@ for _, fb := range cfg.LLM.Fallbacks { ... }                   // 配置的 fall
 `serve.go:128` 调用，与 `llmAdapter` 并列，是**原生 tool calling** 用的那条客户端。
 
 ```go
-configs = append(configs, &llm.Config{Provider: cfg.LLM.Provider, ...})   // :410-417 主配置
-for _, fb := range cfg.LLM.Fallbacks { ... }                              // :418-431 fallback 链
+configs = append(configs, &llm.Config{Provider: cfg.LLM.Provider, ...}) // :410-417 主配置
+for _, fb := range cfg.LLM.Fallbacks { ... } // :418-431 fallback 链
 timeout := time.Duration(cfg.LLM.Timeout) * time.Second
-if timeout <= 0 { timeout = 60 * time.Second }                            // :433-436
-return llm.NewFailoverClient(configs, timeout, rate, burst)               // :440
+if timeout <= 0 { timeout = 60 * time.Second } // :433-436
+return llm.NewFailoverClient(configs, timeout, rate, burst) // :440
 ```
 
-注意它与 §5.2 `createLLMAdapterWithFallback` 是**两套并行的降级链**：那个给 LLM adapter，这个给 ChatClient。fallback provider 为空时默认 `"openai"`（`:420-422`）。
+注意它与第5.2节`createLLMAdapterWithFallback` 是**两套并行的降级链**：那个给 LLM adapter，这个给 ChatClient。fallback provider 为空时默认 `"openai"`（`:420-422`）。
 
 ### 5.4 `wiringServeToolchain` — `serve_wiring.go:182`
 
@@ -648,15 +648,15 @@ return llm.NewFailoverClient(configs, timeout, rate, burst)               // :44
 
 ```go
 if comp.KnowledgeRuntime != nil {
-    akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
-    for _, akfTool := range akfSvc.Tools() {
-        adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
-        internalReg.Register(adapted)
-    }
+ akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
+ for _, akfTool := range akfSvc.Tools() {
+ adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
+ internalReg.Register(adapted)
+ }
 }
 ```
 
-关键在 `comp.KnowledgeRuntime` 是 §4.7 建的**那一个共享实例**——`serve_wiring.go:197-202` 的注释点明：进化系统的 `KnowledgePatchExecutor` 和 agent 的 AKF 工具必须共用同一个 runtime，否则知识 genome 补丁改不到工具真正读的那份。
+关键在 `comp.KnowledgeRuntime` 是第4.7节 建的**那一个共享实例**——`serve_wiring.go:197-202` 的注释点明：进化系统的 `KnowledgePatchExecutor` 和 agent 的 AKF 工具必须共用同一个 runtime，否则知识 genome 补丁改不到工具真正读的那份。
 
 ---
 
@@ -676,7 +676,7 @@ subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAda
 subAgents, peerKernel, err := createPeerAgents(ctx, cfg, comp, llmAdapter, chatClient, toolBinder, comp.EventStore, strategySrc, comp.ExpRepo)
 if err != nil { return nil, nil, fmt.Errorf("create peer agents: %w", err) }
 for _, sa := range subAgents {
-    mgr.RegisterAgent(sa, factory)
+ mgr.RegisterAgent(sa, factory)
 }
 wireLiveDAGAndCompile(ctx, cfg, comp, peerKernel, mgr)
 wireEvolutionLoops(ctx, cfg, comp, peerKernel)
@@ -690,13 +690,13 @@ return subAgents, peerKernel, nil
 
 ```go
 a := &peerAssembly{
-    ...
-    kernel: &kernelHandle{},   // ← 空壳，字段在下面 13 步里逐个填
-    peers:  normalizedPeers(cfg),
+ ...
+ kernel: &kernelHandle{}, // ← 空壳，字段在下面 13 步里逐个填
+ peers: normalizedPeers(cfg),
 }
 a.subAgents = createPeerSubAgents(a.peers, store)
 if len(a.subAgents) == 0 {
-    return nil, nil, errors.New("peer mode: no peer agents configured (agents.peers or agents.sub)")
+ return nil, nil, errors.New("peer mode: no peer agents configured (agents.peers or agents.sub)")
 }
 
 if err := a.assembleFabric(); err != nil { return nil, nil, err }
@@ -751,24 +751,24 @@ kernel.flipped = true
 
 ```go
 exec, err := agentruntime.NewExecution(agentruntime.ExecutionConfig{
-    Fabric:         kernel.fabric,
-    Agents:         agents,
-    ChatClient:     chatClient,
-    ToolBinder:     toolBinder,
-    StrategySource: strategySrc,
-    L1DAG:          l1DAG,
-    MaxPlanDepth:   resolveMaxPlanDepth(cfg.Kernel.DAGExecution),
-    ReaperGrace:    resolveReaperGrace(cfg.Kernel.DAGExecution),
-    SessionIdleTTL: resolveSessionIdleTTL(cfg.Kernel.DAGExecution),
-    CompileStore:   store,
-    PromptEnricher: resolveServePromptEnricher(cfg, comp.Memory, slog.Default()),
-    Logger:         slog.Default(),
+ Fabric: kernel.fabric,
+ Agents: agents,
+ ChatClient: chatClient,
+ ToolBinder: toolBinder,
+ StrategySource: strategySrc,
+ L1DAG: l1DAG,
+ MaxPlanDepth: resolveMaxPlanDepth(cfg.Kernel.DAGExecution),
+ ReaperGrace: resolveReaperGrace(cfg.Kernel.DAGExecution),
+ SessionIdleTTL: resolveSessionIdleTTL(cfg.Kernel.DAGExecution),
+ CompileStore: store,
+ PromptEnricher: resolveServePromptEnricher(cfg, comp.Memory, slog.Default()),
+ Logger: slog.Default(),
 })
 ...
-kernel.sessionReg  = exec.Sessions.Reg
+kernel.sessionReg = exec.Sessions.Reg
 kernel.compileCoord = exec.Compile
-kernel.submitter   = exec.Submitter
-kernel.submitter.Seed(restoredSeq)   // 跨重启 ID 防碰撞
+kernel.submitter = exec.Submitter
+kernel.submitter.Seed(restoredSeq) // 跨重启 ID 防碰撞
 ```
 
 注释强调：`NewExecution` 只允许在三处构建（`sdk/l2.go`、`cmd/ares/agent_kernel.go`、`cmd/ares/peer_assembly.go`），由 `sdk/arch_test.go:135` 锁定。
@@ -779,16 +779,16 @@ kernel.submitter.Seed(restoredSeq)   // 跨重启 ID 防碰撞
 
 ```go
 for _, sa := range subAgents {
-    agents.Spawn(ctx, agentfabric.SpawnSpec{
-        Identity:     sa.ID(),
-        Capabilities: peerCapabilities(toolBinder.ListTools()),
-        // The execution body is always the L2 router
-        CognitionFactory: func([]string) agentfabric.Cognition {
-            return peerRouter
-        },
-        ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),
-        Governance:      agentGovernance,
-    })
+ agents.Spawn(ctx, agentfabric.SpawnSpec{
+ Identity: sa.ID(),
+ Capabilities: peerCapabilities(toolBinder.ListTools()),
+ // The execution body is always the L2 router
+ CognitionFactory: func([]string) agentfabric.Cognition {
+ return peerRouter
+ },
+ ExperiencePrior: loadExperiencePrior(ctx, expRepo, sa.ID()),
+ Governance: agentGovernance,
+ })
 }
 ...
 sched.WithGovernance(agents)
@@ -803,9 +803,9 @@ sched.WithAgentFabric(agents)
 schedCtx, schedCancel := context.WithCancel(ctx)
 schedDone := make(chan struct{})
 runBackground(ctx, comp, sysCompScheduler, func(context.Context) error {
-    defer close(schedDone)
-    sched.Run(schedCtx)
-    return nil
+ defer close(schedDone)
+ sched.Run(schedCtx)
+ return nil
 })
 kernel.schedulerStop = schedCancel
 kernel.schedulerDone = schedDone
@@ -830,8 +830,8 @@ comp.NewEvolution.SetToolClassDAG(l1DAG)
 
 ```go
 l1MetaEnabled = "enabled"
-l1MetaBudget  = "budget"
-l1MetaPrior   = "prior"
+l1MetaBudget = "budget"
+l1MetaPrior = "prior"
 ```
 
 `:561-565` 注释解释了这条链的完整闭环：**genome 补丁改 L1 节点的 enabled/budget/prior → planner 在长出 L2 tool 节点前读它们 → L2 执行统计作为 fitness 流回**。
@@ -846,7 +846,7 @@ l1MetaPrior   = "prior"
 
 > 没有它，workflow/recovery 补丁会永远改在合成的 `input→process→output` bootstrap DAG 上，"live promotion" 什么都观察不到。
 
-这正是 §4.10 里那段"no live agent topology to act on"日志的**另一半**：serve 入口在这把它补上。
+这正是第4.10节 里那段"no live agent topology to act on"日志的**另一半**：serve 入口在这把它补上。
 
 ```go
 liveDAG, dagErr := buildLiveAgentDAG(cfg)
@@ -860,7 +860,7 @@ comp.NewEvolution.UpdateLiveDAG(liveDAG)
 
 ```go
 if peerKernel.compileCoord == nil {
-    peerKernel.compileCoord = planprojection.NewCompileCoordinator(peerKernel.fabric, comp.EventStore)
+ peerKernel.compileCoord = planprojection.NewCompileCoordinator(peerKernel.fabric, comp.EventStore)
 }
 ```
 
@@ -894,13 +894,13 @@ spawn gate 有个例外要留意（`:190-191`）：**population cap 对 recovery
 
 ```go
 collector := introspect.NewCollector(introspect.Sources{
-    Kernel:    peerKernel.scheduler.Snapshot,
-    Fabric:    peerKernel.fabric.LeaseSnapshot,
-    Agents:    peerKernel.agents.AgentsView,
-    Chaos:     chaosStatus.Snapshot,
-    Tasks:     peerKernel.fabric.TaskSnapshot,
-    Decisions: peerKernel.scheduler.DecisionsSnapshot,
-    Collab:    collabReporter.Snapshot,
+ Kernel: peerKernel.scheduler.Snapshot,
+ Fabric: peerKernel.fabric.LeaseSnapshot,
+ Agents: peerKernel.agents.AgentsView,
+ Chaos: chaosStatus.Snapshot,
+ Tasks: peerKernel.fabric.TaskSnapshot,
+ Decisions: peerKernel.scheduler.DecisionsSnapshot,
+ Collab: collabReporter.Snapshot,
 })
 ```
 
@@ -912,7 +912,7 @@ collector := introspect.NewCollector(introspect.Sources{
 
 `WithSystemRuntime`（`:265`）把 SystemRuntime 组件图也带进快照，所以一个"假 Ready"的内核在读面上看得见。
 
-`chaosStatus` 在这里创建并返回，正是为了让 collector 和 §6.7 的 `wireChaos` **看到同一个 frame**（`:236-237` 注释）。
+`chaosStatus` 在这里创建并返回，正是为了让 collector 和第6.7节 的 `wireChaos` **看到同一个 frame**（`:236-237` 注释）。
 
 ### 6.7 `wireChaos` — `serve_chaos_domain.go:165`
 
@@ -942,11 +942,11 @@ collector := introspect.NewCollector(introspect.Sources{
 回到 `runServe`：
 
 ```go
-reg, err := setupPeerRegistry(ctx, g, subAgents, comp, peerKernel)   // :151
+reg, err := setupPeerRegistry(ctx, g, subAgents, comp, peerKernel) // :151
 if peerKernel != nil { peerKernel.peerRegistry = reg }
 
-intelEngine, controlServer, err := setupServeControlPlane(...)        // :164
-if err := mgr.Start(ctx); err != nil { ... }                          // :170
+intelEngine, controlServer, err := setupServeControlPlane(...) // :164
+if err := mgr.Start(ctx); err != nil { ... } // :170
 
 // Sub-agents are execution units only (ares-runtime: agents are not
 // orchestrated, they are scheduled). The Kernel owns dispatch: the
@@ -954,8 +954,8 @@ if err := mgr.Start(ctx); err != nil { ... }                          // :170
 // sub.Agent.ExecuteStep; agents never subscribe to the event stream and
 // self-dispatch (self-dispatch was removed).
 
-startServeHTTPAndHooks(ctx, g, cfg, cfgStore, controlServer, ...)     // :186
-return normalizeShutdownErr(g.Wait())                                 // :194
+startServeHTTPAndHooks(ctx, g, cfg, cfgStore, controlServer, ...) // :186
+return normalizeShutdownErr(g.Wait()) // :194
 ```
 
 `normalizeShutdownErr`（`serve.go:200`）把 `context.Canceled` 视为正常退出返回 `nil`——Ctrl-C 不算失败。
@@ -967,8 +967,8 @@ P2P 消息注册表。有进化系统时桥接到 evolution-aware IPC，否则�
 ```go
 switch {
 case comp.NewEvolution != nil:
-    bridge, err := wireEvolutionIPC(subAgents, comp.NewEvolution.StrategyStore, comp.Observability.GlobalTracer, kernel)
-    reg = bridge.reg
+ bridge, err := wireEvolutionIPC(subAgents, comp.NewEvolution.StrategyStore, comp.Observability.GlobalTracer, kernel)
+ reg = bridge.reg
 ...
 }
 ```
@@ -980,10 +980,10 @@ case comp.NewEvolution != nil:
 ```go
 cur := bridge.DeadLetterCount()
 if cur > 0 && cur != last {
-    dl := bridge.ipc.Bus().DeadLetters().Snapshot()
-    reasons := make(map[string]int, 4)
-    for _, e := range dl { reasons[e.Reason]++ }
-    slog.WarnContext(ctx, "peer mode: IPC dead letters retained ...", "count", cur, "reasons", reasons)
+ dl := bridge.ipc.Bus().DeadLetters().Snapshot()
+ reasons := make(map[string]int, 4)
+ for _, e := range dl { reasons[e.Reason]++ }
+ slog.WarnContext(ctx, "peer mode: IPC dead letters retained ...", "count", cur, "reasons", reasons)
 }
 ```
 
@@ -993,7 +993,7 @@ if cur > 0 && cur != last {
 
 > **没有任何生产 agent 再暴露 `SendMessage` 面——它随 sub.Agent 消息队列一起被移除了。所以这个注册表总是空的，非进化的 ask_agent 发送会以 "not registered" 大声失败**（等价于此前恒失败的 nil-queue 投递）。保留它是为了 discovery 契约；删掉就得重构非进化 ask_agent 分支。
 
-也就是说 §7 开头那句 `peerKernel.peerRegistry = reg` 挂上去的，当前是个**契约占位**，不是活的通信路径。
+也就是说第7节 开头那句 `peerKernel.peerRegistry = reg` 挂上去的，当前是个**契约占位**，不是活的通信路径。
 
 ### 7.2 `setupServeControlPlane` — `serve_wiring.go:356`
 
@@ -1021,13 +1021,13 @@ if cur > 0 && cur != last {
 
 ```go
 fmt.Println("=== ARES Console — Live Runtime ===")
-fmt.Printf("Console:  http://%s/introspect\n", ...)
+fmt.Printf("Console: http://%s/introspect\n", ...)
 log.Info("serve: control-plane exposure state",
-    "bind", addr, "wildcard_bind", isWildcardHost(cfg.Server.Host),
-    "auth", authConfigured, "api_key", serveAPIKey != "",
-    "introspect_token", cfg.Introspect.Token != "")
+ "bind", addr, "wildcard_bind", isWildcardHost(cfg.Server.Host),
+ "auth", authConfigured, "api_key", serveAPIKey != "",
+ "introspect_token", cfg.Introspect.Token != "")
 log.Info("serve: control-plane endpoint registry",
-    "routes", len(actionRoutes), "none", ..., "read", ..., "write", ..., "local", ...)
+ "routes", len(actionRoutes), "none", ..., "read", ..., "write", ..., "local", ...)
 ```
 
 `serveAPIKey` 来自环境变量 `ARES_API_KEY`（`serve_wiring.go:484`），为空时所有破坏性请求 deny-by-default。
@@ -1036,26 +1036,26 @@ log.Info("serve: control-plane endpoint registry",
 
 ```go
 handler := &actionHandler{
-    inner: controlServer,
-    cost: comp.LLM.CostDashboard, costMux: buildCostMux(...),
-    mgr: mgr, tools: registry,
-    apiKey: serveAPIKey, auth: authMW, readAuth: readAuthMW, audit: auditLogger,
-    introspectToken: cfg.Introspect.Token,
-    kernel: peerKernel,
-    chaosStopToken: cfg.Kernel.Chaos.StopToken,
-    intro: peerKernel.intro,
-    lifecycle: evolutionLifecycleForServe(comp),
+ inner: controlServer,
+ cost: comp.LLM.CostDashboard, costMux: buildCostMux(...),
+ mgr: mgr, tools: registry,
+ apiKey: serveAPIKey, auth: authMW, readAuth: readAuthMW, audit: auditLogger,
+ introspectToken: cfg.Introspect.Token,
+ kernel: peerKernel,
+ chaosStopToken: cfg.Kernel.Chaos.StopToken,
+ intro: peerKernel.intro,
+ lifecycle: evolutionLifecycleForServe(comp),
 }
 
 httpSrv := &http.Server{
-    Addr: addr, Handler: handler,
-    ReadTimeout: 15 * time.Second,
-    WriteTimeout: 15 * time.Second,
-    IdleTimeout: 60 * time.Second,
+ Addr: addr, Handler: handler,
+ ReadTimeout: 15 * time.Second,
+ WriteTimeout: 15 * time.Second,
+ IdleTimeout: 60 * time.Second,
 }
 g.Go(func() error { return httpSrv.ListenAndServe() })
 shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
-    return httpSrv.Shutdown(ctx)
+ return httpSrv.Shutdown(ctx)
 })
 ```
 
@@ -1063,23 +1063,23 @@ HTTP 就此监听。
 
 `buildCostMux`（`agent.go:129`）挂在 `actionHandler` 上，与 `controlServer` 并列——cost 面是独立的一小片 mux，不走 introspect。
 
-**关停链注册的顺序即执行的逆序基础**。`httpSrv.Shutdown` 注册在 `PhasePreShutdown`（`:1057-1059`），所以 HTTP 是**第一个**被优雅关闭的。加上 §3 的阶段预算，完整链路是：
+**关停链注册的顺序即执行的逆序基础**。`httpSrv.Shutdown` 注册在 `PhasePreShutdown`（`:1057-1059`），所以 HTTP 是**第一个**被优雅关闭的。加上第3节 的阶段预算，完整链路是：
 
 ```
 第一个信号
  ├─ StartShutdown(30s)
- │    ├─ PhasePreShutdown (5s)  → httpSrv.Shutdown      ← HTTP 先停，不再收新请求
- │    ├─ PhaseGraceful   (20s)  → MCP / runtime 等
- │    ├─ PhaseForce       (5s)
- │    └─ PhaseDone        (1s)
- ├─ shutdownSystemRuntime(15s 独立预算)                  ← 逆拓扑：先停依赖者，最后关 EventStore
- │    └─ orch.Shutdown → 各组件 Stop（EventStore 的 Close 是叶子）
- └─ cancel() → comp.WaitBackground()                     ← 等蒸馏订阅 / GA ticker / LLM 建议循环退出
+ │ ├─ PhasePreShutdown (5s) → httpSrv.Shutdown ← HTTP 先停，不再收新请求
+ │ ├─ PhaseGraceful (20s) → MCP / runtime 等
+ │ ├─ PhaseForce (5s)
+ │ └─ PhaseDone (1s)
+ ├─ shutdownSystemRuntime(15s 独立预算) ← 逆拓扑：先停依赖者，最后关 EventStore
+ │ └─ orch.Shutdown → 各组件 Stop（EventStore 的 Close 是叶子）
+ └─ cancel() → comp.WaitBackground() ← 等蒸馏订阅 / GA ticker / LLM 建议循环退出
 ```
 
-`comp.WaitBackground()`（`serve_wiring.go:93-96`）等的正是 §4.6 的蒸馏订阅、§4.11 的 GA ticker 与 LLM 建议循环——**没有它，这些 goroutine 会活过优雅关闭**。
+`comp.WaitBackground()`（`serve_wiring.go:93-96`）等的正是第4.6节 的蒸馏订阅、第4.11节 的 GA ticker 与 LLM 建议循环——**没有它，这些 goroutine 会活过优雅关闭**。
 
-EventStore 的关闭顺序由 §4.11 `wireSystemRuntime` 的依赖图决定（`:125-131` 注释）：它是依赖叶子，逆拓扑关停保证每个依赖它的组件先停，所以关掉它不会切断活跃写者。
+EventStore 的关闭顺序由第4.11节`wireSystemRuntime` 的依赖图决定（`:125-131` 注释）：它是依赖叶子，逆拓扑关停保证每个依赖它的组件先停，所以关掉它不会切断活跃写者。
 
 ---
 
@@ -1089,15 +1089,15 @@ EventStore 的关闭顺序由 §4.11 `wireSystemRuntime` 的依赖图决定（`:
 
 ```go
 if r.Method == http.MethodPost && r.Body != nil {
-    r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+ r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
 }
 for _, spec := range actionRoutes {
-    if spec.Available != nil && !spec.Available(h) { continue }
-    if !spec.match(r.Method, r.URL.Path)          { continue }
-    princ, ok := h.authorize(spec.Auth, w, r)
-    if !ok { return }
-    spec.Handler(h, w, r, princ)
-    return
+ if spec.Available != nil && !spec.Available(h) { continue }
+ if !spec.match(r.Method, r.URL.Path) { continue }
+ princ, ok := h.authorize(spec.Auth, w, r)
+ if !ok { return }
+ spec.Handler(h, w, r, princ)
+ return
 }
 h.inner.ServeHTTP(w, r)
 ```
@@ -1119,8 +1119,8 @@ h.inner.ServeHTTP(w, r)
 
 ```go
 {Method: "POST", Path: "/api/tasks", Auth: authWrite,
-    Desc:    "peer task submission (submitPeerTask)",
-    Handler: (*actionHandler).routeSubmitTask},
+ Desc: "peer task submission (submitPeerTask)",
+ Handler: (*actionHandler).routeSubmitTask},
 ```
 
 最后两条是兜底：`* /api/...` 走读侧控制服务器，`* /...` 直接透传。
@@ -1133,23 +1133,23 @@ h.inner.ServeHTTP(w, r)
 
 ```go
 func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
-    w.Header().Set("Content-Type", "application/json")
-    if h.kernel == nil {
-        w.WriteHeader(http.StatusServiceUnavailable)
-        writeJSON(w, map[string]any{"error": "peer runtime not active", "status": "error"})
-        return
-    }
-    var req submitTaskRequest
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil { ... 400 }
-    if req.Capability == "" { ... 400 "capability is required" }
-    if req.TenantID != "" {
-        if req.Payload == nil { req.Payload = map[string]any{} }
-        req.Payload["tenant_id"] = req.TenantID
-    }
-    taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
-    ...
-    w.WriteHeader(http.StatusAccepted)
-    writeJSON(w, map[string]any{"task_id": taskID, "status": "submitted", ...})
+ w.Header().Set("Content-Type", "application/json")
+ if h.kernel == nil {
+ w.WriteHeader(http.StatusServiceUnavailable)
+ writeJSON(w, map[string]any{"error": "peer runtime not active", "status": "error"})
+ return
+ }
+ var req submitTaskRequest
+ if err := json.NewDecoder(r.Body).Decode(&req); err != nil { ... 400 }
+ if req.Capability == "" { ... 400 "capability is required" }
+ if req.TenantID != "" {
+ if req.Payload == nil { req.Payload = map[string]any{} }
+ req.Payload["tenant_id"] = req.TenantID
+ }
+ taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
+ ...
+ w.WriteHeader(http.StatusAccepted)
+ writeJSON(w, map[string]any{"task_id": taskID, "status": "submitted", ...})
 }
 ```
 
@@ -1159,9 +1159,9 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 
 ```go
 type submitTaskRequest struct {
-    Capability string         `json:"capability"`
-    Payload    map[string]any `json:"payload"`
-    TenantID   string         `json:"tenant_id,omitempty"`
+ Capability string `json:"capability"`
+ Payload map[string]any `json:"payload"`
+ TenantID string `json:"tenant_id,omitempty"`
 }
 ```
 
@@ -1171,7 +1171,7 @@ type submitTaskRequest struct {
 
 ```go
 if kernel == nil || kernel.submitter == nil || kernel.fabric == nil {
-    return "", errors.New("peer mode: kernel fabric not wired")
+ return "", errors.New("peer mode: kernel fabric not wired")
 }
 taskID, _, err := kernel.submitter.Submit(ctx, capability, payload)
 ```
@@ -1192,49 +1192,49 @@ payload = cp
 
 // 2. 解析 session_id / prompt / tenant_id
 sessionID, _ = payload["session_id"].(string)
-prompt, _    := payload["input"].(string)
-tenantID, _  := payload["tenant_id"].(string)
+prompt, _ := payload["input"].(string)
+tenantID, _ := payload["tenant_id"].(string)
 if sessionID == "" {
-    sessionID = fmt.Sprintf("sess-auto-%d", s.seq.Add(1))
-    payload["session_id"] = sessionID
+ sessionID = fmt.Sprintf("sess-auto-%d", s.seq.Add(1))
+ payload["session_id"] = sessionID
 }
 
 // 3. 能力归一到单一 L2 执行路径
 if capability != PlanCapability {
-    slog.InfoContext(ctx, "agentruntime: capability normalized to single L2 execution path",
-        "from", capability, "to", PlanCapability, "session_id", sessionID)
-    capability = PlanCapability
+ slog.InfoContext(ctx, "agentruntime: capability normalized to single L2 execution path",
+ "from", capability, "to", PlanCapability, "session_id", sessionID)
+ capability = PlanCapability
 }
 
 // 4. prompt 丰富（记忆折叠）
 if s.enricher != nil && strings.TrimSpace(prompt) != "" {
-    if enriched := s.enricher(ctx, sessionID, prompt); enriched != "" {
-        prompt = enriched
-        payload["input"] = prompt
-    }
+ if enriched := s.enricher(ctx, sessionID, prompt); enriched != "" {
+ prompt = enriched
+ payload["input"] = prompt
+ }
 }
 
 // 5. 会话准入
 if err := s.sessions.Admit(ctx, sessionID, prompt); err != nil {
-    return "", sessionID, err
+ return "", sessionID, err
 }
 
 // 6. 构造任务
 taskID = fmt.Sprintf("peer-plan-%d", s.seq.Add(1))
 env := taskfabric.NewCheckpointEnvelope(payload)
 env.SessionID = sessionID
-env.TenantID  = tenantID
+env.TenantID = tenantID
 task := &taskfabric.Task{
-    ID:         taskID,
-    Capability: capability,
-    // Origin stays "" — this is a root task (user-submitted work)
-    RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-    Checkpoint:  env,
+ ID: taskID,
+ Capability: capability,
+ // Origin stays "" — this is a root task (user-submitted work)
+ RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
+ Checkpoint: env,
 }
 
 // 7. 入织物
 if err := s.sessions.Fabric.Create(task); err != nil {
-    return "", sessionID, fmt.Errorf("agentruntime: create task: %w", err)
+ return "", sessionID, fmt.Errorf("agentruntime: create task: %w", err)
 }
 ```
 
@@ -1250,22 +1250,22 @@ if err := s.sessions.Fabric.Create(task); err != nil {
 
 ```go
 if strings.Contains(sessionID, "/") {
-    return fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
+ return fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
 }
 unlock := s.lockAdmission(sessionID)
 defer unlock()
 if _, err := s.Reg.GetSession(sessionID); err == nil {
-    return nil          // 已存在，幂等返回
+ return nil // 已存在，幂等返回
 }
 if s.Compile == nil || s.Fabric == nil {
-    return fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
+ return fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
 }
 
 liveCtx := context.WithoutCancel(ctx)
 g, err := s.Reg.InitSession(sessionID, prompt, nil,
-    func(subCtx context.Context, dag *engine.MutableDAG) (stop func()) {
-        return compile.SubscribeGraphEvents(subCtx, dag)
-    })
+ func(subCtx context.Context, dag *engine.MutableDAG) (stop func()) {
+ return compile.SubscribeGraphEvents(subCtx, dag)
+ })
 ```
 
 斜杠检查的理由在注释里：`SessionIDFromNode` 在第一个斜杠反解析，`"a/b"` 会让 reaper 把**活跃**会话的历史当死任务收割。
@@ -1276,16 +1276,16 @@ g, err := s.Reg.InitSession(sessionID, prompt, nil,
 
 ```go
 if strings.Contains(sessionID, "/") { ... 同样的斜杠契约，单点强制 }
-rootID := SessionRootID(sessionID)          // "sess/" + sessionID + "/root"
+rootID := SessionRootID(sessionID) // "sess/" + sessionID + "/root"
 g, err := NewL2Graph(rootID, prompt, params)
 
 entry := &sessionEntry{graph: g}
 entry.lastAccessNano.Store(time.Now().UnixNano())
 if compileCoord != nil {
-    // The subscription runs on a context the REGISTRY owns, never on a
-    // caller-scoped one
-    subCtx, cancel := context.WithCancel(context.Background())
-    ...
+ // The subscription runs on a context the REGISTRY owns, never on a
+ // caller-scoped one
+ subCtx, cancel := context.WithCancel(context.Background())
+ ...
 }
 ```
 
@@ -1294,7 +1294,7 @@ ID 规则（`session_registry.go:263-273`）：
 ```go
 func SessionRootID(sessionID string) string { return sessionIDPrefix + sessionID + "/root" }
 func SessionNodeID(sessionID string, depth int, tool string, seq int) string {
-    return fmt.Sprintf("sess/%s/d%d/%s#%d", sessionID, depth, tool, seq)
+ return fmt.Sprintf("sess/%s/d%d/%s#%d", sessionID, depth, tool, seq)
 }
 ```
 
@@ -1305,17 +1305,17 @@ func SessionNodeID(sessionID string, depth int, tool string, seq int) string {
 ```go
 rootStep := g.DAG().StepIndex()[g.Root()]
 if _, err := s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
-    if !errors.Is(err, taskfabric.ErrTaskExists) {
-        s.ReleaseQuietly(sessionID)
-        return ...
-    }
-    // 已存在的 TERMINAL root 属于同 ID 的上一个会话
-    if stale, terr := s.Fabric.Task(g.Root()); terr == nil &&
-        (stale.State == taskfabric.StateCompleted || stale.State == taskfabric.StateFailed) {
-        n := Harvest(s.Fabric, sessionID)
-        ...
-        s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep))
-    }
+ if !errors.Is(err, taskfabric.ErrTaskExists) {
+ s.ReleaseQuietly(sessionID)
+ return ...
+ }
+ // 已存在的 TERMINAL root 属于同 ID 的上一个会话
+ if stale, terr := s.Fabric.Task(g.Root()); terr == nil &&
+ (stale.State == taskfabric.StateCompleted || stale.State == taskfabric.StateFailed) {
+ n := Harvest(s.Fabric, sessionID)
+ ...
+ s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep))
+ }
 }
 ```
 
@@ -1325,8 +1325,8 @@ if _, err := s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep))
 payload := map[string]any{"input": s.Input}
 for k, v := range s.Metadata { payload[k] = v }
 return taskfabric.PlanStep{
-    ID: s.ID, Capability: s.AgentType, DependsOn: deps,
-    MaxRetries: maxRetries, Priority: parsePriority(s.Metadata), ...
+ ID: s.ID, Capability: s.AgentType, DependsOn: deps,
+ MaxRetries: maxRetries, Priority: parsePriority(s.Metadata), ...
 }
 ```
 
@@ -1336,12 +1336,12 @@ return taskfabric.PlanStep{
 
 ```go
 func (f *Fabric) Create(t *Task) error {
-    strategyID := f.strategyStampID()   // 锁外采样：stamp fn 是外部代码
-    pending := make([]*pendingAppend, 0, 1)
-    f.mu.Lock()
-    defer f.flushAppends(&pending)
-    defer f.mu.Unlock()
-    return f.createLocked(t, strategyID, &pending)
+ strategyID := f.strategyStampID() // 锁外采样：stamp fn 是外部代码
+ pending := make([]*pendingAppend, 0, 1)
+ f.mu.Lock()
+ defer f.flushAppends(&pending)
+ defer f.mu.Unlock()
+ return f.createLocked(t, strategyID, &pending)
 }
 ```
 
@@ -1351,9 +1351,9 @@ func (f *Fabric) Create(t *Task) error {
 if t.ID == "" { return ErrTaskIDRequired }
 if _, exists := f.tasks[t.ID]; exists { return ErrTaskExists }
 
-cp := *t                                  // 复制，织物持有独立实例
+cp := *t // 复制，织物持有独立实例
 if len(t.Dependencies) > 0 {
-    cp.Dependencies = append([]string(nil), t.Dependencies...)  // 切片也要复制
+ cp.Dependencies = append([]string(nil), t.Dependencies...) // 切片也要复制
 }
 cp.State = StateReady
 cp.Owner = ""
@@ -1370,20 +1370,20 @@ return nil
 
 ```go
 ev := TaskEvent{Type: typ, TaskID: t.ID, AgentID: t.Owner, Origin: t.Origin,
-                State: t.State, Checkpoint: t.Checkpoint, At: f.now()}
+ State: t.State, Checkpoint: t.Checkpoint, At: f.now()}
 t.UpdatedAt = ev.At
 f.events = append(f.events, ev)
 // 内存日志有上限，超过 2×max 时压缩到 max
 if f.store == nil { return nil }
 // 必须持久化的事件带完整重建载荷
 payload := map[string]any{
-    restoreKeyTaskID:  t.ID,
-    restoreKeyAgentID: t.Owner,
-    restoreKeyOrigin:  t.Origin,
-    restoreKeyState:   string(t.State),
-    // The fencing epoch rides on EVERY persisted event, not just the
-    // must-persist ones
-    restoreKeyEpoch:   f.epoch,
+ restoreKeyTaskID: t.ID,
+ restoreKeyAgentID: t.Owner,
+ restoreKeyOrigin: t.Origin,
+ restoreKeyState: string(t.State),
+ // The fencing epoch rides on EVERY persisted event, not just the
+ // must-persist ones
+ restoreKeyEpoch: f.epoch,
 }
 ```
 
@@ -1393,10 +1393,10 @@ payload := map[string]any{
 
 ```go
 for p.seq > f.flushedSeq+1 {
-    if !time.Now().Before(deadline) { orderTimedOut = true; break }
-    timer := time.AfterFunc(time.Until(deadline), f.flushCond.Broadcast)
-    f.flushCond.Wait()
-    timer.Stop()
+ if !time.Now().Before(deadline) { orderTimedOut = true; break }
+ timer := time.AfterFunc(time.Until(deadline), f.flushCond.Broadcast)
+ f.flushCond.Wait()
+ timer.Stop()
 }
 ```
 
@@ -1422,41 +1422,41 @@ defer ticker.Stop()
 // 协作式抢占的独立扫描器
 preemptTicker := time.NewTicker(s.preemptInterval())
 go func() {
-    for {
-        select {
-        case <-ctx.Done(): return
-        case <-preemptTicker.C:
-            func() {
-                defer func() { if r := recover(); r != nil { ... } }()
-                s.PreemptLowerPriority(s.fabric.ResumableTasks())
-            }()
-        }
-    }
+ for {
+ select {
+ case <-ctx.Done(): return
+ case <-preemptTicker.C:
+ func() {
+ defer func() { if r := recover(); r != nil { ... } }()
+ s.PreemptLowerPriority(s.fabric.ResumableTasks())
+ }()
+ }
+ }
 }()
 
 // 事件订阅（有 store 时）
 var events <-chan *ares_events.Event
 if s.eventStore != nil {
-    ch, err := s.eventStore.Subscribe(ctx, ares_events.EventFilter{
-        Types: []ares_events.EventType{
-            ares_events.EventTaskCreated,
-            ares_events.EventTaskReady,
-            ares_events.EventTaskCompleted,
-            ares_events.EventTaskFailed,
-            ares_events.EventTaskYielded,
-        },
-    })
-    ...
+ ch, err := s.eventStore.Subscribe(ctx, ares_events.EventFilter{
+ Types: []ares_events.EventType{
+ ares_events.EventTaskCreated,
+ ares_events.EventTaskReady,
+ ares_events.EventTaskCompleted,
+ ares_events.EventTaskFailed,
+ ares_events.EventTaskYielded,
+ },
+ })
+ ...
 }
 
 for {
-    select {
-    case <-ctx.Done(): return
-    case <-ticker.C:   s.safeDrain(ctx)
-    case _, ok := <-events:
-        if !ok { events = nil; continue }   // 关闭后退化为纯轮询
-        s.safeDrain(ctx)
-    }
+ select {
+ case <-ctx.Done(): return
+ case <-ticker.C: s.safeDrain(ctx)
+ case _, ok := <-events:
+ if !ok { events = nil; continue } // 关闭后退化为纯轮询
+ s.safeDrain(ctx)
+ }
 }
 ```
 
@@ -1468,40 +1468,40 @@ for {
 
 ```go
 func (s *Scheduler) safeDrain(ctx context.Context) {
-    defer func() { if r := recover(); r != nil { log.Error("kernel scheduler: panic in drain, continuing", "panic", r) } }()
-    s.drain(ctx)
+ defer func() { if r := recover(); r != nil { log.Error("kernel scheduler: panic in drain, continuing", "panic", r) } }()
+ s.drain(ctx)
 }
 ```
 
 `drain` 本体：
 
 ```go
-s.reconcileFabricDeaths()          // 清理 fabric 里已死但静态注册还在的僵尸 executor
+s.reconcileFabricDeaths() // 清理 fabric 里已死但静态注册还在的僵尸 executor
 
 tasks := s.fabric.ResumableTasks()
 if len(tasks) == 0 { return }
 
-s.PreemptLowerPriority(tasks)      // 抢占：READY 任务优先级高于 RUNNING 的，协作式让出
+s.PreemptLowerPriority(tasks) // 抢占：READY 任务优先级高于 RUNNING 的，协作式让出
 
 sem := make(chan struct{}, s.drainLimit())
 var wg sync.WaitGroup
 drainLoop:
 for _, taskID := range tasks {
-    select {
-    case <-ctx.Done(): break drainLoop
-    default:
-    }
-    select {
-    case sem <- struct{}{}:
-    case <-ctx.Done(): break drainLoop
-    }
-    wg.Add(1)
-    go func(id string) {
-        defer wg.Done()
-        defer func() { <-sem }()
-        defer func() { if recover() != nil { log.Error(...) } }()
-        if err := s.execute(ctx, id); err != nil { s.logFailure(id, err) }
-    }(taskID)
+ select {
+ case <-ctx.Done(): break drainLoop
+ default:
+ }
+ select {
+ case sem <- struct{}{}:
+ case <-ctx.Done(): break drainLoop
+ }
+ wg.Add(1)
+ go func(id string) {
+ defer wg.Done()
+ defer func() { <-sem }()
+ defer func() { if recover() != nil { log.Error(...) } }()
+ if err := s.execute(ctx, id); err != nil { s.logFailure(id, err) }
+ }(taskID)
 }
 wg.Wait()
 ```
@@ -1510,12 +1510,12 @@ wg.Wait()
 
 ```go
 for id, t := range f.tasks {
-    switch t.State {
-    case StateReady:
-        if depsCompletedLocked(f.tasks, t.Dependencies) { out = append(out, id) }
-    case StateSuspended:
-        if t.Lease != nil && !t.Lease.IsExpired(f.now()) { out = append(out, id) }
-    }
+ switch t.State {
+ case StateReady:
+ if depsCompletedLocked(f.tasks, t.Dependencies) { out = append(out, id) }
+ case StateSuspended:
+ if t.Lease != nil && !t.Lease.IsExpired(f.now()) { out = append(out, id) }
+ }
 }
 ```
 
@@ -1534,15 +1534,15 @@ for id, t := range f.tasks {
 ```go
 execs := s.allExecutors()
 if boundID, bound := s.boundFor(taskID); bound {
-    // 恢复绑定：绑定到本任务的替换体是唯一候选
-    if agent, ok := execs[boundID]; ok && agent != nil {
-        if tk, tkErr := s.fabric.Task(taskID); tkErr == nil &&
-            taskfabric.CapabilityOverlap(tk.Capability, []string{string(agent.Type())}) > 0 {
-            cands = append(cands, taskfabric.Candidate{...})
-        }
-    }
-    if len(cands) == 0 { return s.executeUnbound(ctx, taskID) }
-    return s.executeWithCandidates(ctx, taskID, cands)
+ // 恢复绑定：绑定到本任务的替换体是唯一候选
+ if agent, ok := execs[boundID]; ok && agent != nil {
+ if tk, tkErr := s.fabric.Task(taskID); tkErr == nil &&
+ taskfabric.CapabilityOverlap(tk.Capability, []string{string(agent.Type())}) > 0 {
+ cands = append(cands, taskfabric.Candidate{...})
+ }
+ }
+ if len(cands) == 0 { return s.executeUnbound(ctx, taskID) }
+ return s.executeWithCandidates(ctx, taskID, cands)
 }
 return s.executeUnbound(ctx, taskID)
 ```
@@ -1553,20 +1553,20 @@ return s.executeUnbound(ctx, taskID)
 
 ```go
 for agentID, agent := range execs {
-    if agent == nil { continue }
-    if s.isBoundToAnyTask(agentID) { continue }
-    // peer 模式下 fabric 活跃population 是唯一候选源
-    if s.agents != nil && !s.hybridStatic { continue }
-    cands = append(cands, taskfabric.Candidate{
-        AgentID: agentID,
-        Capabilities: []string{string(agent.Type())},
-        Load: s.tracker.Load(agentID),
-        Confidence: s.tracker.Confidence(agentID),
-        Priority: s.tracker.Priority(agentID),
-    })
+ if agent == nil { continue }
+ if s.isBoundToAnyTask(agentID) { continue }
+ // peer 模式下 fabric 活跃population 是唯一候选源
+ if s.agents != nil && !s.hybridStatic { continue }
+ cands = append(cands, taskfabric.Candidate{
+ AgentID: agentID,
+ Capabilities: []string{string(agent.Type())},
+ Load: s.tracker.Load(agentID),
+ Confidence: s.tracker.Confidence(agentID),
+ Priority: s.tracker.Priority(agentID),
+ })
 }
 if s.agents != nil && s.hybridStatic {
-    return s.hybridPreferStatic(taskID, cands, s.appendFabricCandidates(nil, execs))
+ return s.hybridPreferStatic(taskID, cands, s.appendFabricCandidates(nil, execs))
 }
 return s.appendFabricCandidates(cands, execs)
 ```
@@ -1580,7 +1580,7 @@ peer 模式（`s.agents != nil && !hybridStatic`）下静态注册被跳过，�
 ```go
 tk, err := s.fabric.Task(taskID)
 if len(cands) == 0 {
-    return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
+ return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
 }
 
 // 预算过滤：在 Schedule 发租约之前就把预算/期限耗尽的候选剔掉
@@ -1590,12 +1590,12 @@ if len(cands) == 0 { return ... ErrNoCapableCandidate }
 // 按 (agentID, 任务能力) 重新解析置信度
 prior := s.fabric.PriorConfidence(tk.Capability)
 for i := range cands {
-    conf, measured := s.tracker.ConfidenceForMeasured(cands[i].AgentID, tk.Capability)
-    switch {
-    case measured:  cands[i].Confidence = conf
-    case prior > 0: cands[i].Confidence = 0          // 让 Schedule 用先验填充
-    default:        cands[i].Confidence = conf        // 中性先验
-    }
+ conf, measured := s.tracker.ConfidenceForMeasured(cands[i].AgentID, tk.Capability)
+ switch {
+ case measured: cands[i].Confidence = conf
+ case prior > 0: cands[i].Confidence = 0 // 让 Schedule 用先验填充
+ default: cands[i].Confidence = conf // 中性先验
+ }
 }
 
 winner, epoch, err := s.fabric.Schedule(taskID, cands, s.ttl)
@@ -1608,8 +1608,8 @@ if err != nil { return err }
 var executor CapabilityExecutor
 if s.agents != nil { executor = s.fabricExecutor(winner) }
 if executor == nil {
-    executor, ok = s.LookupExecutor(winner)
-    if !ok || executor == nil { return s.handleStaleWinner(taskID, winner, epoch) }
+ executor, ok = s.LookupExecutor(winner)
+ if !ok || executor == nil { return s.handleStaleWinner(taskID, winner, epoch) }
 }
 
 // 抓取当前 checkpoint 作为 meta，跨 yield→resume 保住 UserProfile
@@ -1617,13 +1617,13 @@ meta, decodeErr := taskfabric.DecodeCheckpoint(tk.Checkpoint)
 
 // 量子前预算门
 if !s.budgetOK(winner) {
-    s.fabric.Release(taskID, winner, epoch)
-    return nil
+ s.fabric.Release(taskID, winner, epoch)
+ return nil
 }
 // 准入门：原子抢占忙槽
 if !s.tracker.TryBegin(winner, maxConcurrentPerAgent) {
-    s.fabric.Release(taskID, winner, epoch)
-    return nil
+ s.fabric.Release(taskID, winner, epoch)
+ return nil
 }
 ```
 
@@ -1635,10 +1635,10 @@ if !s.tracker.TryBegin(winner, maxConcurrentPerAgent) {
 slotReleased := false
 var stopHeartbeat func()
 defer func() {
-    if r := recover(); r != nil {
-        if stopHeartbeat != nil { stopHeartbeat() }
-        if !slotReleased { s.tracker.EndNeutral(winner); slotReleased = true }
-    }
+ if r := recover(); r != nil {
+ if stopHeartbeat != nil { stopHeartbeat() }
+ if !slotReleased { s.tracker.EndNeutral(winner); slotReleased = true }
+ }
 }()
 
 s.beforeQuantum(ctx, taskID, winner)
@@ -1657,10 +1657,10 @@ slotReleased = true
 
 if s.governance != nil { s.consumeBudget(winner, usage.tokens) }
 if err == nil {
-    // 数任务不数量子
-    if tkEnd, tkErr := s.fabric.Task(taskID); tkErr == nil && tkEnd.State == taskfabric.StateCompleted {
-        s.Scheduled.Add(1)
-    }
+ // 数任务不数量子
+ if tkEnd, tkErr := s.fabric.Task(taskID); tkErr == nil && tkEnd.State == taskfabric.StateCompleted {
+ s.Scheduled.Add(1)
+ }
 }
 s.unbindRecoveryExecutorAfterTerminal(taskID)
 return err
@@ -1680,11 +1680,11 @@ t, err := f.Task(taskID)
 // 经验先验填充：候选没声明置信度时用 ConfidenceSource 补
 f.mu.Lock(); src := f.confidence; f.mu.Unlock()
 if src != nil {
-    if conf := src.Confidence(t.Capability); conf > 0 {
-        for i := range candidates {
-            if candidates[i].Confidence <= 0 { candidates[i].Confidence = conf }
-        }
-    }
+ if conf := src.Confidence(t.Capability); conf > 0 {
+ for i := range candidates {
+ if candidates[i].Confidence <= 0 { candidates[i].Confidence = conf }
+ }
+ }
 }
 
 best := Pick(t.Capability, candidates)
@@ -1698,16 +1698,16 @@ return best.AgentID, epoch, nil
 
 ```go
 func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
-    overlap := CapabilityOverlap(taskCapability, c.Capabilities)
-    load    := clamp01(c.Load)
-    conf    := clamp01(c.Confidence)
-    boost   := 1.0
-    if c.Priority > 0 { boost = 1.0 + c.Priority }
-    parts := ScoreParts{Overlap: overlap, Load: load, Confidence: conf, PriorityBoost: boost}
-    if overlap > 0 {
-        parts.Score = overlap * (1 - load) * conf * boost
-    }
-    return parts
+ overlap := CapabilityOverlap(taskCapability, c.Capabilities)
+ load := clamp01(c.Load)
+ conf := clamp01(c.Confidence)
+ boost := 1.0
+ if c.Priority > 0 { boost = 1.0 + c.Priority }
+ parts := ScoreParts{Overlap: overlap, Load: load, Confidence: conf, PriorityBoost: boost}
+ if overlap > 0 {
+ parts.Score = overlap * (1 - load) * conf * boost
+ }
+ return parts
 }
 ```
 
@@ -1719,11 +1719,11 @@ func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
 
 ```go
 trimmed := strings.TrimSpace(required)
-if trimmed == "" { return 1.0 }        // 无约束 → 任何候选都行
+if trimmed == "" { return 1.0 } // 无约束 → 任何候选都行
 
 // 精确整链匹配短路
 for _, h := range have {
-    if strings.TrimSpace(h) == trimmed { return 1.0 }
+ if strings.TrimSpace(h) == trimmed { return 1.0 }
 }
 // 否则按 "/" 分段做前缀比例
 ```
@@ -1734,16 +1734,16 @@ for _, h := range have {
 
 ```go
 for i := range candidates {
-    c := &candidates[i]
-    s := Score(taskCapability, *c)
-    if s > 0 && (best == nil || s > bestScore) { best = c; bestScore = s }
+ c := &candidates[i]
+ s := Score(taskCapability, *c)
+ if s > 0 && (best == nil || s > bestScore) { best = c; bestScore = s }
 
-    overlap := CapabilityOverlap(taskCapability, c.Capabilities)
-    if overlap <= 0 { continue }
-    fb := overlap * (1 - clamp01(c.Load))      // 无置信度的兜底层
-    if c.Priority > 0 { fb *= 1 + c.Priority }
-    if fb <= 0 { continue }
-    if lastResort == nil || fb > resortScore { lastResort = c; resortScore = fb }
+ overlap := CapabilityOverlap(taskCapability, c.Capabilities)
+ if overlap <= 0 { continue }
+ fb := overlap * (1 - clamp01(c.Load)) // 无置信度的兜底层
+ if c.Priority > 0 { fb *= 1 + c.Priority }
+ if fb <= 0 { continue }
+ if lastResort == nil || fb > resortScore { lastResort = c; resortScore = fb }
 }
 if best != nil { return best }
 return lastResort
@@ -1759,11 +1759,11 @@ if !ok { return 0, ErrTaskNotFound }
 if agentID == "" { return 0, ErrAgentIDRequired }
 if t.State != StateReady && t.State != StateSuspended { return 0, ErrTaskNotReady }
 
-f.epoch++                                   // ← fencing token 递增
+f.epoch++ // ← fencing token 递增
 lease := Lease{
-    Owner:     agentID,
-    ExpiresAt: f.now().Add(ttl),            // 用织物时钟，不用墙钟
-    Epoch:     f.epoch,
+ Owner: agentID,
+ ExpiresAt: f.now().Add(ttl), // 用织物时钟，不用墙钟
+ Epoch: f.epoch,
 }
 if err := t.transition(StateLeased); err != nil { return 0, err }
 t.Owner = agentID
@@ -1782,34 +1782,34 @@ return lease.Epoch, nil
 
 ```go
 func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
-    if err := f.Start(taskID, agentID, epoch); err != nil { return err }
+ if err := f.Start(taskID, agentID, epoch); err != nil { return err }
 
-    // 量子计数在 step 跑之前累加
-    f.mu.Lock()
-    if t, ok := f.tasks[taskID]; ok { t.Quantum++; t.UpdatedAt = f.now() }
-    f.mu.Unlock()
+ // 量子计数在 step 跑之前累加
+ f.mu.Lock()
+ if t, ok := f.tasks[taskID]; ok { t.Quantum++; t.UpdatedAt = f.now() }
+ f.mu.Unlock()
 
-    checkpoint, done, stepErr := runStepRecovered(step)
-    if stepErr != nil {
-        if isCancellation(stepErr) {
-            // 取消不是失败：Release 回 READY，不烧重试预算，保留 checkpoint
-            if releaseErr := f.Release(taskID, agentID, epoch); releaseErr != nil {
-                return errors.Join(stepErr, releaseErr)
-            }
-            return stepErr
-        }
-        if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
-            return errors.Join(stepErr, failErr)
-        }
-        return stepErr
-    }
-    if done {
-        if checkpoint != nil {
-            return f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
-        }
-        return f.Complete(taskID, agentID, epoch)
-    }
-    return f.Yield(taskID, agentID, epoch, checkpoint)
+ checkpoint, done, stepErr := runStepRecovered(step)
+ if stepErr != nil {
+ if isCancellation(stepErr) {
+ // 取消不是失败：Release 回 READY，不烧重试预算，保留 checkpoint
+ if releaseErr := f.Release(taskID, agentID, epoch); releaseErr != nil {
+ return errors.Join(stepErr, releaseErr)
+ }
+ return stepErr
+ }
+ if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
+ return errors.Join(stepErr, failErr)
+ }
+ return stepErr
+ }
+ if done {
+ if checkpoint != nil {
+ return f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+ }
+ return f.Complete(taskID, agentID, epoch)
+ }
+ return f.Yield(taskID, agentID, epoch, checkpoint)
 }
 ```
 
@@ -1836,7 +1836,7 @@ func isCancellation(err error) bool { return errors.Is(err, context.Canceled) }
 `Start`（`fabric_lifecycle.go:113`）：
 
 ```go
-t, err := f.ownerLocked(id, agentID, epoch)   // epoch 校验在这
+t, err := f.ownerLocked(id, agentID, epoch) // epoch 校验在这
 if err := t.transition(StateRunning); err != nil { return err }
 pending = append(pending, f.recordLocked(t, EventTaskStarted))
 ```
@@ -1848,17 +1848,17 @@ pending = append(pending, f.recordLocked(t, EventTaskStarted))
 ```go
 t.RetryPolicy.Attempts++
 if t.CanRetry() {
-    t.transition(StateReady)
-    // 记失败事件时失败 agent 还挂着，终态事件不能丢掉行动者
-    pending = append(pending, f.recordLocked(t, EventTaskFailed))
-    t.Owner = ""
-    t.Lease = nil
-    pending = append(pending, f.recordLocked(t, EventTaskReady))
-    return nil
+ t.transition(StateReady)
+ // 记失败事件时失败 agent 还挂着，终态事件不能丢掉行动者
+ pending = append(pending, f.recordLocked(t, EventTaskFailed))
+ t.Owner = ""
+ t.Lease = nil
+ pending = append(pending, f.recordLocked(t, EventTaskReady))
+ return nil
 }
 t.transition(StateFailed)
 pending = append(pending, f.recordLocked(t, EventTaskFailed))
-f.cascadeFailureLocked(t.ID, &pending)   // 终态失败向下级联
+f.cascadeFailureLocked(t.ID, &pending) // 终态失败向下级联
 ```
 
 `CompleteWithCheckpoint`（`:190`）的顺序有讲究：
@@ -1880,54 +1880,54 @@ pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 
 ```go
 return func() (any, bool, error) {
-    type stepResult struct { out *sub.StepOutcome; err error }
-    done := make(chan stepResult, 1)
-    go func() {
-        defer func() {
-            if r := recover(); r != nil {
-                done <- stepResult{err: apperrors.Kernel("run_quantum", "executor_panic", ...)}
-            }
-        }()
-        // 任务的租户骑在量子的 context 上
-        mt := s.ToModelTask(tk)
-        out, stepErr := executor.ExecuteStep(tenantctx.With(ctx, mt.TenantID), mt)
-        done <- stepResult{out: out, err: stepErr}
-    }()
+ type stepResult struct { out *sub.StepOutcome; err error }
+ done := make(chan stepResult, 1)
+ go func() {
+ defer func() {
+ if r := recover(); r != nil {
+ done <- stepResult{err: apperrors.Kernel("run_quantum", "executor_panic", ...)}
+ }
+ }()
+ // 任务的租户骑在量子的 context 上
+ mt := s.ToModelTask(tk)
+ out, stepErr := executor.ExecuteStep(tenantctx.With(ctx, mt.TenantID), mt)
+ done <- stepResult{out: out, err: stepErr}
+ }()
 
-    var out *sub.StepOutcome
-    var stepErr error
-    select {
-    case res := <-done: out, stepErr = res.out, res.err
-    case <-ctx.Done():  return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown: %w", ctx.Err())
-    }
+ var out *sub.StepOutcome
+ var stepErr error
+ select {
+ case res := <-done: out, stepErr = res.out, res.err
+ case <-ctx.Done(): return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown: %w", ctx.Err())
+ }
 
-    if stepErr != nil { return nil, false, stepErr }
-    if out == nil { return nil, false, ... ErrNilStepOutcome }
-    if out.Result != nil && out.Result.Error != "" {
-        return nil, false, apperrors.Kernel("run_quantum", "step_error", ...)
-    }
-    if usage != nil && out.Result != nil {
-        usage.tokens = tokenUsageFromResult(out.Result, "input") + tokenUsageFromResult(out.Result, "output")
-    }
+ if stepErr != nil { return nil, false, stepErr }
+ if out == nil { return nil, false, ... ErrNilStepOutcome }
+ if out.Result != nil && out.Result.Error != "" {
+ return nil, false, apperrors.Kernel("run_quantum", "step_error", ...)
+ }
+ if usage != nil && out.Result != nil {
+ usage.tokens = tokenUsageFromResult(out.Result, "input") + tokenUsageFromResult(out.Result, "output")
+ }
 
-    if !out.Done {
-        // Yield：保住 meta，累加 token
-        return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
-            UserProfile: meta.UserProfile, Payload: meta.Payload,
-            UsedExperienceID: meta.UsedExperienceID, StrategyID: meta.StrategyID,
-            SessionID: meta.SessionID, StepCheckpoint: out.Checkpoint,
-            InputTokens:  meta.InputTokens + tokenUsageFromResult(out.Result, "input"),
-            OutputTokens: meta.OutputTokens + tokenUsageFromResult(out.Result, "output"),
-        }), false, nil
-    }
-    // Done：把 worker 的真实输出装进 checkpoint
-    outMap := map[string]any{"result": "ok"}
-    if res := out.Result; res != nil {
-        if items := res.Items; len(items) > 0 { outMap["items"] = items }
-        if res.Reason != "" { outMap["reason"] = res.Reason }
-        if len(res.Metadata) > 0 { outMap["metadata"] = res.Metadata }
-    }
-    return taskfabric.EncodeCheckpoint(... StepCheckpoint: outMap ...), true, nil
+ if !out.Done {
+ // Yield：保住 meta，累加 token
+ return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+ UserProfile: meta.UserProfile, Payload: meta.Payload,
+ UsedExperienceID: meta.UsedExperienceID, StrategyID: meta.StrategyID,
+ SessionID: meta.SessionID, StepCheckpoint: out.Checkpoint,
+ InputTokens: meta.InputTokens + tokenUsageFromResult(out.Result, "input"),
+ OutputTokens: meta.OutputTokens + tokenUsageFromResult(out.Result, "output"),
+ }), false, nil
+ }
+ // Done：把 worker 的真实输出装进 checkpoint
+ outMap := map[string]any{"result": "ok"}
+ if res := out.Result; res != nil {
+ if items := res.Items; len(items) > 0 { outMap["items"] = items }
+ if res.Reason != "" { outMap["reason"] = res.Reason }
+ if len(res.Metadata) > 0 { outMap["metadata"] = res.Metadata }
+ }
+ return taskfabric.EncodeCheckpoint(... StepCheckpoint: outMap ...), true, nil
 }
 ```
 
@@ -1984,17 +1984,17 @@ return c.ExecuteStep(ctx, task)
 name := string(task.AgentType)
 switch {
 case strings.HasPrefix(name, "tool/"):
-    tool := strings.TrimPrefix(name, "tool/")
-    return (&toolCognition{tool: tool, binder: r.binder, logger: r.logger}).ExecuteStep(ctx, task)
-case name == answerAgentType:                    // "ares/answer"
-    return (&answerCognition{...}).ExecuteStep(ctx, task)
-case name == planAgentType:                      // "ares/plan"
-    if r.planner != nil { return r.planner.ExecuteStep(ctx, task) }
-    return nil, fmt.Errorf("agentfabric: plan node %q has no planner cognition", name)
-case name == rootAgentType:                      // "ares/root"
-    return (&rootCognition{}).ExecuteStep(ctx, task)
+ tool := strings.TrimPrefix(name, "tool/")
+ return (&toolCognition{tool: tool, binder: r.binder, logger: r.logger}).ExecuteStep(ctx, task)
+case name == answerAgentType: // "ares/answer"
+ return (&answerCognition{...}).ExecuteStep(ctx, task)
+case name == planAgentType: // "ares/plan"
+ if r.planner != nil { return r.planner.ExecuteStep(ctx, task) }
+ return nil, fmt.Errorf("agentfabric: plan node %q has no planner cognition", name)
+case name == rootAgentType: // "ares/root"
+ return (&rootCognition{}).ExecuteStep(ctx, task)
 default:
-    return nil, fmt.Errorf("agentfabric: unsupported L2 capability %q", name)
+ return nil, fmt.Errorf("agentfabric: unsupported L2 capability %q", name)
 }
 ```
 
@@ -2010,10 +2010,10 @@ default:
 
 ```go
 func (c *rootCognition) ExecuteStep(_ context.Context, task *models.Task) (*StepOutcome, error) {
-    prompt, _ := task.Payload["input"].(string)
-    result := models.NewTaskResult(task.TaskID, task.AgentType)
-    result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: prompt}}, "session admitted")
-    return &StepOutcome{Done: true, Result: result}, nil
+ prompt, _ := task.Payload["input"].(string)
+ result := models.NewTaskResult(task.TaskID, task.AgentType)
+ result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: prompt}}, "session admitted")
+ return &StepOutcome{Done: true, Result: result}, nil
 }
 ```
 
@@ -2047,43 +2047,43 @@ g, err := c.sessions.GetSession(sessionID)
 
 depth := g.PlanDepth()
 if depth >= c.maxDepth {
-    c.forcedAnswers.Add(1)
-    return c.growAnswerNode(ctx, g, task, "max plan depth reached", nil)
+ c.forcedAnswers.Add(1)
+ return c.growAnswerNode(ctx, g, task, "max plan depth reached", nil)
 }
 
-prompt, err := c.assembleContext(ctx, task, g)      // 从前驱路径组装上下文
+prompt, err := c.assembleContext(ctx, task, g) // 从前驱路径组装上下文
 
 if priors := c.l1Priors(); len(priors) > 0 {
-    prompt = append(prompt, &llmcore.LLMMessage{
-        Role: roleSystem,
-        Content: "evolution priors (hints only, tool choice stays with you):\n- " + strings.Join(priors, "\n- "),
-    })
+ prompt = append(prompt, &llmcore.LLMMessage{
+ Role: roleSystem,
+ Content: "evolution priors (hints only, tool choice stays with you):\n- " + strings.Join(priors, "\n- "),
+ })
 }
 
 llmParams := map[string]any{}
 if st := c.activeStrategy(ctx); st != nil {
-    if strings.TrimSpace(st.Prompt) != "" {
-        prompt = append(prompt, &llmcore.LLMMessage{Role: roleSystem,
-            Content: "evolution strategy (deployed " + st.ID + "):\n" + st.Prompt})
-    }
-    for k, v := range st.Params { llmParams[k] = v }
+ if strings.TrimSpace(st.Prompt) != "" {
+ prompt = append(prompt, &llmcore.LLMMessage{Role: roleSystem,
+ Content: "evolution strategy (deployed " + st.ID + "):\n" + st.Prompt})
+ }
+ for k, v := range st.Params { llmParams[k] = v }
 }
 
 var llmTools []llmcore.Tool
 if c.binder != nil {
-    schemas := c.binder.GetToolSchemas()
-    llmTools = make([]llmcore.Tool, 0, len(schemas))
-    for _, s := range schemas { llmTools = append(llmTools, toCoreTool(s)) }
+ schemas := c.binder.GetToolSchemas()
+ llmTools = make([]llmcore.Tool, 0, len(schemas))
+ for _, s := range schemas { llmTools = append(llmTools, toCoreTool(s)) }
 }
 
 resp, err := c.chat.Chat(ctx, prompt, llmTools, llmParams)
 
 if len(resp.ToolCalls) == 0 {
-    return c.growAnswerNode(ctx, g, task, resp.Content, resp)      // 终局
+ return c.growAnswerNode(ctx, g, task, resp.Content, resp) // 终局
 }
 grown, err := c.growToolNodes(ctx, g, task, resp.ToolCalls, sessionID)
 if grown == 0 {
-    return c.growAnswerNode(ctx, g, task, resp.Content, resp)      // 全被 L1 约束跳过
+ return c.growAnswerNode(ctx, g, task, resp.Content, resp) // 全被 L1 约束跳过
 }
 result.SetSuccess(nil, "planner grew "+strconv.Itoa(grown)+" tool nodes")
 result.Metadata = tokenUsageMetadata(resp)
@@ -2102,31 +2102,31 @@ prev := task.TaskID
 if !g.HasNode(prev) { prev = g.Root() }
 
 for seq, tc := range toolCalls {
-    toolName := tc.Function.Name
-    if !c.isToolEnabled(toolName)      { continue }   // L1 约束
-    if !c.toolBudgetRemaining(g, toolName) { continue }
+ toolName := tc.Function.Name
+ if !c.isToolEnabled(toolName) { continue } // L1 约束
+ if !c.toolBudgetRemaining(g, toolName) { continue }
 
-    nodeID := SessionNodeID(sessionID, round, toolName, seq)
-    if g.HasNode(nodeID) { prev = nodeID; grown++; continue }   // 幂等
+ nodeID := SessionNodeID(sessionID, round, toolName, seq)
+ if g.HasNode(nodeID) { prev = nodeID; grown++; continue } // 幂等
 
-    args := map[string]any{}
-    if tc.Function.Arguments != "" { json.Unmarshal([]byte(tc.Function.Arguments), &args) }
+ args := map[string]any{}
+ if tc.Function.Arguments != "" { json.Unmarshal([]byte(tc.Function.Arguments), &args) }
 
-    metadata := args
-    if metadata == nil { metadata = map[string]any{} }
-    metadata[planMetadataKey] = sessionID
-    // UNCONDITIONAL, exactly like session_id: an LLM-supplied "tenant_id"
-    // tool argument must never survive into the grown node's envelope
-    metadata[tenantMetadataKey] = task.TenantID
+ metadata := args
+ if metadata == nil { metadata = map[string]any{} }
+ metadata[planMetadataKey] = sessionID
+ // UNCONDITIONAL, exactly like session_id: an LLM-supplied "tenant_id"
+ // tool argument must never survive into the grown node's envelope
+ metadata[tenantMetadataKey] = task.TenantID
 
-    g.AddToolNode(ctx, nodeID, toolName, metadata, prev)
-    prev = nodeID     // 同轮内工具串行链式
-    grown++
+ g.AddToolNode(ctx, nodeID, toolName, metadata, prev)
+ prev = nodeID // 同轮内工具串行链式
+ grown++
 }
 
 newPlanID := SessionNodeID(sessionID, round, "plan", 0)
 if planExists := g.HasNode(newPlanID); !planExists && grown > 0 {
-    g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev)
+ g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev)
 }
 ```
 
@@ -2140,11 +2140,11 @@ if planExists := g.HasNode(newPlanID); !planExists && grown > 0 {
 answerID := SessionNodeID(task.SessionID, stableRound(g, task.TaskID), "answer", 0)
 
 if !g.HasNode(answerID) {
-    pred := task.TaskID
-    if !g.HasNode(pred) { pred = g.Root() }
-    args := map[string]any{"content": content, planMetadataKey: task.SessionID}
-    if task.TenantID != "" { args[tenantMetadataKey] = task.TenantID }
-    g.AddToolNode(ctx, answerID, "answer", args, pred)
+ pred := task.TaskID
+ if !g.HasNode(pred) { pred = g.Root() }
+ args := map[string]any{"content": content, planMetadataKey: task.SessionID}
+ if task.TenantID != "" { args[tenantMetadataKey] = task.TenantID }
+ g.AddToolNode(ctx, answerID, "answer", args, pred)
 }
 result.SetSuccess(nil, "planner grew answer node")
 return &StepOutcome{Done: true, Result: result}, nil
@@ -2163,9 +2163,9 @@ return &StepOutcome{Done: true, Result: result}, nil
 ```go
 var agentType string
 switch tool {
-case "answer": agentType = answerAgentType      // "ares/answer"
-case "plan":   agentType = planAgentType        // "ares/plan"
-default:       agentType = "tool/" + tool
+case "answer": agentType = answerAgentType // "ares/answer"
+case "plan": agentType = planAgentType // "ares/plan"
+default: agentType = "tool/" + tool
 }
 step := &engine.Step{ID: id, AgentType: agentType, Metadata: argsMetadata(args)}
 if strings.TrimSpace(dependsOn) != "" { step.DependsOn = []string{dependsOn} }
@@ -2181,14 +2181,14 @@ m.steps[id] = step
 m.version++
 
 m.hub.Publish(GraphEvent{
-    Change: GraphChange{
-        Type:   ChangeAddNode,
-        NodeID: id,
-        // Publish an isolated CLONE, never the live *Step
-        Step:      cloneStepForSnapshot(step),
-        Timestamp: time.Now(),
-    },
-    ...
+ Change: GraphChange{
+ Type: ChangeAddNode,
+ NodeID: id,
+ // Publish an isolated CLONE, never the live *Step
+ Step: cloneStepForSnapshot(step),
+ Timestamp: time.Now(),
+ },
+ ...
 })
 ```
 
@@ -2200,11 +2200,11 @@ m.hub.Publish(GraphEvent{
 h.seq++
 event.Seq = h.seq
 for id, ch := range h.subscribers {
-    select {
-    case ch <- event:
-    default:
-        h.dropped[id]++      // 非阻塞：缓冲满就丢，但计数
-    }
+ select {
+ case ch <- event:
+ default:
+ h.dropped[id]++ // 非阻塞：缓冲满就丢，但计数
+ }
 }
 ```
 
@@ -2216,32 +2216,32 @@ for id, ch := range h.subscribers {
 
 ```go
 case evt, ok := <-ch:
-    if !ok { return }
-    if haveSeq && evt.Seq != lastSeq+1 {
-        log.Warn("planprojection: graph event gap detected; reconciling", ...)
-        c.reconcileNow(ctx, dag, "sequence gap")
-    }
-    haveSeq = true
-    lastSeq = evt.Seq
+ if !ok { return }
+ if haveSeq && evt.Seq != lastSeq+1 {
+ log.Warn("planprojection: graph event gap detected; reconciling", ...)
+ c.reconcileNow(ctx, dag, "sequence gap")
+ }
+ haveSeq = true
+ lastSeq = evt.Seq
 
-    compileCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-    res, err := c.ApplyChange(compileCtx, dag, evt)
-    cancel()
-    if err != nil {
-        log.Error("planprojection: incremental compile failed", ...)
-        // 失败的增量编译本身是收敛信号
-        c.reconcileNow(ctx, dag, "incremental compile failed")
-        armTailCheck(tailCheck)
-        continue
-    }
-    for _, s := range res.Skipped { log.Warn(...) }
-    lastDropped, lastDropVersion = c.checkDrops(ctx, dag, subID, lastDropped, lastDropVersion, false)
-    armTailCheck(tailCheck)
+ compileCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+ res, err := c.ApplyChange(compileCtx, dag, evt)
+ cancel()
+ if err != nil {
+ log.Error("planprojection: incremental compile failed", ...)
+ // 失败的增量编译本身是收敛信号
+ c.reconcileNow(ctx, dag, "incremental compile failed")
+ armTailCheck(tailCheck)
+ continue
+ }
+ for _, s := range res.Skipped { log.Warn(...) }
+ lastDropped, lastDropVersion = c.checkDrops(ctx, dag, subID, lastDropped, lastDropVersion, false)
+ armTailCheck(tailCheck)
 
 case <-tailCheck.C:
-    // Tick path: 没事件送达时，版本变了说明有事件被丢
-    lastDropped, lastDropVersion = c.checkDrops(ctx, dag, subID, lastDropped, lastDropVersion, true)
-    armTailCheck(tailCheck)
+ // Tick path: 没事件送达时，版本变了说明有事件被丢
+ lastDropped, lastDropVersion = c.checkDrops(ctx, dag, subID, lastDropped, lastDropVersion, true)
+ armTailCheck(tailCheck)
 ```
 
 三条补偿路径：**Seq 跳号** → 全量 reconcile；**增量编译失败** → 全量 reconcile；**drop 计数或版本变化** → reconcile。`tailCheck` 是 standing timer，每次 fire 后重新武装——这是 F-21 的修复（突发尾部落在一次性检查窗口之外就永远补偿不到）。
@@ -2252,7 +2252,7 @@ case <-tailCheck.C:
 
 ```go
 case engine.ChangeAddNode:
-    if err := c.applyAddNode(ctx, dag, evt.Change, &res); err != nil { ... }
+ if err := c.applyAddNode(ctx, dag, evt.Change, &res); err != nil { ... }
 
 // applyAddNode
 step := ch.Step
@@ -2262,10 +2262,10 @@ createdID, err := c.compileOrAdopt(ctx, dag, step, res)
 // compileOrAdopt
 id, err := c.fabric.CompileNode(ctx, ProjectStep(step))
 if err != nil {
-    if !errors.Is(err, taskfabric.ErrTaskExists) { return "", err }
-    c.addTracked(step.ID)
-    c.reconcileRefresh(dag, step.ID, step, res)
-    return "", nil
+ if !errors.Is(err, taskfabric.ErrTaskExists) { return "", err }
+ c.addTracked(step.ID)
+ c.reconcileRefresh(dag, step.ID, step, res)
+ return "", nil
 }
 c.addTracked(id)
 return id, nil
@@ -2278,9 +2278,9 @@ return id, nil
 ```go
 byID := make(map[string]PlanStep, len(steps))
 for _, s := range steps {
-    if s.ID == "" { return nil, ... "step id required" }
-    if _, dup := byID[s.ID]; dup { return nil, ... "duplicate step id" }
-    byID[s.ID] = s
+ if s.ID == "" { return nil, ... "step id required" }
+ if _, dup := byID[s.ID]; dup { return nil, ... "duplicate step id" }
+ byID[s.ID] = s
 }
 strategyID := f.strategyStampID()
 
@@ -2296,7 +2296,7 @@ if err := detectPlanCycle(steps, byID); err != nil { f.mu.Unlock(); return nil, 
 
 `resolveDependencies` 的解析顺序（`:220-232` 注释）：批内定义 > 已在织物里的任务 > 报错。批内定义优先，防止一批重定义的节点静默绑到早先编译留下的同 ID 任务上。
 
-新任务经 `createLocked` 以 `READY` 入织物（同 §11.3）。
+新任务经 `createLocked` 以 `READY` 入织物（同第11.3节）。
 
 **至此，LLM 的每个 tool call 都变成了织物里一个 READY 任务，依赖链正确。**
 
@@ -2311,19 +2311,19 @@ if err := detectPlanCycle(steps, byID); err != nil { f.mu.Unlock(); return nil, 
 ```go
 body, ok := argsFromPayload(task.Payload)[answerContentKey].(string)
 if !ok || strings.TrimSpace(body) == "" {
-    body = c.synthesizeAnswer(ctx, task)
+ body = c.synthesizeAnswer(ctx, task)
 }
 if strings.TrimSpace(body) == "" {
-    body = unansweredBody
-    c.logAnswerGap(task)
+ body = unansweredBody
+ c.logAnswerGap(task)
 }
 result := models.NewTaskResult(task.TaskID, task.AgentType)
 result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: body}}, "answer node terminated session")
 
 if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {
-    if err := c.sessions.ReleaseSession(task.SessionID); err != nil {
-        c.logger.Warn("agentfabric: answer released an unknown session", ...)
-    }
+ if err := c.sessions.ReleaseSession(task.SessionID); err != nil {
+ c.logger.Warn("agentfabric: answer released an unknown session", ...)
+ }
 }
 return &StepOutcome{Done: true, Result: result}, nil
 ```
@@ -2354,23 +2354,23 @@ return resp.Content
 
 ## 21. 终态与观测
 
-`RunQuantum` 返回后回到 `executeWithCandidates`（§13.3 末尾）：
+`RunQuantum` 返回后回到 `executeWithCandidates`（第13.3节 末尾）：
 
 ### 21.1 `endQuantumOutcome` — `scheduler_quantum.go:228`
 
 ```go
 if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
-    s.tracker.EndNeutral(winner)     // 抢占 fencing，良性
-    return
+ s.tracker.EndNeutral(winner) // 抢占 fencing，良性
+ return
 }
 if errors.Is(err, taskfabric.ErrIllegalState) || errors.Is(err, taskfabric.ErrTaskNotFound) ||
-   errors.Is(err, context.Canceled) {
-    s.tracker.EndNeutral(winner)     // 非 executor 的失败条件
-    return
+ errors.Is(err, context.Canceled) {
+ s.tracker.EndNeutral(winner) // 非 executor 的失败条件
+ return
 }
 s.tracker.End(winner, err == nil)
 if s.attribution != nil {
-    s.attribution.RecordWithMetrics(winner, capability, err == nil, latency, retries, 0)
+ s.attribution.RecordWithMetrics(winner, capability, err == nil, latency, retries, 0)
 }
 ```
 
@@ -2394,58 +2394,58 @@ if s.attribution != nil {
 
 ```
 HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
-  │
-  ├─ agent.go:543        ServeHTTP → 路由匹配 → authorize(authWrite)
-  ├─ routes_tasks.go:56  handleSubmitTask → 校验 kernel/capability
-  ├─ agent_kernel.go:186 submitPeerTask
-  ├─ submit.go:151       Submit
-  │    ├─ 归一 capability → "ares/plan"
-  │    ├─ session.go:104  Admit
-  │    │    ├─ session_registry.go:103  InitSession → NewL2Graph
-  │    │    │    └─ coordinator.go:695  SubscribeGraphEvents（订阅挂上）
-  │    │    └─ workflow_plan.go:207     CompileNode(root)
-  │    │         └─ fabric_lifecycle.go:15  Create → READY + task.created
-  │    └─ fabric_lifecycle.go:15        Create(提交任务) → READY
-  │
-  ├─ HTTP 202 Accepted（异步，不等执行）
-  │
-  ├─ scheduler.go:253    Run 循环被事件唤醒
-  ├─ dispatch.go:43      drain → ResumableTasks 返回 root
-  ├─ execute.go:52       execute → buildCandidates（fabric 活 agent）
-  ├─ execute.go:149      executeWithCandidates
-  │    ├─ schedule.go:24 Schedule → Pick（评分）→ Acquire（epoch=1）
-  │    ├─ lifecycle.go:78  Acquire → LEASED
-  │    ├─ quantum.go:72    RunQuantum
-  │    │    ├─ lifecycle.go:113  Start → RUNNING
-  │    │    ├─ quantum.go:38     buildQuantumStep 闭包
-  │    │    │    ├─ ToModelTask → models.Task
-  │    │    │    ├─ tenantctx.With(ctx, tenantID)
-  │    │    │    └─ fabric_executor.go:60  ExecuteStep
-  │    │    │         └─ executor.go:105  Agent.ExecuteStep
-  │    │    │              └─ l2graph.go:375  routerCognition
-  │    │    │                   └─ l2graph.go:421  rootCognition → Done(prompt)
-  │    │    ├─ quantum.go:72  Complete → COMPLETED
-  │    │    └─ 事件 task.completed 落库
-  │    └─ endQuantumOutcome → tracker.End
-  │
-  ├─ 下一轮 drain：提交任务（"ares/plan"）就绪
-  │    └─ 同样链路 → planner_cognition.go:235
-  │         ├─ chat.Chat 打 LLM
-  │         ├─ 无 tool calls → growAnswerNode
-  │         │    └─ l2graph.go:280  AddToolNode("answer")
-  │         │         └─ mutable_dag.go:77  AddNode → hub.Publish
-  │         │              └─ coordinator.go:734  收到事件
-  │         │                   └─ ApplyChange → compileOrAdopt → CompileNode
-  │         │                        └─ answer 任务 READY
-  │         └─ planner 量子 Done
-  │
-  ├─ 再一轮 drain：answer 任务被调度
-  │    └─ l2graph.go:539  answerCognition
-  │         ├─ synthesizeAnswer（若 content 不在 payload 里）
-  │         ├─ SetSuccess(body)
-  │         └─ ReleaseSession → 会话终结
-  │
-  └─ 全部任务 COMPLETED，会话释放
+ │
+ ├─ agent.go:543 ServeHTTP → 路由匹配 → authorize(authWrite)
+ ├─ routes_tasks.go:56 handleSubmitTask → 校验 kernel/capability
+ ├─ agent_kernel.go:186 submitPeerTask
+ ├─ submit.go:151 Submit
+ │ ├─ 归一 capability → "ares/plan"
+ │ ├─ session.go:104 Admit
+ │ │ ├─ session_registry.go:103 InitSession → NewL2Graph
+ │ │ │ └─ coordinator.go:695 SubscribeGraphEvents（订阅挂上）
+ │ │ └─ workflow_plan.go:207 CompileNode(root)
+ │ │ └─ fabric_lifecycle.go:15 Create → READY + task.created
+ │ └─ fabric_lifecycle.go:15 Create(提交任务) → READY
+ │
+ ├─ HTTP 202 Accepted（异步，不等执行）
+ │
+ ├─ scheduler.go:253 Run 循环被事件唤醒
+ ├─ dispatch.go:43 drain → ResumableTasks 返回 root
+ ├─ execute.go:52 execute → buildCandidates（fabric 活 agent）
+ ├─ execute.go:149 executeWithCandidates
+ │ ├─ schedule.go:24 Schedule → Pick（评分）→ Acquire（epoch=1）
+ │ ├─ lifecycle.go:78 Acquire → LEASED
+ │ ├─ quantum.go:72 RunQuantum
+ │ │ ├─ lifecycle.go:113 Start → RUNNING
+ │ │ ├─ quantum.go:38 buildQuantumStep 闭包
+ │ │ │ ├─ ToModelTask → models.Task
+ │ │ │ ├─ tenantctx.With(ctx, tenantID)
+ │ │ │ └─ fabric_executor.go:60 ExecuteStep
+ │ │ │ └─ executor.go:105 Agent.ExecuteStep
+ │ │ │ └─ l2graph.go:375 routerCognition
+ │ │ │ └─ l2graph.go:421 rootCognition → Done(prompt)
+ │ │ ├─ quantum.go:72 Complete → COMPLETED
+ │ │ └─ 事件 task.completed 落库
+ │ └─ endQuantumOutcome → tracker.End
+ │
+ ├─ 下一轮 drain：提交任务（"ares/plan"）就绪
+ │ └─ 同样链路 → planner_cognition.go:235
+ │ ├─ chat.Chat 打 LLM
+ │ ├─ 无 tool calls → growAnswerNode
+ │ │ └─ l2graph.go:280 AddToolNode("answer")
+ │ │ └─ mutable_dag.go:77 AddNode → hub.Publish
+ │ │ └─ coordinator.go:734 收到事件
+ │ │ └─ ApplyChange → compileOrAdopt → CompileNode
+ │ │ └─ answer 任务 READY
+ │ └─ planner 量子 Done
+ │
+ ├─ 再一轮 drain：answer 任务被调度
+ │ └─ l2graph.go:539 answerCognition
+ │ ├─ synthesizeAnswer（若 content 不在 payload 里）
+ │ ├─ SetSuccess(body)
+ │ └─ ReleaseSession → 会话终结
+ │
+ └─ 全部任务 COMPLETED，会话释放
 ```
 
 多轮工具调用时，中间多出若干次 `growToolNodes → AddToolNode → 事件 → CompileNode → tool 任务 READY → toolCognition.ExecuteStep → binder.CallTool` 的循环，直到 LLM 不再给 tool calls。
@@ -2460,7 +2460,7 @@ HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
 | Task Fabric vs Agent Fabric | `internal/fabric/task/`（任务状态机）vs `internal/fabric/agent/`（agent 能力/身份） |
 | `internal/runtime.Manager` vs `kernel.Orchestrator` | 前者管 agent 生命周期 + 插件总线；后者管系统组件图的控制面。`kernel/component.go:5-8` 有专门注释区分 |
 | `ares run` vs `ares serve` | 前者走 SDK 进程内路径（`runRun` 在 `main.go:335`，`sdk.NewRuntime` 在 `main.go:365`），**全程无 HTTP**；后者走 Bootstrap + HTTP 控制台。执行核都是 `agentruntime` |
-| **「动态图」** vs §19 的图投影 | `DynamicExecutor` / `WorkflowReloader` / `WorkflowService`（`docs/zh/features/dynamic-graph.md` 所述）是 Leader/Sub 时期的引擎，v0.3.x 已随该架构删除，**在 `cmd/` 与 `ares_bootstrap/` 中零引用，未接入 serve**。§19 穿的是任务织物的图事件投影，两者不是一回事。§4.7 建的进化 `MutableDAG` 又是第三样——那是给进化系统打补丁用的占位拓扑 |
+| **「动态图」** vs 第19节 的图投影 | `DynamicExecutor` / `WorkflowReloader` / `WorkflowService`（`docs/zh/features/dynamic-graph.md` 所述）是 Leader/Sub 时期的引擎，v0.3.x 已随该架构删除，**在 `cmd/` 与 `ares_bootstrap/` 中零引用，未接入 serve**。第19节 穿的是任务织物的图事件投影，两者不是一回事。第4.7节 建的进化 `MutableDAG` 又是第三样——那是给进化系统打补丁用的占位拓扑 |
 | GA genome vs 策略 | 一个 genome 承载一组策略参数（temperature / max_tokens 等），fitness 从共享 evidence store 读。策略的历史版本存 `evolution_strategies`（append-only，每版本一行），激活态由 ASM 管理 |
 | 量子 vs 任务 | 一个任务可以跑多个量子（yield→resume）。`t.Quantum` 是任务的执行深度，跨租约持有者累加 |
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// SpawnSpec is the syscall-style spawn request (design §13: spawn is a
+// SpawnSpec is the syscall-style spawn request (spawn is a
 // syscall, not an orchestration API). The Kernel validates quota / capability
 // / resource / policy, then creates the Agent + (optionally) a Task + the
 // parent-child provenance link.
@@ -45,7 +45,7 @@ type SpawnSpec struct {
 	ExperiencePrior any
 }
 
-// Spawn is the Kernel syscall that creates a new Agent (design §13: spawn
+// Spawn is the Kernel syscall that creates a new Agent (spawn
 // establishes provenance, NOT hierarchy). The new agent is a same-level
 // cognitive process (A ≡ B ≡ C): it can compete with its parent for tasks,
 // communicate as a peer, and survive its parent's death. The parent-child
@@ -232,7 +232,7 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 // Retire permanently decommissions an agent (graceful). The agent must NOT be
 // RUNNING — suspend it first. A retired agent cannot be resumed; its in-flight
 // tasks (if any) are reclaimed by the Runtime's recovery. Retiring a parent
-// does NOT kill its children (§13 invariant #1: parent death ≠ child death).
+// does NOT kill its children (invariant #1: parent death ≠ child death).
 // The agent's resource claim is released back to the quota.
 //
 // Args:
@@ -269,7 +269,7 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 
 // Kill forcefully terminates an agent (non-graceful; e.g. crash). Unlike
 // Retire, Kill works on any state and is the crash path. The agent entry is
-// removed from the registry, but its children survive (§13: Parent death ≠
+// removed from the registry, but its children survive (Parent death ≠
 // Child death). Children's Parent field is NOT cleared — it stays as
 // provenance. Task reclaim is the recovery subsystem's job. The agent's resource claim is
 // released back to the quota.
@@ -297,18 +297,18 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 	// NOTE: children of a killed agent survive. We do NOT clear their Parent
 	// field — it remains as provenance. The Process Tree edge is preserved
 	// in f.children so the parent's causal descendants are still discoverable
-	// even after the parent is gone (§13 invariant #1 + #7).
+	// even after the parent is gone (invariant #1 + #7).
 	f.mu.Unlock()
 	f.snapshots.save(agentID, snap)
 	f.record(ctx, a, EventAgentKilled, nil)
 	return nil
 }
 
-// Recover restores an agent's state from a checkpoint (design §13: cognitive
+// Recover restores an agent's state from a checkpoint (cognitive
 // state can independently survive). The agent must exist and be IDLE or
 // SUSPENDED. Recover replaces the agent's cognitive state with the provided
-// checkpoint — this is how a new Agent resumes a dead one's cognition (§13
-// invariant #2: Agent disposable, Task durable; a new agent picks up the
+// checkpoint — this is how a new Agent resumes a dead one's cognition
+// (invariant #2: Agent disposable, Task durable; a new agent picks up the
 // cognitive checkpoint).
 //
 // Args:

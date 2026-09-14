@@ -679,7 +679,7 @@ func (c *CompileCoordinator) applyReplaceNode(ctx context.Context, dag *engine.M
 // polled after each delivered event plus on a standing light tick.
 //
 // The tail check used to be a one-shot timer armed by delivery — which left a
-// dead window (F-21, docs/reviews/0.3.1-final-deep-review.md §0.1): a burst
+// dead window (F-21, docs/reviews/0.3.1-final-deep-review.md): a burst
 // split by scheduler delay could drop its tail AFTER the one-shot fired with
 // zero recorded drops and with no subsequent delivery to reveal the gap; the
 // session then stalled forever (tail nodes never materialized as fabric

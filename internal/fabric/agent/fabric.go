@@ -44,7 +44,7 @@ type EventSink interface {
 	Emit(ctx context.Context, ev AgentEvent) error
 }
 
-// AgentEvent is one immutable lifecycle record (design §7: full state
+// AgentEvent is one immutable lifecycle record (full state
 // rebuild from the event stream).
 type AgentEvent struct {
 	Type     AgentEventType
@@ -187,7 +187,7 @@ func (f *Fabric) IsIdle(agentID string) bool {
 
 // Children returns the child agent IDs of a parent (Process Tree: spawn
 // causality). This is PROVENANCE ONLY — it does NOT imply a permission
-// hierarchy (§13 invariant #1: A ≡ B ≡ C). Returns nil for a leaf or unknown
+// hierarchy (invariant #1: A ≡ B ≡ C). Returns nil for a leaf or unknown
 // agent.
 func (f *Fabric) Children(parentID string) []string {
 	f.mu.Lock()
@@ -229,7 +229,7 @@ func (f *Fabric) record(ctx context.Context, a *Agent, typ AgentEventType, paylo
 }
 
 // AgentView is a read-only copy of an agent's scheduling-relevant state —
-// the runtime introspection panel's Domain C row (monitoring.md §2.2).
+// the runtime introspection panel's Domain C row (monitoring.md).
 // Named AgentView to avoid clashing with the revival-record AgentSnapshot.
 type AgentView struct {
 	// Identity is the stable agent identifier.

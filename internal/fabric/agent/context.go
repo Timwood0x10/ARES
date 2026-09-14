@@ -86,7 +86,7 @@ func decodeCognitiveMap(m map[string]any) (CognitiveState, error) {
 	return CognitiveState{Context: m}, nil
 }
 
-// ContextLayer identifies the three context tiers (design §13: Context three
+// ContextLayer identifies the three context tiers (Context three
 // layers — do not share one brain).
 type ContextLayer int
 
@@ -145,8 +145,8 @@ func (f *Fabric) TaskContext(agentID string) (map[string]any, error) {
 }
 
 // SetPrivate stores a key in the agent's Private State (scratchpad). This
-// layer NEVER leaks to the Task Shared State or to other agents (§13
-// invariant #5 + #6).
+// layer NEVER leaks to the Task Shared State or to other agents
+// (invariant #5 + #6).
 func (f *Fabric) SetPrivate(agentID, key string, val any) error {
 	f.mu.Lock()
 	a, ok := f.agents[agentID]
@@ -234,7 +234,7 @@ func (f *Fabric) SetCognitiveState(agentID string, cs CognitiveState) error {
 
 // CheckpointCognitive returns a snapshot of the agent's cognitive state for
 // durable storage (the Runtime does NOT depend on hidden CoT — only on this
-// checkpointable state; §13 invariant #5). The snapshot is a copy: mutating
+// checkpointable state; invariant #5). The snapshot is a copy: mutating
 // it does not affect the live agent.
 func (f *Fabric) CheckpointCognitive(agentID string) (CognitiveState, error) {
 	return f.CognitiveState(agentID)
