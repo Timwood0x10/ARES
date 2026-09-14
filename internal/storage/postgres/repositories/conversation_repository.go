@@ -396,14 +396,21 @@ func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenant
 // CleanupExpired removes conversation messages that have expired.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // Returns number of deleted messages or error if operation fails.
-func (r *ConversationRepository) CleanupExpired(ctx context.Context) (int64, error) {
+func (r *ConversationRepository) CleanupExpired(ctx context.Context, tenantID string) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's conversations (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM conversations
 		WHERE expires_at IS NOT NULL AND expires_at < NOW()
+		  AND tenant_id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query)
+	result, err := r.db.ExecContext(ctx, query, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired conversations")
 	}

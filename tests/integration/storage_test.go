@@ -60,7 +60,7 @@ func TestEmbeddingQueueEnqueueAndFetch(t *testing.T) {
 			assert.Equal(t, embeddingConfig.DefaultVersion, pending.Version)
 
 			// Mark the task as completed.
-			require.NoError(t, queue.MarkCompleted(ctx, pending.TaskID))
+			require.NoError(t, queue.MarkCompleted(ctx, pending.Table, pending.TaskID))
 			break
 		}
 	}
@@ -178,7 +178,7 @@ func TestEmbeddingQueueMarkFailed(t *testing.T) {
 				}
 			}
 		}
-		require.NoError(t, queue.MarkFailed(ctx, targetTask.TaskID, "test error"))
+		require.NoError(t, queue.MarkFailed(ctx, targetTask.Table, targetTask.TaskID, "test error"))
 	}
 
 	// Verify the task was moved to dead letter queue.

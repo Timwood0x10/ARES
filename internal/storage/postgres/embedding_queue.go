@@ -261,13 +261,14 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 		return nil, errors.Wrap(err, "iterate embedding tasks")
 	}
 
-	// Mark fetched tasks as processing within the same transaction.
+	// Mark fetched tasks as processing within the same transaction, scoped by
+	// the source-row identity like every Mark* statement.
 	for _, task := range tasks {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE embedding_queue
 			SET status = 'processing', processing_at = NOW()
-			WHERE task_id = $1
-		`, task.TaskID)
+			WHERE task_id = $1 AND table_name = $2
+		`, task.TaskID, task.Table)
 		if err != nil {
 			return nil, errors.Wrap(err, "mark task processing")
 		}
@@ -282,22 +283,40 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	return tasks, nil
 }
 
+// markProcessingSQL addresses a queue row by its source-row identity
+// (table_name, task_id) — the two fixed components of dedupe_key (see
+// generateDedupeKey). Scoping by task_id alone would touch every table's
+// entry for that id (S-9).
+const markProcessingSQL = `
+	UPDATE embedding_queue
+	SET status = 'processing', processing_at = NOW()
+	WHERE task_id = $2 AND table_name = $1
+`
+
+// markCompletedSQL carries the same (table_name, task_id) scoping as
+// markProcessingSQL.
+const markCompletedSQL = `
+	UPDATE embedding_queue
+	SET status = 'completed', completed_at = NOW()
+	WHERE task_id = $2 AND table_name = $1
+`
+
 // MarkProcessing marks a task as being processed.
 //
-// task_id addresses exactly one queue row: dedupe_key is derived solely from
-// (table, task_id, tenant_id), so a source row can never own two entries. All
-// Mark* statements below rely on that invariant — see generateDedupeKey.
+// (table_name, task_id) addresses exactly one queue row: dedupe_key is
+// derived solely from (table, task_id, tenant_id), so a source row can never
+// own two entries. All Mark* statements below rely on that invariant — see
+// generateDedupeKey.
 // Args:
 // ctx - database operation context.
-// taskID - task identifier.
+// tableName - source table the task's row belongs to; empty is rejected.
+// taskID - task identifier; empty is rejected.
 // Returns error if update fails.
-func (q *EmbeddingQueue) MarkProcessing(ctx context.Context, taskID string) error {
-	_, err := q.db.Exec(ctx, `
-		UPDATE embedding_queue
-		SET status = 'processing', processing_at = NOW()
-		WHERE task_id = $1
-	`, taskID)
-
+func (q *EmbeddingQueue) MarkProcessing(ctx context.Context, tableName, taskID string) error {
+	if tableName == "" || taskID == "" {
+		return fmt.Errorf("mark processing: table name and task id are required: %w", errors.ErrInvalidArgument)
+	}
+	_, err := q.db.Exec(ctx, markProcessingSQL, tableName, taskID)
 	if err != nil {
 		return errors.Wrap(err, "mark task processing")
 	}
@@ -308,15 +327,14 @@ func (q *EmbeddingQueue) MarkProcessing(ctx context.Context, taskID string) erro
 // MarkCompleted marks a task as successfully completed.
 // Args:
 // ctx - database operation context.
-// taskID - task identifier.
+// tableName - source table the task's row belongs to; empty is rejected.
+// taskID - task identifier; empty is rejected.
 // Returns error if update fails.
-func (q *EmbeddingQueue) MarkCompleted(ctx context.Context, taskID string) error {
-	_, err := q.db.Exec(ctx, `
-		UPDATE embedding_queue
-		SET status = 'completed', completed_at = NOW()
-		WHERE task_id = $1
-	`, taskID)
-
+func (q *EmbeddingQueue) MarkCompleted(ctx context.Context, tableName, taskID string) error {
+	if tableName == "" || taskID == "" {
+		return fmt.Errorf("mark completed: table name and task id are required: %w", errors.ErrInvalidArgument)
+	}
+	_, err := q.db.Exec(ctx, markCompletedSQL, tableName, taskID)
 	if err != nil {
 		return errors.Wrap(err, "mark task completed")
 	}
@@ -334,10 +352,14 @@ func (q *EmbeddingQueue) MarkCompleted(ctx context.Context, taskID string) error
 // causing infinite retries.
 // Args:
 // ctx - database operation context.
-// taskID - task identifier.
+// tableName - source table the task's row belongs to; empty is rejected.
+// taskID - task identifier; empty is rejected.
 // errMessage - error message to store.
 // Returns error if update fails or task exceeded max retries.
-func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessage string) error {
+func (q *EmbeddingQueue) MarkFailed(ctx context.Context, tableName, taskID, errMessage string) error {
+	if tableName == "" || taskID == "" {
+		return fmt.Errorf("mark failed: table name and task id are required: %w", errors.ErrInvalidArgument)
+	}
 	tx, err := q.db.Begin(ctx)
 	if err != nil {
 		return errors.Wrap(err, "begin mark failed transaction")
@@ -355,8 +377,8 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 	// MarkFailed calls block until we commit, preventing lost updates.
 	var retryCount int
 	err = tx.QueryRowContext(ctx, `
-		SELECT retry_count FROM embedding_queue WHERE task_id = $1 FOR UPDATE
-	`, taskID).Scan(&retryCount)
+		SELECT retry_count FROM embedding_queue WHERE task_id = $1 AND table_name = $2 FOR UPDATE
+	`, taskID, tableName).Scan(&retryCount)
 
 	if err == sql.ErrNoRows {
 		return errors.Wrap(errors.ErrRecordNotFound, "get retry count")
@@ -380,14 +402,14 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 			INSERT INTO embedding_dead_letter
 			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, error_message, retry_count, created_at)
 			SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, $1, retry_count, queued_at
-			FROM embedding_queue WHERE task_id = $2
-		`, errMessage, taskID)
+			FROM embedding_queue WHERE task_id = $2 AND table_name = $3
+		`, errMessage, taskID, tableName)
 		if err != nil {
 			return errors.Wrap(err, "move to dead letter")
 		}
 
 		// Delete from main queue.
-		_, err = tx.ExecContext(ctx, `DELETE FROM embedding_queue WHERE task_id = $1`, taskID)
+		_, err = tx.ExecContext(ctx, `DELETE FROM embedding_queue WHERE task_id = $1 AND table_name = $2`, taskID, tableName)
 		if err != nil {
 			return errors.Wrap(err, "delete from queue")
 		}
@@ -396,8 +418,8 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 		_, err = tx.ExecContext(ctx, `
 			UPDATE embedding_queue
 			SET status = 'pending', retry_count = retry_count + 1, error_message = $1
-			WHERE task_id = $2
-		`, errMessage, taskID)
+			WHERE task_id = $2 AND table_name = $3
+		`, errMessage, taskID, tableName)
 		if err != nil {
 			return errors.Wrap(err, "mark task failed")
 		}

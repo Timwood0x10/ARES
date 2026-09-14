@@ -205,11 +205,12 @@ var coreMigrationStatements = []string{
 	// strategy, because GetHistory must be able to return prior versions — a
 	// model that a VARCHAR primary key cannot express.
 	//
-	// NOTE: the storage-layer StrategyRepository (internal/storage/postgres/
-	///repositories) queries this table with a different, incompatible schema
-	// (id VARCHAR PK, strategy_mutation_type, updated_at) but is not wired
-	// anywhere in production. It must not be treated as a second schema
-	// authority; if it is ever wired it must be ported to this shape.
+	// NOTE: the storage-layer StrategyRepository that assumed a one-row-per-
+	// strategy schema (id VARCHAR PK, strategy_mutation_type, updated_at) was
+	// deleted as unwired dead code — it had no production caller and could not
+	// express the append-only history this store needs. Do not reintroduce a
+	// VARCHAR-keyed repository against this table; this shape is the only
+	// schema authority.
 	//
 	// Pre-existing deployments whose evolution_strategies was created with the
 	// older incompatible shape (VARCHAR id PK, no strategy_id column) keep

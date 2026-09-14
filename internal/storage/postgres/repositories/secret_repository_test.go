@@ -486,7 +486,7 @@ func TestSecretRepository_CleanupExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup expired secrets
-	deleted, err := repo.CleanupExpired(ctx)
+	deleted, err := repo.CleanupExpired(ctx, "tenant-1")
 	require.NoError(t, err)
 
 	// Note: We don't assert specific count as it depends on other test data

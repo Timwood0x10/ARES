@@ -864,16 +864,23 @@ func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, tenantI
 // CleanupExpired removes knowledge chunks that are no longer needed.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // olderThan - cutoff time for deletion.
 // Returns number of deleted chunks or error if operation fails.
-func (r *KnowledgeRepository) CleanupExpired(ctx context.Context, olderThan time.Time) (int64, error) {
+func (r *KnowledgeRepository) CleanupExpired(ctx context.Context, tenantID string, olderThan time.Time) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's chunks, and the maintenance worker runs it on a schedule (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM knowledge_chunks_1024
 		WHERE updated_at < $1
 		  AND access_count < 10
+		  AND tenant_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query, olderThan)
+	result, err := r.db.ExecContext(ctx, query, olderThan, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired chunks")
 	}

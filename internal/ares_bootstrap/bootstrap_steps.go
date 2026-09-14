@@ -45,13 +45,15 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			if deps.ExpRepo == nil {
 				deps.ExpRepo = expRepo
 			}
-			// Register the repo's decay purge with the maintenance
-			// worker so decayed experience rows are deleted, not just filtered
-			// on read. The concrete *ExperienceRepository implements
-			// CleanupExpired; the fat interface intentionally stays untouched.
-			if cleaner, ok := expRepo.(ExpiryCleaner); ok {
+			// Register the repo's decay purge with the maintenance worker so
+			// decayed experience rows are deleted, not just filtered on read.
+			// CleanupExpired is tenant-scoped (S-10), so the concrete repo no
+			// longer satisfies ExpiryCleaner directly — tenantCleanupFunc binds
+			// the maintenance tenant; the fat interface stays untouched.
+			if concrete, ok := expRepo.(*repositories.ExperienceRepository); ok {
 				comp.ExpiryCleaners = append(comp.ExpiryCleaners,
-					NamedExpiryCleaner{Name: storage_models.ExperiencesTable, Cleaner: cleaner})
+					NamedExpiryCleaner{Name: storage_models.ExperiencesTable,
+						Cleaner: tenantCleanupFunc(concrete.CleanupExpired)})
 			}
 			// Register the other retention-managed
 			// tables (sessions, conversations, secrets, knowledge_chunks) so

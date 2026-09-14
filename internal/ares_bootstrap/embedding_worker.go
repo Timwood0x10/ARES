@@ -57,8 +57,8 @@ type embeddingEmbedder interface {
 // embedding queue. *postgres.EmbeddingQueue satisfies this.
 type embeddingQueueClient interface {
 	FetchPendingTasks(ctx context.Context, limit int) ([]*postgres.EmbeddingTask, error)
-	MarkCompleted(ctx context.Context, taskID string) error
-	MarkFailed(ctx context.Context, taskID string, errMessage string) error
+	MarkCompleted(ctx context.Context, tableName, taskID string) error
+	MarkFailed(ctx context.Context, tableName, taskID, errMessage string) error
 	Reconcile(ctx context.Context, threshold time.Duration) error
 	PurgeDeadLetters(ctx context.Context, age time.Duration) (int64, error)
 }
@@ -229,7 +229,7 @@ func processEmbeddingTask(
 	vec, err := embClient.Embed(ctx, task.Content)
 	if err != nil {
 		failMsg := err.Error()
-		if markErr := queue.MarkFailed(ctx, task.TaskID, failMsg); markErr != nil {
+		if markErr := queue.MarkFailed(ctx, task.Table, task.TaskID, failMsg); markErr != nil {
 			logger.ErrorContext(ctx, "mark embedding task failed",
 				"task_id", task.TaskID, "error", markErr)
 		}
@@ -250,7 +250,7 @@ func processEmbeddingTask(
 	}
 
 	if err := writer.writeEmbedding(ctx, task, vec, model, version); err != nil {
-		if markErr := queue.MarkFailed(ctx, task.TaskID, err.Error()); markErr != nil {
+		if markErr := queue.MarkFailed(ctx, task.Table, task.TaskID, err.Error()); markErr != nil {
 			logger.ErrorContext(ctx, "mark embedding task failed after write error",
 				"task_id", task.TaskID, "error", markErr)
 		}
@@ -259,7 +259,7 @@ func processEmbeddingTask(
 		return
 	}
 
-	if err := queue.MarkCompleted(ctx, task.TaskID); err != nil {
+	if err := queue.MarkCompleted(ctx, task.Table, task.TaskID); err != nil {
 		logger.ErrorContext(ctx, "mark embedding task completed failed",
 			"task_id", task.TaskID, "error", err)
 		return

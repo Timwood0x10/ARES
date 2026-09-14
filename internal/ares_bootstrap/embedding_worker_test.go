@@ -47,7 +47,7 @@ func (q *fakeQueue) FetchPendingTasks(_ context.Context, limit int) ([]*postgres
 	return batch, nil
 }
 
-func (q *fakeQueue) MarkCompleted(_ context.Context, taskID string) error {
+func (q *fakeQueue) MarkCompleted(_ context.Context, _, taskID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.markErr != nil {
@@ -57,7 +57,7 @@ func (q *fakeQueue) MarkCompleted(_ context.Context, taskID string) error {
 	return nil
 }
 
-func (q *fakeQueue) MarkFailed(_ context.Context, taskID, errMessage string) error {
+func (q *fakeQueue) MarkFailed(_ context.Context, _, taskID, errMessage string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.markErr != nil {

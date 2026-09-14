@@ -228,13 +228,6 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, tenantID, i
 // tenant_id is part of the schema because Search filters on it
 // (`WHERE tenant_id = $3`); a table without the column made every search fail
 // with `column "tenant_id" does not exist`.
-//
-// TODO(tech-debt): DeleteEmbedding still carries no tenant parameter, so a
-// delete is keyed on id alone and does not respect the tenant boundary that
-// Search() enforces. AddEmbedding was made tenant-scoped (breaking
-// storage.VectorStore change, decision locked in review); extending
-// DeleteEmbedding the same way stays deferred because it is not part of the
-// interface.
 func vectorCollectionDDL(table string, dimension int) string {
 	return fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (

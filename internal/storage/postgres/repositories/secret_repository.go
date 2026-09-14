@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/adapters"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
@@ -280,14 +281,21 @@ func (r *SecretRepository) UpdateMetadata(ctx context.Context, key, tenantID str
 // CleanupExpired removes secrets that have expired.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // Returns number of deleted secrets or error if operation fails.
-func (r *SecretRepository) CleanupExpired(ctx context.Context) (int64, error) {
+func (r *SecretRepository) CleanupExpired(ctx context.Context, tenantID string) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's secrets — the most sensitive table in the schema (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM secrets
 		WHERE expires_at IS NOT NULL AND expires_at < NOW()
+		  AND tenant_id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query)
+	result, err := r.db.ExecContext(ctx, query, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired secrets")
 	}

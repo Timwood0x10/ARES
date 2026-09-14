@@ -434,7 +434,7 @@ func TestExperienceRepository_CleanupExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup expired experiences
-	count, err := repo.CleanupExpired(ctx)
+	count, err := repo.CleanupExpired(ctx, "tenant-1")
 	require.NoError(t, err)
 	assert.Greater(t, count, int64(0))
 

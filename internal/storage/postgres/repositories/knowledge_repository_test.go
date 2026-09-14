@@ -967,7 +967,7 @@ func TestKnowledgeRepository_CleanupExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup chunks older than 24 hours
-	deleted, err := repo.CleanupExpired(ctx, time.Now().Add(-24*time.Hour))
+	deleted, err := repo.CleanupExpired(ctx, "tenant-1", time.Now().Add(-24*time.Hour))
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, deleted, int64(1), "Expected at least 1 chunk to be deleted")
 
@@ -1011,7 +1011,7 @@ func TestKnowledgeRepository_CleanupExpired_NoChunks(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup chunks older than 24 hours (none should be deleted)
-	deleted, err := repo.CleanupExpired(ctx, time.Now().Add(-24*time.Hour))
+	deleted, err := repo.CleanupExpired(ctx, "tenant-1", time.Now().Add(-24*time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), deleted, "Expected no chunks to be deleted")
 

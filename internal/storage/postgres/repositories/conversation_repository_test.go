@@ -542,7 +542,7 @@ func TestConversationRepository_CleanupExpired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup expired conversations
-	deleted, err := repo.CleanupExpired(ctx)
+	deleted, err := repo.CleanupExpired(ctx, "tenant-1")
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), deleted)
 
@@ -584,7 +584,7 @@ func TestConversationRepository_CleanupExpired_NoExpiration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup expired conversations - should not delete non-expired conversation
-	deleted, err := repo.CleanupExpired(ctx)
+	deleted, err := repo.CleanupExpired(ctx, "tenant-1")
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), deleted)
 
