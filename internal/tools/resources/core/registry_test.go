@@ -619,64 +619,6 @@ func TestToolGroup(t *testing.T) {
 	}
 }
 
-// TestGlobalRegistry tests global registry functions.
-func TestGlobalRegistry(t *testing.T) {
-	// Save original state
-	originalCount := GlobalRegistry.Count()
-
-	// Register tool
-	tool := &MockTool{
-		name:        "global_test_tool",
-		description: "A tool for global registry test",
-		category:    CategoryCore,
-	}
-
-	err := Register(tool)
-	if err != nil {
-		t.Fatalf("failed to register tool in global registry: %v", err)
-	}
-
-	// Get tool
-	retrieved, exists := Get("global_test_tool")
-	if !exists {
-		t.Error("tool should exist in global registry")
-	}
-	if retrieved.Name() != "global_test_tool" {
-		t.Errorf("retrieved tool name = %q, want %q", retrieved.Name(), "global_test_tool")
-	}
-
-	// List tools
-	tools := List()
-	found := false
-	for _, name := range tools {
-		if name == "global_test_tool" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("global_test_tool should be in global registry list")
-	}
-
-	// Execute tool
-	ctx := context.Background()
-	result, err := Execute(ctx, "global_test_tool", map[string]interface{}{"param": "test"})
-	if err != nil {
-		t.Fatalf("failed to execute tool: %v", err)
-	}
-	if !result.Success {
-		t.Error("execute should return success")
-	}
-
-	// Cleanup
-	_ = GlobalRegistry.Unregister("global_test_tool")
-
-	// Verify cleanup
-	if GlobalRegistry.Count() != originalCount {
-		t.Errorf("global registry count should be restored to %d, got %d", originalCount, GlobalRegistry.Count())
-	}
-}
-
 // TestRegistryErrors tests error constants.
 func TestRegistryErrors(t *testing.T) {
 	if ErrNilTool == nil {

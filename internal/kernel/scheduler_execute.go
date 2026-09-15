@@ -383,10 +383,7 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 		})
 	}
 	qg.Go(func() error {
-		interval := s.ttl / 3
-		if interval < 5*time.Second {
-			interval = 5 * time.Second
-		}
+		interval := leaseHeartbeatInterval(s.ttl)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -404,4 +401,28 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 		}
 	})
 	return stop
+}
+
+// leaseHeartbeatInterval derives the renewal cadence from the lease TTL
+// (F-04): ttl/3 gives three renewal chances per lease and is floored at 5s
+// for normal TTLs. A ttl SHORTER than 15s must NOT take that floor — the
+// first heartbeat would fire after the lease expired and recovery would
+// requeue a still-running quantum — so short TTLs keep their ttl/3 cadence
+// (chaos/recovery demos configure lease_ttl as low as 2s). A zero or
+// negative ttl falls back to the legacy 5s floor; callers configuring ttl
+// that low have no lease semantics to protect anyway.
+func leaseHeartbeatInterval(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return 5 * time.Second
+	}
+	interval := ttl / 3
+	if interval >= 5*time.Second {
+		return interval
+	}
+	// Short TTL: cadence shrinks with the lease; cap at ttl/2 so the first
+	// renewal always lands inside the lease window.
+	if interval > ttl/2 {
+		return ttl / 2
+	}
+	return interval
 }

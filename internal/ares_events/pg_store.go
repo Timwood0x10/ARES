@@ -426,7 +426,11 @@ func buildAllReadQuery(opts ReadOptions) (string, []any) {
 	if opts.Direction == ReadDescending {
 		direction = "DESC"
 	}
-	query += fmt.Sprintf(" ORDER BY created_at %s", direction)
+	// version is the per-stream monotonic tie-break for equal created_at
+	// (F-03, same rationale as the memory store): a timestamp-only ORDER BY
+	// let a later-lifecycle event sort ahead of an earlier one on a tie and
+	// restore's fold reset a terminal task back to READY.
+	query += fmt.Sprintf(" ORDER BY created_at %s, version %s, id %s", direction, direction, direction)
 
 	if opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argIdx)

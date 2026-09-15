@@ -3,6 +3,7 @@ package memorystore
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 func TestStoreSaveInputIsolation(t *testing.T) {
 	s := New()
 	obj := &knowledge.KnowledgeObject{
+		Namespace:  "default",
 		ID:         "obj-1",
 		Summary:    "original",
 		Raw:        []byte("raw-original"),
@@ -34,7 +36,7 @@ func TestStoreSaveInputIsolation(t *testing.T) {
 	obj.Metadata["k"] = "mutated"
 	obj.Tags[0] = "mutated"
 
-	got, err := s.Get(context.Background(), "", "obj-1")
+	got, err := s.Get(context.Background(), "default", "obj-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -50,6 +52,7 @@ func TestStoreSaveInputIsolation(t *testing.T) {
 func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	s := New()
 	obj := &knowledge.KnowledgeObject{
+		Namespace:  "default",
 		ID:         "obj-1",
 		Type:       knowledge.ObjectMemory,
 		Summary:    "searchable summary",
@@ -63,7 +66,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	}
 
 	// Mutate through every read path.
-	g, _ := s.Get(context.Background(), "", "obj-1")
+	g, _ := s.Get(context.Background(), "default", "obj-1")
 	g.Summary = "via-get"
 	g.Metadata["k"] = "via-get"
 	g.Raw[0] = 'X'
@@ -74,7 +77,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	}
 	q[0].Summary = "via-query"
 
-	sr, _ := s.Search(context.Background(), "", "searchable", "", 10)
+	sr, _ := s.Search(context.Background(), "default", "searchable", "", 10)
 	if len(sr) != 1 {
 		t.Fatalf("Search: expected 1 result, got %d", len(sr))
 	}
@@ -86,7 +89,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	}
 	lb[0].Summary = "via-list"
 
-	final, _ := s.Get(context.Background(), "", "obj-1")
+	final, _ := s.Get(context.Background(), "default", "obj-1")
 	if final.Summary != "searchable summary" || final.Metadata["k"] != "v" || final.Raw[0] != 'r' {
 		t.Errorf("mutations through returned objects corrupted the stored copy: %+v", final)
 	}
@@ -101,7 +104,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 // before escaping the RLock.
 func TestStoreHybridSearchResultsAreCopies(t *testing.T) {
 	s := New()
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID:         "obj-1",
 		Type:       knowledge.ObjectMemory,
 		Summary:    "alpha beta",
@@ -129,7 +132,7 @@ func TestStoreHybridSearchResultsAreCopies(t *testing.T) {
 	res[0].Object.Summary = "mutated"
 	res[0].Object.Raw = []byte("junk")
 
-	final, _ := s.Get(context.Background(), "", "obj-1")
+	final, _ := s.Get(context.Background(), "default", "obj-1")
 	if final.Summary != "alpha beta" {
 		t.Errorf("HybridSearch result mutation corrupted the stored object: %q", final.Summary)
 	}
@@ -147,14 +150,15 @@ func TestStoreConcurrentSaveGetUnderRace(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
 				obj := &knowledge.KnowledgeObject{
-					ID:       "obj-shared",
-					Summary:  "summary",
-					Raw:      []byte("payload"),
-					Metadata: map[string]any{"w": w, "i": i},
+					Namespace: "default",
+					ID:        "obj-shared",
+					Summary:   "summary",
+					Raw:       []byte("payload"),
+					Metadata:  map[string]any{"w": w, "i": i},
 				}
 				_ = s.Save(context.Background(), obj)
 				obj.Metadata["mutated"] = true // post-Save mutation
-				if got, err := s.Get(context.Background(), "", "obj-shared"); err == nil {
+				if got, err := s.Get(context.Background(), "default", "obj-shared"); err == nil {
 					_ = got.Summary
 				}
 				_, _ = s.Query(context.Background(), knowledge.Query{})
@@ -232,5 +236,104 @@ func TestSaveRefusesCrossNamespaceOverwrite(t *testing.T) {
 	// The caller's own namespace gained nothing either: the Save failed whole.
 	if _, err := s.Get(ctx, "tenant-b", "obj-1"); !errors.Is(err, ErrObjectNotFound) {
 		t.Fatalf("refused Save must not create the row in tenant-b, got %v", err)
+	}
+}
+
+// TestCrossTenantLifecycleWriteRefused locks the tenant predicate on
+// UpdateStatus and Promote. Before the fix both took only an id and matched on
+// it alone, so any caller holding an object ID could flip another tenant's
+// lifecycle status or promote it to active — a cross-tenant WRITE, which is
+// strictly worse than the read/delete exposure closed earlier.
+//
+// The row must be left untouched, and the error must be ErrObjectNotFound so
+// the caller cannot tell "missing" from "foreign".
+func TestCrossTenantLifecycleWriteRefused(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	obj := &knowledge.KnowledgeObject{
+		ID: "cand", Namespace: "tenant-a", Summary: "candidate",
+		Status: knowledge.StatusCandidate,
+	}
+	if err := s.Save(ctx, obj); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := s.UpdateStatus(ctx, "tenant-b", "cand", knowledge.StatusActive); !errors.Is(err, ErrObjectNotFound) {
+		t.Errorf("cross-tenant UpdateStatus = %v, want ErrObjectNotFound", err)
+	}
+	if err := s.Promote(ctx, "tenant-b", "cand", &knowledge.Quality{ExtractionScore: 0.9}); !errors.Is(err, ErrObjectNotFound) {
+		t.Errorf("cross-tenant Promote = %v, want ErrObjectNotFound", err)
+	}
+
+	got, err := s.Get(ctx, "tenant-a", "cand")
+	if err != nil {
+		t.Fatalf("owning-tenant Get after refused writes: %v", err)
+	}
+	if got.Status != knowledge.StatusCandidate {
+		t.Errorf("Status = %q, want %q (refused writes must not mutate)", got.Status, knowledge.StatusCandidate)
+	}
+	if got.Quality != nil {
+		t.Errorf("Quality = %+v, want nil (refused Promote must not record)", got.Quality)
+	}
+
+	// The owning tenant can still transition.
+	if err := s.UpdateStatus(ctx, "tenant-a", "cand", knowledge.StatusActive); err != nil {
+		t.Errorf("owning-tenant UpdateStatus: %v", err)
+	}
+}
+
+// TestSaveRejectsEmptyNamespace pins that Save refuses a row with no
+// namespace. Every read path (Get/Delete/Search/UpdateStatus/Promote) filters
+// on namespace, and StoreProvider.namespaceFor falls back through
+// Scope.Namespaces -> tenantctx -> provider default and never yields empty —
+// so a row saved without one is silently unreachable rather than merely
+// unindexed. This is what distill_memory did before it stamped a namespace:
+// the write succeeded and every later read missed it.
+//
+// An empty ID is still reported as the ID error, so the checks keep that
+// order.
+func TestSaveRejectsEmptyNamespace(t *testing.T) {
+	s := New()
+	err := s.Save(context.Background(), &knowledge.KnowledgeObject{ID: "x", Summary: "no namespace"})
+	if err == nil || !strings.Contains(err.Error(), "namespace cannot be empty") {
+		t.Fatalf("Save with empty namespace = %v, want a namespace error", err)
+	}
+	if len(s.objects) != 0 {
+		t.Fatalf("nothing must be stored, got %d objects", len(s.objects))
+	}
+
+	// ID validation still wins when both are empty.
+	err = s.Save(context.Background(), &knowledge.KnowledgeObject{})
+	if err == nil || !strings.Contains(err.Error(), "ID cannot be empty") {
+		t.Fatalf("Save with empty ID = %v, want the ID error", err)
+	}
+}
+
+// TestGetRepresentationCrossTenantRefused locks F-05: a representation is
+// reachable only through its owning object's tenant. A foreign tenant's
+// vector read must be indistinguishable from a missing one
+// (ErrObjectNotFound), matching the Get/Delete anti-probing contract.
+func TestGetRepresentationCrossTenantRefused(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	if err := s.Save(ctx, &knowledge.KnowledgeObject{
+		Namespace: "tenant-a", ID: "vec-obj", Summary: "vectors", Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("Save owner: %v", err)
+	}
+	if err := s.SaveRepresentation(ctx, &knowledge.Representation{
+		ID: "rep-1", ObjectID: "vec-obj", Model: "m", Dimension: 2, Vector: []float32{0.1, 0.2},
+	}); err != nil {
+		t.Fatalf("SaveRepresentation: %v", err)
+	}
+
+	// Owning tenant reads it.
+	got, err := s.GetRepresentation(ctx, "tenant-a", "vec-obj", "m")
+	if err != nil || got == nil {
+		t.Fatalf("owning tenant must read its representation, got %v / %v", got, err)
+	}
+	// Foreign tenant gets not-found (not an error disclosing existence).
+	if _, err := s.GetRepresentation(ctx, "tenant-b", "vec-obj", "m"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("cross-tenant GetRepresentation = %v, want ErrObjectNotFound", err)
 	}
 }

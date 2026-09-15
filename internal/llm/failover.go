@@ -299,6 +299,10 @@ func (fc *FailoverClient) generateAttempting(ctx context.Context, call func(*Cli
 // successful stream. Failed providers are cooled down with the same policy
 // as Generate (rate-limit = full cooldown, other errors = shorter cooldown).
 //
+// Note: no production caller invokes GenerateStream yet — it is a
+// capability reserve, exercised by tests but unwired from serve (review
+// finding F-10). Wire it before advertising streaming support.
+//
 // The stream itself runs under the caller's context (a streaming-specific
 // deadline), NOT the request-level fc.timeout: a fixed 30s request timeout
 // would cut long outputs off mid-stream. fc.timeout is only used to
@@ -373,10 +377,13 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		var first StreamChunk
 		select {
 		case chunk, ok := <-ch:
-			// Stop and drain the timer so it is released on the success path.
-			if !timer.Stop() {
-				<-timer.C
-			}
+			// Stop the timer on the success path. No channel drain: since
+			// Go 1.23 timer channels are unbuffered, so if the timer fired
+			// while the select picked this branch, its value was never
+			// queued and a drain receive would block forever (the old
+			// `if !t.Stop() { <-t.C }` idiom is deprecated for exactly this
+			// reason). Timer + goroutine are GC-reclaimed regardless.
+			timer.Stop()
 			if !ok {
 				attemptCancel()
 				lastErr = fmt.Errorf("stream from %s closed before first chunk", client.GetProvider())

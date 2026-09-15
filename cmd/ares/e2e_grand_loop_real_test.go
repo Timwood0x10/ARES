@@ -327,16 +327,33 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	}
 
 	// ── 7. Lease expiry → recovery → replacement resumes → COMPLETED ────
-	advance(7 * time.Minute) // past the scheduler's 5-minute lease TTL
-	// 30s budget (~30x the nominal recovery path, same headroom posture as
-	// the L2 burst-growth test): the 10s deadline used to fail the whole
-	// suite under full-repo parallel load (observed once at exactly 10.03s
-	// with CPU starvation — the wait includes lease-expiry requeue and a
-	// scheduler poll, both timer-sensitive), while isolated reruns always
-	// passed in ~1s. A deadline that only fits an idle machine is a flake
-	// factory, not a regression signal.
-	if state := waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 30*time.Second); state != taskfabric.StateCompleted {
-		t.Fatalf("task must complete after recovery, got %s", state)
+	//
+	// The controlled clock must keep advancing while we wait, not advance
+	// once. The scheduler is live and also drains SUSPENDED tasks, so a drain
+	// that re-acquires t1 around the chaos kill mints a lease at whatever the
+	// clock reads THEN. With a ONE-SHOT advance that lease can land at
+	// (advancedNow + TTL), which a frozen clock never reaches: the lease never
+	// expires, CheckExpiredLeases never requeues the task, recovery never
+	// fires, and the wait times out — but only when CPU load is heavy enough
+	// to lose the kill/acquire race (isolated runs pass in ~1s). Re-advancing
+	// on every wait round guarantees every lease minted at any point still
+	// expires, so recovery always has a trigger.
+	//
+	// 30s wall budget is ~30x the nominal recovery path (the old 10s deadline
+	// failed the whole suite under full-repo parallel load); each round also
+	// waits longer than the 1s recovery sweep so one expiry → requeue →
+	// replacement → COMPLETED chain can finish before the next advance.
+	var finalState taskfabric.TaskState
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		advance(7 * time.Minute) // past the scheduler's 5-minute lease TTL
+		finalState = waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 1500*time.Millisecond)
+		if finalState == taskfabric.StateCompleted || !time.Now().Before(deadline) {
+			break
+		}
+	}
+	if finalState != taskfabric.StateCompleted {
+		t.Fatalf("task must complete after recovery, got %s", finalState)
 	}
 
 	// ── 8. Assertions ───────────────────────────────────────────────────

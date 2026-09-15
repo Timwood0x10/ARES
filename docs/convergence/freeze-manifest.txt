@@ -1,0 +1,56 @@
+# freeze-manifest.txt — 收敛冻结基线（ARCHITECTURE.md Phase 0 产出）。
+#
+# 被 scripts/check_convergence_freeze.sh（make ci-freeze）读取。规则：
+#   R1  examples/ 顶层条目必须是本文件 [examples] 节的子集（禁新增 demo 目录）。
+#   R2  internal/ 顶层包必须是本文件 [internal] 节的子集（禁新增顶层包）。
+#   R3  internal/fabric/* 已完成迁移（Phase 2b），生产代码可正常 import。
+#
+# 计划内删除只告警、不失败；新增一律 exit 1。
+# 收敛期内需要新增顶层条目时，先在 ARCHITECTURE.md 记录理由，再更新本清单。
+
+[examples]
+README.md
+_fixtures
+_internal
+arena
+
+[internal]
+agentipc
+agentruntime
+agents
+agentsyscall
+apitools
+ares_bootstrap
+ares_callbacks
+ares_config
+ares_events
+ares_ratelimit
+ares_security
+ares_shutdown
+aresrecovery
+core
+detector
+discovery
+embedding
+errors
+evidence
+evoapi
+fabric
+feedback
+introspect
+kernel
+knowledge
+knowledgeapi
+llm
+llmcore
+llmexp
+llmservice
+llmsvcapi
+logger
+mcpclient
+runtime
+scoreutil
+storage
+tenantctx
+tools
+truncate

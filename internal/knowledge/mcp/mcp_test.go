@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -354,7 +355,7 @@ func TestDistillMemory(t *testing.T) {
 					t.Errorf("expected 1 saved object, got %d", ms.Count())
 				}
 				objID, _ := parsed["object_id"].(string)
-				saved, gErr := ms.Get(context.Background(), "", objID)
+				saved, gErr := ms.Get(context.Background(), "default", objID)
 				if gErr != nil {
 					t.Fatalf("saved object not retrievable: %v", gErr)
 				}
@@ -493,4 +494,36 @@ func TestQueryKnowledgeConfigForwardsTypes(t *testing.T) {
 	if cfg := queryKnowledgeConfig(queryKnowledgeParams{Text: "x"}); len(cfg.Types) != 0 {
 		t.Fatalf("no filter declared must yield no type restriction, got %v", cfg.Types)
 	}
+}
+
+// TestQueryKnowledgeDoesNotAdvertiseTagFilter pins that the tool schema and
+// description make no tag-filter promise. knowledge.Intent.Scope carries only
+// Namespaces and Types, so a Tags parameter would be accepted and silently
+// ignored — the same over-promising Types did before it was plumbed through.
+// If a Tags filter is added to Scope and wired to the providers, add the field
+// back and assert it forwards instead.
+func TestQueryKnowledgeDoesNotAdvertiseTagFilter(t *testing.T) {
+	// The param struct must not grow a Tags field: reflect over its JSON tags.
+	rt := reflect.TypeOf(queryKnowledgeParams{})
+	if _, ok := rt.FieldByName("Tags"); ok {
+		t.Fatal("queryKnowledgeParams must not declare Tags until Intent.Scope can carry it")
+	}
+	if f, ok := rt.FieldByName("Types"); !ok {
+		t.Fatal("Types must stay: it is plumbed via queryKnowledgeConfig")
+	} else if f.Tag.Get("json") == "" {
+		t.Fatal("Types must keep its json tag")
+	}
+
+	// The tool description must not claim tag search either.
+	svc := NewAKFServiceWithStore(nil, &testCompiler{}, nil, knowledge.QualityGateConfig{})
+	for _, tool := range svc.Tools() {
+		if tool.Name != "query_knowledge" {
+			continue
+		}
+		if strings.Contains(tool.Description, "tag") {
+			t.Fatalf("query_knowledge description still claims tag search: %q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("query_knowledge tool not found")
 }

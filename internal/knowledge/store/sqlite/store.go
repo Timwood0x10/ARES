@@ -144,6 +144,9 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 		if obj.ID == "" {
 			return errors.New("knowledge object ID cannot be empty")
 		}
+		if obj.Namespace == "" {
+			return errors.New("knowledge object namespace cannot be empty: an empty namespace is unreachable once any caller supplies a tenant (StoreProvider.namespaceFor never yields empty)")
+		}
 
 		metaJSON, _ := json.Marshal(obj.Metadata)
 		tags := strings.Join(obj.Tags, ",")
@@ -359,10 +362,15 @@ func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Represent
 	return err
 }
 
-func (s *Store) GetRepresentation(ctx context.Context, objectID string, model string) (*knowledge.Representation, error) {
+func (s *Store) GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
+	// Tenant scope via the owning object (F-05): the representations table
+	// carries no namespace column, so the join enforces that the caller's
+	// tenant owns the object before its vector is served.
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, object_id, model, dimension, vector, metadata, created_at
-		FROM akf_representations WHERE object_id = ? AND model = ?`, objectID, model)
+		SELECT r.id, r.object_id, r.model, r.dimension, r.vector, r.metadata, r.created_at
+		FROM akf_representations r
+		JOIN akf_objects o ON o.id = r.object_id
+		WHERE r.object_id = ? AND r.model = ? AND o.namespace = ?`, objectID, model, tenantID)
 
 	var rep knowledge.Representation
 	var metaJSON, vecJSON, createdAtStr string
@@ -625,9 +633,9 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 }
 
 // UpdateStatus transitions an object's lifecycle status.
-func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.ObjectStatus) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, updated_at = ? WHERE id = ?",
-		string(status), time.Now().UTC().Format(time.RFC3339), id)
+func (s *Store) UpdateStatus(ctx context.Context, tenantID, id string, status knowledge.ObjectStatus) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, updated_at = ? WHERE id = ? AND namespace = ?",
+		string(status), time.Now().UTC().Format(time.RFC3339), id, tenantID)
 	if err != nil {
 		return fmt.Errorf("update status %q: %w", id, err)
 	}
@@ -639,10 +647,10 @@ func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.Ob
 }
 
 // Promote moves a candidate to active and records its computed Quality.
-func (s *Store) Promote(ctx context.Context, id string, q *knowledge.Quality) error {
+func (s *Store) Promote(ctx context.Context, tenantID, id string, q *knowledge.Quality) error {
 	qualityJSON := marshalQuality(q)
-	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, quality = ?, updated_at = ? WHERE id = ?",
-		string(knowledge.StatusActive), qualityJSON, time.Now().UTC().Format(time.RFC3339), id)
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, quality = ?, updated_at = ? WHERE id = ? AND namespace = ?",
+		string(knowledge.StatusActive), qualityJSON, time.Now().UTC().Format(time.RFC3339), id, tenantID)
 	if err != nil {
 		return fmt.Errorf("promote %q: %w", id, err)
 	}

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
@@ -242,12 +243,14 @@ func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) boo
 const StallConfirmations = 5
 
 // StallDetector turns SessionStalled's point-in-time verdict into a decision
-// that survives the answer-node compile gap. The zero value is ready to use;
-// one detector belongs to one wait loop, and that loop must be the only
-// goroutine touching it (no lock — same ownership rule as a loop-local
-// counter).
+// that survives the answer-node compile gap. The zero value is ready to use.
+// One detector still belongs to one wait loop; the counter is atomic purely
+// as defensive hardening so an accidental concurrent Stalled call cannot
+// data-race — atomicity does NOT make a shared detector meaningful (two
+// loops polling different sessions through one detector would interleave
+// each other's evidence).
 type StallDetector struct {
-	consecutive int
+	consecutive atomic.Int64
 }
 
 // Stalled reports whether the session should be treated as stalled now. A
@@ -258,11 +261,10 @@ type StallDetector struct {
 // ask the detector.
 func (d *StallDetector) Stalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
 	if !SessionStalled(fabric, sessionID, planTaskID) {
-		d.consecutive = 0
+		d.consecutive.Store(0)
 		return false
 	}
-	d.consecutive++
-	return d.consecutive >= StallConfirmations
+	return d.consecutive.Add(1) >= StallConfirmations
 }
 
 // Release drops a session. A release miss is returned to the caller so it can

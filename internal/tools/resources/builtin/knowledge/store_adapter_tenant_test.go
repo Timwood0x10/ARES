@@ -88,7 +88,7 @@ func (f *fakeStore) Search(context.Context, string, string, string, int) ([]*kno
 	return nil, nil
 }
 func (f *fakeStore) SaveRepresentation(context.Context, *knowledge.Representation) error { return nil }
-func (f *fakeStore) GetRepresentation(context.Context, string, string) (*knowledge.Representation, error) {
+func (f *fakeStore) GetRepresentation(context.Context, string, string, string) (*knowledge.Representation, error) {
 	return nil, nil
 }
 func (f *fakeStore) HybridSearch(context.Context, knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
@@ -97,8 +97,12 @@ func (f *fakeStore) HybridSearch(context.Context, knowledge.HybridSearchRequest)
 func (f *fakeStore) ListByStatus(context.Context, string, knowledge.ObjectStatus, int) ([]*knowledge.KnowledgeObject, error) {
 	return nil, nil
 }
-func (f *fakeStore) UpdateStatus(context.Context, string, knowledge.ObjectStatus) error { return nil }
-func (f *fakeStore) Promote(context.Context, string, *knowledge.Quality) error          { return nil }
+func (f *fakeStore) UpdateStatus(context.Context, string, string, knowledge.ObjectStatus) error {
+	return nil
+}
+func (f *fakeStore) Promote(context.Context, string, string, *knowledge.Quality) error {
+	return nil
+}
 
 // TestUpdateKnowledgeCrossTenantRefused pins the fix: updating an ID that
 // belongs to another tenant must fail with the store's not-found answer and

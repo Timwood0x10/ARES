@@ -60,6 +60,13 @@ type memoryPromptEnricher struct {
 	// construction so the janitor and the lazy sweep agree on one value.
 	ttl time.Duration
 
+	// clock is the time source for last-used stamping and the sweep cutoff.
+	// Nil means time.Now (see now). It is injectable so a test can drive
+	// expiry deterministically: a wall-clock TTL small enough to test quickly
+	// is also small enough for a load-delayed goroutine to stall past, which
+	// swept an active session mid-conversation under full-repo parallel runs.
+	clock func() time.Time
+
 	mu       sync.Mutex                    // guards sessions
 	sessions map[string]memorySessionEntry // L2 session ID → memory session
 
@@ -83,6 +90,16 @@ func newMemoryPromptEnricher(mgr memory.MemoryManager, logger *slog.Logger) *mem
 		ttl:      memorySessionTTL,
 		sessions: make(map[string]memorySessionEntry),
 	}
+}
+
+// now returns the current time from the injected clock, or time.Now when none
+// was set. Centralized so last-used stamping (lookup/store) and the sweep
+// cutoff (sweepLocked) always read the same source.
+func (e *memoryPromptEnricher) now() time.Time {
+	if e.clock == nil {
+		return time.Now()
+	}
+	return e.clock()
 }
 
 // Enrich rewrites prompt to carry the session's history context and records
@@ -160,7 +177,7 @@ func (e *memoryPromptEnricher) lookup(sessionID string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	entry.lastUsed = time.Now()
+	entry.lastUsed = e.now()
 	e.sessions[sessionID] = entry
 	return entry.memSession, true
 }
@@ -170,7 +187,7 @@ func (e *memoryPromptEnricher) store(sessionID, memSession string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.sweepLocked()
-	e.sessions[sessionID] = memorySessionEntry{memSession: memSession, lastUsed: time.Now()}
+	e.sessions[sessionID] = memorySessionEntry{memSession: memSession, lastUsed: e.now()}
 }
 
 // sweepLocked drops entries idle past the TTL. Caller must hold e.mu.
@@ -187,7 +204,7 @@ func (e *memoryPromptEnricher) sweepLocked() {
 	if ttl <= 0 {
 		ttl = memorySessionTTL
 	}
-	cutoff := time.Now().Add(-ttl)
+	cutoff := e.now().Add(-ttl)
 	for id, entry := range e.sessions {
 		if entry.lastUsed.Before(cutoff) {
 			delete(e.sessions, id)

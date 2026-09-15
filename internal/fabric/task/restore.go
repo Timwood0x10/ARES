@@ -276,6 +276,16 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		if err := restoreCheckpoint(p, t); err != nil {
 			return err
 		}
+		// Terminal states are ABSORBING in the fold (F-03): once a task folds
+		// COMPLETED/FAILED, no later event — not even a stale checkpoint
+		// that sorted after the terminal one on an equal timestamp — may
+		// reset it to READY. The sort's (Timestamp, Version) ordering is the
+		// first line of defense; this is the second, so the file-header
+		// contract ("terminal tasks are restored as terminal and never
+		// revived") holds even for a log whose ordering is untrustworthy.
+		if t.State == StateCompleted || t.State == StateFailed {
+			return nil
+		}
 		switch state := TaskState(restoreString(p, restoreKeyState)); state {
 		case StateCompleted, StateFailed:
 			t.State = state

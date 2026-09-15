@@ -355,7 +355,7 @@ func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowle
 		if obj.Confidence < b.gate.MinFinalScore {
 			continue
 		}
-		if pErr := b.store.Promote(ctx, obj.ID, obj.Quality); pErr != nil {
+		if pErr := b.store.Promote(ctx, obj.Namespace, obj.ID, obj.Quality); pErr != nil {
 			// best-effort: promotion failure does not roll back the Save.
 			slog.Warn("distill bridge: promote object",
 				"object_id", obj.ID, "error", pErr)

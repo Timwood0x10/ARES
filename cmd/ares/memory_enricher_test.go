@@ -189,21 +189,34 @@ func TestMemoryPromptEnricherSweepsIdleEntries(t *testing.T) {
 // TestMemoryPromptEnricherActiveSessionSurvivesSweep: a session still in
 // use refreshes its last-used stamp on every lookup, so an ongoing
 // conversation is never swept out from under itself.
+//
+// The clock is injected so expiry is driven exactly rather than raced against
+// wall time. The previous version used a 60ms TTL with a 20ms lookup loop, so
+// a >60ms scheduler stall under full-repo parallel load let the entry fall
+// idle, the next lookup's sweep dropped it, and a fresh memory session was
+// minted — the assertion failed intermittently (~0.14s) with nothing wrong in
+// the code under test. Injecting the clock removes the timing assumption while
+// still exercising the sweep/refresh logic end to end.
 func TestMemoryPromptEnricherActiveSessionSurvivesSweep(t *testing.T) {
 	e := testEnricher(t, newTestMemoryManager(t))
-	e.ttl = 60 * time.Millisecond
+	e.ttl = time.Minute
+	now := time.Now()
+	e.clock = func() time.Time { return now }
 
 	first, err := e.memorySession(context.Background(), "sess-live")
 	require.NoError(t, err)
 
-	// Keep it warm across more than one TTL window.
-	deadline := time.Now().Add(150 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	// Advance less than one TTL between lookups, enough times to exceed
+	// several TTL windows in total: each lookup refreshes lastUsed, so the
+	// entry must never fall idle.
+	for i := 0; i < 5; i++ {
+		now = now.Add(40 * time.Second) // < ttl (1m)
 		again, err := e.memorySession(context.Background(), "sess-live")
 		require.NoError(t, err)
 		require.Equal(t, first, again, "an active session must keep its memory session")
-		time.Sleep(20 * time.Millisecond)
 	}
+	// 200s elapsed in total — well past the 1m TTL — yet the mapping survives
+	// because every lookup refreshed it.
 	require.Contains(t, e.sessions, "sess-live")
 }
 

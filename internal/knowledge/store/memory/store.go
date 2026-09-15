@@ -98,6 +98,9 @@ func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) e
 		if obj.ID == "" {
 			return errors.New("knowledge object ID cannot be empty")
 		}
+		if obj.Namespace == "" {
+			return errors.New("knowledge object namespace cannot be empty: an empty namespace is unreachable once any caller supplies a tenant (StoreProvider.namespaceFor never yields empty)")
+		}
 		// Objects are keyed by ID alone, so an upsert whose ID already exists
 		// under a DIFFERENT namespace would migrate another tenant's row into
 		// the caller's. Tenant-scoped Get/Delete/Search cannot catch this: a
@@ -256,9 +259,15 @@ func (s *Store) SaveRepresentation(_ context.Context, rep *knowledge.Representat
 	return nil
 }
 
-func (s *Store) GetRepresentation(_ context.Context, objectID string, model string) (*knowledge.Representation, error) {
+func (s *Store) GetRepresentation(_ context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Tenant scope comes from the OWNING object (F-05): a representation is
+	// only reachable through its object, so a foreign-tenant object's vector
+	// reads as absent — the same anti-probing contract as Get.
+	if obj, ok := s.objects[objectID]; !ok || obj.Namespace != tenantID {
+		return nil, ErrObjectNotFound
+	}
 	key := objectID + ":" + model
 	rep, ok := s.reps[key]
 	if !ok {
@@ -381,11 +390,13 @@ func (s *Store) ListByStatus(_ context.Context, ns string, status knowledge.Obje
 }
 
 // UpdateStatus transitions an object's lifecycle status.
-func (s *Store) UpdateStatus(_ context.Context, id string, status knowledge.ObjectStatus) error {
+func (s *Store) UpdateStatus(_ context.Context, tenantID, id string, status knowledge.ObjectStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	obj, ok := s.objects[id]
-	if !ok {
+	// Missing and foreign-namespace are the same answer, so a caller cannot
+	// probe other tenants for valid object IDs.
+	if !ok || obj.Namespace != tenantID {
 		return ErrObjectNotFound
 	}
 	obj.Status = status
@@ -394,11 +405,11 @@ func (s *Store) UpdateStatus(_ context.Context, id string, status knowledge.Obje
 }
 
 // Promote moves a candidate to active and records its computed Quality.
-func (s *Store) Promote(_ context.Context, id string, q *knowledge.Quality) error {
+func (s *Store) Promote(_ context.Context, tenantID, id string, q *knowledge.Quality) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	obj, ok := s.objects[id]
-	if !ok {
+	if !ok || obj.Namespace != tenantID {
 		return ErrObjectNotFound
 	}
 	obj.Status = knowledge.StatusActive

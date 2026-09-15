@@ -46,8 +46,11 @@ type KnowledgeStore interface {
 	// SaveRepresentation stores an embedding vector.
 	SaveRepresentation(ctx context.Context, rep *Representation) error
 
-	// GetRepresentation retrieves an embedding vector by model.
-	GetRepresentation(ctx context.Context, objectID string, model string) (*Representation, error)
+	// GetRepresentation retrieves an embedding vector by model, scoped to
+	// the owning object's tenant: a representation whose object belongs to
+	// another tenant is reported as ErrObjectNotFound (indistinguishable
+	// from a missing one, same anti-probing contract as Get).
+	GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*Representation, error)
 
 	// HybridSearch performs vector recall (cosine) plus lexical (keyword) scoring
 	// and returns ranked results. The caller supplies QueryVector (computed via
@@ -59,11 +62,15 @@ type KnowledgeStore interface {
 	// Empty status matches objects with no status (backward compatibility).
 	ListByStatus(ctx context.Context, ns string, status ObjectStatus, limit int) ([]*KnowledgeObject, error)
 
-	// UpdateStatus transitions an object's lifecycle status.
-	UpdateStatus(ctx context.Context, id string, status ObjectStatus) error
+	// UpdateStatus transitions an object's lifecycle status, scoped to the
+	// owning tenant. A row in another namespace is reported as ErrObjectNotFound
+	// and left untouched.
+	UpdateStatus(ctx context.Context, tenantID, id string, status ObjectStatus) error
 
-	// Promote moves a candidate to active and records its computed Quality.
-	Promote(ctx context.Context, id string, q *Quality) error
+	// Promote moves a candidate to active and records its computed Quality,
+	// scoped to the owning tenant. A row in another namespace is reported as
+	// ErrObjectNotFound and left untouched.
+	Promote(ctx context.Context, tenantID, id string, q *Quality) error
 }
 
 // HybridSearchRequest configures a HybridSearch call.

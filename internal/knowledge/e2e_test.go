@@ -331,7 +331,7 @@ func TestAKG_WriteReadLoop(t *testing.T) {
 		t.Fatalf("final score %v below MinFinalScore %v", finalScore, gate.MinFinalScore)
 	}
 
-	if err := ms.Promote(ctx, candidate.ID, q); err != nil {
+	if err := ms.Promote(ctx, candidate.Namespace, candidate.ID, q); err != nil {
 		t.Fatalf("Promote: %v", err)
 	}
 

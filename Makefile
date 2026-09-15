@@ -69,7 +69,7 @@ ci-test-race-short:
 # CI security scan
 ci-security:
 	@echo "Running gosec security scan..."
-	@go run github.com/securego/gosec/v2/cmd/gosec@latest ./internal/...
+	@golangci-lint run --enable-only=gosec ./...
 	@echo "Security scan: OK"
 
 # Convergence freeze patrol (ARCHITECTURE.md Phase 0). Fails on new

@@ -134,6 +134,25 @@ func init() {
 	rootCmd.AddCommand(benchCmd)
 }
 
+// goMinorVersion extracts the minor version from a runtime version string
+// ("go1.27.1" → 27). Unparseable forms (devel builds, custom toolchains)
+// return 0 — the doctor then shows the recommend-warn, which is honest: an
+// unknown toolchain is not verifiably above the floor.
+func goMinorVersion(v string) int {
+	s, found := strings.CutPrefix(v, "go1.")
+	if !found {
+		return 0
+	}
+	minor := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			break
+		}
+		minor = minor*10 + int(r-'0')
+	}
+	return minor
+}
+
 // ── doctor ─────────────────────────────────────────────────────
 
 func runDoctor(_ *cobra.Command, _ []string) error {
@@ -144,7 +163,11 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 
 	// Go version
 	fmt.Printf("  Go:       %s", runtime.Version())
-	if v := runtime.Version(); strings.HasPrefix(v, "go1.26") || strings.HasPrefix(v, "go1.25") {
+	// Minimum-version check (C-7): the old prefix whitelist ("go1.25",
+	// "go1.26") flagged every NEWER toolchain — go1.27 printed a warning
+	// even though it far exceeds the floor. Parse the minor version and
+	// compare numerically so future releases never false-positive.
+	if goMinorVersion(runtime.Version()) >= 25 {
 		fmt.Println(" ✅")
 	} else {
 		fmt.Println(" ⚠  Go 1.25+ recommended")

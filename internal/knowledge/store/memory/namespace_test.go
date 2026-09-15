@@ -134,7 +134,7 @@ func TestNamespaceIsolation_ListByStatus(t *testing.T) {
 
 	// Promote tenant A's candidate; tenant B's view is unaffected. Reuse the
 	// outer err to avoid shadowing the ListByStatus declaration above.
-	if err = s.Promote(ctx, "t1:inactive", &knowledge.Quality{ExtractionScore: 0.9}); err != nil {
+	if err = s.Promote(ctx, "tenant-a", "t1:inactive", &knowledge.Quality{ExtractionScore: 0.9}); err != nil {
 		t.Fatalf("Promote: %v", err)
 	}
 	gotB, err := s.ListByStatus(ctx, "tenant-b", knowledge.StatusActive, 100)

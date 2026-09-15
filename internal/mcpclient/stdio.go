@@ -39,12 +39,29 @@ type stdioTransport struct {
 }
 
 // ConnectStdio connects to an MCP server via stdio transport.
+//
+// ctx bounds the connection handshake ONLY (the initialize round-trip). The
+// subprocess's lifetime is owned by Client.Close, deliberately NOT by ctx:
+// exec.CommandContext ties the process to the context it was built with, so
+// binding it to the caller's connect-timeout context meant the cancel that
+// follows a successful connect (the SDK's wireMCPClients cancels its 30s
+// connect context immediately) KILLED the server — every later CallTool died
+// with "broken pipe" and WithMCP was unusable (F-02). A handshake failure
+// still kills the child here; after a successful connect, only Close does.
 func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
 	if !filepath.IsAbs(command) {
 		return nil, fmt.Errorf("command must be an absolute path, got: %s", command)
 	}
 
-	cmd := exec.CommandContext(ctx, command, args...) //nolint:gosec // guarded by IsAbs check above
+	// Detached lifetime, bounded handshake: the process runs until Close,
+	// while initialize below still runs under the caller's ctx (deadline,
+	// cancellation) and kills the child on failure.
+	//nolint:noctx,gosec // F-02: deliberately NOT CommandContext — binding the
+	// process to the caller's connect-timeout ctx made the post-connect
+	// cancel KILL the server (broken pipe on every later call). The
+	// handshake stays bounded via initialize(ctx); the process is owned by
+	// Client.Close. IsAbs check above guards the binary path.
+	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()

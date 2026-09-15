@@ -11,14 +11,14 @@ import (
 
 func TestSaveAndGet(t *testing.T) {
 	s := New()
-	obj := &knowledge.KnowledgeObject{ID: "o1", Summary: "test", Confidence: 0.9}
+	obj := &knowledge.KnowledgeObject{Namespace: "default", ID: "o1", Summary: "test", Confidence: 0.9}
 
 	err := s.Save(context.Background(), obj)
 	if err != nil {
 		t.Fatalf("Save error: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "", "o1")
+	got, err := s.Get(context.Background(), "default", "o1")
 	if err != nil {
 		t.Fatalf("Get error: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestSaveEmptyID(t *testing.T) {
 
 func TestGetNotFound(t *testing.T) {
 	s := New()
-	obj, err := s.Get(context.Background(), "", "nonexistent")
+	obj, err := s.Get(context.Background(), "default", "nonexistent")
 	if !errors.Is(err, ErrObjectNotFound) {
 		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
@@ -52,9 +52,9 @@ func TestGetNotFound(t *testing.T) {
 func TestQueryByType(t *testing.T) {
 	s := New()
 	_ = s.Save(context.Background(),
-		&knowledge.KnowledgeObject{ID: "d1", Type: knowledge.ObjectDecision, Confidence: 0.9},
-		&knowledge.KnowledgeObject{ID: "m1", Type: knowledge.ObjectMemory, Confidence: 0.8},
-		&knowledge.KnowledgeObject{ID: "d2", Type: knowledge.ObjectDecision, Confidence: 0.7},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "d1", Type: knowledge.ObjectDecision, Confidence: 0.9},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "m1", Type: knowledge.ObjectMemory, Confidence: 0.8},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "d2", Type: knowledge.ObjectDecision, Confidence: 0.7},
 	)
 
 	results, err := s.Query(context.Background(), knowledge.Query{Types: []knowledge.ObjectType{knowledge.ObjectDecision}})
@@ -69,8 +69,8 @@ func TestQueryByType(t *testing.T) {
 func TestQueryByTags(t *testing.T) {
 	s := New()
 	_ = s.Save(context.Background(),
-		&knowledge.KnowledgeObject{ID: "a", Tags: []string{"redis", "cache"}},
-		&knowledge.KnowledgeObject{ID: "b", Tags: []string{"postgres"}},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "a", Tags: []string{"redis", "cache"}},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "b", Tags: []string{"postgres"}},
 	)
 
 	results, err := s.Query(context.Background(), knowledge.Query{Tags: []string{"redis"}})
@@ -86,7 +86,7 @@ func TestQueryWithLimit(t *testing.T) {
 	s := New()
 	for i := 0; i < 10; i++ {
 		id := fmt.Sprintf("o%d", i)
-		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: id, Confidence: float64(i) / 10})
+		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{Namespace: "default", ID: id, Confidence: float64(i) / 10})
 	}
 
 	results, err := s.Query(context.Background(), knowledge.Query{Limit: 3})
@@ -109,7 +109,7 @@ func TestQueryOffsetBeyondEnd(t *testing.T) {
 	s := New()
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("o%d", i)
-		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: id, Confidence: float64(i) / 10})
+		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{Namespace: "default", ID: id, Confidence: float64(i) / 10})
 	}
 
 	results, err := s.Query(context.Background(), knowledge.Query{Offset: 10})
@@ -130,7 +130,7 @@ func TestQueryLimitThenOffset(t *testing.T) {
 	s := New()
 	for i := 0; i < 10; i++ {
 		id := fmt.Sprintf("o%d", i)
-		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: id, Confidence: float64(i) / 10})
+		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{Namespace: "default", ID: id, Confidence: float64(i) / 10})
 	}
 
 	results, err := s.Query(context.Background(), knowledge.Query{Limit: 3, Offset: 1})
@@ -144,14 +144,14 @@ func TestQueryLimitThenOffset(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	s := New()
-	_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: "o1"})
+	_ = s.Save(context.Background(), &knowledge.KnowledgeObject{Namespace: "default", ID: "o1"})
 
-	err := s.Delete(context.Background(), "", "o1")
+	err := s.Delete(context.Background(), "default", "o1")
 	if err != nil {
 		t.Fatalf("Delete error: %v", err)
 	}
 
-	got, _ := s.Get(context.Background(), "", "o1")
+	got, _ := s.Get(context.Background(), "default", "o1")
 	if got != nil {
 		t.Error("expected nil after delete")
 	}
@@ -160,11 +160,11 @@ func TestDelete(t *testing.T) {
 func TestSearch(t *testing.T) {
 	s := New()
 	_ = s.Save(context.Background(),
-		&knowledge.KnowledgeObject{ID: "o1", Summary: "Redis cache layer", Confidence: 0.9},
-		&knowledge.KnowledgeObject{ID: "o2", Summary: "PostgreSQL storage", Confidence: 0.8},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "o1", Summary: "Redis cache layer", Confidence: 0.9},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "o2", Summary: "PostgreSQL storage", Confidence: 0.8},
 	)
 
-	results, err := s.Search(context.Background(), "", "redis", "", 10)
+	results, err := s.Search(context.Background(), "default", "redis", "", 10)
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
@@ -175,6 +175,13 @@ func TestSearch(t *testing.T) {
 
 func TestRepresentation(t *testing.T) {
 	s := New()
+	// The owning object must exist under the querying tenant: F-05 scopes
+	// representations through their owner's namespace.
+	if err := s.Save(context.Background(), &knowledge.KnowledgeObject{
+		Namespace: "default", ID: "o1", Summary: "owner", Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("Save owner error: %v", err)
+	}
 	rep := &knowledge.Representation{
 		ID: "rep1", ObjectID: "o1", Model: "openai", Dimension: 1536,
 	}
@@ -184,7 +191,7 @@ func TestRepresentation(t *testing.T) {
 		t.Fatalf("SaveRepresentation error: %v", err)
 	}
 
-	got, err := s.GetRepresentation(context.Background(), "o1", "openai")
+	got, err := s.GetRepresentation(context.Background(), "default", "o1", "openai")
 	if err != nil {
 		t.Fatalf("GetRepresentation error: %v", err)
 	}
@@ -199,8 +206,8 @@ func TestRepresentation(t *testing.T) {
 func TestCount(t *testing.T) {
 	s := New()
 	_ = s.Save(context.Background(),
-		&knowledge.KnowledgeObject{ID: "a"},
-		&knowledge.KnowledgeObject{ID: "b"},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "a"},
+		&knowledge.KnowledgeObject{Namespace: "default", ID: "b"},
 	)
 	if s.Count() != 2 {
 		t.Errorf("expected 2, got %d", s.Count())

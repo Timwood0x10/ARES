@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memctx "github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // Tools returns the AKF MCP tool definitions that can be registered
@@ -96,10 +97,14 @@ type compileContextParams struct {
 }
 
 // queryKnowledgeParams is the JSON input for the QueryKnowledge tool.
+//
+// There is deliberately no Tags filter. knowledge.Intent.Scope carries only
+// Namespaces and Types, so a tag parameter would be accepted and then silently
+// ignored — the same over-promising that Types once did. Plumb a Tags field
+// through Scope and the providers before advertising one here.
 type queryKnowledgeParams struct {
 	Text      string   `json:"text"`
 	Types     []string `json:"types,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
 	Limit     int      `json:"limit"`
 	MaxTokens int      `json:"max_tokens,omitempty"`
 }
@@ -126,7 +131,7 @@ func (s *AKFService) Tools() []Tool {
 		},
 		{
 			Name:        "query_knowledge",
-			Description: "Query knowledge objects by type, tag, or text search through all providers.",
+			Description: "Query knowledge objects by type or text search through all providers.",
 			Execute:     s.handleQueryKnowledge,
 		},
 		{
@@ -268,8 +273,14 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 
 	now := time.Now()
 	obj := &knowledge.KnowledgeObject{
-		ID:         fmt.Sprintf("mem_%d", now.UnixNano()),
-		Type:       objType,
+		ID:   fmt.Sprintf("mem_%d", now.UnixNano()),
+		Type: objType,
+		// Every read path is tenant-scoped (Get/Delete/Search/UpdateStatus/
+		// Promote all filter on namespace), so an object saved without one is
+		// unreachable: StoreProvider.namespaceFor falls back through
+		// Scope.Namespaces -> tenantctx -> the provider default and never
+		// yields empty. Stamp the request tenant, defaulting the same way.
+		Namespace:  knowledgeNamespace(ctx),
 		Summary:    params.Content,
 		Normalized: params.Content,
 		Tags:       params.Tags,
@@ -300,7 +311,10 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 			return "", fmt.Errorf("distill memory: save object %s: %w", obj.ID, err)
 		}
 		if obj.Confidence >= s.gate.MinFinalScore {
-			if err := s.store.Promote(ctx, obj.ID, obj.Quality); err == nil {
+			// Promote is tenant-scoped: pass the SAME namespace the Save
+			// above stamped (knowledgeNamespace(ctx)), so the update lands
+			// on the row we just wrote instead of silently missing it.
+			if err := s.store.Promote(ctx, obj.Namespace, obj.ID, obj.Quality); err == nil {
 				obj.Status = knowledge.StatusActive
 			} else {
 				// best-effort: promotion failure leaves the object persisted as
@@ -415,4 +429,15 @@ func queryKnowledgeConfig(p queryKnowledgeParams) *runtime.Config {
 		}
 	}
 	return cfg
+}
+
+// knowledgeNamespace resolves the namespace a distill_memory write must land
+// under: the request-scoped tenant when present, otherwise "default". It
+// mirrors StoreProvider.namespaceFor's fallback so writes and reads agree on
+// which namespace holds the object.
+func knowledgeNamespace(ctx context.Context) string {
+	if ns := memctx.From(ctx); ns != "" {
+		return ns
+	}
+	return "default"
 }

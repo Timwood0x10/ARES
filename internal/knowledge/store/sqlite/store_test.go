@@ -40,7 +40,7 @@ func newTestStore(t *testing.T) *Store {
 func TestSaveAndGet(t *testing.T) {
 	s := newTestStore(t)
 
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID:         "obj1",
 		Type:       knowledge.ObjectDecision,
 		Summary:    "Test decision",
@@ -51,13 +51,13 @@ func TestSaveAndGet(t *testing.T) {
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
-	t.Cleanup(func() { _ = s.Delete(context.Background(), "", obj.ID) })
+	t.Cleanup(func() { _ = s.Delete(context.Background(), "default", obj.ID) })
 
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "", "obj1")
+	got, err := s.Get(context.Background(), "default", "obj1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestSaveAndGet(t *testing.T) {
 func TestGetNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	obj, err := s.Get(context.Background(), "", "nonexistent")
+	obj, err := s.Get(context.Background(), "default", "nonexistent")
 	if err != ErrObjectNotFound {
 		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
@@ -89,9 +89,9 @@ func TestSaveAndQueryByType(t *testing.T) {
 
 	now := time.Now()
 	objs := []*knowledge.KnowledgeObject{
-		{ID: "d1", Type: knowledge.ObjectDecision, Summary: "Dec 1", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
-		{ID: "d2", Type: knowledge.ObjectDecision, Summary: "Dec 2", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
-		{ID: "a1", Type: knowledge.ObjectArchitecture, Summary: "Arch 1", Confidence: 0.7, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "d1", Type: knowledge.ObjectDecision, Summary: "Dec 1", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "d2", Type: knowledge.ObjectDecision, Summary: "Dec 2", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "a1", Type: knowledge.ObjectArchitecture, Summary: "Arch 1", Confidence: 0.7, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, o := range objs {
 		if err := s.Save(context.Background(), o); err != nil {
@@ -100,7 +100,7 @@ func TestSaveAndQueryByType(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, o := range objs {
-			_ = s.Delete(context.Background(), "", o.ID)
+			_ = s.Delete(context.Background(), "default", o.ID)
 		}
 	})
 
@@ -120,8 +120,8 @@ func TestSearch(t *testing.T) {
 
 	now := time.Now()
 	objs := []*knowledge.KnowledgeObject{
-		{ID: "r1", Summary: "Redis cache", Normalized: "Redis caching layer", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
-		{ID: "p1", Summary: "PostgreSQL database", Normalized: "PostgreSQL relational database", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "r1", Summary: "Redis cache", Normalized: "Redis caching layer", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "p1", Summary: "PostgreSQL database", Normalized: "PostgreSQL relational database", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, o := range objs {
 		if err := s.Save(context.Background(), o); err != nil {
@@ -130,11 +130,11 @@ func TestSearch(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, o := range objs {
-			_ = s.Delete(context.Background(), "", o.ID)
+			_ = s.Delete(context.Background(), "default", o.ID)
 		}
 	})
 
-	results, err := s.Search(context.Background(), "", "redis", "", 10)
+	results, err := s.Search(context.Background(), "default", "redis", "", 10)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -150,14 +150,14 @@ func TestSaveAndGetRepresentation(t *testing.T) {
 	s := newTestStore(t)
 
 	// Save an object first (foreign key constraint).
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID: "rep-obj-1", Summary: "rep test", Confidence: 1.0,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save object: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Delete(context.Background(), "", obj.ID) })
+	t.Cleanup(func() { _ = s.Delete(context.Background(), "default", obj.ID) })
 
 	rep := &knowledge.Representation{
 		ID:        "rep1",
@@ -171,7 +171,7 @@ func TestSaveAndGetRepresentation(t *testing.T) {
 		t.Fatalf("SaveRepresentation: %v", err)
 	}
 
-	got, err := s.GetRepresentation(context.Background(), "rep-obj-1", "openai-text-3-large")
+	got, err := s.GetRepresentation(context.Background(), "default", "rep-obj-1", "openai-text-3-large")
 	if err != nil {
 		t.Fatalf("GetRepresentation: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestSaveAndGetRepresentation(t *testing.T) {
 func TestGetRepresentationNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	rep, err := s.GetRepresentation(context.Background(), "nonexistent", "any")
+	rep, err := s.GetRepresentation(context.Background(), "default", "nonexistent", "any")
 	if err != ErrObjectNotFound {
 		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
@@ -203,14 +203,14 @@ func TestGetRepresentationNotFound(t *testing.T) {
 func TestGetCorruptTimestampDegradesToZeroTimeAndLogs(t *testing.T) {
 	s := newTestStore(t)
 
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID: "corrupt-ts", Summary: "corrupt ts", Confidence: 1.0,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Delete(context.Background(), "", obj.ID) })
+	t.Cleanup(func() { _ = s.Delete(context.Background(), "default", obj.ID) })
 
 	// Corrupt both timestamp columns directly (bypassing the writer).
 	if _, err := s.db.Exec(
@@ -220,7 +220,7 @@ func TestGetCorruptTimestampDegradesToZeroTimeAndLogs(t *testing.T) {
 		t.Fatalf("corrupt timestamps: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "", obj.ID)
+	got, err := s.Get(context.Background(), "default", obj.ID)
 	if err != nil {
 		t.Fatalf("Get with corrupt timestamps must degrade, not fail: %v", err)
 	}
@@ -235,15 +235,15 @@ func TestGetCorruptTimestampDegradesToZeroTimeAndLogs(t *testing.T) {
 func TestDelete(t *testing.T) {
 	s := newTestStore(t)
 
-	obj := &knowledge.KnowledgeObject{ID: "del1", Summary: "delete me", Confidence: 1.0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	obj := &knowledge.KnowledgeObject{Namespace: "default", ID: "del1", Summary: "delete me", Confidence: 1.0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := s.Delete(context.Background(), "", "del1"); err != nil {
+	if err := s.Delete(context.Background(), "default", "del1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "", "del1")
+	got, err := s.Get(context.Background(), "default", "del1")
 	if err != ErrObjectNotFound {
 		t.Fatalf("expected ErrObjectNotFound after delete, got %v", err)
 	}
@@ -337,16 +337,16 @@ func TestQueryByTagExactTokenMatch(t *testing.T) {
 	ctx := context.Background()
 
 	objects := []*knowledge.KnowledgeObject{
-		{ID: "tag-exact", Type: knowledge.ObjectDecision, Summary: "go only", Tags: []string{"go"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
-		{ID: "tag-super", Type: knowledge.ObjectDecision, Summary: "golang", Tags: []string{"golang"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
-		{ID: "tag-multi", Type: knowledge.ObjectDecision, Summary: "ab and ac", Tags: []string{"ab", "ac"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
-		{ID: "tag-wild", Type: knowledge.ObjectDecision, Summary: "literal percent", Tags: []string{"100%_done"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-exact", Type: knowledge.ObjectDecision, Summary: "go only", Tags: []string{"go"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-super", Type: knowledge.ObjectDecision, Summary: "golang", Tags: []string{"golang"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-multi", Type: knowledge.ObjectDecision, Summary: "ab and ac", Tags: []string{"ab", "ac"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-wild", Type: knowledge.ObjectDecision, Summary: "literal percent", Tags: []string{"100%_done"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
 	}
 	for _, o := range objects {
 		if err := s.Save(ctx, o); err != nil {
 			t.Fatalf("Save %s: %v", o.ID, err)
 		}
-		t.Cleanup(func(id string) func() { return func() { _ = s.Delete(ctx, "", id) } }(o.ID))
+		t.Cleanup(func(id string) func() { return func() { _ = s.Delete(ctx, "default", id) } }(o.ID))
 	}
 
 	cases := []struct {
@@ -392,7 +392,7 @@ func TestDeleteCascadesRepresentations(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID: "cascade-obj", Type: knowledge.ObjectDecision, Summary: "cascade me",
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
@@ -407,11 +407,11 @@ func TestDeleteCascadesRepresentations(t *testing.T) {
 		t.Fatalf("SaveRepresentation: %v", err)
 	}
 
-	if err := s.Delete(ctx, "", "cascade-obj"); err != nil {
+	if err := s.Delete(ctx, "default", "cascade-obj"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, err := s.GetRepresentation(ctx, "cascade-obj", "test-model"); err != ErrObjectNotFound {
+	if _, err := s.GetRepresentation(ctx, "default", "cascade-obj", "test-model"); err != ErrObjectNotFound {
 		t.Fatalf("representation must be cascade-deleted with its object, got err=%v", err)
 	}
 }

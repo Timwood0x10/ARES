@@ -82,7 +82,7 @@ func (s *testStore) SaveRepresentation(_ context.Context, _ *knowledge.Represent
 	return nil
 }
 
-func (s *testStore) GetRepresentation(_ context.Context, _, _ string) (*knowledge.Representation, error) {
+func (s *testStore) GetRepresentation(_ context.Context, _, _, _ string) (*knowledge.Representation, error) {
 	return nil, nil
 }
 
@@ -94,11 +94,11 @@ func (s *testStore) ListByStatus(_ context.Context, _ string, _ knowledge.Object
 	return nil, nil
 }
 
-func (s *testStore) UpdateStatus(_ context.Context, _ string, _ knowledge.ObjectStatus) error {
+func (s *testStore) UpdateStatus(_ context.Context, _, _ string, _ knowledge.ObjectStatus) error {
 	return nil
 }
 
-func (s *testStore) Promote(_ context.Context, _ string, _ *knowledge.Quality) error {
+func (s *testStore) Promote(_ context.Context, _, _ string, _ *knowledge.Quality) error {
 	return nil
 }
 
