@@ -117,6 +117,19 @@ type Client struct {
 	closeOnce      sync.Once                // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
+// applyExtraHeaders sets the user-configured Config.Extra entries as HTTP
+// headers on req. It runs AFTER the built-in provider headers so a proxy or
+// gateway in front of the provider can override reserved fields
+// (Authorization, X-Title) — the "custom provider credentials ride here"
+// contract that ares_config.LLMConfig.Extra documents. (independent-review
+// F-16: Extra was previously a dead config — bootstrap assigned it into
+// Config.Extra but no request path read it.)
+func (c *Client) applyExtraHeaders(req *http.Request) {
+	for k, v := range c.config.Extra {
+		req.Header.Set(k, v)
+	}
+}
+
 // Option configures a Client instance during construction.
 type Option func(*Client)
 
@@ -524,6 +537,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
@@ -617,6 +631,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
@@ -732,6 +747,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set("X-Title", "ARES")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -277,34 +278,82 @@ func (e *Engine) CheckHealth(ctx context.Context) error {
 	return nil
 }
 
+// autoDiscoveryMaxBackoff caps the restart delay so a deterministic panic
+// retries at a steady pace instead of going quiet.
+const autoDiscoveryMaxBackoff = 30 * time.Second
+
+// autoDiscoveryRestartBackoff returns the delay before restart attempt n
+// (0-based): 1s, 2s, 4s, ... capped at autoDiscoveryMaxBackoff. The shift is
+// guarded so a large attempt count saturates the cap rather than overflowing
+// to a negative (and therefore immediate) delay.
+func autoDiscoveryRestartBackoff(attempt int) time.Duration {
+	if attempt >= 5 {
+		return autoDiscoveryMaxBackoff
+	}
+	return time.Second << attempt
+}
+
 // StartAutoDiscovery starts periodic discovery and health checks.
+//
+// The loop is SELF-HEALING: a panic inside a cycle is recovered and the loop
+// restarts after a backoff rather than dying (code_rules_v2 §4.2). It runs for
+// the life of the engine with no caller to observe a failure, so a goroutine
+// that simply exited on panic would silently kill auto-discovery for the rest
+// of the process — the subsystem would look healthy while doing nothing.
+// Restart stops only when ctx is cancelled.
 func (e *Engine) StartAutoDiscovery(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
 
 	go func() {
-		if err := e.DiscoverNow(ctx); err != nil {
-			log.Warn("discovery: initial cycle failed", "error", err)
-		}
-
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
+		for attempt := 0; ; attempt++ {
+			e.runAutoDiscovery(ctx, interval, attempt)
+			if ctx.Err() != nil {
+				return // clean shutdown — never restart
+			}
+			backoff := autoDiscoveryRestartBackoff(attempt)
+			log.Warn("discovery: restarting background loop after panic",
+				"attempt", attempt+1, "backoff", backoff)
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				if err := e.DiscoverNow(ctx); err != nil {
-					log.Warn("discovery: cycle failed", "error", err)
-				}
-				if err := e.CheckHealth(ctx); err != nil {
-					log.Warn("discovery: health check failed", "error", err)
-				}
+			case <-time.After(backoff):
 			}
 		}
 	}()
+}
+
+// runAutoDiscovery runs one lifetime of the periodic discovery/health loop. It
+// recovers its own panics so the caller can decide to restart; returning after
+// a panic is what signals the caller, and ctx cancellation ends it cleanly.
+func (e *Engine) runAutoDiscovery(ctx context.Context, interval time.Duration, attempt int) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("discovery: background loop panicked",
+				"attempt", attempt+1, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	if err := e.DiscoverNow(ctx); err != nil {
+		log.Warn("discovery: initial cycle failed", "error", err)
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := e.DiscoverNow(ctx); err != nil {
+				log.Warn("discovery: cycle failed", "error", err)
+			}
+			if err := e.CheckHealth(ctx); err != nil {
+				log.Warn("discovery: health check failed", "error", err)
+			}
+		}
+	}
 }
 
 // List returns all known services.

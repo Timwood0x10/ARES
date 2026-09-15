@@ -450,11 +450,19 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 }
 
 // HybridSearch performs vector + lexical scoring over SQLite-stored objects.
+//
+// Memory bounding: the candidate pass applies a SQL-side LIMIT (see
+// hybridRecallCap) so a broad namespace/type filter cannot materialize
+// every matching row into Go memory — the same window postgres applies
+// (independent-review F-09: sqlite had no bound at all). The window is
+// ordered by updated_at DESC (most recent objects first); an explicit
+// wider TopK/FinalK raises it so a caller's own recall request is honored.
 func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
 	conditions, args := hybridConditions(req)
+	args = append(args, hybridRecallLimit(req))
 	//nolint:gosec // conditions are static WHERE fragments; values use ? placeholders.
 	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects` + conditions
+		FROM akf_objects` + conditions + ` ORDER BY updated_at DESC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search query: %w", err)
@@ -538,6 +546,30 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 		scored = scored[:finalK]
 	}
 	return scored, nil
+}
+
+// hybridRecallCap bounds the candidate rows HybridSearch loads for scoring
+// (independent-review F-09): sqlite previously had no LIMIT, so a broad
+// namespace/type filter materialized EVERY matching row. Same window and
+// rationale as the postgres fix: there is no relevance index (vector
+// columns are Go-side scored, lexical scoring is Jaccard in Go), so the
+// cap is a recall window over the most recently updated objects, sized
+// generously relative to the default TopK=20/FinalK=5.
+const hybridRecallCap = 512
+
+// hybridRecallLimit returns the SQL-side candidate LIMIT for a hybrid
+// search request: at least hybridRecallCap, but never smaller than the
+// caller's own recall caps (TopK/FinalK) so an explicit wide request is
+// honored.
+func hybridRecallLimit(req knowledge.HybridSearchRequest) int {
+	limit := hybridRecallCap
+	if req.TopK > limit {
+		limit = req.TopK
+	}
+	if req.FinalK > limit {
+		limit = req.FinalK
+	}
+	return limit
 }
 
 // hybridConditions builds the WHERE clause (with parameterized placeholders)

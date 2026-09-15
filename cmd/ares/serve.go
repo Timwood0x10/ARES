@@ -26,7 +26,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
-	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -118,13 +117,14 @@ func runServe() error {
 	// --- Runtime config store + hot-reload watcher + startup snapshot ---
 	cfgStore := wiringServeCfgStoreWatch(ctx, g, cfg, comp)
 
-	// --- LLM adapter with fallback ---
-	llmAdapter, err := createLLMAdapterWithFallback(cfg)
-	if err != nil {
-		return fmt.Errorf("create llm adapter: %w", err)
-	}
-
 	// --- ChatClient for native tool calling ---
+	// TODO(tech-debt): the separate output.LLMAdapter assembly
+	// (createLLMAdapterWithFallback) was removed here — its result was
+	// threaded through createAndServeAgents/createPeerAgents but never
+	// consumed, so the "runtime fallback chain" it advertised never ran.
+	// Runtime failover lives in FailoverClient (createChatClient); the
+	// unused internal/llm/output adapter package has zero callers left
+	// and is a 0.4 deletion candidate (independent-review F-07).
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
 		return fmt.Errorf("create chat client: %w", err)
@@ -138,7 +138,7 @@ func runServe() error {
 	}
 
 	// --- Create + register agents with the runtime manager ---
-	subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+	subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, chatClient, toolBinder, comp, mgr)
 	if err != nil {
 		return err
 	}
@@ -316,85 +316,11 @@ func validateServeConfig(cfg *ares_config.Config) error {
 	return nil
 }
 
-// createLLMAdapterWithFallback creates an LLM adapter with fallback chain.
-func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, error) {
-	factory := output.NewFactory()
-
-	// Try primary
-	primaryCfg := &output.Config{
-		Provider:  cfg.LLM.Provider,
-		APIKey:    cfg.LLM.APIKey,
-		BaseURL:   cfg.LLM.BaseURL,
-		Model:     cfg.LLM.Model,
-		Timeout:   cfg.LLM.Timeout,
-		MaxTokens: cfg.LLM.MaxTokens,
-	}
-
-	adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg)
-	if err == nil {
-		log.Info("LLM adapter created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
-		return adapter, nil
-	}
-	log.Warn("primary LLM failed, trying fallbacks", "err", err)
-
-	// Try fallbacks from config
-	for _, fb := range cfg.LLM.Fallbacks {
-		fbCfg := &output.Config{
-			Provider:  fb.Provider,
-			APIKey:    fb.APIKey,
-			BaseURL:   fb.BaseURL,
-			Model:     fb.Model,
-			Timeout:   fb.Timeout,
-			MaxTokens: fb.MaxTokens,
-		}
-		if fbCfg.Provider == "" {
-			fbCfg.Provider = "openai"
-		}
-		adapter, err = factory.Create(fbCfg.Provider, fbCfg)
-		if err == nil {
-			log.Info("LLM fallback adapter created", "provider", fbCfg.Provider, "model", fbCfg.Model)
-			return adapter, nil
-		}
-		log.Warn("fallback LLM failed", "provider", fbCfg.Provider, "err", err)
-	}
-	// Last resort: local ollama — but ONLY when the config did not
-	// explicitly name any LLM. Silently switching an explicitly configured
-	// hosted provider (bad key, wrong base URL) to a local llama hides the
-	// misconfiguration and changes model behavior without notice; that is
-	// a hard error now. An empty/unset LLM config is the legitimate
-	// "local dev" case where the ollama default is a real convenience.
-	llmConfigured := cfg.LLM.Provider != "" || len(cfg.LLM.Fallbacks) > 0
-	if !llmConfigured {
-		log.Info("no LLM configured, defaulting to local ollama (llama3.2)")
-		ollamaCfg := &output.Config{
-			Provider:  "ollama",
-			BaseURL:   "http://localhost:11434",
-			Model:     "llama3.2",
-			Timeout:   120,
-			MaxTokens: 2048,
-		}
-		adapter, err = factory.Create("ollama", ollamaCfg)
-		if err == nil {
-			return adapter, nil
-		}
-		// Wrap the sentinel so callers can errors.Is(err, ErrNoLLMAdapter)
-		// while still retaining the underlying adapter-creation error.
-		return nil, fmt.Errorf("no LLM adapter available: %w (last attempt: %v)", ErrNoLLMAdapter, err)
-	}
-	// The user configured LLM provider(s) and every one of them failed:
-	// surface that instead of papering over it with an unrequested local
-	// model.
-	return nil, fmt.Errorf("all configured LLM providers failed (primary %q + %d fallback(s)): %w",
-		cfg.LLM.Provider, len(cfg.LLM.Fallbacks), ErrNoLLMAdapter)
-}
-
-// ErrNoLLMAdapter is the sentinel returned by createLLMAdapterWithFallback when
-// every configured provider (primary, fallbacks, and the local ollama last
-// resort) fails to produce an adapter. Callers that need to distinguish "no
-// LLM available" from other serve failures should use errors.Is(err,
-// ErrNoLLMAdapter) — e.g. to surface a degraded-mode warning instead of a hard
-// crash. (Prefer typed errors over string matching.)
-var ErrNoLLMAdapter = errors.New("serve: no LLM adapter available")
+// createLLMAdapterWithFallback was removed (independent-review F-07): its
+// result was threaded into createAndServeAgents/createPeerAgents but never
+// consumed — the primary→fallback→ollama chain it advertised never ran.
+// Runtime failover is FailoverClient in createChatClient; see the TODO at
+// the ChatClient assembly site.
 
 // defaultServeHost is the fallback bind host when the config leaves
 // server.host empty (a hand-built Config may skip setDefaults). The explicit

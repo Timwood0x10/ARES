@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -288,6 +289,19 @@ func (w *chaosWrappedAgent) ProcessStream(ctx context.Context, input any) (<-cha
 	// it cannot leak indefinitely.
 	relay := make(chan base.AgentEvent)
 	go func() {
+		// Recover boundary (code_rules_v2 §4.2): the relay forwards agent
+		// events with no caller to observe a panic, so one would take the
+		// whole process down.
+		//
+		// This defer is registered FIRST, so under LIFO unwinding it runs
+		// LAST: cancel() and close(relay) still execute during the panic,
+		// and the consumer sees a closed channel rather than a hang.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("chaos: event relay panicked",
+					"panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		defer cancel()
 		defer close(relay)
 		for {

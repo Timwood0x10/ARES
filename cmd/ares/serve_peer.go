@@ -19,7 +19,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/introspect"
-	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -36,7 +35,6 @@ func createAndServeAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,
 	internalReg *core_tools.Registry,
-	llmAdapter output.LLMAdapter,
 	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	comp *ares_bootstrap.Components,
@@ -58,7 +56,7 @@ func createAndServeAgents(
 	injectToolClassDAG(comp, toolBinder)
 
 	subAgents, peerKernel, err := createPeerAgents(
-		ctx, cfg, comp, llmAdapter, chatClient, toolBinder,
+		ctx, cfg, comp, chatClient, toolBinder,
 		comp.EventStore, strategySrc, comp.ExpRepo,
 	)
 	if err != nil {

@@ -207,6 +207,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set("X-Title", "ARES")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -291,6 +292,7 @@ func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOve
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -375,6 +377,7 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string, o request
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -162,6 +162,7 @@ func (c *Client) chatOllama(ctx context.Context, messages []*llmcore.LLMMessage,
 		return nil, errors.Wrap(err, "create ollama chat request")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -274,6 +275,7 @@ func (c *Client) chatOpenAI(ctx context.Context, messages []*llmcore.LLMMessage,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set("X-Title", "ARES")
+	c.applyExtraHeaders(req)
 
 	return c.decodeOpenAIChatResponse(ctx, req)
 }
@@ -471,6 +473,7 @@ func (c *Client) chatAnthropic(ctx context.Context, messages []*llmcore.LLMMessa
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	c.applyExtraHeaders(req)
 
 	return c.decodeAnthropicChatResponse(ctx, req)
 }

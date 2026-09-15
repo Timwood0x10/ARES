@@ -23,7 +23,6 @@ import (
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llm "github.com/Timwood0x10/ares/internal/llm"
-	"github.com/Timwood0x10/ares/internal/llm/output"
 	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
@@ -72,7 +71,6 @@ func createPeerAgents(
 	ctx context.Context,
 	cfg *ares_config.Config,
 	comp *ares_bootstrap.Components,
-	llmAdapter output.LLMAdapter,
 	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	store ares_events.EventStore,
