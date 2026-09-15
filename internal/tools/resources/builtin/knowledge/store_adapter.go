@@ -66,11 +66,11 @@ func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string
 	if a == nil || a.store == nil {
 		return nil, errors.New("knowledge store adapter: store is nil")
 	}
-	obj, err := a.store.Get(ctx, itemID)
+	obj, err := a.store.Get(ctx, tenantID, itemID)
 	if err != nil {
 		return nil, err
 	}
-	if obj == nil || obj.Namespace != tenantID {
+	if obj == nil {
 		return nil, errObjectNotFound
 	}
 	return toKnowledgeItem(obj), nil
@@ -86,13 +86,25 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 	}
 	obj := fromKnowledgeItem(item)
 	obj.Namespace = tenantID
+	// Fetch the existing row for field preservation only — NOT for ownership.
+	// A tenant-scoped Get reports a foreign-namespace row as absent, so the
+	// adapter cannot distinguish "no such row" from "another tenant's row", and
+	// must not try: that would reopen the ID-enumeration hole the scoped Get
+	// closed. Ownership is enforced in the store instead: Save refuses to
+	// overwrite a row whose namespace differs (ErrObjectNotFound), which is
+	// what stops a cross-tenant knowledge_update from migrating the victim row
+	// into the caller's namespace via the upsert-on-miss path below.
+	existing, gerr := a.store.Get(ctx, tenantID, item.ID)
+	if gerr != nil {
+		existing = nil
+	}
 	// Preserve the fields the round trip through KnowledgeItem cannot
 	// carry (Raw, Representations, EmbeddingModel, Confidence, Version,
 	// Type, Status, Quality, Relations). Overwriting the stored object
 	// with a bare conversion previously dropped the embedding metadata, so
 	// every knowledge_update silently degraded that object's semantic
 	// recall to lexical-only.
-	if existing, err := a.store.Get(ctx, item.ID); err == nil && existing != nil && existing.Namespace == tenantID {
+	if existing != nil {
 		if obj.Raw == nil {
 			obj.Raw = existing.Raw
 		}
@@ -121,6 +133,11 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 			obj.Version = existing.Version
 		}
 	}
+	// Ownership on the write path is the store's Save guard (refuses to
+	// overwrite a row owned by a different namespace), not anything checkable
+	// here: a cross-tenant update reaches Save with the foreign row invisible
+	// to the scoped Get above, and the guard is what turns that silent
+	// migration into ErrObjectNotFound.
 	if err := a.store.Save(ctx, obj); err != nil {
 		return nil, err
 	}
@@ -147,14 +164,21 @@ func (a *StoreAdapter) DeleteKnowledge(ctx context.Context, tenantID, itemID str
 	if a == nil || a.store == nil {
 		return errors.New("knowledge store adapter: store is nil")
 	}
-	obj, err := a.store.Get(ctx, itemID)
+	obj, err := a.store.Get(ctx, tenantID, itemID)
 	if err != nil {
 		return err
 	}
-	if obj != nil && obj.Namespace != tenantID {
+	// A nil object must be rejected, not treated as deletable: the pre-fix
+	// check was `obj != nil && obj.Namespace != tenantID`, which skipped the
+	// tenant test entirely when a store returned (nil, nil) and then deleted
+	// by ID. The write path was therefore MORE permissive than the read path
+	// (GetKnowledge already rejected nil). Any store backend that answers
+	// (nil, nil) instead of an ErrObjectNotFound sentinel turned that
+	// asymmetry into an unguarded delete.
+	if obj == nil || obj.Namespace != tenantID {
 		return errObjectNotFound
 	}
-	return a.store.Delete(ctx, itemID)
+	return a.store.Delete(ctx, tenantID, itemID)
 }
 
 // objectText returns the most complete text representation of an object.

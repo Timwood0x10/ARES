@@ -1,6 +1,7 @@
 package postgresstore
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -84,5 +85,22 @@ func TestPqFloat32ArrayScan_ByteSlice(t *testing.T) {
 	}
 	if len(a) != 2 || a[0] != 0.5 || a[1] != 1.0 {
 		t.Errorf("unexpected values: %v", a)
+	}
+}
+
+// TestSaveUpsertSQLGuardsNamespace pins the tenant-ownership guard in the
+// Save statement (the postgres package has no live-database test harness, so
+// the SQL shape is asserted directly, same approach as
+// TestHybridSearchCandidateQueryShape). Objects are keyed by id alone; without
+// `WHERE akf_objects.namespace = EXCLUDED.namespace` on the DO UPDATE branch,
+// an upsert carrying another tenant's id would overwrite that row and
+// re-stamp it with the caller's namespace — the cross-tenant migration that
+// StoreAdapter.UpdateKnowledge relies on Save to refuse.
+func TestSaveUpsertSQLGuardsNamespace(t *testing.T) {
+	if !strings.Contains(saveUpsertSQL, "ON CONFLICT (id) DO UPDATE SET") {
+		t.Fatal("saveUpsertSQL must remain an upsert on the id key")
+	}
+	if !strings.Contains(saveUpsertSQL, "WHERE akf_objects.namespace = EXCLUDED.namespace") {
+		t.Fatal("saveUpsertSQL lost the namespace ownership guard on the update branch")
 	}
 }

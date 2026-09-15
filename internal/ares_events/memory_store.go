@@ -292,17 +292,37 @@ func (s *MemoryEventStore) SubscriberCount() int {
 }
 
 // notifySubscribers sends an event to all matching subscribers (non-blocking).
+//
+// A full subscriber buffer DROPS the event for that subscriber: the send is
+// deliberately non-blocking so one slow consumer cannot stall the publisher
+// or the other subscribers. The drop is not silent — it is counted for
+// Stats() and logged at Warn on a sampling schedule (1st, then every 1024th)
+// so sustained data loss is visible in production logs without a slow
+// subscriber flooding them.
 func (s *MemoryEventStore) notifySubscribers(event *Event) {
 	for _, sub := range s.subscribers {
 		if s.matchesFilter(event, sub.filter) {
 			select {
 			case sub.ch <- event:
 			default:
-				s.dropped.Add(1)
+				total := s.dropped.Add(1)
+				// Sample: always log the first drop (so a single loss is
+				// never invisible), then once per 1024 to bound log volume.
+				if total == 1 || total&dropLogMask == 0 {
+					log.Warn("events: subscriber buffer full, event dropped",
+						"stream_id", event.StreamID,
+						"event_type", event.Type,
+						"subscriber_id", sub.id,
+						"total_dropped", total)
+				}
 			}
 		}
 	}
 }
+
+// dropLogMask is the sampling period (as a mask, so a power of two) for
+// drop warnings: 1024-1 between sampled lines.
+const dropLogMask = int64(1023)
 
 // matchesFilter checks if an event matches a subscription filter.
 func (s *MemoryEventStore) matchesFilter(event *Event, filter EventFilter) bool {

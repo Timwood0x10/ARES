@@ -2,6 +2,7 @@ package memorystore
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestStoreSaveInputIsolation(t *testing.T) {
 	obj.Metadata["k"] = "mutated"
 	obj.Tags[0] = "mutated"
 
-	got, err := s.Get(context.Background(), "obj-1")
+	got, err := s.Get(context.Background(), "", "obj-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	}
 
 	// Mutate through every read path.
-	g, _ := s.Get(context.Background(), "obj-1")
+	g, _ := s.Get(context.Background(), "", "obj-1")
 	g.Summary = "via-get"
 	g.Metadata["k"] = "via-get"
 	g.Raw[0] = 'X'
@@ -73,7 +74,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	}
 	q[0].Summary = "via-query"
 
-	sr, _ := s.Search(context.Background(), "searchable", "", 10)
+	sr, _ := s.Search(context.Background(), "", "searchable", "", 10)
 	if len(sr) != 1 {
 		t.Fatalf("Search: expected 1 result, got %d", len(sr))
 	}
@@ -85,7 +86,7 @@ func TestStoreReturnedObjectsAreCopies(t *testing.T) {
 	}
 	lb[0].Summary = "via-list"
 
-	final, _ := s.Get(context.Background(), "obj-1")
+	final, _ := s.Get(context.Background(), "", "obj-1")
 	if final.Summary != "searchable summary" || final.Metadata["k"] != "v" || final.Raw[0] != 'r' {
 		t.Errorf("mutations through returned objects corrupted the stored copy: %+v", final)
 	}
@@ -128,7 +129,7 @@ func TestStoreHybridSearchResultsAreCopies(t *testing.T) {
 	res[0].Object.Summary = "mutated"
 	res[0].Object.Raw = []byte("junk")
 
-	final, _ := s.Get(context.Background(), "obj-1")
+	final, _ := s.Get(context.Background(), "", "obj-1")
 	if final.Summary != "alpha beta" {
 		t.Errorf("HybridSearch result mutation corrupted the stored object: %q", final.Summary)
 	}
@@ -153,7 +154,7 @@ func TestStoreConcurrentSaveGetUnderRace(t *testing.T) {
 				}
 				_ = s.Save(context.Background(), obj)
 				obj.Metadata["mutated"] = true // post-Save mutation
-				if got, err := s.Get(context.Background(), "obj-shared"); err == nil {
+				if got, err := s.Get(context.Background(), "", "obj-shared"); err == nil {
 					_ = got.Summary
 				}
 				_, _ = s.Query(context.Background(), knowledge.Query{})
@@ -161,4 +162,75 @@ func TestStoreConcurrentSaveGetUnderRace(t *testing.T) {
 		}(w)
 	}
 	wg.Wait()
+}
+
+// TestCrossTenantAccessRefused locks the tenant predicate added to Get/Delete/
+// Search. Before the fix these took no tenant at all — Get(ctx, id) and
+// Delete(ctx, id) matched on the primary key alone, so any caller holding an
+// object ID could read or erase another tenant's knowledge. Search ignored its
+// tenant argument entirely in the postgres and sqlite backends (it was named
+// `_ string`).
+//
+// A foreign-namespace row must be indistinguishable from a missing one, so the
+// error is ErrObjectNotFound in both cases: distinguishing them would let a
+// caller probe another tenant for valid object IDs.
+func TestCrossTenantAccessRefused(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	obj := &knowledge.KnowledgeObject{ID: "secret", Namespace: "tenant-a", Summary: "belongs to a"}
+	if err := s.Save(ctx, obj); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := s.Get(ctx, "tenant-b", "secret"); !errors.Is(err, ErrObjectNotFound) {
+		t.Errorf("cross-tenant Get = %v, want ErrObjectNotFound", err)
+	}
+	if err := s.Delete(ctx, "tenant-b", "secret"); !errors.Is(err, ErrObjectNotFound) {
+		t.Errorf("cross-tenant Delete = %v, want ErrObjectNotFound", err)
+	}
+	if got, err := s.Search(ctx, "tenant-b", "belongs", "", 10); err != nil || len(got) != 0 {
+		t.Errorf("cross-tenant Search = %d results (err %v), want none", len(got), err)
+	}
+
+	// The owning tenant still has full access.
+	if _, err := s.Get(ctx, "tenant-a", "secret"); err != nil {
+		t.Errorf("owning-tenant Get: %v", err)
+	}
+	// And the row survived the refused delete.
+	if _, err := s.Get(ctx, "tenant-a", "secret"); err != nil {
+		t.Errorf("row must survive a refused cross-tenant Delete: %v", err)
+	}
+}
+
+// TestSaveRefusesCrossNamespaceOverwrite locks the Save ownership guard.
+// Objects are keyed by ID alone, and a tenant-scoped Get reports a foreign row
+// as absent — so without this guard an upsert-on-miss caller (knowledge_update
+// via StoreAdapter) would overwrite another tenant's row and re-stamp it with
+// the caller's namespace, silently migrating the victim's knowledge. The
+// refused Save must answer ErrObjectNotFound (same as a foreign Get, so the
+// caller cannot probe which IDs exist elsewhere) and leave the row untouched.
+func TestSaveRefusesCrossNamespaceOverwrite(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	victim := &knowledge.KnowledgeObject{ID: "obj-1", Namespace: "tenant-a", Normalized: "secret"}
+	if err := s.Save(ctx, victim); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	attacker := &knowledge.KnowledgeObject{ID: "obj-1", Namespace: "tenant-b", Normalized: "attacker content"}
+	if err := s.Save(ctx, attacker); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("cross-namespace Save = %v, want ErrObjectNotFound", err)
+	}
+
+	got, err := s.Get(ctx, "tenant-a", "obj-1")
+	if err != nil {
+		t.Fatalf("owning-tenant Get after refused Save: %v", err)
+	}
+	if got.Namespace != "tenant-a" || got.Normalized != "secret" {
+		t.Fatalf("victim row mutated by refused Save: ns=%q normalized=%q", got.Namespace, got.Normalized)
+	}
+	// The caller's own namespace gained nothing either: the Save failed whole.
+	if _, err := s.Get(ctx, "tenant-b", "obj-1"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("refused Save must not create the row in tenant-b, got %v", err)
+	}
 }

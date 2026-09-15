@@ -98,6 +98,16 @@ func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) e
 		if obj.ID == "" {
 			return errors.New("knowledge object ID cannot be empty")
 		}
+		// Objects are keyed by ID alone, so an upsert whose ID already exists
+		// under a DIFFERENT namespace would migrate another tenant's row into
+		// the caller's. Tenant-scoped Get/Delete/Search cannot catch this: a
+		// foreign row reads as absent there, and an upsert-on-miss caller
+		// (knowledge_update) would silently reassign it. Refusing the overwrite
+		// with ErrObjectNotFound keeps the foreign row indistinguishable from a
+		// missing one — the caller cannot probe other tenants' IDs via Save.
+		if existing, ok := s.objects[obj.ID]; ok && existing.Namespace != obj.Namespace {
+			return ErrObjectNotFound
+		}
 		// Store a private copy so later caller mutations cannot corrupt the
 		// stored state (see cloneObject).
 		s.objects[obj.ID] = cloneObject(obj)
@@ -105,11 +115,13 @@ func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) e
 	return nil
 }
 
-func (s *Store) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *Store) Get(_ context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	obj, ok := s.objects[id]
-	if !ok {
+	// A foreign-namespace row is indistinguishable from a missing one, so a
+	// caller cannot probe another tenant for valid object IDs.
+	if !ok || obj.Namespace != tenantID {
 		return nil, ErrObjectNotFound
 	}
 	return cloneObject(obj), nil
@@ -178,9 +190,18 @@ func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.Knowle
 	return result, nil
 }
 
-func (s *Store) Delete(_ context.Context, id string) error {
+func (s *Store) Delete(_ context.Context, tenantID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A missing ID and a foreign-namespace ID must be indistinguishable:
+	// answering nil for one and ErrObjectNotFound for the other would let a
+	// caller enumerate IDs that exist under other tenants. postgres/sqlite
+	// reach the same contract by checking RowsAffected on
+	// `DELETE ... WHERE id = ? AND namespace = ?` (zero rows either way).
+	obj, ok := s.objects[id]
+	if !ok || obj.Namespace != tenantID {
+		return ErrObjectNotFound
+	}
 	delete(s.objects, id)
 	// Clean up related representations.
 	for key := range s.reps {
@@ -191,7 +212,7 @@ func (s *Store) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *Store) Search(_ context.Context, text string, model string, limit int) ([]*knowledge.KnowledgeObject, error) {
+func (s *Store) Search(_ context.Context, tenantID, text string, model string, limit int) ([]*knowledge.KnowledgeObject, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -201,6 +222,9 @@ func (s *Store) Search(_ context.Context, text string, model string, limit int) 
 
 	var scored []*knowledge.KnowledgeObject
 	for _, obj := range s.objects {
+		if obj.Namespace != tenantID {
+			continue
+		}
 		content := strings.ToLower(obj.Summary + " " + strings.Join(obj.Tags, " "))
 		score := 0
 		for _, kw := range keywords {

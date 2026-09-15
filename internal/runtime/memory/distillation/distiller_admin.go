@@ -269,6 +269,7 @@ func extractEvidenceFromMessages(messages []Message, turnID string) []string {
 //
 //	error - the first error encountered, or nil.
 func (d *Distiller) syncToExperienceStore(ctx context.Context, memories []Memory, tenantID string) error {
+	ctx = WithTenant(ctx, tenantID)
 	for _, mem := range memories {
 		exp := d.convertMemoryToExperience(&mem, tenantID)
 		if err := d.expStore.Create(ctx, exp); err != nil {

@@ -16,20 +16,32 @@ type Query struct {
 // data path. Provider → Pipeline → KnowledgeRuntime bypasses Store entirely.
 type KnowledgeStore interface {
 	// Save persists one or more KnowledgeObjects. Creates or updates.
+	// An upsert whose ID already exists under a DIFFERENT namespace is refused
+	// with ErrObjectNotFound and leaves the stored row untouched: objects are
+	// keyed by ID alone, so without this guard a knowledge_update carrying
+	// another tenant's ID would silently migrate that row into the caller's
+	// namespace.
 	Save(ctx context.Context, objects ...*KnowledgeObject) error
 
-	// Get retrieves a KnowledgeObject by ID.
-	// Returns ErrObjectNotFound if not found.
-	Get(ctx context.Context, id string) (*KnowledgeObject, error)
+	// Get retrieves a KnowledgeObject by ID, scoped to the owning tenant.
+	// Returns ErrObjectNotFound when no row with that ID exists IN THAT
+	// TENANT — deliberately the same error as "no such ID", so a caller
+	// cannot probe for another tenant's object IDs.
+	Get(ctx context.Context, tenantID, id string) (*KnowledgeObject, error)
 
 	// Query retrieves KnowledgeObjects matching the given criteria.
 	Query(ctx context.Context, q Query) ([]*KnowledgeObject, error)
 
-	// Delete removes a KnowledgeObject by ID.
-	Delete(ctx context.Context, id string) error
+	// Delete removes a KnowledgeObject by ID, scoped to the owning tenant.
+	// A row belonging to another tenant is reported as ErrObjectNotFound and
+	// left untouched; a missing ID answers identically, so a caller cannot
+	// enumerate which IDs exist under other tenants.
+	Delete(ctx context.Context, tenantID, id string) error
 
-	// Search performs semantic search using the given embedding model.
-	Search(ctx context.Context, text string, model string, limit int) ([]*KnowledgeObject, error)
+	// Search performs semantic search using the given embedding model,
+	// scoped to the owning tenant. Backends without vectors degrade to
+	// lexical matching but must still apply the tenant scope.
+	Search(ctx context.Context, tenantID, text string, model string, limit int) ([]*KnowledgeObject, error)
 
 	// SaveRepresentation stores an embedding vector.
 	SaveRepresentation(ctx context.Context, rep *Representation) error

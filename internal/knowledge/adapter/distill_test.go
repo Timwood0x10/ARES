@@ -53,7 +53,7 @@ func (s *testStore) Save(_ context.Context, objects ...*knowledge.KnowledgeObjec
 	return nil
 }
 
-func (s *testStore) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *testStore) Get(_ context.Context, _, id string) (*knowledge.KnowledgeObject, error) {
 	obj, ok := s.objects[id]
 	if !ok {
 		return nil, fmt.Errorf("not found: %s", id)
@@ -69,12 +69,12 @@ func (s *testStore) Query(_ context.Context, _ knowledge.Query) ([]*knowledge.Kn
 	return result, nil
 }
 
-func (s *testStore) Delete(_ context.Context, id string) error {
+func (s *testStore) Delete(_ context.Context, _, id string) error {
 	delete(s.objects, id)
 	return nil
 }
 
-func (s *testStore) Search(_ context.Context, _ string, _ string, _ int) ([]*knowledge.KnowledgeObject, error) {
+func (s *testStore) Search(_ context.Context, _, _ string, _ string, _ int) ([]*knowledge.KnowledgeObject, error) {
 	return nil, nil
 }
 
@@ -137,7 +137,7 @@ func TestDistillBridge_FullPipeline(t *testing.T) {
 
 	// Verify objects are in store.
 	for _, obj := range objects {
-		got, err := store.Get(context.Background(), obj.ID)
+		got, err := store.Get(context.Background(), "", obj.ID)
 		if err != nil {
 			t.Errorf("object %q not found in store: %v", obj.ID, err)
 		}
@@ -294,7 +294,10 @@ func TestDistillBridge_QualityGate(t *testing.T) {
 			}
 
 			// Verify the stored object reflects the same lifecycle state.
-			got, gErr := store.Get(context.Background(), obj.ID)
+			// DistillConversation was called with tenantID "t1", and the bridge lets a
+			// non-empty tenantID override its configured namespace — so the row lives
+			// under "t1", not the bridge default "akf".
+			got, gErr := store.Get(context.Background(), "t1", obj.ID)
 			if gErr != nil {
 				t.Fatalf("object not found in store: %v", gErr)
 			}

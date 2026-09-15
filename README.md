@@ -110,13 +110,20 @@ Single-tenant by default; per-request tenant scoping when you opt in. **There is
 | Mode | Trigger | Behavior |
 |---|---|---|
 | **Default (single-tenant)** | Submit without `tenant_id` | Everything runs under the `default` tenant — tasks, planner-grown nodes, `ask_agent` sessions, distilled facts and knowledge recall. Behavior is identical to a system with no tenant concept. |
-| **Opt-in (tenant-scoped)** | Submit with `tenant_id` (`POST /api/tasks`, `POST /api/graphs`, or `payload["tenant_id"]` on SDK submissions) | That request and everything it derives executes, stores and recalls under that tenant, end to end. |
+| **Opt-in (tenant-scoped)** | Submit with `tenant_id` (`POST /api/tasks`, `POST /api/graphs`, or `payload["tenant_id"]` on SDK submissions) | That request and its derived work executes under that tenant; the experience/distillation store isolates per tenant column, the knowledge side isolates per namespace (see boundaries below). |
 
 How it holds together:
 
-- The tenant rides the task's **checkpoint envelope** (schema v5) through the scheduler's asynchronous execution, is restored into the quantum's context (`tenantctx`), and stamps everything downstream — grown tool/answer nodes, collaboration sessions, distillation. Empty means "no tenant known"; every consumer falls back to `default`.
+- The tenant rides the task's **checkpoint envelope** (schema v5) through the scheduler's asynchronous execution, is restored into the quantum's context (`tenantctx`), and stamps downstream — grown tool/answer nodes, collaboration sessions, distillation. Empty means "no tenant known"; every consumer falls back to `default`.
 - **Anti-forgery is Kernel-enforced**: an LLM-supplied `tenant_id` in tool arguments, `create_task` payloads or `ask_agent` payloads is overwritten by the executing context's tenant (the same contract `Origin` follows). The system never generates a non-default tenant on its own.
-- **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — the plumbing is ready for that swap; only the source of the value changes. See `SECURITY.md` → Tenancy.
+
+**Actual isolation boundaries** (stated honestly — do not read this as end-to-end column-level tenancy):
+
+- **Experience/distillation store**: every query in `internal/storage/postgres/repositories/experience_repository.go` carries a `tenant_id = $N` predicate — column-level isolation. Distillation writes take the tenant through a context seam (`distillation.WithTenant`), so a runtime override reaches the write side.
+- **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one; the underlying `Get`/`Delete`/`Search` carry no tenant or namespace predicate of their own.
+- **AKG-distilled facts are not tenant-split today**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"`, so every AKG fact lands in the same namespace.
+
+- **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — and the two knowledge-side gaps above must be closed first before the isolation is end to end. See `SECURITY.md` → Tenancy.
 
 ## Stability & Performance
 
@@ -170,7 +177,7 @@ The LLM never participates in extraction or build — it only consumes the retri
 - **Rule-based relation extraction** over a closed predicate vocabulary: `calls`, `fixes`, `depends_on`, `belongs_to`, `similar_to`, `supersedes`, `causes`, `related_to`.
 - **Multi-dimensional QualityGate** (extraction / consistency / freshness / usage) driving a `candidate → active → superseded/rejected` lifecycle with promotion.
 - **HybridSearch**: vector cosine + lexical Jaccard, filtered by namespace and status.
-- **Multi-backend persistence**: Memory, SQLite, PostgreSQL, **MySQL** (driver-free).
+- **Multi-backend persistence**: Memory, SQLite, PostgreSQL.
 
 ### Honest limitations
 
@@ -184,9 +191,9 @@ The LLM never participates in extraction or build — it only consumes the retri
 
 | Extension point | What to do | Interface touched |
 |---|---|---|
-| **New database backend** | Add `internal/knowledge/store/<name>/store.go` implementing `KnowledgeStore`. Shipped: Memory, SQLite, PostgreSQL, **MySQL** (no driver dependency — the consumer blank-imports their MySQL driver). CockroachDB / TiDB / Spanner are one file each. | `KnowledgeStore` (unchanged for new backends) |
+| **New database backend** | Add `internal/knowledge/store/<name>/store.go` implementing `KnowledgeStore`. Shipped: Memory, SQLite, PostgreSQL. A MySQL / CockroachDB / TiDB / Spanner backend is one file each — none has been written yet. | `KnowledgeStore` (unchanged for new backends) |
 | **Professional vector DB** | Add vector recall inside your `KnowledgeStore` implementation (the PostgreSQL store already uses pgvector `ORDER BY embedding <=> $1` for `HybridSearch`). | `KnowledgeStore` (unchanged for new backends) |
-| **Multi-tenancy** | Per-request opt-in (see [Tenancy Model](#tenancy-model)): the submission's `tenant_id` rides the checkpoint envelope into the execution context and scopes knowledge write/read; repository-layer queries carry explicit `tenant_id` predicates. Default deployment is single-tenant (`default`), predicate-based at the DB layer. | No new interface |
+| **Multi-tenancy** | Per-request opt-in (see [Tenancy Model](#tenancy-model)): the submission's `tenant_id` rides the checkpoint envelope into the execution context. **Isolation is layered**: the experience/distillation store isolates per tenant column (queries carry a `tenant_id` predicate); the knowledge side isolates per `namespace`, not a tenant column, and AKG facts currently all write to the `default` namespace. Default deployment is single-tenant (`default`). | No new interface |
 
 > Design invariant: `KnowledgeStore` is the single persistence contract. Adding a database or a vector index never changes it — only new implementations appear. This is what keeps the upper runtime logic untouched as the storage layer evolves.
 

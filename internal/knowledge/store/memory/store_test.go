@@ -18,7 +18,7 @@ func TestSaveAndGet(t *testing.T) {
 		t.Fatalf("Save error: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "o1")
+	got, err := s.Get(context.Background(), "", "o1")
 	if err != nil {
 		t.Fatalf("Get error: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestSaveEmptyID(t *testing.T) {
 
 func TestGetNotFound(t *testing.T) {
 	s := New()
-	obj, err := s.Get(context.Background(), "nonexistent")
+	obj, err := s.Get(context.Background(), "", "nonexistent")
 	if !errors.Is(err, ErrObjectNotFound) {
 		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
@@ -146,12 +146,12 @@ func TestDelete(t *testing.T) {
 	s := New()
 	_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: "o1"})
 
-	err := s.Delete(context.Background(), "o1")
+	err := s.Delete(context.Background(), "", "o1")
 	if err != nil {
 		t.Fatalf("Delete error: %v", err)
 	}
 
-	got, _ := s.Get(context.Background(), "o1")
+	got, _ := s.Get(context.Background(), "", "o1")
 	if got != nil {
 		t.Error("expected nil after delete")
 	}
@@ -164,7 +164,7 @@ func TestSearch(t *testing.T) {
 		&knowledge.KnowledgeObject{ID: "o2", Summary: "PostgreSQL storage", Confidence: 0.8},
 	)
 
-	results, err := s.Search(context.Background(), "redis", "", 10)
+	results, err := s.Search(context.Background(), "", "redis", "", 10)
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}

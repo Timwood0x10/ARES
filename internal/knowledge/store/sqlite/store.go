@@ -151,7 +151,7 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 		relationsJSON := marshalRelations(obj.Relations)
 		now := time.Now().UTC().Format(time.RFC3339)
 
-		_, err := s.db.ExecContext(ctx, `
+		res, err := s.db.ExecContext(ctx, `
 			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET
@@ -169,12 +169,22 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 				quality = excluded.quality,
 				relations = excluded.relations,
 				embedding_model = excluded.embedding_model
+			WHERE akf_objects.namespace = excluded.namespace
 		`, obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
 			string(metaJSON), tags, obj.Confidence, obj.Version,
 			obj.CreatedAt.UTC().Format(time.RFC3339), now,
 			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel)
 		if err != nil {
 			return fmt.Errorf("save %q: %w", obj.ID, err)
+		}
+		// The WHERE on DO UPDATE only lets the upsert touch a row owned by the
+		// caller's namespace; a conflicting ID under another namespace affects
+		// zero rows. That must surface as ErrObjectNotFound (same answer as a
+		// tenant-scoped Get for a foreign row) so an upsert-on-miss caller
+		// cannot migrate another tenant's object into its own namespace, and
+		// cannot probe which foreign IDs exist.
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrObjectNotFound
 		}
 	}
 	return nil
@@ -208,10 +218,10 @@ func marshalRelations(rels []knowledge.Relation) string {
 	return string(b)
 }
 
-func (s *Store) Get(ctx context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *Store) Get(ctx context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects WHERE id = ?`, id)
+		FROM akf_objects WHERE id = ? AND namespace = ?`, id, tenantID)
 
 	obj, err := scanObject(row)
 	if err == sql.ErrNoRows {
@@ -285,21 +295,31 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 	return results, rows.Err()
 }
 
-func (s *Store) Delete(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM akf_objects WHERE id = ?", id)
-	return err
+func (s *Store) Delete(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM akf_objects WHERE id = ? AND namespace = ?", id, tenantID)
+	if err != nil {
+		return fmt.Errorf("delete %q: %w", id, err)
+	}
+	// A missing ID and a foreign-namespace ID both affect zero rows and must
+	// answer the same way (ErrObjectNotFound): reporting nil for one would let
+	// a caller enumerate which IDs exist under other tenants. Mirrors the
+	// memory backend, where both cases return ErrObjectNotFound.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrObjectNotFound
+	}
+	return nil
 }
 
-func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([]*knowledge.KnowledgeObject, error) {
+func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, limit int) ([]*knowledge.KnowledgeObject, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
 		FROM akf_objects
-		WHERE normalized LIKE ? OR summary LIKE ?
+		WHERE (normalized LIKE ? OR summary LIKE ?) AND namespace = ?
 		ORDER BY created_at DESC
-		LIMIT ?`, "%"+text+"%", "%"+text+"%", limit)
+		LIMIT ?`, "%"+text+"%", "%"+text+"%", tenantID, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -354,7 +354,7 @@ func TestDistillMemory(t *testing.T) {
 					t.Errorf("expected 1 saved object, got %d", ms.Count())
 				}
 				objID, _ := parsed["object_id"].(string)
-				saved, gErr := ms.Get(context.Background(), objID)
+				saved, gErr := ms.Get(context.Background(), "", objID)
 				if gErr != nil {
 					t.Fatalf("saved object not retrievable: %v", gErr)
 				}

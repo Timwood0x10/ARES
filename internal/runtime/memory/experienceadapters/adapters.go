@@ -228,9 +228,22 @@ func (r *DistillationRepo) CountByMemoryType(
 	return count, nil
 }
 
+// writeTenant resolves the tenant to stamp onto a write. A tenant injected
+// into ctx via distillation.WithTenant wins over the construction-time
+// DefaultTenant, so a runtime SetDefaultTenantID override reaches the write
+// path instead of re-scoping reads only. Falls back to DefaultTenant when the
+// context carries none, preserving the pre-existing single-tenant behavior.
+func (r *DistillationRepo) writeTenant(ctx context.Context) string {
+	if tenantID := distillation.TenantFrom(ctx); tenantID != "" {
+		return tenantID
+	}
+	return r.DefaultTenant
+}
+
 // Create inserts a new experience. The Experience DTO carries no tenant,
-// so the adapter's DefaultTenant is applied. ExtractionMethod is preserved
-// in Metadata so the round-trip through SearchByVector restores it.
+// so the adapter's write tenant is applied (context-injected tenant first,
+// DefaultTenant otherwise). ExtractionMethod is preserved in Metadata so the
+// round-trip through SearchByVector restores it.
 func (r *DistillationRepo) Create(ctx context.Context, exp *experience.Experience) error {
 	if r == nil || r.Repo == nil {
 		return errors.New("distillation repo: repository is nil")
@@ -238,7 +251,7 @@ func (r *DistillationRepo) Create(ctx context.Context, exp *experience.Experienc
 	if exp == nil {
 		return errors.New("distillation repo: experience is nil")
 	}
-	storage := ToStorageExperience(exp, r.DefaultTenant)
+	storage := ToStorageExperience(exp, r.writeTenant(ctx))
 	if err := r.Repo.Create(ctx, storage); err != nil {
 		return fmt.Errorf("distillation repo create: %w", err)
 	}
@@ -257,8 +270,9 @@ func (r *DistillationRepo) Update(ctx context.Context, exp *experience.Experienc
 	if exp == nil {
 		return errors.New("distillation repo: experience is nil")
 	}
-	storage := ToStorageExperience(exp, r.DefaultTenant)
-	if existing, err := r.Repo.GetByID(ctx, r.DefaultTenant, exp.ID); err == nil && existing != nil {
+	tenantID := r.writeTenant(ctx)
+	storage := ToStorageExperience(exp, tenantID)
+	if existing, err := r.Repo.GetByID(ctx, tenantID, exp.ID); err == nil && existing != nil {
 		storage.CreatedAt = existing.CreatedAt
 	}
 	if err := r.Repo.Update(ctx, storage); err != nil {
@@ -272,7 +286,7 @@ func (r *DistillationRepo) Delete(ctx context.Context, id string) error {
 	if r == nil || r.Repo == nil {
 		return errors.New("distillation repo: repository is nil")
 	}
-	if err := r.Repo.Delete(ctx, id, r.DefaultTenant); err != nil {
+	if err := r.Repo.Delete(ctx, id, r.writeTenant(ctx)); err != nil {
 		return fmt.Errorf("distillation repo delete: %w", err)
 	}
 	return nil
@@ -286,8 +300,9 @@ func (r *DistillationRepo) DeleteBatch(ctx context.Context, ids []string) error 
 	if r == nil || r.Repo == nil {
 		return errors.New("distillation repo: repository is nil")
 	}
+	tenantID := r.writeTenant(ctx)
 	for _, id := range ids {
-		if err := r.Repo.Delete(ctx, id, r.DefaultTenant); err != nil {
+		if err := r.Repo.Delete(ctx, id, tenantID); err != nil {
 			return fmt.Errorf("distillation repo delete batch %s: %w", id, err)
 		}
 	}

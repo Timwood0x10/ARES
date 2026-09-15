@@ -552,6 +552,10 @@ func (d *Distiller) embedOneMemory(ctx context.Context, memory *Memory) ([]float
 //
 //	[]Memory - resolved memories after conflict handling.
 func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, tenantID string, embedded []memWithEmbedding) []Memory {
+	// Carry the tenant into repo writes: the ExperienceRepository write
+	// methods take no tenant argument, so the adapter reads it back off ctx
+	// instead of falling through to its construction-time default.
+	ctx = WithTenant(ctx, tenantID)
 	var finalMemories []Memory
 
 	for idx, ew := range embedded {
@@ -804,6 +808,7 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 	if d.repo == nil {
 		return nil
 	}
+	ctx = WithTenant(ctx, tenantID)
 
 	config := d.getConfig()
 

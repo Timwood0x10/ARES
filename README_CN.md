@@ -105,13 +105,20 @@ make examples          # 构建全部示例
 | 模式 | 触发方式 | 行为 |
 |---|---|---|
 | **默认（单租户）** | 提交不带 `tenant_id` | 一切运行在 `default` 租户下 —— 任务、planner 生长的节点、`ask_agent` 会话、蒸馏事实与知识召回。行为与没有租户概念的完全一致。 |
-| **按请求隔离** | 提交带 `tenant_id`（`POST /api/tasks`、`POST /api/graphs`，或 SDK 提交的 `payload["tenant_id"]`） | 该请求及其全部派生工作端到端地在该租户下执行、存储与召回。 |
+| **按请求隔离** | 提交带 `tenant_id`（`POST /api/tasks`、`POST /api/graphs`，或 SDK 提交的 `payload["tenant_id"]`） | 该请求及其派生工作在该租户下执行；经验/蒸馏仓储按租户列隔离，知识侧按 namespace 隔离（见下方边界）。 |
 
 运作机制：
 
-- 租户随任务的 **checkpoint 信封**（schema v5）穿越调度器的异步执行，恢复进量子的执行上下文（`tenantctx`），并盖章到所有下游 —— 生长的工具/答案节点、协作会话、蒸馏。空值即"无租户"，所有消费方回退 `default`。
+- 租户随任务的 **checkpoint 信封**（schema v5）穿越调度器的异步执行，恢复进量子的执行上下文（`tenantctx`），并盖章到下游 —— 生长的工具/答案节点、协作会话、蒸馏。空值即"无租户"，所有消费方回退 `default`。
 - **防伪造由 Kernel 强制**：LLM 在工具参数、`create_task` payload、`ask_agent` payload 里塞的 `tenant_id` 会被执行上下文的租户无条件覆盖（与 `Origin` 同一契约）。系统自身永远不会生成非 default 租户。
-- **多租户部署**：当前租户由 HTTP 边界的**调用方声明**。真正的多租户部署必须在鉴权层绑定租户（如从 JWT principal 服务端推导），而非信任请求体 —— 管道已就绪，只需更换租户值的来源。见 `SECURITY.md` → Tenancy。
+
+**隔离的实际边界**（诚实声明，勿按"全链路租户列隔离"理解）：
+
+- **经验/蒸馏仓储**：`internal/storage/postgres/repositories/experience_repository.go` 的查询全部带 `tenant_id = $N` 谓词，是列级隔离。蒸馏写入经由 context 接缝（`distillation.WithTenant`）取租户，运行期覆盖可达写侧。
+- **知识侧按 namespace 隔离，不是租户列**：`KnowledgeStore` 的对象表只有 `namespace` 列，没有 `tenant_id` 列。`StoreProvider` 用 `namespaceFor` 把租户映射为 namespace（显式 `Scope.Namespaces` → `tenantctx` → provider 默认值），隔离因此依赖调用方始终带上 namespace；底层 `Get`/`Delete`/`Search` 本身不带任何租户或 namespace 谓词。
+- **AKG 蒸馏事实当前不随租户切分**：`internal/ares_bootstrap/knowledge_akg.go` 的 `akgNamespace` 是常量 `"default"`，所有 AKG 事实都写进同一 namespace。
+
+- **多租户部署**：当前租户由 HTTP 边界的**调用方声明**。真正的多租户部署必须在鉴权层绑定租户（如从 JWT principal 服务端推导），而非信任请求体；并且需要先把上面两条知识侧的边界补上，才谈得上端到端隔离。见 `SECURITY.md` → Tenancy。
 
 ## 稳定性与性能
 
@@ -160,7 +167,7 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 - **基于规则的关系抽取**，谓词词表封闭：`calls`、`fixes`、`depends_on`、`belongs_to`、`similar_to`、`supersedes`、`causes`、`related_to`。
 - **多维 QualityGate**（抽取/一致性/新鲜度/使用度），驱动 `candidate → active → superseded/rejected` 生命周期与晋升。
 - **HybridSearch**：向量余弦 + 词法 Jaccard，按 namespace 与 status 过滤。
-- **多后端持久化**：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖）。
+- **多后端持久化**：Memory、SQLite、PostgreSQL。
 
 ### 诚实的局限
 
@@ -174,9 +181,9 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 
 | 扩展点 | 做法 | 涉及接口 |
 |---|---|---|
-| **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖 —— 消费方自行 blank-import MySQL 驱动）。CockroachDB / TiDB / Spanner 各只需一个文件。 | `KnowledgeStore`（新增后端时不变） |
+| **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL。MySQL / CockroachDB / TiDB / Spanner 各只需一个文件，但目前都还没写。 | `KnowledgeStore`（新增后端时不变） |
 | **专业向量库** | 在你的 `KnowledgeStore` 实现内部添加向量召回（PostgreSQL store 已在 `HybridSearch` 中使用 pgvector 的 `ORDER BY embedding <=> $1`）。 | `KnowledgeStore`（新增后端时不变） |
-| **多租户** | 按请求可选启用（见[租户模型](#租户模型)）：提交的 `tenant_id` 随 checkpoint 信封进入执行上下文并约束知识读写；仓储层查询带显式 `tenant_id` 谓词。默认部署为单租户（`default`），DB 层由谓词承载。 | 无新接口 |
+| **多租户** | 按请求可选启用（见[租户模型](#租户模型)）：提交的 `tenant_id` 随 checkpoint 信封进入执行上下文。**隔离强度分层**：经验/蒸馏仓储是列级隔离（查询带 `tenant_id` 谓词）；知识侧按 `namespace` 隔离而非租户列，且 AKG 事实目前固定写入 `default` namespace。默认部署为单租户（`default`）。 | 无新接口 |
 
 > 设计不变量：`KnowledgeStore` 是唯一的持久化契约。新增数据库或向量索引永远不改变它 —— 只会出现新的实现。这正是存储层演进时上层 runtime 逻辑不受影响的根本原因。
 

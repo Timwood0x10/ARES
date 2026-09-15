@@ -31,7 +31,7 @@ type sseTransport struct {
 }
 
 // ConnectSSE connects to an MCP server via SSE transport.
-func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
+func ConnectSSE(ctx context.Context, name, connectURL string) (*Client, error) {
 	// The stream itself is long-lived, so the client carries no overall
 	// Timeout — that would cut the stream off mid-flight. The handshake is
 	// bounded instead at the transport layer: ResponseHeaderTimeout covers
@@ -43,7 +43,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 		client: &http.Client{Transport: transport},
 	}
 
-	sseReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	sseReq, err := http.NewRequestWithContext(ctx, http.MethodGet, connectURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sse request: %w", err)
 	}
@@ -82,12 +82,16 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 		}
 		return nil, fmt.Errorf("read endpoint: %w", err)
 	}
-	// Resolve the advertised message endpoint against the request URL: MCP
-	// SSE servers commonly send a RELATIVE endpoint ("/messages?sessionId=…"),
-	// and storing it verbatim makes every later POST fail with "unsupported
-	// protocol scheme" — the connection is up but unusable. sseResp.Request
-	// is the final request after redirects, so it is the correct base.
-	messageURL, err := resolveSSEEndpoint(sseResp.Request, endpoint)
+	// Resolve a RELATIVE endpoint against the post-redirect request URL (MCP
+	// SSE servers commonly send "/messages?sessionId=…"; storing it verbatim
+	// makes every later POST fail with "unsupported protocol scheme"), but
+	// verify an ABSOLUTE one against the URL the caller connected to — see
+	// resolveSSEEndpoint for why those two bases must differ.
+	originURL, perr := url.Parse(connectURL)
+	if perr != nil {
+		originURL = nil
+	}
+	messageURL, err := resolveSSEEndpoint(originURL, sseResp.Request, endpoint)
 	if err != nil {
 		tr.sseCancel()
 		if err := sseResp.Body.Close(); err != nil {
@@ -179,11 +183,21 @@ func (tr *sseTransport) readEndpointEvent(sc *bufio.Scanner) (string, error) {
 }
 
 // resolveSSEEndpoint resolves the endpoint advertised by the server's
-// "endpoint" event into an absolute URL. Absolute endpoints pass through;
-// relative ones are resolved against the (post-redirect) request URL. An
-// empty endpoint or a relative endpoint without a base URL is an error —
-// both left the transport unusable with a confusing later POST failure.
-func resolveSSEEndpoint(req *http.Request, endpoint string) (string, error) {
+// "endpoint" event into an absolute URL.
+//
+// base is used to resolve a RELATIVE endpoint — the post-redirect request
+// URL, which is where the stream actually came from. originURL is the URL
+// the caller passed to ConnectSSE and is what an ABSOLUTE endpoint is checked
+// against: the SSE stream and the message POST are two halves of one
+// transport, so a server must not redirect tool-call payloads (the JSON-RPC
+// body POSTed by roundTrip) off the origin the client chose to connect to.
+//
+// The two must be distinct because http.Client follows redirects by default.
+// Comparing against the post-redirect URL alone would let a hostile server
+// answer the handshake with a 302 to a host it controls and then advertise a
+// same-origin endpoint there — passing a check whose entire purpose is to pin
+// delivery to the connected origin.
+func resolveSSEEndpoint(originURL *url.URL, base *http.Request, endpoint string) (string, error) {
 	if endpoint == "" {
 		return "", fmt.Errorf("empty endpoint event")
 	}
@@ -191,13 +205,50 @@ func resolveSSEEndpoint(req *http.Request, endpoint string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
-	if u.IsAbs() {
-		return u.String(), nil
+	if !u.IsAbs() {
+		if base == nil || base.URL == nil {
+			return "", fmt.Errorf("relative endpoint %q without a base request URL", endpoint)
+		}
+		return base.URL.ResolveReference(u).String(), nil
 	}
-	if req == nil || req.URL == nil {
-		return "", fmt.Errorf("relative endpoint %q without a base request URL", endpoint)
+	if originURL == nil {
+		return "", fmt.Errorf("absolute endpoint %q without an origin URL to verify against", endpoint)
 	}
-	return req.URL.ResolveReference(u).String(), nil
+	if !sameOrigin(originURL, u) {
+		return "", fmt.Errorf("cross-origin endpoint %q rejected: SSE message endpoint must be same-origin as %q",
+			endpoint, originURL.String())
+	}
+	return u.String(), nil
+}
+
+// sameOrigin reports whether a and b share scheme, host and effective port.
+// It is the containment check for an SSE-advertised message endpoint: the
+// transport may move the POST path, but not off the origin it connected to.
+func sameOrigin(a, b *url.URL) bool {
+	if !strings.EqualFold(a.Scheme, b.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	return effectivePort(a) == effectivePort(b)
+}
+
+// effectivePort returns the port a URL implicitly uses, filling in the
+// scheme default when the URL omits it so "https://h" and "https://h:443"
+// compare equal.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "wss":
+		return "443"
+	case "http", "ws":
+		return "80"
+	default:
+		return ""
+	}
 }
 
 // drainSSE consumes the SSE body until the stream ends or the transport is

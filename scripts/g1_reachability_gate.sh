@@ -25,6 +25,7 @@ WHITELIST=(
   "internal/evoapi/genome"             # consumed only by examples/_internal (pulled in by evoapi)
   "internal/evoapi/mutation"           # consumed only by examples/_internal (pulled in by evoapi + 10-ga-full-evolution)
   "internal/knowledgeapi"              # consumed only by examples/_internal via knowledge/service (itself whitelisted)
+  "internal/storage/postgres/services" # consumed only by examples/_internal (11-knowledge-import: RetrievalService); its former serve-path consumer was removed with the AKG retrieval rework. Same examples-only precedent as knowledge/service above
 )
 
 cd "$(dirname "$0")/.."

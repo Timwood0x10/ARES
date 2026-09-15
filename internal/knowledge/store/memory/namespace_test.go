@@ -146,12 +146,13 @@ func TestNamespaceIsolation_ListByStatus(t *testing.T) {
 	}
 }
 
-// TestNamespaceIsolation_GetIsGlobal confirms that Get is keyed by ID globally
-// (not partitioned by namespace): the same ID resolves regardless of the
-// namespace the caller has in mind. This documents the design — namespace is a
-// query filter, not an ID partition — so tenants must use globally-unique IDs
-// (e.g. "tenant:object") to avoid collisions.
-func TestNamespaceIsolation_GetIsGlobal(t *testing.T) {
+// TestNamespaceIsolation_GetIsTenantScoped confirms that Get is partitioned by
+// namespace: an ID resolves only for the tenant that owns it. This replaced an
+// earlier design in which namespace was a query filter and Get was keyed by ID
+// globally (callers had to mint globally-unique IDs like "tenant:object" to
+// avoid collisions). Cross-tenant refusal is covered in depth by
+// TestCrossTenantAccessRefused; this test keeps the owning-tenant happy path.
+func TestNamespaceIsolation_GetIsTenantScoped(t *testing.T) {
 	s := New()
 	ctx := context.Background()
 	obj := &knowledge.KnowledgeObject{ID: "shared-id", Namespace: "tenant-a", Summary: "owner is tenant-a"}
@@ -159,7 +160,7 @@ func TestNamespaceIsolation_GetIsGlobal(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := s.Get(ctx, "shared-id")
+	got, err := s.Get(ctx, "tenant-a", "shared-id")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestNamespaceIsolation_GetIsGlobal(t *testing.T) {
 		t.Errorf("expected owner tenant-a, got %q", got.Namespace)
 	}
 	// A missing ID is still not-found, regardless of namespace intent.
-	if _, err := s.Get(ctx, "absent"); !errors.Is(err, ErrObjectNotFound) {
+	if _, err := s.Get(ctx, "tenant-a", "absent"); !errors.Is(err, ErrObjectNotFound) {
 		t.Errorf("expected ErrObjectNotFound for absent id, got %v", err)
 	}
 }

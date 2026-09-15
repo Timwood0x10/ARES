@@ -830,15 +830,12 @@ func (m *memoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (s
 // operations and for the write fallback in StoreDistilledTask (a task whose
 // payload carries no tenant_id is distilled under this tenant).
 //
-// LIMITATION (write tenant pinning): the DB write tenant for experiences is
-// fixed at adapter construction (experienceadapters.NewDistillationRepo is
-// built with DefaultTenant — the llmexp Experience DTO carries no TenantID
-// field), so an override here re-scopes READS while distillation writes keep
-// landing in the construction-time tenant.
-//
-// TODO(tech-debt): thread the tenant through the write chain (DTO field or
-// context seam) before any real multi-tenant deployment; tracked with the
-// lease/tenant unfired-wiring ledger item.
+// The override reaches both sides: reads via m.defaultTenantID, and writes
+// because the distiller injects the resolved tenant into the context
+// (distillation.WithTenant) at each repository write, which
+// experienceadapters.DistillationRepo reads back in preference to its
+// construction-time default. Without that seam an override re-scoped reads
+// while distillation writes kept landing in the construction-time tenant.
 func (m *memoryManager) SetDefaultTenantID(tenantID string) {
 	if tenantID == "" {
 		return

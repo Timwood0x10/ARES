@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -137,8 +138,10 @@ func TestFailoverClient_FallbackCooldownExpiry(t *testing.T) {
 		t.Fatal("expected error when all fail")
 	}
 
-	// Wait for fallback cooldown to expire.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the fallback cooldown to actually expire. A fixed 300ms slept
+	// past the 200ms cooldown by luck; polling the client's own cooldown map
+	// waits for the real condition and fails loudly if it never clears.
+	waitForCooldownsClear(t, fc)
 
 	// Second call: primary fails again, fallback cooldown expired → retried → succeeds.
 	resp, err := fc.Generate(context.Background(), "hello2")
@@ -198,8 +201,8 @@ func TestFailoverClient_AllErrorsCooldown(t *testing.T) {
 		t.Fatalf("expected fallback called once (cooled), got %d", atomic.LoadInt32(fallbackCount))
 	}
 
-	// Wait for cooldowns to expire.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for both cooldowns to actually expire (see waitForCooldownsClear).
+	waitForCooldownsClear(t, fc)
 
 	// Third call: both cooldowns expired, primary fails, fallback succeeds.
 	resp, err := fc.Generate(context.Background(), "hello3")
@@ -375,6 +378,43 @@ func cooledKeys(fc *FailoverClient) []string {
 	return out
 }
 
+// waitForCooldownsClear blocks until every recorded cooldown has EXPIRED.
+//
+// It deliberately tests expiry rather than map emptiness: expired entries are
+// removed lazily inside isCoolingDown, so a caller that only inspects the map
+// sees stale keys forever and would hang. Reading the stored expiry
+// timestamps is the condition the callers actually depend on.
+//
+// It replaces fixed time.Sleep calls that guessed at cooldown expiry: those
+// slept a constant past the configured cooldown and passed by luck, and were
+// load-sensitive.
+func waitForCooldownsClear(t *testing.T, fc *FailoverClient) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		now := time.Now()
+		// The snapshot (including its capacity hint) is built entirely under
+		// the lock: reading len(fc.cooldowns) before RLock would race with
+		// isCoolingDown pruning entries.
+		var stillCooling []string
+		fc.mu.RLock()
+		stillCooling = make([]string, 0, len(fc.cooldowns))
+		for k, expiry := range fc.cooldowns {
+			if now.Before(expiry) {
+				stillCooling = append(stillCooling, k)
+			}
+		}
+		fc.mu.RUnlock()
+		if len(stillCooling) == 0 {
+			return
+		}
+		if now.After(deadline) {
+			t.Fatalf("cooldowns never expired, still cooling: %v", stillCooling)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // cancelledFailoverClient builds a two-provider failover client over servers
 // that always succeed, plus its key list in registration order.
 func cancelledFailoverClient(t *testing.T) (*FailoverClient, *httptest.Server, *httptest.Server) {
@@ -420,7 +460,10 @@ func TestFailoverClient_CancelledContextDoesNotPoisonCooldowns(t *testing.T) {
 // the shape a real user abort produces.
 func TestFailoverClient_MidCallCancelDoesNotPoisonCooldowns(t *testing.T) {
 	release := make(chan struct{})
+	arrived := make(chan struct{})
+	var arriveOnce sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arriveOnce.Do(func() { close(arrived) })
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -444,8 +487,15 @@ func TestFailoverClient_MidCallCancelDoesNotPoisonCooldowns(t *testing.T) {
 		defer close(done)
 		_, _ = fc.Generate(ctx, "hello")
 	}()
-	// Let the request reach the server, then abort it mid-flight.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the server has actually received the request, then abort it
+	// mid-flight. A fixed sleep here raced the dial under load: cancel could
+	// land before the request left the client, and the test would then assert
+	// the wrong path (pre-connect abort, not in-flight abort).
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("request never reached the server")
+	}
 	cancel()
 	<-done
 
