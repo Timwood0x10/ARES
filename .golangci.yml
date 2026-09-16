@@ -21,6 +21,10 @@ formatters:
 # gci uses a completely different implementation (daixiang0/gci) that
 # does not scan GOMODCACHE, making it orders of magnitude faster.
 # See: docs/bug@ques/zh/goimports-modindex-cpu-spike.md
+#
+# NOTE: `make fmt` must use the `golangci-lint fmt` subcommand (formatter-only),
+# NOT `golangci-lint run --fix` — the latter runs every enabled linter with full
+# type-checking just to rewrite imports. See docs/bug@ques/zh/make-fmt-cpu-spike.md.
 
 # NOTE: the old v1 top-level `linters-settings` block (gocyclo=15,
 # goconst 3/5, gocritic tags) was silently IGNORED by golangci-lint v2.

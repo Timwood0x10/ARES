@@ -31,7 +31,12 @@ repos:
       - id: golangci-lint
         name: golangci-lint
         description: Fast linters runner for Go.
-        entry: golangci-lint run --fix
+        # `run --fix` ran all 18 linters plus the full dependency-tree
+        # cache-key hashing just to rewrite whitespace (see the analysis in
+        # docs/reports/ and .golangci.yml). `fmt` is the formatter-only
+        # subcommand; -j halves the cache-key open() storm the same way
+        # LINT_CONCURRENCY does in the Makefile.
+        entry: golangci-lint fmt -j 7
         types: [go]
         language: system
         pass_filenames: false

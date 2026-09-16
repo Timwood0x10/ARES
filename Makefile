@@ -38,10 +38,28 @@ ci-vet:
 	@echo "Vet: OK"
 
 # CI linter
+# LINT_CONCURRENCY caps golangci-lint's parallel analysis.
+#
+# golangci-lint's cache-key phase open()/read()s every .go file in the
+# transitive import graph (~8500 files / ~191MB here). At full parallelism
+# those syscalls contend on FileHash's global mutex, so TOTAL CPU is
+# multiplied without any wall-time gain. Cold-cache measurements on a
+# 14-core box (see docs/reports/ if re-derived):
+#
+#   -j 14 -> 54s CPU / 5.6s wall / peak 1300%
+#   -j  8 -> 37s CPU / 5.3s wall / peak  795%   <- strictly better than -j 14
+#   -j  4 -> 31s CPU / 7.8s wall / peak  405%   <- slower wall
+#
+# Half the logical CPUs is the sweet spot: it keeps (even beats) wall time
+# while cutting the CPU spike that makes the machine unresponsive. Override
+# with `make lint LINT_CONCURRENCY=14` when you want throughput back.
+NPROC := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)
+LINT_CONCURRENCY ?= $(shell echo $$(( $(NPROC) / 2 )))
+
 ci-lint:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=10m; \
+		golangci-lint run --timeout=10m -j $(LINT_CONCURRENCY); \
 		echo "Linting: OK"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \
@@ -69,7 +87,7 @@ ci-test-race-short:
 # CI security scan
 ci-security:
 	@echo "Running gosec security scan..."
-	@golangci-lint run --enable-only=gosec ./...
+	@golangci-lint run --enable-only=gosec -j $(LINT_CONCURRENCY) ./...
 	@echo "Security scan: OK"
 
 # Convergence freeze patrol (ARCHITECTURE.md Phase 0). Fails on new
@@ -81,15 +99,27 @@ ci-freeze:
 	@echo "Freeze check: OK"
 
 # Format code
-# Uses golangci-lint --fix to auto-format with the same gci version it checks
-# with, plus gofmt -s for final cleanup. gci replaces goimports which caused
-# 800%+ CPU via modindex re-reads (see docs/bug@ques/zh/goimports-modindex-cpu-spike.md).
+# Uses `golangci-lint fmt` (formatter-only subcommand) with the same gci version
+# it checks with, plus gofmt -s for final cleanup.
+# Do NOT use `golangci-lint run --fix` here: it executes all 18 linters
+# (full type-check + analysis) just to format — measured 48s CPU / 1250% peak
+# on a 14-core Mac. `golangci-lint fmt` runs only the configured formatters:
+# 2.3s CPU / 122% peak for byte-identical output.
+# gci replaces goimports which caused 800%+ CPU via modindex re-reads
+# (see docs/bug@ques/zh/goimports-modindex-cpu-spike.md).
 fmt:
-	golangci-lint run --fix --timeout=5m
+	# `golangci-lint fmt` has no -j flag (formatter-only subcommand); concurrency
+	# only matters for the analysis in `run`.
+	golangci-lint fmt
 	gofmt -s -w .
 
 # Lint targets
-lint: lint-vet lint-staticcheck lint-golangci
+#
+# golangci-lint already runs govet + staticcheck as linters (see .golangci.yml),
+# so a separate `go vet` / `staticcheck` pass is a redundant full-tree analysis.
+# Measured: vet 3.4s CPU + staticcheck 4.4s CPU duplicated work per `make lint`.
+# The standalone lint-vet / lint-staticcheck targets remain for explicit use.
+lint: lint-golangci
 	@echo ""
 	@echo "All lint checks: PASSED"
 
@@ -110,16 +140,34 @@ lint-staticcheck:
 lint-golangci:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m && \
+		golangci-lint run --timeout=5m -j $(LINT_CONCURRENCY) && \
 		echo "golangci-lint: PASSED"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \
 		exit 1; \
 	fi
 
+# TEST_PARALLEL and TEST_GOMAXPROCS cap how hard `go test` pushes the machine.
+# Measured peak whole-machine CPU on a 14-core box, all cold:
+#
+#   default (-p 14, GOMAXPROCS 14)   1282%   39.5s   0 FAIL
+#   -p 4 only                        1333%   44.9s   0 FAIL   <- peak unchanged
+#   GOMAXPROCS=8 -p 4                1012%   42.3s   0 FAIL
+#   GOMAXPROCS=4 -p 4                 580%   55.5s   3 FAIL   <- starves E2E
+#
+# -p alone does NOT lower the peak: 4 concurrent test binaries each still
+# spawn GOMAXPROCS threads, so the box saturates either way. Only capping
+# GOMAXPROCS moves the peak — and below 8 it starts starving CPU-sensitive
+# tests (TestE2E_GrandLoop_RealSchedulerChaosRecovery hits its 30s deadline).
+# So 8 is the deepest cut that keeps the suite green. Override for throughput:
+#   make test TEST_PARALLEL=8 TEST_GOMAXPROCS=14
+TEST_PARALLEL ?= 4
+TEST_GOMAXPROCS ?= 8
+export GOMAXPROCS := $(TEST_GOMAXPROCS)
+
 # Test targets
 test:
-	go test -short -cover ./...
+	go test -short -cover -p $(TEST_PARALLEL) ./...
 
 test-race:
 	go test -race -cover ./...
@@ -355,8 +403,8 @@ examples:  ## Build all example fixtures
 help:
 	@echo "Available targets:"
 	@echo "  install       - Download and install dependencies"
-	@echo "  fmt           - Format code with goimports and gofmt"
-	@echo "  lint          - Run all linters (vet, staticcheck, golangci-lint)"
+	@echo "  fmt           - Format code (golangci-lint fmt + gofmt -s)"
+	@echo "  lint          - Run golangci-lint (includes govet + staticcheck)"
 	@echo "  lint-vet      - Run go vet"
 	@echo "  lint-staticcheck  - Run staticcheck"
 	@echo "  lint-golangci    - Run golangci-lint (REQUIRED)"

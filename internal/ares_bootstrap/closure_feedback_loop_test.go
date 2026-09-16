@@ -19,14 +19,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	ares_evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // newFeedbackLoopComponents builds a Bootstrap instance with evolution enabled

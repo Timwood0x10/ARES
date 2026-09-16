@@ -49,8 +49,14 @@ func walkGoFiles(t *testing.T, root string, fn func(path string, data []byte)) {
 			return nil
 		}
 		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "node_modules", "testdata", "generated-images":
+			// Skip every dot-directory and vendored/deps trees. Tool worktrees
+			// and editor state (.kilo, .ares, .git, ...) are not repo source,
+			// and enumerating them one by one keeps missing the next one —
+			// a stray worktree otherwise makes this scanner report files that
+			// are not part of the build.
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "vendor" ||
+				name == "node_modules" || name == "testdata" || name == "generated-images" {
 				return fs.SkipDir
 			}
 			return nil
