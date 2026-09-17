@@ -26,22 +26,8 @@ const redactedMarker = "***"
 func (c *Config) Redacted() *Config {
 	out := *c
 
-	// LLM provider key (and its fallbacks).
-	out.LLM = c.LLM
-	out.LLM.Extra = redactStringMap(c.LLM.Extra)
-	if out.LLM.APIKey != "" {
-		out.LLM.APIKey = redactedMarker
-	}
-	if len(out.LLM.Fallbacks) > 0 {
-		out.LLM.Fallbacks = make([]LLMConfig, len(c.LLM.Fallbacks))
-		for i, fb := range c.LLM.Fallbacks {
-			out.LLM.Fallbacks[i] = fb
-			out.LLM.Fallbacks[i].Extra = redactStringMap(fb.Extra)
-			if fb.APIKey != "" {
-				out.LLM.Fallbacks[i].APIKey = redactedMarker
-			}
-		}
-	}
+	// LLM provider key, Extra and nested fallbacks (recursive redaction).
+	out.LLM = redactLLMConfig(c.LLM)
 
 	// Storage password.
 	out.Storage = c.Storage
@@ -104,6 +90,25 @@ func redactStringMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
 	for k := range m {
 		out[k] = redactedMarker
+	}
+	return out
+}
+
+// redactLLMConfig returns a copy of in with its API key, Extra map and
+// nested fallbacks redacted at every depth. LLMConfig.Fallbacks is a
+// recursive type (a fallback may itself carry fallbacks), so a one-level
+// pass would leak the deeper APIKey/Extra values over /api/runtime/config.
+func redactLLMConfig(in LLMConfig) LLMConfig {
+	out := in
+	out.Extra = redactStringMap(in.Extra)
+	if out.APIKey != "" {
+		out.APIKey = redactedMarker
+	}
+	if len(in.Fallbacks) > 0 {
+		out.Fallbacks = make([]LLMConfig, len(in.Fallbacks))
+		for i, fb := range in.Fallbacks {
+			out.Fallbacks[i] = redactLLMConfig(fb)
+		}
 	}
 	return out
 }

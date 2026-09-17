@@ -267,24 +267,71 @@ func (g *Genealogy) RecordPromotion(agentID string) {
 	}
 }
 
-// GetNode returns a node by ID.
+// cloneLineageNode returns a deep copy of a LineageNode (including Children
+// and Metadata) so concurrent writers mutating node fields under the write
+// lock cannot race with readers holding the returned pointer.
+func cloneLineageNode(n *LineageNode) *LineageNode {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	if n.Metadata != nil {
+		cp.Metadata = make(map[string]any, len(n.Metadata))
+		for k, v := range n.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	if n.Children != nil {
+		cp.Children = make([]*LineageNode, len(n.Children))
+		for i, c := range n.Children {
+			cp.Children[i] = cloneLineageNode(c)
+		}
+	}
+	return &cp
+}
+
+// cloneLineageNodeShallow returns a copy of a LineageNode with Metadata
+// deep-copied but Children set to nil. Used by Descendants/AllNodes where
+// the caller iterates the full tree separately — cloning children here
+// would duplicate entire subtrees in the result.
+func cloneLineageNodeShallow(n *LineageNode) *LineageNode {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	cp.Children = nil
+	if n.Metadata != nil {
+		cp.Metadata = make(map[string]any, len(n.Metadata))
+		for k, v := range n.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
+// GetNode returns a deep copy of the node with the given ID.
 func (g *Genealogy) GetNode(id string) (*LineageNode, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	n, ok := g.nodes[id]
-	return n, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneLineageNode(n), true
 }
 
-// Roots returns root nodes (agents with no parent).
+// Roots returns deep copies of root nodes (agents with no parent).
 func (g *Genealogy) Roots() []*LineageNode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	result := make([]*LineageNode, len(g.roots))
-	copy(result, g.roots)
+	for i, r := range g.roots {
+		result[i] = cloneLineageNode(r)
+	}
 	return result
 }
 
-// Descendants returns all descendants of an agent.
+// Descendants returns deep copies of all descendants of an agent.
 func (g *Genealogy) Descendants(id string) []*LineageNode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -301,7 +348,7 @@ func (g *Genealogy) Descendants(id string) []*LineageNode {
 
 func collectDescendants(node *LineageNode, result *[]*LineageNode) {
 	for _, child := range node.Children {
-		*result = append(*result, child)
+		*result = append(*result, cloneLineageNodeShallow(child))
 		collectDescendants(child, result)
 	}
 }
@@ -392,7 +439,7 @@ func (g *Genealogy) AllNodes() []*LineageNode {
 	defer g.mu.RUnlock()
 	result := make([]*LineageNode, 0, len(g.nodes))
 	for _, n := range g.nodes {
-		result = append(result, n)
+		result = append(result, cloneLineageNodeShallow(n))
 	}
 	return result
 }

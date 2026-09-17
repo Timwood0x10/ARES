@@ -119,33 +119,43 @@ func (e *Experience) Record(skill, taskPattern string, successRate float64) erro
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Update or append under the lock, then persist OUTSIDE it: the store
+	// Save does disk I/O (marshal + write + rename) and holding the write
+	// lock across it would block every concurrent BestMatch/Confidence read
+	// on the scheduler hot path.
+	var toPersist []ExperienceRecord
+	found := false
 	for i, r := range e.records {
 		if r.Skill == skill && r.TaskPattern == taskPattern {
 			e.records[i] = rec
-			return e.persistLocked()
+			found = true
+			break
 		}
 	}
-	if len(e.records) >= e.maxRecords {
-		// Drop the oldest record to bound memory.
-		e.records = append(e.records[1:], rec)
-		return e.persistLocked()
+	if !found {
+		if len(e.records) >= e.maxRecords {
+			// Drop the oldest record to bound memory.
+			e.records = append(e.records[1:], rec)
+		} else {
+			e.records = append(e.records, rec)
+		}
 	}
-	e.records = append(e.records, rec)
-	return e.persistLocked()
+	toPersist = make([]ExperienceRecord, len(e.records))
+	copy(toPersist, e.records)
+	e.mu.Unlock()
+
+	return e.persistRecords(toPersist)
 }
 
-// persistLocked writes the current record set to the store when one is
-// attached. Caller must hold the write lock.
+// persistRecords writes the given record set to the store when one is
+// attached. Called WITHOUT holding the lock (see Record).
 //
 // Returns:
 //   - error: wrapped store error, or nil (no store = no-op).
-func (e *Experience) persistLocked() error {
+func (e *Experience) persistRecords(records []ExperienceRecord) error {
 	if e.store == nil {
 		return nil
 	}
-	records := make([]ExperienceRecord, len(e.records))
-	copy(records, e.records)
 	if err := e.store.Save(context.Background(), records); err != nil {
 		return fmt.Errorf("ares_skills: persist experience: %w", err)
 	}

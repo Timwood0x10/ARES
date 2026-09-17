@@ -102,7 +102,7 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 				// Task completion bypasses the round gate: tasks are terminal
 				// signals whose distillation should not be delayed.
 				if event.Type == ares_events.EventTaskCompleted {
-					d.processEvent(subCtx, event)
+					d.processEventRecovered(subCtx, event)
 					continue
 				}
 				// Threshold 0 preserves legacy ungated behaviour.
@@ -110,7 +110,7 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 				threshold := d.config.DistillationThreshold
 				d.configMu.RUnlock()
 				if threshold <= 0 {
-					d.processEvent(subCtx, event)
+					d.processEventRecovered(subCtx, event)
 					continue
 				}
 				roundCounter++
@@ -121,10 +121,23 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.E
 				}
 				log.InfoContext(subCtx, "[Memory Distillation] Round gate reached, triggering distillation",
 					"round", roundCounter, "threshold", threshold)
-				d.processEvent(subCtx, event)
+				d.processEventRecovered(subCtx, event)
 			}
 		}
 	})
+}
+
+// processEventRecovered runs processEvent under a panic-recover boundary so
+// a panicking user hook (OnMessageAdded / OnTaskCompleted) cannot end
+// distillation subscription for the rest of the process.
+func (d *Distiller) processEventRecovered(ctx context.Context, event *ares_events.Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.ErrorContext(ctx, "[Memory Distillation] processEvent panicked; event skipped",
+				"event_type", event.Type, "panic", fmt.Errorf("%v", r))
+		}
+	}()
+	d.processEvent(ctx, event)
 }
 
 // Stop cancels the event subscription started by SubscribeAndDistill (if

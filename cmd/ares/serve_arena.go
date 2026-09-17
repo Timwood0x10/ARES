@@ -629,13 +629,14 @@ func printInspectDiagnostics(ctx context.Context, baseURL string) {
 }
 
 // getJSON performs an HTTP GET with the given context and decodes the JSON
-// response body into a map. Returns nil on any error. The context provides
-// cancellation/timeout control and supersedes the legacy http.Get calls.
+// response body into a map. Returns nil on any error. Attaches the arena
+// API key so inspect/survival subcommands work against a secured server.
 func getJSON(ctx context.Context, url string) map[string]any {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil
 	}
+	setArenaAuthHeader(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil

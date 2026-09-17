@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -449,23 +450,34 @@ func (s *EvolutionScheduler) Register() {
 			if evt == nil {
 				continue
 			}
-			switch evt.Type {
-			case ares_events.EventAgentStopped:
-				s.OnAgentEnd(contextFromEvent(evt), CallbackData{AgentID: evt.StreamID})
-			case ares_events.EventTaskCompleted:
-				// Use the deterministic score provider when wired;
-				// fall back to the constant 1.0 when not (backward compatible).
-				s.RecordScore(s.taskScore(true))
-			case ares_events.EventTaskFailed:
-				// Use the deterministic score provider when wired;
-				// fall back to the constant 0.0 when not (backward compatible).
-				s.RecordScore(s.taskScore(false))
-			}
+			// Per-event recover: a panicking score callback must not crash
+			// the process or end event consumption permanently.
+			s.handleSubscriptionEvent(evt)
 		}
 		return nil
 	})
 
 	log.Info("[Evolution] Scheduler registered for agent stopped events")
+}
+
+// handleSubscriptionEvent dispatches one subscription event under a
+// panic-recover boundary so a panicking score callback cannot crash the
+// process or end event consumption permanently.
+func (s *EvolutionScheduler) handleSubscriptionEvent(evt *ares_events.Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("[Evolution] subscription event handler panicked; event skipped",
+				"event_type", evt.Type, "panic", fmt.Errorf("%v", r))
+		}
+	}()
+	switch evt.Type {
+	case ares_events.EventAgentStopped:
+		s.OnAgentEnd(contextFromEvent(evt), CallbackData{AgentID: evt.StreamID})
+	case ares_events.EventTaskCompleted:
+		s.RecordScore(s.taskScore(true))
+	case ares_events.EventTaskFailed:
+		s.RecordScore(s.taskScore(false))
+	}
 }
 
 // contextFromEvent derives a context from an EventStore event, propagating

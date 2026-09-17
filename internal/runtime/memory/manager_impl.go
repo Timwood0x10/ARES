@@ -269,27 +269,39 @@ func (m *memoryManager) Start(ctx context.Context) error {
 // Stop stops the memory manager and cleans up resources.
 // It safely handles nil components and collects all errors encountered during shutdown.
 func (m *memoryManager) Stop(ctx context.Context) error {
+	// Snapshot components under the lock, then join OUTSIDE it: taskMemory.Stop
+	// and sessionMemory.Close block on WaitGroups, and holding m.mu across
+	// those joins would stall every concurrent BuildContext/emitEvent that
+	// takes m.mu.RLock for the drain duration.
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.stopped {
+		m.mu.Unlock()
 		return nil
 	}
+	m.stopped = true
+	taskMem := m.taskMemory
+	sessMem := m.sessionMemory
+	distiller := m.distiller
+	m.mu.Unlock()
 
 	var errs []error
 
-	if m.taskMemory != nil {
-		m.taskMemory.Stop()
+	if taskMem != nil {
+		taskMem.Stop()
 	}
 
-	if m.sessionMemory != nil {
-		if err := m.sessionMemory.Close(ctx); err != nil {
+	if sessMem != nil {
+		if err := sessMem.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close session memory: %w", err))
 			log.Warn("Failed to close session memory", "error", err)
 		}
 	}
 
-	m.stopped = true
+	// Stop the distiller if it exposes Stop: without this the
+	// SubscribeAndDistill goroutine leaks at shutdown.
+	if stopper, ok := distiller.(interface{ Stop() }); ok {
+		stopper.Stop()
+	}
 
 	if len(errs) > 0 {
 		var msg []string

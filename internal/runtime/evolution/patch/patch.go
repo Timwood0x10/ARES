@@ -345,8 +345,16 @@ type Registry struct {
 	// remove nodes/edges) whose targets are dynamic node IDs.
 	fallback RuntimeComponent
 	// applied tracks already-applied patch IDs for idempotent re-delivery.
+	// Capped at maxAppliedEntries: when exceeded the map is cleared entirely
+	// (a rare double-apply of a very old patch is preferable to unbounded
+	// memory growth over the process lifetime).
 	applied map[string]bool
 }
+
+// maxAppliedEntries bounds the idempotency map. Once exceeded the entire map
+// is cleared — the alternative (LRU) adds complexity for a guard whose miss
+// window is already bounded by the patch delivery rate.
+const maxAppliedEntries = 10000
 
 // NewRegistry creates a new patch registry.
 func NewRegistry() *Registry {
@@ -459,13 +467,17 @@ func (r *Registry) isApplied(id string) bool {
 	return r.applied[id]
 }
 
-// markApplied records a non-empty patch ID as applied.
+// markApplied records a non-empty patch ID as applied. Clears the entire map
+// when it exceeds maxAppliedEntries to prevent unbounded growth.
 func (r *Registry) markApplied(id string) {
 	if id == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if len(r.applied) >= maxAppliedEntries {
+		r.applied = make(map[string]bool)
+	}
 	r.applied[id] = true
 }
 

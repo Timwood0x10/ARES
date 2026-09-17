@@ -207,9 +207,18 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get absolute path: %w", err)
 		}
+		// Resolve symlinks before the prefix check so a link INSIDE the
+		// allowed dir cannot smuggle a read of an outside file (a not-yet-
+		// existing path keeps its Abs form; the file must exist to load).
+		if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+			absPath = resolved
+		}
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get absolute directory: %w", err)
+		}
+		if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+			absDir = resolved
 		}
 		rel, err := filepath.Rel(absDir, absPath)
 		if err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // ContextSnippet matches context.ContextSnippet in internal/runtime/memory/context.
@@ -281,9 +282,17 @@ func (r *KnowledgeRetriever) Retrieve(
 	// cap again here. Vector recall (TopK) is over-fetched 3x relative to the
 	// caller's topK so the FinalK ranking has a richer candidate pool.
 	if r.store != nil {
+		// Resolve the namespace per-request: an explicit r.namespace always
+		// wins; otherwise fall back to the request-scoped tenant. When both
+		// are empty the store's global scan is the DESIRED single-tenant
+		// behaviour — do not invent a default namespace here.
+		ns := r.namespace
+		if ns == "" {
+			ns = tenantctx.From(ctx)
+		}
 		req := knowledge.HybridSearchRequest{
 			Query:        input,
-			Namespace:    r.namespace,
+			Namespace:    ns,
 			TopK:         topK * 3,
 			FinalK:       topK,
 			MinScore:     r.minScore,

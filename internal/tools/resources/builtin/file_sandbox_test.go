@@ -14,7 +14,7 @@ import (
 // read the agent's files).
 func TestResolveFileToolsAllowedDir(t *testing.T) {
 	t.Run("configured dir wins", func(t *testing.T) {
-		dir, err := resolveFileToolsAllowedDir("/custom/sandbox")
+		dir, err := ResolveFileToolsAllowedDir("/custom/sandbox")
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -24,7 +24,7 @@ func TestResolveFileToolsAllowedDir(t *testing.T) {
 	})
 
 	t.Run("empty config falls back to a private dir", func(t *testing.T) {
-		dir, err := resolveFileToolsAllowedDir("")
+		dir, err := ResolveFileToolsAllowedDir("")
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}

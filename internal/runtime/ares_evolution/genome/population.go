@@ -265,27 +265,31 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		return ErrNilCrosser
 	}
 
+	// Phase 1 (under write lock): validation, sorting, survivor/elite
+	// selection, parent pool. All pure computation on snapshots — no I/O.
+	// The locked flag + defer guarantees Unlock on every return path.
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	locked := true
+	unlock := func() {
+		if locked {
+			locked = false
+			p.mu.Unlock()
+		}
+	}
+	defer unlock()
 
 	if len(p.Agents) == 0 {
 		return ErrSelectionEmptyPopulation
 	}
 
-	// Guard: refuse to select parents from unevaluated population.
 	if err := p.ensureEvaluatedBeforeSelection(); err != nil {
 		return fmt.Errorf("pre-evolution validation: %w", err)
 	}
 
-	// Step 1: Sort by score and select survivors.
 	sorted := make([]*mutation.Strategy, len(p.Agents))
 	copy(sorted, p.Agents)
 	SortByScore(sorted)
 
-	// Step 1a: Evict aged-out agents (AgentMaxAge > 0).
-	// Agents whose generation age exceeds AgentMaxAge are removed, unless:
-	//   - they are root strategies (MutationRoot), or
-	//   - GenerationCreated == 0 (unknown/legacy — never evict by age).
 	if p.cfg.AgentMaxAge > 0 {
 		keep := sorted[:0]
 		for _, s := range sorted {
@@ -304,36 +308,30 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	survivorCount = min(survivorCount, len(sorted))
 	survivors := sorted[:survivorCount]
 
-	// Step 2: Preserve elites (method-specific).
 	elites := cfg.eliteFn(survivors)
-
-	// Step 2.5: Preserve prompt diversity if all elites use one prompt template.
 	elites = p.preservePromptDiversityLocked(elites, sorted)
 
-	// Step 3: Generate offspring using method-specific parent pool.
 	parentPool := cfg.parentPoolFn(survivors)
 	remainingSlots := p.Size - len(elites)
-	// If maxOffspring is set (steady-state), limit offspring count.
 	if cfg.maxOffspring > 0 && cfg.maxOffspring < remainingSlots {
 		remainingSlots = cfg.maxOffspring
 	}
+
+	// Early return: no room for offspring.
 	if remainingSlots <= 0 && len(elites) >= p.Size {
-		// No room for offspring; use elites as next gen (trim if needed).
 		nextGen := elites[:min(len(elites), p.Size)]
 		p.Agents = nextGen
 		p.Generation++
-
-		// Update best-ever tracking after assembling the new generation.
 		p.updateBestEverLocked()
-
-		// Skip adaptive adjustments when no offspring were produced — no new
-		// genetic material entered the pool, so diversity/stagnation signals
-		// would be misleading.
+		gen := p.Generation
+		rate := p.currentMutationRate
+		size := len(p.Agents)
+		unlock()
 		el.Info(ctx, "doEvolve", "evolution completed, no offspring produced",
-			"generation", p.Generation,
-			"population_size", len(p.Agents),
+			"generation", gen,
+			"population_size", size,
 			"elite_count", len(elites),
-			"mutation_rate", p.currentMutationRate,
+			"mutation_rate", rate,
 			"note", "no offspring produced, skipped adaptive adjustments",
 		)
 		return nil
@@ -344,22 +342,52 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		return fmt.Errorf("genome.doEvolve: build selector: %w", err)
 	}
 
-	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, selector, remainingSlots)
+	// Snapshot state needed by generateOffspring so we can release the lock
+	// during the I/O-capable mutation phase. Concurrent Evolve calls are safe:
+	// phase 2 only reads these snapshots and the parentPool/elites pointers
+	// (which are never mutated after phase 1 — a concurrent phase 3 replaces
+	// p.Agents but does not write through the old pointers).
+	offspringParams := offspringParams{
+		parentPool:   parentPool,
+		mutator:      mutator,
+		crosser:      crosser,
+		selector:     selector,
+		count:        remainingSlots,
+		mutationRate: p.currentMutationRate,
+		generation:   p.Generation,
+		callbacks:    p.cfg.Callbacks,
+		popSize:      p.Size,
+		rng:          rand.New(rand.NewSource(p.rng.Int63())), //nolint:gosec // deterministic seed from locked rng
+	}
+	gen := p.Generation
+	popSize := p.Size
+	unlock()
+
+	// Phase 2 (outside lock): generate offspring. The guided mutator may
+	// perform LLM network I/O (HintsForTask); holding the write lock across
+	// it would block Stats/Snapshot/BestStrategy for the full duration —
+	// the same reason ScoreAgents already scores outside the lock.
+	offspring, err := p.generateOffspringUnlocked(ctx, offspringParams)
 	if err != nil {
 		return fmt.Errorf("genome.doEvolve: generate offspring: %w", err)
 	}
 
+	// Phase 3 (under write lock): assemble next generation and run adaptive
+	// adjustments.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	// Step 4: Assemble next generation.
-	nextGen := make([]*mutation.Strategy, 0, p.Size)
+	nextGen := make([]*mutation.Strategy, 0, popSize)
 	nextGen = append(nextGen, elites...)
 	nextGen = append(nextGen, offspring...)
 
 	// Pad if under target size. Each survivor is used at most once to avoid
 	// duplicate elite IDs in the next generation.
 	survivorIdx := 0
-	for len(nextGen) < p.Size && survivorIdx < len(survivors) {
+	for len(nextGen) < popSize && survivorIdx < len(survivors) {
 		clone := survivors[survivorIdx].Clone()
-		clone.GenerationCreated = p.Generation + 1
+		clone.GenerationCreated = gen + 1
 		nextGen = append(nextGen, clone)
 		survivorIdx++
 	}
@@ -442,33 +470,37 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	return nil
 }
 
-// generateOffspring creates new strategies through crossover and mutation
-// to fill the specified number of population slots.
-// When selector is non-nil, parents are chosen via the configured selection
-// strategy (tournament, rank, SUS, roulette). Otherwise, parents are selected
-// randomly from the breeding pool (backward compatible).
-//
-// Args:
-//
-//	ctx - operation context (used for cancellation).
-//	parentPool - eligible parent strategies for crossover.
-//	mutator - the mutation engine for generating variations.
-//	crosser - the crossover engine for combining parents.
-//	sel - optional Selection strategy (nil for random selection).
-//	count - number of offspring to generate.
-//
-// Returns:
-//
-//	[]*mutation.Strategy - generated offspring strategies.
-//	error - non-nil if generation fails or context is cancelled.
-func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, sel Selection, count int) ([]*mutation.Strategy, error) {
-	if count <= 0 {
+// offspringParams bundles the population state that generateOffspringUnlocked
+// needs, snapshotted by doEvolve Phase 1 under the write lock. Passing a
+// struct keeps the function signature within the 5-param limit.
+type offspringParams struct {
+	parentPool   []*mutation.Strategy
+	mutator      MutatorInterface
+	crosser      CrossoverInterface
+	selector     Selection
+	count        int
+	mutationRate float64
+	generation   int
+	callbacks    EvolveCallbacks
+	popSize      int
+	rng          *rand.Rand
+}
+
+// generateOffspringUnlocked produces offspring strategies WITHOUT holding the
+// population write lock. All population state it needs is carried in params
+// (snapshotted by the caller under the lock). This is the I/O-safe variant
+// used by doEvolve Phase 2: the guided mutator's HintsForTask may perform
+// LLM network calls, and holding p.mu across them would block
+// Stats/Snapshot/BestStrategy for the full duration (the same reason
+// ScoreAgents already scores outside the lock).
+func (p *Population) generateOffspringUnlocked(ctx context.Context, params offspringParams) ([]*mutation.Strategy, error) {
+	if params.count <= 0 {
 		return []*mutation.Strategy{}, nil
 	}
 
-	offspring := make([]*mutation.Strategy, 0, count)
+	offspring := make([]*mutation.Strategy, 0, params.count)
 
-	for len(offspring) < count {
+	for len(offspring) < params.count {
 		select {
 		case <-ctx.Done():
 			return offspring, ctx.Err()
@@ -476,8 +508,8 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 		}
 
 		var parentA, parentB *mutation.Strategy
-		if sel != nil {
-			winners, err := sel.Select(ctx, parentPool, 2)
+		if params.selector != nil {
+			winners, err := params.selector.Select(ctx, params.parentPool, 2)
 			if err != nil {
 				return nil, fmt.Errorf("select parents: %w", err)
 			}
@@ -486,56 +518,40 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 				return nil, errors.New("select returned empty winners")
 			case 1:
 				parentA = winners[0]
-				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
+				parentB = params.parentPool[params.rng.Intn(len(params.parentPool))]
 			default:
 				parentA = winners[0]
 				parentB = winners[1]
 			}
 		} else {
-			// Original random selection (backward compatible).
-			parentA = parentPool[p.rng.Intn(len(parentPool))]
-			parentB = parentPool[p.rng.Intn(len(parentPool))]
+			parentA = params.parentPool[params.rng.Intn(len(params.parentPool))]
+			parentB = params.parentPool[params.rng.Intn(len(params.parentPool))]
 		}
 
-		child, err := crosser.Crossover(ctx, parentA, parentB)
+		child, err := params.crosser.Crossover(ctx, parentA, parentB)
 		if err != nil {
 			return nil, fmt.Errorf("crossover failed: %w", err)
 		}
 
-		// Invoke crossover callback if set.
-		if p.cfg.Callbacks.OnCrossover != nil {
-			p.cfg.Callbacks.OnCrossover(context.Background(), child, 0)
+		if params.callbacks.OnCrossover != nil {
+			params.callbacks.OnCrossover(context.Background(), child, 0)
 		}
 
-		// Apply mutation based on configured rate.
-		// The Mutate call is only triggered when the probability check passes,
-		// ensuring mutators with side effects (e.g., counters) are not invoked
-		// on offspring that skip mutation.
-		if p.rng.Float64() < p.currentMutationRate {
-			mutated, err := mutator.Mutate(ctx, child, 1)
+		if params.rng.Float64() < params.mutationRate {
+			mutated, err := params.mutator.Mutate(ctx, child, 1)
 			if err != nil {
 				return nil, fmt.Errorf("mutate offspring: %w", err)
 			}
-			// Mutate(n=1) returns exactly one variant; use it as the mutated child.
 			if len(mutated) > 0 {
-				// Preserve original crossover parent IDs so outcome recording
-				// can look up parent scores in the pre-evolution snapshot.
 				mutated[0].ParentID = child.ParentID
 				child = mutated[0]
 			}
-			// If len(mutated) == 0, the mutator returned no variants;
-			// keep the unmutated crossover child as-is.
-
-			// Invoke mutation callback if set.
-			if p.cfg.Callbacks.OnMutation != nil {
-				p.cfg.Callbacks.OnMutation(context.Background(), child, 0)
+			if params.callbacks.OnMutation != nil {
+				params.callbacks.OnMutation(context.Background(), child, 0)
 			}
 		}
 
-		// Record the generation when this offspring enters the population.
-		// Using p.Generation+1 so age = 0 in the next eviction check — an agent
-		// survives exactly AgentMaxAge generations after creation.
-		child.GenerationCreated = p.Generation + 1
+		child.GenerationCreated = params.generation + 1
 		offspring = append(offspring, child)
 	}
 

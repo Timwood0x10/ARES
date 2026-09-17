@@ -264,8 +264,12 @@ func (ec *EvolutionCoordinator) Policy() PolicyGenome {
 // Used for self-healing scenarios where a critical fault needs instant response.
 // Returns the patch result or an error if the patch cannot be applied.
 func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.RuntimePatch) error {
+	// Snapshot the registry under the lock, then release it before Apply
+	// (executor I/O / user callback) so concurrent Submit/Evaluate/Policy
+	// calls are not blocked for the full apply duration.
 	ec.mu.Lock()
-	defer ec.mu.Unlock()
+	reg := ec.patchReg
+	ec.mu.Unlock()
 
 	proposal := PatchProposal{
 		Patch:     patch,
@@ -275,7 +279,10 @@ func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.
 		Timestamp: time.Now(),
 	}
 
-	err := ec.patchReg.Apply(ctx, patch)
+	err := reg.Apply(ctx, patch)
+
+	// Re-acquire to append history.
+	ec.mu.Lock()
 	ec.appendDecision(PatchDecision{
 		Proposal: proposal,
 		Decision: DecisionApply,
@@ -286,6 +293,7 @@ func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.
 		AppliedAt: time.Now(),
 		Error:     err,
 	})
+	ec.mu.Unlock()
 	return err
 }
 

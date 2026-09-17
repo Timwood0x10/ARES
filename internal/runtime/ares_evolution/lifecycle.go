@@ -578,16 +578,37 @@ func (l *StrategyLifecycle) Start(ctx context.Context) {
 	l.mu.Unlock()
 
 	go func() {
-		// Production background goroutines must not die silently or take
-		// the process down on a bug — recover, log, and exit cleanly.
-		defer func() {
-			if r := recover(); r != nil {
-				log.ErrorContext(context.Background(), "watch loop panicked",
-					"method", "watch", "error", fmt.Errorf("panic: %v", r))
+		defer close(done)
+		const (
+			initialBackoff = time.Second
+			maxBackoff     = 30 * time.Second
+		)
+		backoff := initialBackoff
+		for {
+			panicked := func() (panicked bool) {
+				defer func() {
+					if r := recover(); r != nil {
+						panicked = true
+						log.ErrorContext(watchCtx, "watch loop panicked; restarting",
+							"method", "watch", "panic", fmt.Errorf("%v", r),
+							"backoff", backoff)
+					}
+				}()
+				l.watch(watchCtx)
+				return false
+			}()
+			if !panicked || watchCtx.Err() != nil {
+				return
 			}
-			close(done)
-		}()
-		l.watch(watchCtx)
+			select {
+			case <-watchCtx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
 	}()
 }
 

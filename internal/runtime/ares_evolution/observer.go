@@ -231,15 +231,7 @@ func (o *RuntimeObserver) Start(ctx context.Context) error {
 	o.mu.Unlock()
 
 	go func() {
-		// Production background goroutines must not die silently or take
-		// the process down on a bug — recover, log, and exit cleanly.
-		defer func() {
-			if r := recover(); r != nil {
-				log.ErrorContext(context.Background(), "event loop panicked",
-					"method", "processEvent", "error", fmt.Errorf("panic: %v", r))
-			}
-			close(eg.done)
-		}()
+		defer close(eg.done)
 		for {
 			select {
 			case evt, ok := <-ch:
@@ -249,7 +241,17 @@ func (o *RuntimeObserver) Start(ctx context.Context) error {
 				if evt == nil {
 					continue
 				}
-				o.processEvent(subCtx, evt)
+				// Per-event recover: a panicking handler must not end
+				// fitness-sample collection for the rest of the process.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.ErrorContext(subCtx, "event processing panicked; event skipped",
+								"event_type", evt.Type, "panic", fmt.Errorf("%v", r))
+						}
+					}()
+					o.processEvent(subCtx, evt)
+				}()
 			case <-subCtx.Done():
 				return
 			}

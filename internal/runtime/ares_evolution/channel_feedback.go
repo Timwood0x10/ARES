@@ -172,27 +172,18 @@ func (r *ChannelFeedbackRecorder) Start(ctx context.Context) {
 	r.mu.Unlock()
 
 	go func() {
-		// A background goroutine must not take the process down on a bug
-		// (a background goroutine must not take the process down on a bug)
-		// — recover, log, exit cleanly.
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.ErrorContext(context.Background(), "channel feedback drain panicked",
-					"error", fmt.Errorf("panic: %v", rec))
-			}
-			close(done)
-		}()
+		defer close(done)
 		for {
 			select {
 			case rec := <-r.queue:
-				r.write(drainCtx, rec)
+				r.writeRecovered(drainCtx, rec)
 			case <-drainCtx.Done():
 				// Flush what is already queued: these are completed
 				// observations, and shutdown is not a reason to lose them.
 				for {
 					select {
 					case rec := <-r.queue:
-						r.write(context.WithoutCancel(drainCtx), rec)
+						r.writeRecovered(context.WithoutCancel(drainCtx), rec)
 					default:
 						return
 					}
@@ -200,6 +191,19 @@ func (r *ChannelFeedbackRecorder) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// writeRecovered runs one write under a panic-recover boundary so a single
+// bad observation cannot kill the drain loop (and with it all collaboration
+// and tool-call feedback).
+func (r *ChannelFeedbackRecorder) writeRecovered(ctx context.Context, rec channelRecord) {
+	defer func() {
+		if rec0 := recover(); rec0 != nil {
+			log.ErrorContext(ctx, "channel feedback write panicked; record dropped",
+				"panic", fmt.Errorf("%v", rec0))
+		}
+	}()
+	r.write(ctx, rec)
 }
 
 // Stop cancels the drain goroutine and waits for it to exit.

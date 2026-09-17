@@ -96,8 +96,10 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 	s.survival.mu.Unlock()
 
 	defer func() {
+		cancel()
 		s.survival.mu.Lock()
 		s.survival.running = false
+		s.survival.cancel = nil
 		s.survival.mu.Unlock()
 	}()
 
@@ -220,6 +222,16 @@ func (s *Service) calculateAvgRecoveryTime(events []SurvivalEvent) time.Duration
 
 // randomChaosAction generates a random chaos action targeting available resources.
 func (s *Service) randomChaosAction() Action {
+	// NewService tolerates a nil injector (and Execute guards it); without
+	// this guard a nil injector here would panic inside the survival
+	// goroutine and kill the process.
+	if s.injector == nil {
+		return Action{
+			ID:        randomID(),
+			Type:      ActionPauseAgent,
+			CreatedAt: time.Now(),
+		}
+	}
 	actionTypes := []ActionType{
 		ActionKillAgent,
 		ActionKillLeader,

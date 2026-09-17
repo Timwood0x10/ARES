@@ -114,7 +114,8 @@ func (kb *KnowledgeBase) Record(pattern, mutation, outcome string, scoreDelta fl
 }
 
 // Lookup returns knowledge entries matching the given pattern, ordered by
-// confidence descending. Returns nil if no matches.
+// confidence descending. Returns nil if no matches. Entries are deep-copied
+// so concurrent Record mutations cannot race with the caller.
 func (kb *KnowledgeBase) Lookup(pattern string) []*EvolutionKnowledge {
 	kb.mu.RLock()
 	defer kb.mu.RUnlock()
@@ -122,7 +123,8 @@ func (kb *KnowledgeBase) Lookup(pattern string) []*EvolutionKnowledge {
 	var results []*EvolutionKnowledge
 	for _, e := range kb.entries {
 		if e.Pattern == pattern {
-			results = append(results, e)
+			cp := *e
+			results = append(results, &cp)
 		}
 	}
 	if len(results) == 0 {
@@ -135,13 +137,16 @@ func (kb *KnowledgeBase) Lookup(pattern string) []*EvolutionKnowledge {
 }
 
 // All returns all stored knowledge entries, ordered by confidence descending.
+// Entries are deep-copied so concurrent Record mutations cannot race with
+// the caller.
 func (kb *KnowledgeBase) All() []*EvolutionKnowledge {
 	kb.mu.RLock()
 	defer kb.mu.RUnlock()
 
 	results := make([]*EvolutionKnowledge, 0, len(kb.entries))
 	for _, e := range kb.entries {
-		results = append(results, e)
+		cp := *e
+		results = append(results, &cp)
 	}
 	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].Confidence > results[j].Confidence

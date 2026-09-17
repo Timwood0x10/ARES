@@ -73,7 +73,7 @@ func (h *Handler) APIKeyAuthMiddleware(next http.Handler) http.Handler {
 		}
 		if h.apiKey == "" {
 			writeError(w, http.StatusUnauthorized,
-				"arena API key not configured: set ARENA_API_KEY (or --api-key), "+
+				"arena API key not configured: set security.arena_api_key in ares.yaml (or --api-key), "+
 					"or pass --allow-anonymous for local development")
 			return
 		}

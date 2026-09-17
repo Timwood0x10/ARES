@@ -632,6 +632,9 @@ Example:
 			if err != nil {
 				return fmt.Errorf("parse ttl %q: %w", ttlStr, err)
 			}
+			if ttl <= 0 {
+				return fmt.Errorf("--ttl/jwt_expiry must be positive, got %q", ttlStr)
+			}
 			if _, err := ares_security.ParseRole(tokenRole); err != nil {
 				return err
 			}

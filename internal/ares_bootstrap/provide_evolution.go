@@ -102,6 +102,10 @@ func ProvideEvolution(
 	if llmClient != nil {
 		evalRegistry, err = setupEvaluators(llmClient)
 		if err != nil {
+			// Register already subscribed to the EventStore on its own
+			// background goroutine; without Shutdown that goroutine leaks
+			// for the process lifetime.
+			scheduler.Shutdown()
 			return nil, fmt.Errorf("bootstrap: setup evaluators: %w", err)
 		}
 	}

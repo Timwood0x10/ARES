@@ -413,7 +413,11 @@ func (p *DefaultPromoter) GetHistory(ctx context.Context, strategyID string) ([]
 		return []StrategyPromotionRecord{}, nil
 	}
 
-	return history, nil
+	// Return a copy: transitionState appends to the same slice under the
+	// write lock, and the caller must not observe torn data.
+	out := make([]StrategyPromotionRecord, len(history))
+	copy(out, history)
+	return out, nil
 }
 
 // GetCurrentState returns the current state of a strategy.
@@ -442,7 +446,12 @@ func (p *DefaultPromoter) GetChampions(ctx context.Context, taskType string) ([]
 	champions := make([]StrategyInfo, 0, len(championIDs))
 	for _, id := range championIDs {
 		if info, exists := p.strategies[id]; exists && info.CurrentState == StrategyStateChampion {
-			champions = append(champions, *info)
+			// Deep-copy ScoreHistory: the struct copy shares the backing
+			// array that Evaluate appends into under the write lock.
+			cp := *info
+			cp.ScoreHistory = make([]ScoreSnapshot, len(info.ScoreHistory))
+			copy(cp.ScoreHistory, info.ScoreHistory)
+			champions = append(champions, cp)
 		}
 	}
 
@@ -459,7 +468,12 @@ func (p *DefaultPromoter) GetStrategyInfo(ctx context.Context, strategyID string
 		return nil, ErrStrategyNotFound
 	}
 
-	return info, nil
+	// Deep-copy: Evaluate mutates the live entry (ScoreHistory append,
+	// state fields) under the write lock; returning the pointer would race.
+	cp := *info
+	cp.ScoreHistory = make([]ScoreSnapshot, len(info.ScoreHistory))
+	copy(cp.ScoreHistory, info.ScoreHistory)
+	return &cp, nil
 }
 
 // SetGeneration sets the current evolution generation.
@@ -648,7 +662,13 @@ func (p *DefaultPromoter) GetAllStrategies() map[string]StrategyInfo {
 
 	result := make(map[string]StrategyInfo)
 	for id, info := range p.strategies {
-		result[id] = *info
+		// Deep-copy ScoreHistory (same as GetChampions/GetStrategyInfo):
+		// the plain struct copy shares the backing array that Evaluate
+		// appends into under the write lock — a read-side data race.
+		cp := *info
+		cp.ScoreHistory = make([]ScoreSnapshot, len(info.ScoreHistory))
+		copy(cp.ScoreHistory, info.ScoreHistory)
+		result[id] = cp
 	}
 
 	return result

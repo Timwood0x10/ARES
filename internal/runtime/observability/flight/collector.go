@@ -99,12 +99,18 @@ func (c *Collector) Start(ctx context.Context) error {
 		return nil
 	}
 
-	ctx, c.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
 
 	ch, err := c.eventStore.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
+		// Cancel before returning: the pre-fix early return leaked the
+		// WithCancel registration with nothing ever able to release it.
+		cancel()
 		return err
 	}
+	c.mu.Lock()
+	c.cancel = cancel
+	c.mu.Unlock()
 
 	c.eg.Go(func() error {
 		c.collectLoop(ctx, ch)
@@ -125,8 +131,13 @@ func (c *Collector) Start(ctx context.Context) error {
 // context and the enqueue side is non-blocking, so Stop cannot hang on store
 // I/O.
 func (c *Collector) Stop() {
-	if c.cancel != nil {
-		c.cancel()
+	// Read under the lock: Start writes c.cancel, so the pre-fix unsynchronized
+	// read raced with a concurrent Start.
+	c.mu.RLock()
+	cancel := c.cancel
+	c.mu.RUnlock()
+	if cancel != nil {
+		cancel()
 	}
 	_ = c.eg.Wait()
 }
@@ -381,9 +392,12 @@ func (c *Collector) handleAgentEnd(evt *ares_events.Event) {
 	// pair the end event with the exact start event (not just the most
 	// recent unpaired one — robust to out-of-order arrival).
 	parentID := ""
-	c.mu.RLock()
+	c.mu.Lock()
 	parentID = c.agentStartIDs[agentID]
-	c.mu.RUnlock()
+	// Delete after pairing: the map would otherwise grow without bound
+	// for every agent identity the process has ever seen.
+	delete(c.agentStartIDs, agentID)
+	c.mu.Unlock()
 
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,

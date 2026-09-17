@@ -222,6 +222,11 @@ func startPluginBus(ctx context.Context, store ares_events.EventStore, sched *ke
 	}
 	if err := bus.Start(ctx); err != nil {
 		log.Warn("peer mode: plugin bus start failed (scheduling continues without plugins)", "err", err)
+		// Stop the bus so any plugins that DID start before the failure
+		// are torn down; otherwise they are orphaned with no handle.
+		if stopErr := bus.Stop(ctx); stopErr != nil {
+			log.Warn("peer mode: plugin bus stop after failed start", "err", stopErr)
+		}
 		return nil
 	}
 	sched.WithQuantumHook(newPluginBusHook(bus, loop, loopCfg))

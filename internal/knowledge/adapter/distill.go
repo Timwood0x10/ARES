@@ -238,15 +238,23 @@ func (b *DistillBridge) DistillConversation(
 
 	// embedding + dedup. Requires both emb and store; dedup
 	// additionally requires gate.EnableDedup. Superseded objects skip the
-	// quality gate during scoring.
-	b.embedAndDedup(ctx, objects)
+	// quality gate during scoring. Representations are collected but NOT
+	// yet persisted: the Postgres FK (akf_representations.object_id →
+	// akf_objects.id) requires the parent object to exist first.
+	reps := b.embedAndDedup(ctx, objects)
 
 	// quality gate. Score each non-superseded object; the
 	// resulting Quality and Confidence drive the promote decision at persist.
 	b.scoreQuality(objects)
 
 	// persist to KnowledgeStore and promote qualifying candidates.
-	return objects, b.persistAndPromote(ctx, objects)
+	if err := b.persistAndPromote(ctx, objects); err != nil {
+		return objects, err
+	}
+
+	// Objects now exist in the store; representations can reference them.
+	b.saveRepresentations(ctx, reps)
+	return objects, nil
 }
 
 // extractRelations populates obj.Relations for each object
@@ -258,14 +266,16 @@ func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) {
 	}
 }
 
-// embedAndDedup embeds each object, stores the
-// Representation, and marks superseded duplicates. Requires both emb and
-// store; dedup additionally requires gate.EnableDedup. Superseded objects
-// skip the quality gate. Does nothing when emb or store is nil.
-func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.KnowledgeObject) {
+// embedAndDedup embeds each object and marks superseded duplicates.
+// Requires both emb and store; dedup additionally requires gate.EnableDedup.
+// Superseded objects skip the quality gate. Returns the representations for
+// later persistence (the caller must save them AFTER store.Save so the FK
+// constraint is satisfied). Does nothing when emb or store is nil.
+func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.KnowledgeObject) []*knowledge.Representation {
 	if b.emb == nil || b.store == nil {
-		return
+		return nil
 	}
+	var reps []*knowledge.Representation
 	for _, obj := range objects {
 		text := obj.Normalized
 		if text == "" {
@@ -278,18 +288,13 @@ func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.
 			continue
 		}
 		vec := toFloat32(vecF64)
-		rep := &knowledge.Representation{
+		reps = append(reps, &knowledge.Representation{
 			ID:        "rep_" + obj.ID,
 			ObjectID:  obj.ID,
 			Model:     b.model,
 			Dimension: len(vec),
 			Vector:    vec,
-		}
-		if rErr := b.store.SaveRepresentation(ctx, rep); rErr != nil {
-			// best-effort: representation is not required for Save.
-			slog.Warn("distill bridge: save representation",
-				"object_id", obj.ID, "error", rErr)
-		}
+		})
 		if !b.gate.EnableDedup {
 			continue
 		}
@@ -314,6 +319,19 @@ func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.
 		}
 		if dup != nil {
 			obj.Status = knowledge.StatusSuperseded
+		}
+	}
+	return reps
+}
+
+// saveRepresentations persists representations after the parent objects
+// exist in the store. Best-effort: a representation failure does not roll
+// back the already-saved objects.
+func (b *DistillBridge) saveRepresentations(ctx context.Context, reps []*knowledge.Representation) {
+	for _, rep := range reps {
+		if rErr := b.store.SaveRepresentation(ctx, rep); rErr != nil {
+			slog.Warn("distill bridge: save representation",
+				"object_id", rep.ObjectID, "error", rErr)
 		}
 	}
 }

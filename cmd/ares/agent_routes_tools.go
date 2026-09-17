@@ -234,19 +234,18 @@ func registerNativeTools(ctx context.Context, internalReg *core.Registry, cfg *a
 // newToolRegistry creates the public tool registry with built-in + custom tools.
 // The file tool is sandboxed to prevent path-traversal attacks. The sandbox
 // root is tools.file_sandbox_dir in ares.yaml (the same knob governs both
-// file-tool surfaces); empty falls back to the current working directory.
+// file-tool surfaces); empty falls back to a process-private temp dir via the
+// shared resolver — the HTTP tool surface must not silently span the whole
+// working directory.
 func newToolRegistry(cfg *ares_config.Config) (*api_tools.Registry, error) {
 	r := api_tools.NewRegistry()
-	sandboxDir := ""
+	configured := ""
 	if cfg != nil {
-		sandboxDir = strings.TrimSpace(cfg.Tools.FileSandboxDir)
+		configured = strings.TrimSpace(cfg.Tools.FileSandboxDir)
 	}
-	if sandboxDir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("resolve file sandbox dir from working directory: %w", err)
-		}
-		sandboxDir = wd
+	sandboxDir, err := builtintools.ResolveFileToolsAllowedDir(configured)
+	if err != nil {
+		return nil, err
 	}
 	if err := api_tools.RegisterBuiltinTools(r, api_tools.WithFileSandboxDir(sandboxDir)); err != nil {
 		return nil, err

@@ -26,10 +26,17 @@ import (
 type ExecutionAttribution struct {
 	mu sync.Mutex
 	// results maps "agentID|capability" → outcome counts.
+	// Capped at maxAttributionEntries: when exceeded both maps are cleared
+	// entirely (losing old attribution data is preferable to unbounded
+	// memory growth and ever-longer Snapshot scans under the mutex).
 	results map[string]*capabilityOutcome
 	// agentResults maps agentID → aggregated outcome (all capabilities).
 	agentResults map[string]*capabilityOutcome
 }
+
+// maxAttributionEntries bounds the attribution maps. Once exceeded both are
+// cleared — the evolution system only needs recent data to score strategies.
+const maxAttributionEntries = 50000
 
 // capabilityOutcome tracks success/failure counts for one (agent, capability)
 // pair (or one agent's aggregate).
@@ -97,6 +104,13 @@ func (a *ExecutionAttribution) RecordWithMetrics(
 	key := agentID + "|" + capability
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Bound the maps: clear entirely when the key count exceeds the cap.
+	// Losing old attribution data is preferable to unbounded memory growth
+	// and ever-longer Snapshot scans under the mutex on the scheduler path.
+	if _, exists := a.results[key]; !exists && len(a.results) >= maxAttributionEntries {
+		a.results = make(map[string]*capabilityOutcome)
+		a.agentResults = make(map[string]*capabilityOutcome)
+	}
 	out, ok := a.results[key]
 	if !ok {
 		out = &capabilityOutcome{}

@@ -28,7 +28,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// resolveFileToolsAllowedDir returns the directory that FileTools and PDFTool
+// ResolveFileToolsAllowedDir returns the directory that FileTools and PDFTool
 // may operate within. It uses the configured dir — tools.file_sandbox_dir in
 // ares.yaml, the single knob for every file-facing tool surface (the public
 // HTTP tool registry reads the same config entry).
@@ -40,7 +40,7 @@ import (
 // local user could pre-plant or read the agent's files). The per-boot private
 // dir costs nothing for a scratch sandbox. A loud warning marks the fallback
 // so the operator sees the reduced scope.
-func resolveFileToolsAllowedDir(configured string) (string, error) {
+func ResolveFileToolsAllowedDir(configured string) (string, error) {
 	if dir := strings.TrimSpace(configured); dir != "" {
 		return dir, nil
 	}
@@ -72,7 +72,7 @@ type GeneralToolsDeps struct {
 	LLMClient *llm.Client
 	// FileSandboxDir roots the FileTools/PDFTool sandbox — wired from
 	// tools.file_sandbox_dir in ares.yaml. Empty falls back to a
-	// process-private temp dir (see resolveFileToolsAllowedDir).
+	// process-private temp dir (see ResolveFileToolsAllowedDir).
 	FileSandboxDir string
 }
 
@@ -103,7 +103,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	// Resolve the file sandbox ONCE so FileTools and PDFTool share the exact
 	// same directory — two resolutions could diverge under the private-dir
 	// fallback and silently split the sandbox.
-	fileSandboxDir, err := resolveFileToolsAllowedDir(d.FileSandboxDir)
+	fileSandboxDir, err := ResolveFileToolsAllowedDir(d.FileSandboxDir)
 	if err != nil {
 		return errors.Wrap(err, "register general tools")
 	}

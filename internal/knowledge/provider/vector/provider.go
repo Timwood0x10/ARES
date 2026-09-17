@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // VectorProvider implements GraphProvider by querying a VectorStore for
@@ -182,7 +183,14 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			limit = 200 // safety cap
 		}
 
-		results, err := p.store.Search(gCtx, p.config.Collection, p.config.TenantID, queryVec, limit)
+		// Resolve tenant per-request: the constructor-time Config.TenantID
+		// is the fallback, but the request-scoped tenant takes priority so
+		// tenant-attributed chunks are reachable by their owner.
+		tenant := tenantctx.From(gCtx)
+		if tenant == "" {
+			tenant = p.config.TenantID
+		}
+		results, err := p.store.Search(gCtx, p.config.Collection, tenant, queryVec, limit)
 		if err != nil {
 			// If the collection doesn't exist yet, return empty (not an error).
 			errCh <- fmt.Errorf("vector search %s: %w", p.config.Collection, err)

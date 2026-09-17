@@ -144,11 +144,37 @@ func (g *Graph) AddNode(node *GraphNode) {
 }
 
 // GetNode returns a node by ID.
+// cloneGraphNode returns a deep copy of a GraphNode (including Children and
+// Metadata) so concurrent writers mutating node fields under the write lock
+// cannot race with readers holding the returned pointer.
+func cloneGraphNode(n *GraphNode) *GraphNode {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	if n.Metadata != nil {
+		cp.Metadata = make(map[string]any, len(n.Metadata))
+		for k, v := range n.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	if n.Children != nil {
+		cp.Children = make([]*GraphNode, len(n.Children))
+		for i, c := range n.Children {
+			cp.Children[i] = cloneGraphNode(c)
+		}
+	}
+	return &cp
+}
+
 func (g *Graph) GetNode(id string) (*GraphNode, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	n, ok := g.nodes[id]
-	return n, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneGraphNode(n), true
 }
 
 // UpdateNodeStatus atomically updates the status, end time, and duration of a node.
@@ -165,31 +191,53 @@ func (g *Graph) UpdateNodeStatus(id string, status NodeStatus, endAt time.Time) 
 	}
 }
 
-// Root returns the first root node (backward-compatible single-agent
-// accessor; Roots returns every agent's root).
+// Root returns a deep copy of the first root node (backward-compatible
+// single-agent accessor; Roots returns every agent's root).
 func (g *Graph) Root() *GraphNode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.root
+	return cloneGraphNode(g.root)
 }
 
-// Roots returns every root node — one per agent. Multi-agent exports render
-// each root's subtree.
+// Roots returns deep copies of every root node — one per agent. Multi-agent
+// exports render each root's subtree.
 func (g *Graph) Roots() []*GraphNode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	result := make([]*GraphNode, len(g.roots))
-	copy(result, g.roots)
+	for i, r := range g.roots {
+		result[i] = cloneGraphNode(r)
+	}
 	return result
 }
 
-// Nodes returns all nodes.
+// cloneGraphNodeShallow returns a copy of a GraphNode with Metadata
+// deep-copied but Children set to nil. Used by Nodes() where the caller
+// iterates all nodes — cloning children here would duplicate entire
+// subtrees in the result.
+func cloneGraphNodeShallow(n *GraphNode) *GraphNode {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	cp.Children = nil
+	if n.Metadata != nil {
+		cp.Metadata = make(map[string]any, len(n.Metadata))
+		for k, v := range n.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
+// Nodes returns shallow copies of all nodes (Metadata deep-copied, Children
+// nil — use GetNode/Root for a full subtree).
 func (g *Graph) Nodes() []*GraphNode {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	result := make([]*GraphNode, 0, len(g.nodes))
 	for _, n := range g.nodes {
-		result = append(result, n)
+		result = append(result, cloneGraphNodeShallow(n))
 	}
 	return result
 }

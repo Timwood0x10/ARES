@@ -176,10 +176,12 @@ func (dp *DeploymentPipeline) IsEnabled() bool {
 // Returns:
 //   - record - the deployment outcome record.
 //   - err    - non-nil if deployment fails catastrophically (not rollback).
+//
+// The mutex is NOT held across staging/live Apply or Evaluate calls (those
+// are I/O-bound). Concurrent Deploy calls will interleave their staging/live
+// operations; callers that need serialization should use an external
+// semaphore or the coordinator's runMu.
 func (dp *DeploymentPipeline) Deploy(ctx context.Context, p patch.RuntimePatch) (*DeploymentRecord, error) {
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-
 	// Use the actual patch ID so audit records can trace back to the source
 	// candidate; a synthesized timestamp ID would be unrelated and untraceable.
 	patchID := p.ID
@@ -191,40 +193,48 @@ func (dp *DeploymentPipeline) Deploy(ctx context.Context, p patch.RuntimePatch) 
 		Timestamp: time.Now(),
 	}
 
-	if !dp.config.Enabled {
+	dp.mu.Lock()
+	enabled := dp.config.Enabled
+	staging := dp.staging
+	live := dp.live
+	evalTimeout := dp.config.EvaluationTimeout
+	threshold := dp.config.PromotionThreshold
+	dp.mu.Unlock()
+
+	if !enabled {
 		record.Status = DeploymentDisabled
 		record.Reason = "auto-promotion disabled in config"
-		dp.history = append(dp.history, *record)
+		dp.appendHistory(*record)
 		return record, nil
 	}
 
-	if dp.staging == nil || dp.live == nil {
+	if staging == nil || live == nil {
 		record.Status = DeploymentRejected
 		record.Reason = "staging or live runtime is nil"
-		dp.history = append(dp.history, *record)
+		dp.appendHistory(*record)
 		return record, errors.New("deployment: staging or live runtime is nil")
 	}
 
 	// Step 2: Apply to staging.
-	rollback, err := dp.staging.Apply(ctx, p)
+	rollback, err := staging.Apply(ctx, p)
 	if err != nil {
 		record.Status = DeploymentRejected
 		record.Reason = fmt.Sprintf("staging apply failed: %v", err)
-		dp.history = append(dp.history, *record)
+		dp.appendHistory(*record)
 		return record, fmt.Errorf("deployment: staging apply: %w", err)
 	}
 
 	// Step 3: Shadow evaluate — returns both shadow (patch strategy)
 	// and baseline (active strategy) scores from the same time anchor.
-	evalCtx, cancel := context.WithTimeout(ctx, dp.config.EvaluationTimeout)
+	evalCtx, cancel := context.WithTimeout(ctx, evalTimeout)
 	defer cancel()
 
-	shadowScore, baselineScore, err := dp.staging.Evaluate(evalCtx)
+	shadowScore, baselineScore, err := staging.Evaluate(evalCtx)
 	if err != nil {
-		_ = dp.staging.Rollback(ctx, rollback)
+		_ = staging.Rollback(ctx, rollback)
 		record.Status = DeploymentRejected
 		record.Reason = fmt.Sprintf("shadow evaluate failed: %v", err)
-		dp.history = append(dp.history, *record)
+		dp.appendHistory(*record)
 		return record, fmt.Errorf("deployment: shadow evaluate: %w", err)
 	}
 	record.ShadowScore = shadowScore
@@ -234,23 +244,23 @@ func (dp *DeploymentPipeline) Deploy(ctx context.Context, p patch.RuntimePatch) 
 	// delta (shadow - baseline), not an absolute score. This prevents any
 	// patch from passing when the active strategy already scores higher.
 	delta := shadowScore - baselineScore
-	if delta < dp.config.PromotionThreshold {
-		_ = dp.staging.Rollback(ctx, rollback)
+	if delta < threshold {
+		_ = staging.Rollback(ctx, rollback)
 		record.Status = DeploymentRejected
 		record.Reason = fmt.Sprintf(
 			"delta %.3f (shadow %.3f - baseline %.3f) below promotion threshold %.3f",
-			delta, shadowScore, baselineScore, dp.config.PromotionThreshold)
-		dp.history = append(dp.history, *record)
+			delta, shadowScore, baselineScore, threshold)
+		dp.appendHistory(*record)
 		return record, nil
 	}
 
 	// Step 5: Promote to live.
-	liveRollback, err := dp.live.Apply(ctx, p)
+	liveRollback, err := live.Apply(ctx, p)
 	if err != nil {
-		_ = dp.staging.Rollback(ctx, rollback)
+		_ = staging.Rollback(ctx, rollback)
 		record.Status = DeploymentRolledBack
 		record.Reason = fmt.Sprintf("live apply failed: %v", err)
-		dp.history = append(dp.history, *record)
+		dp.appendHistory(*record)
 		return record, fmt.Errorf("deployment: live apply: %w", err)
 	}
 
@@ -259,8 +269,17 @@ func (dp *DeploymentPipeline) Deploy(ctx context.Context, p patch.RuntimePatch) 
 		"patch promoted to live runtime (delta %.3f: shadow %.3f - baseline %.3f)",
 		delta, shadowScore, baselineScore)
 	record.RollbackPatch = liveRollback
-	dp.history = append(dp.history, *record)
+	dp.appendHistory(*record)
 	return record, nil
+}
+
+// appendHistory appends a record to the history slice under the write lock.
+// Called from Deploy/MonitorAndRollback after I/O completes so the mutex is
+// never held across staging/live Apply or Evaluate calls.
+func (dp *DeploymentPipeline) appendHistory(r DeploymentRecord) {
+	dp.mu.Lock()
+	dp.history = append(dp.history, r)
+	dp.mu.Unlock()
 }
 
 // History returns a copy of all deployment records for observability.
@@ -292,18 +311,25 @@ func (dp *DeploymentPipeline) History() []DeploymentRecord {
 //     DeploymentRolledBack (regression detected and rolled back).
 //   - err - non-nil only if the monitoring itself failed catastrophically.
 func (dp *DeploymentPipeline) MonitorAndRollback(ctx context.Context, record *DeploymentRecord) (*DeploymentRecord, error) {
-	dp.mu.Lock()
-	defer dp.mu.Unlock()
-
 	if record == nil || record.Status != DeploymentPromoted || record.RollbackPatch == nil {
 		return record, fmt.Errorf("deployment: MonitorAndRollback requires a promoted record with a rollback handle")
 	}
+
+	// Snapshot config and component pointers under the lock, then release it
+	// before the sleep + evaluate so concurrent History/Deploy calls are not
+	// blocked for the full EvaluationTimeout.
+	dp.mu.Lock()
+	evalTimeout := dp.config.EvaluationTimeout
+	rollbackThreshold := dp.config.RollbackThreshold
+	staging := dp.staging
+	live := dp.live
+	dp.mu.Unlock()
 
 	// Wait for the evaluation window to elapse before sampling.
 	select {
 	case <-ctx.Done():
 		return record, ctx.Err()
-	case <-time.After(dp.config.EvaluationTimeout):
+	case <-time.After(evalTimeout):
 	}
 
 	// Sample the current live fitness. Evaluate returns shadow (the
@@ -312,21 +338,21 @@ func (dp *DeploymentPipeline) MonitorAndRollback(ctx context.Context, record *De
 	// its score is the current live score. The baseline is the old
 	// strategy's score — if shadow < baseline by more than the threshold,
 	// the promotion caused a regression.
-	currentScore, oldBaseline, err := dp.staging.Evaluate(ctx)
+	currentScore, oldBaseline, err := staging.Evaluate(ctx)
 	if err != nil {
 		return record, fmt.Errorf("deployment: monitor evaluate: %w", err)
 	}
 
 	regression := oldBaseline - currentScore
-	if regression <= dp.config.RollbackThreshold {
+	if regression <= rollbackThreshold {
 		// No significant regression — keep promoted.
 		record.LiveScore = currentScore
 		return record, nil
 	}
 
 	// Regression detected — roll back the live patch.
-	if dp.live != nil {
-		if err := dp.live.Rollback(ctx, record.RollbackPatch); err != nil {
+	if live != nil {
+		if err := live.Rollback(ctx, record.RollbackPatch); err != nil {
 			return record, fmt.Errorf("deployment: live rollback failed: %w", err)
 		}
 	}
@@ -335,10 +361,11 @@ func (dp *DeploymentPipeline) MonitorAndRollback(ctx context.Context, record *De
 	record.LiveScore = currentScore
 	record.Reason = fmt.Sprintf(
 		"regression %.3f (baseline %.3f - live %.3f) exceeded rollback threshold %.3f",
-		regression, oldBaseline, currentScore, dp.config.RollbackThreshold)
+		regression, oldBaseline, currentScore, rollbackThreshold)
 	record.RollbackPatch = nil
 
-	// Update the history entry in place.
+	// Update the history entry in place under the write lock.
+	dp.mu.Lock()
 	for i := range dp.history {
 		if dp.history[i].PatchID == record.PatchID &&
 			dp.history[i].Timestamp.Equal(record.Timestamp) {
@@ -346,6 +373,7 @@ func (dp *DeploymentPipeline) MonitorAndRollback(ctx context.Context, record *De
 			break
 		}
 	}
+	dp.mu.Unlock()
 	return record, nil
 }
 

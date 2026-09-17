@@ -476,6 +476,11 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			result.Stats = append(result.Stats, stats)
 
 			lineages := s.collectLineages()
+			// The genealogy recorder trims to maxLineages; after a trim
+			// len(lineages) can be < wiredLineageLen, which would panic.
+			if wiredLineageLen > len(lineages) {
+				wiredLineageLen = 0
+			}
 			result.Lineages = append(result.Lineages, lineages[wiredLineageLen:]...)
 			wiredLineageLen = len(lineages)
 		case s.population != nil && s.mutator != nil && s.crosser != nil:

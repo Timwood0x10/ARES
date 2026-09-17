@@ -206,9 +206,12 @@ func (b *bootstrapBuilder) assembleExperience() error {
 	// generation recording, task/agent lifecycle tracing) write into the same
 	// instances — so the dashboard endpoints show live data, not empty lists.
 	comp.Observability = &ObservabilityComponents{
-		EvolutionTracer: aresrecovery.NewEvolutionTracer(),
-		FeedbackStore:   aresrecovery.NewFeedbackStore(),
-		GlobalTracer:    aresrecovery.NewGlobalTracer(),
+		// Cap the three registries that would otherwise grow without bound
+		// for the process lifetime (each has a WithMax* builder that was
+		// defined but never called in production).
+		EvolutionTracer: aresrecovery.NewEvolutionTracer().WithMaxGenerations(2000),
+		FeedbackStore:   aresrecovery.NewFeedbackStore().WithMaxEntries(5000),
+		GlobalTracer:    aresrecovery.NewGlobalTracer().WithMaxSpans(10000),
 	}
 	// Runtime observability providers: these surfaces now feed
 	// introspect.ControlServer directly; the standalone
@@ -490,7 +493,9 @@ func (b *bootstrapBuilder) wirePlatform() error {
 	// 10. Optional service discovery (opt-in via config.Discovery.Enabled).
 	// When disabled, ProvideDiscovery returns ErrDiscoveryDisabled and the
 	// discovery packages remain unused, preserving prior behavior.
-	discoveryComp, err := ProvideDiscovery(ctx, &cfg.Discovery, comp.EventStore)
+	// Pass bctx (not the caller's ctx) so runCleanups cancels the
+	// auto-discovery loop when a later bootstrap step fails.
+	discoveryComp, err := ProvideDiscovery(bctx, &cfg.Discovery, comp.EventStore)
 	switch {
 	case errors.Is(err, ErrDiscoveryDisabled):
 		// Discovery is disabled — not an error, just no-op.

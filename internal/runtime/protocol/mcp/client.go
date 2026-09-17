@@ -111,9 +111,17 @@ func (c *MCPClient) ConnectWithLifetime(ctx, lifetimeCtx context.Context, transp
 		return fmt.Errorf("start transport: %w", err)
 	}
 
-	// Start receiving messages in background.
+	// Start receiving messages in background. On a non-ctx transport error
+	// the loop exits permanently; clear connected so IsConnected reports the
+	// truth instead of leaving a zombie that looks healthy but times out
+	// on every CallTool.
 	c.eg.Go(func() error {
-		return c.receiveLoop()
+		err := c.receiveLoop()
+		if err != nil && c.ctx.Err() == nil {
+			c.connected.Store(false)
+			log.Warn("mcp: receive loop exited with error", "error", err)
+		}
+		return err
 	})
 
 	// Perform initialize handshake against the bounded handshake ctx.
@@ -251,7 +259,8 @@ func (c *MCPClient) Close() error {
 		}
 	}
 
-	if err := c.eg.Wait(); err != nil && c.ctx.Err() == nil {
+	// c.ctx is set only by Connect; Close before Connect leaves it nil.
+	if err := c.eg.Wait(); err != nil && (c.ctx == nil || c.ctx.Err() == nil) {
 		log.Error("mcp: receive loop error", "server", c.serverName, "error", err)
 	}
 

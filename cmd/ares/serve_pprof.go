@@ -26,7 +26,7 @@ import (
 func validatePprofAddr(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("ARES_PPROF_ADDR must be host:port, got %q: %w", addr, err)
+		return fmt.Errorf("server.pprof_addr must be host:port, got %q: %w", addr, err)
 	}
 	if host == "localhost" {
 		return nil
@@ -34,7 +34,7 @@ func validatePprofAddr(addr string) error {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	return fmt.Errorf("ARES_PPROF_ADDR must be a loopback address (got %q): pprof exposes memory and goroutine dumps", addr)
+	return fmt.Errorf("server.pprof_addr must be a loopback address (got %q): pprof exposes memory and goroutine dumps", addr)
 }
 
 // startPprofServer serves net/http/pprof and expvar on the address named by

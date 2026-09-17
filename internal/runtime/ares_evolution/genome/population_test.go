@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -476,13 +477,13 @@ func TestConcurrentEvolveSafety(t *testing.T) {
 	ctx := context.Background()
 	base := newTestStrategy(0.5)
 
-	callCount := 0
+	var callCount atomic.Int64
 	mutator := &mockMutator{
 		mutateFn: func(ctx context.Context, parent *mutation.Strategy, n int) ([]*mutation.Strategy, error) {
-			callCount++
+			c := callCount.Add(1)
 			result := make([]*mutation.Strategy, n)
 			for i := range result {
-				result[i] = newTestStrategy(float64(callCount))
+				result[i] = newTestStrategy(float64(c))
 			}
 			return result, nil
 		},

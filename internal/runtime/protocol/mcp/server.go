@@ -318,6 +318,10 @@ func (s *MCPServer) Serve(ctx context.Context) error {
 		"version", s.info.Version,
 	)
 
+	// Capture the parent before errgroup.WithContext shadows it: the derived
+	// ctx is always cancelled when Wait returns non-nil, so checking it would
+	// swallow every serve failure as a graceful shutdown.
+	parentCtx := ctx
 	eg, ctx := errgroup.WithContext(ctx)
 
 	eg.Go(func() error {
@@ -325,7 +329,7 @@ func (s *MCPServer) Serve(ctx context.Context) error {
 	})
 
 	if err := eg.Wait(); err != nil {
-		if ctx.Err() != nil {
+		if parentCtx.Err() != nil {
 			log.Info("mcp-server: shutdown complete")
 			return nil
 		}

@@ -152,7 +152,7 @@ func TestStatusProbeRuntime(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	rt := probeStatusRuntime(context.Background(), srv.URL)
+	rt := probeStatusRuntime(context.Background(), srv.URL, "")
 	if !rt.Running {
 		t.Fatalf("expected running, error=%q", rt.Error)
 	}
@@ -165,7 +165,7 @@ func TestStatusProbeRuntime(t *testing.T) {
 }
 
 func TestStatusProbeRuntimeDead(t *testing.T) {
-	rt := probeStatusRuntime(context.Background(), "http://127.0.0.1:1")
+	rt := probeStatusRuntime(context.Background(), "http://127.0.0.1:1", "")
 	if rt.Running {
 		t.Fatal("expected not running")
 	}
@@ -183,7 +183,7 @@ func TestStatusProbeRuntimeTrailingSlash(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	rt := probeStatusRuntime(context.Background(), srv.URL+"/")
+	rt := probeStatusRuntime(context.Background(), srv.URL+"/", "")
 	if !rt.Running {
 		t.Fatalf("expected running with trailing slash, error=%q", rt.Error)
 	}
