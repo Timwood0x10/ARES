@@ -110,13 +110,13 @@ func (r *Resolver) resolveOne(d ToolDecl, trust TrustLevel) (ResolvedTool, error
 		if !r.builtins[d.Name] {
 			return ResolvedTool{}, fmt.Errorf("ares_skills: unknown builtin tool %q", d.Name)
 		}
-		return ResolvedTool{ID: d.ID, Kind: ToolBuiltin, Target: d.Name}, nil
+		return ResolvedTool{ID: d.ID, Kind: ToolBuiltin, Target: d.Name, Trust: trust}, nil
 
 	case string(ToolMCP):
 		if d.Server == "" {
 			return ResolvedTool{}, fmt.Errorf("ares_skills: mcp tool %q missing server", d.ID)
 		}
-		return ResolvedTool{ID: d.ID, Kind: ToolMCP, Target: d.Server}, nil
+		return ResolvedTool{ID: d.ID, Kind: ToolMCP, Target: d.Server, Trust: trust}, nil
 
 	case string(ToolExecutable):
 		if trust == TrustUntrusted {
@@ -133,7 +133,18 @@ func (r *Resolver) resolveOne(d ToolDecl, trust TrustLevel) (ResolvedTool, error
 		if !executableExists(d.Command) {
 			return ResolvedTool{}, fmt.Errorf("ares_skills: declared executable %q not found", d.Command)
 		}
-		return ResolvedTool{ID: d.ID, Kind: ToolExecutable, Target: d.Command, Args: d.Args}, nil
+		if trust == TrustAsk {
+			// TrustAsk previously vanished here: the tier was computed,
+			// only TrustUntrusted blocked, and the resolved tool carried
+			// nothing — the confirmation gate was never enforced. The tier
+			// now rides on ResolvedTool.Trust; this Warn makes the
+			// unconfirmed state visible until executors enforce it.
+			log.Warn("ares_skills: executable resolved under TrustAsk; executor must confirm before running",
+				"tool", d.ID,
+				"command", d.Command,
+			)
+		}
+		return ResolvedTool{ID: d.ID, Kind: ToolExecutable, Target: d.Command, Args: d.Args, Trust: trust}, nil
 
 	default:
 		return ResolvedTool{}, fmt.Errorf("ares_skills: unsupported tool type %q", d.Type)

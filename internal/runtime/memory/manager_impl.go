@@ -325,11 +325,28 @@ func (m *memoryManager) SetEventStore(store ares_events.EventStore, streamID str
 	m.streamID = streamID
 }
 
+// ApplyLiveConfig implements LiveConfigApplier: it pushes patch-updated
+// limits into the live SessionMemory/TaskMemory, which capture TTL/capacity
+// at construction and would otherwise keep enforcing boot-time values.
+func (m *memoryManager) ApplyLiveConfig(cfg *MemoryConfig) {
+	if cfg == nil {
+		return
+	}
+	m.sessionMemory.Reconfigure(cfg.MaxSessions, cfg.SessionTTL)
+	m.taskMemory.Reconfigure(cfg.MaxTasks, cfg.TaskTTL)
+}
+
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (m *memoryManager) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 	m.mu.RLock()
 	store, sid := m.eventStore, m.streamID
 	m.mu.RUnlock()
+	// Optional by design (SetEventStore defaults to nil = no-op). Emit
+	// returns false for a nil store, so without this guard every message
+	// emitted a misleading Warn on the hot path.
+	if store == nil {
+		return
+	}
 	if !ares_events.Emit(ctx, store, sid, eventType, "memory", payload) {
 		log.Warn("failed to emit event", "event_type", eventType, "stream_id", sid)
 	}
@@ -693,6 +710,9 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 
 	var storedCount int64
 	g, storeCtx := errgroup.WithContext(ctx)
+	// Bound concurrency: the distilled-memory count is distiller-controlled;
+	// unbounded g.Go fired one DB-writing goroutine per experience.
+	g.SetLimit(8)
 	for _, mem := range memories {
 		mem := mem
 		g.Go(func() error {

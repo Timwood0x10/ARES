@@ -126,6 +126,41 @@ func (m *HeartbeatMonitor) checkAndMarkOffline() []string {
 	return timedOut
 }
 
+// StartAutoCheck drives CheckTimeouts on a background ticker until the
+// context is cancelled or the returned stop function is called. The pre-fix
+// monitor was fully passive: nothing in production ever invoked
+// CheckTimeouts, so agents were never marked offline by this path, the
+// TimeoutCallback machinery never fired, and config Interval was dead.
+// Returns a stop function that also waits for the loop to exit.
+func (m *HeartbeatMonitor) StartAutoCheck(ctx context.Context) func() {
+	interval := m.config.Interval
+	if interval <= 0 {
+		interval = DefaultHeartbeatConfig().Interval
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				m.CheckTimeouts()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+}
+
 // RemoveAgent removes an agent from monitoring.
 func (m *HeartbeatMonitor) RemoveAgent(agentID string) {
 	m.mu.Lock()
@@ -217,6 +252,9 @@ func (s *HeartbeatSender) Validate() error {
 // Start starts sending heartbeats.
 // This method can be called again after Stop.
 func (s *HeartbeatSender) Start(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	if s.started {
 		s.mu.Unlock()
@@ -261,15 +299,18 @@ func (s *HeartbeatSender) sendHeartbeat() {
 
 // Stop stops sending heartbeats and waits for the run goroutine to exit.
 func (s *HeartbeatSender) Stop() {
+	// Hold the lock across cancel + Wait: run() never takes s.mu, so this
+	// cannot deadlock, and it closes the window where a concurrent Start
+	// could wg.Add(1) while Wait is in flight (sync.WaitGroup misuse) or
+	// rewrite s.ctx while the still-exiting run() reads it.
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.started {
-		s.mu.Unlock()
 		return
 	}
 	s.started = false
-	cancel := s.cancel
-	s.mu.Unlock()
-
-	cancel()
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.wg.Wait()
 }

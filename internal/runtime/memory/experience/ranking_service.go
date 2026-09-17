@@ -81,12 +81,15 @@ func (s *RankingService) Configure(weights *RankingWeights) error {
 	s.usageWeight = weights.UsageWeight
 	s.recencyWeight = weights.RecencyWeight
 	s.recencyDays = weights.RecencyDays
+	// Snapshot before unlock: the pre-fix log read the fields AFTER
+	// Unlock, racing a concurrent Rank (RLock) or a second Configure.
+	usageWeight, recencyWeight, recencyDays := s.usageWeight, s.recencyWeight, s.recencyDays
 	s.mu.Unlock()
 
 	s.logger.Info("Ranking weights configured",
-		"usage_weight", s.usageWeight,
-		"recency_weight", s.recencyWeight,
-		"recency_days", s.recencyDays,
+		"usage_weight", usageWeight,
+		"recency_weight", recencyWeight,
+		"recency_days", recencyDays,
 	)
 
 	return nil

@@ -37,8 +37,23 @@ type HTTPManifest struct {
 	Skills []HTTPManifestSkill `json:"skills"`
 }
 
-// httpClient is overridable for tests (local httptest servers).
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+// httpClient is overridable for tests (local httptest servers). The default
+// pins redirects to the originally declared host: the pre-fix client
+// followed up to 10 redirects to ANY host/scheme, so a trusted manifest
+// host answering 302 to e.g. 169.254.169.254 would let the fetcher read
+// cloud metadata endpoints.
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("ares_skills: stopped after 10 redirects")
+		}
+		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+			return fmt.Errorf("ares_skills: cross-host redirect to %s refused", req.URL.Host)
+		}
+		return nil
+	},
+}
 
 // FetchHTTPManifest fetches and decodes a remote skill manifest, mapping it
 // onto metadata-only index entries (Source=registered). A fetch failure is

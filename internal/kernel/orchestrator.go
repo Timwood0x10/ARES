@@ -90,6 +90,18 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	var started []string
 
 	for _, name := range order {
+		// Shutdown may have raced in: the pre-fix loop kept starting
+		// components after Shutdown had already marked them Stopped —
+		// live goroutines recorded as stopped, invisible to the teardown
+		// report. Adopt applies the same recheck (see startAdopted).
+		o.mu.Lock()
+		stopped := o.stopped
+		o.mu.Unlock()
+		if stopped {
+			// No rollback: Shutdown owns teardown of every registered
+			// component, started or not.
+			return errors.New("kernel: startup aborted — shutdown began during startup")
+		}
 		if err := o.startComponent(ctx, name); err != nil {
 			// The failing component may have partially started (Start()
 			// succeeded, Ready() failed, or Start() returned error after
@@ -603,7 +615,12 @@ func (o *Orchestrator) markBackgroundFailed(name, reason string) {
 		st.State = StateFailed
 		st.Reason = reason
 	})
-	if o.events == nil {
+	// Snapshot under the lock: SetEventSink writes o.events under o.mu, and
+	// this function runs on errgroup goroutines (GoBackground).
+	o.mu.Lock()
+	events := o.events
+	o.mu.Unlock()
+	if events == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -614,7 +631,7 @@ func (o *Orchestrator) markBackgroundFailed(name, reason string) {
 		Payload:    map[string]any{"component": name, "reason": reason},
 		Timestamp:  time.Now(),
 	}
-	if err := o.events.Append(ctx, "system_runtime/"+name, []*ares_events.Event{evt}, 0); err != nil {
+	if err := events.Append(ctx, "system_runtime/"+name, []*ares_events.Event{evt}, 0); err != nil {
 		log.Warn("kernel: component failure event not recorded",
 			"component", name, "error", err)
 	}
@@ -623,7 +640,12 @@ func (o *Orchestrator) markBackgroundFailed(name, reason string) {
 // SetEventSink attaches the optional event store used to record background
 // component failures. Nil (the default) disables event emission.
 func (o *Orchestrator) SetEventSink(store ares_events.EventStore) {
+	// Guarded: markBackgroundFailed reads o.events from errgroup goroutines
+	// started by GoBackground; an unsynchronized write here was a data race
+	// (and a torn-interface nil-deref class) if called after Start.
+	o.mu.Lock()
 	o.events = store
+	o.mu.Unlock()
 }
 
 // Snapshot returns a point-in-time status view of all managed components

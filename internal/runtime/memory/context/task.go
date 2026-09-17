@@ -87,9 +87,31 @@ func (m *TaskMemory) Stop() {
 	m.cleanupWg.Wait()
 }
 
+// Reconfigure pushes updated limits from a runtime config patch into the
+// already-constructed live store (mirrors SessionMemory.Reconfigure).
+// Non-positive values leave the corresponding limit unchanged.
+func (m *TaskMemory) Reconfigure(maxSize int, ttl time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxSize > 0 {
+		m.maxSize = maxSize
+	}
+	if ttl > 0 {
+		m.ttl = ttl
+	}
+}
+
 // cleanupLoop runs periodic cleanup of expired tasks.
 func (m *TaskMemory) cleanupLoop(ctx context.Context) {
-	defer m.cleanupWg.Done()
+	defer func() {
+		// Reset the running flag under the lock: the pre-fix exit left it
+		// true forever, so a later Start on a fresh context silently never
+		// restarted the sweeper and expiry fell back to lazy deletion only.
+		m.mu.Lock()
+		m.cleanupRunning = false
+		m.mu.Unlock()
+		m.cleanupWg.Done()
+	}()
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()

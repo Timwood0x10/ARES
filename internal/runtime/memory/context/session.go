@@ -96,6 +96,24 @@ func NewSessionMemory(maxSize int, ttl time.Duration) *SessionMemory {
 
 // WithMaxMessages sets the per-session stored-message cap (0 or negative
 // restores the default). Returns the receiver for chaining.
+// Reconfigure pushes updated limits from a runtime config patch into the
+// already-constructed live store. maxSize and ttl are captured at
+// NewSessionMemory time, so without this push the patch executor updated the
+// stored config while the live store kept enforcing boot-time values.
+// Non-positive values leave the corresponding limit unchanged. The cleanup
+// tick keeps its original cadence (a coarser tick only delays the sweep;
+// lazy expiry in Get/GetMessages is the backstop).
+func (m *SessionMemory) Reconfigure(maxSize int, ttl time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxSize > 0 {
+		m.maxSize = maxSize
+	}
+	if ttl > 0 {
+		m.ttl = ttl
+	}
+}
+
 func (m *SessionMemory) WithMaxMessages(n int) *SessionMemory {
 	if n <= 0 {
 		n = defaultMaxSessionMessages
@@ -261,16 +279,22 @@ func (m *SessionMemory) AddMessage(ctx context.Context, sessionID string, msg Me
 	return nil
 }
 
-// GetMessages returns session messages. The read counts as proof of life —
-// it refreshes AccessedAt exactly like Get, so a session reached only through
-// this path (BuildPromptMessages/BuildContext, the memory tool) cannot age
-// out of the TTL sweep in the middle of a conversation.
+// GetMessages returns session messages. A live read refreshes AccessedAt
+// (proof of life, same as Get) — but an EXPIRED session is deleted here too,
+// matching Get's lazy-expiry semantics. The pre-fix version refreshed
+// AccessedAt without any TTL check, so a session reached only through this
+// path (BuildPromptMessages/BuildContext, the memory tool) was immortal —
+// the TTL sweep could never reap it.
 func (m *SessionMemory) GetMessages(ctx context.Context, sessionID string) ([]Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	session, exists := m.sessions[sessionID]
 	if !exists {
+		return nil, ErrSessionNotFound
+	}
+	if time.Since(session.AccessedAt) > m.ttl {
+		delete(m.sessions, sessionID)
 		return nil, ErrSessionNotFound
 	}
 	session.AccessedAt = time.Now()

@@ -439,12 +439,23 @@ func (s *EvolutionScheduler) Register() {
 		return
 	}
 
+	// Arm the subscription group and launch the loop AS ONE critical
+	// section: the pre-fix Unlock-then-Go window let Shutdown copy subEg
+	// and Wait before Go was invoked (sync.WaitGroup Add racing Wait —
+	// a panic), and a second Register silently overwrote subCancel,
+	// orphaning the first loop's goroutine forever.
 	s.subMu.Lock()
+	if s.subEg != nil {
+		s.subMu.Unlock()
+		cancel()
+		log.Warn("[Evolution] Scheduler already registered; duplicate Register ignored")
+		return
+	}
 	s.subCancel = cancel
-	s.subEg = new(errgroup.Group)
-	s.subMu.Unlock()
+	subEg := new(errgroup.Group)
+	s.subEg = subEg
 
-	s.subEg.Go(func() error {
+	subEg.Go(func() error {
 		defer log.Info("[Evolution] Scheduler subscription loop stopped")
 		for evt := range ch {
 			if evt == nil {
@@ -456,6 +467,7 @@ func (s *EvolutionScheduler) Register() {
 		}
 		return nil
 	})
+	s.subMu.Unlock()
 
 	log.Info("[Evolution] Scheduler registered for agent stopped events")
 }
@@ -855,11 +867,37 @@ func (s *EvolutionScheduler) Tick(ctx context.Context) {
 	if !s.checkGuardrails(ctx) {
 		return
 	}
-	if err := adapter.Run(ctx); err != nil {
-		log.WarnContext(ctx, "[Evolution] Tick-triggered evolution failed", "error", err)
-		return
+
+	// Route through the same cancel-and-arm critical section as OnAgentEnd:
+	// the pre-fix direct adapter.Run ran UNSERIALIZED with an in-flight
+	// event-triggered cycle (lastRun only updates after success, so the
+	// minInterval throttle could not see it) — two concurrent evolution
+	// cycles — and the tick run was invisible to Shutdown's evolveEg wait.
+	egCtx, egCancel := context.WithCancel(ctx)
+	eg, _ := errgroup.WithContext(egCtx)
+
+	s.evolveMu.Lock()
+	if s.evolveCancel != nil {
+		s.evolveCancel()
 	}
-	s.mu.Lock()
-	s.lastRun = time.Now()
-	s.mu.Unlock()
+	s.evolveCancel = egCancel
+	s.evolveEg = eg
+	s.evolveMu.Unlock()
+
+	eg.Go(func() error {
+		if err := adapter.Run(egCtx); err != nil {
+			log.WarnContext(egCtx, "[Evolution] Tick-triggered evolution failed", "error", err)
+			return nil
+		}
+		s.mu.Lock()
+		s.lastRun = time.Now()
+		s.mu.Unlock()
+		return nil
+	})
+
+	// Wait synchronously to preserve the ticker's backpressure semantics.
+	// A concurrent OnAgentEnd (or Shutdown) cancels egCtx and the run exits
+	// through the executor's context checks — the supersede edge that used
+	// to be missing.
+	_ = eg.Wait()
 }

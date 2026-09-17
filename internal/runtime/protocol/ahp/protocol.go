@@ -83,7 +83,10 @@ func (p *Protocol) SendMessage(ctx context.Context, msg *AHPMessage) error {
 	err := queue.Enqueue(ctx, msg)
 	if err != nil {
 		reason := classifyEnqueueError(err)
-		if p.dlq != nil {
+		// Do NOT dead-letter sends that failed on a CLOSED queue: the
+		// protocol is shutting down, the DLQ processor will never tick
+		// again, and the entry would sit unprocessable forever.
+		if p.dlq != nil && !errors.Is(err, apperrors.ErrQueueClosed) {
 			p.dlq.Add(msg, err, reason)
 		}
 		return fmt.Errorf("send message to %s: %w", msg.TargetAgent, err)
@@ -127,6 +130,14 @@ func (p *Protocol) GetAgentStatus(agentID string) (models.AgentStatus, bool) {
 // CheckTimeouts checks for agents that have timed out.
 func (p *Protocol) CheckTimeouts() []string {
 	return p.heartbeat.CheckTimeouts()
+}
+
+// StartHeartbeatMonitoring drives CheckTimeouts on a background ticker at
+// the configured heartbeat Interval until ctx is cancelled or the returned
+// stop func is called. Wiring is the caller's choice; without a call to this
+// (or CheckTimeouts) the monitor never marks agents offline by itself.
+func (p *Protocol) StartHeartbeatMonitoring(ctx context.Context) func() {
+	return p.heartbeat.StartAutoCheck(ctx)
 }
 
 // GetDLQ returns the dead letter queue.

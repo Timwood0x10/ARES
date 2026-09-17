@@ -49,6 +49,18 @@ type MemoryConfigStore interface {
 	Unlock()
 }
 
+// LiveConfigApplier is implemented by config stores that also own live
+// structures (SessionMemory/TaskMemory). Those structures capture TTL and
+// capacity at construction, so without this push a successful patch only
+// updated the stored config — runtime behavior kept enforcing boot-time
+// values. The patch executor type-asserts the store and calls
+// ApplyLiveConfig after every successful mutation (and rollback).
+type LiveConfigApplier interface {
+	// ApplyLiveConfig pushes the (already mutated, lock-protected) config
+	// into the store's live structures.
+	ApplyLiveConfig(cfg *MemoryConfig)
+}
+
 // ── MemoryPatchExecutor ────────────────────────────────────
 
 // MemoryPatchExecutor implements patch.RuntimeComponent for the Memory subsystem,
@@ -127,6 +139,16 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 	if cfg == nil {
 		return nil, errors.New(errPrefix + "no config available")
 	}
+	// Push the mutated config into live structures via a deferred call: it
+	// runs for every patch type's return path AND for rollbacks (which
+	// re-enter Apply). Pre-fix, SessionTTL/MaxSessions/MaxTasks patches
+	// updated only the stored config — the live stores captured those
+	// values at construction and never saw the change.
+	defer func() {
+		if applier, ok := e.store.(LiveConfigApplier); ok {
+			applier.ApplyLiveConfig(cfg)
+		}
+	}()
 	// Snapshot the previous config so we can build a rollback and so a
 	// validation failure leaves the config untouched (validate-before-mutate).
 	prev := *cfg

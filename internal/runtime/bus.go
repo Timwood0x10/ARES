@@ -309,6 +309,13 @@ func (b *PluginBus) remove(plugin RuntimePlugin) {
 // late plugins under the same ctx.
 func (b *PluginBus) Start(ctx context.Context) error {
 	b.mu.Lock()
+	// Re-entrancy guard: a second Start re-invoked invokeStart on every
+	// plugin without stopping them first — duplicate drain goroutines,
+	// double subscriptions, clobbered plugin-internal state.
+	if b.started {
+		b.mu.Unlock()
+		return errors.New("runtime: bus already started")
+	}
 	b.started = true
 	b.startCtx = ctx
 	// Snapshot under the lock: hot-plug Register may append to b.plugins
@@ -362,6 +369,14 @@ func (b *PluginBus) Start(ctx context.Context) error {
 // Stop shuts down all plugins in reverse registration order.
 func (b *PluginBus) Stop(ctx context.Context) error {
 	b.mu.Lock()
+	// Idempotency guard: without it a second Stop re-ran invokeStop on
+	// every plugin (b.plugins is never cleared). Callers still own the
+	// ordering contract — do not call Start while a Stop teardown is in
+	// flight (teardown runs after the lock is released).
+	if !b.started {
+		b.mu.Unlock()
+		return nil
+	}
 	b.started = false
 	// Signal every Subscribe cleanup goroutine: they park on their caller's
 	// ctx OR this channel, so a subscriber whose ctx is never cancelled is

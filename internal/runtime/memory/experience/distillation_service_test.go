@@ -253,18 +253,22 @@ func TestDistill_InvalidExtractedExperience(t *testing.T) {
 	require.Len(t, repo.created, 0)
 }
 
-func TestDistill_EnqueueFailureWithoutEmbedClientReturnsError(t *testing.T) {
-	// Enqueue fails AND no embedding client is wired: the synchronous fallback
-	// (backfillEmbedding) cannot embed, so the row stays vector-less and Distill
-	// must surface the error rather than returning a row that can never be fixed.
+func TestDistill_EnqueueFailureWithoutEmbedClientReturnsRowForReconcile(t *testing.T) {
+	// Enqueue fails AND no embedding client is wired: the synchronous
+	// fallback (backfillEmbedding) cannot embed, but the row IS persisted —
+	// returning an error here made callers retry Distill, which Created a
+	// DUPLICATE vectorless row. The persisted row is handed back as-is;
+	// Reconcile's experiences pass (embedding IS NULL, no live queue entry)
+	// is the designed recovery path for exactly this state.
 	llmClient := newTestLLM(t, llmExtractionContent)
 	enq := &fakeEnqueuer{err: context.DeadlineExceeded}
 	repo := &fakeExpRepo{}
 	svc := NewDistillationService(llmClient, nil, repo, WithEmbeddingEnqueuer(enq))
 
-	_, err := svc.Distill(context.Background(), distillableTask())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "backfill embedding")
+	exp, err := svc.Distill(context.Background(), distillableTask())
+	require.NoError(t, err)
+	require.NotNil(t, exp)
+	require.Len(t, repo.created, 1) // exactly ONE row — no duplicate on caller retry
 }
 
 func TestDistill_NoEnqueuerNoEmbedClientReturnsError(t *testing.T) {

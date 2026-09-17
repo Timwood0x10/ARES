@@ -86,6 +86,13 @@ type ResolvedTool struct {
 	Target string
 	// Args are the static arguments from the manifest (executables only).
 	Args []string
+	// Trust is the source trust tier the tool was resolved under
+	// (TrustAllowed / TrustAsk / TrustUntrusted). Carried on the resolved
+	// tool so the executor can enforce the confirmation gate — pre-fix the
+	// tier was computed at resolve time and then silently dropped, so
+	// TrustAsk ("requires confirmation before execution") was never
+	// enforced anywhere.
+	Trust TrustLevel
 }
 
 // ToolDecl is one tool declaration inside a skill manifest.

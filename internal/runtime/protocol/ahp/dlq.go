@@ -2,6 +2,7 @@ package ahp
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -74,6 +75,11 @@ func (d *DLQ) AddWithMaxRetries(msg *AHPMessage, err error, reason string, maxRe
 }
 
 // GetAll returns all entries in the DLQ.
+//
+// NOTE: the returned *DLQEntry values are the LIVE pointers (Process relies
+// on pointer identity for Remove). Callers must treat them as read-only;
+// any future introspection surface must copy before exposing them — the
+// entries' Retries field is mutated by the processor.
 func (d *DLQ) GetAll() []*DLQEntry {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -270,19 +276,25 @@ func (p *DLQProcessor) processEntry(ctx context.Context, entry *DLQEntry) error 
 	return handler(ctx, entry)
 }
 
-// defaultHandler is the default handler for DLQ entries.
+// defaultHandler handles entries whose Reason has no registered handler. It
+// deliberately returns a NON-nil error: Process treats a nil return as
+// "handled" and removes the entry, so the pre-fix nil made the DLQ a black
+// hole — every dead-lettered message (queue_full, queue_closed, … — reasons
+// for which nothing registers handlers) was deleted on the first auto-retry
+// tick without ever being redelivered. Retaining the entry lets a handler
+// registered later pick it up; the per-tick Warn keeps the retention visible.
 func (p *DLQProcessor) defaultHandler(_ context.Context, entry *DLQEntry) error {
 	sessionID := ""
 	if entry.Message != nil {
 		sessionID = entry.Message.SessionID
 	}
-	log.Warn("DLQ entry processed by default handler",
+	log.Warn("DLQ entry has no registered handler; retaining for retry",
 		"session_id", sessionID,
 		"reason", entry.Reason,
 		"retries", entry.Retries,
 		"error", entry.Error,
 	)
-	return nil
+	return fmt.Errorf("dlq: no handler registered for reason %q", entry.Reason)
 }
 
 // Stats returns processing statistics.

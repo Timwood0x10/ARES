@@ -276,7 +276,12 @@ func withRetry[T any](c *Client, ctx context.Context, fn func() (T, error)) (T, 
 		}
 	}()
 	for attempt := 1; attempt <= attempts; attempt++ {
-		if c.circuit != nil {
+		// Once a half-open probe is admitted, do NOT call Allow() again for
+		// the retry attempts: the probe slot this call holds counts against
+		// halfOpenInflight, so a second Allow() rejects with
+		// ErrCircuitBreakerOpen — capping probe retries at 1 (MaxAttempts
+		// dead) and masking the real provider error as "breaker open".
+		if c.circuit != nil && !probeAdmitted {
 			if err := c.circuit.Allow(); err != nil {
 				return zero, err
 			}

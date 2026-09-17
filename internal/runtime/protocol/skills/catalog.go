@@ -104,7 +104,11 @@ func (c *Catalog) SyncGitSources(ctx context.Context) error {
 // Args:
 //   - srcs: the http/oci manifest sources.
 func (c *Catalog) SetHTTPSources(srcs []HTTPSource) {
+	// Locked: Build/Refresh/Activate read c.httpSrcs under c.mu; the
+	// pre-fix unlocked write raced any of them if called after startup.
+	c.mu.Lock()
 	c.httpSrcs = append([]HTTPSource(nil), srcs...)
+	c.mu.Unlock()
 }
 
 // Build indexes all declared sources (metadata only — zero disk scanning

@@ -54,6 +54,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	launches := make([]agentLaunch, 0, len(m.agents))
 	for id, ma := range m.agents {
+		// Respect operator intent: an agent the operator explicitly stopped
+		// (StopAgent → operatorIntent) must not be resurrected by a
+		// wholesale Start; the operator revives it via RestartAgent/
+		// ResumeAgent, which clear the intent deliberately.
+		if ma.operatorIntent {
+			continue
+		}
 		if ma.agent != nil {
 			agentCtx, agentCancel := context.WithCancel(m.getGctx())
 			ma.cancel = agentCancel
@@ -196,12 +203,31 @@ func (m *Manager) Stop() error {
 	_ = g.Wait()
 	DoneBackground("runtime:pre-start") // group drained; release the label
 
-	// Wait for all errgroup goroutines.
+	// Wait for all errgroup goroutines, BOUNDED: the per-agent Stop calls
+	// above are timeout-bounded, but this wait also covers each agent's run
+	// loop — and an agent.Start that ignores its context (foreign code,
+	// exactly what launchAgentGoroutine's recover boundary anticipates)
+	// would otherwise block process shutdown forever.
 	if g := m.getG(); g != nil {
-		_ = g.Wait()
+		waitDone := make(chan struct{})
+		go func() {
+			_ = g.Wait()
+			close(waitDone)
+		}()
+		waitTimer := time.NewTimer(m.config.OverallStopTimeout)
+		select {
+		case <-waitDone:
+			waitTimer.Stop()
+		case <-waitTimer.C:
+			log.Warn("runtime: stop timed out waiting for agent goroutines; stragglers are leaked",
+				"timeout", m.config.OverallStopTimeout)
+		}
 	}
 
-	log.Info("runtime: stopped", "total_restarts", m.totalRestarts)
+	m.mu.RLock()
+	totalRestarts := m.totalRestarts
+	m.mu.RUnlock()
+	log.Info("runtime: stopped", "total_restarts", totalRestarts)
 	return nil
 }
 

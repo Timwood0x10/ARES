@@ -356,6 +356,10 @@ func (q *EmbeddingQueue) MarkCompleted(ctx context.Context, tableName, taskID st
 // taskID - task identifier; empty is rejected.
 // errMessage - error message to store.
 // Returns error if update fails or task exceeded max retries.
+// retryBaseDelaySeconds is the first-retry delay applied by MarkFailed's
+// exponential backoff (doubling per retry, capped at 600s).
+const retryBaseDelaySeconds = 5
+
 func (q *EmbeddingQueue) MarkFailed(ctx context.Context, tableName, taskID, errMessage string) error {
 	if tableName == "" || taskID == "" {
 		return fmt.Errorf("mark failed: table name and task id are required: %w", errors.ErrInvalidArgument)
@@ -414,12 +418,19 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, tableName, taskID, errM
 			return errors.Wrap(err, "delete from queue")
 		}
 	} else {
-		// Increment retry count and re-queue for processing.
+		// Increment retry count and re-queue with exponential backoff.
+		// queued_at MUST be pushed into the future: FetchPendingTasks
+		// selects queued_at <= NOW(), so the pre-fix UPDATE (status flip
+		// only) re-delivered the failing task on the very next poll — a
+		// tight retry loop that burned embedding quota until MaxRetries,
+		// despite the comment claiming exponential backoff. Base 5s,
+		// doubling per retry, capped at 10 minutes.
 		_, err = tx.ExecContext(ctx, `
 			UPDATE embedding_queue
-			SET status = 'pending', retry_count = retry_count + 1, error_message = $1
+			SET status = 'pending', retry_count = retry_count + 1, error_message = $1,
+			    queued_at = NOW() + (LEAST(POWER(2, retry_count) * $4, 600) * INTERVAL '1 second')
 			WHERE task_id = $2 AND table_name = $3
-		`, errMessage, taskID, tableName)
+		`, errMessage, taskID, tableName, retryBaseDelaySeconds)
 		if err != nil {
 			return errors.Wrap(err, "mark task failed")
 		}
@@ -467,6 +478,24 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 			}
 		}
 	}()
+
+	// Reclaim rows stuck in 'processing' FIRST: FetchPendingTasks commits
+	// the status flip before the work runs, and nothing else ever moved a
+	// 'processing' row back — a worker crash (or the mid-batch ctx.Err()
+	// early return in the embedding worker) left the row invisible to
+	// every pass forever: the vector was never written and no retry ever
+	// happened. Rows younger than the threshold may still have a live
+	// worker (and processing_at is only NULL for legacy rows); older ones
+	// are dead and safe to re-queue.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE embedding_queue
+		SET status = 'pending', error_message = 'reclaimed stale processing row'
+		WHERE status = 'processing'
+		  AND processing_at IS NOT NULL
+		  AND processing_at < NOW() - ($1 * INTERVAL '1 microsecond')
+	`, thresholdMicros); err != nil {
+		return errors.Wrap(err, "reclaim stale processing rows")
+	}
 
 	// Rows already given up on (max retries exceeded) are excluded from both
 	// passes. MarkFailed deletes the queue entry when it dead-letters a task, so

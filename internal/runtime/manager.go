@@ -358,6 +358,12 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 
 	// Mark as intentionally stopped to prevent NotifyAgentDead race.
 	ma.stopped = true
+	// An explicit RestartAgent call IS an operator decision and supersedes
+	// a prior StopAgent/PauseAgent intent (otherwise the install-section
+	// intent recheck would veto the operator's own restart). A StopAgent
+	// landing IN the restart window still wins: it sets the flag again
+	// after this clear, and the install recheck honors it.
+	ma.operatorIntent = false
 	prevRestarts := ma.restarts
 	// Capture the cancel func and agent handle UNDER the lock: ma.cancel /
 	// ma.agent are written by ResumeAgent/PauseAgent under m.mu, so reading
@@ -391,6 +397,26 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 
 	// Re-register and start.
 	m.mu.Lock()
+	// Re-check INSIDE the install critical section: Manager.Stop, an
+	// operator StopAgent, or a concurrent Restart/Restore may have landed
+	// while the old instance was stopping. Installing anyway would either
+	// resurrect an agent over an operator stop (the same guard RestoreAgent
+	// applies) or overwrite a live entry whose cancel is then lost forever —
+	// an orphaned goroutine that Shutdown can never reap.
+	if m.isStopped {
+		m.mu.Unlock()
+		return ErrRuntimeStopped
+	}
+	if cur, ok := m.agents[agentID]; !ok || cur != ma {
+		m.mu.Unlock()
+		log.Info("runtime: restart aborted — agent entry changed during restart", "agent_id", agentID)
+		return nil // not an error: another lifecycle transition took over
+	}
+	if ma.operatorIntent {
+		m.mu.Unlock()
+		log.Info("runtime: restart aborted — operator stopped/paused the agent during restart", "agent_id", agentID)
+		return nil // not an error: the desired state is "stopped"
+	}
 	agentCtx, agentCancel := context.WithCancel(m.getGctx())
 	m.agents[agentID] = &managedAgent{
 		agent:    &chaosWrappedAgent{Agent: newAgent, m: m, id: agentID},
